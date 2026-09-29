@@ -499,6 +499,82 @@ export class CrawlingSchedulerService {
   }
 
   /**
+   * Make this connector's repeating schedule match `scheduleConfig`. An
+   * identical schedule is left alone; otherwise the new one is added before
+   * the old ones are removed, so a failed add never leaves the connector with
+   * no schedule at all.
+   */
+  async upsertRepeatingSchedule(
+    connector: string,
+    connectorId: string,
+    scheduleConfig: ICrawlingSchedule,
+    orgId: string,
+    userId: string,
+  ): Promise<'scheduled' | 'unchanged'> {
+    const repeatOptions = this.transformScheduleConfig(scheduleConfig);
+    if (!scheduleConfig.isEnabled || !repeatOptions) {
+      throw new BadRequestError('Only an enabled repeating schedule can be upserted');
+    }
+    this.assertSchedulable(repeatOptions);
+
+    const jobId = this.buildJobId(connector, connectorId, orgId);
+    const jobName = this.buildJobName(connector, connectorId);
+    const existing = (await this.queue.getRepeatableJobs()).filter(
+      (r) => r.name === jobName,
+    );
+    const matching = existing.filter((r) => this.repeatOptsMatch(r, repeatOptions));
+    const stale = existing.filter((r) => !matching.includes(r));
+
+    if (matching.length === 0) {
+      const jobData: CrawlingJobData = {
+        connector,
+        connectorId,
+        scheduleConfig,
+        orgId,
+        userId,
+        timestamp: new Date(),
+      };
+      await this.queue.add(jobName, jobData, {
+        priority: 5,
+        attempts: 3,
+        removeOnComplete: 10,
+        removeOnFail: 10,
+        repeat: repeatOptions,
+      });
+    }
+    for (const r of stale) {
+      await this.queue.removeRepeatableByKey(r.key);
+    }
+    this.pausedJobs.delete(jobId);
+
+    return matching.length === 0 ? 'scheduled' : 'unchanged';
+  }
+
+  /**
+   * Remove every repeating schedule and queued run for this connector.
+   * Repeatables are found by name, so one without a queued run is still
+   * removed. Returns whether anything was scheduled.
+   */
+  async removeConnectorSchedules(
+    connector: string,
+    connectorId: string,
+    orgId: string,
+  ): Promise<boolean> {
+    const jobName = this.buildJobName(connector, connectorId);
+    const repeatables = (await this.queue.getRepeatableJobs()).filter(
+      (r) => r.name === jobName,
+    );
+    for (const r of repeatables) {
+      await this.queue.removeRepeatableByKey(r.key);
+    }
+    await this.removeJobInternal(connector, connectorId, orgId);
+    const wasPaused = this.pausedJobs.delete(
+      this.buildJobId(connector, connectorId, orgId),
+    );
+    return repeatables.length > 0 || wasPaused;
+  }
+
+  /**
    * Remove a job (public method)
    */
   async removeJob(

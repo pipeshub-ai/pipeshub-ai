@@ -1,6 +1,6 @@
 import { Logger } from '../../../libs/services/logger.service';
+import { BadRequestError } from '../../../libs/errors/http.errors';
 import { CrawlingSchedulerService } from './crawling_service';
-import { CrawlingScheduleType } from '../schema/enums';
 import {
   ConnectorSyncBlock,
   buildCrawlingScheduleFromSync,
@@ -9,9 +9,11 @@ import {
 
 export type ScheduleReconcileOutcome =
   | 'scheduled'
+  | 'unchanged'
   | 'removed'
   | 'noop'
-  | 'skipped';
+  | 'invalid_input'
+  | 'invalid_config';
 
 export interface ScheduleReconcileInput {
   connector: string; // connector type, e.g. 'Confluence'
@@ -22,97 +24,111 @@ export interface ScheduleReconcileInput {
   sync: ConnectorSyncBlock | null | undefined;
 }
 
+/** Fixed message for every reconcile result, so one query finds them all. */
+export const RECONCILE_LOG_MESSAGE = 'connector schedule reconcile';
+
+const RETRY_DELAYS_MS = [200, 1_000];
+
+const errorFields = (error: unknown): { error: string; stack?: string } => ({
+  error: error instanceof Error ? error.message : String(error),
+  stack: error instanceof Error ? error.stack : undefined,
+});
+
+// Validation errors are the input's fault; retrying them only delays the report.
+const withRetry = async <T>(
+  operation: () => Promise<T>,
+  retryDelaysMs: number[],
+  logger: Logger,
+  ctx: Record<string, unknown>,
+): Promise<T> => {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (error instanceof BadRequestError || attempt >= retryDelaysMs.length) {
+        throw error;
+      }
+      logger.warn(`${RECONCILE_LOG_MESSAGE}: retrying after error`, {
+        ...ctx,
+        attempt: attempt + 1,
+        ...errorFields(error),
+      });
+      await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt]));
+    }
+  }
+};
+
 /**
- * Reconcile the BullMQ crawling job for a connector against its saved
- * sync config. Idempotent — `scheduleJob` removes any existing job before
- * creating a new one, and we explicitly remove on disable / non-SCHEDULED.
+ * Make the BullMQ crawling schedule for a connector match its saved sync
+ * config. Every call ends in exactly one `RECONCILE_LOG_MESSAGE` log line
+ * carrying the outcome; failures and invalid input or config are logged at
+ * error. Queue errors are retried, then rethrown.
  */
 export const reconcileConnectorSchedule = async (
   scheduler: CrawlingSchedulerService,
   logger: Logger,
   input: ScheduleReconcileInput,
+  { retryDelaysMs = RETRY_DELAYS_MS }: { retryDelaysMs?: number[] } = {},
 ): Promise<ScheduleReconcileOutcome> => {
-  const { connector, connectorId, orgId, userId, isActive, sync } = input;
+  const started = Date.now();
+  const { connector, connectorId, orgId, isActive, sync } = input;
+  // Only stamped on the job as createdBy; a missing owner must not cost the schedule.
+  const userId = input.userId || 'system';
   const ctx = { connector, connectorId, orgId };
 
-  if (!connector || !connectorId || !orgId || !userId) {
-    logger.warn('reconcileConnectorSchedule called with missing identifiers', ctx);
-    return 'skipped';
-  }
-
-  const selectedStrategy = sync?.selectedStrategy ?? '(none)';
-  const wantsSchedule = isActive && isScheduledSyncStrategy(sync);
-
-  if (!wantsSchedule) {
-    const skipReason = !isActive
-      ? 'connector was deactivated'
-      : `sync strategy is "${selectedStrategy}" (not SCHEDULED)`;
-
-    logger.info(`Schedule reconcile: ${skipReason} — checking for existing job to remove`, {
+  const report = (
+    outcome: ScheduleReconcileOutcome | 'failed',
+    extra: Record<string, unknown> = {},
+  ): void => {
+    const isProblem =
+      outcome === 'failed' || outcome === 'invalid_input' || outcome === 'invalid_config';
+    const log = isProblem ? logger.error.bind(logger) : logger.info.bind(logger);
+    log(RECONCILE_LOG_MESSAGE, {
       ...ctx,
+      outcome,
       isActive,
-      selectedStrategy,
+      selectedStrategy: sync?.selectedStrategy ?? null,
+      intervalMinutes: sync?.scheduledConfig?.intervalMinutes ?? null,
+      durationMs: Date.now() - started,
+      ...extra,
     });
+  };
 
-    try {
-      const existing = await scheduler.getJobStatus(connector, connectorId, orgId);
-      if (!existing) {
-        logger.info(`Schedule reconcile: no existing job found — nothing to remove (${skipReason})`, ctx);
-        return 'noop';
-      }
-      await scheduler.removeJob(connector, connectorId, orgId);
-      logger.info(`Crawling job removed: ${skipReason}`, ctx);
-      return 'removed';
-    } catch (error) {
-      logger.error('Failed to remove crawling job during reconcile', {
-        ...ctx,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      throw error;
-    }
+  if (!connector || !connectorId || !orgId) {
+    report('invalid_input');
+    return 'invalid_input';
   }
-
-  const schedule = buildCrawlingScheduleFromSync(sync, userId);
-  if (!schedule) {
-    logger.warn(
-      'Connector has SCHEDULED strategy but scheduledConfig is invalid or missing — skipping job creation',
-      {
-        ...ctx,
-        scheduledConfig: sync?.scheduledConfig ?? null,
-      },
-    );
-    return 'skipped';
-  }
-
-  const isInterval = schedule.scheduleType === CrawlingScheduleType.INTERVAL;
-  const intervalCfg = isInterval ? schedule.scheduleConfig : undefined;
-  const intervalMinutes = intervalCfg?.intervalMinutes;
-  const timezone = intervalCfg?.timezone ?? 'UTC';
 
   try {
-    await scheduler.scheduleJob(
-      connector,
-      connectorId,
-      schedule,
-      orgId,
-      userId,
+    if (!isActive || !isScheduledSyncStrategy(sync)) {
+      const removed = await withRetry(
+        () => scheduler.removeConnectorSchedules(connector, connectorId, orgId),
+        retryDelaysMs,
+        logger,
+        ctx,
+      );
+      const outcome = removed ? 'removed' : 'noop';
+      report(outcome);
+      return outcome;
+    }
+
+    const schedule = buildCrawlingScheduleFromSync(sync, userId);
+    if (!schedule) {
+      report('invalid_config', { scheduledConfig: sync?.scheduledConfig ?? null });
+      return 'invalid_config';
+    }
+
+    const outcome = await withRetry(
+      () =>
+        scheduler.upsertRepeatingSchedule(connector, connectorId, schedule, orgId, userId),
+      retryDelaysMs,
+      logger,
+      ctx,
     );
-    logger.info(
-      `Crawling job scheduled: connector activated with ${intervalMinutes ?? '?'}min interval`,
-      {
-        ...ctx,
-        scheduleType: schedule.scheduleType,
-        intervalMinutes,
-        timezone,
-      },
-    );
-    return 'scheduled';
+    report(outcome);
+    return outcome;
   } catch (error) {
-    logger.error('Failed to schedule crawling job during reconcile', {
-      ...ctx,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    });
+    report('failed', errorFields(error));
     throw error;
   }
 };
-
