@@ -8,11 +8,16 @@ the agent runtime.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from app.config.constants.ai_models import AzureOpenAILLM
-from app.connectors.sources.demo.harness.answer_judge import LangChainJudgeClient
+from app.connectors.sources.demo.harness.answer_judge import (
+    AnthropicJudgeClient,
+    LangChainJudgeClient,
+)
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -113,7 +118,12 @@ def resolve_model(
     return provider, model, None
 
 
-JUDGE_PROVIDERS = ("azure_openai", "openai", "anthropic")
+JUDGE_PROVIDERS = ("azure_openai", "anthropic_foundry", "openai", "anthropic")
+
+# Azure resource hosts whose first label is the resource name Foundry needs.
+_AZURE_RESOURCE_HOST = re.compile(
+    r"^(?P<resource>[a-z0-9][a-z0-9-]*)\.(?:cognitiveservices\.azure\.com|openai\.azure\.com|services\.ai\.azure\.com)$"
+)
 
 
 class JudgeConfigError(RuntimeError):
@@ -122,7 +132,7 @@ class JudgeConfigError(RuntimeError):
 
 @dataclass(frozen=True)
 class JudgeModel:
-    client: LangChainJudgeClient
+    client: LangChainJudgeClient | AnthropicJudgeClient
     provider: str
     model: str
     # True when the JUDGE_* settings chose it, rather than the eval/instance ones.
@@ -133,11 +143,47 @@ class JudgeModel:
         return f"{self.provider} / {self.model or 'default model'} ({source})"
 
 
+def foundry_resource(endpoint: str) -> str | None:
+    """The Azure resource name in an endpoint URL, or None when it isn't one."""
+    host = (urlparse(endpoint if "//" in endpoint else f"//{endpoint}").hostname or "").lower()
+    match = _AZURE_RESOURCE_HOST.match(host)
+    return match.group("resource") if match else None
+
+
+def build_foundry_judge_client(resource: str, api_key: str, model: str) -> AnthropicJudgeClient:
+    """Claude on Azure AI Foundry, through the Anthropic Messages API."""
+    try:
+        from anthropic import AnthropicFoundry
+    except ImportError as exc:
+        raise JudgeConfigError(
+            "the installed anthropic SDK has no AnthropicFoundry client; "
+            "anthropic_foundry needs the version langchain-anthropic pins in backend/python/pyproject.toml."
+        ) from exc
+    return AnthropicJudgeClient(AnthropicFoundry(resource=resource, api_key=api_key, timeout=120), model)
+
+
+def _foundry_judge(key: str | None, model: str) -> JudgeModel:
+    model = model or os.getenv("JUDGE_AZURE_DEPLOYMENT") or ""
+    endpoint = os.getenv("JUDGE_AZURE_ENDPOINT") or ""
+    resource = os.getenv("JUDGE_FOUNDRY_RESOURCE") or (foundry_resource(endpoint) if endpoint else None)
+    missing = [name for name, value in (("JUDGE_API_KEY", key), ("JUDGE_MODEL or JUDGE_AZURE_DEPLOYMENT", model)) if not value]
+    if not resource:
+        missing.append(
+            "JUDGE_FOUNDRY_RESOURCE, or a JUDGE_AZURE_ENDPOINT on *.cognitiveservices.azure.com, "
+            "*.openai.azure.com or *.services.ai.azure.com" + (" (the one set is not)" if endpoint else "")
+        )
+    if missing:
+        raise JudgeConfigError(f"JUDGE_PROVIDER=anthropic_foundry but not set: {'; '.join(missing)}.")
+    return JudgeModel(build_foundry_judge_client(resource, key or "", model), "anthropic_foundry", model, dedicated=True)
+
+
 def _dedicated_judge(provider: str) -> JudgeModel:
     if provider not in JUDGE_PROVIDERS:
         raise JudgeConfigError(f"JUDGE_PROVIDER is '{provider}'; use one of {', '.join(JUDGE_PROVIDERS)}.")
     key = os.getenv("JUDGE_API_KEY")
     model = os.getenv("JUDGE_MODEL") or ""
+    if provider == "anthropic_foundry":
+        return _foundry_judge(key, model)
     endpoint = os.getenv("JUDGE_AZURE_ENDPOINT")
     deployment = os.getenv("JUDGE_AZURE_DEPLOYMENT")
     needed = {"JUDGE_API_KEY": key}
@@ -187,6 +233,8 @@ __all__ = [
     "JudgeModel",
     "MissingModelError",
     "build_chat_model",
+    "build_foundry_judge_client",
+    "foundry_resource",
     "judge_model_from_env",
     "resolve_model",
 ]

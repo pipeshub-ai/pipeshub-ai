@@ -228,11 +228,27 @@ def _retryable(exc: BaseException) -> bool:
     return isinstance(exc, (TimeoutError, httpx.TimeoutException)) or "timeout" in type(exc).__name__.lower()
 
 
+# Long opaque strings, and "sk-" keys that some providers echo half-masked in a 401.
+_SECRET_LIKE = re.compile(r"sk-[^\s'\",]+|[A-Za-z0-9_*+/=-]{24,}")
+
+
+def _safe_message(exc: BaseException) -> str:
+    message = str(getattr(exc, "message", None) or exc)
+    return _SECRET_LIKE.sub("[redacted]", " ".join(message.split()))[:200]
+
+
+class JudgeStopError(RuntimeError):
+    """The model stopped without a usable answer (a refusal, or out of tokens)."""
+
+
 def _parse_reply(raw: str, expected_ids: set[int]) -> _Reply:
     text = raw.strip()
     fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL)
     if fenced:
         text = fenced.group(1)
+    elif not text.startswith("{") and "{" in text:
+        # A model without a JSON mode may put a sentence before the object.
+        text = text[text.index("{"):text.rindex("}") + 1]
     reply = _Reply.model_validate(json.loads(text))
     got = [c.id for c in reply.claims]
     if sorted(got) != sorted(expected_ids):
@@ -289,9 +305,9 @@ class AnswerJudge:
         try:
             raw = self._complete(build_prompt(answer, [c for c, _ in kinds]))
         except Exception as exc:
-            # Only the type and status: a provider's message can echo request details.
             code = _status_code(exc)
-            return JudgeResult.error(f"model call failed: {type(exc).__name__}" + (f" (HTTP {code})" if code else ""))
+            status = f" (HTTP {code})" if code else ""
+            return JudgeResult.error(f"model call failed: {type(exc).__name__}{status}: {_safe_message(exc)}")
         try:
             reply = _parse_reply(raw, set(range(1, len(kinds) + 1)))
         except (ValueError, ValidationError) as exc:
@@ -353,13 +369,53 @@ class LangChainJudgeClient:
         return str(content)
 
 
+class AnthropicJudgeClient:
+    """An Anthropic Messages API client (such as ``AnthropicFoundry``) as a
+    ``JudgeClient``, counting the tokens it used.
+
+    Sends no temperature, top_p or top_k: newer Claude models reject
+    non-default sampling with a 400. Thinking is left at the model's default.
+    """
+
+    def __init__(self, sdk_client: Any, model: str, *, max_tokens: int = 8000, effort: str = "medium") -> None:  # noqa: ANN401 - any Anthropic SDK client
+        self._sdk = sdk_client
+        self._model = model
+        self._max_tokens = max_tokens
+        self._effort = effort
+        self.calls = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+
+    def complete(self, system: str, user: str) -> str:
+        self.calls += 1
+        response = self._sdk.messages.create(
+            model=self._model,
+            max_tokens=self._max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+            # Through extra_body so an older SDK without the field still sends it.
+            extra_body={"output_config": {"effort": self._effort}},
+        )
+        usage = getattr(response, "usage", None)
+        self.input_tokens += int(getattr(usage, "input_tokens", 0) or 0)
+        self.output_tokens += int(getattr(usage, "output_tokens", 0) or 0)
+        stop = getattr(response, "stop_reason", None)
+        if stop in ("refusal", "max_tokens"):
+            raise JudgeStopError(f"the model stopped with stop_reason={stop}")
+        return "".join(
+            getattr(block, "text", "") for block in response.content or [] if getattr(block, "type", None) == "text"
+        )
+
+
 __all__ = [
+    "AnthropicJudgeClient",
     "REQUIRE_JUDGE_ENV",
     "SYSTEM_PROMPT",
     "AnswerJudge",
     "ClaimResult",
     "JudgeClient",
     "JudgeResult",
+    "JudgeStopError",
     "LangChainJudgeClient",
     "build_prompt",
     "check_content",

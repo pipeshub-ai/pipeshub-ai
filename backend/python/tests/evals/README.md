@@ -246,12 +246,23 @@ model that wrote the answer. `chat_models.judge_model_from_env()` picks it:
 
 | Setting | What it is | In CI, set from |
 | --- | --- | --- |
-| `JUDGE_PROVIDER` | `azure_openai`, `openai` or `anthropic` | `azure_openai` whenever the `AZURE_JUDGE_API_KEY` secret exists |
-| `JUDGE_MODEL` | the model name | the `AZURE_JUDGE_MODEL` secret |
+| `JUDGE_PROVIDER` | `anthropic_foundry`, `azure_openai`, `openai` or `anthropic` | `anthropic_foundry` whenever the `AZURE_JUDGE_API_KEY` secret exists |
+| `JUDGE_MODEL` | the model name; for Foundry, the deployment name | the `AZURE_JUDGE_MODEL` secret (`claude-sonnet-5.5`) |
 | `JUDGE_API_KEY` | the judge's own key | the `AZURE_JUDGE_API_KEY` secret |
-| `JUDGE_AZURE_ENDPOINT` | Azure only | the same endpoint as `TEST_AZURE_OPENAI_ENDPOINT` |
-| `JUDGE_AZURE_DEPLOYMENT` | Azure only | the `AZURE_JUDGE_MODEL` secret, since the deployment is named after the model |
-| `JUDGE_AZURE_API_VERSION` | Azure only, optional | not set; defaults to the product's API version |
+| `JUDGE_AZURE_ENDPOINT` | Azure and Foundry; Foundry reads the resource name from its host | the same endpoint as `TEST_AZURE_OPENAI_ENDPOINT` |
+| `JUDGE_FOUNDRY_RESOURCE` | Foundry only, optional; the resource name, when the endpoint doesn't give it | not set |
+| `JUDGE_AZURE_DEPLOYMENT` | Azure OpenAI; Foundry uses it when `JUDGE_MODEL` is empty | the `AZURE_JUDGE_MODEL` secret |
+| `JUDGE_AZURE_API_VERSION` | Azure OpenAI only, optional | not set; defaults to the product's API version |
+
+`anthropic_foundry` is Claude deployed on Azure AI Foundry. It uses the
+Anthropic Messages API through the official SDK's `AnthropicFoundry` client,
+not Azure OpenAI chat completions. The resource is the first part of the
+endpoint's host (`<resource>.cognitiveservices.azure.com`,
+`<resource>.openai.azure.com` or `<resource>.services.ai.azure.com`). The judge
+sends no temperature, top_p or top_k, because Claude Sonnet 5.5 rejects
+non-default sampling. It leaves thinking at the model's default and asks for
+`effort: medium`. The JSON reply is validated as for every provider. A refusal,
+or a reply cut off at the token limit, is a judge error.
 
 Run locally by exporting the `JUDGE_*` names directly.
 

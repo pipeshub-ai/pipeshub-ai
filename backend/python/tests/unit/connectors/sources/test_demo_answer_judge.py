@@ -14,6 +14,7 @@ import pytest
 from app.connectors.sources.demo.harness import answer_judge as aj
 from app.connectors.sources.demo.harness.answer_judge import (
     AnswerJudge,
+    AnthropicJudgeClient,
     JudgeResult,
     LangChainJudgeClient,
     quote_in_answer,
@@ -321,3 +322,72 @@ def test_the_langchain_client_asks_for_json_with_a_timeout_and_counts_tokens() -
     assert client.complete("system", "user") == '{"claims": []}'
     assert model.kwargs == {"timeout": 30, "response_format": {"type": "json_object"}}
     assert (client.calls, client.input_tokens, client.output_tokens) == (1, 120, 30)
+
+
+class Block:
+    def __init__(self, type_: str, text: str = "") -> None:
+        self.type = type_
+        self.text = text
+
+
+class Usage:
+    input_tokens = 900
+    output_tokens = 250
+
+
+class Response:
+    def __init__(self, content: list[Block], stop_reason: str = "end_turn") -> None:
+        self.content = content
+        self.stop_reason = stop_reason
+        self.usage = Usage()
+
+
+class FakeMessages:
+    def __init__(self, response: Response) -> None:
+        self.response = response
+        self.kwargs: dict = {}
+
+    def create(self, **kwargs: object) -> Response:
+        self.kwargs = kwargs
+        return self.response
+
+
+class FakeAnthropic:
+    def __init__(self, response: Response) -> None:
+        self.messages = FakeMessages(response)
+
+
+def test_the_anthropic_client_sends_no_sampling_parameters_and_reads_only_text() -> None:
+    body = reply(("supported", "without any approval"))
+    sdk = FakeAnthropic(Response([Block("thinking", "{not the answer}"), Block("text", body)]))
+    client = AnthropicJudgeClient(sdk, "claude-sonnet-5.5")
+    assert client.complete("system", "user") == body
+    sent = sdk.messages.kwargs
+    assert not {"temperature", "top_p", "top_k", "thinking"} & set(sent)
+    assert sent["model"] == "claude-sonnet-5.5" and sent["system"] == "system"
+    assert sent["messages"] == [{"role": "user", "content": "user"}]
+    assert sent["extra_body"] == {"output_config": {"effort": "medium"}}
+    assert (client.calls, client.input_tokens, client.output_tokens) == (1, 900, 250)
+
+
+def test_the_anthropic_client_reply_is_judged_like_any_other() -> None:
+    sdk = FakeAnthropic(Response([Block("text", "Here is my assessment:\n" + reply(("supported", "without any approval")))]))
+    result = AnswerJudge(AnthropicJudgeClient(sdk, "claude-sonnet-5.5"), sleep=lambda _s: None).judge(ANSWER, [NO_APPROVAL])
+    assert result.status == "judged" and result.passed
+
+
+@pytest.mark.parametrize("stop_reason", ["refusal", "max_tokens"])
+def test_a_refusal_or_a_cut_off_reply_is_a_judge_error(stop_reason: str) -> None:
+    sdk = FakeAnthropic(Response([Block("text", reply(("supported", "without any approval")))], stop_reason))
+    result = AnswerJudge(AnthropicJudgeClient(sdk, "claude-sonnet-5.5"), sleep=lambda _s: None).judge(ANSWER, [NO_APPROVAL])
+    assert result.status == "judge error" and not result.passed
+    assert stop_reason in result.detail
+
+
+def test_a_model_error_names_its_class_and_status_but_not_a_key() -> None:
+    err = StatusError(401)
+    err.message = "Incorrect API key provided: sk-abc123***************************xyz9."
+    judge, _ = judge_with(err)
+    detail = judge.judge(ANSWER, [NO_APPROVAL]).detail
+    assert "StatusError (HTTP 401)" in detail and "Incorrect API key provided" in detail
+    assert "sk-abc123" not in detail and "xyz9" not in detail
