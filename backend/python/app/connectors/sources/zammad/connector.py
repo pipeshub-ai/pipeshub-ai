@@ -109,6 +109,11 @@ ZAMMAD_CONFIG_PATH = "/services/connectors/{connector_id}/config"
 # Constants for batch processing and parsing
 BATCH_SIZE_KB_ANSWERS = 50
 ATTACHMENT_ID_PARTS_COUNT = 3
+TICKET_ID_LISTING_PAGE_SIZE = 50
+GRAPH_RECORDS_PAGE_SIZE = 500
+FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup:excluded_groups"
+# Attachment records are "<ticket>_<article>_<attachment>".
+TICKET_ATTACHMENT_ID_PATTERN = re.compile(r"^(\d+)_\d+_\d+$")
 KB_ANSWER_ATTACHMENT_PARTS_COUNT = 2
 
 # Zammad link type to RecordRelations mapping
@@ -266,6 +271,9 @@ class ZammadConnector(BaseConnector):
         # Filter collections (initialized in run_sync)
         self.sync_filters: Any = None
         self.indexing_filters: Any = None
+        # Ids of groups the applied group filter leaves out; None until a complete
+        # group listing has been read, so a failed listing removes nothing.
+        self._filter_excluded_group_ids: set[str] | None = None
 
     async def init(self) -> bool:
         """
@@ -443,6 +451,8 @@ class ZammadConnector(BaseConnector):
             self.logger.info("🎫 Step 5: Syncing tickets...")
             await self._sync_tickets_for_groups(group_record_groups)
 
+            await self._remove_tickets_in_excluded_groups()
+
             # Step 6: Sync knowledge base (always fetch, indexing filters control indexing_status)
             self.logger.info("📚 Step 6: Syncing knowledge base...")
             await self._sync_knowledge_bases()
@@ -613,13 +623,18 @@ class ZammadConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         page = 1
         per_page = 100
+        self._filter_excluded_group_ids = None
+        excluded_group_ids: set[str] = set()
+        listing_complete = True
 
         while True:
             response = await datasource.list_groups(page=page, per_page=per_page)
 
-            if not response.success or not response.data:
-                if page == 1:
-                    self.logger.warning("Failed to fetch groups from Zammad")
+            if not response.success:
+                listing_complete = False
+                self.logger.warning(f"Failed to fetch groups from Zammad (page {page})")
+                break
+            if not response.data:
                 break
 
             groups_data = response.data
@@ -634,12 +649,12 @@ class ZammadConnector(BaseConnector):
                 group_name = group_data.get("name", "")
                 active = group_data.get("active", True)
 
-                if not active or not group_id or not group_name:
+                if group_id and not self._is_group_allowed_by_filter(str(group_id)):
+                    excluded_group_ids.add(str(group_id))
+                    self.logger.debug(f"⏭️ Skipping group {group_id} ({group_name}) - excluded by filter")
                     continue
 
-                # Apply group_ids filter early - skip groups that don't match the filter
-                if not self._is_group_allowed_by_filter(str(group_id)):
-                    self.logger.debug(f"⏭️ Skipping group {group_id} ({group_name}) - excluded by filter")
+                if not active or not group_id or not group_name:
                     continue
 
                 # Parse timestamps
@@ -719,6 +734,8 @@ class ZammadConnector(BaseConnector):
 
             page += 1
 
+        if listing_complete:
+            self._filter_excluded_group_ids = excluded_group_ids
         self.logger.info(
             f"📥 Fetched {len(user_groups)} groups, "
             f"created {len(record_groups)} RecordGroups and {len(user_groups)} UserGroups"
@@ -907,6 +924,8 @@ class ZammadConnector(BaseConnector):
                 else:
                     self.logger.debug(f"No tickets found for group {group_name}, keeping existing checkpoint to avoid skipping older tickets")
 
+                await self._remove_tickets_gone_from_group(int(group_id), group_name)
+
                 total_tickets_all_groups += total_tickets
                 total_attachments_all_groups += total_attachments
                 if total_attachments > 0:
@@ -922,6 +941,34 @@ class ZammadConnector(BaseConnector):
             self.logger.info(f"✅ Total: Synced {total_tickets_all_groups} tickets, {total_attachments_all_groups} attachments across {len(group_record_groups)} groups")
         else:
             self.logger.info(f"✅ Total: Synced {total_tickets_all_groups} tickets across {len(group_record_groups)} groups")
+
+    def _date_filter_bounds(self, key: SyncFilterKey) -> tuple[int | None, int | None]:
+        date_filter = self.sync_filters.get(key) if self.sync_filters else None
+        if not date_filter:
+            return None, None
+        return date_filter.get_value(default=(None, None))
+
+    def _build_ticket_search_query(self, group_id: int, last_sync_time: int | None) -> str:
+        """Zammad search query for a group's tickets within the sync date filters."""
+        query_parts = [f"group_id:{group_id}"]
+        modified_after, modified_before = self._date_filter_bounds(SyncFilterKey.MODIFIED)
+        created_after, created_before = self._date_filter_bounds(SyncFilterKey.CREATED)
+
+        if last_sync_time:
+            modified_after = max(modified_after, last_sync_time) if modified_after else last_sync_time
+
+        def _iso(epoch_ms: int) -> str:
+            return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        if modified_after:
+            query_parts.append(f"updated_at:[{_iso(modified_after)} TO *]")
+        if modified_before:
+            query_parts.append(f"updated_at:[* TO {_iso(modified_before)}]")
+        if created_after:
+            query_parts.append(f"created_at:[{_iso(created_after)} TO *]")
+        if created_before:
+            query_parts.append(f"created_at:[* TO {_iso(created_before)}]")
+        return " AND ".join(query_parts)
 
     async def _fetch_tickets_for_group_batch(
         self,
@@ -945,57 +992,7 @@ class ZammadConnector(BaseConnector):
         offset = 0
         batch_size = 50
 
-        # Build query: always filter by group_id
-        query_parts = [f"group_id:{group_id}"]
-
-        # Get modified date filter from sync_filters
-        modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED) if self.sync_filters else None
-        modified_after: Optional[int] = None
-        modified_before: Optional[int] = None
-
-        if modified_filter:
-            modified_after, modified_before = modified_filter.get_value(default=(None, None))
-
-        # Get created date filter from sync_filters
-        created_filter = self.sync_filters.get(SyncFilterKey.CREATED) if self.sync_filters else None
-        created_after: Optional[int] = None
-        created_before: Optional[int] = None
-
-        if created_filter:
-            created_after, created_before = created_filter.get_value(default=(None, None))
-
-        # Determine modified_after from filter and/or incremental sync checkpoint
-        if last_sync_time:
-            # Use the greater of last_sync_time and modified_after filter
-            if modified_after:
-                modified_after = max(modified_after, last_sync_time)
-            else:
-                modified_after = last_sync_time
-
-        # Add modified date range filter (updated_at)
-        if modified_after:
-            dt = datetime.fromtimestamp(modified_after / 1000, tz=timezone.utc)
-            iso_format = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-            query_parts.append(f"updated_at:[{iso_format} TO *]")
-
-        if modified_before:
-            dt = datetime.fromtimestamp(modified_before / 1000, tz=timezone.utc)
-            iso_format = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-            query_parts.append(f"updated_at:[* TO {iso_format}]")
-
-        # Add created date range filter (created_at)
-        if created_after:
-            dt = datetime.fromtimestamp(created_after / 1000, tz=timezone.utc)
-            iso_format = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-            query_parts.append(f"created_at:[{iso_format} TO *]")
-
-        if created_before:
-            dt = datetime.fromtimestamp(created_before / 1000, tz=timezone.utc)
-            iso_format = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-            query_parts.append(f"created_at:[* TO {iso_format}]")
-
-        # Build final query
-        query = " AND ".join(query_parts)
+        query = self._build_ticket_search_query(group_id, last_sync_time)
         self.logger.debug(f"Fetching tickets for group '{group_name}' with query: {query}")
 
         while True:
@@ -1066,6 +1063,160 @@ class ZammadConnector(BaseConnector):
 
             # Increment offset for next page
             offset += limit
+
+    @staticmethod
+    def _ticket_id_of(record: Record) -> str | None:
+        """The Zammad ticket a ticket or ticket-attachment record belongs to, else None."""
+        external_id = record.external_record_id or ""
+        if record.record_type == RecordType.TICKET:
+            return external_id if external_id.isdigit() else None
+        match = TICKET_ATTACHMENT_ID_PATTERN.match(external_id)
+        return match.group(1) if match else None
+
+    async def _records_by_ticket_in_group(self, external_group_id: str) -> dict[str, list[str]]:
+        """Record ids of each ticket held in a group record group: its attachments, then the ticket."""
+        by_ticket: dict[str, list[str]] = defaultdict(list)
+        after_key: str | None = None
+        while True:
+            page = await self.data_entities_processor.get_records_in_record_group(
+                self.connector_id, external_group_id, GRAPH_RECORDS_PAGE_SIZE, after_key
+            )
+            for record in page:
+                ticket_id = self._ticket_id_of(record)
+                if not ticket_id:
+                    continue
+                # Ticket last: a failed delete leaves the ticket for the next sync to find again.
+                if record.record_type == RecordType.TICKET:
+                    by_ticket[ticket_id].append(record.id)
+                else:
+                    by_ticket[ticket_id].insert(0, record.id)
+            if len(page) < GRAPH_RECORDS_PAGE_SIZE:
+                return by_ticket
+            after_key = page[-1].id
+
+    async def _list_group_ticket_ids(self, group_id: int, group_name: str) -> set[str] | None:
+        """Every ticket id the group holds within the sync date filters, or None if any page failed."""
+        datasource = await self._get_fresh_datasource()
+        query = self._build_ticket_search_query(group_id, last_sync_time=None)
+        ticket_ids: set[str] = set()
+        offset = 0
+        while True:
+            response = await datasource.search_tickets(
+                query=query, limit=TICKET_ID_LISTING_PAGE_SIZE, offset=offset
+            )
+            if not response.success:
+                self.logger.warning(
+                    f"Could not list the tickets of group '{group_name}' (offset {offset}); "
+                    "not removing any of its tickets this sync"
+                )
+                return None
+            tickets = response.data or []
+            if not isinstance(tickets, list):
+                tickets = [tickets]
+            ticket_ids.update(str(t["id"]) for t in tickets if isinstance(t, dict) and t.get("id") is not None)
+            if len(tickets) < TICKET_ID_LISTING_PAGE_SIZE:
+                return ticket_ids
+            offset += TICKET_ID_LISTING_PAGE_SIZE
+
+    def _passes_date_filters(self, ticket: dict[str, Any]) -> bool:
+        for key, field in ((SyncFilterKey.MODIFIED, "updated_at"), (SyncFilterKey.CREATED, "created_at")):
+            after, before = self._date_filter_bounds(key)
+            value = self._parse_zammad_datetime(ticket.get(field) or "")
+            if not value:
+                continue
+            if (after and value < after) or (before and value > before):
+                return False
+        return True
+
+    async def _is_ticket_out_of_scope(self, ticket_id: str) -> bool:
+        """True only when Zammad says the ticket is gone, or an applied filter now leaves it out.
+
+        A search listing can miss a ticket that still exists (the search index
+        lags or is being rebuilt), so each ticket missing from it is read back
+        before its records are removed. Any other answer keeps them.
+        """
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.get_ticket(int(ticket_id))
+        if response.status_code == HttpStatusCode.NOT_FOUND.value:
+            return True
+        if not response.success or not isinstance(response.data, dict):
+            return False
+        group_id = response.data.get("group_id")
+        if group_id is not None and not self._is_group_allowed_by_filter(str(group_id)):
+            return True
+        return not self._passes_date_filters(response.data)
+
+    async def _delete_ticket_records(self, record_ids: list[str], reason: str) -> bool:
+        """Delete one ticket's records in order through the shared delete path.
+
+        Stops at the first failure so the ticket itself stays and the next sync
+        finds it and retries. Returns whether every record was removed.
+        """
+        for record_id in record_ids:
+            try:
+                await self.data_entities_processor.on_record_deleted(record_id)
+            except Exception as e:
+                self.logger.warning(f"Failed to remove record {record_id} ({reason}); retrying next sync: {e}")
+                return False
+        return True
+
+    async def _remove_tickets_gone_from_group(self, group_id: int, group_name: str) -> None:
+        """Remove tickets deleted in Zammad, or now outside the sync filters, from a synced group.
+
+        The incremental search only returns tickets updated since the checkpoint,
+        so a deleted ticket never appears in it. This compares the graph with a
+        complete id listing of the group instead.
+        """
+        try:
+            by_ticket = await self._records_by_ticket_in_group(f"group_{group_id}")
+            if not by_ticket:
+                return
+            listed = await self._list_group_ticket_ids(group_id, group_name)
+            if listed is None:
+                return
+            removed = 0
+            for ticket_id, record_ids in by_ticket.items():
+                if ticket_id in listed or not await self._is_ticket_out_of_scope(ticket_id):
+                    continue
+                if await self._delete_ticket_records(record_ids, f"ticket {ticket_id} left group '{group_name}'"):
+                    removed += 1
+            if removed:
+                self.logger.info(f"🗑️ Removed {removed} tickets deleted or filtered out of group '{group_name}'")
+        except Exception as e:
+            self.logger.warning(f"Could not check group '{group_name}' for deleted tickets: {e}", exc_info=True)
+
+    async def _remove_tickets_in_excluded_groups(self) -> None:
+        """Remove every ticket in a group the applied group filter now leaves out.
+
+        Editing the filters deletes the sync points, so the memo of the last
+        clean-up goes with them and the next sync cleans up again.
+        """
+        excluded = self._filter_excluded_group_ids
+        if not excluded:
+            return
+        wanted = sorted(excluded)
+        try:
+            done = await self.tickets_sync_point.read_sync_point(FILTER_CLEANUP_SYNC_POINT_KEY)
+            if done and done.get("excluded_group_ids") == wanted:
+                return
+            failed = 0
+            for group_id in wanted:
+                by_ticket = await self._records_by_ticket_in_group(f"group_{group_id}")
+                if by_ticket:
+                    self.logger.info(
+                        f"🗑️ Removing {len(by_ticket)} tickets of group {group_id}, which the group filter excludes"
+                    )
+                for record_ids in by_ticket.values():
+                    if not await self._delete_ticket_records(record_ids, f"group {group_id} excluded by filter"):
+                        failed += 1
+            if failed:
+                self.logger.warning(f"{failed} tickets in filtered-out groups could not be removed; retrying next sync")
+                return
+            await self.tickets_sync_point.update_sync_point(
+                FILTER_CLEANUP_SYNC_POINT_KEY, {"excluded_group_ids": wanted}
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not remove tickets of filtered-out groups: {e}", exc_info=True)
 
     # ==================== ATTACHMENT HANDLING AND TRANSFORMATIONS ====================
 
