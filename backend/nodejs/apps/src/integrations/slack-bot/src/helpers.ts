@@ -326,6 +326,22 @@ export function isSlackSupportedAttachment(file: SlackFile): boolean {
   );
 }
 
+const DELIMITED_TEXT_MIMETYPES = new Set(["text/csv", "text/tab-separated-values"]);
+
+function isDelimitedTextAttachment(file: SlackFile): boolean {
+  const mime = resolveTextAttachmentMimetype(file);
+  return mime !== null && DELIMITED_TEXT_MIMETYPES.has(mime);
+}
+
+/**
+ * The chat CSV/TSV parser falls back through utf-8, utf-8-sig, latin1, cp1252
+ * and iso-8859-1, and latin1 decodes any byte, so a Windows Excel (cp1252) CSV
+ * works there. Only NUL bytes, which mean a binary file renamed to .csv, are refused.
+ */
+export function isReadableDelimitedText(binary: Buffer): boolean {
+  return !binary.includes(0);
+}
+
 /** Strict UTF-8 check; NUL bytes mean a binary file (or UTF-16) renamed to a text extension. */
 export function isReadableUtf8Text(binary: Buffer): boolean {
   try {
@@ -400,7 +416,12 @@ export async function uploadSlackAttachments(
       return;
     }
     const textMimetype = resolveTextAttachmentMimetype(file);
-    if (textMimetype !== null && !isReadableUtf8Text(binary)) {
+    const readable =
+      textMimetype === null ||
+      (DELIMITED_TEXT_MIMETYPES.has(textMimetype)
+        ? isReadableDelimitedText(binary)
+        : isReadableUtf8Text(binary));
+    if (!readable) {
       result.unreadable.push(file);
       return;
     }
@@ -759,12 +780,22 @@ export function buildSkippedAttachmentsNotice(
     const lead = unsupported.length === 1 ? "I can't read this type of file" : "I can't read these types of file";
     parts.push(`${lead}: ${describe(unsupported)}.`);
   }
-  if (unreadable.length > 0) {
-    const one = unreadable.length === 1;
+  // Only the plain-text and Markdown parsers need UTF-8; CSV and TSV fail here only when binary.
+  const unreadableDelimited = unreadable.filter(isDelimitedTextAttachment);
+  const unreadableUtf8 = unreadable.filter((file) => !isDelimitedTextAttachment(file));
+  if (unreadableUtf8.length > 0) {
+    const one = unreadableUtf8.length === 1;
     parts.push(
-      `${one ? "This file doesn't" : "These files don't"} contain readable text: ${describe(unreadable)}. ` +
+      `${one ? "This file doesn't" : "These files don't"} contain readable text: ${describe(unreadableUtf8)}. ` +
         `If ${one ? "it is a text file" : "they are text files"}, save ${one ? "it" : "them"} ` +
         `with UTF-8 encoding and send ${one ? "it" : "them"} again.`,
+    );
+  }
+  if (unreadableDelimited.length > 0) {
+    const one = unreadableDelimited.length === 1;
+    parts.push(
+      `${one ? "This file looks" : "These files look"} like binary data, not CSV or TSV text: ` +
+        `${describe(unreadableDelimited)}.`,
     );
   }
   if (oversized.length > 0) {
@@ -816,9 +847,11 @@ export interface IncomingAttachmentsOutcome {
 }
 
 /**
- * Tells the user about attachments skipped before download, for every bot
- * setup (with or without an agent), and decides whether the message still
- * gets an answer.
+ * Decides whether the message gets an answer, for every bot setup (with or
+ * without an agent). When no attachment was accepted, it posts the
+ * skipped-attachments notice here, since no upload follows. Otherwise the
+ * notice waits for the upload, so the user gets one notice that also covers
+ * files refused after download (see resolveSkippedAttachmentsAfterUpload).
  */
 export async function handleIncomingAttachments(
   typedClient: TypedSlackClient,
@@ -828,14 +861,39 @@ export async function handleIncomingAttachments(
   const { supported, unsupported, oversized } = classifySlackFiles(typedMessage.files);
   const hasSupported = supported.length > 0;
   const hasText = messageHasQuestionText(typedMessage.text, botUserId);
-  const followUp: SkippedAttachmentsFollowUp = hasSupported
-    ? "otherAttachments"
-    : hasText
-      ? "messageOnly"
-      : "none";
-  await postSkippedAttachmentsNotice(typedClient, typedMessage, { unsupported, oversized }, followUp);
+  if (!hasSupported) {
+    await postSkippedAttachmentsNotice(
+      typedClient,
+      typedMessage,
+      { unsupported, oversized },
+      hasText ? "messageOnly" : "none",
+    );
+  }
   const filesPresent = (typedMessage.files?.length ?? 0) > 0;
   return { shouldAnswer: hasSupported || hasText || !filesPresent, hasSupported };
+}
+
+/**
+ * The one notice for a message whose accepted attachments went through
+ * upload: files refused before download plus those refused after it, worded
+ * by whether anything was actually uploaded.
+ */
+export function resolveSkippedAttachmentsAfterUpload(
+  classification: SlackFileClassification,
+  upload: SlackAttachmentUploadResult,
+  hasText: boolean,
+): { skipped: SkippedAttachments; followUp: SkippedAttachmentsFollowUp; hasSkipped: boolean } {
+  const skipped: SkippedAttachments = {
+    unsupported: classification.unsupported,
+    unreadable: upload.unreadable,
+    oversized: [...classification.oversized, ...upload.oversized],
+  };
+  const followUp: SkippedAttachmentsFollowUp =
+    upload.attachments.length > 0 ? "otherAttachments" : hasText ? "messageOnly" : "none";
+  const hasSkipped =
+    classification.unsupported.length + classification.oversized.length +
+      upload.unreadable.length + upload.oversized.length > 0;
+  return { skipped, followUp, hasSkipped };
 }
 
 export function truncateForSlackStreamMarkdown(text: string): string {

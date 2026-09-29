@@ -46,6 +46,7 @@ import {
   type SlackMessagePayload,
   type TypedSlackClient,
   type AttachmentRef,
+  type SlackAttachmentUploadResult,
   FAILED_RESPONSE_GENERATION_MESSAGE,
   STREAM_UPDATE_THROTTLE_MS,
   STREAM_UPDATE_MAX_CHARS,
@@ -62,7 +63,8 @@ import {
   hasMarkdownTableStartOutsideCodeFences,
   buildFinalSlackChunks,
   splitSlackBlocksByLimit,
-  extractSupportedAttachments,
+  classifySlackFiles,
+  resolveSkippedAttachmentsAfterUpload,
   uploadSlackAttachments,
   postSkippedAttachmentsNotice,
   buildSkippedAttachmentsNotice,
@@ -487,27 +489,28 @@ async function processSlackMessage(
     // Handle file attachments for agents
     let attachmentRefs: AttachmentRef[] = [];
     if (typedMessage.files && typedMessage.files.length > 0) {
-      const supportedFiles = extractSupportedAttachments(typedMessage.files);
+      const classification = classifySlackFiles(typedMessage.files);
+      const supportedFiles = classification.supported;
       if (supportedFiles.length > 0) {
         try {
+          let upload: SlackAttachmentUploadResult = { attachments: [], unreadable: [], oversized: [] };
           const botToken = resolvedSlackBot?.botToken;
           if (botToken) {
-            const upload = await uploadSlackAttachments(supportedFiles, botToken, accessToken, currentAgentId);
+            upload = await uploadSlackAttachments(supportedFiles, botToken, accessToken, currentAgentId);
             attachmentRefs = upload.attachments;
             console.log(`Uploaded ${attachmentRefs.length} attachment(s) for chat`);
-            const skipped = { unreadable: upload.unreadable, oversized: upload.oversized };
-            const skippedCount = upload.unreadable.length + upload.oversized.length;
-            if (skippedCount > 0 && attachmentRefs.length === 0) {
-              if (!messageHasQuestionText(typedMessage.text, typedContext.botUserId)) {
-                // Attachment-only and nothing usable is left: the notice is the reply.
-                await sendOrUpdateNonStreamMessage(buildSkippedAttachmentsNotice(skipped, "none"));
-                return;
-              }
-              await postSkippedAttachmentsNotice(typedClient, typedMessage, skipped, "messageOnly");
-            } else {
-              await postSkippedAttachmentsNotice(typedClient, typedMessage, skipped, "otherAttachments");
-            }
           }
+          const { skipped, followUp, hasSkipped } = resolveSkippedAttachmentsAfterUpload(
+            classification,
+            upload,
+            messageHasQuestionText(typedMessage.text, typedContext.botUserId),
+          );
+          if (hasSkipped && followUp === "none") {
+            // Attachment-only and nothing usable is left: the notice is the reply.
+            await sendOrUpdateNonStreamMessage(buildSkippedAttachmentsNotice(skipped, followUp));
+            return;
+          }
+          await postSkippedAttachmentsNotice(typedClient, typedMessage, skipped, followUp);
         } catch (uploadError) {
           const errData = (uploadError as any).response?.data;
           const errMsg = errData
