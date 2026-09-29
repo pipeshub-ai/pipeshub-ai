@@ -12,6 +12,10 @@ name: Release Changelog
 # so the release run only re-dispatches this workflow with the tag, and the
 # skill runs under workflow_dispatch. Dispatching by hand with a tag
 # regenerates a missed changelog.
+#
+# Claude reads contributor-written release notes and PR text, so it runs in a
+# read-only job and hands over a patch; a separate job checks that the patch
+# touches only the changelog files before it commits with a write token.
 on:
   release:
     types: [published]
@@ -21,6 +25,14 @@ on:
         description: Tag of an existing release, e.g. v0.9.1
         required: true
         type: string
+
+# Dispatched runs take turns across both jobs, so each builds on the branch the
+# previous one pushed. `queue: max` keeps every waiting run; the default keeps
+# only the newest pending one and cancels the rest.
+concurrency:
+  group: release-changelog-${{ github.event_name }}
+  queue: max
+  cancel-in-progress: false
 
 jobs:
   dispatch:
@@ -38,19 +50,18 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
         run: gh workflow run release-changelog.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$TAG"
 
-  changelog:
+  generate:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # One run at a time, and `queue: max` keeps every waiting run; the default
-    # keeps only the newest pending one and cancels the rest.
-    concurrency:
-      group: release-changelog
-      queue: max
-      cancel-in-progress: false
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+      pull-requests: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      branch: ${{ steps.branch.outputs.name }}
+      base_sha: ${{ steps.branch.outputs.base_sha }}
+      remote_sha: ${{ steps.branch.outputs.remote_sha }}
     steps:
       - name: Check the tag and the API key
         id: release
@@ -64,11 +75,19 @@ jobs:
             echo "::error::The ANTHROPIC_API_KEY repository secret is not set. Add it under Settings > Secrets and variables > Actions, then re-run this workflow."
             exit 1
           fi
-          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName > /dev/null; then
+          if ! is_draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"; then
             echo "::error::No release found for tag \"$TAG\". Enter the tag of a published release, e.g. v0.9.1."
             exit 1
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [ "$is_draft" = "true" ]; then
+            echo "::error::The release for tag \"$TAG\" is still a draft. Publish it first; publishing starts this workflow on its own."
+            exit 1
+          fi
+          newest="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName')"
+          {
+            echo "tag=$TAG"
+            echo "newest=$newest"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout main
         uses: actions/checkout@v4
@@ -95,12 +114,13 @@ jobs:
           {
             echo "name=$BRANCH"
             echo "remote_sha=$remote_sha"
+            echo "base_sha=$(git rev-parse HEAD)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Run the release-changelog skill
         uses: anthropics/claude-code-action@v1
         env:
-          # gh CLI auth for the read-only release/PR lookups the skill performs.
+          # Read-only: this job has only read permissions.
           GH_TOKEN: ${{ github.token }}
         with:
           # Metered Claude API key (console.anthropic.com) — org-controlled and
@@ -108,37 +128,90 @@ jobs:
           # `claude setup-token` OAuth token used elsewhere in this repo.
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # Without this the action requests an OIDC token for the Claude GitHub
-          # App, which needs `id-token: write`; the job token is enough here.
+          # App, which needs `id-token: write`; the read-only job token is enough.
           github_token: ${{ github.token }}
           # A release-triggered run is dispatched with GITHUB_TOKEN, so its actor
           # is github-actions[bot], which agent mode rejects unless listed here.
           allowed_bots: github-actions[bot]
-          # The tag was checked against an existing release in the first step.
+          # The tags were checked against published releases in the first step.
           prompt: |
             Run the release-changelog skill for the release tagged "${{ steps.release.outputs.tag }}"
             of pipeshub-ai/pipeshub-ai. Follow .claude/skills/release-changelog/SKILL.md
             exactly: write changelog/<version>.md, update changelog/README.md, and
-            register the release in the root CHANGELOG.md (index row, entry below the
-            Unreleased section, refreshed Unreleased compare link). If this release
-            is already registered, update its entries in place rather than adding
-            duplicates.
+            register the release in the root CHANGELOG.md (index row, entry in
+            release-date order, Unreleased compare link). If this release is already
+            registered, update its entries in place rather than adding duplicates.
+
+            The newest published release is "${{ steps.release.outputs.newest }}". The
+            Unreleased compare link must start from that tag, even when it is not the
+            release you are writing.
 
             Do NOT run git commit or git push, and do NOT open a PR — a later
-            workflow step handles that. Your only output is the edited files.
-          claude_args: '--allowedTools "Read,Write,Edit,Glob,Grep,Skill,Bash(gh release view:*),Bash(gh pr view:*),Bash(gh api:*),Bash(ls:*),Bash(cat:*),Bash(wc:*),Bash(grep:*),Bash(mkdir:*),Bash(python3:*)"'
+            workflow job handles that. Your only output is the edited files.
+          claude_args: '--allowedTools "Read,Write,Edit,Glob,Grep,Skill,Bash(gh release view:*),Bash(gh pr view:*),Bash(ls:*),Bash(cat:*),Bash(wc:*),Bash(grep:*),Bash(mkdir:*),Bash(python3:*)"'
 
-      - name: Open or update the changelog pull request
+      - name: Save the changelog edits as a patch
+        run: |
+          set -euo pipefail
+          git add CHANGELOG.md changelog/
+          git diff --cached --binary > "$RUNNER_TEMP/changelog.patch"
+
+      - name: Upload the patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: changelog-patch
+          path: ${{ runner.temp }}/changelog.patch
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout the base the patch was made on
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.generate.outputs.base_sha }}
+
+      - name: Download the patch
+        uses: actions/download-artifact@v4
+        with:
+          name: changelog-patch
+          path: ${{ runner.temp }}/patch
+
+      - name: Commit the changelog and open or update the pull request
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
-          BRANCH: ${{ steps.branch.outputs.name }}
-          REMOTE_SHA: ${{ steps.branch.outputs.remote_sha }}
+          TAG: ${{ needs.generate.outputs.tag }}
+          BRANCH: ${{ needs.generate.outputs.branch }}
+          REMOTE_SHA: ${{ needs.generate.outputs.remote_sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
 
-          # Only the changelog surfaces may ship from this job.
-          git add CHANGELOG.md changelog/
+          patch="$RUNNER_TEMP/patch/changelog.patch"
+          if [ ! -s "$patch" ]; then
+            echo "::warning::The skill produced no changelog changes for $TAG; nothing to open a PR for."
+            exit 0
+          fi
+          git apply --index "$patch"
+          # The patch came from the job that read untrusted text, so only
+          # regular files under the changelog surfaces may ship.
+          while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
+            new_mode="$(cut -d' ' -f2 <<< "$meta")"
+            case "$path" in
+              CHANGELOG.md | changelog/*) ;;
+              *) echo "::error::The patch changes \"$path\", which is outside CHANGELOG.md and changelog/. Nothing was pushed."; exit 1 ;;
+            esac
+            if [ "$new_mode" != "100644" ]; then
+              echo "::error::The patch deletes \"$path\" or makes it something other than a regular file. Nothing was pushed."
+              exit 1
+            fi
+          done < <(git diff --cached --raw --no-renames -z)
           if git diff --cached --quiet; then
             echo "::warning::The skill produced no changelog changes for $TAG; nothing to open a PR for."
             exit 0
