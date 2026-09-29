@@ -891,7 +891,7 @@ def _count_leading_header_rows(row_nodes: list[LexborNode]) -> int:
 
     A header row is made only of ``<th>`` cells (empty ``<td>`` padding aside)
     and none of them labels its row (``scope="row"``). A ``<td>`` with content,
-    or a row label, marks a data row: Wikipedia-style tables put a ``<th>`` at
+    or a row label, marks a data row: many published tables put a ``<th>`` at
     the start of every data row, and counting those as headers turned the
     first data row into every column's label, or swallowed whole tables.
     """
@@ -1143,9 +1143,8 @@ class HtmlTableNormalizer:
     Inline / block markup inside cells is converted to markdown.
 
     Nesting is capped (`_MAX_NESTED_TABLE_DEPTH`): every level re-serializes
-    everything below it, so deeply nested tables (Wikipedia taxonomy
-    cladograms nest ~17 deep) grow exponentially — one 17KB page produced a
-    36MB row. Past the cap a nested table contributes its plain text.
+    everything below it, so deeply nested tables (taxonomy trees can nest
+    ~17 deep) grow exponentially — one 17KB page produced a 36MB row. Past the cap a nested table contributes its plain text.
     """
 
     def __init__(self, depth: int = 0) -> None:

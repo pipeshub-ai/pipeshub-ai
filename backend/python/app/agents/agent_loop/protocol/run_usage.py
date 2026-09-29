@@ -1,6 +1,6 @@
 """Wire payload for the opt-in CUSTOM `run_usage` stream frame: token totals
-for every LLM call one chat run made, so external clients (the FRAMES
-benchmark harness) can report cost without a second tracing system.
+for every LLM call one chat run made, so external clients (e.g. evaluation
+harnesses) can report cost without a second tracing system.
 Rides on the same opt-in as `retrieval_context` (`includeRetrievalContext`).
 """
 

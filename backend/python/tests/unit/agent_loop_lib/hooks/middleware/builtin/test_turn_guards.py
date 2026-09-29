@@ -177,7 +177,7 @@ class TestDeadlineWarning:
     """The wrap-up note two turns before the cap. It rides on the latest tool
     result's loop footer: as an injected user message, "stop and answer now"
     read as a prompt attack and Azure OpenAI's content filter rejected every
-    such call in the FRAMES runs, which the agent turned into a canned
+    such call in evaluation runs, which the agent turned into a canned
     refusal."""
 
     @pytest.mark.asyncio

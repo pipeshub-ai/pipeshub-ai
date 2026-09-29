@@ -272,9 +272,8 @@ def _env_disabled_toolsets() -> set[str]:
     that does not set it nothing.
 
     Exists for measurement harnesses that must hold the tool surface fixed
-    across systems: the FRAMES benchmark compares retrieval quality, so a
-    calculator only lets one system do arithmetic out-of-model that every
-    other system does in-model. `PIPESHUB_ENABLE_CODE_EXECUTION` already
+    across systems: when retrieval quality is compared, a tool one system has
+    and the others lack (a calculator, say) confounds the comparison. `PIPESHUB_ENABLE_CODE_EXECUTION` already
     covers the sandbox; this covers everything else without a flag per tool.
     """
     raw = os.getenv("PIPESHUB_AGENT_DISABLED_TOOLSETS", "")

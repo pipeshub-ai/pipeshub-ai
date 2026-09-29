@@ -145,7 +145,7 @@ class TestWrapUpNote:
     """Two turns before `max_turns`, the model is told to answer. The note
     must reach it as loop state on a tool result, never as a user message:
     Azure OpenAI's content filter rejected every injected "stop and answer"
-    user message in the FRAMES runs."""
+    user message in evaluation runs."""
 
     async def test_the_wrap_up_call_sees_it_in_the_last_tool_footer(self) -> None:
         from app.agent_loop_lib.core.messages import ToolMessage, UserMessage

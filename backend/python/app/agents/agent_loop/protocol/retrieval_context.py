@@ -3,8 +3,8 @@
 Carries identifiers only — which records and blocks reached the model after
 prefetch or a tool call — never block text, so the frame stays small and
 adds no content exposure beyond what the answer's citations already carry.
-Field names are camelCase to match the wire contract external clients (the
-FRAMES benchmark harness) parse, same convention as `ArtifactSSEPayload`.
+Field names are camelCase to match the wire contract external clients (e.g.
+evaluation harnesses) parse, same convention as `ArtifactSSEPayload`.
 """
 
 from __future__ import annotations

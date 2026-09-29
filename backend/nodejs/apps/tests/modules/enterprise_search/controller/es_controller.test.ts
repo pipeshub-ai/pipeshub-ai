@@ -13886,7 +13886,7 @@ describe('assignRetrievalContextToPayload', () => {
   it('is independent of agentCapabilities forwarding', () => {
     // Regression: this used to live inside assignAgentCapabilitiesToPayload,
     // which streamChat only calls in agent mode — so `internal_search`, the
-    // mode the benchmark measures, silently never received the flag.
+    // mode evaluations measure, silently never received the flag.
     const payload: Record<string, unknown> = {}
     assignAgentCapabilitiesToPayload(payload, { includeRetrievalContext: true })
     expect(payload).to.not.have.property('includeRetrievalContext')

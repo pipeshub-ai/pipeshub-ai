@@ -113,7 +113,7 @@ class ChatQuery(BaseModel):
     # labels are only valid for the request that minted them, so callers
     # that rely on record ids surviving across turns should leave this off.
     enableRecordIdShortening: bool = False
-    # Opt-in measurement surface for the benchmark harness: streams CUSTOM
+    # Opt-in measurement surface for evaluation harnesses: streams CUSTOM
     # `retrieval_context` frames naming the records and blocks that reached
     # the model, plus a `run_usage` frame. No effect on the answer.
     includeRetrievalContext: bool = False
