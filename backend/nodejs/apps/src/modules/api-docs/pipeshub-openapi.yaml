@@ -19514,8 +19514,9 @@ paths:
 
         - `smtpConfigCheck` — verifies SMTP host/port/fromEmail are configured; throws `404` if
           missing fields, `500` if config fetch fails.
-        - `userAdminCheck` — requires admin privileges; throws `400` if not admin, `404` if token
-          context is missing.
+        - No admin check on the route: any member of the organization may invite.
+          Members may invite only as `member` and without `groupIds`; inviting as `admin` or
+          assigning groups needs an org admin, and a member asking for either gets `403`.
         - `accountTypeCheck` — rejects `individual` account type; throws `400`.
 
         If all provided emails already have active accounts, returns `200` with
@@ -19584,7 +19585,6 @@ paths:
 
             - Missing or empty `emails` field
             - Invalid email format in array
-            - Requester does not have admin privileges (`userAdminCheck`)
             - Organization is an individual account (`accountTypeCheck`)
             - Inviting as admin would exceed the organization limit of 5 admins
           content:
@@ -19597,12 +19597,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            A member (not an org admin) asked to invite as `admin` or to assign `groupIds`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
             Not found. Possible reasons:
 
             - SMTP configuration missing host, port, or fromEmail (`smtpConfigCheck`)
-            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Requester missing from the token context (controller)
             - Organization not found (`accountTypeCheck`)
           content:
             application/json:
@@ -19642,7 +19649,8 @@ paths:
 
         Optional `groupIds` (a JSON-encoded array of 24-hex-character ObjectIds) adds new/restored
         users to the specified groups. Same middleware chain as `POST /users/bulk/invite`
-        (`smtpConfigCheck`, `userAdminCheck`, `accountTypeCheck`).
+        (`smtpConfigCheck`, `accountTypeCheck`), and the same rule on who may invite: any member,
+        but only an org admin may invite as `admin` or assign `groupIds` (`403` otherwise).
       operationId: bulkInviteUsersFromFile
       security:
         - bearerAuth: []
@@ -19685,7 +19693,7 @@ paths:
             - No email addresses found in the file
             - More than 1000 addresses
             - `groupIds` contains an invalid ObjectId
-            - Requester is not an admin (`userAdminCheck`), or individual account (`accountTypeCheck`)
+            - Individual account (`accountTypeCheck`)
           content:
             application/json:
               schema:
@@ -19696,12 +19704,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            A member (not an org admin) asked to invite as `admin` or to assign `groupIds`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
             Not found. Possible reasons:
 
             - SMTP configuration missing host, port, or fromEmail (`smtpConfigCheck`)
-            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Requester missing from the token context (controller)
             - Organization not found (`accountTypeCheck`)
           content:
             application/json:
@@ -19721,7 +19736,8 @@ paths:
 
         - `smtpConfigCheck` — verifies SMTP is configured; throws `404` if fields missing,
           `500` if config fetch fails.
-        - `userAdminCheck` — admin only; throws `400` if not admin, `404` if token context missing.
+        - No admin check on the route: any member of the organization may resend an invite to a
+          pending user in the same organization, as any member may invite.
         - `accountTypeCheck` — rejects individual account type; throws `400`.
 
         **Controller behavior:**
@@ -19766,7 +19782,6 @@ paths:
 
             - Invalid user ID format (Zod)
             - User has already logged in (`hasLoggedIn: true`)
-            - Requester does not have admin privileges (`userAdminCheck`)
             - Organization is an individual account (`accountTypeCheck`)
           content:
             application/json:
@@ -19787,7 +19802,7 @@ paths:
             Not found. Possible reasons:
 
             - SMTP configuration missing fields (`smtpConfigCheck`)
-            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Requester missing from the token context (controller)
             - Organization not found (`accountTypeCheck`)
           content:
             application/json:
