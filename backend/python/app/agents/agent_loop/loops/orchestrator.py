@@ -265,7 +265,7 @@ def _domain_overview(agent: "Agent") -> str:
         if isinstance(tool, AgentTool):
             agent_lines.append(f"- **{name}** (domain agent): {tool.short_description}")
             continue
-        domain = getattr(tool, "app_name", None)
+        domain = tool.app_name
         if not domain:
             domain = name.split("__", 1)[0] if "__" in name else name
         groups.setdefault(domain, []).append(name)

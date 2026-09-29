@@ -224,6 +224,13 @@ class Tool(ABC):
         return []
 
     @property
+    def app_name(self) -> str | None:
+        """The app/toolset this tool belongs to (the ``jira`` of
+        ``jira__search_issues``), or None for tools outside any app. Domain
+        agents claim tools by it."""
+        return None
+
+    @property
     def risk_level(self) -> "RiskLevel":
         """Convenience bridge from `Tag("risk", ...)` to `approval.base.RiskLevel`.
 

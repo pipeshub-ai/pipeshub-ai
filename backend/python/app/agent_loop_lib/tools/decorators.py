@@ -179,6 +179,10 @@ class FunctionTool(Tool):
         return self.get_tool_name()
 
     @property
+    def app_name(self) -> str:
+        return self._app_name
+
+    @property
     def short_description(self) -> str:
         return self._short_description
 
@@ -309,6 +313,10 @@ class BoundMethodTool(Tool):
     @property
     def name(self) -> str:
         return f"{self._app_name}__{self._short_name}"
+
+    @property
+    def app_name(self) -> str:
+        return self._app_name
 
     @property
     def short_description(self) -> str:

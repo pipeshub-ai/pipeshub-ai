@@ -474,7 +474,7 @@ def plan_domain_agents(
             if name in claimed:
                 continue
             tool = tool_registry.resolve_by_name(name)
-            app_name = getattr(tool, "app_name", None)
+            app_name = tool.app_name
             if name in definition.tool_names or (app_name and app_name in definition.app_names):
                 names.append(name)
                 claimed.add(name)

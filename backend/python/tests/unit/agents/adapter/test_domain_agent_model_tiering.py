@@ -16,7 +16,7 @@ from app.agents.agent_loop.domain_agents import (
     register_domain_agents,
 )
 from tests.unit.agents.adapter.conftest import make_context
-from tests.unit.agents.adapter.test_domain_agents import FakeTool
+from tests.unit.agents.adapter.test_domain_agents import FakeAppTool
 
 
 def _definitions(*, tiered_model: str | None) -> tuple[DomainAgentDefinition, ...]:
@@ -39,8 +39,8 @@ def _definitions(*, tiered_model: str | None) -> tuple[DomainAgentDefinition, ..
 
 def _registry() -> ToolRegistry:
     registry = ToolRegistry()
-    registry.register_tool(FakeTool("calculator_evaluate", app_name="calculator"))
-    registry.register_tool(FakeTool("dynamic_web_search", app_name="dynamic"))
+    registry.register_tool(FakeAppTool("calculator", "evaluate"))
+    registry.register_tool(FakeAppTool("dynamic", "web_search"))
     return registry
 
 

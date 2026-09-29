@@ -20,6 +20,7 @@ from app.agent_loop_lib.core.types import AgentResult, Goal
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.base import Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.builtin.coordination.agent_tool import AgentTool
+from app.agent_loop_lib.tools.decorators import BoundMethodTool, ToolMeta
 from app.agent_loop_lib.tools.builtin.sandbox.input_staging import peek_staged_input_files
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.tools.special_route import RouteContext
@@ -35,18 +36,13 @@ from tests.unit.agents.adapter.support.scripted_transport import ScriptedTranspo
 
 
 class FakeTool(Tool):
-    """Minimal registrable tool; `app_name` mimics the PipesHub adapters'
-    domain-grouping attribute."""
+    """An app-less tool (run_code, load_skill, ...). Like those, it inherits
+    `Tool.app_name` -- None -- so no domain can claim it by app."""
 
-    def __init__(self, name: str, app_name: str | None = None, result: str = "ok") -> None:
+    def __init__(self, name: str, result: Any = "ok") -> None:  # noqa: ANN401
         self._name = name
-        self._app_name = app_name
         self._result = result
         self.calls: list[dict[str, Any]] = []
-
-    @property
-    def app_name(self) -> str | None:
-        return self._app_name
 
     @property
     def name(self) -> str:
@@ -71,9 +67,29 @@ class FakeTool(Tool):
     def validate(self, kwargs: dict[str, Any]) -> None:
         return
 
-    async def execute(self, **kwargs: Any) -> ToolOutput:
+    async def execute(self, **kwargs: Any) -> ToolOutput:  # noqa: ANN401
         self.calls.append(kwargs)
         return ToolOutput(success=True, data=self._result)
+
+
+class FakeAppTool(BoundMethodTool):
+    """A connector tool built the way `ToolsetBuilder` builds one, so its
+    name and `app_name` come from the same `@tool` path production derives
+    them from. A fake that declares `app_name` by hand is what hid that
+    `BoundMethodTool` never exposed it."""
+
+    def __init__(self, app_name: str, short_name: str, result: Any = "ok") -> None:  # noqa: ANN401
+        self._result = result
+        self.calls: list[dict[str, Any]] = []
+        super().__init__(self._run, ToolMeta(
+            path=f"/tools/{app_name}/{short_name}",
+            short_description=f"fake {short_name}",
+            description=f"fake {short_name}",
+        ))
+
+    async def _run(self, **kwargs: Any) -> Any:  # noqa: ANN401
+        self.calls.append(kwargs)
+        return self._result
 
 
 def _full_registry() -> ToolRegistry:
@@ -84,15 +100,15 @@ def _full_registry() -> ToolRegistry:
         FakeTool("run_code"),
         FakeTool("install_packages"),
         FakeTool("read_sandbox_file"),
-        FakeTool("dynamic__web_search", app_name="dynamic"),
-        FakeTool("dynamic__fetch_url", app_name="dynamic"),
-        FakeTool("knowledgegraph__search", app_name="knowledgegraph"),
-        FakeTool("knowledgegraph__list_files", app_name="knowledgegraph"),
-        FakeTool("knowledgegraph__fetch_record", app_name="knowledgegraph"),
-        FakeTool("calculator_evaluate", app_name="calculator"),
-        FakeTool("date_calculator_get_exclusion_dates", app_name="date_calculator"),
-        FakeTool("google_calendar_list_events", app_name="google_calendar"),
-        FakeTool("jira_search_issues", app_name="jira"),
+        FakeAppTool("dynamic", "web_search"),
+        FakeAppTool("dynamic", "fetch_url"),
+        FakeAppTool("knowledgegraph", "search"),
+        FakeAppTool("knowledgegraph", "list_files"),
+        FakeAppTool("knowledgegraph", "fetch_record"),
+        FakeAppTool("calculator", "evaluate"),
+        FakeAppTool("date_calculator", "get_exclusion_dates"),
+        FakeAppTool("google_calendar", "list_events"),
+        FakeAppTool("jira", "search_issues"),
     ):
         registry.register_tool(tool)
     return registry
@@ -124,11 +140,11 @@ class TestComposition:
             assert isinstance(registry.resolve_by_name(agent_name), AgentTool)
 
         # Unclaimed connector tool stays a direct top-level tool...
-        assert "jira_search_issues" in top_names
+        assert "jira__search_issues" in top_names
         # ...while claimed domain tools leave the top level entirely.
-        for claimed in ("run_code", "dynamic__web_search", "retrieval_search",
-                        "calculator_evaluate", "date_calculator_get_exclusion_dates",
-                        "google_calendar_list_events"):
+        for claimed in ("run_code", "dynamic__web_search", "retrieval__search",
+                        "calculator__evaluate", "date_calculator__get_exclusion_dates",
+                        "google_calendar__list_events"):
             assert claimed not in top_names
 
     def test_calculator_agent_claims_date_calculator_tools_too(self) -> None:
@@ -140,8 +156,8 @@ class TestComposition:
         _compose(registry)
 
         calculator = registry.resolve_by_name("calculator_agent")._spec
-        assert "date_calculator_get_exclusion_dates" in calculator.tool_names
-        assert "calculator_evaluate" in calculator.tool_names
+        assert "date_calculator__get_exclusion_dates" in calculator.tool_names
+        assert "calculator__evaluate" in calculator.tool_names
 
     def test_child_specs_are_react_loops_scoped_to_their_domain(self) -> None:
         registry = _full_registry()
@@ -170,10 +186,10 @@ class TestComposition:
 
     def test_no_claims_degenerates_to_flat_tool_list(self) -> None:
         registry = ToolRegistry()
-        registry.register_tool(FakeTool("jira_search_issues", app_name="jira"))
+        registry.register_tool(FakeAppTool("jira", "search_issues"))
         top_names = _compose(registry)
 
-        assert top_names == ["jira_search_issues"]
+        assert top_names == ["jira__search_issues"]
         assert not any(registry.has(n) for n in ("web_agent", "coding_agent"))
 
 
@@ -189,7 +205,7 @@ class TestAvailabilityGating:
 
     def test_no_internal_exploration_agent_without_knowledge_tools(self) -> None:
         registry = ToolRegistry()
-        registry.register_tool(FakeTool("jira_search_issues", app_name="jira"))
+        registry.register_tool(FakeAppTool("jira", "search_issues"))
         top_names = _compose(registry)
 
         assert "internal_exploration_agent" not in top_names
@@ -197,7 +213,7 @@ class TestAvailabilityGating:
 
     def test_no_web_agent_without_web_search_tools(self) -> None:
         registry = ToolRegistry()
-        registry.register_tool(FakeTool("retrieval_search", app_name="retrieval"))
+        registry.register_tool(FakeAppTool("retrieval", "search"))
         top_names = _compose(registry)
 
         assert "web_agent" not in top_names
@@ -464,7 +480,7 @@ class TestPlanRegisterSplit:
 
         # Simulate work happening between planning and registration (e.g.
         # loop routing) — the registry gains an unrelated tool.
-        registry.register_tool(FakeTool("slack_post_message", app_name="slack"))
+        registry.register_tool(FakeAppTool("slack", "post_message"))
 
         runtime = AgentRuntime(tool_registry=registry)
         top_names = register_domain_agents(
@@ -473,7 +489,7 @@ class TestPlanRegisterSplit:
 
         # The plan's residual is frozen at planning time — a tool added
         # afterward is neither claimed nor granted via this call.
-        assert "slack_post_message" not in top_names
+        assert "slack__post_message" not in top_names
 
     def test_compose_domain_agents_is_plan_then_register(self) -> None:
         registry = _full_registry()
@@ -500,7 +516,7 @@ class TestEndToEndDelegation:
         tool result. One shared ScriptedTransport scripts both runs in call
         order, proving parent and child use the same Agent loop."""
         registry = _full_registry()
-        calc_tool = registry.resolve_by_name("calculator_evaluate")
+        calc_tool = registry.resolve_by_name("calculator__evaluate")
 
         transport = ScriptedTransport()
         transport_registry = TransportRegistry()
@@ -512,7 +528,7 @@ class TestEndToEndDelegation:
         # 1: parent delegates; 2: child calls its tool; 3: child answers;
         # 4: parent answers.
         transport.add_tool_call(ToolCall(id="c1", name="calculator_agent", arguments={"goal": "what is 3 + 4?"}))
-        transport.add_tool_call(ToolCall(id="c2", name="calculator_evaluate", arguments={}))
+        transport.add_tool_call(ToolCall(id="c2", name="calculator__evaluate", arguments={}))
         transport.add_text("The sum is 7.")
         transport.add_text("Answer: 7.")
 
@@ -551,7 +567,7 @@ class TestEndToEndDelegation:
 
         registry = ToolRegistry()
         registry.register_tool(
-            FakeTool("jira_search_issues", app_name="jira", result={"tickets": ["A-1", "A-2"]})
+            FakeAppTool("jira", "search_issues", result={"tickets": ["A-1", "A-2"]})
         )
         created_backends: list[_UploadCapturingBackend] = []
 
@@ -572,7 +588,7 @@ class TestEndToEndDelegation:
         top_names = _compose(registry, runtime)
         assert "coding_agent" in top_names
 
-        transport.add_tool_call(ToolCall(id="c-jira", name="jira_search_issues", arguments={}))
+        transport.add_tool_call(ToolCall(id="c-jira", name="jira__search_issues", arguments={}))
         transport.add_tool_call(ToolCall(
             id="c-code", name="coding_agent",
             arguments={"goal": "Build a PDF report of the tickets."},
@@ -605,7 +621,7 @@ class TestEndToEndDelegation:
         child_goal_text = " ".join(
             m.content if isinstance(m.content, str) else str(m.content) for m in child_first_call_messages
         )
-        assert "jira_search_issues" in child_goal_text
+        assert "jira__search_issues" in child_goal_text
         assert "A-1" in child_goal_text and "A-2" in child_goal_text
         assert "Build a PDF report of the tickets." in child_goal_text
 
@@ -616,7 +632,7 @@ class TestEndToEndDelegation:
         # `parent_results_as_json`'s budget-aware envelope (see
         # `coordination/parent_results.py`): results wrapped alongside a
         # `_meta` block describing any truncation (none here).
-        assert payload["results"] == [{"tool": "jira_search_issues", "content": {"tickets": ["A-1", "A-2"]}}]
+        assert payload["results"] == [{"tool": "jira__search_issues", "content": {"tickets": ["A-1", "A-2"]}}]
         assert payload["_meta"]["truncated"] is False
 
 
@@ -853,7 +869,7 @@ class TestAgentToolResultNote:
 def _parent_messages_with_jira_result() -> list:
     return [
         UserMessage(content="build a report of my tickets"),
-        AssistantMessage(tool_calls=[ToolCall(id="c-jira", name="jira_search_issues", arguments={})]),
+        AssistantMessage(tool_calls=[ToolCall(id="c-jira", name="jira__search_issues", arguments={})]),
         ToolMessage(content='{"tickets": ["A-1", "A-2"]}', tool_call_id="c-jira"),
     ]
 
@@ -882,7 +898,7 @@ class TestAgentToolShareParentResults:
         result = await tool.handle(call, _route_context(runtime, call, messages=_parent_messages_with_jira_result()))
 
         assert result.is_error is False
-        assert "jira_search_issues" in captured["goal"].description
+        assert "jira__search_issues" in captured["goal"].description
         assert "A-1" in captured["goal"].description
         assert "A-2" in captured["goal"].description
         assert "build a PDF report of the tickets" in captured["goal"].description
@@ -909,7 +925,7 @@ class TestAgentToolShareParentResults:
         payload = json.loads(staged["input/parent_tool_results.json"])
         # `parent_results_as_json`'s budget-aware envelope — see the
         # end-to-end delegation test above for the same shape.
-        assert payload["results"] == [{"tool": "jira_search_issues", "content": {"tickets": ["A-1", "A-2"]}}]
+        assert payload["results"] == [{"tool": "jira__search_issues", "content": {"tickets": ["A-1", "A-2"]}}]
         assert payload["_meta"]["truncated"] is False
 
     async def test_staging_is_cleared_once_handle_returns(self) -> None:
@@ -967,3 +983,34 @@ class TestAgentToolShareParentResults:
 
         assert captured["goal"].description == "compute 2 + 2"
         assert captured["staged"] is None
+
+
+class TestClaimingProductionToolsets:
+    """Tools loaded the way `PipesHubToolLoader` loads them are claimed by
+    the domain whose `app_names` lists their app."""
+
+    def test_the_calculator_toolset_goes_to_calculator_agent(self) -> None:
+        from app.agent_loop_lib.tools.toolset import ToolsetBuilder
+        from app.agents.actions.calculator.calculator import Calculator
+
+        registry = ToolRegistry()
+        toolset = ToolsetBuilder(
+            Calculator(), name="calculator", description="", path_prefix="/tools/calculator",
+        )
+        for tool in toolset.tools:
+            registry.register_tool(tool)
+        registry.register_tool(FakeTool("run_code"))
+
+        plan = plan_domain_agents(registry)
+
+        calculator_names = {t.name for t in toolset.tools}
+        assert calculator_names
+        assert set(plan.claims["calculator_agent"]) == calculator_names
+        assert not calculator_names & set(plan.top_level_names)
+
+    def test_app_names_come_from_the_tool_path(self) -> None:
+        tool = FakeAppTool("google_calendar", "list_events")
+
+        assert tool.name == "google_calendar__list_events"
+        assert tool.app_name == "google_calendar"
+        assert FakeTool("run_code").app_name is None
