@@ -74,8 +74,19 @@ def mail_user(pipeshub_client: PipeshubClient, mailbox: None) -> Iterator[Second
         delete_second_user(pipeshub_client, user, strict=True)
 
 
+# How authenticate answers a wrong password, a locked account and an unknown
+# email alike (WRONG_EMAIL_OR_PASSWORD).
+WRONG_PASSWORD_STATUS = 400
+
+
 def _sign_in_status(account: UserAccountClient, email: str, password: str) -> tuple[int, bool]:
-    session_token = account.init_auth(email).headers.get("x-session-token", "")
+    started = account.init_auth(email)
+    session_token = started.headers.get("x-session-token", "")
+    if started.status_code != 200 or not session_token:
+        pytest.fail(
+            f"initAuth for {email} answered HTTP {started.status_code} with "
+            f"{'a' if session_token else 'no'} session token, so no password was tried."
+        )
     response = account.authenticate(session_token, email, password)
     return response.status_code, "accessToken" in response.text
 
@@ -128,7 +139,7 @@ class TestForgotPasswordLink:
         status, token_returned = _sign_in_status(
             user_account_client, mail_user.email, TEST_USER_PASSWORD
         )
-        assert status >= 400 and not token_returned, (
+        assert status == WRONG_PASSWORD_STATUS and not token_returned, (
             f"The password from before the reset still signs in (HTTP {status})."
         )
 
@@ -342,7 +353,7 @@ class TestSignInCode:
 
 def _wrong_password(account: UserAccountClient, email: str, attempt: int) -> None:
     status, token_returned = _sign_in_status(account, email, f"DefinitelyWrong{attempt}!")
-    assert status >= 400 and not token_returned, (
+    assert status == WRONG_PASSWORD_STATUS and not token_returned, (
         f"Wrong password {attempt} was accepted (HTTP {status})."
     )
 
@@ -376,7 +387,7 @@ class TestLockoutThreshold:
         for attempt in range(1, LOCKOUT_THRESHOLD + 1):
             _wrong_password(user_account_client, email, attempt)
         status, token_returned = _sign_in_status(user_account_client, email, TEST_USER_PASSWORD)
-        assert status >= 400 and not token_returned, (
+        assert status == WRONG_PASSWORD_STATUS and not token_returned, (
             f"{LOCKOUT_THRESHOLD} wrong passwords did not lock the account: the "
             f"right one then got HTTP {status}."
         )
@@ -399,7 +410,7 @@ class TestLockoutCountersShared:
             _wrong_password(user_account_client, email, attempt)
 
         status, token_returned = _sign_in_status(user_account_client, email, TEST_USER_PASSWORD)
-        assert status >= 400 and not token_returned, (
+        assert status == WRONG_PASSWORD_STATUS and not token_returned, (
             f"{wrong_codes} wrong codes and {LOCKOUT_THRESHOLD - wrong_codes} wrong "
             f"passwords did not lock the account (the right password got HTTP "
             f"{status}), so the two are counted separately."

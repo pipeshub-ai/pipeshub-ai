@@ -99,14 +99,17 @@ def wait_for_new_message(
     as the failure it is rather than as a timeout.
     """
     deadline = time.monotonic() + timeout
-    subjects: list[str] = []
-    while time.monotonic() < deadline:
+    while True:
         fresh = [m for m in _search(address) if str(m.get("ID")) not in seen]
         subjects = [str(m.get("Subject") or "") for m in fresh]
         for summary in fresh:
             if subject_contains.lower() in str(summary.get("Subject") or "").lower():
                 return _read(str(summary.get("ID")))
-        time.sleep(_POLL_INTERVAL_SECONDS)
+        # The last search happens at the deadline, not one interval before it.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(_POLL_INTERVAL_SECONDS, remaining))
     raise AssertionError(
         f"No email with subject containing {subject_contains!r} reached "
         f"{address} within {timeout:.0f}s. New messages seen: {subjects or 'none'}."

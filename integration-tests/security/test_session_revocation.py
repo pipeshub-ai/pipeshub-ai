@@ -41,7 +41,12 @@ from helper import local_auth
 from helper.clients.auth_client import UserAccountClient
 from helper.config import MONGO_DB_NAME, MONGO_URI, TEST_USER_PASSWORD
 from helper.pipeshub_client import PipeshubClient
-from helper.second_user import SecondUser, create_second_user, delete_second_user
+from helper.second_user import (
+    SecondUser,
+    _delete_credentials,
+    create_second_user,
+    delete_second_user,
+)
 from helper.source_credentials import secrets_required
 
 logger = logging.getLogger("security-session-revocation")
@@ -132,8 +137,22 @@ def _python_status(user: SecondUser, token: str) -> int | None:
         return None
 
 
-def _refresh_refused(response: requests.Response) -> bool:
-    return 400 <= response.status_code < 500 and "accessToken" not in response.text
+# A refusal is the status that means "sign in again", with no new token. Other
+# 4xx and 5xx answers are also no token, but they are not the product refusing.
+REFRESH_REFUSED_STATUS = 401
+
+DELETED_USER_REFRESH_GAP = (
+    "Refreshing a deleted user's token answers 500, not 401: deleteUser records "
+    "no session-ending activity, and the IAM lookup's 404 arrives as an "
+    "unhandled axios error. Fixed by #3686; remove this mark when it merges."
+)
+deleted_user_refresh_gap = pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason=DELETED_USER_REFRESH_GAP
+)
+
+
+def _refresh_refused(response: requests.Response, expected_status: int) -> bool:
+    return response.status_code == expected_status and "accessToken" not in response.text
 
 
 def _new_user(client: PipeshubClient) -> SecondUser:
@@ -199,8 +218,19 @@ def _lock_by_wrong_passwords(
     )
 
 
+# How authenticate answers a wrong password, a locked account and an unknown
+# email alike (WRONG_EMAIL_OR_PASSWORD).
+WRONG_PASSWORD_STATUS = 400
+
+
 def _password_login_status(account: UserAccountClient, email: str, password: str) -> tuple[int, bool]:
-    session_token = account.init_auth(email).headers.get("x-session-token", "")
+    started = account.init_auth(email)
+    session_token = started.headers.get("x-session-token", "")
+    if started.status_code != 200 or not session_token:
+        pytest.fail(
+            f"initAuth for {email} answered HTTP {started.status_code} with "
+            f"{'a' if session_token else 'no'} session token, so no password was tried."
+        )
     response = account.authenticate(session_token, email, password)
     return response.status_code, "accessToken" in response.text
 
@@ -215,15 +245,18 @@ def _assert_access_refused_at_node(sessions: TwoSessions, which: str, event: str
 
 
 def _assert_refresh_refused(
-    sessions: TwoSessions, which: str, event: str, account: UserAccountClient
+    sessions: TwoSessions,
+    which: str,
+    event: str,
+    account: UserAccountClient,
+    expected_status: int = REFRESH_REFUSED_STATUS,
 ) -> None:
     response = account.refresh_token(sessions.session(which).refresh)
-    # The body is left out of the message: when this fails it holds a live token.
-    assert _refresh_refused(response), (
-        f"A refresh token from the {which} session, issued before {event}, was "
-        f"accepted (HTTP {response.status_code}, new access token returned: "
-        f"{'accessToken' in response.text}). It can mint fresh access tokens "
-        "for as long as it lives."
+    # The body is left out of the message: when this fails it may hold a live token.
+    assert _refresh_refused(response, expected_status), (
+        f"A refresh token from the {which} session, issued before {event}, got "
+        f"HTTP {response.status_code}, not {expected_status} (new access token "
+        f"returned: {'accessToken' in response.text})."
     )
 
 
@@ -293,7 +326,10 @@ def after_deletion(
         deleted = True
         yield sessions
     finally:
-        if not deleted:
+        if deleted:
+            # The deletion clears only the password hash; the seeded row goes too.
+            _delete_credentials(pipeshub_client.org_id, user.user_id)
+        else:
             delete_second_user(pipeshub_client, user, strict=True)
 
 
@@ -307,7 +343,7 @@ class TestPasswordChangeEndsEverySession:
         status, token_returned = _password_login_status(
             user_account_client, email, TEST_USER_PASSWORD
         )
-        assert status >= 400 and not token_returned, (
+        assert status == WRONG_PASSWORD_STATUS and not token_returned, (
             f"Signing in with the old password returned HTTP {status}. A changed "
             "password that still opens a session has not been changed."
         )
@@ -382,7 +418,7 @@ class TestAdminUnblock:
         status, token_returned = _password_login_status(
             user_account_client, fresh_user.email, TEST_USER_PASSWORD
         )
-        assert status >= 400 and not token_returned, (
+        assert status == WRONG_PASSWORD_STATUS and not token_returned, (
             f"The right password opened a session on a locked account (HTTP {status}), "
             "so unblocking it would change nothing this test can see."
         )
@@ -413,6 +449,7 @@ class TestDeletedUserEndsEverySession:
     ) -> None:
         _assert_access_refused_at_node(after_deletion, which, "the user was deleted")
 
+    @deleted_user_refresh_gap
     @SESSIONS
     def test_refresh_tokens_from_before_the_deletion_are_refused(
         self, after_deletion: TwoSessions, which: str, user_account_client: UserAccountClient
