@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from app.agent_loop_lib.agent import observability as obs
+from app.agent_loop_lib.core.finish_moves import finish_move
 from app.agent_loop_lib.core.messages import (
     MALFORMED_TOOL_CALL_ARGS_KEY,
     MALFORMED_TOOL_CALL_ERROR_KEY,
@@ -297,7 +298,7 @@ async def execute_tool_call(
             tool_call_id=call.id, name=call.name,
             content=(
                 "[Duplicate call skipped — you already ran this exact search/scrape. "
-                "Use the results you already have or call task_complete to finish.]"
+                f"Use the results you already have, or {finish_move(turn_scope)}.]"
             ),
             is_error=False,
         )

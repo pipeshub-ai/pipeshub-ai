@@ -563,6 +563,7 @@ def register_domain_agents(
             system_prompt=build_sub_agent_prompt(
                 definition.domain, context,
                 extra_instructions=extra_instructions,
+                tool_names=child_tool_names,
             ),
             tool_names=child_tool_names,
             tool_disclosure=tool_disclosure,

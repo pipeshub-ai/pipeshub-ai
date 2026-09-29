@@ -214,7 +214,7 @@ def domain_spec_factory(
         model = overrides.get("model") or model_name
         return AgentSpec(
             name=f"pipeshub-subagent-{role_name}",
-            system_prompt=build_sub_agent_prompt(role_name, context),
+            system_prompt=build_sub_agent_prompt(role_name, context, tool_names=tool_names),
             tool_names=list(tool_names),
             model=ModelSpec(provider=provider, model=model),
             loop=ReActLoop(),

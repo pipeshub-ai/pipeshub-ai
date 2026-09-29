@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.agent_loop_lib.core.finish_moves import finish_move
 from app.agent_loop_lib.core.messages import ToolMessage
 from app.agent_loop_lib.hooks.events import HookEvent
 from app.agent_loop_lib.hooks.middleware.builtin.budget_guard import require_budget
@@ -73,35 +74,10 @@ def check_not_cancelled(cancellation_token: object):
     return _middleware
 
 
-_TASK_COMPLETE = "task_complete"
-
-
-def _can_call(scope: TurnScope | None, tool_name: str) -> bool:
-    """Whether this run may call `tool_name`: registered, and inside the
-    spec's grant (an empty grant means every registered tool)."""
-    if scope is None:
-        return False
-    run = scope.run
-    registry = getattr(run.runtime, "tool_registry", None)
-    if registry is None or not registry.has(tool_name):
-        return False
-    granted = run.spec.tool_names
-    return not granted or tool_name in granted
-
-
 def deadline_note(scope: TurnScope | None) -> str:
     """The wrap-up line added to the latest tool result's loop footer,
-    naming only a way to finish this run actually has.
-
-    Agents built without `task_complete` finish with a plain-text reply, and
-    telling one to call a tool it does not have leaves it no valid move.
-    """
-    finish = (
-        f"call {_TASK_COMPLETE} with your final answer"
-        if _can_call(scope, _TASK_COMPLETE)
-        else "reply with your final answer as plain text, without calling tools"
-    )
-    return f"\n[loop: last tool round: {finish}; say which parts you could not confirm]"
+    naming only a way to finish this run actually has."""
+    return f"\n[loop: last tool round: {finish_move(scope)}; say which parts you could not confirm]"
 
 
 def warn_before_deadline(warn_at_turns_left: int = 2):
@@ -113,7 +89,7 @@ def warn_before_deadline(warn_at_turns_left: int = 2):
     `[loop: step N/MAX]` state already uses -- not on an injected user
     message. An instruction posing as the user right after tool output reads
     as a prompt attack: Azure OpenAI's content filter rejected every such
-    request in the FRAMES runs, and the agent answered with a canned refusal.
+    request carrying one, and the agent answered with a canned refusal.
     Only this call's copy of the message changes; history keeps the plain
     footer. With no tool result to carry it the note is skipped: the run
     then has not been gathering anything to stop.
