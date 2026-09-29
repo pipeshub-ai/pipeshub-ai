@@ -18,6 +18,8 @@ import {
   jwtGeneratorForOtpMail,
   jwtGeneratorForEmailVerified,
   jwtGeneratorForMailAuth,
+  describeLinkLifetime,
+  passwordResetLinkExpiry,
 } from '../../../src/libs/utils/createJwt'
 import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum'
 import { deriveUserActionSecret } from '../../../src/libs/utils/jwtKeys'
@@ -88,6 +90,35 @@ describe('createJwt', () => {
       )
       const decoded = jwt.verify(passwordResetToken, userActionSecret) as any
       expect(decoded.exp - decoded.iat).to.equal(20 * 60)
+    })
+
+    describe('with PASSWORD_RESET_LINK_EXPIRY set', () => {
+      const original = process.env.PASSWORD_RESET_LINK_EXPIRY
+
+      afterEach(() => {
+        if (original === undefined) {
+          delete process.env.PASSWORD_RESET_LINK_EXPIRY
+        } else {
+          process.env.PASSWORD_RESET_LINK_EXPIRY = original
+        }
+      })
+
+      it('uses the configured lifetime for the link', () => {
+        process.env.PASSWORD_RESET_LINK_EXPIRY = '60s'
+        const { passwordResetToken } = jwtGeneratorForForgotPasswordLink(
+          'user@example.com',
+          'user-123',
+          'org-456',
+          secret,
+        )
+        const decoded = jwt.verify(passwordResetToken, userActionSecret) as any
+        expect(decoded.exp - decoded.iat).to.equal(60)
+      })
+
+      it('falls back to 20 minutes when the value is blank', () => {
+        process.env.PASSWORD_RESET_LINK_EXPIRY = '  '
+        expect(passwordResetLinkExpiry()).to.equal('20m')
+      })
     })
 
     it('should embed correct claims in mailAuthToken', () => {
@@ -603,6 +634,19 @@ describe('createJwt', () => {
         expect(() => jwt.verify(token, secret)).to.throw(jwt.JsonWebTokenError, 'invalid signature')
         expect(() => jwt.verify(token, userActionSecret)).to.not.throw()
       })
+    })
+  })
+
+  describe('describeLinkLifetime', () => {
+    it('spells out minutes, hours, days and seconds', () => {
+      expect(describeLinkLifetime('20m')).to.equal('20 minutes')
+      expect(describeLinkLifetime('1h')).to.equal('1 hour')
+      expect(describeLinkLifetime('2d')).to.equal('2 days')
+      expect(describeLinkLifetime('90')).to.equal('90 seconds')
+    })
+
+    it('returns a value it cannot read unchanged', () => {
+      expect(describeLinkLifetime('1.5 hours')).to.equal('1.5 hours')
     })
   })
 })

@@ -139,6 +139,9 @@ services:
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      # One minute rather than twenty, so the expired-link test waits a minute, not
+      # twenty. Only forgot-password links use it; invites have their own lifetime.
+      - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-60s}
       
       # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}

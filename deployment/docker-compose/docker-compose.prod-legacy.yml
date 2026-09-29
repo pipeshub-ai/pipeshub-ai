@@ -142,6 +142,7 @@ services:
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-20m}
 
       # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
       # runtime_threads.py propagates this to OPENBLAS and MKL automatically.

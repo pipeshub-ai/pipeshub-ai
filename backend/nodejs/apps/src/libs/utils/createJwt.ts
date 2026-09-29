@@ -19,6 +19,33 @@ export const mailJwtGenerator = (email: string, scopedJwtSecret: string) => {
   );
 };
 
+const DEFAULT_PASSWORD_RESET_LINK_EXPIRY = '20m';
+
+/** Lifetime of a forgot-password link, as a jsonwebtoken `expiresIn` value. */
+export const passwordResetLinkExpiry = (): string => {
+  const configured = process.env.PASSWORD_RESET_LINK_EXPIRY?.trim() ?? '';
+  return configured === '' ? DEFAULT_PASSWORD_RESET_LINK_EXPIRY : configured;
+};
+
+const LIFETIME_UNITS: Record<string, string> = {
+  s: 'second',
+  m: 'minute',
+  h: 'hour',
+  d: 'day',
+};
+
+/** `'20m'` → `'20 minutes'`, for telling people how long their link works. */
+export const describeLinkLifetime = (expiresIn: string): string => {
+  const match = /^(\d+)\s*([smhd])?$/i.exec(expiresIn.trim());
+  if (!match) {
+    return expiresIn;
+  }
+  const amount = match[1] ?? '';
+  // A bare number is seconds, as jsonwebtoken reads it.
+  const unit = LIFETIME_UNITS[(match[2] ?? 's').toLowerCase()] ?? 'second';
+  return `${amount} ${unit}${amount === '1' ? '' : 's'}`;
+};
+
 export const jwtGeneratorForForgotPasswordLink = (
   userEmail: string,
   userId: string,
@@ -34,7 +61,7 @@ export const jwtGeneratorForForgotPasswordLink = (
       scopes: [TokenScopes.PASSWORD_RESET],
     },
     scopedJwtSecret,
-    { expiresIn: '20m' },
+    { expiresIn: passwordResetLinkExpiry() } as jwt.SignOptions,
   );
   const mailAuthToken = jwt.sign(
     {

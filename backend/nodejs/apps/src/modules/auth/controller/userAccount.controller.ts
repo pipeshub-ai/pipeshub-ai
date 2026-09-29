@@ -6,10 +6,13 @@ import { Request, Response, NextFunction } from 'express';
 import {
   iamJwtGenerator,
   iamUserLookupJwtGenerator,
+  describeLinkLifetime,
   jwtGeneratorForForgotPasswordLink,
   mailJwtGenerator,
+  passwordResetLinkExpiry,
   refreshTokenJwtGenerator,
 } from '../../../libs/utils/createJwt';
+import { isDuplicateKeyError } from '../../../libs/utils/mongo.utils';
 import { generateOtp } from '../utils/generateOtp';
 
 import { passwordValidator } from '../utils/passwordValidator';
@@ -18,6 +21,10 @@ import {
   AuthMethodType,
   OrgAuthConfig,
 } from '../schema/orgAuthConfiguration.schema';
+import {
+  UsedPasswordResetLink,
+  hashResetLink,
+} from '../schema/usedPasswordResetLink.schema';
 import {
   SESSION_INVALIDATING_ACTIVITIES,
   userActivitiesType,
@@ -90,6 +97,10 @@ const {
   ACCOUNT_BLOCKED,
 } = userActivitiesType;
 export const SALT_ROUNDS = 10;
+export const RESET_LINK_ALREADY_USED =
+  'This reset link has already been used. Request a new one from the sign-in page.';
+// The longest-lived link (a new account's first password) lasts 48 hours.
+const RESET_LINK_FALLBACK_LIFETIME_MS = 48 * 60 * 60 * 1000;
 const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
 const SESSION_INVALIDATE_TOKEN_DELAY_MS = 1000;
 
@@ -556,6 +567,7 @@ export class UserAccountController {
           orgName: org?.shortName || org?.registeredName,
           name: user.fullName,
           link: resetPasswordLink,
+          linkLifetime: describeLinkLifetime(passwordResetLinkExpiry()),
         },
       });
 
@@ -874,21 +886,77 @@ export class UserAccountController {
       }
       const orgId = req.tokenPayload?.orgId;
       const userId = req.tokenPayload?.userId;
-      const userFindResult = await this.iamService.getUserById(
-        userId,
-        iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
-      );
+      const linkHash = await this.claimResetLink(req);
+      try {
+        const userFindResult = await this.iamService.getUserById(
+          userId,
+          iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
+        );
 
-      if (userFindResult.statusCode !== 200) {
-        throw new NotFoundError(SESSION_NO_LONGER_VALID);
+        if (userFindResult.statusCode !== 200) {
+          throw new NotFoundError(SESSION_NO_LONGER_VALID);
+        }
+        await this.updatePassword(userId, orgId, password, req.ip!);
+      } catch (error) {
+        // updatePassword refuses a weak, reused or blocked password before it
+        // writes anything, so the link is handed back for another attempt.
+        if (error instanceof BadRequestError) {
+          await UsedPasswordResetLink.deleteOne({ linkHash });
+        }
+        throw error;
       }
-      await this.updatePassword(userId, orgId, password, req.ip!);
 
       res.status(200).send({ data: 'password reset' });
       return;
     } catch (error) {
       next(error);
     }
+  }
+
+  /**
+   * Mark the link used before any reset work, so of two simultaneous requests
+   * only one proceeds. The PASSWORD_CHANGED check in scopedTokenValidator stops
+   * a later reuse, but that activity is written only when a reset finishes.
+   */
+  private async claimResetLink(
+    req: AuthenticatedServiceRequest,
+  ): Promise<string> {
+    const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+    if (token === '') {
+      throw new UnauthorizedError('No token provided');
+    }
+    const linkHash = hashResetLink(token);
+    const exp: unknown = req.tokenPayload?.exp;
+    const expiresAt = new Date(
+      typeof exp === 'number'
+        ? exp * 1000
+        : Date.now() + RESET_LINK_FALLBACK_LIFETIME_MS,
+    );
+
+    try {
+      // Mongoose builds indexes in the background; without the unique index
+      // both inserts would succeed. Cached after the first call.
+      await UsedPasswordResetLink.init();
+    } catch (error) {
+      this.logger.warn('The used reset link index could not be built', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    try {
+      await UsedPasswordResetLink.create({
+        linkHash,
+        userId: String(req.tokenPayload?.userId),
+        orgId: String(req.tokenPayload?.orgId),
+        expiresAt,
+      });
+    } catch (error) {
+      if (isDuplicateKeyError(error)) {
+        throw new UnauthorizedError(RESET_LINK_ALREADY_USED);
+      }
+      throw error;
+    }
+    return linkHash;
   }
 
   async resetPassword(

@@ -15,7 +15,9 @@ import {
   SIGN_IN_CODE_REQUESTED,
   WRONG_EMAIL_OR_PASSWORD,
   WRONG_SIGN_IN_CODE,
+  RESET_LINK_ALREADY_USED,
 } from '../../../../src/modules/auth/controller/userAccount.controller';
+import { UsedPasswordResetLink } from '../../../../src/modules/auth/schema/usedPasswordResetLink.schema';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 
@@ -33,6 +35,34 @@ import {
 
 // The account-locked email is sent in the background; this lets it run.
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+// Behaves like the collection's unique index on linkHash: a second insert of
+// the same hash is refused with Mongo's duplicate-key error.
+function fakeUsedResetLinks(): Set<string> {
+  const used = new Set<string>();
+  sinon.stub(UsedPasswordResetLink, 'init').resolves();
+  sinon.stub(UsedPasswordResetLink, 'create').callsFake((async (doc: any) => {
+    if (used.has(doc.linkHash)) {
+      throw Object.assign(new Error('E11000 duplicate key error'), { code: 11000 });
+    }
+    used.add(doc.linkHash);
+    return doc;
+  }) as any);
+  sinon.stub(UsedPasswordResetLink, 'deleteOne').callsFake(((filter: any) => {
+    used.delete(filter.linkHash);
+    return Promise.resolve({ acknowledged: true, deletedCount: 1 });
+  }) as any);
+  return used;
+}
+
+function resetLinkRequest(password: string, token = 'reset-link-token'): any {
+  return {
+    body: { password },
+    headers: { authorization: `Bearer ${token}` },
+    tokenPayload: { orgId: 'o1', userId: 'u1', exp: Math.floor(Date.now() / 1000) + 1200 },
+    ip: '127.0.0.1',
+  };
+}
 
 describe('UserAccountController', () => {
   let controller: UserAccountController;
@@ -934,11 +964,8 @@ describe('UserAccountController', () => {
     });
 
     it('should call next(NotFoundError) when user not found by ID', async () => {
-      const req: any = {
-        body: { password: 'NewPass1!' },
-        tokenPayload: { orgId: 'o1', userId: 'u1' },
-        ip: '127.0.0.1',
-      };
+      fakeUsedResetLinks();
+      const req = resetLinkRequest('NewPass1!');
 
       mockIamService.getUserById.resolves({
         statusCode: 404,
@@ -2316,13 +2343,88 @@ describe('UserAccountController', () => {
     });
   });
 
+  describe('resetPasswordViaEmailLink - one use per link', () => {
+    const newResponse = () => ({
+      status: sinon.stub().returnsThis(),
+      send: sinon.stub().returnsThis(),
+    });
+
+    beforeEach(() => {
+      // Slow enough that both requests are in flight together, as they are
+      // when a link is opened twice at once.
+      mockIamService.getUserById.callsFake(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve({ statusCode: 200, data: { _id: 'u1', orgId: 'o1' } }),
+              20,
+            ),
+          ),
+      );
+      sinon.stub(UserCredentials, 'findOne').resolves(null);
+      sinon.stub(UserCredentials.prototype, 'save').resolves({});
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
+    it('lets exactly one of two simultaneous uses of the same link through', async () => {
+      fakeUsedResetLinks();
+      const first = { res: newResponse(), next: sinon.stub() };
+      const second = { res: newResponse(), next: sinon.stub() };
+
+      await Promise.all([
+        controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), first.res as any, first.next),
+        controller.resetPasswordViaEmailLink(resetLinkRequest('SecondValid1!'), second.res as any, second.next),
+      ]);
+
+      const outcomes = [first, second];
+      const succeeded = outcomes.filter((o) => o.res.status.calledWith(200));
+      const refused = outcomes.filter((o) => o.next.called);
+      expect(succeeded).to.have.lengthOf(1);
+      expect(refused).to.have.lengthOf(1);
+      const error = refused[0]!.next.firstCall.args[0];
+      expect(error).to.be.instanceOf(UnauthorizedError);
+      expect(error.message).to.equal(RESET_LINK_ALREADY_USED);
+      // The refused request stopped before any reset work.
+      expect(mockIamService.getUserById.calledOnce).to.be.true;
+      expect((UserActivities.create as sinon.SinonStub).calledOnce).to.be.true;
+    });
+
+    it('refuses a link that was already used', async () => {
+      fakeUsedResetLinks();
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+      const again = sinon.stub();
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('SecondValid1!'), newResponse() as any, again);
+
+      expect(next.called).to.be.false;
+      expect(again.firstCall.args[0].message).to.equal(RESET_LINK_ALREADY_USED);
+    });
+
+    it('hands the link back when the new password is refused', async () => {
+      const used = fakeUsedResetLinks();
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('weak'), res, next);
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(used.size).to.equal(0);
+
+      const retry = { res: newResponse(), next: sinon.stub() };
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('StrongEnough1!'), retry.res as any, retry.next);
+      expect(retry.next.called).to.be.false;
+      expect(retry.res.status.calledWith(200)).to.be.true;
+    });
+
+    it('lets two different links for the same account each work', async () => {
+      fakeUsedResetLinks();
+      const a = { res: newResponse(), next: sinon.stub() };
+      const b = { res: newResponse(), next: sinon.stub() };
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!', 'link-a'), a.res as any, a.next);
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('SecondValid1!', 'link-b'), b.res as any, b.next);
+      expect(a.next.called || b.next.called).to.be.false;
+    });
+  });
+
   describe('resetPasswordViaEmailLink - success', () => {
     it('should reset password successfully via email link', async () => {
-      const req: any = {
-        body: { password: 'NewValidPass1!' },
-        tokenPayload: { orgId: 'o1', userId: 'u1' },
-        ip: '127.0.0.1',
-      };
+      fakeUsedResetLinks();
+      const req = resetLinkRequest('NewValidPass1!');
 
       mockIamService.getUserById.resolves({
         statusCode: 200,
