@@ -78,7 +78,7 @@ class TestLlmHealthCheck:
             )
 
         assert resp.status_code == 500
-        assert "LLM failed" in resp.body.decode()
+        assert "LLM failed" not in resp.body.decode()  # logged, never returned
 
 
 class TestInitializeEmbeddingModel:
@@ -524,7 +524,7 @@ class TestPerformLlmHealthCheck:
         body = resp.body.decode()
         assert resp.status_code == 500
         assert "doesn't support images" not in body
-        assert "Rate limit" in body
+        assert "Rate limit" not in body  # the provider's text is logged, never returned
 
     @pytest.mark.asyncio
     async def test_multimodal_both_fail(self):
@@ -902,7 +902,7 @@ class TestInitializeEmbeddingModelExtraEdgeCases:
             with pytest.raises(HTTPException) as exc_info:
                 await initialize_embedding_model(mock_request, configs)
             assert exc_info.value.status_code == 500
-            assert "No default embedding model found" in str(exc_info.value.detail)
+            assert "couldn't start" in str(exc_info.value.detail)
 
     @pytest.mark.asyncio
     async def test_dense_embeddings_none_after_try_block(self, mock_request):
@@ -1077,7 +1077,7 @@ class TestPerformEmbeddingHealthCheckExtraEdgeCases:
 
         assert resp.status_code == 500
         body = resp.body.decode()
-        assert "embed fail" in body
+        assert "embed fail" not in body  # logged, never returned
 
     @pytest.mark.asyncio
     async def test_collection_info_falsy(self, mock_request):
@@ -1185,7 +1185,7 @@ class TestLlmHealthCheckFullCoverage:
             )
 
         assert resp.status_code == 500
-        assert "LLM failed" in resp.body.decode()
+        assert "LLM failed" not in resp.body.decode()  # logged, never returned
 
 
 class TestInitializeEmbeddingModelFullCoverage:
@@ -1588,7 +1588,7 @@ class TestPerformLlmHealthCheckFullCoverage:
         body = resp.body.decode()
         assert resp.status_code == 500
         assert "doesn't support images" not in body
-        assert "Rate limit" in body
+        assert "Rate limit" not in body  # the provider's text is logged, never returned
 
     @pytest.mark.asyncio
     async def test_multimodal_both_fail(self):

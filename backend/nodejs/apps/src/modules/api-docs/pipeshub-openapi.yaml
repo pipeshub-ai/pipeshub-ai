@@ -39211,12 +39211,21 @@ paths:
       responses:
         '200':
           description: Default model updated
+        '400':
+          description: |
+            The model's health check was refused because of its settings: the
+            provider rejected the API key, could not find the model, or could
+            not be reached at the endpoint. `error.message` names what to fix.
         '401':
           description: Unauthorized
         '403':
           description: Admin access required
         '404':
           description: Model not found
+        '500':
+          description: The health check failed for a reason other than the model's settings.
+        '503':
+          description: The vector store could not be checked for the embedding model change; try again.
 
   /configurationManager/ai-models/prepare-model:
     post:

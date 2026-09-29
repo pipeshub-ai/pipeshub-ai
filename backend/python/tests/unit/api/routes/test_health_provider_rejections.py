@@ -9,6 +9,7 @@ import pytest
 from fastapi.responses import JSONResponse
 
 from app.api.routes.health import (
+    embedding_health_check,
     perform_embedding_health_check,
     perform_llm_health_check,
 )
@@ -124,3 +125,67 @@ async def test_a_missing_local_file_is_not_called_an_unreachable_endpoint() -> N
 
     assert resp.status_code == 500
     assert not body["message"].startswith("Couldn't reach")
+
+
+@pytest.mark.asyncio
+async def test_provider_and_exception_text_never_reach_the_response() -> None:
+    leaked = "Traceback (most recent call last): secret-host.internal req-9f2"
+    for error in (
+        _status_error(openai.BadRequestError, 400, {"error": {"message": leaked}}),
+        RuntimeError(leaked),
+        _status_error(openai.AuthenticationError, 401, {"error": {"message": leaked}}),
+    ):
+        resp, body = await _check_llm(error)
+        assert leaked not in resp.body.decode()
+        assert "error_type" not in body["details"]
+
+
+def _embedding_request(embed_error: Exception) -> tuple[MagicMock, MagicMock]:
+    retrieval_service = MagicMock()
+    request = MagicMock()
+    request.app.container.retrieval_service = AsyncMock(return_value=retrieval_service)
+    embeddings = MagicMock()
+    embeddings.aembed_query = AsyncMock(side_effect=embed_error)
+    return request, embeddings
+
+
+@pytest.mark.asyncio
+async def test_set_default_embedding_with_a_rejected_key_is_a_400() -> None:
+    config = {
+        "provider": "openAI", "isDefault": True,
+        "configuration": {"model": "text-embedding-3-small", "apiKey": "wrong"},
+    }
+    error = _status_error(openai.AuthenticationError, 401, {"error": {"message": "Incorrect API key provided"}})
+    request, embeddings = _embedding_request(error)
+
+    with patch(f"{MODULE}.get_embedding_model", return_value=embeddings):
+        resp = await embedding_health_check(request, [config])
+
+    body = json.loads(resp.body)
+    assert resp.status_code == 400
+    assert body["details"]["error_code"] == "auth_error"
+    assert "rejected by OpenAI" in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_set_default_embedding_that_cannot_be_built_for_a_missing_model_is_a_400() -> None:
+    config = {"provider": "openAI", "configuration": {"model": "gone", "apiKey": "k"}}
+    error = _status_error(openai.NotFoundError, 404, {"error": {"message": "model gone"}})
+    request, _ = _embedding_request(error)
+
+    with patch(f"{MODULE}.get_embedding_model", side_effect=error):
+        resp = await embedding_health_check(request, [config])
+
+    assert resp.status_code == 400
+    assert json.loads(resp.body)["details"]["error_code"] == "model_not_found"
+
+
+@pytest.mark.asyncio
+async def test_set_default_embedding_other_failures_stay_a_500_without_their_text() -> None:
+    request, embeddings = _embedding_request(RuntimeError("boom at secret-host"))
+
+    with patch(f"{MODULE}.get_embedding_model", return_value=embeddings):
+        resp = await embedding_health_check(request, [{"provider": "openAI", "configuration": {"model": "m"}}])
+
+    assert resp.status_code == 500
+    assert "secret-host" not in resp.body.decode()
