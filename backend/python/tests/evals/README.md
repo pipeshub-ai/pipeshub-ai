@@ -168,3 +168,118 @@ and copy its JSON over the matching baseline file. Only runs of the same case
 set, provider and model are compared; anything else is shown without a verdict,
 the same rule `integration-tests/perf/compare.py` uses for the performance
 benchmarks.
+
+## The demo answer judge
+
+The Acme Corp demo's acceptance test (`integration-tests/connectors/demo/`)
+asks golden questions on a real instance and scores the answers with
+`app/connectors/sources/demo/harness/kb_harness.py`. Citations and permissions
+are exact rules. What the answer *says* is checked by an AI judge,
+`answer_judge.py` in the same folder, because phrase lists and regular
+expressions could not keep up with how many ways a model can say one fact, and
+similarity scores cannot tell "needs approval" from "needs no approval".
+
+### What stays exact, and why
+
+- **Citations** (`must_cite`, `must_cite_any_of`, `must_not_cite`): a record
+  id is either cited or not.
+- **Permissions and leaks** (`restricted`, `restricted_facts`, and every
+  persona expected to get `none`): these never reach the judge. Whether a
+  restricted fact reached someone who may not see it must not depend on a
+  model's opinion.
+- **Exact tokens** (`answer_must_mention`): a figure like "2.2%" or a name.
+
+### Writing facts for a question
+
+```yaml
+answer_must_state:
+  - "A purchase of up to and including $250 needs no approval."
+answer_must_not_state:        # optional
+  - "Every purchase needs manager approval."
+```
+
+- One fact per sentence, written the way a careful reviewer would check it.
+- Spell out the edges that matter: "up to and including $250", not "up to $250".
+- Name the subject: "your manager approves purchases over $250", not "approval
+  is needed over $250".
+- Use `answer_must_not_state` for a wrong answer that is tempting, such as an
+  out-of-date limit.
+
+`test_demo_fixture.py` checks that both lists are non-empty lists of non-empty
+strings.
+
+### How the judge decides
+
+One model call per answer, with every claim in it, at temperature 0 and asking
+for JSON only (checked with Pydantic). For each claim the judge writes a
+sentence or two of reasoning and then a verdict:
+
+- `supported`: the answer plainly says it, with the same meaning, subject and
+  limits;
+- `contradicted`: the answer says something incompatible, including stating
+  the fact and then taking it back;
+- `missing`: neither.
+
+Hedged ("I think", "usually"), partial and edge-wrong statements ("under $250"
+for "up to and including $250") are not support. The judge is told to judge
+only what the answer says, not what is true.
+
+Every `supported` or `contradicted` verdict must quote the answer. If the quote
+is not in the answer (ignoring case, spacing, quote marks and markdown
+emphasis), the verdict becomes `unverified`, which fails: the judge may not
+invent its evidence.
+
+A must-state claim passes only when `supported`; a must-not-state claim passes
+when `missing` or `contradicted`. A model error, a timeout or a reply that is
+not the JSON asked for is a **judge error**, never a pass. Rate limits (429),
+timeouts and server errors are retried twice with backoff first. With no judge
+configured, the facts are **not judged**; that passes locally and fails when
+`PIPESHUB_REQUIRE_JUDGE=1`, which the integration workflow sets.
+
+The judge is built by `chat_models.judge_client_from_env()` from the same
+`TEST_AZURE_OPENAI_*` settings the integration suite gives the instance
+(`EVAL_PROVIDER` overrides). That means today it is the same model that wrote
+the answer, and models tend to rate their own writing kindly. A separate,
+stronger judge deployment would remove that risk; it is not set up yet.
+
+### Calibration
+
+`answer_judge_calibration.yaml` holds about 45 hand-labelled hard cases:
+negation, "under" against "up to and including", the right amount on the
+wrong subject, time phrases ("will sign off on Monday"), hedging, a fact buried
+in a long answer, an answer that states a fact and then contradicts it, and an
+instruction to the grader hidden in the answer. Most are around the expense
+policy's approval bands; the rest cover PR #482's review, the export fix, the
+on-call handbook, the exports launch and the holiday carry-over change.
+
+`run_judge_calibration.py` asks the judge about every case and compares its
+pass or fail on each claim with the label. It fails below 95% agreement and
+lists every disagreement with the judge's reasoning. It runs as its own step in
+`answer-quality-evals.yml`, every night:
+
+```bash
+cd backend/python
+TEST_AZURE_OPENAI_API_KEY=... TEST_AZURE_OPENAI_ENDPOINT=... \
+TEST_AZURE_OPENAI_DEPLOYMENT_NAME=... EVAL_PROVIDER=azure_openai \
+  python -m tests.evals.run_judge_calibration --output reports/evals/judge-calibration.json
+```
+
+`test_judge_calibration.py` runs on every pull request without a model: it
+checks the labels are well formed and that the agreement check can fail.
+
+When you add a case, label what a careful human reader would say. Where two
+verdicts are both fair (a hedge is `missing` to one reader and `contradicted`
+to another), list both; never list `supported` with anything else. The
+sentence variations that the phrase-matching approach in #3585 collected are
+good material for more cases.
+
+### Cost
+
+The judge's instructions are about 470 tokens; with the claims and a typical
+answer a call is roughly 1,000 to 1,500 tokens in and 100 to 300 out. On a
+GPT-4o-class model that is about half a cent per call, so the nightly
+calibration (one call per case) costs around 20 cents, and a tenth of that on a
+mini model. In the demo test, only answers to questions that list facts are
+judged, one call each; today no golden question lists any, so it costs
+nothing until questions are converted. The calibration run prints its token
+count and cost.
