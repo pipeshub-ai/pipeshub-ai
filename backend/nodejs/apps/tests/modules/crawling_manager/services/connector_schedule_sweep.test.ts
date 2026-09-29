@@ -65,11 +65,11 @@ describe('ConnectorScheduleSweepService', () => {
 
   it('leaves a schedule that already matches alone', async () => {
     await seed(record('c1'))
-    const scheduleJob = sinon.spy(scheduler, 'scheduleJob')
+    const upsert = sinon.spy(scheduler, 'upsertRepeatingSchedule')
 
     const summary = await sweeper.sweep()
 
-    expect(scheduleJob.called).to.be.false
+    expect(upsert.called).to.be.false
     expect(summary.repaired).to.equal(0)
     expect(schedulesFor('c1')).to.have.length(1)
   })
@@ -135,10 +135,10 @@ describe('ConnectorScheduleSweepService', () => {
   })
 
   it('keeps going when one connector fails', async () => {
-    const scheduleJob = scheduler.scheduleJob.bind(scheduler)
-    sinon.stub(scheduler, 'scheduleJob').callsFake(async (connector, connectorId, ...rest) => {
+    const upsert = scheduler.upsertRepeatingSchedule.bind(scheduler)
+    sinon.stub(scheduler, 'upsertRepeatingSchedule').callsFake(async (connector, connectorId, ...rest) => {
       if (connectorId === 'c1') throw new Error('redis hiccup')
-      return scheduleJob(connector, connectorId, ...rest)
+      return upsert(connector, connectorId, ...rest)
     })
     fetchAll.resolves([record('c1'), record('c2')])
 
