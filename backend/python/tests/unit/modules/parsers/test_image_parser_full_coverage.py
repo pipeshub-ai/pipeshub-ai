@@ -128,6 +128,27 @@ class TestFetchSingleUrlHttpErrors:
         assert "signed URL" in call_msg or "expired" in call_msg
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [403, 404, 429, 500])
+    async def test_http_error_logs_keep_the_query_string_out(self, parser, status):
+        url = "https://bucket.example.com/a.png?X-Amz-Expires=60&X-Amz-Signature=secret-sig"
+        result = await parser._fetch_single_url(_fetcher(status=status), url, logger=parser.logger)
+        assert result is None
+        call_msg = parser.logger.warning.call_args[0][0]
+        assert "https://bucket.example.com/a.png" in call_msg
+        assert "secret-sig" not in call_msg
+
+    @pytest.mark.asyncio
+    async def test_empty_content_log_keeps_the_query_string_out(self, parser):
+        url = "https://cdn.example.com/a.png?token=secret-token"
+        with patch(
+            "app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype",
+            return_value="png",
+        ):
+            result = await parser._fetch_single_url(_fetcher(content=b""), url, logger=parser.logger)
+        assert result is None
+        assert "secret-token" not in parser.logger.info.call_args[0][0]
+
+    @pytest.mark.asyncio
     async def test_403_without_signed_url(self, parser):
         result = await parser._fetch_single_url(
             _fetcher(status=403), "https://example.com/protected.png", logger=parser.logger

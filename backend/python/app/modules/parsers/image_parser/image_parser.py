@@ -132,16 +132,16 @@ class ImageParser:
         if status == HTTPStatus.FORBIDDEN:
             if 'X-Amz-Expires' in url:
                 log.warning(
-                    f"⚠️ Access denied (403) for signed URL - likely expired or invalid signature: {url[:150]}..."
+                    f"⚠️ Access denied (403) for signed URL - likely expired or invalid signature: {redact_url(url)}"
                 )
             else:
-                log.warning(f"⚠️ Access denied (403) for URL - insufficient permissions: {url[:150]}...")
+                log.warning(f"⚠️ Access denied (403) for URL - insufficient permissions: {redact_url(url)}")
         elif status == HTTPStatus.NOT_FOUND:
-            log.warning(f"⚠️ Image not found (404) at URL: {url[:150]}...")
+            log.warning(f"⚠️ Image not found (404) at URL: {redact_url(url)}")
         elif status >= HTTPStatus.INTERNAL_SERVER_ERROR:
-            log.warning(f"⚠️ Server error ({status}) when fetching URL: {url[:150]}...")
+            log.warning(f"⚠️ Server error ({status}) when fetching URL: {redact_url(url)}")
         else:
-            log.warning(f"⚠️ HTTP error ({status}) when fetching URL: {url[:150]}...")
+            log.warning(f"⚠️ HTTP error ({status}) when fetching URL: {redact_url(url)}")
 
     @staticmethod
     async def _fetch_single_url(
@@ -164,7 +164,7 @@ class ImageParser:
 
             # Validate URL format before attempting to fetch
             if not ImageParser._is_valid_image_url(url):
-                log.warning(f"⚠️ URL does not appear to be an image URL: {url[:100]}...")
+                log.warning(f"⚠️ URL does not appear to be an image URL: {redact_url(url)}")
                 return None
 
             try:
@@ -183,24 +183,24 @@ class ImageParser:
             get_content_type_header = response.headers.get('content-type', '').lower()
             get_content_type = get_content_type_header.split(';')[0].strip()
             is_valid = ImageParser._is_valid_image_content_type(get_content_type)
-            log.debug(f"GET content-type for URL {url[:200]}... => {get_content_type}")
+            log.debug(f"GET content-type for URL {redact_url(url)} => {get_content_type}")
 
             if not is_valid:
-                log.info(f"⚠️ Content-type invalid during GET: {get_content_type} from URL: {url[:100]}...")
+                log.info(f"⚠️ Content-type invalid during GET: {get_content_type} from URL: {redact_url(url)}")
                 return None
 
             extension = get_extension_from_mimetype(get_content_type)
             if not extension:
-                log.info(f"⚠️ Extension couldn't be determined for URL: {url[:100]}... Skipping image")
+                log.info(f"⚠️ Extension couldn't be determined for URL: {redact_url(url)}; skipping image")
                 return None
 
             if f".{extension}" not in VALID_IMAGE_EXTENSIONS:
-                log.info(f"⚠️ Extension {extension} not in valid image extensions, from URL: {url[:100]}... Skipping image")
+                log.info(f"⚠️ Extension {extension} not in valid image extensions, from URL: {redact_url(url)}; skipping image")
                 return None
 
             content = response.content
             if not content:
-                log.info(f"⚠️ Empty content received from URL: {url}")
+                log.info(f"⚠️ Empty content received from URL: {redact_url(url)}")
                 return None
 
             base64_encoded = base64.b64encode(content).decode('utf-8')
@@ -208,11 +208,11 @@ class ImageParser:
                 log.debug("Detected SVG extension from GET; converting SVG base64 to PNG base64")
                 return f"data:image/png;base64,{ImageParser.svg_base64_to_png_base64(base64_encoded)}"
 
-            log.debug(f"Converted URL to base64 for {extension}: {url[:100]}")
+            log.debug(f"Converted URL to base64 for {extension}: {redact_url(url)}")
             return f"data:image/{extension};base64,{base64_encoded}"
 
         except Exception as e:
-            log.error(f"⚠️ Failed to convert URL to base64: {url[:150]}..., error: {str(e)}")
+            log.error(f"⚠️ Failed to convert URL to base64: {redact_url(url)}, error: {str(e)}")
             return None
 
     @staticmethod
