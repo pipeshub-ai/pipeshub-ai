@@ -3410,7 +3410,8 @@ async def get_all_scheduled_connector_instances_internal(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail="No organisations found",
             )
-        organisation_id = organisation[0].get("_key") or organisation[0].get("id")
+        # Only for app docs written before orgId was stored on them.
+        fallback_org_id = organisation[0].get("_key") or organisation[0].get("id")
 
         if isinstance(connector_ids, str):
             ids = list(dict.fromkeys(i.strip() for i in connector_ids.split(",") if i.strip()))[:_MAX_LISTED_CONNECTOR_IDS]
@@ -3432,11 +3433,15 @@ async def get_all_scheduled_connector_instances_internal(
         # determine whether a subsequent page exists without a separate COUNT
         # query.
         probe_limit = limit + 1
+        # raise_on_error: an empty page would tell the schedule sweep that every
+        # schedule is an orphan. Stable sort keeps offset paging from skipping rows.
         page_docs = await graph_provider.get_documents_paginated(
             CollectionNames.APPS.value,
             skip=skip,
             limit=probe_limit,
             filters={"isActive": True},
+            sort_field="_key",
+            raise_on_error=True,
         )
         has_more = len(page_docs) == probe_limit
         page_docs = page_docs[:limit]
@@ -3450,7 +3455,7 @@ async def get_all_scheduled_connector_instances_internal(
             candidates.append({
                 "connectorId": connector_id,
                 "connectorType": connector_type,
-                "orgId": organisation_id,
+                "orgId": doc.get("orgId") or fallback_org_id,
                 "createdBy": doc.get("createdBy"),
             })
 
