@@ -86,13 +86,12 @@ export class ConnectorScheduleSweepService {
         },
       );
 
-      const every = intervalMinutes * 60_000;
-      for (const existing of await this.queue.getRepeatableJobs()) {
-        if (Number(existing.every) !== every) {
-          await this.queue.removeRepeatableByKey(existing.key);
-        }
-      }
-      await this.queue.add(SWEEP_JOB_NAME, {}, { repeat: { every } });
+      // Idempotent across replicas and restarts; a changed interval replaces the old one.
+      await this.queue.upsertJobScheduler(
+        SWEEP_JOB_NAME,
+        { every: intervalMinutes * 60_000 },
+        { name: SWEEP_JOB_NAME },
+      );
       // Repairs state after a Redis flush or deploy without waiting a full tick.
       await this.queue.add(
         SWEEP_JOB_NAME,
@@ -154,7 +153,7 @@ export class ConnectorScheduleSweepService {
         const name = this.scheduler.jobNameFor(item.type, item.connectorId);
         desiredNames.add(name);
 
-        const intervalMinutes = Number(item.sync?.scheduledConfig?.intervalMinutes);
+        const intervalMinutes = Number(item.sync.scheduledConfig?.intervalMinutes);
         if (!Number.isFinite(intervalMinutes) || intervalMinutes < 1) {
           this.logger.warn('Sweep skipped connector with an invalid interval', ctx);
           continue;

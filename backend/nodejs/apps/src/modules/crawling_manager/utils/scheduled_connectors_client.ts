@@ -64,12 +64,10 @@ export const fetchScheduledConnectorsPage = async (
   const resp = await executeConnectorCommand(url, HttpMethod.GET, {
     Authorization: `Bearer ${token}`,
   });
-  const status = resp?.statusCode;
+  const status = resp.statusCode;
 
-  if (!status || status < 200 || status >= 300) {
-    throw new Error(
-      `Connector service returned non-2xx status ${status ?? '(no response)'}`,
-    );
+  if (status < 200 || status >= 300) {
+    throw new Error(`Connector service returned non-2xx status ${String(status)}`);
   }
 
   const data = resp.data as {
@@ -78,7 +76,7 @@ export const fetchScheduledConnectorsPage = async (
   } | null;
 
   return {
-    items: (data?.items ?? []) as ScheduledConnectorRecord[],
+    items: data?.items ?? [],
     hasMore: data?.hasMore ?? false,
   };
 };
