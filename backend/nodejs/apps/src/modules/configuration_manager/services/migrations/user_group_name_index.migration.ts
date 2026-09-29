@@ -25,12 +25,13 @@ interface DuplicateNameSet {
   groupIds: Types.ObjectId[];
 }
 
-const FIX_INSTRUCTIONS =
-  'Rename the teams listed above so that no two active teams in the same organization share a name, then restart the service. ' +
-  'Nothing was renamed or deleted. Until this is fixed, two requests arriving at the same moment can still create teams with the same name.';
+export const DUPLICATE_GROUP_NAMES_MESSAGE =
+  'Skipped adding the unique user group name index: some active user groups in the same organization share a name. ' +
+  'Rename the user groups listed in "duplicates" so that no two active groups in one organization share a name, then restart the service. ' +
+  'Nothing was renamed or deleted. Until then, two requests arriving at the same moment can still create user groups with the same name.';
 
 /**
- * Enforces "one active team name per organization" in the database, so two
+ * Enforces "one active user group name per organization" in the database, so two
  * simultaneous create or rename requests cannot both pass the app-level check.
  * Runs every boot: cheap once the index exists, and keeps reporting existing
  * duplicates until an admin renames them.
@@ -46,32 +47,29 @@ export class UserGroupNameIndexMigration {
 
       const duplicates = await this.findDuplicateNames();
       if (duplicates.length > 0) {
-        this.reportDuplicates(duplicates);
-        return {
-          status: 'skipped_duplicates',
-          duplicateSets: duplicates.length,
-          errored: 0,
-        };
+        return this.skipForDuplicates(duplicates);
       }
 
-      await UserGroups.collection.createIndex(
-        ACTIVE_GROUP_NAME_INDEX.keys,
-        ACTIVE_GROUP_NAME_INDEX.options,
-      );
-      this.logger.info('Created unique index on active team names', {
+      try {
+        await UserGroups.collection.createIndex(
+          ACTIVE_GROUP_NAME_INDEX.keys,
+          ACTIVE_GROUP_NAME_INDEX.options,
+        );
+      } catch (error) {
+        if (
+          (error as { code?: unknown } | null)?.code !== MONGO_DUPLICATE_KEY
+        ) {
+          throw error;
+        }
+        // A duplicate was written between the check and the index build.
+        return this.skipForDuplicates(await this.findDuplicateNames());
+      }
+      this.logger.info('Created unique index on active user group names', {
         index: ACTIVE_GROUP_NAME_INDEX.options.name,
       });
       return { status: 'created', duplicateSets: 0, errored: 0 };
     } catch (error) {
-      if ((error as { code?: unknown } | null)?.code === MONGO_DUPLICATE_KEY) {
-        // A duplicate was written between the check and the index build.
-        this.logger.error(
-          `Could not add the unique team-name index: two active teams in one organization share a name. ${FIX_INSTRUCTIONS}`,
-          { error: (error as Error).message },
-        );
-        return { status: 'skipped_duplicates', duplicateSets: 1, errored: 0 };
-      }
-      this.logger.error('Unique team-name index migration failed', {
+      this.logger.error('Unique user group name index migration failed', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       return { status: 'failed', duplicateSets: 0, errored: 1 };
@@ -111,16 +109,20 @@ export class UserGroupNameIndexMigration {
     ]);
   }
 
-  private reportDuplicates(duplicates: DuplicateNameSet[]): void {
-    this.logger.error(
-      `Skipped adding the unique team-name index: ${String(duplicates.length)} team name(s) are used by more than one active team in the same organization. ${FIX_INSTRUCTIONS}`,
-      {
-        duplicates: duplicates.map((set) => ({
-          orgId: String(set._id.orgId),
-          name: set._id.name,
-          teamIds: set.groupIds.map((id) => String(id)),
-        })),
-      },
-    );
+  private skipForDuplicates(
+    duplicates: DuplicateNameSet[],
+  ): UserGroupNameIndexResult {
+    this.logger.error(DUPLICATE_GROUP_NAMES_MESSAGE, {
+      duplicates: duplicates.map((set) => ({
+        orgId: String(set._id.orgId),
+        name: set._id.name,
+        groupIds: set.groupIds.map((id) => String(id)),
+      })),
+    });
+    return {
+      status: 'skipped_duplicates',
+      duplicateSets: duplicates.length,
+      errored: 0,
+    };
   }
 }

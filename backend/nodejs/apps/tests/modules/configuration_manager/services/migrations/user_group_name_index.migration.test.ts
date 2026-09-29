@@ -2,7 +2,10 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
-import { UserGroupNameIndexMigration } from '../../../../../src/modules/configuration_manager/services/migrations/user_group_name_index.migration';
+import {
+  DUPLICATE_GROUP_NAMES_MESSAGE,
+  UserGroupNameIndexMigration,
+} from '../../../../../src/modules/configuration_manager/services/migrations/user_group_name_index.migration';
 import {
   ACTIVE_GROUP_NAME_INDEX,
   UserGroups,
@@ -67,10 +70,11 @@ describe('UserGroupNameIndexMigration', () => {
     expect(writes.every((w) => !w.called)).to.equal(true);
     expect(logger.error.calledOnce).to.equal(true);
     const [message, meta] = logger.error.firstCall.args;
-    expect(message).to.include('Rename the teams');
+    expect(message).to.equal(DUPLICATE_GROUP_NAMES_MESSAGE);
     expect(message).to.include('Nothing was renamed or deleted');
+    expect(message).to.not.match(/team/i);
     expect(meta.duplicates).to.deep.equal([
-      { orgId: String(orgId), name: 'Engineering', teamIds: ids.map(String) },
+      { orgId: String(orgId), name: 'Engineering', groupIds: ids.map(String) },
     ]);
   });
 
@@ -101,18 +105,25 @@ describe('UserGroupNameIndexMigration', () => {
     expect(collection.createIndex.calledOnce).to.equal(true);
   });
 
-  it('logs the fix when a duplicate appears between the check and the index build', async () => {
+  it('lists the groups when a duplicate appears between the check and the index build', async () => {
     const collection = makeCollection(() => Promise.resolve([{ name: '_id_' }]));
     collection.createIndex.rejects(Object.assign(new Error('E11000 duplicate key error'), { code: 11000 }));
     sinon.replace(UserGroups, 'collection', collection as any);
-    sinon.stub(UserGroups, 'aggregate').resolves([] as any);
+    const orgId = new mongoose.Types.ObjectId();
+    const ids = [new mongoose.Types.ObjectId(), new mongoose.Types.ObjectId()];
+    const aggregate = sinon.stub(UserGroups, 'aggregate');
+    aggregate.onFirstCall().resolves([] as any);
+    aggregate.onSecondCall().resolves([{ _id: { orgId, name: 'Ops' }, groupIds: ids }] as any);
     const logger = makeLogger();
 
     const result = await new UserGroupNameIndexMigration(logger as any).run();
 
-    expect(result.status).to.equal('skipped_duplicates');
+    expect(result).to.deep.equal({ status: 'skipped_duplicates', duplicateSets: 1, errored: 0 });
     expect(logger.error.calledOnce).to.equal(true);
-    expect(logger.error.firstCall.args[0]).to.include('Rename the teams');
+    expect(logger.error.firstCall.args[0]).to.equal(DUPLICATE_GROUP_NAMES_MESSAGE);
+    expect(logger.error.firstCall.args[1].duplicates).to.deep.equal([
+      { orgId: String(orgId), name: 'Ops', groupIds: ids.map(String) },
+    ]);
   });
 
   it('reports other failures without throwing', async () => {
