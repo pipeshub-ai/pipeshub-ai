@@ -50,20 +50,22 @@ const ADMIN_B: FakeUser = { _id: '64b0000000000000000000b1', orgId: ORG_B, email
 const USERS = [ADMIN_A, MEMBER_A, OTHER_A, ADMIN_B]
 
 interface FakeConnector {
+  type: string
   orgId: string
   scope: 'team' | 'personal'
   createdBy: string
 }
 
+const CONNECTOR = 'Google Drive'
+
 /** What the connector service holds; it only ever shows a caller the connectors of their own org. */
 const CONNECTORS: Record<string, FakeConnector> = {
-  'drive-team': { orgId: ORG_A, scope: 'team', createdBy: ADMIN_A._id },
-  'drive-max': { orgId: ORG_A, scope: 'personal', createdBy: MEMBER_A._id },
-  'drive-olga': { orgId: ORG_A, scope: 'personal', createdBy: OTHER_A._id },
+  'drive-team': { type: CONNECTOR, orgId: ORG_A, scope: 'team', createdBy: ADMIN_A._id },
+  'drive-max': { type: CONNECTOR, orgId: ORG_A, scope: 'personal', createdBy: MEMBER_A._id },
+  'drive-olga': { type: CONNECTOR, orgId: ORG_A, scope: 'personal', createdBy: OTHER_A._id },
 }
 
 const BASE = '/api/v1/crawlingManager'
-const CONNECTOR = 'Google Drive'
 const TYPE = encodeURIComponent(CONNECTOR)
 
 const daily = (hour = 2, minute = 30) => ({
@@ -275,6 +277,13 @@ describe('Crawling manager over HTTP', () => {
         expect(res.status, `${method} ${path}`).to.equal(403)
       }
       expect(await repeatables()).to.have.length(1)
+    })
+
+    it('schedules under the connector type, whatever name the path carries', async () => {
+      const res = await send('POST', `/web.delete/drive-max/schedule`, session(MEMBER_A), daily())
+      expect(res.status).to.equal(201)
+      expect(res.body.data).to.include({ connector: CONNECTOR })
+      expect(pendingRuns().map((run) => run.data.connector)).to.deep.equal([CONNECTOR])
     })
 
     it('lets a member schedule their own personal connector', async () => {
