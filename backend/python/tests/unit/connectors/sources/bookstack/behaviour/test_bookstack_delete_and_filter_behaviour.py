@@ -46,7 +46,14 @@ class FakeBookStack:
 
     def delete_page(self, page_id: int) -> None:
         page = self.pages.pop(page_id)
-        self.audit.append({"type": "page_delete", "detail": f"({page_id}) {page['name']}"})
+        self.audit.append({"type": "page_delete", "detail": f"({page_id}) {page['name']}",
+                           "loggable_type": "page", "loggable_id": page_id})
+
+    def purge_page(self, page_id: int) -> None:
+        """Delete with the recycle bin keeping nothing: BookStack strips the id from the event."""
+        page = self.pages.pop(page_id)
+        self.audit.append({"type": "page_delete", "detail": page["name"],
+                           "loggable_type": "page", "loggable_id": None})
 
     @staticmethod
     def _body(body: dict[str, Any]) -> BookStackResponse:
@@ -204,6 +211,31 @@ async def test_a_page_restored_before_the_sync_keeps_its_record(world) -> None:
 
     assert store.deleted == []
     assert "page/2" in store.records
+
+
+async def test_a_purged_page_whose_event_lost_its_id_is_still_removed(world) -> None:
+    source, store, connector = world
+    await connector._sync_records()
+    source.purge_page(2)
+
+    await connector._sync_records()
+
+    assert store.deleted == ["page/2"]
+    assert set(store.records) == {"page/1", "page/3", "page/4"}
+
+
+async def test_a_purged_page_is_removed_once_the_page_list_can_be_read(world) -> None:
+    source, store, connector = world
+    await connector._sync_records()
+    source.purge_page(2)
+    source.listing_error_at_offset = 0
+
+    await connector._sync_records()
+    assert store.deleted == []
+
+    source.listing_error_at_offset = None
+    await connector._sync_records()
+    assert store.deleted == ["page/2"]
 
 
 async def test_a_delete_bookstack_cannot_confirm_is_kept_and_retried(world) -> None:
