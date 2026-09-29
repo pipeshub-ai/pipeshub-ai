@@ -173,3 +173,38 @@ class TestRetitledEntry:
 
         assert store.name_of("urn:post-1") == "Post"
         assert store.metadata_updates == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_title_update_is_retried_by_the_next_sync(self) -> None:
+        # RSS keeps no sync checkpoint: every sync re-reads the feed and compares it
+        # with the stored record, so an update that failed is found again next time.
+        store = FakeRecordStore()
+        conn = _connector(store)
+        await _sync(conn, _entry("Post"))
+        real_update = store.on_record_metadata_update
+        store.on_record_metadata_update = AsyncMock(side_effect=RuntimeError("graph down"))  # type: ignore[method-assign]
+
+        await _sync(conn, _entry("Retitled"))
+        assert store.name_of("urn:post-1") == "Post"
+
+        store.on_record_metadata_update = real_update  # type: ignore[method-assign]
+        await _sync(conn, _entry("Retitled"))
+
+        assert store.name_of("urn:post-1") == "Retitled"
+        assert store.metadata_updates == ["urn:post-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_retried_by_the_next_sync(self) -> None:
+        store = FakeRecordStore()
+        conn = _connector(store)
+        await _sync(conn, _entry("Post"))
+        real_lookup = store.get_record_by_external_id
+        store.get_record_by_external_id = AsyncMock(side_effect=RuntimeError("graph down"))  # type: ignore[method-assign]
+
+        await _sync(conn, _entry("Retitled"))
+        assert store.name_of("urn:post-1") == "Post"
+
+        store.get_record_by_external_id = real_lookup  # type: ignore[method-assign]
+        await _sync(conn, _entry("Retitled"))
+
+        assert store.name_of("urn:post-1") == "Retitled"
