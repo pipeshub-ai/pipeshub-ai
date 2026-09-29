@@ -42,10 +42,11 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # One run at a time; a second release published mid-run waits its turn so
-    # the two PRs don't build on divergent CHANGELOG.md states.
+    # One run at a time, and `queue: max` keeps every waiting run; the default
+    # keeps only the newest pending one and cancels the rest.
     concurrency:
       group: release-changelog
+      queue: max
       cancel-in-progress: false
     permissions:
       contents: write
@@ -63,19 +64,38 @@ jobs:
             echo "::error::The ANTHROPIC_API_KEY repository secret is not set. Add it under Settings > Secrets and variables > Actions, then re-run this workflow."
             exit 1
           fi
-          if ! url="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url)"; then
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName > /dev/null; then
             echo "::error::No release found for tag \"$TAG\". Enter the tag of a published release, e.g. v0.9.1."
             exit 1
           fi
-          {
-            echo "tag=$TAG"
-            echo "url=$url"
-          } >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Checkout main
         uses: actions/checkout@v4
         with:
           ref: main
+
+      # Every release adds to one open changelog PR, so releases published
+      # before it merges build on each other's CHANGELOG.md edits.
+      - name: Start from the open changelog branch
+        id: branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: changelog/pending
+        run: |
+          set -euo pipefail
+          remote_sha="$(git ls-remote --heads origin "refs/heads/$BRANCH" | cut -f1)"
+          open_pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$open_pr" ]; then
+            git fetch --depth=1 origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+          else
+            git checkout -B "$BRANCH"
+          fi
+          {
+            echo "name=$BRANCH"
+            echo "remote_sha=$remote_sha"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Run the release-changelog skill
         uses: anthropics/claude-code-action@v1
@@ -90,23 +110,29 @@ jobs:
           # Without this the action requests an OIDC token for the Claude GitHub
           # App, which needs `id-token: write`; the job token is enough here.
           github_token: ${{ github.token }}
+          # A release-triggered run is dispatched with GITHUB_TOKEN, so its actor
+          # is github-actions[bot], which agent mode rejects unless listed here.
+          allowed_bots: github-actions[bot]
           # The tag was checked against an existing release in the first step.
           prompt: |
             Run the release-changelog skill for the release tagged "${{ steps.release.outputs.tag }}"
             of pipeshub-ai/pipeshub-ai. Follow .claude/skills/release-changelog/SKILL.md
             exactly: write changelog/<version>.md, update changelog/README.md, and
             register the release in the root CHANGELOG.md (index row, entry below the
-            Unreleased section, refreshed Unreleased compare link).
+            Unreleased section, refreshed Unreleased compare link). If this release
+            is already registered, update its entries in place rather than adding
+            duplicates.
 
             Do NOT run git commit or git push, and do NOT open a PR — a later
             workflow step handles that. Your only output is the edited files.
           claude_args: '--allowedTools "Read,Write,Edit,Glob,Grep,Skill,Bash(gh release view:*),Bash(gh pr view:*),Bash(gh api:*),Bash(ls:*),Bash(cat:*),Bash(wc:*),Bash(grep:*),Bash(mkdir:*),Bash(python3:*)"'
 
-      - name: Open a pull request with the changelog
+      - name: Open or update the changelog pull request
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
-          RELEASE_URL: ${{ steps.release.outputs.url }}
+          BRANCH: ${{ steps.branch.outputs.name }}
+          REMOTE_SHA: ${{ steps.branch.outputs.remote_sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -118,21 +144,40 @@ jobs:
             exit 0
           fi
 
-          VERSION="${TAG#v}"
-          BRANCH="changelog/${VERSION}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
-          git commit -m "docs(changelog): add ${VERSION} release notes"
-          git push -u origin "$BRANCH" --force-with-lease
+          git commit -m "docs(changelog): add release notes for ${TAG}"
+          # An empty REMOTE_SHA means the branch must not exist yet. Otherwise it
+          # is the head read before the skill ran: the one this run built on, or
+          # a stale branch whose PR is already closed, which is replaced.
+          git push --force-with-lease="refs/heads/${BRANCH}:${REMOTE_SHA}" origin "HEAD:refs/heads/${BRANCH}"
 
-          gh pr create \
-            --base main \
-            --head "$BRANCH" \
-            --title "docs(changelog): ${VERSION}" \
-            --body "Automated changelog for [${TAG}](${RELEASE_URL}), generated by the \`release-changelog\` skill ([workflow run](${RUN_URL})).
+          tags="$(
+            {
+              gh api "repos/${GITHUB_REPOSITORY}/compare/main...${BRANCH}" \
+                --jq '.commits[].commit.message | split("\n")[0] | select(startswith("docs(changelog): add release notes for ")) | ltrimstr("docs(changelog): add release notes for ")'
+              echo "$TAG"
+            } | awk 'NF && !seen[$0]++'
+          )"
+          versions=""
+          body="Automated changelog, generated by the \`release-changelog\` skill (latest [workflow run](${RUN_URL})). Each release published before this PR merges is added here.
+
+          Releases:"
+          while read -r t; do
+            versions+="${versions:+, }${t#v}"
+            body+=$'\n'"- [${t}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${t}): \`changelog/${t#v}.md\`"
+          done <<< "$tags"
+          title="docs(changelog): ${versions}"
+          body+="
 
           Review checklist:
-          - [ ] Headline captures the release's biggest story
+          - [ ] Each headline captures its release's biggest story
           - [ ] Breaking changes / upgrade notes are complete
-          - [ ] Every PR in the release notes is represented in \`changelog/${VERSION}.md\`"
+          - [ ] Every PR in each release's notes is represented in its changelog file"
+
+          pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$pr" ]; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" -f title="$title" -f body="$body" > /dev/null
+          else
+            gh pr create --base main --head "$BRANCH" --title "$title" --body "$body"
+          fi
