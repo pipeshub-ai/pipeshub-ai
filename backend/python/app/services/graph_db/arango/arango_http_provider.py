@@ -13190,6 +13190,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             final_kb_roles = list(base_roles.intersection(set(permissions or []))) if permissions else list(base_roles)
             if permissions and not final_kb_roles:
                 include_kb = False
+            if not include_kb and not include_connector:
+                return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
             user_from = f"users/{user_id}"
             filter_conditions = []
             filter_bind: dict[str, Any] = {}
@@ -13217,6 +13219,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             record_filter = " AND " + " AND ".join(filter_conditions) if filter_conditions else ""
             perm_filter = " AND permissionEdge.role IN @permissions" if permissions else ""
             sort_field = sort_by if sort_by in ("recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType") else "recordName"
+            sort_direction = "DESC" if (sort_order or "").lower() == "desc" else "ASC"
             main_query = f"""
             LET user_from = @user_from
             LET org_id = @org_id
@@ -13241,16 +13244,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN {{ kb_id: kb._key, kb_doc: kb, role: user_team_perm }}
             )
             LET allKbAccess = APPEND(directKbAccess, (FOR t IN teamKbAccess FILTER LENGTH(FOR d IN directKbAccess FILTER d.kb_id == t.kb_id RETURN 1) == 0 RETURN t))
-            LET kbRecords = {'(FOR access IN directKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" ' + ('FILTER record.isFile != false ' if include_kb else '') + record_filter + ' RETURN { record: record, permission: { role: access.role, type: "USER" }, kb_id: kb._key, kb_name: kb.name })' if include_kb else '[]'}
+            LET kbRecords = {'(FOR access IN allKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" ' + ('FILTER record.isFile != false ' if include_kb else '') + record_filter + ' RETURN { record: record, permission: { role: access.role, type: "USER" }, kb_id: kb._key, kb_name: kb.name })' if include_kb else '[]'}
             LET connectorRecords = {'(FOR permissionEdge IN @@permission FILTER permissionEdge._from == user_from FILTER permissionEdge.type == "USER" ' + perm_filter + ' LET record = DOCUMENT(permissionEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "CONNECTOR" ' + record_filter + ' RETURN { record: record, permission: { role: permissionEdge.role, type: permissionEdge.type } })' if include_connector else '[]'}
             LET allRecords = APPEND(kbRecords, connectorRecords)
+            LET page = (
             FOR item IN allRecords
                 LET record = item.record
-                SORT record.{sort_field} {sort_order.upper()}
+                SORT record.{sort_field} {sort_direction}
                 LIMIT @skip, @limit
                 LET fileRecord = FIRST(FOR fileEdge IN @@is_of_type FILTER fileEdge._from == record._id LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }})
                 RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb: {{ id: item.kb_id || null, name: item.kb_name || null }} }}
+            )
+            RETURN {{ records: page, total: LENGTH(allRecords) }}
             """
+            # Arango rejects a bind parameter the query does not use, and each
+            # source leaves its half of the query out.
             bind = {
                 "user_from": user_from,
                 "org_id": org_id,
@@ -13258,30 +13266,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "limit": limit,
                 "kb_permissions": final_kb_roles,
                 "@permission": CollectionNames.PERMISSION.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 **filter_bind,
             }
-            if permissions:
+            if include_kb:
+                bind["@belongs_to_kb"] = CollectionNames.BELONGS_TO.value
+            if permissions and include_connector:
                 bind["permissions"] = permissions
-            records = await self.execute_query(main_query, bind_vars=bind)
-            count_query = """
-            LET user_from = @user_from
-            LET org_id = @org_id
-            LET directKbAccess = (FOR kbEdge IN @@permission FILTER kbEdge._from == user_from FILTER kbEdge.type == "USER" FILTER kbEdge.role IN @kb_permissions LET kb = DOCUMENT(kbEdge._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true RETURN { kb_doc: kb })
-            LET teamKbAccess = (FOR teamKbPerm IN @@permission FILTER teamKbPerm.type == "TEAM" FILTER STARTS_WITH(teamKbPerm._to, "apps/") LET kb = DOCUMENT(teamKbPerm._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true LET team_id = SPLIT(teamKbPerm._from, '/')[1] LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN 1) FILTER user_team_perm != null RETURN { kb_doc: kb })
-            LET allKbAccess = APPEND(directKbAccess, (FOR t IN teamKbAccess FILTER LENGTH(FOR d IN directKbAccess FILTER d.kb_doc._key == t.kb_doc._key RETURN 1) == 0 RETURN t))
-            LET kbCount = LENGTH(FOR access IN allKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" RETURN 1)
-            LET connectorCount = LENGTH(FOR permissionEdge IN @@permission FILTER permissionEdge._from == user_from FILTER permissionEdge.type == "USER" LET record = DOCUMENT(permissionEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "CONNECTOR" RETURN 1)
-            RETURN kbCount + connectorCount
-            """
-            count_results = await self.execute_query(count_query, bind_vars={**bind, "kb_permissions": final_kb_roles, "@permission": CollectionNames.PERMISSION.value, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, **filter_bind})
-            total = count_results[0] if count_results else 0
+            # Page and total from one query, so the count can never disagree with
+            # the list or be sent bind parameters it does not declare.
+            result = await self.execute_query(main_query, bind_vars=bind)
+            page = result[0] if result else {"records": [], "total": 0}
             available = {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
-            return records or [], total, available
+            return page["records"], page["total"], available
         except Exception as e:
             self.logger.error(f"❌ Failed to list all records: {str(e)}")
-            return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
+            raise
 
     async def get_records(
         self,
@@ -13332,7 +13332,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
         except Exception as e:
             self.logger.error("❌ Failed to get records: %s", str(e))
-            return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
+            raise
 
     async def list_kb_records(
         self,
@@ -13359,7 +13359,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [], "folders": []}
             filter_conditions = []
             filter_bind: dict[str, Any] = {"kb_id": kb_id, "org_id": org_id, "user_permission": user_perm, "skip": skip, "limit": limit, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, "@record_relations": CollectionNames.RECORD_RELATIONS.value, "@is_of_type": CollectionNames.IS_OF_TYPE.value}
-            filter_bind: dict[str, Any] = {"kb_id": kb_id, "org_id": org_id, "user_permission": user_perm, "skip": skip, "limit": limit, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, "@record_relations": CollectionNames.RECORD_RELATIONS.value, "@is_of_type": CollectionNames.IS_OF_TYPE.value}
             if search:
                 filter_conditions.append("(LIKE(LOWER(record.recordName), @search) OR LIKE(LOWER(record.externalRecordId), @search))")
                 filter_bind["search"] = f"%{(search or '').lower()}%"
@@ -13385,6 +13384,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             folder_filter = " AND folder_record._key == @folder_id" if folder_id else ""
             if folder_id:
                 filter_bind["folder_id"] = folder_id
+            sort_field = sort_by if sort_by in ("recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus") else "recordName"
+            sort_direction = "DESC" if (sort_order or "").lower() == "desc" else "ASC"
             main_query = f"""
             LET kb = DOCUMENT("apps", @kb_id)
             FILTER kb != null AND kb.type == "KB"
@@ -13409,35 +13410,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER record.isFile != false
                     {record_filter}
                     LET folder_info = FIRST(FOR f IN kbFolders FILTER f.folder._id == relEdge._from RETURN f)
-                    RETURN {{ record: record, folder_id: folder_info.folder_id, folder_name: folder_info.folder_name, permission: {{ role: user_permission, type: "USER" }}, kb_id: @kb_id }}
+                    RETURN {{ record: record, folder_id: folder_info.folder_id, folder_name: folder_info.folder_name, permission: {{ role: @user_permission, type: "USER" }}, kb_id: @kb_id }}
             )
             LET record_ids = all_records_data[*].record._id
             LET all_files = (FOR fileEdge IN @@is_of_type FILTER fileEdge._from IN record_ids LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ record_id: fileEdge._from, file: {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }} }})
+            LET page = (
             FOR item IN all_records_data
                 LET record = item.record
                 LET fileRecord = FIRST(FOR f IN all_files FILTER f.record_id == record._id RETURN f.file)
-                SORT record.{sort_by or "recordName"} {(sort_order or "asc").upper()}
+                SORT record.{sort_field} {sort_direction}
                 LIMIT @skip, @limit
                 RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb_id: item.kb_id, folder: {{ id: item.folder_id, name: item.folder_name }} }}
-            """
-            records = await self.execute_query(main_query, bind_vars=filter_bind)
-            count_query = f"""
-            LET kb = DOCUMENT("apps", @kb_id)
-            FILTER kb != null AND kb.type == "KB"
-            LET folder_ids = (
-                FOR belongsEdge IN @@belongs_to_kb
-                    FILTER belongsEdge._to == kb._id
-                    LET folder_record = DOCUMENT(belongsEdge._from)
-                    FILTER folder_record != null
-                    FILTER folder_record.mimeType == "application/vnd.folder"
-                    {folder_filter}
-                    RETURN belongsEdge._from
             )
-            LET record_count = (FOR relEdge IN @@record_relations FILTER relEdge._from IN folder_ids FILTER relEdge.relationshipType == "PARENT_CHILD" LET record = DOCUMENT(relEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == @org_id {record_filter} COLLECT WITH COUNT INTO c RETURN c)
-            RETURN FIRST(record_count) || 0
+            RETURN {{ records: page, total: LENGTH(all_records_data) }}
             """
-            count_results = await self.execute_query(count_query, bind_vars=filter_bind)
-            total = count_results[0] if count_results else 0
+            result = await self.execute_query(main_query, bind_vars=filter_bind)
+            page = result[0] if result else {"records": [], "total": 0}
             folders_query = """
             LET kb = DOCUMENT("apps", @kb_id)
             FILTER kb != null AND kb.type == "KB"
@@ -13454,10 +13442,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             folders_result = await self.execute_query(folders_query, bind_vars={"kb_id": kb_id, "@belongs_to_kb": CollectionNames.BELONGS_TO.value})
             folder_list = folders_result[0] if folders_result and isinstance(folders_result[0], list) else []
             available = {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [user_perm] if user_perm else [], "folders": folder_list}
-            return records or [], total, available
+            return page["records"], page["total"], available
         except Exception as e:
             self.logger.error(f"❌ Failed to list KB records: {str(e)}")
-            return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [], "folders": []}
+            raise
 
     def _validation_error(self, code: int, reason: str) -> dict:
         """Helper to create validation error response."""

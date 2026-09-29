@@ -12141,7 +12141,10 @@ class Neo4jProvider(IGraphDBProvider):
                 WITH u, directKbs, COLLECT({{kb: kb2, role: userTeamPerm.role}}) AS teamKbs
 
                 WITH u, directKbs + teamKbs AS allKbAccess
-                UNWIND [access IN allKbAccess WHERE access.kb IS NOT NULL] AS kbAccess
+                // One null row when the user reaches no KB: UNWIND of an empty list ends
+                // the query, and the connector records below would be lost with it.
+                WITH u, [access IN allKbAccess WHERE access.kb IS NOT NULL] AS reachableKbs
+                UNWIND CASE WHEN size(reachableKbs) = 0 THEN [null] ELSE reachableKbs END AS kbAccess
                 WITH DISTINCT u, kbAccess.kb AS kb, kbAccess.role AS kb_role
 
                 OPTIONAL MATCH (kb)<-[:BELONGS_TO]-(kbRecord:Record)
@@ -12253,7 +12256,10 @@ class Neo4jProvider(IGraphDBProvider):
                 WITH u, directKbs, COLLECT({{kb: kb2}}) AS teamKbs
 
                 WITH u, directKbs + teamKbs AS allKbAccess
-                UNWIND [access IN allKbAccess WHERE access.kb IS NOT NULL] AS kbAccess
+                // One null row when the user reaches no KB: UNWIND of an empty list ends
+                // the query, and the connector records below would be lost with it.
+                WITH u, [access IN allKbAccess WHERE access.kb IS NOT NULL] AS reachableKbs
+                UNWIND CASE WHEN size(reachableKbs) = 0 THEN [null] ELSE reachableKbs END AS kbAccess
                 WITH DISTINCT u, kbAccess.kb AS kb
 
                 OPTIONAL MATCH (kb)<-[:BELONGS_TO]-(kbRecord:Record)
@@ -12313,7 +12319,10 @@ class Neo4jProvider(IGraphDBProvider):
                 WITH u, directKbs, COLLECT({kb: kb2, role: userTeamPerm.role}) AS teamKbs
 
                 WITH u, directKbs + teamKbs AS allKbAccess
-                UNWIND [access IN allKbAccess WHERE access.kb IS NOT NULL] AS kbAccess
+                // One null row when the user reaches no KB: UNWIND of an empty list ends
+                // the query, and the connector records below would be lost with it.
+                WITH u, [access IN allKbAccess WHERE access.kb IS NOT NULL] AS reachableKbs
+                UNWIND CASE WHEN size(reachableKbs) = 0 THEN [null] ELSE reachableKbs END AS kbAccess
                 WITH DISTINCT u, kbAccess.kb AS kb, kbAccess.role AS kb_role
 
                 OPTIONAL MATCH (kb)<-[:BELONGS_TO]-(kbRecord:Record)
@@ -12432,13 +12441,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ List all records failed: {str(e)}")
-            return [], 0, {
-                "recordTypes": [],
-                "origins": [],
-                "connectors": [],
-                "indexingStatus": [],
-                "permissions": []
-            }
+            raise
 
     async def list_kb_records(
         self,
@@ -12720,14 +12723,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to list KB records: {str(e)}")
-            return [], 0, {
-                "recordTypes": [],
-                "origins": [],
-                "connectors": [],
-                "indexingStatus": [],
-                "permissions": [],
-                "folders": []
-            }
+            raise
 
     async def get_kb_children(
         self,

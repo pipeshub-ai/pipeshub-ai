@@ -11353,16 +11353,15 @@ class TestGetRecords:
             assert total == 1
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_read_raises(self, connected_provider):
         with patch.object(
             connected_provider, "get_user_by_user_id",
             new_callable=AsyncMock, side_effect=Exception("fail")
         ):
-            records, total, filters = await connected_provider.get_records(
-                "u1", "org1", 0, 10, None, None, None, None, None, None, None, None, "recordName", "asc", "all"
-            )
-            assert records == []
-            assert total == 0
+            with pytest.raises(Exception, match="fail"):
+                await connected_provider.get_records(
+                    "u1", "org1", 0, 10, None, None, None, None, None, None, None, None, "recordName", "asc", "all"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -11378,8 +11377,7 @@ class TestListAllRecords:
             connected_provider, "execute_query",
             new_callable=AsyncMock,
             side_effect=[
-                [{"id": "r1", "recordName": "Search Result"}],
-                [1],
+                [{"records": [{"id": "r1", "recordName": "Search Result"}], "total": 1}],
             ]
         ):
             records, total, filters = await connected_provider.list_all_records(
@@ -11393,8 +11391,7 @@ class TestListAllRecords:
             connected_provider, "execute_query",
             new_callable=AsyncMock,
             side_effect=[
-                [{"id": "r1"}],
-                [1],
+                [{"records": [{"id": "r1"}], "total": 1}],
             ]
         ):
             records, total, _ = await connected_provider.list_all_records(
@@ -11408,7 +11405,7 @@ class TestListAllRecords:
         with patch.object(
             connected_provider, "execute_query",
             new_callable=AsyncMock,
-            side_effect=[[], [0]]
+            side_effect=[[{"records": [], "total": 0}]]
         ):
             records, total, _ = await connected_provider.list_all_records(
                 "u1", "org1", 0, 10, None, None, None, None, None, None, None, None, "recordName", "asc", "local"
@@ -11416,16 +11413,15 @@ class TestListAllRecords:
             assert records == []
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_read_raises(self, connected_provider):
         with patch.object(
             connected_provider, "execute_query",
             new_callable=AsyncMock, side_effect=Exception("fail")
         ):
-            records, total, filters = await connected_provider.list_all_records(
-                "u1", "org1", 0, 10, None, None, None, None, None, None, None, None, "recordName", "asc", "all"
-            )
-            assert records == []
-            assert total == 0
+            with pytest.raises(Exception, match="fail"):
+                await connected_provider.list_all_records(
+                    "u1", "org1", 0, 10, None, None, None, None, None, None, None, None, "recordName", "asc", "all"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -13409,7 +13405,7 @@ class TestListAllRecordsExtended:
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
         records = [{"id": "r1", "recordName": "Rec1"}]
-        connected_provider.execute_query = AsyncMock(side_effect=[records, [1]])
+        connected_provider.execute_query = AsyncMock(side_effect=[[{"records": records, "total": 1}]])
         result_records, total, filters = await connected_provider.list_all_records(
             "uk1", "org1", skip=0, limit=10,
             search=None, record_types=None, origins=None,
@@ -13422,7 +13418,7 @@ class TestListAllRecordsExtended:
 
     @pytest.mark.asyncio
     async def test_with_all_filters(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(side_effect=[[], [0]])
+        connected_provider.execute_query = AsyncMock(side_effect=[[{"records": [], "total": 0}]])
         result_records, total, filters = await connected_provider.list_all_records(
             "uk1", "org1", skip=0, limit=10,
             search="test", record_types=["FILE"], origins=["UPLOAD"],
@@ -13434,7 +13430,7 @@ class TestListAllRecordsExtended:
 
     @pytest.mark.asyncio
     async def test_source_connector(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(side_effect=[[], [0]])
+        connected_provider.execute_query = AsyncMock(side_effect=[[{"records": [], "total": 0}]])
         result_records, total, filters = await connected_provider.list_all_records(
             "uk1", "org1", skip=0, limit=10,
             search=None, record_types=None, origins=None,
@@ -13445,22 +13441,21 @@ class TestListAllRecordsExtended:
         assert result_records == []
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_read_raises(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result_records, total, filters = await connected_provider.list_all_records(
-            "uk1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            permissions=None, date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc", source="all"
-        )
-        assert result_records == []
-        assert total == 0
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.list_all_records(
+                "uk1", "org1", skip=0, limit=10,
+                search=None, record_types=None, origins=None,
+                connectors=None, indexing_status=None,
+                permissions=None, date_from=None, date_to=None,
+                sort_by="recordName", sort_order="asc", source="all"
+            )
 
     @pytest.mark.asyncio
     async def test_permissions_filter_disables_kb(self, connected_provider):
         """When permissions filter has no overlap with KB roles, KB is excluded."""
-        connected_provider.execute_query = AsyncMock(side_effect=[[], [0]])
+        connected_provider.execute_query = AsyncMock(side_effect=[[{"records": [], "total": 0}]])
         result_records, total, filters = await connected_provider.list_all_records(
             "uk1", "org1", skip=0, limit=10,
             search=None, record_types=None, origins=None,
@@ -13520,16 +13515,16 @@ class TestGetRecordsExtended:
         assert result_records == []
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_read_raises(self, connected_provider):
         connected_provider.get_user_by_user_id = AsyncMock(side_effect=Exception("fail"))
-        result_records, total, filters = await connected_provider.get_records(
-            "u1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            permissions=None, date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc", source="all"
-        )
-        assert result_records == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_records(
+                "u1", "org1", skip=0, limit=10,
+                search=None, record_types=None, origins=None,
+                connectors=None, indexing_status=None,
+                permissions=None, date_from=None, date_to=None,
+                sort_by="recordName", sort_order="asc", source="all"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -13543,8 +13538,7 @@ class TestListKbRecordsExtended:
         connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         connected_provider.execute_query = AsyncMock(
             side_effect=[
-                [{"id": "r1", "recordName": "Rec1"}],
-                [1],
+                [{"records": [{"id": "r1", "recordName": "Rec1"}], "total": 1}],
                 [[{"id": "f1", "name": "Folder"}]],
             ]
         )
@@ -13574,7 +13568,7 @@ class TestListKbRecordsExtended:
     async def test_with_folder_filter(self, connected_provider):
         connected_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
         connected_provider.execute_query = AsyncMock(
-            side_effect=[[], [0], [[]]]
+            side_effect=[[{"records": [], "total": 0}], [[]]]
         )
         records, total, filters = await connected_provider.list_kb_records(
             "kb1", "u1", "org1", skip=0, limit=10,
@@ -13589,7 +13583,7 @@ class TestListKbRecordsExtended:
     async def test_with_all_filters(self, connected_provider):
         connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         connected_provider.execute_query = AsyncMock(
-            side_effect=[[], [0], [[]]]
+            side_effect=[[{"records": [], "total": 0}], [[]]]
         )
         records, total, filters = await connected_provider.list_kb_records(
             "kb1", "u1", "org1", skip=0, limit=10,
@@ -13601,17 +13595,16 @@ class TestListKbRecordsExtended:
         assert records == []
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_read_raises(self, connected_provider):
         connected_provider.get_user_kb_permission = AsyncMock(side_effect=Exception("fail"))
-        records, total, filters = await connected_provider.list_kb_records(
-            "kb1", "u1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc"
-        )
-        assert records == []
-        assert total == 0
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.list_kb_records(
+                "kb1", "u1", "org1", skip=0, limit=10,
+                search=None, record_types=None, origins=None,
+                connectors=None, indexing_status=None,
+                date_from=None, date_to=None,
+                sort_by="recordName", sort_order="asc"
+            )
 
 
 # ---------------------------------------------------------------------------

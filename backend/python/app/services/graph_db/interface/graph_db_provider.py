@@ -1489,6 +1489,9 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Tuple of (records list, total count, available_filters dict)
+
+        Raises:
+            Exception: The listing could not be read. Never reported as an empty list.
         """
         pass
 
@@ -2406,7 +2409,11 @@ class IGraphDBProvider(ABC):
         sort_order: str,
         source: str,
     ) -> tuple[list[dict], int, dict]:
-        """List all records the user can access. Returns (records, total_count, available_filters)."""
+        """List all records the user can access. Returns (records, total_count, available_filters).
+
+        An empty list means the user can reach no matching record. A query that
+        could not be read raises; it is never reported as an empty list.
+        """
         pass
 
     @abstractmethod
@@ -2428,7 +2435,11 @@ class IGraphDBProvider(ABC):
         sort_order: str,
         folder_id: str | None = None,
     ) -> tuple[list[dict], int, dict]:
-        """List records in a KB. Returns (records, total_count, available_filters)."""
+        """List records in a KB. Returns (records, total_count, available_filters).
+
+        An empty list means no matching record or no access. A query that could
+        not be read raises; it is never reported as an empty list.
+        """
         pass
 
     # ==================== Group Operations ====================
