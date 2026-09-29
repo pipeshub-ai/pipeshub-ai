@@ -48,14 +48,17 @@ python -m benchmarks.harness run --config benchmarks/datasets/frames/configs/smo
 
 Results land in `reports/frames-benchmark/<run_id>/`: `report.md` (the board),
 `summary.json`, `failures.csv`, plus the raw `predictions.jsonl`,
-`judgments.jsonl`, `claims.jsonl`, `rankings.jsonl` and `scores.jsonl`.
+`judgments.jsonl`, `claims.jsonl`, `rankings.jsonl`, `scores.jsonl`,
+`evidence.jsonl.gz` (the context each answer was produced from) and
+`support.jsonl` (the evidence-support verdicts).
 
 | Command | Does |
 |---|---|
-| `run` | dataset → corpus → prepare (ingest + index gate) → ask → search → grade → score → report |
+| `run` | dataset → corpus → prepare (ingest + index gate) → ask → search → grade → evidence → verify → score → report |
 | `run --resume RUN_ID` | continue a stopped run; every stage skips work already recorded |
 | `run --resume RUN_ID --retry-errors` | also re-ask questions whose prediction failed |
 | `grade` / `score` / `report --resume RUN_ID` | re-derive from recorded predictions (score/report are offline) |
+| `verify --resume RUN_ID` | evidence reconstruction + support judging only, for a run graded earlier (needs Qdrant for PipesHub evidence) |
 | `corpus` | build the pinned corpus only |
 | `seed-models` | register the configured answerer and judges in PipesHub if missing |
 | `write-split` | regenerate `data/split_v1.json` (committed; do not change casually) |
@@ -78,7 +81,8 @@ tool was called).
   outlinks. `corpus_version` hashes the manifest.
 - **Prompts**: the FRAMES auto-rater (paper Figure 6) and the SimpleQA grader
   (simple-evals, MIT) are copied verbatim and sha256-pinned
-  (`grading/prompts.py`).
+  (`grading/prompts.py`), as are the harness's own claim-support and
+  evidence-support grader prompts and every answering prompt.
 - **Models**: identities come from PipesHub's model registry; provider keys
   from the environment. Judges run at temperature 0 and are cached.
 
@@ -96,11 +100,74 @@ tool was called).
 - Baselines and judges never receive tools or web grounding.
 - Systems never see gold answers (`AskItem` has no answer field).
 
+### Answers must come from the corpus, not the model's training data
+
+**Prompt-level grounding.** Every system that retrieves is told to answer
+only from what it was shown: the RAG baselines with `rag-answer-v2`, oracle and
+BM25 with `frames-answer-grounded-v1` (both: "Answer ONLY from the sources …
+do not use [your training data]"), PipesHub by its own `internal_search`
+prompt. Closed book keeps the ungrounded prompt on purpose: it is the
+memory-only control.
+
+**Judge-time verification.** A prompt is a request, not a guarantee, so every
+answer the primary judge marks correct is also checked against the context
+its system actually showed the answering model:
+
+1. *Evidence* (`evidence.jsonl.gz`, one record per prediction and answer
+   sha). Captured at ask time where the system's prompt is visible: the RAG
+   baselines, oracle and BM25 record the exact numbered sources / articles
+   block of their prompt, after fitting and small-to-big; Open WebUI and
+   RAGFlow record the chunk texts they return (`unavailable` when they return
+   none, e.g. RAGFlow's research loop); closed book records `empty`.
+   The `evidence` stage rebuilds the rest from Qdrant, marked `reconstructed`:
+   - PipesHub streams block ids, not text (`systems/pipeshub/evidence.py`):
+     search-hit blocks, fetched ranges `startBlock … startBlock +
+     blocksRendered − 1`, the record summary on a summary hit, and a record's
+     block-less table points when a block-less hit or a rendered fetch could
+     have shown them; sentence points are copies and are skipped.
+   - RAG answers asked before capture existed (`systems/rag/evidence.py`):
+     the recorded `retrieved` chunks are read back from the index the system
+     searched (PipesHub's points, or the standard collection by point id) and
+     run through the answerer's own source assembly, so small-to-big articles
+     come back whole from the corpus. A test pins the rebuild to equal the
+     ask-time capture.
+
+   When Qdrant is unreachable the evidence is `unavailable` and is retried on
+   the next `--resume`; the run never fails for it. Each record is capped at
+   500k chars (`truncated`, original size and sha256 are kept).
+2. *Evidence support* (`verify` stage, `support.jsonl`). A judge at
+   temperature 0, cached, reads the question, the answer and the evidence
+   under the pinned `evidence-support-v1` prompt and says whether the facts
+   the answer depends on are stated in it: `SUPPORTED`, `PARTIAL` or
+   `UNSUPPORTED`. Combining stated facts and arithmetic or date math over
+   stated values count as supported. Evidence over the budget is cut
+   deterministically: split into paragraph segments, ranked by BM25 against
+   the question and answer, and the best kept with the segment before and
+   after each; the cut is recorded. Unavailable evidence is `NO_EVIDENCE`
+   without a call; empty evidence is `UNSUPPORTED` without a call. Wrong
+   answers are not checked. Before judging, the stage logs a projected cost
+   from the `pricing:` table; the spend counts toward `limits.max_cost_usd`.
+
+Settings (`grading.evidence_support`, all optional; left out of the config
+hash so a run started before the check can still be resumed and verified):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `judge` | `primary` | `primary`, `secondary`, or a model selector |
+| `max_evidence_tokens` | `6000` | evidence shown per check |
+| `systems` | all but `closed_book` | system ids to verify |
+
+Changing the judge or the budget re-verifies on the next resume. An existing
+run is verified with `verify --resume RUN_ID` (or `grade --resume`, which also
+runs both stages).
+
 ## Metrics
 
 | Group | Metric |
 |---|---|
 | Answer | FRAMES accuracy (primary judge, bootstrap CI), secondary-judge accuracy and κ, SimpleQA strict accuracy, hedge rate, leniency gap |
+| Grounding | grounded accuracy = correct ∧ `SUPPORTED` (bootstrap CI; paired exact McNemar), memory-suspect = correct ∧ `UNSUPPORTED` (count, rate with CI, question ids), `PARTIAL` and `NO_EVIDENCE` counts. Rates are withheld until every correct answer has a verdict |
+| By split | accuracy, grounded accuracy and memory-suspect rate per split of the dataset's committed split file (dev / held-out), with CIs, when a run spans more than one |
 | Retrieval | all-gold-in-context, context recall, surfaced recall (from the `retrieval_context` stream frames); recall@k / MRR / nDCG@10 from ranked search |
 | Citations | integrity (markers resolve, records exist, text matches source), precision/recall vs gold articles, ALCE citation recall/precision, correct ∧ grounded |
 | Diagnosis | failure signature per wrong answer (`metrics/failures.py`): system error, policy violation, abstained, F6 reasoning miss, F3 context overflow, F2 turn budget, F5 links unused, F1 stopped early, F4 never surfaced |
@@ -141,6 +208,9 @@ need `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`
 Implement `systems/base.py::SystemAdapter` (and `CorpusIngestor` /
 `RankedRetriever` where supported) in a new package under `systems/`, then add
 one `AdapterSpec` to `systems/__init__.py::ADAPTER_REGISTRY`. No stage changes.
+For the evidence check, set `Prediction.evidence` (`harness/evidence.py`) to
+the context the adapter's model was given; if only ids are known at ask time,
+give the spec a `rebuild_evidence` hook instead.
 
 ## Tests
 
