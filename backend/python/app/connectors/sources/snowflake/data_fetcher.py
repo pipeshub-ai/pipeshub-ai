@@ -28,6 +28,15 @@ logger = logging.getLogger(__name__)
 UNREADABLE_ALL = "*"
 
 
+def unreadable_key(kind: str, scope: str) -> str:
+    """An entry in SnowflakeHierarchy.unreadable: ``kind`` could not be read under ``scope``.
+
+    ``kind`` is "tables", "views" or "files" for a failed listing, or "columns"
+    for a failed column read, which leaves the tables listed but their columns empty.
+    """
+    return f"{kind}:{scope}"
+
+
 class SnowflakeFetchError(Exception):
     """A metadata query Snowflake refused, carrying what it refused with.
 
@@ -217,9 +226,9 @@ class SnowflakeHierarchy:
     files: Dict[str, List[SnowflakeFile]] = field(default_factory=dict)
     folders: Dict[str, List[SnowflakeFolder]] = field(default_factory=dict)
     foreign_keys: List[ForeignKey] = field(default_factory=list)
-    # Scopes whose listing failed ("DB", "DB.SCHEMA", "DB.SCHEMA.STAGE", or
-    # UNREADABLE_ALL). The fetches return empty lists on failure so a sync can
-    # go on, which must not be read as "these objects are gone".
+    # unreadable_key() entries, or UNREADABLE_ALL. The fetches return empty
+    # lists on failure so a sync can go on, which must not be read as "these
+    # objects are gone".
     unreadable: Set[str] = field(default_factory=set)
     
     def summary(self) -> Dict[str, int]:
@@ -322,7 +331,7 @@ class SnowflakeDataFetcher:
                             db.name, schema.name, strict=True
                         )
                     except SnowflakeFetchError:
-                        self.hierarchy.unreadable.add(schema_key)
+                        self.hierarchy.unreadable.add(unreadable_key("columns", schema_key))
                         all_columns = {}
                     for table in tables:
                         table.columns = all_columns.get(table.name, [])
@@ -383,7 +392,9 @@ class SnowflakeDataFetcher:
         response = await self.data_source.list_schemas(database=database)
         if not response.success:
             logger.error("Failed to fetch schemas: %s", response.error)
-            self.hierarchy.unreadable.add(database)
+            self.hierarchy.unreadable.update(
+                unreadable_key(kind, database) for kind in ("tables", "views", "files")
+            )
             return []
         
         schemas = []
@@ -403,7 +414,7 @@ class SnowflakeDataFetcher:
         response = await self.data_source.list_tables(database=database, schema=schema)
         if not response.success:
             logger.error("Failed to fetch tables: %s", response.error)
-            self.hierarchy.unreadable.add(f"{database}.{schema}")
+            self.hierarchy.unreadable.add(unreadable_key("tables", f"{database}.{schema}"))
             return []
         
         tables = []
@@ -427,7 +438,7 @@ class SnowflakeDataFetcher:
         response = await self.data_source.list_views(database=database, schema=schema)
         if not response.success:
             logger.error("Failed to fetch views: %s", response.error)
-            self.hierarchy.unreadable.add(f"{database}.{schema}")
+            self.hierarchy.unreadable.add(unreadable_key("views", f"{database}.{schema}"))
             return []
         
         views = []
@@ -453,7 +464,8 @@ class SnowflakeDataFetcher:
         response = await self.data_source.list_stages(database=database, schema=schema)
         if not response.success:
             logger.error("Failed to fetch stages: %s", response.error)
-            self.hierarchy.unreadable.add(f"{database}.{schema}")
+            # Without the stages, none of their files can be listed.
+            self.hierarchy.unreadable.add(unreadable_key("files", f"{database}.{schema}"))
             return []
         
         stages = []
@@ -477,7 +489,7 @@ class SnowflakeDataFetcher:
         stage_fqn = f"{database}.{schema}.{stage}"
         if not self.warehouse:
             logger.warning("Warehouse not set, skipping stage files for %s", stage_fqn)
-            self.hierarchy.unreadable.add(stage_fqn)
+            self.hierarchy.unreadable.add(unreadable_key("files", stage_fqn))
             return []
         
         logger.debug("Fetching files for stage: %s (warehouse: %s)", stage_fqn, self.warehouse)
@@ -489,7 +501,7 @@ class SnowflakeDataFetcher:
         )
         if not response.success:
             logger.error("Failed to fetch stage files for %s: %s", stage_fqn, response.error)
-            self.hierarchy.unreadable.add(stage_fqn)
+            self.hierarchy.unreadable.add(unreadable_key("files", stage_fqn))
             return []
         
         files = []

@@ -69,6 +69,7 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.snowflake.apps import SnowflakeApp
 from app.connectors.sources.snowflake.data_fetcher import (
     UNREADABLE_ALL,
+    unreadable_key,
     SnowflakeDataFetcher,
     SnowflakeDatabase,
     SnowflakeFetchError,
@@ -664,13 +665,20 @@ class SnowflakeConnector(BaseConnector):
                     await self._sync_stages(db.name, schema.name, stages)
                     self.sync_stats.stages_synced += len(stages)
 
+                    columns_unread = unreadable_key("columns", schema_key) in unreadable
                     changed = self._select_changed(
                         "tables",
-                        {t.fqn: (t, self._table_revision(t)) for t in tables},
+                        {
+                            t.fqn: (t, self._table_revision(
+                                t, prior["tables"].get(t.fqn) if columns_unread else None
+                            ))
+                            for t in tables
+                        },
                         prior, next_state, listed, unreadable,
                     )
                     synced = await self._sync_tables(
-                        db.name, schema.name, [t for t, _ in changed.values()]
+                        db.name, schema.name, [t for t, _ in changed.values()],
+                        revisions={key: revision for key, (_, revision) in changed.items()},
                     )
                     self._keep_synced("tables", changed, synced, prior, next_state)
 
@@ -725,7 +733,7 @@ class SnowflakeConnector(BaseConnector):
         for key, (obj, revision) in current.items():
             listed[kind].add(key)
             if key in known and (
-                self._in_unreadable_scope(key, unreadable)
+                self._in_unreadable_scope(kind, key, unreadable)
                 or (revision is not None and known[key] == revision)
             ):
                 next_state[kind][key] = known[key]
@@ -764,7 +772,7 @@ class SnowflakeConnector(BaseConnector):
                 # A key listed as another kind now is that object's record, upserted this run.
                 if key in all_listed:
                     continue
-                if self._in_unreadable_scope(key, unreadable):
+                if self._in_unreadable_scope(kind, key, unreadable):
                     next_state[kind][key] = revision
                     continue
                 try:
@@ -781,18 +789,31 @@ class SnowflakeConnector(BaseConnector):
                     next_state[kind][key] = revision
 
     @staticmethod
-    def _in_unreadable_scope(key: str, unreadable: Set[str]) -> bool:
+    def _in_unreadable_scope(kind: str, key: str, unreadable: Set[str]) -> bool:
+        """Whether Snowflake failed to list objects of ``kind`` under a scope containing ``key``."""
         if UNREADABLE_ALL in unreadable:
             return True
-        return any(key.startswith(f"{scope}.") or key.startswith(f"{scope}/") for scope in unreadable)
+        prefix = unreadable_key(kind, "")
+        return any(
+            key.startswith(f"{entry[len(prefix):]}.") or key.startswith(f"{entry[len(prefix):]}/")
+            for entry in unreadable
+            if entry.startswith(prefix)
+        )
 
-    def _table_revision(self, table: SnowflakeTable) -> str:
+    def _table_revision(self, table: SnowflakeTable, carry_columns_from: Optional[str] = None) -> str:
+        column_signature = self._compute_column_signature(table.columns)
+        if carry_columns_from is not None:
+            # The columns read failed, which leaves table.columns empty. Reusing the
+            # saved signature keeps that from looking like a schema change, while row,
+            # byte and last-altered changes still count; a real column change is
+            # caught by the first sync that can read the columns.
+            column_signature = carry_columns_from.rsplit("|", 1)[-1]
         return "|".join(
             str(part) for part in (
                 table.row_count,
                 table.bytes,
                 table.last_altered,
-                self._compute_column_signature(table.columns),
+                column_signature,
             )
         )
 
@@ -920,6 +941,7 @@ class SnowflakeConnector(BaseConnector):
         database_name: str,
         schema_name: str,
         tables: List[SnowflakeTable],
+        revisions: Optional[Dict[str, str]] = None,
     ) -> AsyncGenerator[Tuple[Record, List[Permission]], None]:
         """
         Async generator for processing tables in a memory-efficient manner.
@@ -963,7 +985,7 @@ class SnowflakeConnector(BaseConnector):
                     size_in_bytes=table.bytes or 0,
                     size_bytes=table.bytes,
                     row_count=table.row_count,
-                    external_revision_id=self._table_revision(table),
+                    external_revision_id=(revisions or {}).get(fqn) or self._table_revision(table),
                     version=1,
                     inherit_permissions=True,  # Inherit from parent namespace
                 )
@@ -1029,7 +1051,13 @@ class SnowflakeConnector(BaseConnector):
                 self._record_id_cache[fqn] = record_id
 
                 # Fetch view definition
-                definition = await self._fetch_view_definition(database_name, schema_name, view.name)
+                # Strict, so a failed GET_DDL skips the view: upserting it would blank the
+                # stored definition, and leaving it out of the synced set keeps its saved
+                # revision so the next sync retries. Without a warehouse GET_DDL can never
+                # run, so such views sync without a definition as before.
+                definition = await self._fetch_view_definition(
+                    database_name, schema_name, view.name, strict=self.warehouse is not None
+                )
                 source_tables = self._parse_source_tables(definition)
                 frontend_url = os.getenv("FRONTEND_PUBLIC_URL", "").rstrip("/")
                 weburl = f"{frontend_url}/record/{record_id}" if frontend_url else ""
@@ -1217,7 +1245,11 @@ class SnowflakeConnector(BaseConnector):
         self.logger.info(f"Synced {len(groups)} stages in {parent_fqn}")
 
     async def _sync_tables(
-        self, database_name: str, schema_name: str, tables: List[SnowflakeTable]
+        self,
+        database_name: str,
+        schema_name: str,
+        tables: List[SnowflakeTable],
+        revisions: Optional[Dict[str, str]] = None,
     ) -> Set[str]:
         """
         Sync tables using async generator for memory-efficient processing.
@@ -1237,7 +1269,7 @@ class SnowflakeConnector(BaseConnector):
         total_synced = 0
 
         async for record, perms in self._process_tables_generator(
-            database_name, schema_name, tables
+            database_name, schema_name, tables, revisions
         ):
             batch.append((record, perms))
             synced.add(record.external_record_id)

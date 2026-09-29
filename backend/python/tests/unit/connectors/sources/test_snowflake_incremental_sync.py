@@ -4,10 +4,12 @@ The listing runs through the real SnowflakeDataFetcher over a fake Snowflake,
 and the sync state goes through the real SyncPoint into a store that behaves
 like Neo4j: it merges on write and refuses map-valued properties.
 """
+import json
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -23,7 +25,7 @@ from app.models.entities import Record
 DB, SCHEMA, STAGE = "DB", "S", "STG"
 
 
-def _ok(data: Any) -> SimpleNamespace:
+def _ok(data: object) -> SimpleNamespace:
     return SimpleNamespace(success=True, data=data, error=None, status_code=200, sql_state=None)
 
 
@@ -31,7 +33,7 @@ def _refused() -> SimpleNamespace:
     return SimpleNamespace(success=False, data=None, error="refused", status_code=422, sql_state="42501")
 
 
-def _rows(columns: List[str], rows: List[List[Any]]) -> Dict[str, Any]:
+def _rows(columns: list[str], rows: list[list[Any]]) -> dict[str, Any]:
     return {"resultSetMetaData": {"rowType": [{"name": c} for c in columns]}, "data": rows}
 
 
@@ -39,41 +41,50 @@ class FakeSnowflake:
     """One database, one schema, one stage; tests edit the dicts between syncs."""
 
     def __init__(self) -> None:
-        self.tables: Dict[str, Dict[str, Any]] = {
+        self.tables: dict[str, dict[str, Any]] = {
             "T1": {"rows": 10, "bytes": 100},
             "T2": {"rows": 5, "bytes": 50},
         }
-        self.views: Dict[str, str] = {"V1": "SELECT * FROM T1"}
-        self.files: Dict[str, str] = {"a.csv": "md5-a"}
+        self.views: dict[str, str] = {"V1": "SELECT * FROM T1"}
+        self.files: dict[str, str] = {"a.csv": "md5-a"}
         self.refuse_tables = False
+        self.refuse_views = False
+        self.refuse_columns = False
+        self.refuse_ddl = False
 
-    async def list_databases(self, **_: Any) -> SimpleNamespace:
+    async def list_databases(self, **_: object) -> SimpleNamespace:
         return _ok([{"name": DB}])
 
-    async def list_schemas(self, database: str, **_: Any) -> SimpleNamespace:
+    async def list_schemas(self, database: str, **_: object) -> SimpleNamespace:
         return _ok([{"name": SCHEMA}])
 
-    async def list_tables(self, database: str, schema: str, **_: Any) -> SimpleNamespace:
+    async def list_tables(self, database: str, schema: str, **_: object) -> SimpleNamespace:
         if self.refuse_tables:
             return _refused()
         return _ok([{"name": n, **meta} for n, meta in self.tables.items()])
 
-    async def list_views(self, database: str, schema: str, **_: Any) -> SimpleNamespace:
+    async def list_views(self, database: str, schema: str, **_: object) -> SimpleNamespace:
+        if self.refuse_views:
+            return _refused()
         return _ok([{"name": n, "text": d} for n, d in self.views.items()])
 
-    async def list_stages(self, database: str, schema: str, **_: Any) -> SimpleNamespace:
+    async def list_stages(self, database: str, schema: str, **_: object) -> SimpleNamespace:
         return _ok([{"name": STAGE, "type": "INTERNAL"}])
 
-    async def list_stage_files(self, **_: Any) -> SimpleNamespace:
+    async def list_stage_files(self, **_: object) -> SimpleNamespace:
         return _ok({"data": [[path, 1, "2026-01-01", md5] for path, md5 in self.files.items()]})
 
-    async def execute_sql(self, statement: str, **_: Any) -> SimpleNamespace:
+    async def execute_sql(self, statement: str, **_: object) -> SimpleNamespace:
         if "INFORMATION_SCHEMA.COLUMNS" in statement:
+            if self.refuse_columns:
+                return _refused()
             return _ok(_rows(
                 ["TABLE_NAME", "COLUMN_NAME", "DATA_TYPE"],
                 [[t, "ID", "NUMBER"] for t in self.tables],
             ))
         if "GET_DDL('VIEW'" in statement:
+            if self.refuse_ddl:
+                return _refused()
             name = statement.split("'")[3].split(".")[-1]
             return _ok(_rows(["DDL"], [[self.views.get(name, "")]]))
         return _ok(_rows([], []))
@@ -83,11 +94,11 @@ class Neo4jLikeSyncPointStore:
     """Sync points as Neo4j keeps them: `SET n += $data`, primitives only."""
 
     def __init__(self) -> None:
-        self.nodes: Dict[str, Dict[str, Any]] = {}
+        self.nodes: dict[str, dict[str, Any]] = {}
         self.fail_reads = False
         self.fail_writes = False
 
-    async def get_sync_point(self, key: str, *, raise_on_error: bool = False) -> Optional[dict]:
+    async def get_sync_point(self, key: str, *, raise_on_error: bool = False) -> dict | None:
         if self.fail_reads:
             raise ConnectionError("graph store unavailable")
         node = self.nodes.get(key)
@@ -109,17 +120,17 @@ class FakeProcessor:
 
     def __init__(self) -> None:
         self.org_id = "org-1"
-        self.records: Dict[str, Record] = {}
-        self.upserted: List[str] = []
-        self.queued: List[str] = []
-        self.deleted: List[str] = []
-        self.fail_deletes: Set[str] = set()
+        self.records: dict[str, Record] = {}
+        self.upserted: list[str] = []
+        self.queued: list[str] = []
+        self.deleted: list[str] = []
+        self.fail_deletes: set[str] = set()
         self.on_new_record_groups = AsyncMock()
         self.on_new_app_users = AsyncMock()
         self.ensure_team_app_edge = AsyncMock()
         self.get_user_by_user_id = AsyncMock(return_value=None)
 
-    async def on_new_records(self, batch: List[Tuple[Record, list]]) -> None:
+    async def on_new_records(self, batch: list[tuple[Record, list]]) -> None:
         for record, _ in batch:
             key = record.external_record_id
             existing = self.records.get(key)
@@ -130,7 +141,7 @@ class FakeProcessor:
                 record.id = existing.id
             self.records[key] = record
 
-    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         stored = self.records.get(external_record_id)
         if stored is None:
             return None
@@ -159,12 +170,12 @@ class _DataStoreProvider:
         self.store = store
 
     @asynccontextmanager
-    async def transaction(self):
+    async def transaction(self) -> AsyncIterator[Neo4jLikeSyncPointStore]:
         yield self.store
 
 
 @pytest.fixture
-def env(monkeypatch):
+def env(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     source = FakeSnowflake()
     store = Neo4jLikeSyncPointStore()
@@ -324,3 +335,45 @@ async def test_run_incremental_sync_takes_the_same_path(env) -> None:
         await env.connector.run_incremental_sync()
 
     assert env.processor.upserted == [T1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refused", ["refuse_views", "refuse_columns"])
+async def test_a_failed_read_of_one_kind_does_not_freeze_the_others(env, refused) -> None:
+    await env.sync()
+    setattr(env.source, refused, True)
+    env.source.tables["T1"] = {"rows": 11, "bytes": 110}
+    env.source.files["a.csv"] = "md5-a2"
+    del env.source.tables["T2"]
+
+    await env.sync()
+
+    assert sorted(env.processor.upserted) == sorted([T1, FILE_A])
+    assert env.processor.deleted == [T2]
+    assert V1 in env.processor.records
+
+    setattr(env.source, refused, False)
+    await env.sync()
+    assert env.processor.upserted == []
+
+
+def _saved_revisions(env, kind: str) -> dict[str, Any]:
+    (node,) = env.store.nodes.values()
+    return json.loads(node["objects"])[kind]
+
+
+@pytest.mark.asyncio
+async def test_failed_view_definition_keeps_the_old_revision_for_a_retry(env) -> None:
+    await env.sync()
+    before = _saved_revisions(env, "views")[V1]
+    env.source.views["V1"] = "SELECT id FROM T1"
+    env.source.refuse_ddl = True
+
+    await env.sync()
+    assert V1 not in env.processor.upserted
+    assert _saved_revisions(env, "views")[V1] == before
+
+    env.source.refuse_ddl = False
+    await env.sync()
+    assert env.processor.upserted == [V1]
+    assert env.processor.records[V1].definition == "SELECT id FROM T1"
