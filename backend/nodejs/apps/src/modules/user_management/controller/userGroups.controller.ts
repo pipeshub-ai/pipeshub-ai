@@ -15,6 +15,30 @@ import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
 import type { UserGroupFilter, UserFilter } from '../types/user_management.types';
 
 const RESERVED_GROUP_NAMES = ['admin', 'everyone', 'standard'];
+const GROUP_EXISTS_MESSAGE = 'Group already exists';
+
+// Two requests can both pass the findOne check; the unique index on
+// (orgId, name) then rejects the second write with code 11000.
+function isDuplicateGroupNameError(error: unknown): boolean {
+  const e = error as
+    | { code?: unknown; keyPattern?: Record<string, unknown> }
+    | null
+    | undefined;
+  return e?.code === 11000 && e.keyPattern?.name !== undefined;
+}
+
+async function saveGroupName<T extends { save(): Promise<T> }>(
+  group: T,
+): Promise<T> {
+  try {
+    return await group.save();
+  } catch (error) {
+    if (isDuplicateGroupNameError(error)) {
+      throw new BadRequestError(GROUP_EXISTS_MESSAGE);
+    }
+    throw error;
+  }
+}
 
 @injectable()
 export class UserGroupController {
@@ -58,7 +82,7 @@ export class UserGroupController {
     });
 
     if (groupWithSameName) {
-      throw new BadRequestError('Group already exists');
+      throw new BadRequestError(GROUP_EXISTS_MESSAGE);
     }
 
     const newGroup = new UserGroups({
@@ -68,7 +92,7 @@ export class UserGroupController {
       users: [],
     });
 
-    const group = await newGroup.save();
+    const group = await saveGroupName(newGroup);
 
     res.status(201).json(group);
   }
@@ -201,13 +225,13 @@ export class UserGroupController {
         isDeleted: false,
       });
       if (groupWithSameName) {
-        throw new BadRequestError('Group already exists');
+        throw new BadRequestError(GROUP_EXISTS_MESSAGE);
       }
     }
 
     group.name = normalizedName;
 
-    await group.save();
+    await saveGroupName(group);
 
     res.status(200).json(group);
   }
