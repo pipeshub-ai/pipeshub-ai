@@ -25,7 +25,7 @@ from helper.clients.agents_client import AgentsClient
 from helper.clients.conversations_client import AgentConversationsClient
 from helper.mcp_fixture import ORDER_TOOL, McpFixture
 
-pytestmark = [pytest.mark.integration, pytest.mark.ai_agents, pytest.mark.mcp]
+pytestmark = [pytest.mark.integration, pytest.mark.ai_agents]
 
 _ORDER_ID = "KO-5821"
 

@@ -16,7 +16,7 @@ from pipeshub_client import PipeshubClient
 
 from helper.mcp_client import mcp_url
 
-pytestmark = [pytest.mark.integration, pytest.mark.ai_agents, pytest.mark.mcp]
+pytestmark = [pytest.mark.integration, pytest.mark.ai_agents]
 
 SEARCH_TOOL = "pipeshub_search"
 
