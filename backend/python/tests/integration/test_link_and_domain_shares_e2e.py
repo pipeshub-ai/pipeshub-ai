@@ -48,7 +48,11 @@ from app.models.entities import FileRecord, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from tests.integration.real_graph import connect_arango, connect_neo4j
+from tests.integration.real_graph import (
+    backend_unavailable,
+    connect_arango,
+    connect_neo4j,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -121,7 +125,7 @@ async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
                 else connect_arango(logger, ARANGO_DB)
             )
         except Exception as exc:
-            pytest.skip(f"{request.param} not available: {exc}")
+            backend_unavailable(request.param, exc)
         disconnect = getattr(graph, "disconnect", None)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)

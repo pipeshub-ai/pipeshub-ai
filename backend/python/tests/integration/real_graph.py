@@ -13,15 +13,17 @@ import os
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 if TYPE_CHECKING:
     import logging
 
-    import pytest
-
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+REQUIRED_WHEN_SET = {"neo4j": "NEO4J_IT_URI", "arango": "ARANGO_IT_URL"}
 
 NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
 NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
@@ -53,3 +55,16 @@ async def connect_arango(logger: logging.Logger, database: str) -> IGraphDBProvi
     # write is refused here too.
     await provider.ensure_schema()
     return provider
+
+
+def backend_unavailable(backend: str, error: BaseException) -> None:
+    """Fail when the job said this backend is there (backend-matrix sets its URL); skip otherwise.
+
+    The unit job collects these files on a runner with no graph, where a skip is
+    right. Where the backend was configured, a skip would turn a broken backend
+    into a green run.
+    """
+    variable = REQUIRED_WHEN_SET[backend]
+    if os.environ.get(variable):
+        pytest.fail(f"{backend} is configured ({variable}={os.environ[variable]}) but could not be used: {error!r}")
+    pytest.skip(f"{backend} not available (set {variable} to require it): {error}")
