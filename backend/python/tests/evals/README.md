@@ -225,9 +225,12 @@ for "up to and including $250") are not support. The judge is told to judge
 only what the answer says, not what is true.
 
 Every `supported` or `contradicted` verdict must quote the answer. If the quote
-is not in the answer (ignoring case, spacing, quote marks and markdown
-emphasis), the verdict becomes `unverified`, which fails: the judge may not
-invent its evidence.
+is not in the answer, the verdict becomes `unverified`, which fails: the judge
+may not invent its evidence. The check splits both into words and numbers and
+looks for the quote's run inside the answer's. Case, spacing, punctuation,
+quote marks and markdown emphasis don't matter. Each number is compared by its
+value and unit, with any "k", "million" or "bn" after it included, so "$250.00"
+matches "$250", while "$250k", "$250 million", "$2,500" and "250%" don't.
 
 A must-state claim passes only when `supported`; a must-not-state claim passes
 when `missing` or `contradicted`. A model error, a timeout or a reply that is

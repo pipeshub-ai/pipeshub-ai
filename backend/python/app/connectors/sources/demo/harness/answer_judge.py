@@ -15,10 +15,12 @@ How it decides:
   (the answer says something incompatible, including stating it and then taking
   it back) or ``missing`` (neither). Hedged, partial and edge-wrong statements
   are not support.
-- A ``supported`` or ``contradicted`` verdict must quote the answer. A quote
-  that is not in the answer (compared ignoring case, spacing, quote marks and
-  markdown emphasis) turns the verdict into ``unverified``, a fail: the judge
-  may not invent its evidence.
+- A ``supported`` or ``contradicted`` verdict must quote the answer. The
+  quote and answer are compared as runs of words and numbers, ignoring case,
+  spacing, punctuation, quote marks and markdown emphasis, with each number
+  compared by value and unit ("$250.00" is "$250"; "$250k", "$2,500" and
+  "250%" are not). A quote that is not in the answer turns the verdict into
+  ``unverified``, a fail: the judge may not invent its evidence.
 - A must-state claim passes only when supported. A must-not-state claim passes
   when it is missing or contradicted.
 - A model error, a timeout, a reply that is not the JSON asked for, or
@@ -37,6 +39,7 @@ import os
 import re
 import time
 import unicodedata
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import httpx
@@ -154,58 +157,60 @@ def normalise(text: str) -> str:
     return " ".join(text.split())
 
 
+_MAGNITUDES = {
+    "k": 10**3, "thousand": 10**3,
+    "m": 10**6, "mm": 10**6, "million": 10**6,
+    "b": 10**9, "bn": 10**9, "billion": 10**9,
+}
+_TOKEN = re.compile(
+    r"(?P<cur>[$\u20ac\u00a3\u20b9\u00a5])? ?"
+    r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
+    r"(?: ?(?P<mag>" + "|".join(sorted(_MAGNITUDES, key=len, reverse=True)) + r")\b)?"
+    r"(?P<pct>%)?"
+    r"|(?P<word>[^\W\d_]+(?:['_][^\W\d_]+)*)"
+)
+
+Token = tuple[str, ...] | tuple[str, Decimal, str]
+
+
+def tokens(text: str) -> list[Token]:
+    """Words, and numbers as (value, unit): "$250.00" and "$250" are one amount,
+    "$250 k" and "$2,500" are others, and "250%" is not "$250"."""
+    out: list[Token] = []
+    for m in _TOKEN.finditer(normalise(text)):
+        if m.group("word"):
+            out.append(("w", m.group("word")))
+            continue
+        value = Decimal(m.group("num").replace(",", "")) * _MAGNITUDES.get(m.group("mag") or "", 1)
+        out.append(("n", value.normalize(), (m.group("cur") or "") + (m.group("pct") or "")))
+    return out
+
+
 def quote_in_answer(quote: str, answer: str) -> bool:
-    """Whether every fragment of the quote appears in the answer, in order.
+    """Whether the quote's tokens appear contiguously in the answer's, numbers
+    compared by value and unit.
 
     Judges shorten long passages with an ellipsis, so the fragments either side
-    of one are matched separately.
+    of one are matched separately, in order.
     """
-    haystack = normalise(answer)
-    fragments = [f.strip(" \"'.,;:") for f in re.split(r"\.\.\.|…", normalise(quote))]
-    fragments = [f for f in fragments if f]
+    haystack = tokens(answer)
+    fragments = [t for t in (tokens(f) for f in re.split(r"\.\.\.|\u2026", quote)) if t]
     if not fragments:
         return False
     pos = 0
     for fragment in fragments:
-        found = _find_whole_number(haystack, fragment, pos)
+        found = _find_run(haystack, fragment, pos)
         if found < 0:
             return False
         pos = found + len(fragment)
     return True
 
 
-# "$250k" and "$250 million" are other amounts. The haystack is already lower case.
-_MAGNITUDE = re.compile(r"(?:k|m|b|bn|mm)\b| ?(?:thousand|million|billion)\b")
-
-
-def _find_whole_number(haystack: str, fragment: str, start: int) -> int:
-    """``str.find``, except that a number at the fragment's edge must not run on
-    in the answer: "up to $250" is not a quote of "up to $2500" or "$12500"."""
-    found = haystack.find(fragment, start)
-    while found >= 0:
-        end = found + len(fragment)
-        runs_on_left = fragment[0].isdigit() and found > 0 and _continues_number(haystack, found - 1, -1)
-        runs_on_right = fragment[-1].isdigit() and end < len(haystack) and (
-            _continues_number(haystack, end, 1) or bool(_MAGNITUDE.match(haystack, end))
-        )
-        if not runs_on_left and not runs_on_right:
-            return found
-        found = haystack.find(fragment, found + 1)
+def _find_run(haystack: list[Token], needle: list[Token], start: int) -> int:
+    for i in range(start, len(haystack) - len(needle) + 1):
+        if haystack[i:i + len(needle)] == needle:
+            return i
     return -1
-
-
-def _continues_number(text: str, i: int, step: int) -> bool:
-    # A separator continues the number only before a digit: "$2,500" continues
-    # "$2", while "$250, then" and "$250." end it. Zero cents ("$250.00") are the
-    # same amount, so they don't.
-    if text[i].isdigit():
-        return True
-    if text[i] not in ",." or not (0 <= i + step < len(text)) or not text[i + step].isdigit():
-        return False
-    if text[i] == "." and step > 0:
-        cents = re.match(r"\d+", text[i + 1:]).group()
-        return cents.strip("0") != ""
-    return True
 
 
 def _status_code(exc: BaseException) -> int | None:

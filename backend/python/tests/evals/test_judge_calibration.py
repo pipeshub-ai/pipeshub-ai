@@ -40,7 +40,7 @@ class LabelClient:
         claims = []
         for i, claim in enumerate(ordered, start=1):
             verdict = self._fixed or claim.expect[0]
-            claims.append({"id": i, "reasoning": "", "verdict": verdict, "quote": "" if verdict == "missing" else answer[:12]})
+            claims.append({"id": i, "reasoning": "", "verdict": verdict, "quote": "" if verdict == "missing" else " ".join(answer.split()[:3])})
         return json.dumps({"claims": claims})
 
 
