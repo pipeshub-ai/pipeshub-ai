@@ -31,6 +31,7 @@ from app.connectors.sources.zammad.connector import (
     ZAMMAD_LINK_OBJECT_MAP,
     ZAMMAD_LINK_TYPE_MAP,
     ZammadConnector,
+    ZammadReadError,
 )
 from app.models.entities import (
     AppUser,
@@ -1124,7 +1125,7 @@ class TestZammadFetchTicketsForGroupBatch:
 
         assert len(batches) == 0
 
-    async def test_api_failure_stops(self, zammad_connector):
+    async def test_api_failure_raises_so_the_checkpoint_stays(self, zammad_connector):
         zammad_connector.sync_filters = MagicMock()
         zammad_connector.sync_filters.get.return_value = None
 
@@ -1133,12 +1134,14 @@ class TestZammadFetchTicketsForGroupBatch:
         zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         batches = []
-        async for batch in zammad_connector._fetch_tickets_for_group_batch(
-            group_id=5, group_name="Support", last_sync_time=None
-        ):
-            batches.append(batch)
+        with pytest.raises(ZammadReadError) as raised:
+            async for batch in zammad_connector._fetch_tickets_for_group_batch(
+                group_id=5, group_name="Support", last_sync_time=None
+            ):
+                batches.append(batch)
 
         assert len(batches) == 0
+        assert raised.value.read_until is None
 
     async def test_ticket_transform_error_continues(self, zammad_connector):
         zammad_connector.sync_filters = MagicMock()
@@ -1158,12 +1161,13 @@ class TestZammadFetchTicketsForGroupBatch:
         zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         batches = []
-        async for batch in zammad_connector._fetch_tickets_for_group_batch(
-            group_id=5, group_name="Support", last_sync_time=None
-        ):
-            batches.append(batch)
+        # The other tickets are still yielded; the failure is reported at the end.
+        with pytest.raises(ZammadReadError, match="tickets 1 in group 'Support'"):
+            async for batch in zammad_connector._fetch_tickets_for_group_batch(
+                group_id=5, group_name="Support", last_sync_time=None
+            ):
+                batches.append(batch)
 
-        # Should yield empty batch (error skipped, but remaining records still yielded)
         total = sum(len(b) for b in batches)
         assert total == 0
 
@@ -3613,7 +3617,7 @@ class TestFetchTicketAttachmentsAutoResponse:
         result = await connector._fetch_ticket_attachments({"id": 42}, parent)
         assert len(result) == 0
 
-    async def test_api_failure_returns_empty(self, connector):
+    async def test_api_failure_raises(self, connector):
         ds = _mock_ds()
         ds.list_ticket_articles = AsyncMock(return_value=_resp(success=False))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
@@ -3622,8 +3626,8 @@ class TestFetchTicketAttachmentsAutoResponse:
         parent.id = "p1"
         parent.external_record_id = "42"
 
-        result = await connector._fetch_ticket_attachments({"id": 42}, parent)
-        assert result == []
+        with pytest.raises(ZammadReadError):
+            await connector._fetch_ticket_attachments({"id": 42}, parent)
 
     async def test_skips_attachment_without_id(self, connector):
         ds = _mock_ds()

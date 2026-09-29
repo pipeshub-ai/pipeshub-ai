@@ -41,19 +41,26 @@ class FakeZammad:
     # Ticket ids the search index has not caught up with.
     unindexed: set[int] = field(default_factory=set)
     fail_search: Callable[[str], bool] = lambda _query: False
+    # Elasticsearch's index.max_result_window: a page past it is a 400.
+    result_window: int = 10_000
+    fail_articles_for: set[int] = field(default_factory=set)
+    fail_search_at_offset: int | None = None
+    # Zammad's search does not order by updated_at; newest-id-first shows that.
+    newest_first: bool = False
     fail_list_groups: bool = False
     ticket_read_status: dict[int, int] = field(default_factory=dict)
     search_queries: list[str] = field(default_factory=list)
     ticket_reads: list[int] = field(default_factory=list)
 
-    def add_ticket(self, ticket_id: int, group_id: int, *, day: int = 0,
+    def add_ticket(self, ticket_id: int, group_id: int, *, day: int = 0, minute: int = 0,
                    attachments: int = 0) -> None:
+        stamp = iso(epoch_ms(day) + minute * 60_000)
         self.tickets[ticket_id] = {
             "id": ticket_id,
             "title": f"ticket {ticket_id}",
             "group_id": group_id,
-            "created_at": iso(epoch_ms(day)),
-            "updated_at": iso(epoch_ms(day)),
+            "created_at": stamp,
+            "updated_at": stamp,
             "attachments": attachments,
         }
 
@@ -77,9 +84,12 @@ class FakeZammad:
 
     async def search_tickets(self, query: str, limit: int | None = None, offset: int | None = None) -> ZammadResponse:
         self.search_queries.append(query)
-        if self.fail_search(query):
-            return ZammadResponse(success=False, message="search failed")
+        if self.fail_search(query) or (offset or 0) == self.fail_search_at_offset:
+            return ZammadResponse(success=False, message="search failed", status_code=500)
+        if (offset or 0) + (limit or 10) > self.result_window:
+            return ZammadResponse(success=False, message="search failed", status_code=400)
         group = int(re.search(r"group_id:(\d+)", query).group(1))
+        id_range = re.search(r"\bid:\[(\d+) TO (\d+)\]", query)
         bounds = {
             (field_name, side): datetime.fromisoformat(value.replace("Z", "+00:00"))
             for field_name, side, value in (
@@ -96,8 +106,9 @@ class FakeZammad:
             return True
 
         hits = [
-            self._public(t) for tid, t in sorted(self.tickets.items())
+            self._public(t) for tid, t in sorted(self.tickets.items(), reverse=self.newest_first)
             if t["group_id"] == group and tid not in self.unindexed and matches(t)
+            and (id_range is None or int(id_range.group(1)) <= tid <= int(id_range.group(2)))
         ]
         start = offset or 0
         return ZammadResponse(success=True, data=hits[start:start + (limit or 10)])
@@ -115,6 +126,8 @@ class FakeZammad:
         return ZammadResponse(success=True, data=self._public(self.tickets[id]), status_code=200)
 
     async def list_ticket_articles(self, ticket_id: int) -> ZammadResponse:
+        if ticket_id in self.fail_articles_for:
+            return ZammadResponse(success=False, message="list_ticket_articles failed", status_code=500)
         count = self.tickets[ticket_id]["attachments"] if ticket_id in self.tickets else 0
         attachments = [
             {"id": n, "filename": f"file-{ticket_id}-{n}.txt", "size": 3,

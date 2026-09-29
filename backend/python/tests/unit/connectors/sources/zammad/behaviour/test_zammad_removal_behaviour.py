@@ -17,6 +17,7 @@ from zammad_behaviour_fakes import (
     epoch_ms,
 )
 
+from app.connectors.sources.zammad import connector as zammad_connector
 from app.connectors.sources.zammad.connector import ZammadConnector
 
 CONNECTOR_ID = "zm-1"
@@ -165,3 +166,126 @@ async def test_sync_points_hold_only_values_neo4j_can_store(world: World) -> Non
 
     cleanup = next(v for k, v in world.store.sync_points.items() if k.endswith("filter_cleanup:excluded_groups"))
     assert cleanup["excluded_group_ids"] == ["2"]
+
+
+def _checkpoint(world: World, group_name: str) -> object:
+    return next((v.get("last_sync_time") for k, v in world.store.sync_points.items() if k.endswith(group_name)), None)
+
+
+async def test_a_read_back_that_fails_once_is_repeated_and_the_ticket_goes_on_the_next_sync(world: World) -> None:
+    world.zammad.delete_ticket(11)
+    world.zammad.ticket_read_status[11] = 503
+    await world.sync()
+    assert "11" in world.db.external_ids()
+
+    del world.zammad.ticket_read_status[11]
+    await world.sync()
+    assert world.db.external_ids() == {"10", "20"}
+
+
+async def test_a_failed_search_page_keeps_the_group_checkpoint_until_a_sync_reads_it_all(world: World) -> None:
+    before = _checkpoint(world, "Support")
+    # Two pages of changes; search order is not by updated_at, so the newest lands on page one.
+    world.zammad.add_ticket(599, 1, day=20)
+    for ticket_id in range(500, 560):
+        world.zammad.add_ticket(ticket_id, 1, day=9, minute=ticket_id)
+    world.zammad.newest_first = True
+    world.zammad.fail_search_at_offset = 50
+
+    await world.sync()
+    assert "599" in world.db.external_ids()
+    assert _checkpoint(world, "Support") == before
+
+    world.zammad.fail_search_at_offset = None
+    await world.sync()
+    assert all(str(t) in world.db.external_ids() for t in range(500, 560))
+    assert _checkpoint(world, "Support") > before
+
+
+async def test_a_ticket_whose_articles_fail_keeps_the_checkpoint_and_is_read_again(world: World) -> None:
+    before = _checkpoint(world, "Support")
+    world.zammad.add_ticket(12, 1, day=9, attachments=1)
+    world.zammad.add_ticket(13, 1, day=10)
+    world.zammad.fail_articles_for.add(12)
+
+    await world.sync()
+    # The other ticket lands, but the group's checkpoint stays behind the one that failed.
+    assert "13" in world.db.external_ids()
+    assert "12" not in world.db.external_ids()
+    assert _checkpoint(world, "Support") == before
+
+    world.zammad.fail_articles_for.clear()
+    await world.sync()
+    assert {"12", "12_1_1"} <= world.db.external_ids()
+
+
+def _search_window(world: World, monkeypatch: pytest.MonkeyPatch, size: int) -> None:
+    world.zammad.result_window = size
+    monkeypatch.setattr(zammad_connector, "SEARCH_RESULT_WINDOW", size)
+
+
+async def test_a_group_past_the_search_window_syncs_every_ticket_and_moves_its_checkpoint(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _search_window(world, monkeypatch, 60)
+    for ticket_id in range(100, 400):
+        world.zammad.add_ticket(ticket_id, 1, day=4, minute=2 * ticket_id)
+
+    await world.save_filters({})
+
+    assert all(str(t) in world.db.external_ids() for t in range(100, 400))
+    assert _checkpoint(world, "Support") is not None
+
+
+async def test_a_deleted_ticket_in_a_group_past_the_search_window_is_removed(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _search_window(world, monkeypatch, 60)
+    for ticket_id in range(100, 400):
+        world.zammad.add_ticket(ticket_id, 1, day=4, minute=2 * ticket_id)
+    await world.save_filters({})
+    assert "399" in world.db.external_ids()
+
+    world.zammad.delete_ticket(399)
+    await world.sync()
+
+    assert "399" not in world.db.external_ids()
+    assert all(str(t) in world.db.external_ids() for t in range(100, 399))
+
+
+async def test_a_failed_id_range_keeps_its_tickets_and_still_removes_elsewhere(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _search_window(world, monkeypatch, 60)
+    for ticket_id in range(100, 300):
+        world.zammad.add_ticket(ticket_id, 1, day=4, minute=2 * ticket_id)
+    await world.save_filters({})
+    world.zammad.delete_ticket(11)
+    world.zammad.delete_ticket(299)
+    world.zammad.fail_search = lambda query: "TO 299]" in query
+
+    await world.sync()
+
+    assert "11" not in world.db.external_ids()
+    assert "299" in world.db.external_ids()
+
+
+async def test_a_ticket_moved_out_of_an_excluded_group_is_moved_not_removed(world: World) -> None:
+    world.zammad.move_ticket(20, 1, day=6)
+    world.zammad.unindexed.add(20)  # the destination group's search has not caught up
+
+    await world.save_filters({"group_ids": {"operator": "not_in", "value": ["2"], "type": "list"}})
+
+    assert "20" in world.db.external_ids()
+    assert world.db.records["20"].external_record_group_id == "group_1"
+    assert "20" not in world.db.deleted
+
+
+async def test_an_excluded_group_ticket_that_cannot_be_read_back_is_retried(world: World) -> None:
+    world.zammad.ticket_read_status[20] = 503
+    await world.save_filters({"group_ids": {"operator": "not_in", "value": ["2"], "type": "list"}})
+    assert "20" in world.db.external_ids()
+
+    del world.zammad.ticket_read_status[20]
+    await world.sync()
+    assert "20" not in world.db.external_ids()

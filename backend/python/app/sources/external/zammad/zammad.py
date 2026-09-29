@@ -2352,7 +2352,10 @@ class ZammadDataSource:
             data = None
             if response_text:
                 json_data = response.json()
-                if isinstance(json_data, dict):
+                if isinstance(json_data, dict) and json_data.get("error"):
+                    # An error body read as "no tickets" would end a listing early.
+                    status_ok = False
+                elif isinstance(json_data, dict):
                     # Response structure:
                     # {
                     #   "assets": {"Ticket": {"1": {...}, "7": {...}}, ...},
