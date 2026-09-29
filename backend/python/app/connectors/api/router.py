@@ -2243,11 +2243,18 @@ async def delete_record(
         container = request.app.container
         logger = container.logger()
         user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        if not user_id or not org_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated",
+            )
         logger.info(f"🗑️ Attempting to delete record {record_id}")
 
         result = await graph_provider.delete_record(
             record_id=record_id,
-            user_id=user_id
+            user_id=user_id,
+            org_id=org_id,
         )
 
         if result["success"]:

@@ -7873,6 +7873,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         user_id: str,
+        org_id: str,
         transaction: str | None = None
     ) -> dict:
         """
@@ -7881,6 +7882,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Args:
             record_id: Record ID to delete
             user_id: User ID performing the deletion
+            org_id: Caller's organization; records outside it are reported as not found
             transaction: Optional transaction ID
 
         Returns:
@@ -7895,7 +7897,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 key=record_id,
                 txn_id=transaction
             )
-            if not record:
+            # The per-connector role checks below are not org-scoped (Drive domain/anyone
+            # grants, Gmail address match), so tenancy has to be enforced here.
+            if not record or record.get("orgId") != org_id:
                 return {
                     "success": False,
                     "code": 404,
@@ -7961,7 +7965,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return
 
             # Delete record using the record's internal ID and user_id
-            deletion_result = await self.delete_record(record.id, user_id, transaction=transaction)
+            deletion_result = await self.delete_record(record.id, user_id, record.org_id, transaction=transaction)
 
             # Check if deletion was successful
             if deletion_result.get("success"):
