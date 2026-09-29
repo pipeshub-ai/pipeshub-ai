@@ -5512,6 +5512,10 @@ class SalesforceConnector(BaseConnector):
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
         """
         Handle different types of record updates (content changed, metadata changed).
+
+        A failed write is re-raised: the files checkpoint is saved after this
+        returns, so swallowing it would move the checkpoint past a change that
+        was never stored.
         """
         try:
             if record_update.is_deleted and record_update.external_record_id:
@@ -5530,6 +5534,7 @@ class SalesforceConnector(BaseConnector):
                     await self.data_entities_processor.on_record_metadata_update(record_update.record)
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
+            raise
 
     async def _sync_files(
         self,

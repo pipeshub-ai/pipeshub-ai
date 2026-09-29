@@ -1811,7 +1811,7 @@ class TestHandleRecordUpdates:
         connector.data_entities_processor.on_record_content_update.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_exception_is_caught(self):
+    async def test_a_failed_write_is_raised(self) -> None:
         connector = _make_connector()
         connector.data_entities_processor.on_record_content_update = AsyncMock(
             side_effect=Exception("failure")
@@ -1825,8 +1825,9 @@ class TestHandleRecordUpdates:
             content_changed=True,
             permissions_changed=False,
         )
-        # Should not raise — exception is caught inside the method
-        await connector._handle_record_updates(update)
+        # Swallowing it would let run_sync save the files checkpoint past this change.
+        with pytest.raises(Exception, match="failure"):
+            await connector._handle_record_updates(update)
 
 
 # ===========================================================================
@@ -3277,6 +3278,27 @@ class TestSyncFiles:
 
         connector._handle_record_updates.assert_not_awaited()
         connector.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_update_write_stops_the_file_sync(self) -> None:
+        """run_sync saves the files checkpoint only after _sync_files returns, so this keeps it in place."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._soql_query_paginated = _mock_pages([])
+        file_row = self._make_file_row()
+        stored = connector._build_file_record(file_row, "doc-1", external_record_group_id="org-files")
+        self._store_like_the_graph(connector, stored)
+        connector.data_entities_processor.get_file_record_by_id = AsyncMock(
+            side_effect=GraphQueryError("Could not read file record: unavailable")
+        )
+        connector.data_entities_processor.on_record_metadata_update = AsyncMock(
+            side_effect=RuntimeError("database unavailable")
+        )
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await connector._sync_files(
+                api_version="59.0", file_records_pages=_async_iter_pages([file_row]),
+            )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -7004,7 +7026,7 @@ class TestGetOpportunityRelatedChildRecordsRemaining:
 class TestHandleRecordUpdatesRemaining:
 
     @pytest.mark.asyncio
-    async def test_logs_and_swallows_processing_errors(self):
+    async def test_logs_and_raises_processing_errors(self) -> None:
         connector = _make_connector()
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         connector.data_entities_processor.on_record_deleted = AsyncMock(
@@ -7020,7 +7042,8 @@ class TestHandleRecordUpdatesRemaining:
             permissions_changed=False,
             external_record_id="006000000000001AAA",
         )
-        await connector._handle_record_updates(update)
+        with pytest.raises(RuntimeError, match="delete failed"):
+            await connector._handle_record_updates(update)
         connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
 
