@@ -1903,23 +1903,30 @@ class NextcloudConnector(BaseConnector):
                         parent_lookup = path_to_external_id
                         if not parents_ready:
                             parent_lookup = await self._with_stored_parent(entry, path_to_external_id)
-                        record_update = await self._process_nextcloud_entry(
-                            entry=entry,
-                            user_id=user_id,
-                            user_email=user_email,
-                            record_group_id=record_group_id,
-                            user_root_path=user_root_path,
-                            path_to_external_id=parent_lookup
-                        )
+                        try:
+                            record_update = await self._process_nextcloud_entry(
+                                entry=entry,
+                                user_id=user_id,
+                                user_email=user_email,
+                                record_group_id=record_group_id,
+                                user_root_path=user_root_path,
+                                path_to_external_id=parent_lookup
+                            )
 
-                        if record_update:
-                            # For incremental sync: send new records immediately, handle updates separately
-                            if record_update.is_new and record_update.record:
-                                await self.data_entities_processor.on_new_records(
-                                    [(record_update.record, record_update.new_permissions or [])],
-                                )
-                            elif not await self._handle_record_updates(record_update):
-                                failed[path] = "the change could not be saved"
+                            if record_update:
+                                # For incremental sync: send new records immediately, handle updates separately
+                                if record_update.is_new and record_update.record:
+                                    await self.data_entities_processor.on_new_records(
+                                        [(record_update.record, record_update.new_permissions or [])],
+                                    )
+                                elif not await self._handle_record_updates(record_update):
+                                    failed[path] = "the change could not be saved"
+                        except Exception:
+                            # A later entry below this one would be saved under a parent that was
+                            # never stored; a save links a child only to a stored parent, and a
+                            # retry sees an unchanged parent id, so it would stay detached.
+                            path_to_external_id.pop(entry.get('path', '').rstrip('/'), None)
+                            raise
 
                     # Nextcloud logs one activity for a restored folder and none for what it held,
                     # which the folder's deletion removed from the index.

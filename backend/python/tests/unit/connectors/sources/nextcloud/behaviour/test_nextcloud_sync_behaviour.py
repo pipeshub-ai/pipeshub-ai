@@ -1079,6 +1079,22 @@ class TestIncrementalSync:
         await connector.run_sync()
         assert db.path_of("q2.pdf") == "Docs/Reports/q2.pdf"
 
+    async def test_a_file_in_a_new_folder_whose_lookup_failed_is_parented_after_the_retry(
+        self, server, db, store
+    ) -> None:
+        connector = await synced(server, db, store)
+        server.add_file("Docs/New/q2.pdf", b"%PDF-1.7 q2", "application/pdf")
+        outage = server.outage("PROPFIND", lambda p: p.rstrip("/").endswith("/Docs"), lambda: httpx.Response(503))
+        store.fail_path_lookups = True
+
+        await connector.run_sync()
+        assert not {"New", "q2.pdf"} & db.names(), "nothing below a folder that could not be saved is saved"
+
+        store.fail_path_lookups = False
+        outage.end()
+        await connector.run_sync()
+        assert db.path_of("q2.pdf") == "Docs/New/q2.pdf"
+
     async def test_a_file_restored_after_its_failed_delete_is_kept(self, server, db, store) -> None:
         connector = await synced(server, db, store)
         kept = db.by_name("notes.txt").id
