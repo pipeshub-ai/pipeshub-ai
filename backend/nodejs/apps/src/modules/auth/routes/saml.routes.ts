@@ -14,7 +14,10 @@ import {
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { SessionService } from '../services/session.service';
-import { SamlController } from '../controller/saml.controller';
+import {
+  SAML_LOGOUT_UNSUPPORTED_MESSAGE,
+  SamlController,
+} from '../controller/saml.controller';
 import { Logger } from '../../../libs/services/logger.service';
 import { generateAuthToken } from '../utils/generateAuthToken';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
@@ -83,12 +86,26 @@ export function createSamlRouter(container: Container) {
         // strategy, SAML parse failure before the custom callback fires) we still
         // redirect to /login instead of hitting the global error handler.
         const samlErrorNext = (err?: any) => {
+          if (res.headersSent) {
+            logger.warn('SAML callback continued after its response was sent', {
+              error: err ? err?.message || String(err) : undefined,
+            });
+            return;
+          }
           if (err) {
             logger.error('SAML passport middleware error', { error: err?.message || String(err) });
             return res.redirect(`${config.frontendUrl}/login?saml_error=${encodeURIComponent(err?.message || String(err))}`);
           }
           next();
         };
+        const body = req.body as Record<string, unknown> | undefined;
+        if (body?.SAMLRequest !== undefined || req.query.SAMLRequest !== undefined) {
+          logger.warn('Refused a SAML logout request sent to the sign-in callback');
+          res.redirect(
+            `${config.frontendUrl}/login?saml_error=${encodeURIComponent(SAML_LOGOUT_UNSUPPORTED_MESSAGE)}`,
+          );
+          return;
+        }
         passport.authenticate('saml', {
           session: false,
           failureRedirect: `${config.frontendUrl}/login?saml_error=auth_failed`,

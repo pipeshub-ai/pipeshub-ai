@@ -29,6 +29,8 @@ import { Org } from '../../user_management/schema/org.schema';
 import { isValidEmail } from '../routes/saml.routes';
 
 const orgIdToSamlEmailKey: Record<string, string> = {};
+export const SAML_LOGOUT_UNSUPPORTED_MESSAGE =
+  "Signing out through your identity provider isn't supported. To sign out, use Sign out in PipesHub.";
 @injectable()
 export class SamlController {
   constructor(
@@ -145,10 +147,11 @@ export class SamlController {
             return done(err as Error);
           }
         },
-        async (_req: Request, profile: Profile, done: VerifiedCallback) => {
-          // Optional: Handle logout request here
-          // For now, just pass profile through
-          return done(null, profile);
+        (_req: Request, _profile: Profile, done: VerifiedCallback) => {
+          // Failing here makes passport-saml report one error, before it would
+          // build a logout response and call req.logout(), which needs a session
+          // this app does not keep and then writes to an already-sent response.
+          done(new Error(SAML_LOGOUT_UNSUPPORTED_MESSAGE));
         },
       ),
     );

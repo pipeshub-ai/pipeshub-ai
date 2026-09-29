@@ -196,6 +196,100 @@ describe('createSamlRouter', () => {
     });
   });
 
+  describe('SAML logout requests', () => {
+    const logoutProfile = { ID: '_logout-1', issuer: 'https://idp.example.com', nameID: 'test@example.com', nameIDFormat: 'email' };
+    let previousStrategy: unknown;
+    let strategy: any;
+    let processErrors: sinon.SinonSpy;
+
+    beforeEach(() => {
+      previousStrategy = (passport as any)._strategy('saml');
+      new SamlController(
+        { authBackend: 'http://auth:3000', samlIssuer: 'pipeshub' } as any,
+        mockLogger,
+      ).updateSAMLStrategy('dummy-idp-cert', 'https://idp.example.com/sso');
+      strategy = (passport as any)._strategy('saml');
+      // The IdP's signature checks pass; what arrives is a logout request.
+      sinon.stub(strategy._saml, 'validatePostRequestAsync').resolves({ profile: logoutProfile, loggedOut: true });
+      sinon.stub(strategy._saml, 'validatePostResponseAsync').resolves({ profile: logoutProfile, loggedOut: true });
+      sinon.stub(strategy._saml, 'validateRedirectAsync').resolves({ profile: logoutProfile, loggedOut: true });
+      sinon.spy(strategy._saml, 'getLogoutResponseUrl');
+      // index.ts shuts the process down from its uncaughtException handler.
+      processErrors = sinon.spy();
+      process.on('uncaughtException', processErrors);
+      process.on('unhandledRejection', processErrors);
+    });
+
+    afterEach(() => {
+      process.removeListener('uncaughtException', processErrors);
+      process.removeListener('unhandledRejection', processErrors);
+      if (previousStrategy) passport.use('saml', previousStrategy as any);
+      else passport.unuse('saml');
+    });
+
+    const post = async (path: string, form: Record<string, string>) => {
+      const app = express();
+      app.use(express.urlencoded({ extended: true }));
+      app.use(createSamlRouter(container));
+      app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+        res.status(500).send(err.message);
+      });
+      const server = app.listen(0);
+      try {
+        const { port } = server.address() as AddressInfo;
+        const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+          method: 'POST',
+          redirect: 'manual',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams(form).toString(),
+        });
+        await response.text();
+        // Let any late callback (node-saml answers via process.nextTick) run.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return response;
+      } finally {
+        server.close();
+      }
+    };
+
+    it('answers a logout request posted to the callback with one redirect to the login page', async () => {
+      const response = await post('/signIn/callback', { SAMLRequest: 'x' });
+
+      expect(response.status).to.equal(302);
+      expect(response.headers.get('location')).to.match(/^http:\/\/frontend:3000\/login\?saml_error=/);
+      expect(strategy._saml.validatePostRequestAsync.called).to.equal(false);
+      expect(processErrors.called).to.equal(false);
+    });
+
+    it('fails a logout that reaches the strategy once, without building a logout response', async () => {
+      const response = await post('/signIn/callback', { SAMLResponse: 'x' });
+
+      expect(response.status).to.equal(302);
+      expect(response.headers.get('location')).to.match(/^http:\/\/frontend:3000\/login\?saml_error=/);
+      expect(strategy._saml.getLogoutResponseUrl.called).to.equal(false);
+      expect(processErrors.called).to.equal(false);
+    });
+
+    it('fails a logout request sent to the sign-in route once, without building a logout response', async () => {
+      const controller = new SamlController({ frontendUrl: 'http://frontend:3000' } as any, mockLogger);
+      (OrgAuthConfig.findOne as sinon.SinonStub).returns({
+        lean: () => ({ exec: () => Promise.resolve({ orgId: '507f1f77bcf86cd799439011' }) }),
+      });
+      const next = sinon.spy();
+      const res: any = { redirect: sinon.spy(), setHeader: sinon.spy(), end: sinon.spy() };
+      const req: any = { query: { SAMLRequest: 'x' }, url: '/signIn?SAMLRequest=x', headers: {}, body: {} };
+
+      await controller.signInViaSAML(req, res, next);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(next.calledOnce).to.equal(true);
+      expect(next.firstCall.args[0]).to.be.instanceOf(Error);
+      expect(res.redirect.called).to.equal(false);
+      expect(strategy._saml.getLogoutResponseUrl.called).to.equal(false);
+      expect(processErrors.called).to.equal(false);
+    });
+  });
+
   it('should register GET /signIn route', () => {
     const router = createSamlRouter(container);
     const routes = router.stack
