@@ -17288,9 +17288,9 @@ paths:
         compromised laptop, where only the token's own creator could
         otherwise see or revoke it.
 
-        Requires org-admin privileges (`userAdminCheck`) — note this returns
-        **`400`**, not `403`, for a non-admin caller (shared middleware
-        behavior across the codebase, not specific to this route).
+        Requires org-admin privileges (`userAdminCheck`): a non-admin caller
+        gets `403` (`ForbiddenError`, message
+        "You need admin access to do this. Ask an admin in your organisation.").
       operationId: adminListPersonalAccessTokens
       x-pipeshub-sdk: true
       security:
@@ -17352,8 +17352,8 @@ paths:
         Revokes a token by id, scoped to the org's PAT client but **not** to
         a specific owning user — the admin counterpart to
         `DELETE /personal-access-tokens/{tokenId}`. Requires org-admin
-        privileges (`userAdminCheck`); returns `400` (not `403`) for a
-        non-admin caller, same as `GET /personal-access-tokens/admin`.
+        privileges (`userAdminCheck`); a non-admin caller gets `403`
+        (`ForbiddenError`), same as `GET /personal-access-tokens/admin`.
       operationId: adminRevokePersonalAccessToken
       x-pipeshub-sdk: true
       security:
@@ -19147,8 +19147,8 @@ paths:
         Retrieve the email address for a specific user. Requires admin privileges.
 
         The `id` path parameter is validated as a 24-character hex string. The `userAdminCheck`
-        middleware runs before `userExists`, so missing token context returns `404` before the
-        admin check can throw `400`.
+        middleware runs before `userExists`: missing token context returns `404`, and a
+        non-admin caller gets `403` (`ForbiddenError`).
 
         Returns `{ email }` for the matched user.
       operationId: getUserEmailById
@@ -19901,8 +19901,8 @@ paths:
 
         **Path validation:** `id` must be a 24-character hex MongoDB ObjectId (Zod at route layer).
 
-        **Authorization:** `userAdminCheck` middleware — throws `400` if requester is not admin,
-        `404` if `userId`/`orgId` are missing from the token.
+        **Authorization:** `userAdminCheck` middleware — throws `403` (`ForbiddenError`) if the
+        requester is not an admin, `404` if `userId`/`orgId` are missing from the token.
       operationId: unblockUser
       security:
         - bearerAuth: []
@@ -20435,8 +20435,8 @@ paths:
         The `{id}` path parameter is validated for ObjectId format but is not used to look up a
         user — the check is performed on `req.user` (the token bearer), not on the target ID.
 
-        Returns `200` if the requester is an admin. Returns `400` if not (from `userAdminCheck`
-        which throws `BadRequestError`, not `ForbiddenError`).
+        Returns `200` if the requester is an admin. Returns `403` if not (from `userAdminCheck`,
+        which throws `ForbiddenError` with the message "You need admin access to do this. Ask an admin in your organisation.").
       operationId: adminCheck
       security:
         - bearerAuth: []
