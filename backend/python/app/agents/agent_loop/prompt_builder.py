@@ -334,6 +334,28 @@ _NO_KNOWLEDGE_SOURCES = (
 )
 
 
+# Answering a question that chains several lookups fails in predictable
+# ways: a near-miss on a stated constraint gets accepted, the resolved
+# intermediate entity is dropped from later searches, and one reading of a
+# relative date is taken as the only one. Names no tool, so it holds for any
+# retrieval surface.
+MULTI_HOP_RULES = (
+    "Multi-step questions:\n"
+    "- Before answering, confirm each stated constraint (dates, ranges, tolerances, "
+    "locations, \"the first\", units) against a retrieved value or tool result. If one "
+    "can't be confirmed, keep searching or name the unconfirmed part; don't round a "
+    "near-miss into a match.\n"
+    "- Once a step resolves an intermediate entity, search with that entity, not the "
+    "original wording.\n"
+    "- Before concluding something isn't in the knowledge base, try other readings of "
+    "relative time anchors (\"the quarter before\") and re-check records already found.\n"
+    "- For an attribute of a specific person, project, customer or product, prefer its "
+    "own record over passing mentions; if they conflict, say so.\n"
+    "- For an ambiguous time anchor, answer with the reading the records best support "
+    "and name the alternative."
+)
+
+
 def _build_finding_information(
     surfaces: "ToolSurfaces",
     catalog: "SourceCatalog",
@@ -457,6 +479,7 @@ def _build_finding_information(
             "same query WITHOUT date filters before concluding nothing "
             "exists."
         )
+        parts.append(MULTI_HOP_RULES)
 
     if surfaces.can_fetch_full_record:
         from app.modules.agents.record_escalation.policy import policy_text
