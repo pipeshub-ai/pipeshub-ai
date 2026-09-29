@@ -4,7 +4,7 @@ Every retrieval entry point (the search tool, first-turn prefetch, the legacy
 retrieval tool) goes through ``KnowledgeContextBuilder.build`` so they cannot
 drift apart:
 
-    hits → units → rank and keep the best → neighbours → graph context → reading order
+    hits → units → rank and keep the best → neighbours and small gaps → graph context → reading order
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from app.modules.retrieval.context.neighbours import expand_neighbours
+from app.modules.retrieval.context.neighbours import expand_neighbours, fill_small_gaps
 from app.modules.retrieval.context.ordering import order_for_reading
 from app.modules.retrieval.context.ranking import RelevanceRanker, stamp_unit_ranks
 from app.utils.chat_helpers import (
@@ -85,7 +85,7 @@ class KnowledgeContextBuilder:
         units = [u for u in units if records.get(u.get("virtual_record_id")) is not None]
         units = await self._ranker.rank(units, query=query, records=records, limit=max_units)
         stamp_unit_ranks(units)
-        units = expand_neighbours(units, records)
+        units = fill_small_gaps(expand_neighbours(units, records), records)
 
         kept = {unit.get("virtual_record_id") for unit in units}
         records = {vrid: record for vrid, record in records.items() if vrid in kept}
