@@ -106,6 +106,25 @@ class TestGuardFailsClosed:
 
         svc.collection_registry.recreate_all_collections.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_a_failed_rebuild_refuses_the_change(self) -> None:
+        """The rebuild drops the old collection first; reporting success after
+        it fails would let the caller save or delete the model on top of that."""
+        registry = make_collection_registry("records")
+        registry.recreate_all_collections = AsyncMock(side_effect=RuntimeError("boom"))
+        svc = _retrieval_service(
+            registry=registry,
+            info=VectorCollectionInfo(
+                name="records", exists=True, dense_dimension=768, points_count=0
+            ),
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await check_collection_info(svc, MagicMock(), 1024, MagicMock())
+
+        assert exc.value.status_code == 503
+        assert "could not be rebuilt" in exc.value.detail["error"]
+
 
 class TestEmptyManifestRebuild:
     @pytest.mark.asyncio

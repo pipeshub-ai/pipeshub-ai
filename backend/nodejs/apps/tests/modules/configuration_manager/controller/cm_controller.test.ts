@@ -6,6 +6,7 @@ import * as cmConfig from '../../../../src/modules/configuration_manager/config/
 import * as encryptorModule from '../../../../src/libs/encryptor/encryptor'
 import { CONFIG_SECRET_PLACEHOLDER } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
+import type { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import * as generateAuthTokenModule from '../../../../src/modules/auth/utils/generateAuthToken'
 import * as s3HealthCheckModule from '../../../../src/modules/storage/utils/s3-health-check.util'
 import {
@@ -3176,23 +3177,35 @@ describe('ConfigurationManager Controller', () => {
   // deleteAIModelProvider - additional tests
   // -----------------------------------------------------------------------
   describe('embedding models: the vector store follows the model that embeds', () => {
-    const appConfig = { cmBackend: 'http://cm', aiBackend: 'http://ai' } as any
+    const appConfig = { cmBackend: 'http://cm', aiBackend: 'http://ai' } as unknown as AppConfig
     const IN_USE =
       'This model is embedding your indexed content. Delete the embeddings in Labs first, then change or delete the model and re-embed.'
 
     // Records what reaches the AI service and answers the embedding takeover
     // check with `takeoverStatus` (400 is its answer while vectors are stored).
+    interface SentModel {
+      becomesActive?: boolean
+      configuration?: { model?: string }
+    }
+    interface SentCommand {
+      uri: string
+      body: unknown
+    }
+    const payload = (c?: SentCommand) => c?.body as SentModel | undefined
+    const models = (c?: SentCommand) => c?.body as SentModel[] | undefined
+
     function stubAiService(takeoverStatus = 200) {
-      const calls: { uri: string; body: any }[] = []
-      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function (this: any) {
-        const body = typeof this.body === 'string' ? JSON.parse(this.body) : this.body
-        calls.push({ uri: this.uri, body })
-        if (this.uri.endsWith('/embedding-health-check')) {
+      const calls: SentCommand[] = []
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function (this: unknown) {
+        const command = this as { uri: string; body?: string }
+        const uri = command.uri
+        calls.push({ uri, body: command.body ? (JSON.parse(command.body) as unknown) : undefined })
+        if (uri.endsWith('/embedding-health-check')) {
           return takeoverStatus === 200
             ? { statusCode: 200, data: { status: 'healthy' } }
             : { statusCode: takeoverStatus, data: { status: 'not healthy', message: 'refused' } }
         }
-        if (this.uri.includes('/model-usage/')) {
+        if (uri.includes('/model-usage/')) {
           return { statusCode: 200, data: { success: true, agents: [] } }
         }
         return { statusCode: 200, data: { status: 'healthy' } }
@@ -3200,10 +3213,10 @@ describe('ConfigurationManager Controller', () => {
       return calls
     }
 
-    const takeoverCalls = (calls: { uri: string }[]) =>
+    const takeoverCalls = (calls: SentCommand[]) =>
       calls.filter((c) => c.uri.endsWith('/embedding-health-check'))
 
-    function storedModels(embedding: any[]) {
+    function storedModels(embedding: Record<string, unknown>[]) {
       mockEncService.decrypt.returns(JSON.stringify({ llm: [], embedding }))
       return createMockKeyValueStore({ get: sinon.stub().resolves('encrypted:data') })
     }
@@ -3211,7 +3224,7 @@ describe('ConfigurationManager Controller', () => {
     const openai = { modelKey: 'k1', isDefault: true, provider: 'openai', configuration: { model: 'text-embedding-3-small' } }
     const local = { modelKey: 'k2', isDefault: false, provider: 'sentenceTransformers', configuration: { model: 'BAAI/bge-small-en-v1.5' } }
 
-    async function add(kvs: any, isDefault: boolean) {
+    async function add(kvs: ReturnType<typeof storedModels>, isDefault: boolean) {
       const req = createMockRequest({
         body: { modelType: 'embedding', provider: local.provider, configuration: local.configuration, isDefault },
       })
@@ -3224,7 +3237,7 @@ describe('ConfigurationManager Controller', () => {
       await add(storedModels([openai]), false)
 
       const check = calls.find((c) => c.uri.endsWith('/health-check/embedding'))
-      expect(check?.body.becomesActive).to.equal(false)
+      expect(payload(check)?.becomesActive).to.equal(false)
     })
 
     it('adding the default model lets it reshape the vector store', async () => {
@@ -3233,7 +3246,7 @@ describe('ConfigurationManager Controller', () => {
       await add(storedModels([openai]), true)
 
       const check = calls.find((c) => c.uri.endsWith('/health-check/embedding'))
-      expect(check?.body.becomesActive).to.equal(true)
+      expect(payload(check)?.becomesActive).to.equal(true)
     })
 
     it('adding the first embedding model lets it reshape the store, since it embeds even when not marked default', async () => {
@@ -3242,7 +3255,7 @@ describe('ConfigurationManager Controller', () => {
       await add(storedModels([]), false)
 
       const check = calls.find((c) => c.uri.endsWith('/health-check/embedding'))
-      expect(check?.body.becomesActive).to.equal(true)
+      expect(payload(check)?.becomesActive).to.equal(true)
     })
 
     it('refuses to delete the default embedding model while its vectors are stored', async () => {
@@ -3262,8 +3275,8 @@ describe('ConfigurationManager Controller', () => {
       expect(next.firstCall.args[0].message).to.equal(IN_USE)
       expect(kvs.set.called).to.be.false
       const [takeover] = takeoverCalls(calls)
-      expect(takeover?.body).to.have.length(1)
-      expect(takeover?.body[0].configuration.model).to.equal('BAAI/bge-small-en-v1.5')
+      expect(models(takeover)).to.have.length(1)
+      expect(models(takeover)?.[0]?.configuration?.model).to.equal('BAAI/bge-small-en-v1.5')
     })
 
     it('deletes the default embedding model when nothing is stored, and the next model takes over', async () => {
@@ -3293,7 +3306,7 @@ describe('ConfigurationManager Controller', () => {
         next,
       )
 
-      expect(takeoverCalls(calls)[0]?.body).to.deep.equal([])
+      expect(models(takeoverCalls(calls)[0])).to.deep.equal([])
       expect(next.firstCall.args[0].message).to.equal(IN_USE)
       expect(kvs.set.called).to.be.false
     })
@@ -3328,9 +3341,72 @@ describe('ConfigurationManager Controller', () => {
       )
 
       const check = calls.find((c) => c.uri.endsWith('/health-check/embedding'))
-      expect(check?.body.becomesActive).to.equal(false)
-      expect(takeoverCalls(calls)[0]?.body[0].configuration.model).to.equal('BAAI/bge-small-en-v1.5')
+      expect(payload(check)?.becomesActive).to.equal(false)
+      expect(models(takeoverCalls(calls)[0])?.[0]?.configuration?.model).to.equal('BAAI/bge-small-en-v1.5')
       expect(res.status.calledWith(400)).to.be.true
+      expect(kvs.set.called).to.be.false
+    })
+    it('gives the same plain refusal when an edit would hand embedding to another model while vectors are stored', async () => {
+      stubAiService(400)
+      const kvs = storedModels([{ ...local, isDefault: false }, openai])
+      const res = createMockResponse()
+
+      await updateAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({
+          params: { modelType: 'embedding', modelKey: 'k1' },
+          body: { provider: openai.provider, configuration: openai.configuration, isDefault: false },
+        }),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal(IN_USE)
+    })
+
+    it('gives the same plain refusal when setting another default while vectors are stored', async () => {
+      stubAiService(400)
+      const kvs = storedModels([openai, local])
+      const res = createMockResponse()
+
+      await updateDefaultAIModel(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k2' } }),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal(IN_USE)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it("passes on the incoming model's own health failure when setting the default", async () => {
+      stubAiService(500)
+      const kvs = storedModels([openai, local])
+      const res = createMockResponse()
+
+      await updateDefaultAIModel(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k2' } }),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.status.calledWith(500)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal('refused')
+    })
+
+    it('refuses to delete the model in use when the model taking over fails its health check', async () => {
+      stubAiService(500)
+      const kvs = storedModels([openai, local])
+      const res = createMockResponse()
+
+      await deleteAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k1' } }),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.status.calledWith(500)).to.be.true
       expect(kvs.set.called).to.be.false
     })
   })

@@ -641,7 +641,24 @@ async def handle_model_change(
         )
 
     if existing_vector_size != 0:
-        await recreate_collection(retrieval_service, embedding_size, logger)
+        try:
+            await recreate_collection(retrieval_service, embedding_size, logger)
+        except Exception as e:
+            # The rebuild drops the old collection first, so a failure can leave
+            # the store unusable. Reporting success would let the caller save
+            # (or delete) the model on top of it.
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "not healthy",
+                    "error": (
+                        "The vector store could not be rebuilt for the new embedding "
+                        "model, so nothing was changed. Check that the vector store is "
+                        "reachable and try again."
+                    ),
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            ) from e
 
 async def recreate_collection(retrieval_service, embedding_size, logger) -> None:
     """Rebuild every managed collection for the new embedding dimension.

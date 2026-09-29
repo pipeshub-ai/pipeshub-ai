@@ -39075,7 +39075,7 @@ paths:
         hands embedding to the model that would take over, or to the built-in model
         when none is left. That model goes through the same check as setting a new
         default: refused with 400 while the vector store holds vectors from the
-        deleted model, and the store is rebuilt at its size when empty.
+        deleted model, and the empty store is rebuilt for the replacement model.
       operationId: deleteAIModelProvider
       security:
         - bearerAuth: []

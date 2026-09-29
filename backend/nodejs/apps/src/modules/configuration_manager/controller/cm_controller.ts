@@ -3166,6 +3166,16 @@ const checkEmbeddingModelTakeover = async (
   return (await command.execute()) as AIServiceResponse;
 };
 
+// The takeover check answers 400 only while vectors from the outgoing model
+// are stored; anything else is the incoming model's own health failure.
+const takeoverRefusalMessage = (
+  takeover: AIServiceResponse,
+  fallback: string,
+): string =>
+  takeover.statusCode === 400
+    ? EMBEDDING_MODEL_IN_USE_MESSAGE
+    : healthCheckFailureMessage(takeover.data, fallback);
+
 const healthCheckFailureMessage = (data: unknown, fallback: string): string => {
   const body = (data ?? {}) as {
     message?: string;
@@ -3581,8 +3591,8 @@ export const updateAIModelProvider =
           res.status(takeover.statusCode).json({
             error: {
               status: 'error',
-              message: healthCheckFailureMessage(
-                takeover.data,
+              message: takeoverRefusalMessage(
+                takeover,
                 'The model that would take over embedding failed its health check, so nothing was changed. Check its settings and try again.',
               ),
             },
@@ -4034,11 +4044,13 @@ export const updateDefaultAIModel =
 
         if (!aiResponseData?.data || aiResponseData?.statusCode !== 200) {
           const errData: any = aiResponseData?.data ?? {};
-          const reasonMessage = healthCheckFailureMessage(
-            errData,
+          const fallback =
             `Failed health check while setting default ${targetModelType} model. ` +
-              `Refusing to change default to prevent breaking the system.`,
-          );
+            `Refusing to change default to prevent breaking the system.`;
+          const reasonMessage =
+            targetModelType === 'embedding'
+              ? takeoverRefusalMessage(aiResponseData, fallback)
+              : healthCheckFailureMessage(errData, fallback);
 
           res.status(aiResponseData?.statusCode ?? 500).json({
             error: {
