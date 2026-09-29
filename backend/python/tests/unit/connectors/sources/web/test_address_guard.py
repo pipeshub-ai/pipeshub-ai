@@ -60,6 +60,12 @@ class TestResolveTarget:
         with pytest.raises(UnsafeAddressError):
             await resolve_target("http://rebind.example/")
 
+    @pytest.mark.parametrize("url", ["http://[::1/", "http://[not-an-address]/"])
+    async def test_a_malformed_url_is_refused(self, dns, url) -> None:
+        with pytest.raises(UnsafeAddressError):
+            await resolve_target(url)
+        assert await is_unsafe_url(url) is True
+
     async def test_a_host_that_does_not_resolve_is_not_refused(self, dns) -> None:
         dns.side_effect = socket.gaierror("no such host")
         assert await resolve_target("http://nowhere.example/") is None
@@ -89,7 +95,7 @@ class TestAllowedHosts:
         assert await is_unsafe_url("http://intranet.example/") is True
         assert await is_unsafe_url("http://10.0.0.1/") is True
 
-    @pytest.mark.parametrize("address", ["169.254.169.254", "fd00:ec2::254", "100.100.100.200"])
+    @pytest.mark.parametrize("address", ["169.254.169.254", "fd00:ec2::254", "100.100.100.200", "::ffff:169.254.169.254"])
     async def test_an_allowed_host_can_not_reach_cloud_metadata(self, dns, allowed_hosts, address) -> None:
         allowed_hosts("web-fixtures")
         dns.return_value = _answers(ipaddress.ip_address(address))
@@ -172,6 +178,19 @@ class TestGuardProxy:
         answer = await _through_proxy(proxy_port, request_head.format(port=port).encode())
         assert answer.startswith(b"HTTP/1.1 403")
         assert received == []
+
+    async def test_all_connect_attempts_share_one_deadline(self, monkeypatch) -> None:
+        async def never_answers(*_: object, **__: object) -> None:
+            await asyncio.sleep(3600)
+
+        monkeypatch.setattr(address_guard, "_PROXY_CONNECT_TIMEOUT", 0.2)
+        monkeypatch.setattr(asyncio, "open_connection", never_answers)
+        pin = PublicTarget("http", "public.example", 80, (PUBLIC, ipaddress.ip_address("93.184.215.15")))
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        with pytest.raises(TimeoutError):
+            await address_guard._connect_checked(pin)
+        assert loop.time() - started < 1
 
     async def test_relays_a_public_request_to_the_checked_address_only(self, site, proxy_port, monkeypatch) -> None:
         port, received = site

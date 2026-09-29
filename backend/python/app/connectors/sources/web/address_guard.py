@@ -58,6 +58,8 @@ def _host_allowed(host: str | None) -> bool:
 
 
 def _refuse_never_allowed(host: str, ip: IPAddress) -> None:
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped  # ::ffff:169.254.169.254 reaches the IPv4 metadata address
     if ip.is_link_local or ip in _NEVER_ALLOWED:
         raise UnsafeAddressError(f"{host!r} resolves to a link-local or cloud metadata address")
 
@@ -79,8 +81,12 @@ async def resolve_target(url: str) -> PublicTarget | None:
     Raises:
         UnsafeAddressError: if the URL can't be fetched or any address it resolves to is blocked.
     """
-    parts = urlsplit(url)
-    if parts.scheme in _DEFAULT_PORTS and _host_allowed(parts.hostname):
+    try:
+        parts = urlsplit(url)
+        allowed = parts.scheme in _DEFAULT_PORTS and _host_allowed(parts.hostname)
+    except ValueError as e:
+        raise UnsafeAddressError(f"{url!r} is not a valid URL") from e
+    if allowed:
         try:
             return await asyncio.to_thread(_resolve_allowed_host, url)
         except socket.gaierror:
@@ -157,6 +163,7 @@ def create_guarded_session(**kwargs: object) -> aiohttp.ClientSession:
 
 
 _PROXY_HEAD_LIMIT = 64 * 1024
+_PROXY_CONNECT_TIMEOUT = 15
 _PROXY_REFUSED = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
 
 
@@ -188,11 +195,22 @@ def _origin_form(method: str, target: str, version: str, header_lines: list[byte
 
 
 async def _connect_checked(pin: PublicTarget) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    """Connect to the first reachable address of ``pin``; every one of them passed the check."""
-    for address in pin.addresses[:-1]:
-        with contextlib.suppress(OSError):
-            return await asyncio.open_connection(str(address), pin.port)
-    return await asyncio.open_connection(str(pin.addresses[-1]), pin.port)
+    """Connect to the first reachable address of ``pin``; every one of them passed the check.
+    All attempts share one deadline."""
+    connection: tuple[asyncio.StreamReader, asyncio.StreamWriter] | None = None
+    try:
+        async with asyncio.timeout(_PROXY_CONNECT_TIMEOUT):
+            for address in pin.addresses[:-1]:
+                with contextlib.suppress(OSError):
+                    connection = await asyncio.open_connection(str(address), pin.port)
+                    return connection  # noqa: RET504 -- held so the except block can close it
+            connection = await asyncio.open_connection(str(pin.addresses[-1]), pin.port)
+            return connection  # noqa: RET504 -- held so the except block can close it
+    except BaseException:
+        # The deadline or a cancel can land just after the connect; don't leave that socket open.
+        if connection is not None:
+            connection[1].close()
+        raise
 
 
 async def _serve_proxy_client(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
