@@ -94,6 +94,7 @@ HTTP_NOT_MODIFIED = 304
 MAX_HELD_ATTEMPTS = 5
 # How many of the changes that couldn't be applied a log line names before summarising the rest.
 MAX_NAMED_FAILURES = 20
+RECORD_SCAN_PAGE_SIZE = 1000
 
 # Auth settings can't be saved while the connector is on, and only turning it on checks the password.
 APP_PASSWORD_REJECTED_MESSAGE = (
@@ -1046,6 +1047,7 @@ class NextcloudConnector(BaseConnector):
         user_email: str,
         record_group_id: str,
         resave: set[str] | None = None,
+        listed: set[str] | None = None,
     ) -> bool:
         """
         Synchronize all files for a specific user using WebDAV PROPFIND.
@@ -1053,6 +1055,9 @@ class NextcloudConnector(BaseConnector):
 
         ``resave`` holds the IDs of stored records to save again whatever their state. Each
         one saved leaves it, and each stored record whose save fails joins it.
+
+        ``listed`` gathers the IDs of the files and folders the listing returned that the
+        sync filters keep.
 
         Returns True only when the whole drive was listed and every change saved.
         """
@@ -1136,6 +1141,8 @@ class NextcloudConnector(BaseConnector):
                 path_to_external_id,
                 failed_entries,
             ):
+                if listed is not None and record_update.external_record_id:
+                    listed.add(str(record_update.external_record_id))
                 parent_id = file_record.parent_external_record_id if file_record else None
                 # A save links a record only to a parent that is already stored, and a later
                 # full sync sees nothing to change, so what's inside a skipped folder waits too.
@@ -1193,6 +1200,38 @@ class NextcloudConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error syncing files for {user_email}: {e}", exc_info=True)
             return False
+
+    async def _remove_records_not_listed(self, listed: set[str]) -> None:
+        """Delete the records of files and folders a complete listing no longer returns.
+
+        After a full sync that read the whole drive, a record the listing did not
+        return is a file deleted in Nextcloud or one the sync filters now leave
+        out, so it leaves every store. Only called once the drive was read in full.
+        """
+        stale: list[Record] = []
+        after_key: str | None = None
+        try:
+            while True:
+                page = await self.data_entities_processor.get_records_by_status(
+                    self.connector_id, None, limit=RECORD_SCAN_PAGE_SIZE, after_key=after_key
+                )
+                stale.extend(r for r in page if r.external_record_id not in listed)
+                if len(page) < RECORD_SCAN_PAGE_SIZE:
+                    break
+                after_key = page[-1].id
+        except Exception as e:
+            self.logger.error(f"❌ [Full Sync] Could not read the synced records, so none are removed: {e}")
+            return
+
+        if stale:
+            self.logger.info(
+                f"[Full Sync] Removing {len(stale)} record(s) no longer in Nextcloud or in the sync filters"
+            )
+        for record in stale:
+            try:
+                await self.data_entities_processor.on_record_deleted(record_id=record.id)
+            except Exception as e:
+                self.logger.warning(f"Failed to remove record {record.external_record_id}: {e}")
 
     async def run_sync(self) -> None:
         """
@@ -1312,6 +1351,7 @@ class NextcloudConnector(BaseConnector):
             stored_resave = checkpoint.get("full_sync_resave")
             before = sorted(str(i) for i in stored_resave) if isinstance(stored_resave, list) else []
             resave = set(before)
+            listed: set[str] = set()
 
             # Sync files for the current user only
             self.logger.info(f"Syncing files for user: {self.current_user_email}")
@@ -1320,6 +1360,7 @@ class NextcloudConnector(BaseConnector):
                 self.current_user_email,
                 self.current_user_id,
                 resave,
+                listed,
             )
             if sorted(resave) != before:
                 await self.activity_sync_point.update_sync_point(
@@ -1333,6 +1374,8 @@ class NextcloudConnector(BaseConnector):
                     "was not saved, so the next sync runs a full sync again."
                 )
                 return
+
+            await self._remove_records_not_listed(listed)
 
             # Initialize cursor for incremental sync
             # Fetch the latest activity ID to use as baseline for next incremental sync
