@@ -15,11 +15,13 @@ from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
 
 if TYPE_CHECKING:
     import logging
+    from collections.abc import Callable
 
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
         DataSourceEntitiesProcessor,
     )
     from app.connectors.core.interfaces.sync_point.isync_point import ISyncPoint
+    from app.models.entities import Record
 
 _PAGE_SIZE = 500
 
@@ -106,6 +108,43 @@ class CleanupResult(NamedTuple):
     failed: int
 
 
+async def _remove_records(
+    data_entities_processor: DataSourceEntitiesProcessor,
+    connector_id: str,
+    container_name: str,
+    doomed: Callable[[Record, str], bool],
+    reason: str,
+    logger: logging.Logger,
+) -> CleanupResult:
+    """Delete this connector's records in ``container_name`` whose path ``doomed`` picks.
+
+    Record ids are ``<container>/<path>``; ``doomed`` gets the record and its path.
+    """
+    prefix = f"{container_name}/"
+    removed = failed = 0
+    after_key = None
+    while True:
+        page = await data_entities_processor.get_records_in_record_group(
+            connector_id, container_name, _PAGE_SIZE, after_key
+        )
+        for record in page:
+            external_id = record.external_record_id or ""
+            if not external_id.startswith(prefix) or not doomed(record, external_id[len(prefix):]):
+                continue
+            try:
+                await data_entities_processor.on_record_deleted(record.id)
+                removed += 1
+            except Exception as e:  # noqa: BLE001 — one failed delete must not stop the rest
+                failed += 1
+                logger.warning(f"Failed to remove {external_id} {reason}: {e}")
+        if len(page) < _PAGE_SIZE:
+            break
+        after_key = page[-1].id
+    if removed:
+        logger.info(f"Removed {removed} records in {container_name} {reason}")
+    return CleanupResult(removed, failed)
+
+
 async def remove_records_outside_scope(
     data_entities_processor: DataSourceEntitiesProcessor,
     connector_id: str,
@@ -116,41 +155,59 @@ async def remove_records_outside_scope(
     """Delete this connector's records in ``container_name`` that ``scope`` leaves out.
 
     Narrowing the folders to sync stops new files from being indexed; this also
-    takes out what was indexed before. Record ids are ``<container>/<path>``;
-    folder records are told apart by their folder MIME type.
+    takes out what was indexed before. Folder records are told apart by their
+    folder MIME type.
     """
     if scope.is_everything:
         return CleanupResult(0, 0)
 
     from app.config.constants.arangodb import MimeTypes
 
-    prefix = f"{container_name}/"
-    removed = failed = 0
-    after_key = None
-    while True:
-        page = await data_entities_processor.get_records_in_record_group(
-            connector_id, container_name, _PAGE_SIZE, after_key
-        )
-        for record in page:
-            external_id = record.external_record_id or ""
-            if not external_id.startswith(prefix):
-                continue
-            path = external_id[len(prefix):]
-            is_folder = record.mime_type == MimeTypes.FOLDER.value
-            if (scope.includes_folder(path) if is_folder else scope.includes_file(path)):
-                continue
-            try:
-                await data_entities_processor.on_record_deleted(record.id)
-                removed += 1
-            except Exception as e:  # noqa: BLE001 — one failed delete must not stop the rest
-                failed += 1
-                logger.warning(f"Failed to remove {external_id} outside the synced folders: {e}")
-        if len(page) < _PAGE_SIZE:
-            break
-        after_key = page[-1].id
-    if removed:
-        logger.info(f"Removed {removed} records in {container_name} outside {scope.describe()}")
-    return CleanupResult(removed, failed)
+    def outside(record: Record, path: str) -> bool:
+        is_folder = record.mime_type == MimeTypes.FOLDER.value
+        return not (scope.includes_folder(path) if is_folder else scope.includes_file(path))
+
+    return await _remove_records(
+        data_entities_processor, connector_id, container_name, outside,
+        f"outside {scope.describe()}", logger,
+    )
+
+
+def listed_record_ids(container_name: str, path: str) -> set[str]:
+    """The record ids a listed object keeps: its own and those of the folders above it.
+
+    Folders are implicit in object keys, so ``a/b/c.txt`` keeps ``a`` and ``a/b``;
+    a folder object ``a/b/`` keeps both ``a/b/`` and ``a/b``.
+    """
+    key = path.lstrip("/")
+    parts = [p for p in key.rstrip("/").split("/") if p]
+    ids = {f"{container_name}/{'/'.join(parts[:i])}" for i in range(1, len(parts) + 1)}
+    if key:
+        ids.add(f"{container_name}/{key}")
+    return ids
+
+
+async def remove_records_not_listed(
+    data_entities_processor: DataSourceEntitiesProcessor,
+    connector_id: str,
+    container_name: str,
+    prefix: str,
+    listed: set[str],
+    logger: logging.Logger,
+) -> CleanupResult:
+    """Delete this connector's records under ``prefix`` that a listing of it did not keep.
+
+    This is how a deletion at the source, or a file a sync filter now excludes,
+    leaves the index. ``listed`` holds the ids from ``listed_record_ids`` for
+    every object the listing returned and the filters keep. Call it only after a
+    listing of ``prefix`` that ran from its first page to its last without an
+    error: anything a partial listing missed would be deleted.
+    """
+    return await _remove_records(
+        data_entities_processor, connector_id, container_name,
+        lambda record, path: path.startswith(prefix) and f"{container_name}/{path}" not in listed,
+        "missing from the latest listing", logger,
+    )
 
 
 async def clean_up_scope(

@@ -991,6 +991,25 @@ class FilterCollection(BaseModel):
         return cls(filters=filters)
 
 
+def extension_passes_filter(sync_filters: FilterCollection | None, extension: str | None) -> bool:
+    """Whether a file passes the file-extensions sync filter, honouring In and Not in.
+
+    ``extension`` is the file's extension without the dot, or None when it has
+    none; a file without one is kept only by Not in.
+    """
+    ext_filter = sync_filters.get(SyncFilterKey.FILE_EXTENSIONS) if sync_filters else None
+    if ext_filter is None or ext_filter.is_empty():
+        return True
+    raw = ext_filter.value if isinstance(ext_filter.value, list) else [ext_filter.value]
+    listed = {str(ext).lower().lstrip(".") for ext in raw if ext}
+    operator = ext_filter.operator_value
+    if operator == FilterOperator.NOT_IN:
+        return extension is None or extension.lower() not in listed
+    if operator == FilterOperator.IN:
+        return extension is not None and extension.lower() in listed
+    return True
+
+
 def _selected_ids(raw: Any) -> list[str]:
     """Ids held by a stored list-like value; blanks (``""`` / ``{"id": ""}``) do not count."""
     if isinstance(raw, str):

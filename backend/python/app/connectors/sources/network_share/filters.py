@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING
 
 from app.connectors.core.registry.filters import (
     FilterCollection,
-    FilterOperator,
     SyncFilterKey,
+    extension_passes_filter,
 )
 from app.connectors.sources.network_share.pathing import file_extension
 
@@ -86,20 +86,4 @@ def passes_extension_filter(
 ) -> bool:
     if is_directory:
         return True
-    ext_filter = sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
-    if ext_filter is None or ext_filter.is_empty():
-        return True
-    extension = file_extension(rel_path)
-    operator = ext_filter.get_operator()
-    operator_str = operator.value if hasattr(operator, "value") else str(operator)
-    if extension is None:
-        return operator_str == FilterOperator.NOT_IN
-    allowed = ext_filter.value
-    if not isinstance(allowed, list):
-        return True
-    normalized = [str(ext).lower().lstrip(".") for ext in allowed]
-    if operator_str == FilterOperator.IN:
-        return extension in normalized
-    if operator_str == FilterOperator.NOT_IN:
-        return extension not in normalized
-    return True
+    return extension_passes_filter(sync_filters, file_extension(rel_path))

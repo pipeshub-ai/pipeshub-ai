@@ -40,7 +40,12 @@ from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
-from app.connectors.core.registry.folder_scope import FolderScope, clean_up_scope
+from app.connectors.core.registry.folder_scope import (
+    FolderScope,
+    clean_up_scope,
+    listed_record_ids,
+    remove_records_not_listed,
+)
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -909,7 +914,8 @@ class AzureBlobConnector(BaseConnector):
                 f"operator={operator_str}, extensions={filter_value}"
             )
 
-        modified_after_ms, modified_before_ms, created_after_ms, created_before_ms = self._get_date_filters()
+        user_date_filters = self._get_date_filters()
+        modified_after_ms, modified_before_ms, created_after_ms, created_before_ms = user_date_filters
 
         # Each listed prefix keeps its own last sync time.
         sync_point_key = generate_record_sync_point_key(
@@ -930,6 +936,8 @@ class AzureBlobConnector(BaseConnector):
         blob_count = 0
         listing_failed = False
         failed = FailedItems()
+        listed: set[str] = set()
+        unjudged = False
 
         try:
             async with self.rate_limiter:
@@ -954,6 +962,7 @@ class AzureBlobConnector(BaseConnector):
                 # We iterate directly over it using async for.
                 async for blob in blobs_iterator:
                     obj_timestamp_ms = None
+                    judged = False
                     try:
                         blob_count += 1
                         # Convert BlobProperties to dict for consistent handling
@@ -974,7 +983,14 @@ class AzureBlobConnector(BaseConnector):
                             )
                             continue
 
-                        if not self._pass_date_filters(
+                        if not self._pass_date_filters(blob_dict, *user_date_filters):
+                            continue
+
+                        # Kept before processing: a blob that fails to process still exists.
+                        listed |= listed_record_ids(container_name, blob_name)
+                        judged = True
+
+                        if last_sync_time and not self._pass_date_filters(
                             blob_dict, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
                         ):
                             continue
@@ -1021,6 +1037,8 @@ class AzureBlobConnector(BaseConnector):
                             exc_info=True,
                         )
                         failed.add(obj_timestamp_ms)
+                        # An object that errored before it was judged may still be kept.
+                        unjudged = unjudged or not judged
                         continue
 
             self.logger.info(f"Processed {blob_count} blobs from container {container_name}")
@@ -1041,13 +1059,23 @@ class AzureBlobConnector(BaseConnector):
                 f"{failed.count} blobs in container {container_name} failed to process; "
                 "the next sync retries them"
             )
+        if listing_failed:
+            return
         checkpoint = failed.checkpoint(max_timestamp)
-        if checkpoint and checkpoint > 0 and not listing_failed:
+        if checkpoint and checkpoint > 0:
             await self.record_sync_point.update_sync_point(
                 sync_point_key, {
                     "last_sync_time": checkpoint,
                 }
             )
+        if unjudged:
+            self.logger.info(
+                f"Not removing records in container {container_name}: this listing did not cover every blob"
+            )
+            return
+        await remove_records_not_listed(
+            self.data_entities_processor, self.connector_id, container_name, prefix, listed, self.logger
+        )
 
     def _blob_properties_to_dict(self, blob: "BlobProperties | dict[str, Any]") -> dict[str, Any]:
         """Convert Azure BlobProperties object to a dictionary.
