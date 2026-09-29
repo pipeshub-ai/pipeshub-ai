@@ -140,6 +140,14 @@ export interface SlackFileClassification {
   oversized: SlackFile[];
 }
 
+export interface SlackAttachmentUploadResult {
+  attachments: AttachmentRef[];
+  /** Text attachments whose content is not valid UTF-8 text; not uploaded. */
+  unreadable: SlackFile[];
+  /** Attachments whose downloaded size is over the limit; not uploaded. */
+  oversized: SlackFile[];
+}
+
 export interface CachedUserInfo {
   userRecord: SlackUserRecord | undefined;
   timestamp: number;
@@ -203,8 +211,47 @@ export const SUPPORTED_ATTACHMENT_MIMETYPES = new Set([
   "application/pdf",
 ]);
 
+/**
+ * Text attachments by extension, with the MIME type sent to the chat upload
+ * endpoint. That endpoint picks its parser from the MIME type, and Slack often
+ * labels these files text/plain or application/octet-stream, so the extension
+ * decides. Only types the upload endpoint parses belong here.
+ */
+export const TEXT_ATTACHMENT_EXTENSION_MIMETYPES: Readonly<Record<string, string>> = {
+  txt: "text/plain",
+  md: "text/markdown",
+  markdown: "text/markdown",
+  mdx: "text/mdx",
+  csv: "text/csv",
+  tsv: "text/tab-separated-values",
+};
+
+const TEXT_ATTACHMENT_MIMETYPES: Readonly<Record<string, string>> = {
+  "text/plain": "text/plain",
+  "text/markdown": "text/markdown",
+  "text/x-markdown": "text/markdown",
+  "text/mdx": "text/mdx",
+  "text/csv": "text/csv",
+  "text/tab-separated-values": "text/tab-separated-values",
+};
+
+const GENERIC_MIMETYPES = new Set(["", "application/octet-stream", "binary/octet-stream"]);
+
+/** Slack `filetype` values for text files, used only when the file name has no extension. */
+const SLACK_TEXT_FILETYPE_EXTENSIONS: Readonly<Record<string, string>> = {
+  text: "txt",
+  markdown: "md",
+  csv: "csv",
+  tsv: "tsv",
+};
+
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 export const MAX_ATTACHMENT_MB = Math.floor(MAX_ATTACHMENT_BYTES / (1024 * 1024));
+
+export const SUPPORTED_ATTACHMENTS_HINT =
+  "I can read PDF, JPEG and PNG files, and text files: plain text (.txt), " +
+  "Markdown (.md, .markdown, .mdx), CSV (.csv) and TSV (.tsv). " +
+  `Each file can be up to ${MAX_ATTACHMENT_MB} MB.`;
 
 export const USER_INFO_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 
@@ -240,9 +287,53 @@ export function setCachedUserInfo(userId: string, userRecord: SlackUserRecord | 
 // Attachment helpers
 // ---------------------------------------------------------------------------
 
+function normalizeMimetype(mimetype: string | undefined): string {
+  return (mimetype ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+}
+
+function slackFileExtension(file: SlackFile): string | null {
+  const name = file.name?.trim() ?? "";
+  const dot = name.lastIndexOf(".");
+  if (dot > 0 && dot < name.length - 1) {
+    return name.slice(dot + 1).toLowerCase();
+  }
+  const filetype = file.filetype?.trim().toLowerCase() ?? "";
+  if (filetype === "") return null;
+  return SLACK_TEXT_FILETYPE_EXTENSIONS[filetype] ?? filetype;
+}
+
+/**
+ * The MIME type to upload a supported text attachment with, or null when the
+ * file is not one. The extension and MIME type must agree: a known text
+ * extension needs a text/* or generic MIME type, and a file with no extension
+ * needs a known text MIME type.
+ */
+export function resolveTextAttachmentMimetype(file: SlackFile): string | null {
+  const mime = normalizeMimetype(file.mimetype);
+  const extension = slackFileExtension(file);
+  if (extension) {
+    const mimeForExtension = TEXT_ATTACHMENT_EXTENSION_MIMETYPES[extension];
+    if (mimeForExtension === undefined) return null;
+    return mime.startsWith("text/") || GENERIC_MIMETYPES.has(mime) ? mimeForExtension : null;
+  }
+  return TEXT_ATTACHMENT_MIMETYPES[mime] ?? null;
+}
+
 export function isSlackSupportedAttachment(file: SlackFile): boolean {
-  const mime = (file.mimetype || "").toLowerCase();
-  return SUPPORTED_ATTACHMENT_MIMETYPES.has(mime);
+  return (
+    SUPPORTED_ATTACHMENT_MIMETYPES.has(normalizeMimetype(file.mimetype)) ||
+    resolveTextAttachmentMimetype(file) !== null
+  );
+}
+
+/** Strict UTF-8 check; NUL bytes mean a binary file (or UTF-16) renamed to a text extension. */
+export function isReadableUtf8Text(binary: Buffer): boolean {
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(binary);
+    return !text.includes("\u0000");
+  } catch {
+    return false;
+  }
 }
 
 export function isSlackOversizedAttachment(file: SlackFile): boolean {
@@ -292,21 +383,36 @@ export async function uploadSlackAttachments(
   botToken: string,
   accessToken: string,
   agentId?: string | null,
-): Promise<AttachmentRef[]> {
+): Promise<SlackAttachmentUploadResult> {
   const backendUrl = process.env.BACKEND_URL || "http://localhost:3000";
   const form = new FormData();
+  const result: SlackAttachmentUploadResult = { attachments: [], unreadable: [], oversized: [] };
 
   const binaries = await Promise.all(
     files.map((file) => downloadSlackFile(file, botToken)),
   );
+  let appended = 0;
   files.forEach((file, i) => {
     const binary = binaries[i]!;
+    // Slack's reported size is optional, so check what was actually downloaded.
+    if (binary.length > MAX_ATTACHMENT_BYTES) {
+      result.oversized.push(file);
+      return;
+    }
+    const textMimetype = resolveTextAttachmentMimetype(file);
+    if (textMimetype !== null && !isReadableUtf8Text(binary)) {
+      result.unreadable.push(file);
+      return;
+    }
     const fileName = file.name || `attachment_${file.id}.${file.filetype || "bin"}`;
     form.append("files", binary, {
       filename: fileName,
-      contentType: file.mimetype || "application/octet-stream",
+      contentType: textMimetype ?? (file.mimetype || "application/octet-stream"),
     });
+    appended += 1;
   });
+
+  if (appended === 0) return result;
 
   const uploadUrl = agentId
     ? `${backendUrl}/api/v1/agents/${encodeURIComponent(agentId)}/conversations/internal/attachments/upload`
@@ -326,7 +432,8 @@ export async function uploadSlackAttachments(
     },
   );
 
-  return (uploadResponse.data?.attachments || []) as AttachmentRef[];
+  result.attachments = (uploadResponse.data?.attachments || []) as AttachmentRef[];
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -627,33 +734,60 @@ export function describeSlackFile(file: SlackFile): string {
   return ext ? `${name} (${ext})` : name;
 }
 
-export async function postUnsupportedAttachmentsNotice(
-  typedClient: TypedSlackClient,
-  typedMessage: SlackMessagePayload,
-  unsupported: SlackFile[],
+export interface SkippedAttachments {
+  unsupported?: SlackFile[];
+  unreadable?: SlackFile[];
+  oversized?: SlackFile[];
+}
+
+/** Plain-language reply for attachments the bot is skipping, or "" when nothing was skipped. */
+export function buildSkippedAttachmentsNotice(
+  skipped: SkippedAttachments,
   hasSupportedRemaining: boolean,
-  oversized?: SlackFile[],
-): Promise<void> {
-  if (!typedMessage.channel || (unsupported.length === 0 && (!oversized || oversized.length === 0))) return;
+): string {
+  const unsupported = skipped.unsupported ?? [];
+  const unreadable = skipped.unreadable ?? [];
+  const oversized = skipped.oversized ?? [];
+  if (unsupported.length + unreadable.length + oversized.length === 0) return "";
+
+  const describe = (files: SlackFile[]): string => files.map(describeSlackFile).join(", ");
   const parts: string[] = [];
   if (unsupported.length > 0) {
-    const list = unsupported.map(describeSlackFile).join(", ");
-    const intro = hasSupportedRemaining
-      ? `I can't process the following attachment(s) and will skip them: ${list}.`
-      : `I can't process the attached file(s): ${list}.`;
-    parts.push(intro);
+    const lead = unsupported.length === 1 ? "I can't read this type of file" : "I can't read these types of file";
+    parts.push(`${lead}: ${describe(unsupported)}.`);
   }
-  if (oversized && oversized.length > 0) {
-    const list = oversized.map(describeSlackFile).join(", ");
-    parts.push(`The following attachment(s) exceed the ${MAX_ATTACHMENT_MB} MB size limit and will be skipped: ${list}.`);
+  if (unreadable.length > 0) {
+    const one = unreadable.length === 1;
+    parts.push(
+      `${one ? "This file doesn't" : "These files don't"} contain readable text: ${describe(unreadable)}. ` +
+        `If ${one ? "it is a text file" : "they are text files"}, save ${one ? "it" : "them"} ` +
+        `with UTF-8 encoding and send ${one ? "it" : "them"} again.`,
+    );
   }
-  const supportedHint = `Currently I can read JPEG, PNG, and PDF attachments (up to ${MAX_ATTACHMENT_MB} MB each).`;
-  parts.push(supportedHint);
+  if (oversized.length > 0) {
+    const lead = oversized.length === 1 ? "This file is" : "These files are";
+    parts.push(`${lead} larger than the ${MAX_ATTACHMENT_MB} MB limit: ${describe(oversized)}.`);
+  }
+  if (hasSupportedRemaining) {
+    parts.push("I'll answer using your other attachments.");
+  }
+  parts.push(SUPPORTED_ATTACHMENTS_HINT);
+  return parts.join(" ");
+}
+
+export async function postSkippedAttachmentsNotice(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+  skipped: SkippedAttachments,
+  hasSupportedRemaining: boolean,
+): Promise<void> {
+  const notice = buildSkippedAttachmentsNotice(skipped, hasSupportedRemaining);
+  if (!typedMessage.channel || notice === "") return;
   try {
     await typedClient.chat.postMessage({
       channel: typedMessage.channel,
       thread_ts: resolveThreadId(typedMessage),
-      text: truncateForSlack(parts.join(" ")),
+      text: truncateForSlack(notice),
       ...NO_UNFURL_OPTIONS,
     });
   } catch (error) {

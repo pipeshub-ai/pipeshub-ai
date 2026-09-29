@@ -65,7 +65,8 @@ import {
   classifySlackFiles,
   extractSupportedAttachments,
   uploadSlackAttachments,
-  postUnsupportedAttachmentsNotice,
+  postSkippedAttachmentsNotice,
+  buildSkippedAttachmentsNotice,
   resolveMentionsInText,
   resolveSlackErrorMessage,
   resolveSlackErrorMessageAsync,
@@ -490,8 +491,17 @@ async function processSlackMessage(
         try {
           const botToken = resolvedSlackBot?.botToken;
           if (botToken) {
-            attachmentRefs = await uploadSlackAttachments(supportedFiles, botToken, accessToken, currentAgentId);
+            const upload = await uploadSlackAttachments(supportedFiles, botToken, accessToken, currentAgentId);
+            attachmentRefs = upload.attachments;
             console.log(`Uploaded ${attachmentRefs.length} attachment(s) for chat`);
+            const skipped = { unreadable: upload.unreadable, oversized: upload.oversized };
+            const skippedCount = upload.unreadable.length + upload.oversized.length;
+            if (skippedCount > 0 && attachmentRefs.length === 0) {
+              // Nothing usable is left, matching the pre-download rule: explain and stop.
+              await sendOrUpdateNonStreamMessage(buildSkippedAttachmentsNotice(skipped, false));
+              return;
+            }
+            await postSkippedAttachmentsNotice(typedClient, typedMessage, skipped, true);
           }
         } catch (uploadError) {
           const errData = (uploadError as any).response?.data;
@@ -1402,12 +1412,11 @@ app.message(async ({ message, client, context }) => {
   const { supported, unsupported, oversized } = classifySlackFiles(typedMessage.files);
 
   if (filesPresent && hasAgent && (unsupported.length > 0 || oversized.length > 0)) {
-    await postUnsupportedAttachmentsNotice(
+    await postSkippedAttachmentsNotice(
       typedClient,
       typedMessage,
-      unsupported,
+      { unsupported, oversized },
       supported.length > 0,
-      oversized,
     );
     if (supported.length === 0) return;
   }
@@ -1450,12 +1459,11 @@ app.event("app_mention", async ({ event, client, context }) => {
   const { supported, unsupported, oversized } = classifySlackFiles(typedMessage.files);
 
   if (filesPresent && hasAgent && (unsupported.length > 0 || oversized.length > 0)) {
-    await postUnsupportedAttachmentsNotice(
+    await postSkippedAttachmentsNotice(
       typedClient,
       typedMessage,
-      unsupported,
+      { unsupported, oversized },
       supported.length > 0,
-      oversized,
     );
     if (supported.length === 0) return;
   }

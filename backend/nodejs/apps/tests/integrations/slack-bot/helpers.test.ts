@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import axios from 'axios';
 import * as mdToMrkdwn from '../../../src/integrations/slack-bot/src/utils/md_to_mrkdwn';
 import {
   userInfoCache,
@@ -12,6 +13,14 @@ import {
   classifySlackFiles,
   extractSupportedAttachments,
   MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_MB,
+  TEXT_ATTACHMENT_EXTENSION_MIMETYPES,
+  SUPPORTED_ATTACHMENTS_HINT,
+  resolveTextAttachmentMimetype,
+  isReadableUtf8Text,
+  uploadSlackAttachments,
+  buildSkippedAttachmentsNotice,
+  postSkippedAttachmentsNotice,
   parseSSEEvents,
   readMessageFromObject,
   readMessageFromTextPayload,
@@ -135,8 +144,21 @@ describe('slack-bot/helpers', () => {
       });
 
       it('returns false for unsupported mimetypes', () => {
-        expect(isSlackSupportedAttachment({ id: '1', mimetype: 'text/plain' })).to.equal(false);
+        expect(isSlackSupportedAttachment({ id: '1', mimetype: 'application/json', name: 'a.json' })).to.equal(false);
         expect(isSlackSupportedAttachment({ id: '2', mimetype: 'application/zip' })).to.equal(false);
+      });
+
+      it('accepts each supported text type by extension', () => {
+        for (const [ext, mime] of Object.entries(TEXT_ATTACHMENT_EXTENSION_MIMETYPES)) {
+          expect(isSlackSupportedAttachment({ id: ext, name: `notes.${ext}`, mimetype: mime }), ext).to.equal(true);
+          expect(isSlackSupportedAttachment({ id: ext, name: `notes.${ext}`, mimetype: 'text/plain' }), ext).to.equal(true);
+          expect(isSlackSupportedAttachment({ id: ext, name: `NOTES.${ext.toUpperCase()}`, mimetype: 'application/octet-stream' }), ext).to.equal(true);
+        }
+      });
+
+      it('rejects text-labelled files whose extension is not a supported text type', () => {
+        expect(isSlackSupportedAttachment({ id: '1', name: 'script.py', mimetype: 'text/plain' })).to.equal(false);
+        expect(isSlackSupportedAttachment({ id: '2', name: 'page.html', mimetype: 'text/html' })).to.equal(false);
       });
 
       it('returns false when mimetype is missing', () => {
@@ -163,7 +185,7 @@ describe('slack-bot/helpers', () => {
       it('classifies files into supported, unsupported, and oversized', () => {
         const files = [
           { id: '1', mimetype: 'image/png', size: 100, url_private_download: 'https://x' },
-          { id: '2', mimetype: 'text/plain', size: 100, url_private: 'https://y' },
+          { id: '2', mimetype: 'application/zip', size: 100, url_private: 'https://y' },
           { id: '3', mimetype: 'image/jpeg', size: MAX_ATTACHMENT_BYTES + 1, url_private_download: 'https://z' },
         ];
         const result = classifySlackFiles(files);
@@ -198,11 +220,190 @@ describe('slack-bot/helpers', () => {
       it('returns only supported files', () => {
         const files = [
           { id: '1', mimetype: 'image/png', size: 100, url_private: 'https://x' },
-          { id: '2', mimetype: 'text/plain', size: 100 },
+          { id: '2', mimetype: 'application/zip', size: 100, url_private: 'https://y' },
         ];
         const result = extractSupportedAttachments(files);
         expect(result).to.have.length(1);
         expect(result[0]!.id).to.equal('1');
+      });
+    });
+
+    describe('classifySlackFiles with text attachments', () => {
+      it('marks an oversized Markdown file as oversized', () => {
+        const result = classifySlackFiles([
+          { id: '1', name: 'big.md', mimetype: 'text/plain', size: MAX_ATTACHMENT_BYTES + 1, url_private: 'https://x' },
+        ]);
+        expect(result.oversized.map((f) => f.id)).to.deep.equal(['1']);
+        expect(result.supported).to.have.length(0);
+      });
+    });
+
+    describe('resolveTextAttachmentMimetype', () => {
+      it('maps each extension to the MIME type the upload endpoint parses', () => {
+        expect(resolveTextAttachmentMimetype({ id: '1', name: 'a.md', mimetype: 'text/plain' })).to.equal('text/markdown');
+        expect(resolveTextAttachmentMimetype({ id: '2', name: 'a.markdown', mimetype: 'text/x-markdown' })).to.equal('text/markdown');
+        expect(resolveTextAttachmentMimetype({ id: '3', name: 'a.csv', mimetype: 'text/plain; charset=utf-8' })).to.equal('text/csv');
+        expect(resolveTextAttachmentMimetype({ id: '4', name: 'a.tsv', mimetype: 'application/octet-stream' })).to.equal('text/tab-separated-values');
+      });
+
+      it('rejects a text extension on a file Slack reports as another type', () => {
+        expect(resolveTextAttachmentMimetype({ id: '1', name: 'a.txt', mimetype: 'application/pdf' })).to.equal(null);
+        expect(resolveTextAttachmentMimetype({ id: '2', name: 'a.md', mimetype: 'image/png' })).to.equal(null);
+      });
+
+      it('falls back to the MIME type or Slack filetype when the name has no extension', () => {
+        expect(resolveTextAttachmentMimetype({ id: '1', name: 'README', mimetype: 'text/markdown' })).to.equal('text/markdown');
+        expect(resolveTextAttachmentMimetype({ id: '2', mimetype: 'text/plain', filetype: 'markdown' })).to.equal('text/markdown');
+        expect(resolveTextAttachmentMimetype({ id: '3', mimetype: 'text/plain', filetype: 'python' })).to.equal(null);
+        expect(resolveTextAttachmentMimetype({ id: '4', name: 'LICENSE', mimetype: 'application/octet-stream' })).to.equal(null);
+      });
+    });
+
+    describe('isReadableUtf8Text', () => {
+      it('accepts UTF-8 text, including non-ASCII characters', () => {
+        expect(isReadableUtf8Text(Buffer.from('# Notes\n\nCafé, naïve, 日本語 ✓', 'utf8'))).to.equal(true);
+      });
+
+      it('rejects invalid UTF-8 and binary content', () => {
+        expect(isReadableUtf8Text(Buffer.from([0xff, 0xfe, 0xfd]))).to.equal(false);
+        expect(isReadableUtf8Text(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).to.equal(false);
+        expect(isReadableUtf8Text(Buffer.from('plain\u0000text', 'utf8'))).to.equal(false);
+        expect(isReadableUtf8Text(Buffer.from('hi', 'utf16le'))).to.equal(false);
+      });
+    });
+
+    describe('buildSkippedAttachmentsNotice', () => {
+      it('names the unsupported file and lists every accepted type', () => {
+        const notice = buildSkippedAttachmentsNotice(
+          { unsupported: [{ id: '1', name: 'archive.zip', filetype: 'zip' }] },
+          false,
+        );
+        expect(notice).to.contain("I can't read this type of file: archive.zip (zip).");
+        expect(notice).to.contain(SUPPORTED_ATTACHMENTS_HINT);
+        for (const ext of Object.keys(TEXT_ATTACHMENT_EXTENSION_MIMETYPES)) {
+          expect(SUPPORTED_ATTACHMENTS_HINT, ext).to.contain(`.${ext}`);
+        }
+        for (const label of ['PDF', 'JPEG', 'PNG', `${MAX_ATTACHMENT_MB} MB`]) {
+          expect(SUPPORTED_ATTACHMENTS_HINT).to.contain(label);
+        }
+      });
+
+      it('explains oversized and unreadable files and says the rest are still used', () => {
+        const notice = buildSkippedAttachmentsNotice(
+          {
+            oversized: [{ id: '1', name: 'big.md' }],
+            unreadable: [{ id: '2', name: 'a.txt' }, { id: '3', name: 'b.txt' }],
+          },
+          true,
+        );
+        expect(notice).to.contain(`This file is larger than the ${MAX_ATTACHMENT_MB} MB limit: big.md.`);
+        expect(notice).to.contain("These files don't contain readable text: a.txt, b.txt.");
+        expect(notice).to.contain('save them with UTF-8 encoding');
+        expect(notice).to.contain("I'll answer using your other attachments.");
+      });
+
+      it('returns an empty string when nothing was skipped', () => {
+        expect(buildSkippedAttachmentsNotice({}, false)).to.equal('');
+      });
+    });
+
+    describe('postSkippedAttachmentsNotice', () => {
+      it('replies in the thread with the notice', async () => {
+        const postMessage = sinon.stub().resolves({ ts: '2' });
+        const client = { chat: { postMessage } } as any;
+        await postSkippedAttachmentsNotice(
+          client,
+          { ts: '1', channel: 'D1' },
+          { unsupported: [{ id: '1', name: 'x.exe' }] },
+          false,
+        );
+        expect(postMessage.calledOnce).to.equal(true);
+        const args = postMessage.firstCall.args[0];
+        expect(args.channel).to.equal('D1');
+        expect(args.thread_ts).to.equal('1');
+        expect(args.text).to.contain("I can't read this type of file: x.exe.");
+      });
+    });
+
+    describe('uploadSlackAttachments (mocked Slack download and backend upload)', () => {
+      const utf8Markdown = Buffer.from('# Plan\n\n- Café ✓\n', 'utf8');
+
+      function stubDownloads(bodies: Record<string, Buffer>): sinon.SinonStub {
+        return sinon.stub(axios, 'get').callsFake(async (url: string) => {
+          const body = bodies[url];
+          if (!body) throw new Error(`unexpected download ${url}`);
+          return { data: body } as any;
+        });
+      }
+
+      function formParts(form: any): string {
+        return form.getBuffer().toString('latin1');
+      }
+
+      it('uploads each accepted text type with the MIME type the backend parses', async () => {
+        const entries = Object.entries(TEXT_ATTACHMENT_EXTENSION_MIMETYPES);
+        const files = entries.map(([ext]) => ({
+          id: ext,
+          name: `notes.${ext}`,
+          mimetype: 'text/plain',
+          url_private_download: `https://files.slack.test/${ext}`,
+        }));
+        const getStub = stubDownloads(
+          Object.fromEntries(files.map((f) => [f.url_private_download, utf8Markdown])),
+        );
+        const refs = files.map((f) => ({ recordId: f.id }));
+        const postStub = sinon.stub(axios, 'post').resolves({ data: { attachments: refs } } as any);
+        process.env.BACKEND_URL = 'http://backend.test';
+
+        const result = await uploadSlackAttachments(files, 'xoxb-bot', 'access', 'agent-1');
+
+        expect(getStub.callCount).to.equal(files.length);
+        expect(getStub.firstCall.args[1]!.headers).to.deep.equal({ Authorization: 'Bearer xoxb-bot' });
+        expect(postStub.calledOnce).to.equal(true);
+        expect(postStub.firstCall.args[0]).to.equal(
+          'http://backend.test/api/v1/agents/agent-1/conversations/internal/attachments/upload',
+        );
+        const body = formParts(postStub.firstCall.args[1]);
+        for (const [ext, mime] of entries) {
+          expect(body, ext).to.contain(`filename="notes.${ext}"\r\nContent-Type: ${mime}`);
+        }
+        expect(result).to.deep.equal({ attachments: refs, unreadable: [], oversized: [] });
+      });
+
+      it('skips a text file that is not valid UTF-8 and uploads the rest', async () => {
+        const good = { id: 'g', name: 'good.md', mimetype: 'text/markdown', url_private: 'https://files.slack.test/g' };
+        const bad = { id: 'b', name: 'bad.txt', mimetype: 'text/plain', url_private: 'https://files.slack.test/b' };
+        stubDownloads({ [good.url_private]: utf8Markdown, [bad.url_private]: Buffer.from([0xc3, 0x28, 0xff]) });
+        const postStub = sinon.stub(axios, 'post').resolves({ data: { attachments: [{ recordId: 'g' }] } } as any);
+
+        const result = await uploadSlackAttachments([good, bad], 'xoxb-bot', 'access');
+
+        expect(result.unreadable.map((f) => f.id)).to.deep.equal(['b']);
+        const body = formParts(postStub.firstCall.args[1]);
+        expect(body).to.contain('filename="good.md"');
+        expect(body).not.to.contain('filename="bad.txt"');
+      });
+
+      it('rejects a download over the size limit even when Slack gave no size, and skips the upload call', async () => {
+        const file = { id: 'o', name: 'huge.txt', mimetype: 'text/plain', url_private: 'https://files.slack.test/o' };
+        stubDownloads({ [file.url_private]: Buffer.alloc(MAX_ATTACHMENT_BYTES + 1, 0x61) });
+        const postStub = sinon.stub(axios, 'post');
+
+        const result = await uploadSlackAttachments([file], 'xoxb-bot', 'access');
+
+        expect(result).to.deep.equal({ attachments: [], unreadable: [], oversized: [file] });
+        expect(postStub.called).to.equal(false);
+      });
+
+      it('keeps uploading images and PDFs with their own MIME type', async () => {
+        const pdf = { id: 'p', name: 'doc.pdf', mimetype: 'application/pdf', url_private: 'https://files.slack.test/p' };
+        stubDownloads({ [pdf.url_private]: Buffer.from([0x25, 0x50, 0x44, 0x46, 0xff]) });
+        const postStub = sinon.stub(axios, 'post').resolves({ data: { attachments: [{ recordId: 'p' }] } } as any);
+
+        const result = await uploadSlackAttachments([pdf], 'xoxb-bot', 'access');
+
+        expect(result.attachments).to.have.length(1);
+        expect(formParts(postStub.firstCall.args[1])).to.contain('filename="doc.pdf"\r\nContent-Type: application/pdf');
       });
     });
   });
