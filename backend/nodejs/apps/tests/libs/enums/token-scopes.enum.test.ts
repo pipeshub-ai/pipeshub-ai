@@ -65,8 +65,8 @@ describe('TokenScopes', () => {
     expect(TokenScopes.SLACK_BOT_VERIFY).to.equal('slack-bot:verify');
   });
 
-  it('should have exactly 14 scopes', () => {
-    expect(Object.keys(TokenScopes)).to.have.lengthOf(14);
+  it('should have exactly 15 scopes', () => {
+    expect(Object.keys(TokenScopes)).to.have.lengthOf(15);
   });
 
   it('should contain only the expected keys', () => {
