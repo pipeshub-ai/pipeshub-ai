@@ -35,6 +35,7 @@ from app.exceptions.indexing_exceptions import (
 )
 from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
 from app.models.entities import Record
+from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.embeddings.multimodal.config import MultimodalProviderConfig
@@ -427,7 +428,9 @@ def _build_text_documents(
         # shows up on the blob-backed reindex path and not during normal
         # indexing. There is nothing to embed either way: an empty document would
         # just be a useless retrieval unit.
-        block_text = block.data or ""
+        # Links stay in the stored block for citations; only the embedded
+        # text loses their targets.
+        block_text = anchor_text_only(block.data or "")
         if not block_text.strip():
             continue
         metadata = {
@@ -1844,7 +1847,7 @@ class VectorStore(Transformer):
                 elif block_group_type == "table":
                     table_data = block_group.data
                     if table_data:
-                        table_summary = table_data.get("table_summary", "")
+                        table_summary = anchor_text_only(table_data.get("table_summary", ""))
                         if table_summary:
                             documents_to_embed.append(
                                 Document(
@@ -1893,7 +1896,7 @@ class VectorStore(Transformer):
                 if block_type == "table":
                     table_data = block.data
                     if table_data:
-                        table_summary = table_data.get("table_summary", "")
+                        table_summary = anchor_text_only(table_data.get("table_summary", ""))
                         if table_summary:
                             documents_to_embed.append(
                                 Document(
@@ -1911,7 +1914,9 @@ class VectorStore(Transformer):
                 elif block_type == "table_row":
                     table_data = block.data
                     if table_data:
-                        row_text = table_data.get("row_natural_language_text", "")
+                        row_text = anchor_text_only(
+                            table_data.get("row_natural_language_text", "")
+                        )
                         if row_text:
                             documents_to_embed.append(
                                 Document(
