@@ -11,13 +11,15 @@ example by someone restoring those branches or a connector starting to write
 
 It drives the production path on a real graph: the processor stores a record
 shared with the owner plus a domain, an anyone and an anyone-with-link grant,
-and a control record shared with the colleague by name. Then it asks the
-graph's own access gates:
+and a control record shared with the colleague by name. Then it checks:
 
-* ``filter_accessible_record_ids`` (what graph enrichment may show), and
-* ``get_accessible_virtual_record_ids`` (what search may return).
+* whether the sync wrote any grant for them: a permission edge, or an ``anyone``
+  document, which search honours; and
+* ``get_accessible_virtual_record_ids``, what search returns to the colleague.
 
-The control record proves the gates can see a grant, so a denial means something.
+The control record proves search can see a grant, so a denial means something.
+tests/unit/connectors/core/test_link_shares_stay_off.py guards the other way in:
+production code starting to call the ``anyone`` writers.
 
 Runs on Neo4j and ArangoDB (backend-matrix). Environment: NEO4J_IT_URI,
 NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
@@ -218,30 +220,39 @@ async def _sync_the_two_files(env: _Env) -> tuple[FileRecord, FileRecord]:
     return widely_shared, named_share
 
 
-async def test_the_sync_writes_only_the_named_permission(env: _Env) -> None:
+async def _anyone_documents_for(graph: IGraphDBProvider, file_id: str) -> int:
+    """The "anyone" documents naming this file, which search would honour."""
+    if isinstance(graph, Neo4jProvider):
+        rows = await graph.client.execute_query(
+            "MATCH (a:Anyone {file_key: $id}) RETURN count(a) AS c", parameters={"id": file_id}
+        )
+        return int(rows[0]["c"]) if rows else 0
+    rows = await graph.http_client.execute_aql(
+        f"FOR a IN {CollectionNames.ANYONE.value} FILTER a.file_key == @id COLLECT WITH COUNT INTO c RETURN c",
+        {"id": file_id},
+    )
+    return int(rows[0]) if rows else 0
+
+
+async def test_the_sync_writes_no_grant_for_link_style_shares(env: _Env) -> None:
+    """Search honours an "anyone" document or a permission edge; the sync must write neither.
+
+    The owner's edge is checked first: the permission write shares one try block,
+    so a share type that raised would drop the owner's edge too, and "no extra
+    edge" would then prove nothing.
+    """
     widely_shared, _ = await _sync_the_two_files(env)
 
     edges = await env.graph.get_edges_to_node(
         f"{CollectionNames.RECORDS.value}/{widely_shared.id}", CollectionNames.PERMISSION.value
     )
+    assert edges, "The owner's permission was not written, so the permission step failed as a whole."
     assert len(edges) == 1, (
         f"Expected only the owner's permission on the widely shared file; found {len(edges)}: {edges}. "
         "A domain, anyone or anyone-with-link share has started writing a permission."
     )
-
-
-async def test_the_colleague_cannot_see_the_widely_shared_file(env: _Env) -> None:
-    widely_shared, named_share = await _sync_the_two_files(env)
-    record_ids = [widely_shared.id, named_share.id]
-
-    assert await env.graph.filter_accessible_record_ids(record_ids, env.owner["userId"], env.org_id) == {
-        widely_shared.id
-    }, "The owner should see their own file, and only that one."
-    assert await env.graph.filter_accessible_record_ids(record_ids, env.colleague["userId"], env.org_id) == {
-        named_share.id
-    }, (
-        "The colleague's access should be exactly the file shared with them by name. "
-        "A domain, anyone or anyone-with-link share has started granting access."
+    assert await _anyone_documents_for(env.graph, widely_shared.id) == 0, (
+        "The sync wrote an \"anyone\" document for the file, which search treats as readable by the whole org."
     )
 
 
