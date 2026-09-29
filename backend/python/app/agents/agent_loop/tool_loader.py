@@ -183,7 +183,8 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 state_logger.warning("Failed to add Slack context tools: %s", e)
 
     web_search_config = state.get("web_search_config")
-    if web_search_config:
+    surface = context.surface_policy
+    if web_search_config and (surface is None or surface.web):
         ref_mapper = state.get("citation_ref_mapper")
         if ref_mapper is None:
             from app.utils.chat_helpers import CitationRefMapper
@@ -296,7 +297,14 @@ class PipesHubToolLoader:
                     path_prefix=ts_path_prefix,
                 )
 
-                for t in toolset.tools:
+                tools = toolset.tools
+                surface = context.surface_policy
+                if surface is not None and not is_internal:
+                    tools = [t for t in toolset.tools if surface.permits_tool(t)]
+                    context.withheld_tool_names.extend(
+                        t.name for t in toolset.tools if not surface.permits_tool(t)
+                    )
+                for t in tools:
                     try:
                         registry.register_tool(t)
                         tool_count += 1
@@ -304,7 +312,7 @@ class PipesHubToolLoader:
                         if state_logger:
                             state_logger.warning("Skipping duplicate: %s", t.name)
 
-                registered_names = [t.name for t in toolset.tools if registry.has(t.name)]
+                registered_names = [t.name for t in tools if registry.has(t.name)]
                 if registered_names:
                     try:
                         registry.register_toolset(group_name, ts_description, registered_names)

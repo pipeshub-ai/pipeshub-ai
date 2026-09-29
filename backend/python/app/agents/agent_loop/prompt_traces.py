@@ -17,24 +17,16 @@ Patterns covered:
 """
 from __future__ import annotations
 
-
-def traces_text() -> str:
-    """Return the full worked-traces section string.
-
-    Call only when the model tier warrants it (``model_profile.inject_traces()``).
-    """
-    return _WORKED_TRACES
-
-
-_WORKED_TRACES = """
+_HEADER = """
 ## Worked Examples
 
 These examples show the exact pattern to follow for common request types.
 Tool calls are shown as: TOOL tool_name | param=value
+""".strip()
 
----
-### Example 1 — Single knowledge lookup
-
+_KNOWLEDGE_LOOKUP = (
+    "Single knowledge lookup",
+    """
 User: When is the Q3 board meeting?
 
 Assistant (think): I'll search the knowledge base for the meeting.
@@ -46,10 +38,12 @@ Tool result:
 > [loop: step 1/5, stale_rounds=0]
 
 Assistant (final answer): The Q3 board meeting is on September 18 at 9:00 AM PDT [source](ref1).
+""".strip(),
+)
 
----
-### Example 2 — Two parallel sources, one empty
-
+_PARALLEL_SOURCES = (
+    "Two parallel sources, one empty",
+    """
 User: Who owns the ACME account?
 
 Assistant (think): I'll check both the knowledge base and Jira at the same time.
@@ -63,10 +57,12 @@ Tool results:
 
 Assistant (final answer): The ACME account is owned by **Sarah Chen (sarah@corp.com)** [source](ref2).
 (Jira returned no matching issues.)
+""".strip(),
+)
 
----
-### Example 3 — Empty result then query reformulation
-
+_REFORMULATION = (
+    "Empty result then query reformulation",
+    """
 User: What are our pricing tiers?
 
 Assistant (think): I'll search for pricing information.
@@ -85,10 +81,12 @@ Tool result:
 > [loop: step 2/5, stale_rounds=0]
 
 Assistant (final answer): Our pricing tiers are: Starter ($29/mo), Growth ($99/mo), and Enterprise (custom) [source](ref3).
+""".strip(),
+)
 
----
-### Example 4 — Write action gated by confirmation
-
+_CONFIRMED_WRITE = (
+    "Write action gated by confirmation",
+    """
 User: Can you close the Jira ticket?
 
 Assistant (think): The user wants me to close a ticket but hasn't confirmed which one or whether to proceed. I must ask before writing.
@@ -104,7 +102,33 @@ Tool result:
 > PROJ-42 transitioned to Done. [loop: step 2/5, stale_rounds=0]
 
 Assistant (final answer): Done — [PROJ-42](https://jira.example.com/browse/PROJ-42) has been closed.
-""".strip()
+""".strip(),
+)
+
+# (title, body, demonstrates a connector-app action)
+_EXAMPLES = (
+    (*_KNOWLEDGE_LOOKUP, False),
+    (*_PARALLEL_SOURCES, True),
+    (*_REFORMULATION, False),
+    (*_CONFIRMED_WRITE, True),
+)
+
+
+def traces_text(*, include_action_examples: bool = True) -> str:
+    """Return the worked-traces section string.
+
+    Call only when the model tier warrants it (``model_profile.inject_traces()``).
+    `include_action_examples=False` drops the examples that call connector
+    app tools, for a surface that never grants any.
+    """
+    examples = [
+        (title, text) for title, text, is_action in _EXAMPLES
+        if include_action_examples or not is_action
+    ]
+    return _HEADER + "".join(
+        f"\n\n---\n### Example {i} — {title}\n\n{text}"
+        for i, (title, text) in enumerate(examples, start=1)
+    )
 
 
 __all__ = ["traces_text"]

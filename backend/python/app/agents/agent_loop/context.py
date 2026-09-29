@@ -24,6 +24,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
+from app.agents.agent_loop.surface import SurfacePolicy  # noqa: TC001 - pydantic resolves it at runtime
+
 
 class AgentContext(BaseModel):
     """Per-request context for tool execution and prompt building."""
@@ -174,6 +176,13 @@ class AgentContext(BaseModel):
     # pin list, so these toolsets stay visible from turn 0 under lazy tool
     # disclosure regardless of whatever else got grouped this request.
     essential_toolset_names: list[str] = Field(default_factory=list)
+
+    # Set by a chat mode that narrows what the run is offered (see
+    # `surface.py`); `None` is the full surface every other entry point gets.
+    surface_policy: SurfacePolicy | None = None
+    # Connector tools `PipesHubToolLoader` left out because `surface_policy`
+    # withholds write actions — kept for the factory's one per-run log line.
+    withheld_tool_names: list[str] = Field(default_factory=list)
 
     # `EventSink` (`app.modules.agents.event_sink`) for hooks that must push
     # SSE events mid-run (e.g. Phase 5's `ask_user_question_sse` hook) — the
@@ -411,6 +420,7 @@ class AgentContext(BaseModel):
             query=str(state.get("query") or ""),
             enable_record_id_shortening=bool(state.get("enable_record_id_shortening", False)),
             include_retrieval_context=bool(state.get("include_retrieval_context", False)),
+            surface_policy=state.get("surface_policy"),
             disable_semantic=bool(state.get("disable_semantic", False)),
             disable_pattern_match=bool(state.get("disable_pattern_match", False)),
             system_prompt=state.get("system_prompt"),

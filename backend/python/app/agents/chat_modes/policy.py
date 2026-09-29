@@ -28,6 +28,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.agents.agent_loop.surface import SurfacePolicy
+
 
 # Every chat mode runs the existing "quick" `ModeDefinition` from
 # `app.agents.agent_loop.modes.MODE_CATALOG` (flat ReAct, `skip_intent=True`,
@@ -61,6 +63,8 @@ class ChatModePolicy:
             mode-specific addendum to the agent's system prompt (mirrors
             today's `get_model_config_for_mode()["system_prompt"]` framing,
             e.g. "answer ONLY from internal knowledge" for internal_search).
+        surface: narrows the tools and prompt sections the run is offered
+            (see `agent_loop/surface.py`); `None` keeps the full surface.
     """
 
     name: str
@@ -68,6 +72,7 @@ class ChatModePolicy:
     include_web_search: bool
     prefetch_retrieval: bool
     system_prompt_key: str
+    surface: SurfacePolicy | None = None
 
     @property
     def loop_chat_mode(self) -> str:
@@ -116,12 +121,30 @@ def resolve_agent_policy(capabilities: AgentCapabilities | None = None) -> ChatM
     )
 
 
+# Enterprise search answers only from the organization's own knowledge, so
+# it keeps every read/search/navigate tool, clarification and exact
+# arithmetic, and nothing that produces files, reaches the public web, or
+# changes a connected system.
+ENTERPRISE_SEARCH_SURFACE = SurfacePolicy(
+    name="enterprise_search",
+    code_execution=False,
+    skills=False,
+    artifacts=False,
+    image_generation=False,
+    web=False,
+    mcp=False,
+    write_actions=False,
+    tool_discovery=False,
+    answers_from_knowledge_only=True,
+)
+
 INTERNAL_SEARCH_POLICY = ChatModePolicy(
     name="internal_search",
     has_knowledge=True,
     include_web_search=False,
     prefetch_retrieval=True,
     system_prompt_key="internal_search",
+    surface=ENTERPRISE_SEARCH_SURFACE,
 )
 
 WEB_SEARCH_POLICY = ChatModePolicy(
@@ -175,6 +198,7 @@ def resolve_chat_mode_policy(chat_mode: str | None) -> ChatModePolicy:
 
 __all__ = [
     "AGENT_POLICY",
+    "ENTERPRISE_SEARCH_SURFACE",
     "AgentCapabilities",
     "INTERNAL_SEARCH_POLICY",
     "WEB_SEARCH_POLICY",

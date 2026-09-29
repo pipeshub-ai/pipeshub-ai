@@ -227,6 +227,7 @@ def _apply_policy_to_chat_state(
     chat_state["has_slack_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_slack_connector"))
     chat_state["web_search_config"] = web_search_config if policy.include_web_search else None
     chat_state["chat_mode"] = policy.name
+    chat_state["surface_policy"] = policy.surface
 
 
 async def _build_no_tools_messages(

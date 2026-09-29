@@ -178,6 +178,7 @@ from app.agents.agent_loop.skills_wiring import (
     skills_enabled,
 )
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
+from app.agents.agent_loop.surface import ARTIFACT_REMINDER
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 from app.agents.mcp.service import is_mcp_enabled
@@ -414,7 +415,10 @@ class PipesHubAgentFactory:
         # (per-request state flag -> PIPESHUB_ENABLE_CODE_EXECUTION env ->
         # default True) rather than re-deriving an env-only check here, so
         # both paths apply identically.
-        code_exec_enabled = code_execution_enabled(context.tool_state)
+        surface = context.surface_policy
+        code_exec_enabled = code_execution_enabled(context.tool_state) and (
+            surface is None or surface.code_execution
+        )
         logger.info(
             "PipesHubAgentFactory.create: code_execution_enabled=%s (org_id=%s conversation_id=%s)",
             code_exec_enabled, context.org_id, context.conversation_id,
@@ -442,6 +446,8 @@ class PipesHubAgentFactory:
         if context.has_knowledge:
             skip_apps |= {"retrieval", "knowledgehub"}
         skip_apps |= _env_disabled_toolsets()
+        if surface is not None:
+            skip_apps |= surface.withheld_toolsets()
         _mark("f:transports")
         tool_registry = await PipesHubToolLoader().load(
             context, skip_apps=skip_apps,
@@ -461,7 +467,8 @@ class PipesHubAgentFactory:
         # into an agent regardless of entry point. The flag read is skipped when
         # nothing is attached (nothing to gate, and it saves a settings read on
         # every MCP-less chat).
-        if not context.mcp_servers or await is_mcp_enabled(context.config_service):
+        mcp_allowed = surface is None or surface.mcp
+        if mcp_allowed and (not context.mcp_servers or await is_mcp_enabled(context.config_service)):
             await MCPToolProvider().load_into(tool_registry, context)
         # Registered unconditionally (not just when lazy disclosure ends up
         # active — see `register_lazy_tool_meta_tools`'s docstring):
@@ -516,7 +523,8 @@ class PipesHubAgentFactory:
         # `skill_manage`/... land in that call's registered-tool snapshot and
         # fall into the residual (never domain-claimed) top-level grant.
         skill_manager = None
-        if skills_enabled() and await is_skills_enabled(context.config_service):
+        skills_allowed = surface is None or surface.skills
+        if skills_allowed and skills_enabled() and await is_skills_enabled(context.config_service):
             _mark("f:sandbox")
             skill_manager = await build_skill_manager(context, transport_registry)
             if skill_manager is not None:
@@ -837,7 +845,10 @@ class PipesHubAgentFactory:
         # that does real work in eager mode (auth-aware global discovery,
         # including now the MCP `mcp_unavailable` hits from step 5).
         if tool_disclosure != "lazy":
-            tool_names = [n for n in tool_names if n not in ("list_toolsets", "fetch_tools")]
+            pruned_meta = {"list_toolsets", "fetch_tools"}
+            if surface is not None and not surface.tool_discovery:
+                pruned_meta.add("search_tools")
+            tool_names = [n for n in tool_names if n not in pruned_meta]
         # Every toolset group `group_connector_toolsets` was told to leave
         # alone (skills, plus whichever internal toolsets loaded with
         # `essential=True` metadata this request — see
@@ -867,6 +878,16 @@ class PipesHubAgentFactory:
             )
 
         tool_names = _initial_entity_tool_grant(tool_names, context)
+        if surface is not None:
+            logger.info(
+                "PipesHubAgentFactory.create: surface=%s withheld capabilities=%s toolsets=%s "
+                "sections=%s write_tools=%d mcp_servers=%d; %d tool(s) granted "
+                "(org_id=%s conversation_id=%s run_id=%s)",
+                surface.name, list(surface.withheld_capabilities()),
+                sorted(surface.withheld_toolsets()), list(surface.withheld_sections()),
+                len(context.withheld_tool_names), 0 if mcp_allowed else len(context.mcp_servers),
+                len(tool_names), context.org_id, context.conversation_id, context.run_id,
+            )
 
         spec = AgentSpec(
             name="pipeshub-agent",
@@ -1063,7 +1084,9 @@ class PipesHubAgentFactory:
 
         hooks.on(HookEvent.PRE_TURN).use(conversation_enrichment(context))
         hooks.on(HookEvent.PRE_TURN).use(attachment_rehydration(context))
-        hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
+        surface = context.surface_policy
+        if surface is None or not surface.withholds(ARTIFACT_REMINDER):
+            hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
         hooks.on(HookEvent.PRE_TURN).use(seed_visible_tools_from_history(context))
 
         # Recovers from empty model responses (no text, no tool calls).
