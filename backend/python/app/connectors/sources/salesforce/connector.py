@@ -5808,10 +5808,14 @@ class SalesforceConnector(BaseConnector):
                         or getattr(existing, "external_revision_id", None) != rec.external_revision_id
                         or getattr(existing, "source_updated_at", None) != rec.source_updated_at
                         or getattr(existing, "size_in_bytes", None) != rec.size_in_bytes
-                        or getattr(existing, "extension", None) != rec.extension
                         or getattr(existing, "mime_type", None) != rec.mime_type
                         or getattr(existing, "weburl", None) != rec.weburl
                     )
+                    if not metadata_changed:
+                        # The lookup above returns a base Record, which has no extension. If the
+                        # file record can't be read, the file can't be shown unchanged, so update it.
+                        existing_file = await self.data_entities_processor.get_file_record_by_id(existing.id)
+                        metadata_changed = existing_file is None or existing_file.extension != rec.extension
                     if content_changed or metadata_changed:
                         rec.id = existing.id
                         rec.version = getattr(existing, "version", 0) + 1
