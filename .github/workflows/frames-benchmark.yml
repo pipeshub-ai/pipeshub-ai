@@ -1,13 +1,13 @@
 name: FRAMES Benchmark
 
-# Runs the FRAMES harness (integration-tests/benchmarks/frames) against a fresh
+# Runs the FRAMES benchmark (integration-tests/benchmarks, dataset datasets/frames) against a fresh
 # stack with code execution disabled. The `full` config (100k-article corpus)
 # is meant for a persistent benchmark instance, not this runner.
 on:
   workflow_dispatch:
     inputs:
       config:
-        description: Harness config (benchmarks/frames/configs/<name>.yaml)
+        description: Harness config (benchmarks/datasets/frames/configs/<name>.yaml)
         type: choice
         options:
           - smoke
@@ -84,7 +84,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: integration-tests/.cache/frames
-          key: frames-cache-${{ env.FRAMES_CONFIG }}-${{ hashFiles('integration-tests/benchmarks/frames/corpus/**', 'integration-tests/benchmarks/frames/dataset/**', 'integration-tests/benchmarks/frames/configs/**') }}
+          key: frames-cache-${{ env.FRAMES_CONFIG }}-${{ hashFiles('integration-tests/benchmarks/harness/corpus/**', 'integration-tests/benchmarks/datasets/frames/**') }}
           restore-keys: |
             frames-cache-${{ env.FRAMES_CONFIG }}-
 
@@ -100,7 +100,7 @@ jobs:
         working-directory: integration-tests
         run: |
           source .venv/bin/activate
-          python -m benchmarks.frames seed-models --config "benchmarks/frames/configs/${FRAMES_CONFIG}.yaml"
+          python -m benchmarks.harness seed-models --config "benchmarks/datasets/frames/configs/${FRAMES_CONFIG}.yaml"
 
       # Exit 2 means the run finished but a disallowed tool was called (INVALID).
       - name: Run FRAMES
@@ -108,7 +108,7 @@ jobs:
         run: |
           source .venv/bin/activate
           set +e
-          python -m benchmarks.frames run --config "benchmarks/frames/configs/${FRAMES_CONFIG}.yaml"
+          python -m benchmarks.harness run --config "benchmarks/datasets/frames/configs/${FRAMES_CONFIG}.yaml"
           status=$?
           set -e
           latest=$(ls -td reports/frames-benchmark/*/ 2>/dev/null | head -1)
