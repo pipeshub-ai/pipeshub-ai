@@ -193,7 +193,7 @@ dependencies = [
     "beautifulsoup4==4.12.3",
     "box-sdk-gen==1.12.0",
     "Brotli==1.2.0",
-    "CairoSVG==2.9.0",
+    "CairoSVG==2.9.1",
     "celery==5.4.0",
     "chardet==7.4.3",
     "confluent-kafka==2.8.0",
