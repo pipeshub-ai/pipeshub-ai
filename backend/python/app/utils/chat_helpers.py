@@ -2127,6 +2127,41 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             fk_count,
         )
 
+def _point_position(meta: dict[str, Any]) -> int | None:
+    """Where a vector point's block sits, when the point says so itself.
+
+    A group point's index is in ``blockGroupIndex``; ``blockIndex`` always
+    means a position in ``blocks``. Points indexed before group points
+    carried either field return ``None`` and are located by block id.
+    """
+    index = meta.get("blockIndex")
+    if index is None and meta.get("isBlockGroup"):
+        index = meta.get("blockGroupIndex")
+    return index
+
+
+def _resolved_is_block_group(
+    record: dict[str, Any] | None, block_id: str, index: int, is_block_group: Any,
+) -> Any:
+    """Whether a point located by block id names a group or a block.
+
+    The reconciliation map resolves group and block ids alike, and older
+    points flagged a table stored as a block as a group, which read an
+    unrelated table from ``block_groups`` at that block's position.
+    """
+    if not is_block_group or not isinstance(record, dict):
+        return is_block_group
+    containers = record.get("block_containers") or {}
+    groups = containers.get("block_groups") or []
+    blocks = containers.get("blocks") or []
+    if 0 <= index < len(groups) and (groups[index] or {}).get("id") == block_id:
+        return is_block_group
+    if 0 <= index < len(blocks) and (blocks[index] or {}).get("id") == block_id:
+        logger.debug("Point for block %s was flagged as a group; reading it as a block", block_id)
+        return False
+    return is_block_group
+
+
 async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> List[Dict[str, Any]]:
     """Resolve search hits into renderable units: blocks, list/section groups, tables.
 
@@ -2213,7 +2248,13 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     for result in sorted_new_type_results:
         vrid = result["metadata"].get("virtualRecordId")
         meta = result.get("metadata")
-        if meta.get("blockIndex") is None and meta.get("blockId") and vrid and vrid not in virtual_record_id_to_recon_metadata:
+        if (
+            _point_position(meta) is None
+            and not meta.get("isRecordSummary")
+            and meta.get("blockId")
+            and vrid
+            and vrid not in virtual_record_id_to_recon_metadata
+        ):
             vrids_needing_recon.add(vrid)
 
     async def _prefetch_recon(vrid: str):
@@ -2257,7 +2298,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             })
             continue
 
-        index = meta.get("blockIndex")
+        index = _point_position(meta)
         is_block_group = meta.get("isBlockGroup")
 
         if index is None:
@@ -2265,12 +2306,15 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             if block_id:
                 recon_metadata = virtual_record_id_to_recon_metadata.get(virtual_record_id)
                 if recon_metadata:
-                    block_id_to_index = recon_metadata.get("block_id_to_index", {})
                     rm = ReconciliationMetadata.from_dict(recon_metadata)
                     index_val = rm.block_id_to_index.get(block_id)
                     if index_val is not None:
                         index = index_val
                         meta["blockIndex"] = index
+                        is_block_group = _resolved_is_block_group(
+                            virtual_record_id_to_result.get(virtual_record_id),
+                            block_id, index, is_block_group,
+                        )
 
         # Skip if index is still None - cannot access blocks without a valid index
         if index is None:

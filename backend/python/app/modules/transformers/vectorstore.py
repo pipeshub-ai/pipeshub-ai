@@ -1753,6 +1753,7 @@ class VectorStore(Transformer):
                     sql_base_metadata = {
                         "virtualRecordId": virtual_record_id,
                         "blockId": block_group.id,
+                        "blockGroupIndex": block_group.index,
                         "orgId": org_id,
                         "isBlock": False,
                         "isBlockGroup": True,
@@ -1832,6 +1833,7 @@ class VectorStore(Transformer):
                                     metadata={
                                         "virtualRecordId": virtual_record_id,
                                         "blockId": block_group.id,
+                                        "blockGroupIndex": block_group.index,
                                         "orgId": org_id,
                                         "isBlock": False,
                                         "isBlockGroup": True,
@@ -1852,6 +1854,7 @@ class VectorStore(Transformer):
                             metadata={
                                 "virtualRecordId": virtual_record_id,
                                 "blockId": block.id,
+                                "blockIndex": block.index,
                                 "orgId": org_id,
                                 "isBlock": True,
                                 "isBlockGroup": False,
@@ -1880,9 +1883,12 @@ class VectorStore(Transformer):
                                 {
                                     "virtualRecordId": virtual_record_id,
                                     "blockId": block.id,
+                                    "blockIndex": block.index,
                                     "orgId": org_id,
                                     "isBlock": False,
-                                    "isBlockGroup": True,
+                                    # A block, not a group: readers index
+                                    # block_groups with a group point's index.
+                                    "isBlockGroup": False,
                                     "blockType": BlockType.TABLE.value,
                                 },
                             ))
@@ -1898,6 +1904,7 @@ class VectorStore(Transformer):
                                 {
                                     "virtualRecordId": virtual_record_id,
                                     "blockId": block.id,
+                                    "blockIndex": block.index,
                                     "orgId": org_id,
                                     "isBlock": True,
                                     "isBlockGroup": False,
