@@ -9,6 +9,7 @@ export const userActivitiesType = {
     PASSWORD_CHANGED: "PASSWORD CHANGED",
     ROLE_CHANGED: "ROLE CHANGED",
     ACCOUNT_BLOCKED: "ACCOUNT BLOCKED",
+    ACCOUNT_DELETED: "ACCOUNT DELETED",
   };
 
 export const SESSION_INVALIDATING_ACTIVITIES = [
@@ -16,4 +17,5 @@ export const SESSION_INVALIDATING_ACTIVITIES = [
   userActivitiesType.PASSWORD_CHANGED,
   userActivitiesType.ROLE_CHANGED,
   userActivitiesType.ACCOUNT_BLOCKED,
+  userActivitiesType.ACCOUNT_DELETED,
 ] as const;

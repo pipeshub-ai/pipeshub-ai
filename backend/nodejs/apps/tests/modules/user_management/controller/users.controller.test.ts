@@ -1680,12 +1680,45 @@ describe('UserController', () => {
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
       stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      const recordActivity = sinon.stub(UserActivities, 'create').resolves({} as any);
 
       await controller.deleteUser(req, res, next);
 
       expect(mockUser.isDeleted).to.be.true;
       expect(mockUser.hasLoggedIn).to.be.false;
       expect(mockUser.save.calledOnce).to.be.true;
+      expect(mockEventService.publishEvent.calledOnce).to.be.true;
+      expect(res.json.calledWith({ message: 'User deleted successfully' })).to.be.true;
+      expect(
+        recordActivity.calledWithMatch({
+          userId: mockUser._id,
+          orgId: mockUser.orgId,
+          activityType: userActivitiesType.ACCOUNT_DELETED,
+        }),
+        'the deletion is recorded as ending the account\'s sessions',
+      ).to.be.true;
+      expect(recordActivity.calledAfter(mockUser.save)).to.be.true;
+    });
+
+    it('still deletes the user when recording the deletion fails', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+      const mockUser = {
+        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'test@test.com',
+        isDeleted: false,
+        role: 'member',
+        save: sinon.stub().resolves(),
+      };
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      stubOAuthAppsForDeletedUser([]);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      sinon.stub(UserActivities, 'create').rejects(new Error('mongo timeout'));
+
+      await controller.deleteUser(req, res, next);
+
+      expect(next.called).to.be.false;
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
       expect(res.json.calledWith({ message: 'User deleted successfully' })).to.be.true;
     });

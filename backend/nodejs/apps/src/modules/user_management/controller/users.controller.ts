@@ -1665,6 +1665,28 @@ export class UserController {
 
       await user.save();
 
+      // Ends the sessions and refresh tokens issued before the deletion, and
+      // keeps them ended if the account is later restored. Best effort, as for
+      // a role change: the account is already deleted, and its tokens are
+      // refused on that alone while it stays deleted.
+      try {
+        await UserActivities.create({
+          orgId,
+          userId,
+          email: user.email,
+          activityType: userActivitiesType.ACCOUNT_DELETED,
+          ipAddress: req.ip ?? '',
+        });
+      } catch (activityError) {
+        this.logger.error('Failed to record the deletion as ending sessions', {
+          userId: userId.toString(),
+          error:
+            activityError instanceof Error
+              ? activityError.message
+              : String(activityError),
+        });
+      }
+
       await this.eventService.start();
       const event: Event = {
         eventType: EventType.DeleteUserEvent,

@@ -15,6 +15,7 @@ import {
   SIGN_IN_CODE_REQUESTED,
   WRONG_EMAIL_OR_PASSWORD,
   WRONG_SIGN_IN_CODE,
+  ACCOUNT_NO_LONGER_ACTIVE,
 } from '../../../../src/modules/auth/controller/userAccount.controller';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
@@ -953,7 +954,7 @@ describe('UserAccountController', () => {
   });
 
   describe('getAccessTokenFromRefreshToken', () => {
-    it('should call next(NotFoundError) when user not found', async () => {
+    it('should call next(UnauthorizedError) when the lookup finds no user', async () => {
       const req: any = {
         tokenPayload: { orgId: 'o1', userId: 'u1' },
         ip: '127.0.0.1',
@@ -968,7 +969,8 @@ describe('UserAccountController', () => {
       await controller.getAccessTokenFromRefreshToken(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
     });
 
     it('should call next(BadRequestError) when user is blocked', async () => {
@@ -1562,7 +1564,7 @@ describe('UserAccountController', () => {
   });
 
   describe('getAccessTokenFromRefreshToken (additional)', () => {
-    it('should call next(NotFoundError) when user data is null', async () => {
+    it('should call next(UnauthorizedError) when user data is null', async () => {
       const req: any = {
         tokenPayload: { orgId: 'o1', userId: 'u1' },
         ip: '127.0.0.1',
@@ -1577,7 +1579,8 @@ describe('UserAccountController', () => {
       await controller.getAccessTokenFromRefreshToken(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
     });
   });
 

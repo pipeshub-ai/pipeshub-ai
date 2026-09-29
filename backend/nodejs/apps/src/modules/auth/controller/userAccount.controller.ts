@@ -1,3 +1,4 @@
+import axios from 'axios';
 import bcrypt from 'bcryptjs';
 import { randomBytes } from 'crypto';
 import jwt from 'jsonwebtoken';
@@ -50,6 +51,11 @@ import {
   NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
+import { BaseError } from '../../../libs/errors/base.error';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { inject, injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { generateAuthToken } from '../utils/generateAuthToken';
@@ -88,8 +94,11 @@ const {
   REFRESH_TOKEN,
   PASSWORD_CHANGED,
   ACCOUNT_BLOCKED,
+  ACCOUNT_DELETED,
 } = userActivitiesType;
 export const SALT_ROUNDS = 10;
+export const ACCOUNT_NO_LONGER_ACTIVE =
+  'Your account is no longer active. Contact your admin.';
 const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
 const SESSION_INVALIDATE_TOKEN_DELAY_MS = 1000;
 
@@ -1155,7 +1164,11 @@ export class UserAccountController {
               activityTimestamp >
               tokenIssuedAt + SESSION_INVALIDATE_TOKEN_DELAY_MS
             ) {
-              throw new UnauthorizedError('Session expired, please login again');
+              throw new UnauthorizedError(
+                invalidatingActivity.activityType === ACCOUNT_DELETED
+                  ? ACCOUNT_NO_LONGER_ACTIVE
+                  : 'Session expired, please login again',
+              );
             }
           }
         } catch (activityError) {
@@ -1176,19 +1189,7 @@ export class UserAccountController {
         ipAddress: req.ip,
       });
 
-      const result = await this.iamService.getUserById(
-        userId,
-        iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
-      );
-      if (result.statusCode !== 200) {
-        throw new NotFoundError(SESSION_NO_LONGER_VALID);
-      }
-
-      const user = result.data;
-
-      if (!user) {
-        throw new NotFoundError(SESSION_NO_LONGER_VALID);
-      }
+      const user = await this.activeAccountForRefresh(userId, orgId);
 
       const userCredential = await UserCredentials.findOneAndUpdate({
         userId: userId,
@@ -1221,6 +1222,44 @@ export class UserAccountController {
     } catch (error) {
       next(error);
     }
+  }
+
+  /**
+   * The account a refresh token belongs to, refused when it has been deleted
+   * or disabled. The IAM lookup answers a deleted account with an HTTP 404,
+   * which arrives here as an axios error rather than as one of ours.
+   */
+  private async activeAccountForRefresh(
+    userId: string,
+    orgId: string,
+  ): Promise<Record<string, any>> {
+    let result: { statusCode: number; data?: Record<string, any> };
+    try {
+      result = await this.iamService.getUserById(
+        userId,
+        iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
+      );
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
+        throw new UnauthorizedError(ACCOUNT_NO_LONGER_ACTIVE);
+      }
+      if (error instanceof BaseError) {
+        throw error;
+      }
+      this.logger.error('Looking up the account to refresh a session failed', {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('refresh your session')),
+      );
+    }
+
+    const user = result.data;
+    if (result.statusCode !== 200 || !user || user.isDisabled === true) {
+      throw new UnauthorizedError(ACCOUNT_NO_LONGER_ACTIVE);
+    }
+    return user;
   }
 
   async logoutSession(

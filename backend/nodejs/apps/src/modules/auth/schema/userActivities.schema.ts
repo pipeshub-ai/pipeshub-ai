@@ -13,6 +13,7 @@ const {
   PASSWORD_CHANGED,
   ROLE_CHANGED,
   ACCOUNT_BLOCKED,
+  ACCOUNT_DELETED,
 } = userActivitiesType;
 
 // 🔹 Define TypeScript Interfaces
@@ -30,7 +31,8 @@ export interface IUserActivity extends Document {
     | typeof REFRESH_TOKEN
     | typeof PASSWORD_CHANGED
     | typeof ROLE_CHANGED
-    | typeof ACCOUNT_BLOCKED;
+    | typeof ACCOUNT_BLOCKED
+    | typeof ACCOUNT_DELETED;
   loginMode?:
     | 'OTP'
     | 'PASSWORD'
@@ -75,6 +77,7 @@ const UserActivitySchema = new Schema<IUserActivity>(
         PASSWORD_CHANGED,
         ROLE_CHANGED,
         ACCOUNT_BLOCKED,
+        ACCOUNT_DELETED,
       ],
       required: true,
     },
