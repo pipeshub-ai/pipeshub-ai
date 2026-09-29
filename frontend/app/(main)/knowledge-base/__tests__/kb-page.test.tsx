@@ -77,15 +77,19 @@ vi.mock('../api', () => ({
 }));
 
 const permissions = vi.hoisted(() => ({ denied: new Set<string>() }));
-vi.mock('@/config', () => ({
-  useUserPermission: (key: string) => !permissions.denied.has(key),
-  PermissionLockIcon: () => <span>Locked</span>,
-  usePermissionDeniedDialog: () => ({
-    openDenied: () => {},
-    guard: <A extends unknown[], R>(_allowed: boolean, fn: (...args: A) => R) => fn,
-    dialog: null,
-  }),
-}));
+vi.mock('@/config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/config')>();
+  return {
+    ...actual,
+    useUserPermission: (key: string) => !permissions.denied.has(key),
+    PermissionLockIcon: () => <span>Locked</span>,
+    usePermissionDeniedDialog: () => ({
+      openDenied: () => {},
+      guard: <A extends unknown[], R>(_allowed: boolean, fn: (...args: A) => R) => fn,
+      dialog: null,
+    }),
+  };
+});
 
 vi.mock('@/app/components/ui/lottie-loader', () => ({
   LottieLoader: ({ label }: { label?: string }) => <div role="status">{label ?? 'Loading'}</div>,

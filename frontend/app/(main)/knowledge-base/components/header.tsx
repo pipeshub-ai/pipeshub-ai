@@ -32,6 +32,8 @@ interface KBHeaderProps {
   onUpload?: () => void;
   onShare?: () => void;
   createPermissionDenied?: boolean;
+  folderPermissionDenied?: boolean;
+  uploadPermissionDenied?: boolean;
   sharePermissionDenied?: boolean;
   sharedMembers?: SharedAvatarMember[];
   onRename?: (nodeId: string, nodeType: string, newName: string) => Promise<void>;
@@ -183,6 +185,8 @@ export function Header({
   onUpload,
   onShare,
   createPermissionDenied,
+  folderPermissionDenied,
+  uploadPermissionDenied,
   sharePermissionDenied,
   sharedMembers = [],
   onRename,
@@ -429,15 +433,33 @@ export function Header({
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content align="end">
                   {onCreateFolder && (
-                    <DropdownMenu.Item onClick={() => onCreateFolder()}>
-                      <MaterialIcon name="create_new_folder" size={16} color="var(--slate-11)" />
-                      {t('kb.newFolder')}
+                    <DropdownMenu.Item
+                      disabled={folderPermissionDenied}
+                      onClick={() => {
+                        if (folderPermissionDenied) return;
+                        onCreateFolder();
+                      }}
+                    >
+                      <Flex align="center" gap="2">
+                        <MaterialIcon name="create_new_folder" size={16} color="var(--slate-11)" />
+                        <Text size="2">{t('kb.newFolder')}</Text>
+                        {folderPermissionDenied && <PermissionLockIcon />}
+                      </Flex>
                     </DropdownMenu.Item>
                   )}
                   {onUpload && (
-                    <DropdownMenu.Item onClick={() => onUpload()}>
-                      <MaterialIcon name="file_upload" size={16} color="var(--slate-11)" />
-                      {t('dialog.uploadData')}
+                    <DropdownMenu.Item
+                      disabled={uploadPermissionDenied}
+                      onClick={() => {
+                        if (uploadPermissionDenied) return;
+                        onUpload();
+                      }}
+                    >
+                      <Flex align="center" gap="2">
+                        <MaterialIcon name="file_upload" size={16} color="var(--slate-11)" />
+                        <Text size="2">{t('dialog.uploadData')}</Text>
+                        {uploadPermissionDenied && <PermissionLockIcon />}
+                      </Flex>
                     </DropdownMenu.Item>
                   )}
                 </DropdownMenu.Content>
