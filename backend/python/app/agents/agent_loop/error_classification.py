@@ -66,6 +66,8 @@ _QUOTA_HINTS = (
 )
 _RATE_LIMIT_HINTS = ("429", "rate limit", "rate_limit", "too many requests")
 _AUTH_HINTS = ("401", "403", "unauthorized", "authentication", "invalid api key", "permission denied")
+# OpenAI `model_not_found`, Azure `DeploymentNotFound`: the configured model name is wrong.
+_MODEL_NOT_FOUND_HINTS = ("error code: 404", "model_not_found", "deploymentnotfound")
 # Matched after content_filter: Azure prompt-shields are also HTTP 400.
 _INVALID_REQUEST_HINTS = ("invalid_request_error", "error code: 400")
 _SERVER_ERROR_HINTS = (
@@ -100,6 +102,10 @@ _USER_MESSAGES: dict[str, str] = {
     "auth_error": (
         "The AI model's provider rejected its API key. Ask a workspace admin to "
         "check the key in Workspace → AI Models."
+    ),
+    "model_not_found": (
+        "The AI model's provider couldn't find this model. Ask a workspace admin to "
+        "check the model name in Workspace → AI Models."
     ),
     "request_too_large": (
         "This conversation is too long for the selected model. Shorten your "
@@ -179,7 +185,7 @@ def classify_error(error_msg: str) -> tuple[str, str]:
     """Returns `(error_code, user_message)` for a raw error string.
 
     `error_code` is one of `content_filter` / `request_too_large` /
-    `quota_exceeded` / `rate_limit` / `auth_error` / `invalid_request` / `server_error` /
+    `quota_exceeded` / `rate_limit` / `auth_error` / `model_not_found` / `invalid_request` / `server_error` /
     `timeout` / `unknown` — checked in this priority order since a single
     message can contain multiple hints (e.g. a Groq 413 body that also
     mentions "rate_limit_exceeded"; the request-too-large classification
@@ -198,6 +204,8 @@ def classify_error(error_msg: str) -> tuple[str, str]:
         error_code = "rate_limit"
     elif any(hint in lower for hint in _AUTH_HINTS):
         error_code = "auth_error"
+    elif any(hint in lower for hint in _MODEL_NOT_FOUND_HINTS):
+        error_code = "model_not_found"
     elif any(hint in lower for hint in _INVALID_REQUEST_HINTS):
         error_code = "invalid_request"
     elif any(hint in lower for hint in _SERVER_ERROR_HINTS):

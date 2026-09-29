@@ -4,6 +4,7 @@ import ipaddress
 import os
 import re
 import shutil
+import socket
 from logging import Logger
 from typing import Any
 from urllib.parse import urlparse
@@ -31,6 +32,7 @@ from app.utils.aimodels import (
     get_tts_model,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import provider_error_code
 
 router = APIRouter(dependencies=[Depends(deny_service_tokens)])
 
@@ -92,9 +94,22 @@ def _llm_health_check_needs_outbound(provider: str, configuration: dict[str, Any
 
 
 def _looks_like_connectivity_error(exc: BaseException) -> bool:
+    # SDKs wrap the socket error: openai.APIConnectionError("Connection error.") from httpx.ConnectError.
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if _is_connectivity_error(current):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _is_connectivity_error(exc: BaseException) -> bool:
     if isinstance(
         exc,
-        (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, ConnectionError, OSError),
+        # Not bare OSError: a missing local model file is one too, and is no network fault.
+        (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, ConnectionError, socket.gaierror),
     ):
         return True
     msg = str(exc).lower()
@@ -237,6 +252,66 @@ def _model_setup_failed_message(kind: str, provider: str | None, e: Exception) -
     lead = f"Couldn't connect to {_provider_display_name(provider)} with these {kind} settings"
     reason = _short_provider_reason(e)
     return f"{lead}: {reason}. {_SETUP_NEXT_STEP}" if reason else f"{lead}. {_SETUP_NEXT_STEP}"
+
+
+# Provider answers that mean the settings are wrong, so the admin has to change them.
+_REJECTED_SETTINGS_CODES = frozenset({"auth_error", "model_not_found", "invalid_request", "request_too_large"})
+
+
+def _rejected_settings_message(
+    code: str, kind: str, model_config: dict, model: str, e: Exception,
+) -> str:
+    provider = _provider_display_name(model_config.get("provider"))
+    configuration = model_config.get("configuration") or {}
+    name = configuration.get("modelFriendlyName") or model_config.get("modelFriendlyName") or model or kind
+    if code == "auth_error":
+        return (
+            f"The API key for {name} was rejected by {provider}. "
+            "Check the key in Workspace > AI Models, then try again."
+        )
+    if code == "model_not_found":
+        return (
+            f"{provider} couldn't find the model \"{model}\". "
+            "Check the model name (or deployment name) in Workspace > AI Models, then try again."
+        )
+    return _model_setup_failed_message(kind, model_config.get("provider"), e)
+
+
+async def _model_setup_failed_response(
+    kind: str, model_config: dict, model: str, e: Exception,
+) -> JSONResponse:
+    """What a failed model check returns: 400 when the settings are wrong, 500 otherwise.
+
+    A wrong key, model name or endpoint is the admin's to fix, so it must not
+    read as a PipesHub fault; the dialog shows the message of a 4xx verbatim.
+    """
+    provider = model_config.get("provider")
+    configuration = model_config.get("configuration") or {}
+    if not isinstance(configuration, dict):
+        configuration = {}
+    code = provider_error_code(e)
+    if code in _REJECTED_SETTINGS_CODES:
+        return _config_error(
+            _rejected_settings_message(code, kind, model_config, model, e),
+            model_config, model, error_code=code, error_type=type(e).__name__,
+        )
+    if _looks_like_connectivity_error(e):
+        # With no egress at all, re-typing the endpoint won't help, so say that instead.
+        if _llm_health_check_needs_outbound(provider or "", configuration) and not await _probe_outbound_connectivity():
+            return _outbound_connectivity_error_response(provider or "", model)
+        return _config_error(
+            f"Couldn't reach {_provider_display_name(provider)} at the endpoint in these settings. "
+            "Check the endpoint address and that PipesHub can connect to it, then try again.",
+            model_config, model, error_code="endpoint_unreachable", error_type=type(e).__name__,
+        )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "message": _model_setup_failed_message(kind, provider, e),
+            "details": {"provider": provider, "model": model, "error_type": type(e).__name__},
+        },
+    )
 
 
 # HTTP statuses that mean "ask again later", never "this model cannot do it".
@@ -1106,27 +1181,7 @@ async def perform_llm_health_check(
             "LLM health check failed for %s model %s (%s): %s",
             provider, model_string, friendly_name, e,
         )
-        # A refused connection from a cloud provider usually means the
-        # container has no egress at all, which no amount of re-typing the API
-        # key will fix -- so say that instead of relaying the socket error.
-        if (
-            _looks_like_connectivity_error(e)
-            and _llm_health_check_needs_outbound(provider, configuration)
-            and not await _probe_outbound_connectivity()
-        ):
-            return _outbound_connectivity_error_response(provider, model_name or model_string)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("chat model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name or model_string,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+        return await _model_setup_failed_response("chat model", llm_config, model_name or model_string, e)
 
 
 async def _check_one_llm(
@@ -1436,19 +1491,9 @@ async def perform_embedding_health_check(
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
         logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with model {embedding_config.get('configuration', {}).get('model', '')} ({embedding_config.get('modelFriendlyName', '')}): {str(e)}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message(
-                    "embedding model", embedding_config.get("provider"), e
-                ),
-                "details": {
-                    "provider": embedding_config.get("provider"),
-                    "model": embedding_config.get("configuration", {}).get("model"),
-                    "error_type": type(e).__name__
-                },
-            },
+        return await _model_setup_failed_response(
+            "embedding model", embedding_config,
+            (embedding_config.get("configuration") or {}).get("model") or "", e,
         )
 
 
@@ -1493,18 +1538,7 @@ async def perform_image_generation_health_check(
             "Image generation health check failed to build adapter for "
             f"{provider}/{model_name}: {e}", exc_info=True,
         )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("image model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+        return await _model_setup_failed_response("image model", model_config, model_name, e)
 
     try:
         if provider == ImageGenerationProvider.OPENAI.value:
@@ -1572,18 +1606,7 @@ async def perform_image_generation_health_check(
             f"Image generation health check failed for {provider}/{model_name}: {e}",
             exc_info=True,
         )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("image model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+        return await _model_setup_failed_response("image model", model_config, model_name, e)
 
 
 async def perform_tts_health_check(
@@ -1622,18 +1645,7 @@ async def perform_tts_health_check(
             f"TTS health check failed to build adapter for {provider}/{model_name}: {e}",
             exc_info=True,
         )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("speech model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+        return await _model_setup_failed_response("speech model", model_config, model_name, e)
 
     try:
         if provider == TTSProvider.OPENAI.value:
@@ -1695,18 +1707,7 @@ async def perform_tts_health_check(
             f"TTS health check failed for {provider}/{model_name}: {e}",
             exc_info=True,
         )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("speech model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+        return await _model_setup_failed_response("speech model", model_config, model_name, e)
 
 
 async def perform_stt_health_check(
@@ -1748,18 +1749,7 @@ async def perform_stt_health_check(
             f"STT health check failed to build adapter for {provider}/{model_name}: {e}",
             exc_info=True,
         )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("speech-to-text model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+        return await _model_setup_failed_response("speech-to-text model", model_config, model_name, e)
 
     try:
         if provider == STTProvider.OPENAI.value:
@@ -1867,18 +1857,7 @@ async def perform_stt_health_check(
             f"STT health check failed for {provider}/{model_name}: {e}",
             exc_info=True,
         )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("speech-to-text model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+        return await _model_setup_failed_response("speech-to-text model", model_config, model_name, e)
 
 
 @router.post("/health-check/{model_type}")

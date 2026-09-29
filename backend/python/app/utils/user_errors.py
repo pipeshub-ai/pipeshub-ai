@@ -148,6 +148,11 @@ def _ai_messages(model: str) -> dict[str, str]:
             f"The {model} rejected PipesHub's API key, so this file wasn't indexed. An "
             "admin can update the key in Workspace → AI Models, then Reindex the file."
         ),
+        "model_not_found": (
+            f"The {model}'s provider couldn't find the model it names, so this file wasn't "
+            "indexed. An admin can check the model name in Workspace → AI Models, then "
+            "Reindex the file."
+        ),
         "server_error": unreachable,
         "timeout": unreachable,
         "content_filter": (
@@ -235,6 +240,10 @@ def _status_code(exc: BaseException) -> int | None:
         value = getattr(exc, attr, None)
         if isinstance(value, int):
             return value
+    # google-genai keeps the HTTP status on `code`; its `status` is a name like "UNAUTHENTICATED".
+    code = getattr(exc, "code", None)
+    if _from(exc, ("google.genai",)) and isinstance(code, int):
+        return code
     response = getattr(exc, "response", None)
     value = getattr(response, "status_code", None)
     return value if isinstance(value, int) else None
@@ -258,6 +267,8 @@ def _provider_code(chain: list[BaseException]) -> str:
             return "rate_limit"
         if status in (401, 403):
             return "auth_error"
+        if status == 404:
+            return "model_not_found"
         if status == 413:
             return "request_too_large"
         if status == 400:
@@ -285,6 +296,11 @@ def _provider_code(chain: list[BaseException]) -> str:
         if code != "unknown":
             return code
     return "unknown"
+
+
+def provider_error_code(exc: BaseException) -> str:
+    """`classify_error`'s code for an exception raised by an AI provider's SDK."""
+    return _provider_code(list(_chain(exc)))
 
 
 def _llm_not_configured(exc: BaseException) -> bool:

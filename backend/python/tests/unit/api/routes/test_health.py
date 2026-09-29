@@ -1,4 +1,5 @@
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2031,7 +2032,7 @@ class TestPerformImageGenerationHealthCheck:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_openrouter_bad_api_key_returns_500(self):
+    async def test_openrouter_bad_api_key_is_a_settings_error(self):
         logger = MagicMock()
         mock_adapter = MagicMock()
 
@@ -2049,10 +2050,11 @@ class TestPerformImageGenerationHealthCheck:
             resp = await perform_image_generation_health_check(
                 self._cfg("openRouter", model="bytedance-seed/seedream-4.5"), logger
             )
-        assert resp.status_code == 500
+        assert resp.status_code == 400
+        assert "API key" in json.loads(resp.body)["message"]
 
     @pytest.mark.asyncio
-    async def test_openrouter_network_error_returns_500(self):
+    async def test_openrouter_network_error_is_an_unreachable_endpoint(self):
         logger = MagicMock()
         mock_adapter = MagicMock()
 
@@ -2062,12 +2064,14 @@ class TestPerformImageGenerationHealthCheck:
         mock_http.get = AsyncMock(side_effect=RuntimeError("connection refused"))
 
         with patch(f"{MODULE}.get_image_generation_model", return_value=mock_adapter), \
-             patch("httpx.AsyncClient", return_value=mock_http):
+             patch("httpx.AsyncClient", return_value=mock_http), \
+             patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=True):
             from app.api.routes.health import perform_image_generation_health_check
             resp = await perform_image_generation_health_check(
                 self._cfg("openRouter", model="bytedance-seed/seedream-4.5"), logger
             )
-        assert resp.status_code == 500
+        assert resp.status_code == 400
+        assert json.loads(resp.body)["details"]["error_code"] == "endpoint_unreachable"
 
 
 # ============================================================================
@@ -2191,7 +2195,7 @@ class TestLlmHealthCheckNeedsOutbound:
             resp = await perform_llm_health_check(config, logger)
 
         probe.assert_not_called()
-        assert resp.status_code == 500
+        assert resp.status_code == 400
         assert "outbound_connectivity" not in resp.body.decode()
 
     def test_litellm_proxy_localhost_does_not_need_outbound(self):
@@ -2230,7 +2234,7 @@ class TestLlmHealthCheckNeedsOutbound:
             resp = await perform_llm_health_check(config, logger)
 
         probe.assert_awaited()
-        assert resp.status_code == 500
+        assert resp.status_code == 400
         assert "outbound_connectivity" not in resp.body.decode()
 
     @pytest.mark.asyncio
