@@ -142,17 +142,14 @@ def _python_status(user: SecondUser, token: str) -> int | None:
 REFRESH_REFUSED_STATUS = 401
 
 DELETED_USER_REFRESH_GAP = (
-    "Refreshing a deleted user's token answers 500, not 401: deleteUser records "
-    "no session-ending activity, and the IAM lookup's 404 arrives as an "
+    "Refreshing a deleted user's token answers 500 with no token, not 401: "
+    "deleteUser records no session-ending activity, and the IAM lookup's 404 "
+    "arrives as an "
     "unhandled axios error. Fixed by #3686; remove this mark when it merges."
 )
 deleted_user_refresh_gap = pytest.mark.xfail(
     strict=True, raises=AssertionError, reason=DELETED_USER_REFRESH_GAP
 )
-
-
-def _refresh_refused(response: requests.Response, expected_status: int) -> bool:
-    return response.status_code == expected_status and "accessToken" not in response.text
 
 
 def _new_user(client: PipeshubClient) -> SecondUser:
@@ -249,15 +246,33 @@ def _assert_refresh_refused(
     which: str,
     event: str,
     account: UserAccountClient,
-    expected_status: int = REFRESH_REFUSED_STATUS,
+    known_gap_status: int | None = None,
 ) -> None:
+    """The refresh must be refused with 401 and no new token.
+
+    ``known_gap_status`` is the one wrong answer a test's xfail stands for. Only
+    that answer is raised as an ``AssertionError`` for the xfail to absorb; a
+    minted token, or any other status, is a ``pytest.fail`` (``Failed`` is not an
+    ``AssertionError``), so no xfail can hide it.
+    """
     response = account.refresh_token(sessions.session(which).refresh)
-    # The body is left out of the message: when this fails it may hold a live token.
-    assert _refresh_refused(response, expected_status), (
+    status = response.status_code
+    # The body is left out of every message: when it holds a token, it is live.
+    if "accessToken" in response.text:
+        pytest.fail(
+            f"A refresh token from the {which} session, issued before {event}, "
+            f"minted a new session (HTTP {status}). It can keep minting access "
+            "tokens for as long as it lives."
+        )
+    if status == REFRESH_REFUSED_STATUS:
+        return
+    message = (
         f"A refresh token from the {which} session, issued before {event}, got "
-        f"HTTP {response.status_code}, not {expected_status} (new access token "
-        f"returned: {'accessToken' in response.text})."
+        f"HTTP {status}, not {REFRESH_REFUSED_STATUS}; no new token was returned."
     )
+    if known_gap_status is not None and status != known_gap_status:
+        pytest.fail(f"{message} That is not the known HTTP {known_gap_status} either.")
+    raise AssertionError(message)
 
 
 def _assert_access_refused_at_python(sessions: TwoSessions, which: str, event: str) -> None:
@@ -273,7 +288,17 @@ def _assert_access_refused_at_python(sessions: TwoSessions, which: str, event: s
             "before the event, so a refusal afterwards would prove nothing."
         )
     status = _python_status(sessions.user, sessions.session(which).access)
-    assert status == 401, (
+    if status == 401:
+        return
+    # The xfail stands for exactly one answer: the token still accepted (200).
+    # Anything else is a different problem and must not be absorbed by it.
+    if status != 200:
+        pytest.fail(
+            f"An access token from the {which} session, issued before {event}, got "
+            f"HTTP {status} from the Python service: neither refused (401) nor "
+            "the known gap (200)."
+        )
+    raise AssertionError(
         f"An access token from the {which} session, issued before {event}, still "
         f"works at the Python service (HTTP {status})."
     )
@@ -455,7 +480,11 @@ class TestDeletedUserEndsEverySession:
         self, after_deletion: TwoSessions, which: str, user_account_client: UserAccountClient
     ) -> None:
         _assert_refresh_refused(
-            after_deletion, which, "the user was deleted", user_account_client
+            after_deletion,
+            which,
+            "the user was deleted",
+            user_account_client,
+            known_gap_status=500,
         )
 
     @python_session_gap

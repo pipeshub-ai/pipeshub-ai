@@ -232,10 +232,17 @@ class TestResetLinkUsedTwiceAtOnce:
                 f"Neither simultaneous use worked (HTTP {statuses}), so this says "
                 "nothing about single use."
             )
+        # The xfail stands for exactly one answer: both uses succeeding. A
+        # refusal other than 401 is a different problem and must not hide behind it.
         assert statuses.count(200) == 1, (
             f"Two simultaneous uses of one reset link both succeeded (HTTP "
             f"{statuses}). A link meant to work once worked twice."
         )
+        refused = [status for status in statuses if status != 200]
+        if refused != [401]:
+            pytest.fail(
+                f"The second simultaneous use got HTTP {refused}, not a 401 refusal."
+            )
 
 
 def _has_otp(steps: list[dict[str, Any]]) -> bool:
