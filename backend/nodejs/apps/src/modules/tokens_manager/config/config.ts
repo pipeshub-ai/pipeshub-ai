@@ -1,5 +1,6 @@
 import { RedisConfig } from '../../../libs/types/messaging.types';
 import { ConfigService } from '../services/cm.service';
+import { passwordResetLinkLifetime } from '../../../libs/utils/createJwt';
 
 export interface AppConfig {
   jwtSecret: string;
@@ -91,6 +92,9 @@ export interface AppConfig {
 }
 
 export const loadAppConfig = async (): Promise<AppConfig> => {
+  // Fails startup on an unusable PASSWORD_RESET_LINK_EXPIRY, rather than
+  // letting every reset link be issued already expired.
+  passwordResetLinkLifetime();
   const configService = ConfigService.getInstance();
 
   return {

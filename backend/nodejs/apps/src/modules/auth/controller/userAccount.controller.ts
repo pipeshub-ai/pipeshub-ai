@@ -6,10 +6,9 @@ import { Request, Response, NextFunction } from 'express';
 import {
   iamJwtGenerator,
   iamUserLookupJwtGenerator,
-  describeLinkLifetime,
   jwtGeneratorForForgotPasswordLink,
   mailJwtGenerator,
-  passwordResetLinkExpiry,
+  passwordResetLinkLifetime,
   refreshTokenJwtGenerator,
 } from '../../../libs/utils/createJwt';
 import { isDuplicateKeyError } from '../../../libs/utils/mongo.utils';
@@ -567,7 +566,7 @@ export class UserAccountController {
           orgName: org?.shortName || org?.registeredName,
           name: user.fullName,
           link: resetPasswordLink,
-          linkLifetime: describeLinkLifetime(passwordResetLinkExpiry()),
+          linkLifetime: passwordResetLinkLifetime().description,
         },
       });
 

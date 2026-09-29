@@ -21,29 +21,72 @@ export const mailJwtGenerator = (email: string, scopedJwtSecret: string) => {
 
 const DEFAULT_PASSWORD_RESET_LINK_EXPIRY = '20m';
 
-/** Lifetime of a forgot-password link, as a jsonwebtoken `expiresIn` value. */
-export const passwordResetLinkExpiry = (): string => {
-  const configured = process.env.PASSWORD_RESET_LINK_EXPIRY?.trim() ?? '';
-  return configured === '' ? DEFAULT_PASSWORD_RESET_LINK_EXPIRY : configured;
-};
+// The units jsonwebtoken's duration parser (`ms`) accepts, less milliseconds,
+// which no link should be measured in: name, pattern, seconds per unit.
+const LIFETIME_UNITS: ReadonlyArray<[string, RegExp, number]> = [
+  ['second', /^(s|secs?|seconds?)$/i, 1],
+  ['minute', /^(m|mins?|minutes?)$/i, 60],
+  ['hour', /^(h|hrs?|hours?)$/i, 60 * 60],
+  ['day', /^(d|days?)$/i, 24 * 60 * 60],
+  ['week', /^(w|weeks?)$/i, 7 * 24 * 60 * 60],
+  ['year', /^(y|yrs?|years?)$/i, 365.25 * 24 * 60 * 60],
+];
 
-const LIFETIME_UNITS: Record<string, string> = {
-  s: 'second',
-  m: 'minute',
-  h: 'hour',
-  d: 'day',
-};
+export interface LinkLifetime {
+  /** Whole seconds, the form jsonwebtoken reads a number `expiresIn` as. */
+  seconds: number;
+  /** How the email puts it: "20 minutes", "90 seconds". */
+  description: string;
+}
 
-/** `'20m'` → `'20 minutes'`, for telling people how long their link works. */
-export const describeLinkLifetime = (expiresIn: string): string => {
-  const match = /^(\d+)\s*([smhd])?$/i.exec(expiresIn.trim());
-  if (!match) {
-    return expiresIn;
+/**
+ * Reads a lifetime such as `20m`, `1.5h`, `2 days` or `90`. A bare number is
+ * seconds. It is converted here, because jsonwebtoken reads a unitless string
+ * as milliseconds, so `'90'` passed straight through would expire at once.
+ * Anything else, or a lifetime under one second, is refused.
+ */
+export const parseLinkLifetime = (
+  value: string | number,
+  settingName?: string,
+): LinkLifetime => {
+  const text = String(value).trim();
+  const match = /^(\d+(?:\.\d+)?)\s*([a-z]*)$/i.exec(text);
+  const unitText = match?.[2] ?? '';
+  const unit =
+    unitText === ''
+      ? LIFETIME_UNITS[0]
+      : LIFETIME_UNITS.find(([, pattern]) => pattern.test(unitText));
+  const amountText = match?.[1] ?? '';
+  const seconds = Math.round(Number(amountText) * (unit?.[2] ?? 0));
+  if (!match || !unit || !(seconds >= 1)) {
+    throw new Error(
+      `${settingName === undefined ? '' : `${settingName}: `}"${text}" is not ` +
+        'a usable link lifetime. Use a positive duration such as 20m, 1h or ' +
+        '2d, or a whole number of seconds such as 90.',
+    );
   }
-  const amount = match[1] ?? '';
-  // A bare number is seconds, as jsonwebtoken reads it.
-  const unit = LIFETIME_UNITS[(match[2] ?? 's').toLowerCase()] ?? 'second';
-  return `${amount} ${unit}${amount === '1' ? '' : 's'}`;
+  const amount = Number(amountText);
+  return {
+    seconds,
+    description: `${amountText} ${unit[0]}${amount === 1 ? '' : 's'}`,
+  };
+};
+
+/** `20m` → "20 minutes"; a number is seconds. */
+export const describeLinkLifetime = (value: string | number): string =>
+  parseLinkLifetime(value).description;
+
+/**
+ * The forgot-password link lifetime from PASSWORD_RESET_LINK_EXPIRY, default
+ * 20 minutes. Throws on an unusable value, naming the variable, so a typo
+ * fails startup instead of issuing links that are dead on arrival.
+ */
+export const passwordResetLinkLifetime = (): LinkLifetime => {
+  const configured = process.env.PASSWORD_RESET_LINK_EXPIRY?.trim() ?? '';
+  return parseLinkLifetime(
+    configured === '' ? DEFAULT_PASSWORD_RESET_LINK_EXPIRY : configured,
+    'PASSWORD_RESET_LINK_EXPIRY',
+  );
 };
 
 export const jwtGeneratorForForgotPasswordLink = (
@@ -61,7 +104,7 @@ export const jwtGeneratorForForgotPasswordLink = (
       scopes: [TokenScopes.PASSWORD_RESET],
     },
     scopedJwtSecret,
-    { expiresIn: passwordResetLinkExpiry() } as jwt.SignOptions,
+    { expiresIn: passwordResetLinkLifetime().seconds },
   );
   const mailAuthToken = jwt.sign(
     {

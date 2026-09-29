@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import {
   UserAccountController,
@@ -1420,6 +1421,34 @@ describe('UserAccountController', () => {
   });
 
   describe('sendForgotPasswordEmail', () => {
+    it('tells the reader the configured lifetime, a bare number read as seconds', async () => {
+      const original = process.env.PASSWORD_RESET_LINK_EXPIRY;
+      process.env.PASSWORD_RESET_LINK_EXPIRY = '90';
+      try {
+        sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
+        mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+        await controller.sendForgotPasswordEmail({
+          _id: 'u1',
+          email: 'user@example.com',
+          orgId: 'o1',
+          fullName: 'Test User',
+        });
+
+        const { templateData } = mockMailService.sendMail.firstCall.args[0];
+        expect(templateData.linkLifetime).to.equal('90 seconds');
+        const token = templateData.link.split('#token=')[1];
+        const claims = jwt.decode(token) as { iat: number; exp: number };
+        expect(claims.exp - claims.iat).to.equal(90);
+      } finally {
+        if (original === undefined) {
+          delete process.env.PASSWORD_RESET_LINK_EXPIRY;
+        } else {
+          process.env.PASSWORD_RESET_LINK_EXPIRY = original;
+        }
+      }
+    });
+
     it('should send email and return status 200', async () => {
       const user = {
         _id: 'u1',
