@@ -568,8 +568,9 @@ jobs:
 
       # Restarts Redis, Qdrant, the graph database and MongoDB, kills the
       # indexing process, cuts the app off from its AI provider and makes blob
-      # storage unwritable on the live stack, which would break any test
-      # running beside it. So it runs alone,
+      # storage unwritable on the live stack, and empties and rebuilds the
+      # vector store (Labs cleanup, embedding model change), which would break
+      # any test running beside it. So it runs alone,
       # after everything else on this stack, and only nightly on the core
       # shard's Neo4j pass: one stack, no extra runner, no time added to a PR.
       # A dispatch with connectors=resilience runs it through the step above.
