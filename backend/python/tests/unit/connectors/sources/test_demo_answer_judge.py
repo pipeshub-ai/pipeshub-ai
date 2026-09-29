@@ -130,6 +130,36 @@ def test_quote_matching_ignores_formatting_but_not_words(quote: str, found: bool
     assert quote_in_answer(quote, ANSWER) is found
 
 
+@pytest.mark.parametrize(("quote", "answer", "found"), [
+    ("up to $250", "You can spend up to $2500 without approval.", False),
+    ("up to $250", "You can spend up to $250 without approval.", True),
+    ("up to $250", "You can spend up to $250.00 without approval.", True),
+    ("up to $250", "You can spend up to $250.50 without approval.", False),
+    ("up to $250", "Spend up to $250, then ask.", True),
+    ("$250", "The limit is $12500.", False),
+    ("250", "The limit is 12500.", False),
+    ("$2", "The limit is $2,500.", False),
+    ("$250", "The limit is $250,000.", False),
+    # A later occurrence is still found when the first runs on into a longer number.
+    ("up to $250", "Not up to $2500: up to $250 needs no approval.", True),
+    ("up to $250 ... no approval", "Up to $2500 ... no approval", False),
+])
+def test_a_quoted_number_must_not_be_part_of_a_longer_one(quote: str, answer: str, found: bool) -> None:
+    assert quote_in_answer(quote, answer) is found
+
+
+@pytest.mark.parametrize("q", [
+    {"answer_must_state": "A purchase of up to $250 needs no approval."},
+    {"answer_must_state": [NO_APPROVAL], "answer_must_not_state": "Every purchase needs manager approval."},
+    {"answer_must_state": [NO_APPROVAL, ""]},
+])
+def test_facts_that_are_not_a_list_of_sentences_are_a_judge_error(q: dict) -> None:
+    client = RefusingClient()
+    result = aj.check_content(q, ANSWER, AnswerJudge(client))
+    assert result is not None and result.status == "judge error" and not result.passed
+    assert client.calls == 0
+
+
 @pytest.mark.parametrize("raw", [
     "not json at all",
     '{"claims": [{"id": 1, "verdict": "probably", "quote": ""}]}',

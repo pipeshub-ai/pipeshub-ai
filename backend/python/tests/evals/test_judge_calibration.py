@@ -14,6 +14,7 @@ import pytest
 from app.connectors.sources.demo.harness.answer_judge import AnswerJudge
 from tests.evals.run_judge_calibration import (
     DEFAULT_THRESHOLD,
+    CalibrationCase,
     CalibrationClaim,
     CalibrationSet,
     calibrate,
@@ -88,3 +89,33 @@ def test_a_judge_error_counts_against_agreement(cases: CalibrationSet) -> None:
 def test_a_badly_labelled_claim_is_rejected(claim: dict) -> None:
     with pytest.raises(ValueError):
         CalibrationClaim.model_validate(claim)
+
+
+def test_a_repeated_claim_keeps_its_own_label() -> None:
+    same = "A purchase of up to and including $250 needs no approval."
+    case = CalibrationCase.model_validate({
+        "id": "repeated",
+        "answer": "Purchases up to $250 need no approval.",
+        "claims": [
+            {"state": same, "expect": "supported"},
+            {"not_state": same, "expect": "supported"},
+            {"state": same, "expect": "missing"},
+        ],
+    })
+    # The judge reports must-state claims first: supported, missing, then the must-not-state one.
+    reply = json.dumps({"claims": [
+        {"id": 1, "verdict": "supported", "quote": "up to $250"},
+        {"id": 2, "verdict": "missing", "quote": ""},
+        {"id": 3, "verdict": "supported", "quote": "up to $250"},
+    ]})
+
+    class OneReply:
+        def complete(self, system: str, user: str) -> str:
+            return reply
+
+    report = calibrate(AnswerJudge(OneReply()), CalibrationSet(cases=[case]))
+    assert [(c.kind, c.verdict, c.agrees) for c in report.claims] == [
+        ("must_state", "supported", True),
+        ("must_state", "missing", True),
+        ("must_not_state", "supported", True),
+    ]

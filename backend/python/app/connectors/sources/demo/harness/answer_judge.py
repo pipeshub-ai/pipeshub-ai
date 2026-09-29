@@ -166,10 +166,38 @@ def quote_in_answer(quote: str, answer: str) -> bool:
         return False
     pos = 0
     for fragment in fragments:
-        found = haystack.find(fragment, pos)
+        found = _find_whole_number(haystack, fragment, pos)
         if found < 0:
             return False
         pos = found + len(fragment)
+    return True
+
+
+def _find_whole_number(haystack: str, fragment: str, start: int) -> int:
+    """``str.find``, except that a number at the fragment's edge must not run on
+    in the answer: "up to $250" is not a quote of "up to $2500" or "$12500"."""
+    found = haystack.find(fragment, start)
+    while found >= 0:
+        end = found + len(fragment)
+        runs_on_left = fragment[0].isdigit() and found > 0 and _continues_number(haystack, found - 1, -1)
+        runs_on_right = fragment[-1].isdigit() and end < len(haystack) and _continues_number(haystack, end, 1)
+        if not runs_on_left and not runs_on_right:
+            return found
+        found = haystack.find(fragment, found + 1)
+    return -1
+
+
+def _continues_number(text: str, i: int, step: int) -> bool:
+    # A separator continues the number only before a digit: "$2,500" continues
+    # "$2", while "$250, then" and "$250." end it. Zero cents ("$250.00") are the
+    # same amount, so they don't.
+    if text[i].isdigit():
+        return True
+    if text[i] not in ",." or not (0 <= i + step < len(text)) or not text[i + step].isdigit():
+        return False
+    if text[i] == "." and step > 0:
+        cents = re.match(r"\d+", text[i + 1:]).group()
+        return cents.strip("0") != ""
     return True
 
 
@@ -267,6 +295,9 @@ def check_content(q: dict, answer: str, judge: AnswerJudge | None) -> JudgeResul
     must_not_state = q.get("answer_must_not_state") or []
     if not must_state and not must_not_state:
         return None
+    for key, claims in (("answer_must_state", must_state), ("answer_must_not_state", must_not_state)):
+        if not isinstance(claims, list) or not all(isinstance(c, str) and c.strip() for c in claims):
+            return JudgeResult.error(f"{key} must be a list of non-empty strings")
     if judge is None:
         return JudgeResult.not_judged()
     return judge.judge(answer, must_state, must_not_state)

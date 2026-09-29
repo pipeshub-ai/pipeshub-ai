@@ -138,11 +138,16 @@ def load_cases(path: Path = CASES_PATH) -> CalibrationSet:
     return CalibrationSet.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
 
 
+def _ordered(case: CalibrationCase) -> list[CalibrationClaim]:
+    """The case's claims in the order the judge reports them: must-state first."""
+    return [c for c in case.claims if c.kind == "must_state"] + [c for c in case.claims if c.kind == "must_not_state"]
+
+
 def _compare(case: CalibrationCase, result: JudgeResult) -> list[ClaimAgreement]:
-    by_claim = {(c.kind, c.claim): c for c in result.claims} if result.status == "judged" else {}
+    judged = result.claims if result.status == "judged" else []
     rows = []
-    for claim in case.claims:
-        got = by_claim.get((claim.kind, claim.text))
+    for i, claim in enumerate(_ordered(case)):
+        got = judged[i] if i < len(judged) else None
         rows.append(ClaimAgreement(
             case_id=case.id,
             claim=claim.text,
