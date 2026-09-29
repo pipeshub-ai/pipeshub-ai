@@ -102,6 +102,25 @@ def build_connector_vector_cleanup_events(
     ]
 
 
+def build_stored_document_cleanup_events(
+    *, org_id: str, document_ids: Sequence[str] | None
+) -> list[dict[str, Any]]:
+    """``deleteStoredDocuments`` events for the uploaded files of deleted records.
+
+    A knowledge-base delete removes its records in one graph call and publishes
+    no per-record events, so the files' storage document ids travel here,
+    chunked like the virtual record ids above.
+    """
+    ids = _unique_non_empty(document_ids)
+    return [
+        _event(
+            EventTypes.DELETE_STORED_DOCUMENTS.value,
+            {"orgId": org_id, "documentIds": chunk},
+        )
+        for chunk in _chunks(ids, MAX_VIRTUAL_RECORD_IDS_PER_EVENT)
+    ]
+
+
 def _event(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "eventType": event_type,
@@ -140,6 +159,14 @@ def log_cleanup_publish_failure(
     payload = event.get("payload", {}) or {}
     ids = payload.get("virtualRecordIds")
     event_type = event.get("eventType")
+    if event_type == EventTypes.DELETE_STORED_DOCUMENTS.value:
+        documents = payload.get("documentIds") or []
+        logger.error(
+            f"❌ Failed to publish {event_type} for {subject}: {error}. "
+            f"{len(documents)} uploaded file(s) stay in storage"
+        )
+        logger.debug("Unpublished storage document ids for %s: %s", subject, documents)
+        return
     if ids:
         where = (
             f"chunk {payload.get('chunkIndex', 0) + 1}/"

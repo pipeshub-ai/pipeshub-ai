@@ -3695,6 +3695,16 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_uploaded_document_ids(
+        self, connector_id: str, transaction: str | None = None
+    ) -> list[str]:
+        """Storage document ids of the uploaded files among a connector's (or KB's) records.
+
+        Read before the records are deleted: afterwards nothing points at them.
+        """
+        pass
+
+    @abstractmethod
     async def delete_records_recursive(
         self,
         record_ids: list[str],

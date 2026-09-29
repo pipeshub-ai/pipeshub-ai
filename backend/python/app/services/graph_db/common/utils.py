@@ -1,6 +1,7 @@
+import re
 from typing import Any, Dict, List, Optional
 
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import Connectors, OriginTypes
 
 # Connectors whose record groups are scoped by their root instead of by the full
 # descendant closure. Slack qualifies because grants sit on the channel and every
@@ -130,3 +131,23 @@ def build_connector_stats_response(
         },
         "byRecordType": list(record_type_counts.values()),
     }
+
+
+_STORAGE_DOCUMENT_ID = re.compile(r"^[0-9a-f]{24}$", re.IGNORECASE)
+
+
+def uploaded_document_id(record: Dict[str, Any], type_doc: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """The storage document holding an uploaded file's original bytes, or None.
+
+    A knowledge-base upload keeps its file in a storage document of its own,
+    named by the record's externalRecordId. Folders are uploads too but hold no
+    file, and other origins use externalRecordId for the source system's id.
+    """
+    if record.get("origin") != OriginTypes.UPLOAD.value:
+        return None
+    if (type_doc or {}).get("isFile") is False:
+        return None
+    document_id = record.get("externalRecordId")
+    if isinstance(document_id, str) and _STORAGE_DOCUMENT_ID.match(document_id):
+        return document_id
+    return None

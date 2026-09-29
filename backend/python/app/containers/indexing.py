@@ -49,6 +49,13 @@ class IndexingAppContainer(BaseAppContainer):
         vector_db_service=vector_db_service,
     )
 
+    blob_storage = providers.Resource(
+        container_utils.create_blob_storage,
+        logger=logger,
+        config_service=config_service,
+        graph_provider=graph_provider,
+    )
+
     indexing_pipeline = providers.Resource(
         container_utils.create_indexing_pipeline,
         logger=logger,
@@ -56,6 +63,7 @@ class IndexingAppContainer(BaseAppContainer):
         graph_provider=graph_provider,
         vector_db_service=vector_db_service,
         collection_registry=collection_registry,
+        blob_storage=blob_storage,
     )
 
     document_extractor = providers.Resource(
@@ -63,13 +71,6 @@ class IndexingAppContainer(BaseAppContainer):
         logger=logger,
         graph_provider=graph_provider,
         config_service=config_service,
-    )
-
-    blob_storage = providers.Resource(
-        container_utils.create_blob_storage,
-        logger=logger,
-        config_service=config_service,
-        graph_provider=graph_provider,
     )
 
     graphdb = providers.Resource(

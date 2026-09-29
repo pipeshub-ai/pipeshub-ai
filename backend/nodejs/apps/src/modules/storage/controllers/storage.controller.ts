@@ -49,6 +49,7 @@ import {
   getBaseUrl,
   getDocumentInfo,
   getFullDocumentPath,
+  storedCopies,
   getStorageVendor,
   getVersionFilePath,
   hasExtension,
@@ -359,6 +360,92 @@ export class StorageController {
       next(error);
     }
   }
+
+  /**
+   * Removes a document for good, once the record that owned it is deleted: every
+   * stored copy of its file (current and each version), then its metadata. A
+   * document that is already gone counts as removed, so a retried cleanup
+   * succeeds.
+   */
+  async purgeDocumentById(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = new mongoose.Types.ObjectId(extractOrgId(req));
+      const document = await DocumentModel.findOne({
+        _id: req.params.documentId,
+        orgId,
+      });
+      const documents = document ? [document] : [];
+      await this.purgeDocuments(documents, orgId, req);
+      res.status(HTTP_STATUS.OK).json({ purged: documents.length });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Removes every document filed under a virtual record's path
+   * (`records/{virtualRecordId}`), where indexing keeps the processed record.
+   * Several records can share one virtual record; the caller purges only once
+   * none of them is left.
+   */
+  async purgeVirtualRecordDocuments(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgIdText = extractOrgId(req);
+      const orgId = new mongoose.Types.ObjectId(orgIdText);
+      const documentPath = getFullDocumentPath(
+        orgIdText,
+        `records/${String(req.params.virtualRecordId)}`,
+      );
+      const documents = await DocumentModel.find({ orgId, documentPath });
+      await this.purgeDocuments(documents, orgId, req);
+      res.status(HTTP_STATUS.OK).json({ purged: documents.length });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Files first, metadata last: if a file cannot be removed its document is kept,
+   * so the next attempt can still find the file.
+   */
+  private async purgeDocuments(
+    documents: DocumentModel[],
+    orgId: mongoose.Types.ObjectId,
+    req: AuthenticatedServiceRequest,
+  ): Promise<void> {
+    if (documents.length === 0) {
+      return;
+    }
+    const adapter = await this.initializeStorageAdapter(req);
+    for (const document of documents) {
+      for (const copy of storedCopies(document)) {
+        try {
+          await adapter.deleteObject(copy);
+        } catch (error) {
+          this.logger.error(
+            'Could not remove a stored file; its document was kept',
+            {
+              documentId: String(document._id),
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+          throw new ServiceUnavailableError(
+            'Could not remove the stored file; the document was kept so the removal can be retried',
+          );
+        }
+      }
+      await DocumentModel.deleteOne({ _id: document._id, orgId });
+    }
+  }
+
   /**
    * Removes a new document whose direct upload never arrived. Refused unless a
    * signed URL was issued for it and storage confirms its file is absent, so a

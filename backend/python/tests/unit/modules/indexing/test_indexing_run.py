@@ -576,7 +576,7 @@ class TestPurgeConnectorByMembership:
             side_effect=lambda **kw: order.append("delete")
         )
         pipeline._forget_virtual_record_mappings = AsyncMock(
-            side_effect=lambda ids: order.append("forget")
+            side_effect=lambda ids, **_: order.append("forget")
         )
         _scroll_pages(pipeline, [[]], scan_points=[_point("vr-only", ["conn-1"])])
 

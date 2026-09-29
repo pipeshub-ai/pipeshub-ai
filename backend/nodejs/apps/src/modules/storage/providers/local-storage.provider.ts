@@ -152,6 +152,43 @@ class LocalStorageAdapter implements StorageServiceInterface {
   }
 
   /**
+   * Removes the file a document (or one of its versions) points at. A file that
+   * is already gone counts as removed, so a retried purge succeeds.
+   */
+  async deleteObject(document: Document): Promise<void> {
+    const localPath = this.getLocalPathFromUrl(
+      document.local?.localPath ?? document.local?.url,
+    );
+    if (localPath === null || localPath === '') {
+      throw new StorageNotFoundError('Local file path not found');
+    }
+    const fullPath = this.assertInsideMount(
+      path.join(this.mountPath, localPath),
+    );
+    try {
+      await fs.unlink(fullPath);
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'ENOENT') {
+        throw error;
+      }
+    }
+    await this.removeEmptyFoldersAbove(fullPath);
+  }
+
+  private async removeEmptyFoldersAbove(filePath: string): Promise<void> {
+    let folder = path.dirname(filePath);
+    while (folder.startsWith(this.mountPath + path.sep)) {
+      try {
+        await fs.rmdir(folder);
+      } catch {
+        // Not empty, or already gone: nothing above it can be empty either.
+        return;
+      }
+      folder = path.dirname(folder);
+    }
+  }
+
+  /**
    * Uploads a document to local storage
    */
   async uploadDocumentToStorageService(

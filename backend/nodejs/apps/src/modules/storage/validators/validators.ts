@@ -15,6 +15,21 @@ export const DocumentIdParams = z.object({
   }),
 });
 
+// Purges delete for good, so only a well-formed id may reach the query.
+export const PurgeDocumentParams = z.object({
+  params: z.object({
+    documentId: z.string().regex(/^[0-9a-f]{24}$/i, 'Not a document id'),
+  }),
+});
+
+export const PurgeVirtualRecordParams = z.object({
+  params: z.object({
+    virtualRecordId: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{1,128}$/, 'Not a virtual record id'),
+  }),
+});
+
 export const DocumentIdParamsWithVersion = z.object({
   params: z.object({
     documentId: z.string(),

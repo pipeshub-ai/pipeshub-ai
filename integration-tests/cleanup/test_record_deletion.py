@@ -5,16 +5,9 @@ storage and MongoDB — and until now only the graph was ever checked after a
 delete. These tests check each store separately, so a failure names the store
 that kept the data rather than reporting one undifferentiated "cleanup failed".
 
-Two of the four currently fail, and are marked as expected failures with the
-reason recorded against each. They are written as assertions of correct
-behaviour rather than of today's behaviour: pinning the current result would
-make the bug permanent, and the strict marker means that whoever fixes it is
-told to remove the marker rather than left wondering.
-
-The markers are deliberately on separate one-store tests. A strict expected
-failure applies to a whole test, so combining stores into a single test would
-let a regression in the working stores hide behind the known failure in the
-broken ones.
+Records with identical content share one virtual record id, and with it the
+embeddings and the processed-record envelope; those stay until the last copy is
+deleted. Each record's own uploaded file goes with that record.
 """
 
 from __future__ import annotations
@@ -28,26 +21,12 @@ import pytest_asyncio
 
 from helper import cleanup_sources as src
 from helper import delete_footprint as fp
-from helper.cleanup_errors import StoreNotEmptied
 
 logger = logging.getLogger("cleanup-record-deletion")
 
 pytestmark = [pytest.mark.integration, pytest.mark.cleanup]
 
-BLOB_ISSUE = (
-    "Deleting a record does not reach blob storage. The delete path publishes a "
-    "deleteRecord event whose scope is the graph and the vector database "
-    "(kb_service.py:1178 says so in as many words), and never calls the storage "
-    "service. The files are left behind and are not flagged either, so the "
-    "soft-delete flag that a scheduled clean-up would collect on is never set."
-)
 
-MONGO_ISSUE = (
-    "Deleting a record leaves its storage documents in MongoDB with "
-    "isDeleted still false. The soft-delete path exists "
-    "(storage.controller.ts:317) but only the storage API's own delete endpoint "
-    "reaches it, and the record delete does not call that endpoint."
-)
 
 
 class TestDeletingOneRecord:
@@ -78,7 +57,6 @@ class TestDeletingOneRecord:
 
         await fp.assert_graph_gone(graph_provider, graph_fp, timeout=120)
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=BLOB_ISSUE)
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_files_are_removed_from_blob_storage(
         self, indexed_record, kb_client, blob_store
@@ -91,7 +69,6 @@ class TestDeletingOneRecord:
 
         await blob_store.assert_blobs_gone(prefix, vendor, timeout=120)
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=MONGO_ISSUE)
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_storage_documents_are_removed_from_mongodb(
         self, indexed_record, kb_client, mongo_store
@@ -249,7 +226,6 @@ class TestDeletingOneOfTwoIdenticalRecords:
             f"The surviving copy no longer points at the shared content: {record}"
         )
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=BLOB_ISSUE)
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_deleted_copys_own_upload_is_removed(
         self, one_copy_deleted, blob_store, mongo_store
@@ -277,7 +253,6 @@ class TestDeletingTheLastCopy:
     async def test_the_last_copy_leaves_the_graph(self, last_copy_deleted, graph_provider) -> None:
         await fp.assert_graph_gone(graph_provider, last_copy_deleted["second_graph"], timeout=60)
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=BLOB_ISSUE)
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_envelope_and_uploads_are_removed_from_blob_storage(
         self, last_copy_deleted, blob_store, test_org_id
@@ -288,7 +263,6 @@ class TestDeletingTheLastCopy:
             blob_store, copies, fp.blob_keys_for(copies, test_org_id, records), vendor=last_copy_deleted["vendor"]
         )
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=MONGO_ISSUE)
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_storage_documents_are_removed_from_mongodb(
         self, last_copy_deleted, mongo_store, test_org_id

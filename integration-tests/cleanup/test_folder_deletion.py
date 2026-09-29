@@ -1,9 +1,8 @@
 """Deleting a folder has to take the records inside it with it.
 
-The cascade works. Deleting a folder removes the folder and the records it
-contains, from the graph and from the vector database — the first two tests
-guard that. Blob storage and MongoDB are left behind, the same way they are on
-the record and collection paths, which is the third and fourth.
+Deleting a folder removes the folder and the records it contains from the
+graph, the vector database, blob storage and MongoDB; the first four tests
+check one store each.
 
 The first four tests use a one-level folder with one record. The scenario at
 the end of the file nests a sub-folder (created with the ``?folderId=`` query
@@ -25,18 +24,11 @@ import requests
 
 from helper import cleanup_sources as src
 from helper import delete_footprint as fp
-from helper.cleanup_errors import StoreNotEmptied
 
 logger = logging.getLogger("cleanup-folder-deletion")
 
 pytestmark = [pytest.mark.integration, pytest.mark.cleanup]
 
-STORAGE_GAP = (
-    "The delete path's scope is the graph and the vector database "
-    "(kb_service.py:1178). Neither blob storage nor the storage documents in "
-    "MongoDB are touched, and the documents are not flagged either, so nothing "
-    "will collect them later. The same on all three delete paths."
-)
 
 
 def _delete_folder(kb_client, fixture) -> None:
@@ -77,7 +69,6 @@ class TestDeletingAFolder:
 
         await vector_store.assert_embeddings_gone(virtual_id, timeout=120)
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Folder delete: {STORAGE_GAP}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_records_files_are_removed(
         self, record_in_a_folder, kb_client, blob_store
@@ -90,7 +81,6 @@ class TestDeletingAFolder:
 
         await blob_store.assert_blobs_gone(prefix, vendor, timeout=120)
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Folder delete: {STORAGE_GAP}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_records_storage_documents_are_removed(
         self, record_in_a_folder, kb_client, mongo_store
@@ -198,7 +188,6 @@ class TestDeletingAFolderWithASubFolderAndSharedContent:
             timeout=30,
         )
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Folder delete: {STORAGE_GAP}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_files_are_removed_from_blob_storage(
         self, folder_tree_delete, blob_store, test_org_id
@@ -209,7 +198,6 @@ class TestDeletingAFolderWithASubFolderAndSharedContent:
         paths.append(before.upload_paths[folder_tree_delete["shared"].upload_document_id])
         await fp.assert_blobs_gone(blob_store, before, paths, vendor=folder_tree_delete["vendor"])
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Folder delete: {STORAGE_GAP}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_storage_documents_are_removed_from_mongodb(
         self, folder_tree_delete, mongo_store, test_org_id

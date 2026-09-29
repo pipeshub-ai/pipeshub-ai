@@ -1,10 +1,9 @@
 """Deleting a whole collection has to clear all four stores too.
 
-Deleting a collection is a different code path from deleting a record, and it
-behaves the same way: the graph and the vector database are cleared, blob
-storage and MongoDB are not. Testing both is what shows the gap is in the
-delete design rather than in one endpoint — a distinction that decides whether
-the fix is one call or a shared step every delete path needs.
+Deleting a collection is a different code path from deleting a record: the
+graph goes in one call, and the vector, blob and MongoDB cleanup follows from
+connector-scoped events rather than one event per record. Each store is checked
+on its own, so a failure names the store that kept the data.
 """
 
 from __future__ import annotations
@@ -18,18 +17,11 @@ import pytest_asyncio
 
 from helper import cleanup_sources as src
 from helper import delete_footprint as fp
-from helper.cleanup_errors import StoreNotEmptied
 
 logger = logging.getLogger("cleanup-collection-deletion")
 
 pytestmark = [pytest.mark.integration, pytest.mark.cleanup]
 
-SHARED_CAUSE = (
-    "The delete path's scope is the graph and the vector database "
-    "(kb_service.py:1178). Neither blob storage nor the storage documents in "
-    "MongoDB are touched, and the documents are not flagged either, so nothing "
-    "will collect them later."
-)
 
 
 class TestDeletingACollection:
@@ -47,7 +39,6 @@ class TestDeletingACollection:
 
         await vector_store.assert_embeddings_gone(virtual_id, timeout=120)
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Collection delete: {SHARED_CAUSE}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_files_are_removed_from_blob_storage(
         self, indexed_record, kb_client, blob_store
@@ -60,7 +51,6 @@ class TestDeletingACollection:
 
         await blob_store.assert_blobs_gone(prefix, vendor, timeout=120)
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Collection delete: {SHARED_CAUSE}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_storage_documents_are_removed_from_mongodb(
         self, indexed_record, kb_client, mongo_store
@@ -169,7 +159,6 @@ class TestDeletingACollectionWithFoldersAndSharedContent:
             [r.virtual_record_id for r in collection_delete["unique"]], timeout=30,
         )
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Collection delete: {SHARED_CAUSE}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_files_are_removed_from_blob_storage(
         self, collection_delete, blob_store, test_org_id
@@ -180,7 +169,6 @@ class TestDeletingACollectionWithFoldersAndSharedContent:
         paths.append(before.upload_paths[collection_delete["shared"].upload_document_id])
         await fp.assert_blobs_gone(blob_store, before, paths, vendor=collection_delete["vendor"])
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Collection delete: {SHARED_CAUSE}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_storage_documents_are_removed_from_mongodb(
         self, collection_delete, mongo_store, test_org_id

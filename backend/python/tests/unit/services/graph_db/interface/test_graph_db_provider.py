@@ -347,6 +347,7 @@ class TestAbstractMethodInventory:
         "delete_record_by_external_id",
         "remove_user_access_to_record",
         "delete_records_recursive",
+        "get_uploaded_document_ids",
         "delete_single_record",
         "delete_connector_instance",
         "get_key_by_external_file_id",

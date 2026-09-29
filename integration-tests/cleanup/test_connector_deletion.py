@@ -12,9 +12,7 @@ The scenario, built once for the module:
 * ``other``: a PostgreSQL connector, a different type, over its own schema.
 
 Everything is counted before ``doomed`` is deleted; each test then checks one
-store, or one survivor, so a failure names what went wrong. Blob storage and
-MongoDB are never cleaned by a connector delete today: those two tests are
-strict expected failures and will turn red, on purpose, when that is fixed.
+store, or one survivor, so a failure names what went wrong.
 """
 
 from __future__ import annotations
@@ -28,19 +26,12 @@ import pytest_asyncio
 
 from helper import cleanup_sources as src
 from helper import delete_footprint as fp
-from helper.cleanup_errors import StoreNotEmptied
 from helper.run_folder import new_run_folder
 
 logger = logging.getLogger("cleanup-connector-deletion")
 
 pytestmark = [pytest.mark.integration, pytest.mark.cleanup]
 
-STORAGE_GAP = (
-    "A connector delete clears the graph, the vector database and the connector's "
-    "config (event_service.py _handle_delete) but never calls the storage service, "
-    "so each record's processed envelope under {orgId}/PipesHub/records/{vrid} stays "
-    "in blob storage and its storage document stays in MongoDB."
-)
 
 SHARED = b"# Kestrel Ringing Log\n\nEvery ring is logged with its date, site and ringer.\n"
 
@@ -182,7 +173,6 @@ class TestDeletingAConnector:
         )
         await vector_store.assert_connector_embeddings_gone(connector_delete["connector_id"], timeout=60)
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Connector delete: {STORAGE_GAP}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_files_are_removed_from_blob_storage(
         self, connector_delete, blob_store, test_org_id
@@ -193,7 +183,6 @@ class TestDeletingAConnector:
             vendor=connector_delete["vendor"],
         )
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Connector delete: {STORAGE_GAP}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_storage_documents_are_removed_from_mongodb(
         self, connector_delete, mongo_store, test_org_id

@@ -328,6 +328,17 @@ class RecordEventHandler(BaseEventService):
             return False
         return bool(containers.get("blocks") or containers.get("block_groups"))
 
+    async def _purge_stored_documents(self, org_id: str, document_ids: list[str]) -> None:
+        pipeline = self.event_processor.processor.indexing_pipeline
+        still_stored = await pipeline.purge_stored_documents(org_id, document_ids)
+        if still_stored:
+            # Transient: redelivered with backoff, then dead-lettered, where it
+            # stays visible and replayable.
+            raise IndexingError(
+                "Some stored files of deleted records could not be removed",
+                details={"org_id": org_id, "document_ids": still_stored},
+            )
+
     async def _delete_vector_collection(self, payload: dict | None = None) -> AsyncGenerator[PipelineEvent, None]:
         # The cleanup job polls for a phase and otherwise waits out its whole
         # deadline, so every exit from here must publish one — a failure
@@ -675,6 +686,19 @@ class RecordEventHandler(BaseEventService):
                     yield event
                 return
 
+            if event_type == EventTypes.DELETE_STORED_DOCUMENTS.value:
+                org_id = payload.get("orgId")
+                document_ids = payload.get("documentIds") or []
+                if not org_id:
+                    raise ProcessingError(
+                        "deleteStoredDocuments carries no orgId",
+                        details={"payload_keys": sorted(payload.keys())},
+                    )
+                await self._purge_stored_documents(org_id, document_ids)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="stored_documents", count=len(document_ids)))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="stored_documents", count=len(document_ids)))
+                return
+
             # For all other event types, require record_id
             record_id = payload.get("recordId")
             extension = payload.get("extension", "unknown")
@@ -702,6 +726,11 @@ class RecordEventHandler(BaseEventService):
             # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
                 await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([ virtual_record_id])
+                # The record's own uploaded file, a separate step from the vectors:
+                # re-running the vector delete on a retry is harmless.
+                upload_document_id = payload.get("uploadDocumentId")
+                if upload_document_id and payload.get("orgId"):
+                    await self._purge_stored_documents(payload["orgId"], [upload_document_id])
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))

@@ -137,6 +137,7 @@ from app.services.graph_db.common.utils import (
     ROOT_SCOPED_CONNECTOR_TYPES,
     build_connector_stats_response,
     dedupe_agents_by_id,
+    uploaded_document_id,
 )
 from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
@@ -11930,6 +11931,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "summaryDocumentId": record.get("summaryDocumentId"),
                 "virtualRecordId": record.get("virtualRecordId"),
                 "connectorId": record.get("connectorId"),
+                "uploadDocumentId": uploaded_document_id(record, file_record),
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
@@ -12402,6 +12404,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return False
 
 
+    async def get_uploaded_document_ids(
+        self, connector_id: str, transaction: str | None = None
+    ) -> list[str]:
+        rows = await self.execute_query(
+            """
+            FOR r IN @@records
+                FILTER r.connectorId == @connector_id AND r.origin == @upload
+                LET t = FIRST(FOR v IN 1..1 OUTBOUND r._id @@is_of_type RETURN v)
+                RETURN {origin: r.origin, externalRecordId: r.externalRecordId, isFile: t.isFile}
+            """,
+            bind_vars={
+                "connector_id": connector_id,
+                "upload": OriginTypes.UPLOAD.value,
+                "@records": CollectionNames.RECORDS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+            },
+            transaction=transaction,
+        )
+        ids = (
+            uploaded_document_id(row, {"isFile": row.get("isFile")})
+            for row in rows or []
+        )
+        return list(dict.fromkeys(i for i in ids if i))
+
     async def delete_records_recursive(
         self,
         record_ids: list[str],
@@ -12548,9 +12574,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 try:
                     for rt in records_with_type:
                         rec = rt["record"]
-                        if not rec.get("virtualRecordId"):
-                            continue
                         type_doc = (rt.get("type_target") or {}).get("doc") or {}
+                        # An upload that never indexed still has its file to remove.
+                        if not rec.get("virtualRecordId") and not uploaded_document_id(rec, type_doc):
+                            continue
                         delete_payload = await self._create_deleted_record_event_payload(rec, type_doc)
                         if delete_payload:
                             delete_payload["connectorName"] = rec.get("connectorName")
@@ -12651,9 +12678,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 try:
                     for rt in records_with_type:
                         rec = rt["record"]
-                        if not rec.get("virtualRecordId"):
-                            continue
                         type_doc = (rt.get("type_target") or {}).get("doc") or {}
+                        # An upload that never indexed still has its file to remove.
+                        if not rec.get("virtualRecordId") and not uploaded_document_id(rec, type_doc):
+                            continue
                         delete_payload = await self._create_deleted_record_event_payload(rec, type_doc)
                         if delete_payload:
                             delete_payload["connectorName"] = rec.get("connectorName")

@@ -2307,6 +2307,41 @@ class BlobStorage(Transformer):
                 "priorStorageVersion": prior_storage_version,
             }
 
+    async def purge_document(self, org_id: str, document_id: str) -> int:
+        """Remove a storage document and every stored copy of its file.
+
+        Returns how many documents were removed (0 when it was already gone).
+        Raises when storage could not remove it; the document is then kept, so
+        calling again is safe.
+        """
+        return await self._purge(
+            org_id, Routes.STORAGE_PURGE_DOCUMENT.value.format(documentId=document_id)
+        )
+
+    async def purge_virtual_record_documents(self, org_id: str, virtual_record_id: str) -> int:
+        """Remove every storage document filed under ``records/{virtual_record_id}``.
+
+        Only for a virtual record no record uses any more: records with identical
+        content share it.
+        """
+        return await self._purge(
+            org_id,
+            Routes.STORAGE_PURGE_VIRTUAL_RECORD.value.format(virtualRecordId=virtual_record_id),
+        )
+
+    async def _purge(self, org_id: str, route: str) -> int:
+        headers, nodejs_endpoint, _storage_type = await self._get_auth_and_config(org_id)
+        async with _borrowed_session() as session, session.delete(
+            f"{nodejs_endpoint}{route}", headers=headers
+        ) as response:
+            if response.status != HttpStatusCode.SUCCESS.value:
+                error_text = (await response.text())[:500]
+                raise _storage_status_error(
+                    response.status,
+                    f"Storage purge {route} failed (status {response.status}): {error_text}",
+                )
+            return int((await response.json()).get("purged", 0))
+
     async def get_document_version_history(self, org_id: str, document_id: str) -> list[dict]:
         """Fetch the authoritative ``versionHistory`` array for `document_id`
         straight from the storage document (``GET /internal/{documentId}``).

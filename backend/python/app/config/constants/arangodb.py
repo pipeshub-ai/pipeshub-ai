@@ -664,6 +664,7 @@ class EventTypes(Enum):
     DELETE_CONNECTOR_EMBEDDINGS = "deleteConnectorEmbeddings"
     SYNC_VECTOR_MEMBERSHIP = "syncVectorMembership"
     DELETE_VECTOR_COLLECTION = "deleteVectorCollection"
+    DELETE_STORED_DOCUMENTS = "deleteStoredDocuments"
 
 
 class AccountType(Enum):

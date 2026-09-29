@@ -13,6 +13,7 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.vector_cleanup_events import (
     build_connector_vector_cleanup_events,
+    build_stored_document_cleanup_events,
     log_cleanup_publish_failure,
 )
 from app.models.entities import FileRecord, RecordType
@@ -698,6 +699,16 @@ class KnowledgeBaseService:
 
             self.logger.info(f"🔐 User {user_key} has OWNER permission - proceeding with deletion")
 
+            # Listed first: once the records are gone nothing points at these files.
+            try:
+                uploaded_files = await self.graph_provider.get_uploaded_document_ids(kb_id)
+            except Exception as e:
+                uploaded_files = []
+                self.logger.error(
+                    "Could not list the uploaded files of knowledge base %s; they will "
+                    "stay in storage after it is deleted: %s", kb_id, e,
+                )
+
             result = await self.graph_provider.delete_connector_instance(
                 connector_id=kb_id, org_id=org_id
             )
@@ -729,7 +740,7 @@ class KnowledgeBaseService:
                 connector_name=result.get("connector_name"),
                 record_group_ids=result.get("record_group_ids", []),
                 virtual_record_ids=result.get("virtual_record_ids", []),
-            )
+            ) + build_stored_document_cleanup_events(org_id=org_id, document_ids=uploaded_files)
             published = 0
             for event in events:
                 try:

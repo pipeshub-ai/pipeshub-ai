@@ -271,6 +271,41 @@ export function getCurrentFilePath(
 }
 
 /**
+ * Every file a document keeps in storage: the current one and one per version,
+ * each as a document-shaped value a storage adapter can delete. Versions that
+ * point at the same place as another copy are listed once.
+ */
+export function storedCopies(document: Document): Document[] {
+  const base: Document =
+    typeof (document as { toObject?: () => Document }).toObject === 'function'
+      ? (document as unknown as { toObject: () => Document }).toObject()
+      : document;
+  const locations = [
+    { s3: base.s3, azureBlob: base.azureBlob, local: base.local },
+    ...(base.versionHistory ?? []).map((version) => ({
+      s3: version.s3,
+      azureBlob: version.azureBlob,
+      local: version.local,
+    })),
+  ];
+  const seen = new Set<string>();
+  const copies: Document[] = [];
+  for (const location of locations) {
+    const key =
+      location.s3?.url ??
+      location.azureBlob?.url ??
+      location.local?.localPath ??
+      location.local?.url;
+    if (key === undefined || key === '' || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    copies.push({ ...base, ...location });
+  }
+  return copies;
+}
+
+/**
  * Returns the root folder path for a document (org + optional sub-path + documentId).
  * e.g. 'org1/PipesHub/Finance/doc1'
  */
