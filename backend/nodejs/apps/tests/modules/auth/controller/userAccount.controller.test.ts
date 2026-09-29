@@ -3943,6 +3943,23 @@ describe('UserAccountController', () => {
       expect(next.firstCall.args[0].message).to.include('already in use')
     })
 
+    it('does not sync the graph when Mongo has no user for the token', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves(null)
+
+      const req: any = {
+        tokenPayload: { userId: 'u1', newEmail: 'new@example.com', orgId: 'org1' },
+        ip: '127.0.0.1',
+      }
+
+      await controller.validateEmailChange(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError)
+      expect((controller as any).syncVerifiedEmailToGraph.called).to.be.false
+      expect(res.status.called).to.be.false
+    })
+
     it('should call next on unexpected error', async () => {
       sinon.stub(Users, 'findOne').rejects(new Error('DB error'))
 
