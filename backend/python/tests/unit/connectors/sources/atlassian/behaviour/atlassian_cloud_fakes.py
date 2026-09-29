@@ -128,6 +128,9 @@ class CloudRecordsDb(FakeRecordsDb):
         rows = [r for r in self._stored_by_id(after_key) if r.external_record_group_id == external_group_id]
         return rows[:limit]
 
+    async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Any:  # noqa: ANN401
+        return self.record_groups.get(external_id)
+
     async def get_records_by_status(
         self, connector_id: str, status_filters: list[str] | None, limit: int | None = None,
         after_key: str | None = None, **_: object,
