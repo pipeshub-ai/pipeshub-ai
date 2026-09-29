@@ -675,8 +675,9 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 
     async def delete_sync_point(self, sync_point_key: str) -> None:
-        return await self.graph_provider.remove_sync_point([sync_point_key],
+        return await self.graph_provider.remove_sync_point(sync_point_key,
                     collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+
     async def read_sync_point(self, sync_point_key: str, *, raise_on_error: bool = False) -> Optional[dict]:
         return await self.graph_provider.get_sync_point(
             sync_point_key,

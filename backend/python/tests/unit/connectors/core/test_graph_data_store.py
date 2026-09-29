@@ -278,7 +278,11 @@ class TestGraphTransactionStore:
     @pytest.mark.asyncio
     async def test_delete_sync_point(self, tx_store, mock_graph_provider) -> None:
         await tx_store.delete_sync_point("sp1")
-        mock_graph_provider.remove_sync_point.assert_awaited_once()
+        # Both providers match syncPointKey by equality, so a key wrapped in a
+        # list matches no stored sync point and the delete silently does nothing.
+        mock_graph_provider.remove_sync_point.assert_awaited_once_with(
+            "sp1", collection="syncPoints", transaction="txn-123"
+        )
 
     @pytest.mark.asyncio
     async def test_read_sync_point(self, tx_store, mock_graph_provider) -> None:
