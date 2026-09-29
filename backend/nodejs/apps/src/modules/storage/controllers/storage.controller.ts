@@ -606,6 +606,13 @@ export class StorageController {
       const currentVersionNote = req.body.currentVersionNote;
       const nextVersionNote = req.body.nextVersionNote;
       const userId = extractUserId(req);
+      // Converted before any storage write, so a malformed id can't leave new bytes behind a stale record.
+      const initiatedByUserId = userId
+        ? (toObjectId(
+            userId,
+            'user',
+          ) as unknown as mongoose.Schema.Types.ObjectId)
+        : undefined;
       const orgId = extractOrgId(req);
       const docResult: DocumentInfoResponse | undefined = await getDocumentInfo(
         req,
@@ -701,12 +708,7 @@ export class StorageController {
           size: document.sizeInBytes,
           extension: document.extension,
           note: currentVersionNote,
-          initiatedByUserId: userId
-            ? (toObjectId(
-                userId,
-                'user',
-              ) as unknown as mongoose.Schema.Types.ObjectId)
-            : undefined,
+          initiatedByUserId,
           createdAt: Date.now(),
         });
       } else {
@@ -774,12 +776,7 @@ export class StorageController {
             size: document.sizeInBytes,
             extension: document.extension,
             note: currentVersionNote,
-            initiatedByUserId: userId
-              ? (toObjectId(
-                  userId,
-                  'user',
-                ) as unknown as mongoose.Schema.Types.ObjectId)
-              : undefined,
+            initiatedByUserId,
             createdAt: Date.now(),
           });
         }
@@ -839,12 +836,7 @@ export class StorageController {
         mutationCount: document.mutationCount,
         extension: fileExtension,
         note: nextVersionNote,
-        initiatedByUserId: userId
-          ? (toObjectId(
-              userId,
-              'user',
-            ) as unknown as mongoose.Schema.Types.ObjectId)
-          : undefined,
+        initiatedByUserId,
         createdAt: Date.now(),
       });
       if (storageType === StorageVendor.S3 && currentResponse?.data) {
@@ -874,6 +866,13 @@ export class StorageController {
         (req.body as { version?: number })?.version;
       const { note } = req.body as { note: string };
       const userId = extractUserId(req);
+      // Converted before any storage write, so a malformed id can't leave new bytes behind a stale record.
+      const initiatedByUserId = userId
+        ? (toObjectId(
+            userId,
+            'user',
+          ) as unknown as mongoose.Schema.Types.ObjectId)
+        : undefined;
       const orgId = extractOrgId(req);
       const docResult: DocumentInfoResponse | undefined = await getDocumentInfo(
         req,
@@ -981,12 +980,7 @@ export class StorageController {
         extension: document.extension,
         note: note,
         size: document.versionHistory[versionNum]?.size,
-        initiatedByUserId: userId
-          ? (toObjectId(
-              userId,
-              'user',
-            ) as unknown as mongoose.Schema.Types.ObjectId)
-          : undefined,
+        initiatedByUserId,
         createdAt: Date.now(),
       });
 
