@@ -180,26 +180,44 @@ class RenderBudget:
 
     @property
     def blocks_exhausted(self) -> bool:
-        return self.max_blocks is not None and self.blocks_used >= self.max_blocks
+        """`max_blocks` is per record, as the fetch tool describes it; the
+        character allowance is what bounds the call as a whole."""
+        if self.max_blocks is None:
+            return False
+        state = self._records.get(self._current) if self._current is not None else None
+        used = state.blocks_rendered if state is not None else self.blocks_used
+        return used >= self.max_blocks
 
     def can_afford(self, text: str) -> bool:
-        return len(text) <= self.chars_remaining
+        return self.can_afford_chars(len(text))
+
+    def can_afford_chars(self, chars: int) -> bool:
+        return chars <= self.chars_remaining
 
     def charge(self, text: str) -> None:
         """Record characters spent. Callers that build a block's text in
         pieces (a table's rows) charge as they go."""
-        self.chars_used += len(text)
+        self.charge_chars(len(text))
+
+    def charge_chars(self, chars: int) -> None:
+        """`charge` for text whose exact form is decided later (a template
+        render, an image marker chosen after admission): the caller charges
+        an upper bound now."""
+        self.chars_used += chars
         if self._current is not None:
             state = self._records[self._current]
-            state.chars_rendered += len(text)
-            state.spent += len(text)
+            state.chars_rendered += chars
+            state.spent += chars
 
     def charge_framing(self, text: str) -> None:
         """Record characters spent on framing around the blocks."""
-        self.chars_used += len(text)
-        self.framing_chars += len(text)
+        self.charge_framing_chars(len(text))
+
+    def charge_framing_chars(self, chars: int) -> None:
+        self.chars_used += chars
+        self.framing_chars += chars
         if self._current is not None:
-            self._records[self._current].spent += len(text)
+            self._records[self._current].spent += chars
 
     def take(self, text: str) -> str | None:
         """The text to emit, or None when there is no room left.

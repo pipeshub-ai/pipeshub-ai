@@ -29,7 +29,10 @@ from tests.unit.agent_loop_lib.transport.test_azure_direct_transport import (
     _transport,
     _wire,
 )
-from tests.unit.agents.adapter.support.scripted_transport import ScriptedStep, ScriptedTransport
+from tests.unit.agents.adapter.support.scripted_transport import (
+    ScriptedStep,
+    ScriptedTransport,
+)
 
 _SECRET = "the confidential question text"
 
@@ -45,7 +48,7 @@ class _Model:
     async def ainvoke(self, messages: list, config: Any = None) -> AIMessage:  # noqa: ANN401
         return self._response
 
-    async def astream(self, messages: list, config: Any = None):  # noqa: ANN401, ANN201
+    async def astream(self, messages: list, config: Any = None):  # noqa: ANN401
         for chunk in self._chunks:
             yield chunk
 

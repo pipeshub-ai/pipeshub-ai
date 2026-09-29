@@ -13,14 +13,31 @@ from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.context.base import ContextBudget
 from app.agent_loop_lib.core.finish_moves import can_call, finish_move
-from app.agent_loop_lib.core.messages import AssistantMessage, ToolCall, ToolMessage, UserMessage
+from app.agent_loop_lib.core.messages import (
+    AssistantMessage,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+)
 from app.agent_loop_lib.core.scope import RunScope, TurnScope
 from app.agent_loop_lib.core.types import AgentTurn, Goal, ToolResult
 from app.agent_loop_lib.hooks.middleware.builtin.stall_detection import stall_detection
-from app.agent_loop_lib.hooks.middleware.builtin.truncation_recovery import default_truncation_recovery
-from app.agent_loop_lib.hooks.middleware.context import ModelCallContext, ModelResponseContext, TurnContext
+from app.agent_loop_lib.hooks.middleware.builtin.truncation_recovery import (
+    default_truncation_recovery,
+)
+from app.agent_loop_lib.hooks.middleware.context import (
+    ModelCallContext,
+    ModelResponseContext,
+    TurnContext,
+)
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
-from app.agent_loop_lib.tools.base import ParameterType, Tag, Tool, ToolOutput, ToolParameter
+from app.agent_loop_lib.tools.base import (
+    ParameterType,
+    Tag,
+    Tool,
+    ToolOutput,
+    ToolParameter,
+)
 from app.agent_loop_lib.tools.builtin.planning.task_complete import TaskCompleteTool
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.tools.tags import TAG_DEDUP_EXACT

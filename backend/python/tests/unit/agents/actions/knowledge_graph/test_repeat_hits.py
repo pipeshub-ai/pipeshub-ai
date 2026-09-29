@@ -10,9 +10,9 @@ import pytest
 
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_GRANTED_KEY
 from app.agents.actions.knowledge_graph.ops.repeat_hits import (
+    _CLUSTER_SPAN_BLOCKS,
     READ_RECORD_IDS_KEY,
     REPEAT_HIT_SEARCHES,
-    _CLUSTER_SPAN_BLOCKS,
     cluster_start,
     mark_read,
     observe_search,
@@ -22,7 +22,10 @@ from app.agents.actions.knowledge_graph.ops.search import execute_search
 from app.modules.retrieval.context.builder import KnowledgeContext
 from app.modules.retrieval.context.neighbours import NEIGHBOUR_KEY
 from app.modules.retrieval.context.renderer import RenderedKnowledge
-from tests.unit.agents.actions.knowledge_graph.test_fetch import _fetch_records, _text_record
+from tests.unit.agents.actions.knowledge_graph.test_fetch import (
+    _fetch_records,
+    _text_record,
+)
 
 _SEARCH = "app.agents.actions.knowledge_graph.ops.search"
 _RECORDS = {"vr1": {"id": "r1"}, "vr2": {"id": "r2"}}
