@@ -12,7 +12,6 @@ import {
   extractOrgId,
   extractUserId,
   toObjectId,
-
   validateFileAndDocumentName,
   getDocumentInfo,
   generatePresignedUrlForDirectUpload,
@@ -280,7 +279,18 @@ describe('storage/utils/utils', () => {
     })
 
     // new ObjectId('user-123') throws a BSONError, which the error middleware answers with 500.
-    for (const [id, kind] of [['user-123', 'user'], ['org-1', 'organization'], ['', 'user']] as const) {
+    // A number and a 12-character string are not ids a token should carry; new ObjectId(6)
+    // would build an unrelated timestamp id instead of failing.
+    const malformed: ReadonlyArray<readonly [unknown, 'organization' | 'user']> = [
+      ['user-123', 'user'],
+      ['org-1', 'organization'],
+      ['', 'user'],
+      [6, 'organization'],
+      [1234567890123, 'user'],
+      ['0123456789ab', 'organization'],
+      [{ id: '64d000000000000000000a01' }, 'user'],
+    ]
+    for (const [id, kind] of malformed) {
       it(`should throw BadRequestError naming the ${kind} id for ${JSON.stringify(id)}`, () => {
         expect(() => toObjectId(id, kind))
           .to.throw(BadRequestError)

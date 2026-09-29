@@ -544,12 +544,14 @@ export function serveFileFromLocalStorage(document: Document, res: Response, ver
 /**
  * The org and user ids come from the caller's token. A malformed one makes
  * `new ObjectId` throw a BSONError, which reaches the client as a 500.
+ * isValidObjectId is not enough: it passes a number, which ObjectId turns into
+ * a made-up timestamp id that matches nothing.
  */
 export function toObjectId(
-  id: string,
+  id: unknown,
   kind: 'organization' | 'user',
 ): mongoose.Types.ObjectId {
-  if (!mongoose.isValidObjectId(id)) {
+  if (typeof id !== 'string' || !mongoose.isObjectIdOrHexString(id)) {
     throw new BadRequestError(
       `The ${kind} id in the storage token isn't valid. Issue the token with the 24-character id of an existing ${kind}, then try again.`,
     );
