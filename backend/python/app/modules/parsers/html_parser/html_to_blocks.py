@@ -45,6 +45,14 @@ Block / group mapping (mirrors markdown_to_blocks.MarkdownToBlocksConverter):
     hr               → skipped (no block emitted)
     img              → Block(IMAGE)  (uri from caption_map alt → base64, or inline
                          data:image src; HTTP src alone does not emit a block)
+                         Author alt → media_metadata.alt_text; <figcaption>
+                         (else the alt) → image_metadata.captions.
+                         Icon-sized images inside running text become their
+                         alt text instead of splitting the paragraph.
+
+    a (image only,   → "[label]" text, label from title / alt / target path
+    before text in     (not for page controls such as edit or back-to-top)
+    li / td / th)
 
     div / section /… → recurse into children, or emit Block(TEXT, PARAGRAPH) when
                        the node has text but no block-level descendants.
@@ -60,11 +68,12 @@ Block / group mapping (mirrors markdown_to_blocks.MarkdownToBlocksConverter):
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from collections.abc import Callable
 from typing import Iterator
-from urllib.parse import urljoin
+from urllib.parse import unquote, urljoin, urlsplit
 from uuid import uuid4
 
 from selectolax.lexbor import LexborHTMLParser, LexborNode
@@ -91,9 +100,12 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
     ImageMetadata,
+    MediaMetadata,
     TableMetadata,
 )
 from app.modules.parsers.text_splitting import split_long_text
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Tag classification
@@ -578,6 +590,212 @@ def _resolve_relative_links_on_tree(root: LexborNode, base_url: str) -> None:
         if href.startswith(("http://", "https://", "mailto:", "#", "data:")):
             continue
         anchor.attrs["href"] = urljoin(base_url, href)
+
+
+# Set by ``SelectolaxHtmlParser.extract_and_replace_images``, which rewrites
+# ``alt`` to a lookup key for the downloaded image; this keeps the author's alt.
+ORIGINAL_ALT_ATTR = "data-ph-alt"
+
+_ICON_MAX_PX = 32
+_ICON_LINK_CELL_TAGS = frozenset({"li", "td", "th"})
+_ICON_TEXT_CONTAINER_TAGS = frozenset({
+    "p", "li", "td", "th", "dd", "dt", "figcaption", "caption", "address",
+    *_HEADING_TAGS,
+})
+_GENERIC_LINK_LABELS = frozenset({
+    "edit", "top", "back to top", "icon", "image", "link", "permalink",
+    "anchor", "external link", "more", "print", "share", "download",
+})
+_IMAGE_FILE_RE = re.compile(r"\.(?:png|jpe?g|gif|svg|webp|bmp|ico|tiff?)$", re.IGNORECASE)
+_PAGE_EXTENSION_RE = re.compile(r"\.(?:html?|php|aspx?|jsp)$", re.IGNORECASE)
+
+
+def original_alt(img: LexborNode) -> str:
+    """The alt text the author wrote, even after the alt was rewritten to a key."""
+    attrs = img.attributes or {}
+    if ORIGINAL_ALT_ATTR in attrs:
+        return (attrs.get(ORIGINAL_ALT_ATTR) or "").strip()
+    return (attrs.get("alt") or "").strip()
+
+
+def _pixel_size(value: str | None) -> int | None:
+    match = re.match(r"\s*(\d+)(?:\.\d+)?\s*(?:px)?\s*$", value or "")
+    return int(match.group(1)) if match else None
+
+
+def _is_icon_image(img: LexborNode) -> bool:
+    """Declared no larger than an icon in every dimension the markup gives."""
+    attrs = img.attributes or {}
+    sizes = [_pixel_size(attrs.get(name)) for name in ("width", "height") if attrs.get(name)]
+    return bool(sizes) and all(size is not None and size <= _ICON_MAX_PX for size in sizes)
+
+
+def _nearest_ancestor(node: LexborNode, tags: frozenset[str]) -> LexborNode | None:
+    parent = node.parent
+    while parent is not None:
+        if _tag_name(parent) in tags:
+            return parent
+        parent = parent.parent
+    return None
+
+
+def _is_descendant(node: LexborNode, ancestor: LexborNode) -> bool:
+    parent = node.parent
+    while parent is not None:
+        if parent == ancestor:
+            return True
+        parent = parent.parent
+    return False
+
+
+def _text_around(container: LexborNode, target: LexborNode) -> tuple[bool, bool]:
+    """Whether ``container`` has visible text before and after ``target``."""
+    before = after = seen = False
+    for node in container.traverse(include_text=True):
+        if node == target:
+            seen = True
+            continue
+        if _tag_name(node) is not None or not node.text(deep=False).strip():
+            continue
+        if seen and _is_descendant(node, target):
+            continue
+        if seen:
+            after = True
+        else:
+            before = True
+    return before, after
+
+
+def _replace_with_inline_text(node: LexborNode, text: str) -> None:
+    """Replace ``node`` with ``text``, joined into the text node after it.
+
+    One text node rather than two siblings: table cells join each child on
+    its own line, which would put a label on a different line from its name.
+    """
+    previous = node.prev
+    if previous is not None and _tag_name(previous) is None:
+        preceding = previous.text(deep=False)
+        if preceding and not preceding[-1].isspace():
+            text = " " + text
+    following_node = node.next
+    if following_node is not None and _tag_name(following_node) is None:
+        following = following_node.text(deep=False)
+        joiner = "" if not following or following[0].isspace() else " "
+        following_node.replace_with(text + joiner + following)
+        node.decompose()
+        return
+    node.replace_with(text + " ")
+
+
+def _label_from_target(href: str) -> str:
+    """A readable name from the last path segment of a link target, or ``""``."""
+    if not href or href.startswith(("#", "javascript:", "mailto:", "data:")):
+        return ""
+    try:
+        path = urlsplit(href).path
+    except ValueError:
+        return ""
+    segment = unquote(path.rstrip("/").rsplit("/", 1)[-1]).strip()
+    if not segment or segment.isdigit() or _IMAGE_FILE_RE.search(segment):
+        return ""
+    segment = _PAGE_EXTENSION_RE.sub("", segment)
+    return re.sub(r"[_\s]+", " ", segment).strip()
+
+
+def _icon_link_label(anchor: LexborNode, img: LexborNode) -> str:
+    """The name an icon link stands for, or ``""`` when it is a page control.
+
+    A generic title or alt ("Edit", "Top") marks a control, so it ends the
+    search rather than falling through to the target. A target with a query
+    string is an action, not a thing, and yields no name either.
+    """
+    attrs = anchor.attributes or {}
+    for candidate in ((attrs.get("title") or "").strip(), original_alt(img)):
+        if candidate:
+            return "" if candidate.lower() in _GENERIC_LINK_LABELS else candidate
+    href = (attrs.get("href") or "").strip()
+    if "?" in href:
+        return ""
+    label = _label_from_target(href)
+    return "" if label.lower() in _GENERIC_LINK_LABELS else label
+
+
+def _label_icon_only_links(root: LexborNode) -> int:
+    """Replace an image-only link that introduces a list item or cell with ``[label]``.
+
+    Such a link (a flag or logo in front of a name) carries the only mention
+    of what it links to; left as an image it is dropped whenever the image
+    cannot be stored. Links with no usable label, or not placed before text,
+    are left alone so edit and back-to-top controls do not turn into words.
+    """
+    labelled = 0
+    for anchor in root.css("a"):
+        if anchor.text(deep=True).strip():
+            continue
+        images = anchor.css("img")
+        if not images:
+            continue
+        cell = _nearest_ancestor(anchor, _ICON_LINK_CELL_TAGS)
+        if cell is None:
+            continue
+        before, after = _text_around(cell, anchor)
+        if before or not after:
+            continue
+        label = _icon_link_label(anchor, images[0])
+        if not label:
+            continue
+        _replace_with_inline_text(anchor, f"[{label}]")
+        labelled += 1
+    return labelled
+
+
+def _inline_icons_as_text(root: LexborNode) -> int:
+    """Replace icon-sized images inside running text with their alt text.
+
+    Left as images they split the paragraph into separate text blocks around
+    an image block that carries nothing a reader needs.
+    """
+    replaced = 0
+    for img in root.css("img"):
+        if not _is_icon_image(img):
+            continue
+        container = _nearest_ancestor(img, _ICON_TEXT_CONTAINER_TAGS)
+        if container is None:
+            continue
+        if not any(_text_around(container, img)):
+            continue
+        alt = original_alt(img)
+        if alt:
+            _replace_with_inline_text(img, alt)
+        else:
+            img.decompose()
+        replaced += 1
+    return replaced
+
+
+def _figure_captions(root: LexborNode) -> dict[str, str]:
+    """``alt`` → ``<figcaption>`` text for images inside a ``<figure>``."""
+    captions: dict[str, str] = {}
+    for figure in root.css("figure"):
+        caption_node = figure.css_first("figcaption")
+        caption = _node_text(caption_node) if caption_node is not None else ""
+        if not caption:
+            continue
+        for img in figure.css("img"):
+            alt = ((img.attributes or {}).get("alt") or "").strip()
+            if alt:
+                captions.setdefault(alt, caption)
+    return captions
+
+
+def _original_alts(root: LexborNode) -> dict[str, str]:
+    """Lookup key → author alt, for images whose alt was rewritten to a key."""
+    mapping: dict[str, str] = {}
+    for img in root.css("img"):
+        attrs = img.attributes or {}
+        if ORIGINAL_ALT_ATTR in attrs and attrs.get("alt"):
+            mapping[attrs["alt"].strip()] = (attrs.get(ORIGINAL_ALT_ATTR) or "").strip()
+    return mapping
 
 
 # ---------------------------------------------------------------------------
@@ -1192,11 +1410,20 @@ class HtmlToBlocksConverter:
             return BlocksContainer()
         if base_url:
             _resolve_relative_links_on_tree(root, base_url)
+        labelled = _label_icon_only_links(root)
+        inlined = _inline_icons_as_text(root)
+        if labelled or inlined:
+            logger.debug(
+                "HTML parse: labelled %d icon-only link(s), inlined %d icon image(s)",
+                labelled, inlined,
+            )
         title_node = parser.css_first("head > title")
         document_title = _node_text(title_node) if title_node is not None else ""
         walker = _DomWalker(
             caption_map=caption_map,
             document_title=document_title,
+            original_alts=_original_alts(root),
+            figure_captions=_figure_captions(root),
         )
         return walker.walk(root)
 
@@ -1218,6 +1445,8 @@ class _DomWalker:
         *,
         caption_map: dict[str, str] | None = None,
         document_title: str | None = None,
+        original_alts: dict[str, str] | None = None,
+        figure_captions: dict[str, str] | None = None,
     ) -> None:
         """Initialize walker state for one conversion pass.
 
@@ -1225,8 +1454,13 @@ class _DomWalker:
             caption_map: Alt-text to base64 URI map for inlined images.
             document_title: Non-empty ``<title>`` text from ``<head>``, emitted
                 as a leading HEADING before body content.
+            original_alts: Lookup key → author alt, for images whose ``alt``
+                was rewritten to a ``caption_map`` key.
+            figure_captions: ``alt`` → ``<figcaption>`` text.
         """
         self.caption_map = caption_map or {}
+        self.original_alts = original_alts or {}
+        self.figure_captions = figure_captions or {}
         self.document_title = (document_title or "").strip()
         self.blocks: list[Block] = []
         self.block_groups: list[BlockGroup] = []
@@ -1777,6 +2011,9 @@ class _DomWalker:
         if not uri:
             return None
 
+        author_alt = self.original_alts.get(alt_text, alt_text)
+        caption = self.figure_captions.get(alt_text) or author_alt
+
         image_fmt = None
         if uri.startswith("data:"):
             header = uri.split(",", 1)[0]
@@ -1797,9 +2034,10 @@ class _DomWalker:
             ),
             parent_block_index=parent_block_index,
             image_metadata=ImageMetadata(
-                captions=[alt_text] if alt_text else [],
+                captions=[caption] if caption else [],
                 image_format=image_fmt,
             ),
+            media_metadata=MediaMetadata(alt_text=author_alt) if author_alt else None,
         )
 
     def _append_block_only(self, block: Block) -> Block:

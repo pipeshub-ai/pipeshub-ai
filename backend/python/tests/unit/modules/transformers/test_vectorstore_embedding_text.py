@@ -12,7 +12,10 @@ from app.models.blocks import (
     BlockType,
     DataFormat,
     GroupType,
+    ImageMetadata,
+    MediaMetadata,
 )
+from app.modules.transformers.vectorstore import VectorStore
 from tests.unit.modules.transformers.test_vectorstore_deep import _make_vectorstore_p1
 
 LINKED_TEXT = (
@@ -130,3 +133,14 @@ async def test_block_that_is_only_an_empty_image_link_embeds_nothing():
     await _index(vs, BlocksContainer(blocks=[_text_block(0, "![](https://example.com/spacer.gif)")]))
 
     assert capture.dense == []
+
+
+def test_image_alt_text_is_part_of_the_image_description():
+    block = Block(
+        index=0,
+        type=BlockType.IMAGE,
+        data={"uri": "data:image/png;base64,AAAA"},
+        image_metadata=ImageMetadata(captions=["Revenue by quarter"]),
+        media_metadata=MediaMetadata(alt_text="Bar chart"),
+    )
+    assert VectorStore._image_block_description(block) == "Revenue by quarter Bar chart"

@@ -34,6 +34,7 @@ _HTML_IMG_ALT_RE = re.compile(
     r'<img\s[^>]*alt=["\']([^"\']*)["\'][^>]*>', re.IGNORECASE
 )
 _LIST_MARKER_RE = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+")
+_LINK_WRAPPER_CLOSE_RE = re.compile(r'\]\((?:[^()\s]|\([^()\s]*\))*(?:\s+"[^"]*")?\)')
 
 
 def _strip_list_marker(raw: str) -> str:
@@ -93,12 +94,19 @@ def _split_raw_markdown_into_segments(raw: str) -> list[_Segment]:
                 segments.append(_Segment(kind="text", text=tail))
             break
 
-        before = raw[pos:match.start()]
+        start, end = match.start(), match.end()
+        # A linked image `[![alt](src)](href)`: without taking the wrapper
+        # along, its brackets are left behind as stray "[" and "](href)" text.
+        link_close = _LINK_WRAPPER_CLOSE_RE.match(raw, end)
+        if link_close and start > pos and raw[start - 1] == "[" and raw[start - 2 : start - 1] != "\\":
+            start, end = start - 1, link_close.end()
+
+        before = raw[pos:start]
         if before.strip():
             segments.append(_Segment(kind="text", text=before))
 
         segments.append(_Segment(kind="image", alt_text=_image_alt_from_match(match)))
-        pos = match.end()
+        pos = end
 
     return segments
 

@@ -733,6 +733,9 @@ class VectorStore(Transformer):
             values = getattr(image_metadata, field, None)
             if values:
                 parts.extend(v for v in values if v)
+        alt_text = getattr(getattr(block, "media_metadata", None), "alt_text", None)
+        if isinstance(alt_text, str) and alt_text.strip() and alt_text.strip() not in parts:
+            parts.append(alt_text.strip())
         return " ".join(parts).strip()
 
     async def _normalize_image_to_base64(self, image_uri: str) -> str | None:
