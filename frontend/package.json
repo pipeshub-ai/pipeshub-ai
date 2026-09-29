@@ -107,5 +107,8 @@
     "sharp": "^0.35.4",
     "typescript": "^5.9.2",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "postcss": "^8.5.23"
   }
 }
