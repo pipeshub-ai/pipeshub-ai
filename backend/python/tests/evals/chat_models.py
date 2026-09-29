@@ -8,6 +8,7 @@ the agent runtime.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.config.constants.ai_models import AzureOpenAILLM
@@ -21,8 +22,20 @@ class MissingModelError(RuntimeError):
     """No model to run against — a run without one measures nothing."""
 
 
-def build_chat_model(provider: str, model: str, api_key: str | None) -> BaseChatModel:
-    """A LangChain chat model for ``provider``."""
+def build_chat_model(
+    provider: str,
+    model: str,
+    api_key: str | None,
+    *,
+    azure_endpoint: str | None = None,
+    azure_deployment: str | None = None,
+    azure_api_version: str | None = None,
+) -> BaseChatModel:
+    """A LangChain chat model for ``provider``.
+
+    Azure's endpoint and deployment default to ``TEST_AZURE_OPENAI_*``; the
+    demo answer judge passes its own.
+    """
     if not api_key:
         raise MissingModelError(
             f"No API key for '{provider}'. Set the key in the workflow's "
@@ -36,8 +49,8 @@ def build_chat_model(provider: str, model: str, api_key: str | None) -> BaseChat
     if provider == "azure_openai":
         from langchain_openai import AzureChatOpenAI
 
-        endpoint = os.getenv("TEST_AZURE_OPENAI_ENDPOINT")
-        deployment = os.getenv("TEST_AZURE_OPENAI_DEPLOYMENT_NAME")
+        endpoint = azure_endpoint or os.getenv("TEST_AZURE_OPENAI_ENDPOINT")
+        deployment = azure_deployment or os.getenv("TEST_AZURE_OPENAI_DEPLOYMENT_NAME")
         if not endpoint or not deployment:
             raise MissingModelError(
                 "Azure OpenAI needs an endpoint and a deployment as well as a "
@@ -51,7 +64,7 @@ def build_chat_model(provider: str, model: str, api_key: str | None) -> BaseChat
             azure_deployment=deployment,
             # The product's own version, so the evals talk to Azure the way the
             # thing they are measuring does.
-            api_version=AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
+            api_version=azure_api_version or AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
             temperature=0,
         )
     if provider == "anthropic":
@@ -100,17 +113,80 @@ def resolve_model(
     return provider, model, None
 
 
-def judge_client_from_env() -> tuple[LangChainJudgeClient, str, str]:
-    """The demo answer judge's client, provider and model.
+JUDGE_PROVIDERS = ("azure_openai", "openai", "anthropic")
 
-    Azure OpenAI when its key is set, as the integration workflow's instance
-    uses; ``EVAL_PROVIDER`` overrides. Raises ``MissingModelError`` when the
-    provider it settles on is not fully configured.
+
+class JudgeConfigError(RuntimeError):
+    """JUDGE_PROVIDER is set but the rest of the judge's settings are not usable."""
+
+
+@dataclass(frozen=True)
+class JudgeModel:
+    client: LangChainJudgeClient
+    provider: str
+    model: str
+    # True when the JUDGE_* settings chose it, rather than the eval/instance ones.
+    dedicated: bool
+
+    def describe(self) -> str:
+        source = "dedicated JUDGE_* settings" if self.dedicated else "the eval settings"
+        return f"{self.provider} / {self.model or 'default model'} ({source})"
+
+
+def _dedicated_judge(provider: str) -> JudgeModel:
+    if provider not in JUDGE_PROVIDERS:
+        raise JudgeConfigError(f"JUDGE_PROVIDER is '{provider}'; use one of {', '.join(JUDGE_PROVIDERS)}.")
+    key = os.getenv("JUDGE_API_KEY")
+    model = os.getenv("JUDGE_MODEL") or ""
+    endpoint = os.getenv("JUDGE_AZURE_ENDPOINT")
+    deployment = os.getenv("JUDGE_AZURE_DEPLOYMENT")
+    needed = {"JUDGE_API_KEY": key}
+    if provider == "azure_openai":
+        needed |= {"JUDGE_AZURE_ENDPOINT": endpoint, "JUDGE_AZURE_DEPLOYMENT": deployment}
+        model = model or deployment or ""
+    else:
+        needed["JUDGE_MODEL"] = model
+    missing = [name for name, value in needed.items() if not value]
+    if missing:
+        # No fallback to the answering model: that would quietly bring back the
+        # self-preference the dedicated judge exists to avoid.
+        raise JudgeConfigError(f"JUDGE_PROVIDER={provider} but not set: {', '.join(missing)}.")
+    try:
+        chat = build_chat_model(
+            provider, model, key,
+            azure_endpoint=endpoint,
+            azure_deployment=deployment,
+            azure_api_version=os.getenv("JUDGE_AZURE_API_VERSION") or None,
+        )
+    except MissingModelError as exc:
+        raise JudgeConfigError(str(exc)) from exc
+    return JudgeModel(LangChainJudgeClient(chat, json_mode=provider != "anthropic"), provider, model, dedicated=True)
+
+
+def judge_model_from_env() -> JudgeModel:
+    """The demo answer judge's model.
+
+    With ``JUDGE_PROVIDER`` set, only the ``JUDGE_*`` settings are used, and an
+    incomplete set raises ``JudgeConfigError``. Otherwise the judge uses Azure
+    OpenAI when its key is set, as the integration workflow's instance does;
+    ``EVAL_PROVIDER`` overrides, and an unconfigured provider raises
+    ``MissingModelError``.
     """
+    judge_provider = os.getenv("JUDGE_PROVIDER")
+    if judge_provider:
+        return _dedicated_judge(judge_provider)
     default = "azure_openai" if os.getenv("TEST_AZURE_OPENAI_API_KEY") else "openai"
     provider, model, key = resolve_model(provider_override=os.getenv("EVAL_PROVIDER") or default)
     chat = build_chat_model(provider, model, key)
-    return LangChainJudgeClient(chat, json_mode=provider in ("openai", "azure_openai")), provider, model
+    return JudgeModel(LangChainJudgeClient(chat, json_mode=provider != "anthropic"), provider, model, dedicated=False)
 
 
-__all__ = ["MissingModelError", "build_chat_model", "judge_client_from_env", "resolve_model"]
+__all__ = [
+    "JUDGE_PROVIDERS",
+    "JudgeConfigError",
+    "JudgeModel",
+    "MissingModelError",
+    "build_chat_model",
+    "judge_model_from_env",
+    "resolve_model",
+]

@@ -8,14 +8,16 @@ this test against such an instance with the models it already has.
 
 A golden question may list plain-English facts (``answer_must_state``) that an
 AI judge checks the answer against; see ``answer_judge`` in the demo harness.
-The judge is built from the same ``TEST_AZURE_OPENAI_*`` settings the suite
-gives the instance (``EVAL_PROVIDER`` overrides). Without them those facts are
-"not judged", which fails when ``PIPESHUB_REQUIRE_JUDGE=1``, as the workflow
-sets it.
+The judge uses the ``JUDGE_*`` settings when ``JUDGE_PROVIDER`` is set (an
+incomplete set is a judge error), otherwise the same ``TEST_AZURE_OPENAI_*``
+settings the suite gives the instance (``EVAL_PROVIDER`` overrides). Without
+any, those facts are "not judged", which fails when
+``PIPESHUB_REQUIRE_JUDGE=1``, as the workflow sets it.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import warnings
 from typing import TYPE_CHECKING
@@ -26,6 +28,8 @@ if TYPE_CHECKING:
     from app.connectors.sources.demo.harness.answer_judge import (  # type: ignore[import-not-found]
         AnswerJudge,
     )
+
+logger = logging.getLogger(__name__)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -42,13 +46,18 @@ def answer_judge() -> AnswerJudge | None:
         AnswerJudge,
     )
     from tests.evals.chat_models import (  # type: ignore[import-not-found]
+        JudgeConfigError,
         MissingModelError,
-        judge_client_from_env,
+        judge_model_from_env,
     )
 
     try:
-        client, _provider, _model = judge_client_from_env()
+        judge = judge_model_from_env()
+    except JudgeConfigError as exc:
+        logger.error("demo answer judge is misconfigured: %s", exc)
+        return AnswerJudge.misconfigured(str(exc))
     except MissingModelError as exc:
         warnings.warn(f"demo answers will not be judged: {exc}", stacklevel=1)
         return None
-    return AnswerJudge(client)
+    logger.warning("demo answers are judged by %s", judge.describe())
+    return AnswerJudge(judge.client)

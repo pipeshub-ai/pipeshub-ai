@@ -32,8 +32,9 @@ from app.connectors.sources.demo.harness.answer_judge import (  # noqa: E402
     JudgeResult,
 )
 from tests.evals.chat_models import (  # noqa: E402
+    JudgeConfigError,
     MissingModelError,
-    judge_client_from_env,
+    judge_model_from_env,
 )
 from tests.evals.cost import run_cost  # noqa: E402
 
@@ -208,20 +209,22 @@ def main(argv: list[str] | None = None) -> int:
 
     cases = load_cases(args.cases)
     try:
-        client, provider, model = judge_client_from_env()
-    except MissingModelError as exc:
+        judge_model = judge_model_from_env()
+    except (JudgeConfigError, MissingModelError) as exc:
         print(f"No judge to calibrate: {exc}", file=sys.stderr)
         return 2
 
+    client = judge_model.client
     report = calibrate(AnswerJudge(client), cases, args.threshold)
-    cost = run_cost(model, client.input_tokens, client.output_tokens)
-    summary = render_summary(report, f"{provider} / {model}, {client.calls} calls. {cost.render()}")
+    cost = run_cost(judge_model.model, client.input_tokens, client.output_tokens)
+    summary = render_summary(report, f"Judged by {judge_model.describe()}, {client.calls} calls. {cost.render()}")
     print(summary)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "provider": provider,
-            "model": model,
+            "provider": judge_model.provider,
+            "model": judge_model.model,
+            "dedicated_judge": judge_model.dedicated,
             "agreement": report.agreement,
             "exact_verdicts": report.exact_verdicts,
             "threshold": report.threshold,

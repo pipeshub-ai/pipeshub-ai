@@ -236,11 +236,32 @@ timeouts and server errors are retried twice with backoff first. With no judge
 configured, the facts are **not judged**; that passes locally and fails when
 `PIPESHUB_REQUIRE_JUDGE=1`, which the integration workflow sets.
 
-The judge is built by `chat_models.judge_client_from_env()` from the same
-`TEST_AZURE_OPENAI_*` settings the integration suite gives the instance
-(`EVAL_PROVIDER` overrides). That means today it is the same model that wrote
-the answer, and models tend to rate their own writing kindly. A separate,
-stronger judge deployment would remove that risk; it is not set up yet.
+### Which model judges
+
+Models tend to rate their own writing kindly, so the judge should not be the
+model that wrote the answer. `chat_models.judge_model_from_env()` picks it:
+
+| Setting | Where it comes from | What it is |
+| --- | --- | --- |
+| `JUDGE_PROVIDER` | repository variable | `azure_openai`, `openai` or `anthropic` |
+| `JUDGE_MODEL` | repository variable | the model name (for Azure, defaults to the deployment) |
+| `JUDGE_API_KEY` | secret | the judge's own key |
+| `JUDGE_AZURE_ENDPOINT` | repository variable | Azure only |
+| `JUDGE_AZURE_DEPLOYMENT` | repository variable | Azure only |
+| `JUDGE_AZURE_API_VERSION` | optional | Azure only; defaults to the product's API version |
+
+When `JUDGE_PROVIDER` is set, the judge uses **only** these. If one it needs is
+missing, every judgement is a judge error that names the missing setting. It
+never falls back to the answering model, because that would quietly bring back
+the bias the separate judge exists to remove.
+
+When `JUDGE_PROVIDER` is not set, the judge uses the same `TEST_AZURE_OPENAI_*`
+settings the integration suite gives the instance (`EVAL_PROVIDER` overrides),
+which means the model that wrote the answer.
+
+The demo test logs which provider and model judged, and whether they came from
+the `JUDGE_*` settings. The calibration summary and its JSON (`provider`,
+`model`, `dedicated_judge`) say the same. The key is never logged.
 
 ### Calibration
 

@@ -143,6 +143,18 @@ def test_quote_matching_ignores_formatting_but_not_words(quote: str, found: bool
     # A later occurrence is still found when the first runs on into a longer number.
     ("up to $250", "Not up to $2500: up to $250 needs no approval.", True),
     ("up to $250 ... no approval", "Up to $2500 ... no approval", False),
+    ("up to $250", "Deals up to $250k need a VP.", False),
+    ("up to $250", "Deals up to $250K need a VP.", False),
+    ("up to $250", "Deals up to $250m need a VP.", False),
+    ("up to $250", "Deals up to $250bn need a VP.", False),
+    ("up to $250", "Deals up to $250MM need a VP.", False),
+    ("up to $250", "Deals up to $250 million need a VP.", False),
+    ("up to $250", "Deals up to $250 thousand need a VP.", False),
+    ("up to $250", "Deals up to $250billion need a VP.", False),
+    ("up to $250", "No approval is needed up to $250.", True),
+    ("up to $250", "No approval (up to $250) is needed.", True),
+    ("up to $250", "Up to $250, no approval is needed.", True),
+    ("up to $250", "Up to $250 more or less needs no approval.", True),
 ])
 def test_a_quoted_number_must_not_be_part_of_a_longer_one(quote: str, answer: str, found: bool) -> None:
     assert quote_in_answer(quote, answer) is found

@@ -130,6 +130,12 @@ jobs:
           TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
           TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
           EVAL_PROVIDER: azure_openai
+          # A separate judge model, when configured; see tests/evals/README.md.
+          JUDGE_PROVIDER: ${{ vars.JUDGE_PROVIDER }}
+          JUDGE_MODEL: ${{ vars.JUDGE_MODEL }}
+          JUDGE_AZURE_ENDPOINT: ${{ vars.JUDGE_AZURE_ENDPOINT }}
+          JUDGE_AZURE_DEPLOYMENT: ${{ vars.JUDGE_AZURE_DEPLOYMENT }}
+          JUDGE_API_KEY: ${{ secrets.JUDGE_API_KEY }}
         run: |
           source .venv/bin/activate
           python -m tests.evals.run_judge_calibration \

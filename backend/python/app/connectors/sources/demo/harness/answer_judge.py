@@ -21,9 +21,10 @@ How it decides:
   may not invent its evidence.
 - A must-state claim passes only when supported. A must-not-state claim passes
   when it is missing or contradicted.
-- A model error, a timeout, or a reply that is not the JSON asked for is a
-  ``judge error`` and never a pass. No judge at all is ``not judged``, which
-  passes unless ``PIPESHUB_REQUIRE_JUDGE=1`` (the nightly sets it).
+- A model error, a timeout, a reply that is not the JSON asked for, or
+  incomplete ``JUDGE_*`` settings is a ``judge error`` and never a pass. No
+  judge at all is ``not judged``, which passes unless
+  ``PIPESHUB_REQUIRE_JUDGE=1`` (the nightly sets it).
 
 Permission and leak checks never come here: a model's opinion must not decide
 whether a restricted fact reached someone who may not see it.
@@ -173,6 +174,10 @@ def quote_in_answer(quote: str, answer: str) -> bool:
     return True
 
 
+# "$250k" and "$250 million" are other amounts. The haystack is already lower case.
+_MAGNITUDE = re.compile(r"(?:k|m|b|bn|mm)\b| ?(?:thousand|million|billion)\b")
+
+
 def _find_whole_number(haystack: str, fragment: str, start: int) -> int:
     """``str.find``, except that a number at the fragment's edge must not run on
     in the answer: "up to $250" is not a quote of "up to $2500" or "$12500"."""
@@ -180,7 +185,9 @@ def _find_whole_number(haystack: str, fragment: str, start: int) -> int:
     while found >= 0:
         end = found + len(fragment)
         runs_on_left = fragment[0].isdigit() and found > 0 and _continues_number(haystack, found - 1, -1)
-        runs_on_right = fragment[-1].isdigit() and end < len(haystack) and _continues_number(haystack, end, 1)
+        runs_on_right = fragment[-1].isdigit() and end < len(haystack) and (
+            _continues_number(haystack, end, 1) or bool(_MAGNITUDE.match(haystack, end))
+        )
         if not runs_on_left and not runs_on_right:
             return found
         found = haystack.find(fragment, found + 1)
@@ -238,18 +245,26 @@ class AnswerJudge:
 
     def __init__(
         self,
-        client: JudgeClient,
+        client: JudgeClient | None,
         *,
         max_attempts: int = 3,
         backoff_s: float = 2.0,
         sleep: Callable[[float], None] = time.sleep,
+        config_error: str | None = None,
     ) -> None:
         self._client = client
+        self._config_error = config_error if client is not None else (config_error or "no judge client")
         self._max_attempts = max(1, max_attempts)
         self._backoff_s = backoff_s
         self._sleep = sleep
 
+    @classmethod
+    def misconfigured(cls, reason: str) -> AnswerJudge:
+        """A judge whose settings are wrong: every judgement is a judge error."""
+        return cls(None, config_error=reason)
+
     def _complete(self, user: str) -> str:
+        assert self._client is not None
         for attempt in range(1, self._max_attempts + 1):
             try:
                 return self._client.complete(SYSTEM_PROMPT, user)
@@ -264,6 +279,8 @@ class AnswerJudge:
         kinds += [(c, "must_not_state") for c in must_not_state or []]
         if not kinds:
             return JudgeResult(status="judged", passed=True)
+        if self._config_error:
+            return JudgeResult.error(f"judge misconfigured: {self._config_error}")
         try:
             raw = self._complete(build_prompt(answer, [c for c, _ in kinds]))
         except Exception as exc:
