@@ -8,6 +8,8 @@ from fastapi import HTTPException, Request, status
 from jose import JWTError, jwt
 
 from app.api.middlewares.caller_role import (
+    CallerRole,
+    CallerRoleCache,
     CallerRoleStatus,
     fetch_caller_role,
     normalize_auth_role,
@@ -31,6 +33,12 @@ AUTH_POLICY_ATTR = "__auth_policy__"
 # Set only by the regular path from a verified OAuth access token; a service token that
 # arrives carrying them must not be able to pose as an OAuth client.
 _OAUTH_DERIVED_CLAIMS = ("isOAuth", "oauthScopes", "oauthClientId")
+
+# How long Node's answer about a session token is reused. Concurrent requests share
+# one lookup whatever this is, so it only has to cover steady traffic; kept short so
+# that signing out, a password change or a lockout reaches these services in seconds.
+SESSION_CHECK_TTL_SECONDS = 2.0
+_session_checks = CallerRoleCache(ttl_seconds=SESSION_CHECK_TTL_SECONDS, max_entries=10_000)
 
 
 async def get_config_service(request: Request) -> ConfigurationService:
@@ -267,20 +275,37 @@ def is_request_admin(request: Request) -> bool:
 
 
 async def resolve_request_role(request: Request, payload: dict[str, Any]) -> str:
-    """Org role for the authenticated caller.
+    """Org role for the authenticated caller, once Node has confirmed the token is live.
 
-    Session JWTs carry a role claim. OAuth/PAT tokens do not, and only Node knows
-    whether one has been revoked or its user deleted, so their role comes from Node. A
-    token Node refuses is refused here, and so is one Node could not confirm.
+    A signature proves only that a token was issued. Whether a session has since
+    ended (signed out, password changed, account locked or deleted) or an OAuth/PAT
+    token been revoked is known to Node alone, so both are checked there, and a token
+    Node refuses, or could not confirm, is refused here. Service tokens are not.
+
+    A session's role is its claim, which is current because Node ends every session
+    when a role changes. OAuth/PAT tokens carry none, so theirs is Node's.
     """
-    if not payload.get("isOAuth"):
+    if is_service_token(payload):
         return normalize_auth_role(payload.get("role"))
 
-    caller = await fetch_caller_role(request, await get_config_service(request))
+    config_service = await get_config_service(request)
+    if payload.get("isOAuth"):
+        caller = await fetch_caller_role(request, config_service)
+        _refuse_unconfirmed(caller, "Token is no longer valid")
+        return caller.role
+
+    caller = await _session_checks.get(
+        payload["user"], lambda: fetch_caller_role(request, config_service)
+    )
+    _refuse_unconfirmed(caller, "Your session has ended. Please sign in again.")
+    return normalize_auth_role(payload.get("role"))
+
+
+def _refuse_unconfirmed(caller: CallerRole, rejected_detail: str) -> None:
     if caller.status is CallerRoleStatus.REJECTED:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token is no longer valid",
+            detail=rejected_detail,
             headers={"WWW-Authenticate": "Bearer"},
         )
     if caller.status is CallerRoleStatus.UNKNOWN:
@@ -290,7 +315,6 @@ async def resolve_request_role(request: Request, payload: dict[str, Any]) -> str
             detail="We couldn't confirm your sign-in just now. Please try again in a few seconds.",
             headers={"Retry-After": "5"},
         )
-    return caller.role
 
 
 @dataclass(frozen=True)

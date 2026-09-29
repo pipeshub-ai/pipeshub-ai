@@ -109,6 +109,9 @@ export const hydrateScopedRequestAsUser = async (
     );
   }
 
+  // The Python services ask Node whether every session-style token is still
+  // live, and Node refuses one without a role claim. Member is what this token
+  // has always been treated as there, so it stays member.
   const jwtToken = authTokenService.generateToken({
     userId: user._id,
     orgId: user.orgId,
@@ -116,6 +119,7 @@ export const hydrateScopedRequestAsUser = async (
     fullName: user.fullName,
     mobile: user.mobile,
     userSlug: user.slug,
+    role: 'member',
   });
 
   req.headers.authorization = `Bearer ${jwtToken}`;

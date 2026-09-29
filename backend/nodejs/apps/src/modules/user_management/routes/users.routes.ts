@@ -295,8 +295,8 @@ export function createUserRouter(container: Container) {
   );
 
   // The caller's own live role. No OAuth scope: it discloses only the bearer's role.
-  // Internal services use it to resolve OAuth/PAT roles and to learn that a token was
-  // revoked or its user deleted (authenticate answers 401 in those cases).
+  // Internal services use it to resolve OAuth/PAT roles and to learn that a session
+  // has ended, a token was revoked or its user deleted (authenticate answers 401).
   router.get(
     '/me/role',
     authMiddleware.authenticate,
