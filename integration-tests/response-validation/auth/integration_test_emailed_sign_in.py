@@ -15,22 +15,23 @@ Each class uses a throwaway account. Classes that need sign-in codes turn the
 code method on for the org alongside passwords, and put the org's sign-in policy
 back afterwards.
 
-Not covered here: a reset link used after it expires. The link's 20-minute life
-is fixed in code (``jwtGeneratorForForgotPasswordLink``), with no setting or
-test hook to shorten it.
+The expired-link test needs a stack whose links expire within two minutes. The
+integration compose sets that once ``PASSWORD_RESET_LINK_EXPIRY`` exists
+(#3681); until then, and on stacks with the 20-minute default, it skips.
 """
 
 from __future__ import annotations
 
 import copy
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterator
 
 import pytest
 import requests
 
-from helper import mailpit
+from helper import local_auth, mailpit
 from helper.clients.auth_client import AuthClient, UserAccountClient
 from helper.config import TEST_USER_PASSWORD
 from helper.http.session_client import SessionClient
@@ -45,6 +46,8 @@ RESET_SUBJECT = "Reset your password"
 SIGN_IN_CODE_SUBJECT = "OTP for Login"
 LOCK_WARNING_SUBJECT = "Suspicious Login Attempt"
 LOCKOUT_THRESHOLD = 5
+# Longest link lifetime the expired-link test will wait out.
+MAX_LINK_WAIT_SECONDS = 120
 ANY_USER_ROUTE = "/api/v1/knowledgeBase"
 
 
@@ -154,13 +157,44 @@ class TestForgotPasswordLink:
         )
 
 
+class TestExpiredResetLink:
+    """Test list: an expired reset link is refused."""
+
+    def test_an_expired_link_is_refused(
+        self, mail_user: SecondUser, user_account_client: UserAccountClient
+    ) -> None:
+        token = _emailed_reset_token(user_account_client, mail_user.email)
+        claims = local_auth.jwt_claims(token)
+        lifetime = int(claims.get("exp", 0)) - int(claims.get("iat", 0))
+        if not 0 < lifetime <= MAX_LINK_WAIT_SECONDS:
+            pytest.skip(
+                f"Reset links on this stack last {lifetime}s; this test waits for "
+                f"expiry only when that is at most {MAX_LINK_WAIT_SECONDS}s "
+                "(PASSWORD_RESET_LINK_EXPIRY, 60s in the integration compose)."
+            )
+        # Two seconds past expiry, measured against the link's own clock.
+        time.sleep(max(0.0, int(claims["exp"]) - time.time()) + 2)
+
+        response = user_account_client.reset_password_with_link(token, NEW_PASSWORD)
+        assert response.status_code == 401, (
+            f"A reset link used after it expired got HTTP {response.status_code}."
+        )
+        status, token_returned = _sign_in_status(
+            user_account_client, mail_user.email, TEST_USER_PASSWORD
+        )
+        assert status == 200 and token_returned, (
+            f"After the expired link was refused, the original password no longer "
+            f"signs in (HTTP {status}), so the refused reset changed something."
+        )
+
+
 RESET_LINK_RACE = (
     "A reset link is single-use only through a comparison of its issue time with "
     "the account's latest PASSWORD_CHANGED record (scopedTokenValidator in "
     "auth.middleware.ts). That record is written at the end of updatePassword, "
     "after a user lookup and two bcrypt operations, and nothing claims the link "
     "atomically, so two requests arriving before it is written both succeed. "
-    "Remove this mark once a link is claimed atomically."
+    "Fixed by #3681: remove this mark when it merges."
 )
 
 

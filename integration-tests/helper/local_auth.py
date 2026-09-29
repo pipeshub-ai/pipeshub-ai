@@ -124,14 +124,14 @@ def log_in_with_refresh_token(
     session_token = _init_auth(base_url, email, timeout)
     data = _authenticate(base_url, session_token, email, password, timeout)
     access_token = data["accessToken"]
-    if "userId" not in _jwt_claims(access_token):
+    if "userId" not in jwt_claims(access_token):
         access_token = _switch_to_org(
             base_url, access_token, str(data.get("orgId") or ""), timeout
         )
     return access_token, str(data.get("refreshToken") or "")
 
 
-def _jwt_claims(token: str) -> dict:
+def jwt_claims(token: str) -> dict:
     """Decode the JWT payload without verifying it (claims only, no secrets needed)."""
     try:
         payload = token.split(".")[1]
