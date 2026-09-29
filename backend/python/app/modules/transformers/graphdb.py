@@ -207,6 +207,27 @@ class GraphDBTransformer(Transformer):
             record_group_ids=record_group_ids,
         )
 
+    def _touch_taxonomy_entity(
+        self,
+        touched: List[EntityRecord],
+        record_id: str,
+        node: _TaxonomyNode,
+        entity_type: EntityType,
+        org_id: str,
+        connector_ids: List[str],
+        record_group_ids: List[str],
+    ) -> None:
+        # A graph node read back without `_key`/`id` has no identity to index
+        # under; registering it would fail the whole metadata save.
+        if not node.key:
+            self.logger.warning(
+                "Skipping %s entity without a node key for record %s", entity_type.value, record_id,
+            )
+            return
+        touched.append(self._taxonomy_entity_record(
+            node, entity_type, org_id, connector_ids, record_group_ids,
+        ))
+
     async def _reconcile_edges(
         self,
         tx_store,
@@ -399,10 +420,10 @@ class GraphDBTransformer(Transformer):
                     new_cat_tos[cat_to] = category_node.name
                     if category_node.extracted_name:
                         cat_extracted[cat_to] = category_node.extracted_name
-                    touched_entities.append(self._taxonomy_entity_record(
-                        category_node, EntityType.CATEGORY, org_id_placeholder,
+                    self._touch_taxonomy_entity(
+                        touched_entities, record_id, category_node, EntityType.CATEGORY, org_id_placeholder,
                         connector_ids_placeholder, record_group_ids_placeholder,
-                    ))
+                    )
                 else:
                     self.logger.warning("⚠️ No category extracted for record %s", record_id)
 
@@ -418,10 +439,10 @@ class GraphDBTransformer(Transformer):
                     new_cat_tos[sub_to] = node.name
                     if node.extracted_name:
                         cat_extracted[sub_to] = node.extracted_name
-                    touched_entities.append(self._taxonomy_entity_record(
-                        node, EntityType.SUBCATEGORY, org_id_placeholder,
+                    self._touch_taxonomy_entity(
+                        touched_entities, record_id, node, EntityType.SUBCATEGORY, org_id_placeholder,
                         connector_ids_placeholder, record_group_ids_placeholder,
-                    ))
+                    )
 
                     # Create hierarchy relationship (inter-category) only when it does
                     # not already exist.  Skipping the write for existing edges avoids
@@ -486,10 +507,10 @@ class GraphDBTransformer(Transformer):
                     new_lang_tos[lang_to] = lang_node.name
                     if lang_node.extracted_name:
                         lang_extracted[lang_to] = lang_node.extracted_name
-                    touched_entities.append(self._taxonomy_entity_record(
-                        lang_node, EntityType.LANGUAGE, org_id_placeholder,
+                    self._touch_taxonomy_entity(
+                        touched_entities, record_id, lang_node, EntityType.LANGUAGE, org_id_placeholder,
                         connector_ids_placeholder, record_group_ids_placeholder,
-                    ))
+                    )
 
                 await self._reconcile_edges(
                     tx_store, record_id, record_from,
@@ -510,10 +531,10 @@ class GraphDBTransformer(Transformer):
                     new_topic_tos[topic_to] = topic_node.name
                     if topic_node.extracted_name:
                         topic_extracted[topic_to] = topic_node.extracted_name
-                    touched_entities.append(self._taxonomy_entity_record(
-                        topic_node, EntityType.TOPIC, org_id_placeholder,
+                    self._touch_taxonomy_entity(
+                        touched_entities, record_id, topic_node, EntityType.TOPIC, org_id_placeholder,
                         connector_ids_placeholder, record_group_ids_placeholder,
-                    ))
+                    )
 
                 await self._reconcile_edges(
                     tx_store, record_id, record_from,
