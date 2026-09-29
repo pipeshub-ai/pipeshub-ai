@@ -16473,7 +16473,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — insufficient workspace permission to list OAuth apps
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
           content:
             application/json:
               schema:
@@ -16633,7 +16633,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
           content:
             application/json:
               schema:
@@ -16702,7 +16702,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
           content:
             application/json:
               schema:
@@ -16758,7 +16758,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
           content:
             application/json:
               schema:
@@ -16813,7 +16813,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
           content:
             application/json:
               schema:
@@ -16874,7 +16874,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
           content:
             application/json:
               schema:
@@ -16935,7 +16935,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
           content:
             application/json:
               schema:
@@ -16990,7 +16990,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
           content:
             application/json:
               schema:
@@ -17052,7 +17052,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Forbidden — the bearer token is an OAuth access token or personal access token rather than a user session, or the caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
           content:
             application/json:
               schema:
