@@ -7,26 +7,71 @@ name: Release Changelog
 #
 # `published` fires for both full releases and pre-releases (the skill handles
 # Beta/Alpha channels) but never for drafts.
+#
+# claude-code-action@v1 rejects the `release` event ("Unsupported event type"),
+# so the release run only re-dispatches this workflow with the tag, and the
+# skill runs under workflow_dispatch. Dispatching by hand with a tag
+# regenerates a missed changelog.
 on:
   release:
     types: [published]
-
-# One run at a time; a second release published mid-run waits its turn so the
-# two PRs don't build on divergent CHANGELOG.md states.
-concurrency:
-  group: release-changelog
-  cancel-in-progress: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of an existing release, e.g. v0.9.1
+        required: true
+        type: string
 
 jobs:
+  dispatch:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      # A workflow_dispatch sent with GITHUB_TOKEN does start a new run (the
+      # documented exception to GITHUB_TOKEN events not triggering workflows).
+      - name: Dispatch the changelog run for this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh workflow run release-changelog.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$TAG"
+
   changelog:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # One run at a time; a second release published mid-run waits its turn so
+    # the two PRs don't build on divergent CHANGELOG.md states.
+    concurrency:
+      group: release-changelog
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write
     steps:
-      # The release event checks out the tagged commit by default; the
-      # changelog lives on main, so check that out explicitly.
+      - name: Check the tag and the API key
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$HAS_API_KEY" != "true" ]; then
+            echo "::error::The ANTHROPIC_API_KEY repository secret is not set. Add it under Settings > Secrets and variables > Actions, then re-run this workflow."
+            exit 1
+          fi
+          if ! url="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url)"; then
+            echo "::error::No release found for tag \"$TAG\". Enter the tag of a published release, e.g. v0.9.1."
+            exit 1
+          fi
+          {
+            echo "tag=$TAG"
+            echo "url=$url"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Checkout main
         uses: actions/checkout@v4
         with:
@@ -42,10 +87,12 @@ jobs:
           # does not expire with a personal subscription login, unlike the
           # `claude setup-token` OAuth token used elsewhere in this repo.
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Tag names are maintainer-controlled, but pass through an env var
-          # rather than shell interpolation as a matter of hygiene.
+          # Without this the action requests an OIDC token for the Claude GitHub
+          # App, which needs `id-token: write`; the job token is enough here.
+          github_token: ${{ github.token }}
+          # The tag was checked against an existing release in the first step.
           prompt: |
-            Run the release-changelog skill for the release tagged "${{ github.event.release.tag_name }}"
+            Run the release-changelog skill for the release tagged "${{ steps.release.outputs.tag }}"
             of pipeshub-ai/pipeshub-ai. Follow .claude/skills/release-changelog/SKILL.md
             exactly: write changelog/<version>.md, update changelog/README.md, and
             register the release in the root CHANGELOG.md (index row, entry below the
@@ -58,8 +105,8 @@ jobs:
       - name: Open a pull request with the changelog
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
-          RELEASE_URL: ${{ github.event.release.html_url }}
+          TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_URL: ${{ steps.release.outputs.url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
