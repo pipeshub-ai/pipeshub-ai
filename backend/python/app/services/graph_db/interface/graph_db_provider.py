@@ -2772,6 +2772,9 @@ class IGraphDBProvider(ABC):
         """
         Find all QUEUED duplicate records with the same md5 hash and update their status.
 
+        Scoped to the reference record's org; a reference record with no
+        orgId updates nothing.
+
         Args:
             record_id (str): The record ID to use as reference for finding duplicates
             new_indexing_status (str): The new indexing status to set

@@ -319,17 +319,34 @@ class RecordEventHandler(BaseEventService):
             if not sibling_keys:
                 return
 
+            graph_provider = self.event_processor.graph_provider
+            source_doc = await graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+            org_id = (source_doc or {}).get("orgId")
+            if not org_id:
+                return
+
             sink = getattr(self.event_processor, "sink_orchestrator", None)
             for sibling_key in sibling_keys:
-                await self.event_processor.graph_provider.copy_document_relationships(
-                    record_id, sibling_key
+                sibling_doc = await graph_provider.get_document(
+                    sibling_key, CollectionNames.RECORDS.value
                 )
-                if sink is not None:
-                    sibling_doc = await self.event_processor.graph_provider.get_document(
-                        sibling_key, CollectionNames.RECORDS.value
-                    )
+                # get_records_by_virtual_record_id is not org-scoped; a
+                # virtualRecordId shared across orgs must not carry this
+                # org's taxonomy to another tenant's record.
+                if sibling_doc is None or sibling_doc.get("orgId") != org_id:
                     if sibling_doc is not None:
-                        await sink.sync_entities_for_duplicate(sibling_doc)
+                        self.logger.warning(
+                            "Skipping cross-org duplicate %s for record %s (vrid=%s)",
+                            sibling_key,
+                            record_id,
+                            virtual_record_id,
+                        )
+                    continue
+                await graph_provider.copy_document_relationships(record_id, sibling_key)
+                if sink is not None:
+                    await sink.sync_entities_for_duplicate(sibling_doc)
 
             await self.event_processor.sync_vector_membership(virtual_record_id)
         except Exception as e:

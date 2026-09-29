@@ -4261,9 +4261,29 @@ class TestUpdateQueuedDuplicatesStatus:
         assert result == 0
 
     @pytest.mark.asyncio
+    async def test_no_org_id_promotes_nothing(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [
+            {"_key": "r1", "md5Checksum": "abc123", "sizeInBytes": 100}
+        ]
+        result = await connected_provider.update_queued_duplicates_status("r1", "COMPLETED")
+        assert result == 0
+        assert connected_provider.http_client.execute_aql.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_duplicate_lookup_is_scoped_to_reference_org(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = [
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123", "sizeInBytes": 100}],
+            [],
+        ]
+        await connected_provider.update_queued_duplicates_status("r1", "COMPLETED")
+        call = connected_provider.http_client.execute_aql.await_args_list[1]
+        assert "record.orgId == @org_id" in call.args[0]
+        assert call.kwargs["bind_vars"]["org_id"] == "org-1"
+
+    @pytest.mark.asyncio
     async def test_no_queued_duplicates(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "md5Checksum": "abc123", "sizeInBytes": 100}],  # reference
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123", "sizeInBytes": 100}],  # reference
             [],  # no queued duplicates
         ]
         result = await connected_provider.update_queued_duplicates_status("r1", "COMPLETED")
@@ -4272,7 +4292,7 @@ class TestUpdateQueuedDuplicatesStatus:
     @pytest.mark.asyncio
     async def test_queued_duplicates_found_and_updated(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "md5Checksum": "abc123", "sizeInBytes": 100}],  # reference
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123", "sizeInBytes": 100}],  # reference
             [{"_key": "r2", "md5Checksum": "abc123"}],  # queued duplicate
         ]
         with patch.object(
@@ -4287,7 +4307,7 @@ class TestUpdateQueuedDuplicatesStatus:
     @pytest.mark.asyncio
     async def test_empty_status_mapping(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "md5Checksum": "abc123"}],
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123"}],
             [{"_key": "r2", "md5Checksum": "abc123"}],
         ]
         with patch.object(
@@ -4302,7 +4322,7 @@ class TestUpdateQueuedDuplicatesStatus:
     @pytest.mark.asyncio
     async def test_failed_status_includes_reason(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "md5Checksum": "abc123"}],
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123"}],
             [{"_key": "r2", "md5Checksum": "abc123"}],
         ]
         with patch.object(

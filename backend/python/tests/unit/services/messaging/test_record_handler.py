@@ -2775,6 +2775,7 @@ class TestReconcilePromotedDuplicates:
         )
         gp.copy_document_relationships = AsyncMock(return_value=True)
         sib_docs = {
+            "r1": {"_key": "r1", "orgId": "org-1"},
             "sib-1": {"_key": "sib-1", "orgId": "org-1"},
             "sib-2": {"_key": "sib-2", "orgId": "org-1"},
         }
@@ -2803,14 +2804,54 @@ class TestReconcilePromotedDuplicates:
         gp = handler.event_processor.graph_provider
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=["r1", "sib-1"])
         gp.copy_document_relationships = AsyncMock(return_value=True)
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll: {"_key": key, "orgId": "org-1"})
         handler.event_processor.sync_vector_membership = AsyncMock()
         assert handler.event_processor.sink_orchestrator is None
 
         await handler._reconcile_promoted_duplicates("r1", "vr1")
 
         gp.copy_document_relationships.assert_awaited_once_with("r1", "sib-1")
-        gp.get_document.assert_not_awaited()
         handler.event_processor.sync_vector_membership.assert_awaited_once_with("vr1")
+
+    @pytest.mark.asyncio
+    async def test_cross_org_sibling_is_skipped(self):
+        """A vrid shared across orgs must not carry this org's taxonomy edges
+        or entities onto another tenant's record."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_records_by_virtual_record_id = AsyncMock(
+            return_value=["r1", "same-org", "other-org", "gone"]
+        )
+        gp.copy_document_relationships = AsyncMock(return_value=True)
+        docs = {
+            "r1": {"_key": "r1", "orgId": "org-1"},
+            "same-org": {"_key": "same-org", "orgId": "org-1"},
+            "other-org": {"_key": "other-org", "orgId": "org-2"},
+            "gone": None,
+        }
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll: docs[key])
+        handler.event_processor.sync_vector_membership = AsyncMock()
+        sink = AsyncMock()
+        handler.event_processor.sink_orchestrator = sink
+
+        await handler._reconcile_promoted_duplicates("r1", "vr1")
+
+        gp.copy_document_relationships.assert_awaited_once_with("r1", "same-org")
+        sink.sync_entities_for_duplicate.assert_awaited_once_with(docs["same-org"])
+
+    @pytest.mark.asyncio
+    async def test_source_without_org_reconciles_nothing(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=["r1", "sib-1"])
+        gp.copy_document_relationships = AsyncMock()
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll: {"_key": key})
+        handler.event_processor.sync_vector_membership = AsyncMock()
+
+        await handler._reconcile_promoted_duplicates("r1", "vr1")
+
+        gp.copy_document_relationships.assert_not_awaited()
+        handler.event_processor.sync_vector_membership.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_failure_is_non_fatal(self):

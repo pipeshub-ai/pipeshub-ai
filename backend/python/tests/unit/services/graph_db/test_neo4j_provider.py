@@ -2448,12 +2448,34 @@ class TestDuplicateAndSyncOperations:
         assert await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED") == 0
 
     @pytest.mark.asyncio
+    async def test_update_queued_duplicates_status_without_org_promotes_nothing(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"record": {"id": "rec-1", "md5Checksum": "m1"}}]
+        )
+        assert await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED") == 0
+        assert neo4j_provider.client.execute_query.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_update_queued_duplicates_status_is_scoped_to_reference_org(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[[{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1"}}], []]
+        )
+        await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED")
+        call = neo4j_provider.client.execute_query.await_args_list[1]
+        assert "record.orgId = $org_id" in call.args[0]
+        assert call.kwargs["parameters"]["org_id"] == "org-1"
+
+    @pytest.mark.asyncio
     async def test_update_queued_duplicates_status_updates_records_and_maps_completed_status(
         self, neo4j_provider: Neo4jProvider
     ):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"record": {"id": "rec-1", "md5Checksum": "m1", "sizeInBytes": 12}}],
+                [{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1", "sizeInBytes": 12}}],
                 [{"record": {"id": "rec-2"}}, {"record": {"id": "rec-3"}}],
             ]
         )
@@ -2483,9 +2505,9 @@ class TestDuplicateAndSyncOperations:
     async def test_update_queued_duplicates_status_maps_failed_and_empty(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"record": {"id": "rec-1", "md5Checksum": "m1"}}],
+                [{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1"}}],
                 [{"record": {"id": "rec-2"}}],
-                [{"record": {"id": "rec-1", "md5Checksum": "m1"}}],
+                [{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1"}}],
                 [{"record": {"id": "rec-2"}}],
             ]
         )
@@ -2506,7 +2528,7 @@ class TestDuplicateAndSyncOperations:
     ):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"record": {"id": "rec-1", "md5Checksum": "m1"}}],
+                [{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1"}}],
                 [{"record": {"id": "rec-2"}}],
             ]
         )

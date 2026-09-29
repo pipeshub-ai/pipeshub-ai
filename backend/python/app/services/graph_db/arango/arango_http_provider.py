@@ -6334,6 +6334,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             md5_checksum = ref_record.get("md5Checksum")
             size_in_bytes = ref_record.get("sizeInBytes")
+            org_id = ref_record.get("orgId")
 
             if not md5_checksum:
                 # Expected, not a fault: duplicates are matched by md5Checksum
@@ -6343,18 +6344,27 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.debug(f"Record {record_id} missing md5Checksum")
                 return 0
 
+            # QUEUED is also every new record's initial status, so without the
+            # org scope another org's unindexed copy would be marked done with
+            # this org's virtualRecordId. No orgId fails closed, as dedup does.
+            if not org_id:
+                self.logger.debug(f"Record {record_id} missing orgId, skipping queued duplicate update")
+                return 0
+
             # Find all queued duplicate records directly from RECORDS collection
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.md5Checksum == @md5_checksum
                 AND record._key != @record_id
                 AND record.indexingStatus == @queued_status
+                AND record.orgId == @org_id
             """
 
             bind_vars = {
                 "md5_checksum": md5_checksum,
                 "record_id": record_id,
-                "queued_status": "QUEUED"
+                "queued_status": "QUEUED",
+                "org_id": org_id,
             }
 
             if size_in_bytes is not None:
