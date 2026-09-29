@@ -112,6 +112,27 @@ class TestNeo4jDeleteRecordAuthz:
         delete.assert_awaited_once_with("rec-1", "user-a", ORG_A, None)
         provider.delete_records_and_relations.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_empty_org_never_matches_a_record_without_org(self) -> None:
+        provider = _neo4j(_record(""))
+
+        result = await provider.delete_record("rec-1", "user-a", "")
+
+        assert result["code"] == 404
+        provider.delete_records_and_relations.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_by_external_id_skips_record_without_org(self) -> None:
+        provider = _neo4j(_record(""))
+        record = MagicMock()
+        record.id = "rec-1"
+        record.org_id = ""
+        provider.get_record_by_external_id = AsyncMock(return_value=record)
+
+        await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
+
+        provider.delete_records_and_relations.assert_not_awaited()
+
 
 @pytest.fixture
 def arango() -> ArangoHTTPProvider:
@@ -160,3 +181,14 @@ class TestArangoDeleteRecordOrgScope:
             await arango.delete_record_by_external_id("conn-1", "ext-1", "user-a")
 
         delete.assert_awaited_once_with("rec-1", "user-a", ORG_A, transaction=None)
+
+    @pytest.mark.asyncio
+    async def test_empty_org_never_matches_a_record_without_org(self, arango) -> None:
+        arango.http_client.get_document.return_value = {
+            "_key": "rec-1", "orgId": "", "connectorName": "DRIVE", "origin": "CONNECTOR",
+        }
+        with patch.object(arango, "delete_google_drive_record", new_callable=AsyncMock) as drive:
+            result = await arango.delete_record("rec-1", "user-a", "")
+
+        assert result["code"] == 404
+        drive.assert_not_awaited()

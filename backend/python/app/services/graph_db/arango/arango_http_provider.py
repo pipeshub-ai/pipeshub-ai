@@ -7899,7 +7899,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             # The per-connector role checks below are not org-scoped (Drive domain/anyone
             # grants, Gmail address match), so tenancy has to be enforced here.
-            if not record or record.get("orgId") != org_id:
+            if not org_id or not record or record.get("orgId") != org_id:
                 return {
                     "success": False,
                     "code": 404,

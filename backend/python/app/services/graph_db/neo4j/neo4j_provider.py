@@ -7214,7 +7214,7 @@ class Neo4jProvider(IGraphDBProvider):
             # Get record to determine connector type
             record = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
             # A record in another org is reported exactly like a missing one so IDs can't be probed.
-            if not record or record.get("orgId") != org_id:
+            if not org_id or not record or record.get("orgId") != org_id:
                 return {
                     "success": False,
                     "code": 404,

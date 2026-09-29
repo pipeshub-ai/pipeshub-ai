@@ -1,5 +1,6 @@
-"""DELETE /api/v1/records/{record_id} must be scoped to the caller's org, and
-KB records additionally to the caller's role on the KB.
+"""DELETE /api/v1/records/{record_id} must be scoped to the caller's org and to
+records the caller can access, and KB records additionally to the caller's
+role on the KB.
 
 The route is driven end to end against a real Neo4jProvider whose I/O is
 mocked, so the tests exercise the actual authorization decision rather than a
@@ -31,7 +32,9 @@ def _request(user_id: str = "user-a", org_id: str | None = ORG_A) -> MagicMock:
     return req
 
 
-def _provider(record_org: str, kind: dict, kb_role: str | None = "OWNER") -> Neo4jProvider:
+def _provider(
+    record_org: str, kind: dict, kb_role: str | None = "OWNER", has_access: bool = True
+) -> Neo4jProvider:
     record = {
         "id": RECORD_ID,
         "orgId": record_org,
@@ -46,6 +49,9 @@ def _provider(record_org: str, kind: dict, kb_role: str | None = "OWNER") -> Neo
     provider = Neo4jProvider(MagicMock(), MagicMock())
     provider.client = AsyncMock()
     provider.get_document = AsyncMock(side_effect=get_document)
+    provider.check_record_access_with_details = AsyncMock(
+        return_value={"record": {"id": RECORD_ID}} if has_access else None
+    )
     provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb-1"})
     provider.get_user_by_user_id = AsyncMock(return_value={"id": "ukey-a"})
     provider.get_user_kb_permission = AsyncMock(return_value=kb_role)
@@ -72,6 +78,22 @@ async def test_cross_org_delete_is_404_and_leaves_graph_and_vectors(kind: dict) 
 
     assert exc.value.status_code == 404
     _assert_untouched(provider, kafka)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", [CONNECTOR, KB], ids=["connector", "kb"])
+async def test_same_org_user_without_access_gets_404(kind: dict) -> None:
+    provider = _provider(record_org=ORG_A, kind=kind, kb_role="OWNER", has_access=False)
+    kafka = AsyncMock()
+
+    with pytest.raises(HTTPException) as exc:
+        await delete_record(RECORD_ID, _request(user_id="user-a", org_id=ORG_A), provider, kafka)
+
+    assert exc.value.status_code == 404
+    _assert_untouched(provider, kafka)
+    provider.check_record_access_with_details.assert_awaited_once_with(
+        user_id="user-a", org_id=ORG_A, record_id=RECORD_ID
+    )
 
 
 @pytest.mark.asyncio

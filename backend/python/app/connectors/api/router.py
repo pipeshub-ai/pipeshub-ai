@@ -2251,6 +2251,17 @@ async def delete_record(
             )
         logger.info(f"🗑️ Attempting to delete record {record_id}")
 
+        has_access = await graph_provider.check_record_access_with_details(
+            user_id=user_id,
+            org_id=org_id,
+            record_id=record_id,
+        )
+        if not has_access:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail="You do not have access to this record",
+            )
+
         result = await graph_provider.delete_record(
             record_id=record_id,
             user_id=user_id,
