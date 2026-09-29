@@ -4720,8 +4720,9 @@ class TestGetUserKbPermission:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_user_kb_permission("kb1", "u1")
-        assert result is None
+        # None means "no access"; a failed read must not look like that.
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_user_kb_permission("kb1", "u1")
 
 
 # ---------------------------------------------------------------------------
@@ -11310,58 +11311,24 @@ class TestGetFolderContents:
 
 
 class TestGetRecords:
-    @pytest.mark.asyncio
-    async def test_user_not_found(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_user_by_user_id",
-            new_callable=AsyncMock, return_value=None
-        ):
-            records, total, filters = await connected_provider.get_records(
-                "u1", "org1", 0, 10, None, None, None, None, None, None, None, None, "recordName", "asc", "all"
-            )
-            assert records == []
-            assert total == 0
+    """``user_id`` is the graph key, as /api/v1/records passes it; no second lookup."""
+
+    ARGS = ("uk1", "org1", 0, 10, None, None, None, None, None, None, None, None, "recordName", "asc", "all")
 
     @pytest.mark.asyncio
-    async def test_user_no_key(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_user_by_user_id",
-            new_callable=AsyncMock,
-            return_value={"userId": "u1"}  # no _key or id
-        ):
-            records, total, filters = await connected_provider.get_records(
-                "u1", "org1", 0, 10, None, None, None, None, None, None, None, None, "recordName", "asc", "all"
-            )
-            assert records == []
-            assert total == 0
-
-    @pytest.mark.asyncio
-    async def test_delegates_to_list_all_records(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_user_by_user_id",
-            new_callable=AsyncMock,
-            return_value={"_key": "u1", "userId": "ext_u1"}
-        ), patch.object(
-            connected_provider, "list_all_records",
-            new_callable=AsyncMock,
-            return_value=([{"id": "r1"}], 1, {})
-        ):
-            records, total, filters = await connected_provider.get_records(
-                "ext_u1", "org1", 0, 10, None, None, None, None, None, None, None, None, "recordName", "asc", "all"
-            )
-            assert len(records) == 1
-            assert total == 1
+    async def test_delegates_to_list_all_records_with_the_same_key(self, connected_provider):
+        connected_provider.get_user_by_user_id = AsyncMock()
+        connected_provider.list_all_records = AsyncMock(return_value=([{"id": "r1"}], 1, {}))
+        records, total, _ = await connected_provider.get_records(*self.ARGS)
+        assert (records, total) == ([{"id": "r1"}], 1)
+        connected_provider.list_all_records.assert_awaited_once_with(*self.ARGS)
+        connected_provider.get_user_by_user_id.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_failed_read_raises(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_user_by_user_id",
-            new_callable=AsyncMock, side_effect=Exception("fail")
-        ):
-            with pytest.raises(Exception, match="fail"):
-                await connected_provider.get_records(
-                    "u1", "org1", 0, 10, None, None, None, None, None, None, None, None, "recordName", "asc", "all"
-                )
+        connected_provider.list_all_records = AsyncMock(side_effect=Exception("fail"))
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_records(*self.ARGS)
 
 
 # ---------------------------------------------------------------------------
@@ -13464,67 +13431,6 @@ class TestListAllRecordsExtended:
             sort_by="recordName", sort_order="asc", source="all"
         )
         assert result_records == []
-
-
-# ---------------------------------------------------------------------------
-# get_records (resolves user_id)
-# ---------------------------------------------------------------------------
-
-
-class TestGetRecordsExtended:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider.get_user_by_user_id = AsyncMock(
-            return_value={"_key": "uk1", "userId": "u1"}
-        )
-        connected_provider.list_all_records = AsyncMock(return_value=([], 0, {}))
-        result_records, total, filters = await connected_provider.get_records(
-            "u1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            permissions=None, date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc", source="all"
-        )
-        assert result_records == []
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self, connected_provider):
-        connected_provider.get_user_by_user_id = AsyncMock(return_value=None)
-        result_records, total, filters = await connected_provider.get_records(
-            "u1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            permissions=None, date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc", source="all"
-        )
-        assert result_records == []
-        assert total == 0
-
-    @pytest.mark.asyncio
-    async def test_user_no_key(self, connected_provider):
-        connected_provider.get_user_by_user_id = AsyncMock(
-            return_value={"userId": "u1"}
-        )
-        result_records, total, filters = await connected_provider.get_records(
-            "u1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            permissions=None, date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc", source="all"
-        )
-        assert result_records == []
-
-    @pytest.mark.asyncio
-    async def test_a_failed_read_raises(self, connected_provider):
-        connected_provider.get_user_by_user_id = AsyncMock(side_effect=Exception("fail"))
-        with pytest.raises(Exception, match="fail"):
-            await connected_provider.get_records(
-                "u1", "org1", skip=0, limit=10,
-                search=None, record_types=None, origins=None,
-                connectors=None, indexing_status=None,
-                permissions=None, date_from=None, date_to=None,
-                sort_by="recordName", sort_order="asc", source="all"
-            )
 
 
 # ---------------------------------------------------------------------------

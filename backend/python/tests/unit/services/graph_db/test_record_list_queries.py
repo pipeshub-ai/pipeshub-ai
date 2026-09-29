@@ -115,3 +115,23 @@ async def test_a_failed_kb_records_read_raises(backend) -> None:
         await provider.list_kb_records(
             "kb1", "uk1", "org1", 0, 10, None, None, None, None, None, None, None, "recordName", "asc",
         )
+
+
+@pytest.mark.parametrize("backend", ["arango", "neo4j"])
+async def test_get_records_takes_the_graph_key_on_both_backends(backend) -> None:
+    """/api/v1/records resolves the caller and passes the users node key."""
+    provider = _arango() if backend == "arango" else _neo4j()
+    provider.list_all_records = AsyncMock(return_value=([{"id": "r1"}], 1, {}))
+    args = ("uk1", "org1", 0, 10, None, None, None, None, None, None, None, None, "recordName", "asc", "all")
+    assert await provider.get_records(*args) == ([{"id": "r1"}], 1, {})
+    provider.list_all_records.assert_awaited_once_with(*args)
+
+
+async def test_a_user_on_two_teams_is_deduplicated_to_one_grant_per_kb() -> None:
+    provider = _arango()
+    provider.execute_query = AsyncMock(return_value=[{"records": [], "total": 0}])
+    await provider.list_all_records("uk1", "org1", 0, 10, None, None, None, None, None, None, None, None,
+                                    "recordName", "asc", "all")
+    query = provider.execute_query.await_args.args[0]
+    assert "COLLECT kb_id = access.kb_id" in query
+    assert "FOR access IN allKbAccess" in query

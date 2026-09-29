@@ -85,6 +85,7 @@ from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_f
 from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
+    KB_ROLE_PRIORITY,
     MAX_DIRECT_GRANT_RECORDS,
     ROOT_SCOPED_CONNECTOR_TYPES,
     build_connector_stats_response,
@@ -12145,7 +12146,9 @@ class Neo4jProvider(IGraphDBProvider):
                 // the query, and the connector records below would be lost with it.
                 WITH u, [access IN allKbAccess WHERE access.kb IS NOT NULL] AS reachableKbs
                 UNWIND CASE WHEN size(reachableKbs) = 0 THEN [null] ELSE reachableKbs END AS kbAccess
-                WITH DISTINCT u, kbAccess.kb AS kb, kbAccess.role AS kb_role
+                WITH u, kbAccess.kb AS kb, kbAccess.role AS role
+                ORDER BY coalesce($kb_role_priority[role], 0) DESC
+                WITH u, kb, head(collect(role)) AS kb_role
 
                 OPTIONAL MATCH (kb)<-[:BELONGS_TO]-(kbRecord:Record)
                 WHERE kbRecord.orgId = $org_id
@@ -12323,7 +12326,9 @@ class Neo4jProvider(IGraphDBProvider):
                 // the query, and the connector records below would be lost with it.
                 WITH u, [access IN allKbAccess WHERE access.kb IS NOT NULL] AS reachableKbs
                 UNWIND CASE WHEN size(reachableKbs) = 0 THEN [null] ELSE reachableKbs END AS kbAccess
-                WITH DISTINCT u, kbAccess.kb AS kb, kbAccess.role AS kb_role
+                WITH u, kbAccess.kb AS kb, kbAccess.role AS role
+                ORDER BY coalesce($kb_role_priority[role], 0) DESC
+                WITH u, kb, head(collect(role)) AS kb_role
 
                 OPTIONAL MATCH (kb)<-[:BELONGS_TO]-(kbRecord:Record)
                 WHERE kbRecord.orgId = $org_id
@@ -12377,6 +12382,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Build parameters
             params = {
+                "kb_role_priority": KB_ROLE_PRIORITY,
                 "user_id": user_id,
                 "org_id": org_id,
                 "skip": skip,
@@ -13820,31 +13826,44 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def get_records(
         self,
-        record_ids: list[str],
-        transaction: str | None = None
-    ) -> list[Record]:
-        """Get multiple records by IDs."""
-        try:
-            query = """
-            UNWIND $record_ids AS record_id
-            MATCH (r:Record {id: record_id})
-            RETURN r
-            """
-            results = await self.client.execute_query(
-                query,
-                parameters={"record_ids": record_ids},
-                txn_id=transaction
-            )
-            records = []
-            for result in results:
-                record_data = result.get("r", {})
-                typed_record = self._create_typed_record_from_neo4j_simple(record_data)
-                if typed_record:
-                    records.append(typed_record)
-            return records
-        except Exception as e:
-            self.logger.error(f"❌ Get records failed: {str(e)}")
-            return []
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: str | None,
+        record_types: list[str] | None,
+        origins: list[str] | None,
+        connectors: list[str] | None,
+        indexing_status: list[str] | None,
+        permissions: list[str] | None,
+        date_from: int | None,
+        date_to: int | None,
+        sort_by: str,
+        sort_order: str,
+        source: str,
+    ) -> tuple[list[dict], int, dict]:
+        """List all records the user can access; ``user_id`` is the user's graph key.
+
+        The same list as ``list_all_records``, which takes the same key. A read
+        that fails raises; it is never reported as an empty list.
+        """
+        return await self.list_all_records(
+            user_id,
+            org_id,
+            skip,
+            limit,
+            search,
+            record_types,
+            origins,
+            connectors,
+            indexing_status,
+            permissions,
+            date_from,
+            date_to,
+            sort_by,
+            sort_order,
+            source,
+        )
 
     async def get_user_connector_instances(
         self,

@@ -1471,7 +1471,9 @@ class IGraphDBProvider(ABC):
         List all records the user can access.
 
         Args:
-            user_id: External user ID
+            user_id: The user's graph key (the users node's ``_key`` / ``id``), not
+                the external ``userId``: ``/api/v1/records`` resolves the caller
+                and passes the key (``records_user_id_arg``).
             org_id: Organization ID
             skip: Number of records to skip (pagination)
             limit: Maximum records to return

@@ -3862,10 +3862,10 @@ class TestGetUserKbPermission:
         result = await connected_provider.get_user_kb_permission("kb1", "u1")
         assert result is None
 
-    async def test_exception_returns_none(self, connected_provider):
+    async def test_a_failed_read_raises(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_user_kb_permission("kb1", "u1")
-        assert result is None
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_user_kb_permission("kb1", "u1")
 
     async def test_correct_bind_vars(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = []

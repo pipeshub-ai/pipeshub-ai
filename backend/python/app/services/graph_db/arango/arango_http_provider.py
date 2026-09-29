@@ -133,6 +133,7 @@ from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
+    KB_ROLE_PRIORITY,
     MAX_DIRECT_GRANT_RECORDS,
     ROOT_SCOPED_CONNECTOR_TYPES,
     build_connector_stats_response,
@@ -10702,12 +10703,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             self.logger.debug(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
 
-            role_priority = {
-                "OWNER": 4,
-                "WRITER": 3,
-                "READER": 2,
-                "COMMENTER": 1,
-            }
+            role_priority = KB_ROLE_PRIORITY
 
             # Check direct and team permissions, return highest role (OWNER > WRITER > READER > COMMENTER)
             query = """
@@ -10779,8 +10775,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return role
 
         except Exception as e:
+            # None means "no access"; a failed read must not look like that.
             self.logger.error(f"Failed to check KB permission: {e}")
-            return None
+            raise
 
     async def list_user_knowledge_bases(
         self,
@@ -13218,7 +13215,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 filter_bind["date_to"] = date_to
             record_filter = " AND " + " AND ".join(filter_conditions) if filter_conditions else ""
             perm_filter = " AND permissionEdge.role IN @permissions" if permissions else ""
-            sort_field = sort_by if sort_by in ("recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType") else "recordName"
+            sort_field = sort_by if sort_by in ("recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus") else "recordName"
             sort_direction = "DESC" if (sort_order or "").lower() == "desc" else "ASC"
             main_query = f"""
             LET user_from = @user_from
@@ -13243,8 +13240,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER user_team_perm != null
                     RETURN {{ kb_id: kb._key, kb_doc: kb, role: user_team_perm }}
             )
-            LET allKbAccess = APPEND(directKbAccess, (FOR t IN teamKbAccess FILTER LENGTH(FOR d IN directKbAccess FILTER d.kb_id == t.kb_id RETURN 1) == 0 RETURN t))
-            LET kbRecords = {'(FOR access IN allKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" ' + ('FILTER record.isFile != false ' if include_kb else '') + record_filter + ' RETURN { record: record, permission: { role: access.role, type: "USER" }, kb_id: kb._key, kb_name: kb.name })' if include_kb else '[]'}
+            LET allKbAccess = (
+                FOR access IN APPEND(directKbAccess, teamKbAccess)
+                    COLLECT kb_id = access.kb_id INTO grants = access
+                    RETURN FIRST(FOR g IN grants SORT @kb_role_priority[g.role] || 0 DESC RETURN g)
+            )
+            LET kbRecords = {'(FOR access IN allKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" FILTER record.mimeType != "application/vnd.folder" ' + record_filter + ' RETURN { record: record, permission: { role: access.role, type: "USER" }, kb_id: kb._key, kb_name: kb.name })' if include_kb else '[]'}
             LET connectorRecords = {'(FOR permissionEdge IN @@permission FILTER permissionEdge._from == user_from FILTER permissionEdge.type == "USER" ' + perm_filter + ' LET record = DOCUMENT(permissionEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "CONNECTOR" ' + record_filter + ' RETURN { record: record, permission: { role: permissionEdge.role, type: permissionEdge.type } })' if include_connector else '[]'}
             LET allRecords = APPEND(kbRecords, connectorRecords)
             LET page = (
@@ -13265,6 +13266,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "skip": skip,
                 "limit": limit,
                 "kb_permissions": final_kb_roles,
+                "kb_role_priority": KB_ROLE_PRIORITY,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 **filter_bind,
@@ -13301,38 +13303,28 @@ class ArangoHTTPProvider(IGraphDBProvider):
         sort_order: str,
         source: str,
     ) -> tuple[list[dict], int, dict]:
+        """List all records the user can access; ``user_id`` is the user's graph key.
+
+        The same list as ``list_all_records``, which takes the same key. A read
+        that fails raises; it is never reported as an empty list.
         """
-        List all records the user can access.
-        Resolves external user_id to user key and delegates to list_all_records.
-        Returns (records, total_count, available_filters).
-        """
-        try:
-            user = await self.get_user_by_user_id(user_id)
-            if not user:
-                return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
-            user_key = user.get("_key") or user.get("id")
-            if not user_key:
-                return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
-            return await self.list_all_records(
-                user_key,
-                org_id,
-                skip,
-                limit,
-                search,
-                record_types,
-                origins,
-                connectors,
-                indexing_status,
-                permissions,
-                date_from,
-                date_to,
-                sort_by,
-                sort_order,
-                source,
-            )
-        except Exception as e:
-            self.logger.error("❌ Failed to get records: %s", str(e))
-            raise
+        return await self.list_all_records(
+            user_id,
+            org_id,
+            skip,
+            limit,
+            search,
+            record_types,
+            origins,
+            connectors,
+            indexing_status,
+            permissions,
+            date_from,
+            date_to,
+            sort_by,
+            sort_order,
+            source,
+        )
 
     async def list_kb_records(
         self,

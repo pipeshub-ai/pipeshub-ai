@@ -39,6 +39,10 @@ CONTAINER_FILTER_MAX_TERMS = 25_000
 # omitted is unrecoverable recall loss with nothing to notice.
 CONTAINER_INHERIT_MAX_DEPTH = 20
 
+# A user reaching one KB through several grants (direct, or more than one team)
+# acts with the strongest of them. Roles not listed rank below all of these.
+KB_ROLE_PRIORITY: dict[str, int] = {"OWNER": 4, "WRITER": 3, "READER": 2, "COMMENTER": 1}
+
 
 def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:
     """
