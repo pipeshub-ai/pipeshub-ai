@@ -46,6 +46,7 @@ import {
   getDocumentRootPath,
   extractOrgId,
   extractUserId,
+  toObjectId,
   getBaseUrl,
   getDocumentInfo,
   getFullDocumentPath,
@@ -267,9 +268,9 @@ export class StorageController {
         documentName,
         documentPath: fullDocumentPath,
         alternateDocumentName,
-        orgId: new mongoose.Types.ObjectId(orgId),
+        orgId: toObjectId(orgId, 'organization'),
         isVersionedFile: isVersionedFile,
-        initiatorUserId: userId ? new mongoose.Types.ObjectId(userId) : null,
+        initiatorUserId: userId ? toObjectId(userId, 'user') : null,
         permissions: permissions,
         customMetadata,
         storageVendor: storageVendor,
@@ -314,7 +315,7 @@ export class StorageController {
       const orgId = extractOrgId(req);
       const doc = await DocumentModel.findOne({
         _id: documentId,
-        orgId: new mongoose.Types.ObjectId(orgId),
+        orgId: toObjectId(orgId, 'organization'),
       });
 
       if (!doc) {
@@ -338,7 +339,7 @@ export class StorageController {
       const { documentId } = req.params;
       const document = await DocumentModel.findOne({
         _id: documentId,
-        orgId: new mongoose.Types.ObjectId(orgId),
+        orgId: toObjectId(orgId, 'organization'),
       });
 
       if (!document) {
@@ -347,8 +348,9 @@ export class StorageController {
 
       document.isDeleted = true;
       document.deletedByUserId = userId
-        ? (new mongoose.Types.ObjectId(
+        ? (toObjectId(
             userId,
+            'user',
           ) as unknown as mongoose.Schema.Types.ObjectId)
         : undefined;
 
@@ -376,7 +378,7 @@ export class StorageController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const orgId = new mongoose.Types.ObjectId(extractOrgId(req));
+      const orgId = toObjectId(extractOrgId(req), 'organization');
       const { documentId } = req.params;
       const document = await DocumentModel.findOne({ _id: documentId, orgId });
       if (!document) {
@@ -700,8 +702,9 @@ export class StorageController {
           extension: document.extension,
           note: currentVersionNote,
           initiatedByUserId: userId
-            ? (new mongoose.Types.ObjectId(
+            ? (toObjectId(
                 userId,
+                'user',
               ) as unknown as mongoose.Schema.Types.ObjectId)
             : undefined,
           createdAt: Date.now(),
@@ -772,8 +775,9 @@ export class StorageController {
             extension: document.extension,
             note: currentVersionNote,
             initiatedByUserId: userId
-              ? (new mongoose.Types.ObjectId(
+              ? (toObjectId(
                   userId,
+                  'user',
                 ) as unknown as mongoose.Schema.Types.ObjectId)
               : undefined,
             createdAt: Date.now(),
@@ -836,8 +840,9 @@ export class StorageController {
         extension: fileExtension,
         note: nextVersionNote,
         initiatedByUserId: userId
-          ? (new mongoose.Types.ObjectId(
+          ? (toObjectId(
               userId,
+              'user',
             ) as unknown as mongoose.Schema.Types.ObjectId)
           : undefined,
         createdAt: Date.now(),
@@ -977,8 +982,9 @@ export class StorageController {
         note: note,
         size: document.versionHistory[versionNum]?.size,
         initiatedByUserId: userId
-          ? (new mongoose.Types.ObjectId(
+          ? (toObjectId(
               userId,
+              'user',
             ) as unknown as mongoose.Schema.Types.ObjectId)
           : undefined,
         createdAt: Date.now(),
@@ -1005,7 +1011,7 @@ export class StorageController {
 
       const document = await DocumentModel.findOne({
         _id: documentId,
-        orgId: new mongoose.Types.ObjectId(orgId),
+        orgId: toObjectId(orgId, 'organization'),
       });
 
       if (!document || !document.documentPath) {

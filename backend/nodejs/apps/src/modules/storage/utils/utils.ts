@@ -160,7 +160,7 @@ export async function getDocumentInfo(
     const orgId = extractOrgId(req);
     const documentId = req.params.documentId;
 
-    const orgID = new mongoose.Types.ObjectId(orgId);
+    const orgID = toObjectId(orgId, 'organization');
     if (!documentId) {
       throw new NotFoundError('Document ID is required');
     }
@@ -378,10 +378,10 @@ export async function createPlaceholderDocument(
       documentName,
       documentPath: fullDocumentPath,
       alternateDocumentName,
-      orgId: new mongoose.Types.ObjectId(orgId),
+      orgId: toObjectId(orgId, 'organization'),
       isVersionedFile: isVersionedFile,
       permissions: permissions,
-      initiatorUserId: userId ? new mongoose.Types.ObjectId(userId) : null,
+      initiatorUserId: userId ? toObjectId(userId, 'user') : null,
       customMetadata,
       sizeInBytes: size,
       storageVendor: storageVendor ?? StorageVendor.S3,
@@ -539,6 +539,22 @@ export function serveFileFromLocalStorage(document: Document, res: Response, ver
     logger.error('Error serving local file:', error);
     throw error;
   }
+}
+
+/**
+ * The org and user ids come from the caller's token. A malformed one makes
+ * `new ObjectId` throw a BSONError, which reaches the client as a 500.
+ */
+export function toObjectId(
+  id: string,
+  kind: 'organization' | 'user',
+): mongoose.Types.ObjectId {
+  if (!mongoose.isValidObjectId(id)) {
+    throw new BadRequestError(
+      `The ${kind} id in the storage token isn't valid. Issue the token with the 24-character id of an existing ${kind}, then try again.`,
+    );
+  }
+  return new mongoose.Types.ObjectId(id);
 }
 
 export function extractOrgId(

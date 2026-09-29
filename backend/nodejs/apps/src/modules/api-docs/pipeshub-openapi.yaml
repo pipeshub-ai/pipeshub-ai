@@ -378,9 +378,10 @@ components:
       name: documentId
       in: path
       required: true
-      description: The document's id.
+      description: The document's id, as returned when it was uploaded or created.
       schema:
         type: string
+        pattern: '^[0-9a-fA-F]{24}$'
   headers:
     X-Conversation-Id:
       description: |
@@ -23032,7 +23033,9 @@ paths:
         '200':
           description: The file was stored and its document record created.
         '400':
-          description: The request was missing the file, or the file was rejected.
+          description: |
+            The request was missing the file, the file was rejected, or the storage
+            token's organization or user id is malformed.
         '401':
           description: The storage scoped token was missing or invalid.
         '503':
@@ -23088,7 +23091,9 @@ paths:
         '200':
           description: The document record was created.
         '400':
-          description: The request body was incomplete.
+          description: |
+            The request body was incomplete, or the storage token's organization or
+            user id is malformed.
         '401':
           description: The storage scoped token was missing or invalid.
   /document/internal/{documentId}:
@@ -23105,6 +23110,10 @@ paths:
       responses:
         '200':
           description: The document record.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23125,6 +23134,10 @@ paths:
       responses:
         '200':
           description: The document was marked deleted.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23159,6 +23172,10 @@ paths:
       responses:
         '200':
           description: A download link, or the file itself for local storage.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23189,6 +23206,10 @@ paths:
               schema:
                 type: string
                 format: binary
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23217,6 +23238,10 @@ paths:
       responses:
         '200':
           description: The document's bytes were replaced.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23252,6 +23277,10 @@ paths:
       responses:
         '200':
           description: The new version was stored.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23290,7 +23319,10 @@ paths:
         '200':
           description: The document was rolled back.
         '400':
-          description: The note was missing, or the version was not a whole number.
+          description: |
+            The note was missing, the version was not a whole number, the document
+            id is not a 24-character hex id, or the storage token's organization or
+            user id is malformed.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23311,6 +23343,10 @@ paths:
       responses:
         '200':
           description: A time-limited upload link.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23331,6 +23367,10 @@ paths:
       responses:
         '200':
           description: Whether the document has changed since it was stored.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':

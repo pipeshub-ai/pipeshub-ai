@@ -533,7 +533,7 @@ describe('Storage Routes', () => {
         awaitingDirectUpload: boolean
       }
       const rows: PlaceholderRow[] = [
-        { _id: 'doc-1', orgId: 'org-1', awaitingDirectUpload: true },
+        { _id: '64d000000000000000000b01', orgId: 'org-1', awaitingDirectUpload: true },
       ]
       const controller = {
         watchStorageType: sinon.stub(),
@@ -563,7 +563,7 @@ describe('Storage Routes', () => {
       try {
         const port = (server.address() as AddressInfo).port
         const response = await fetch(
-          `http://127.0.0.1:${port}/api/v1/document/internal/doc-1/abortDirectUpload`,
+          `http://127.0.0.1:${port}/api/v1/document/internal/64d000000000000000000b01/abortDirectUpload`,
           {
             method: 'POST',
             headers: { authorization: 'Bearer service-token', 'content-type': 'application/json' },
@@ -573,6 +573,46 @@ describe('Storage Routes', () => {
         expect(response.status, await response.clone().text()).to.equal(200)
         expect(await response.json()).to.deep.equal({ deleted: true })
         expect(rows).to.have.length(0)
+      } finally {
+        server.close()
+      }
+    })
+
+    it('answers 400 with a next step, not 500, for a malformed document id', async () => {
+      const app = express()
+      app.use(express.json())
+      app.use('/api/v1/document', createStorageRouter(container))
+      app.use(ErrorMiddleware.handleError())
+      const server = app.listen(0)
+      const routes: Array<[string, string]> = [
+        ['GET', '/internal/not-an-id'],
+        ['DELETE', '/internal/not-an-id/'],
+        ['GET', '/internal/not-an-id/download'],
+        ['GET', '/internal/not-an-id/buffer'],
+        ['POST', '/internal/not-an-id/rollBack'],
+        ['POST', '/internal/not-an-id/abortDirectUpload'],
+        ['POST', '/internal/not-an-id/directUpload'],
+        ['GET', '/internal/not-an-id/isModified'],
+      ]
+      try {
+        const port = (server.address() as AddressInfo).port
+        for (const [method, path] of routes) {
+          const response = await fetch(`http://127.0.0.1:${port}/api/v1/document${path}`, {
+            method,
+            headers: { authorization: 'Bearer service-token', 'content-type': 'application/json' },
+            body: method === 'GET' || method === 'DELETE' ? undefined : JSON.stringify({ note: 'n' }),
+          })
+          const body = (await response.json()) as { error: { message: string } }
+          expect(response.status, `${method} ${path}`).to.equal(400)
+          expect(body.error.message, `${method} ${path}`).to.contain(
+            'Use the 24-character id PipesHub returned when the document was uploaded or created',
+          )
+        }
+        for (const handler of Object.values(mockStorageController)) {
+          if (handler !== mockStorageController.watchStorageType) {
+            expect((handler as sinon.SinonStub).called).to.be.false
+          }
+        }
       } finally {
         server.close()
       }
