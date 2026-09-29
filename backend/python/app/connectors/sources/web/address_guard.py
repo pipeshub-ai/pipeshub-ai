@@ -2,13 +2,18 @@
 metadata addresses, redirects included, using the blocked-address policy in ``app.utils.url_fetcher``.
 Each check resolves the host once and the request is sent to that answer, so a second DNS answer
 (rebinding) can't move it somewhere the check never saw.
+
+Operators list internal hosts the connectors may crawl in ``WEB_CONNECTOR_ALLOWED_HOSTS``
+(comma-separated host names). Link-local and cloud metadata addresses stay blocked for them.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import ipaddress
+import os
 import socket
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
@@ -18,7 +23,9 @@ from aiohttp.abc import AbstractResolver, ResolveResult
 from aiohttp.resolver import DefaultResolver
 
 from app.utils.url_fetcher import (
+    _CLOUD_METADATA_ADDRESSES,
     FetchError,
+    IPAddress,
     PublicTarget,
     _hostname_is_blocked,
     _ip_is_blocked,
@@ -29,8 +36,41 @@ if TYPE_CHECKING:
     from aiohttp import ClientHandlerType, ClientRequest, ClientResponse
 
 
+ALLOWED_HOSTS_ENV = "WEB_CONNECTOR_ALLOWED_HOSTS"
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+# AWS's IPv6 metadata endpoint is a private (ULA) address, so only this list keeps it closed to an allowed host.
+_NEVER_ALLOWED = _CLOUD_METADATA_ADDRESSES | {ipaddress.ip_address("fd00:ec2::254")}
+
+
 class UnsafeAddressError(aiohttp.ClientConnectionError):
     """The URL isn't http(s), or its host is or resolves to an address the connectors may not reach."""
+
+
+@functools.cache
+def _allowed_hosts() -> frozenset[str]:
+    return frozenset(
+        host.strip().lower().removesuffix(".") for host in os.getenv(ALLOWED_HOSTS_ENV, "").split(",") if host.strip()
+    )
+
+
+def _host_allowed(host: str | None) -> bool:
+    return bool(host) and host.lower().removesuffix(".") in _allowed_hosts()
+
+
+def _refuse_never_allowed(host: str, ip: IPAddress) -> None:
+    if ip.is_link_local or ip in _NEVER_ALLOWED:
+        raise UnsafeAddressError(f"{host!r} resolves to a link-local or cloud metadata address")
+
+
+def _resolve_allowed_host(url: str) -> PublicTarget:
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    port = parts.port or _DEFAULT_PORTS[parts.scheme]
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    addresses = tuple(dict.fromkeys(ipaddress.ip_address(info[4][0]) for info in infos))
+    for ip in addresses:
+        _refuse_never_allowed(host, ip)
+    return PublicTarget(parts.scheme, host, port, addresses)
 
 
 async def resolve_target(url: str) -> PublicTarget | None:
@@ -39,6 +79,14 @@ async def resolve_target(url: str) -> PublicTarget | None:
     Raises:
         UnsafeAddressError: if the URL can't be fetched or any address it resolves to is blocked.
     """
+    parts = urlsplit(url)
+    if parts.scheme in _DEFAULT_PORTS and _host_allowed(parts.hostname):
+        try:
+            return await asyncio.to_thread(_resolve_allowed_host, url)
+        except socket.gaierror:
+            return None
+        except ValueError as e:
+            raise UnsafeAddressError(f"{url!r} has an invalid port or address") from e
     try:
         return await asyncio.to_thread(resolve_public_http_target, url)
     except FetchError as e:
@@ -61,6 +109,9 @@ def _check(host: str, address: str) -> None:
         ip = ipaddress.ip_address(address)
     except ValueError as e:
         raise UnsafeAddressError(f"{host!r} resolves to an unusable address") from e
+    if _host_allowed(host):
+        _refuse_never_allowed(host, ip)
+        return
     if _hostname_is_blocked(host) or _ip_is_blocked(ip):
         raise UnsafeAddressError(f"{host!r} is not a public address")
 
@@ -136,6 +187,14 @@ def _origin_form(method: str, target: str, version: str, header_lines: list[byte
     return f"{method} {path} {version}\r\n".encode("latin-1") + b"".join(line + b"\r\n" for line in kept) + b"\r\n"
 
 
+async def _connect_checked(pin: PublicTarget) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Connect to the first reachable address of ``pin``; every one of them passed the check."""
+    for address in pin.addresses[:-1]:
+        with contextlib.suppress(OSError):
+            return await asyncio.open_connection(str(address), pin.port)
+    return await asyncio.open_connection(str(pin.addresses[-1]), pin.port)
+
+
 async def _serve_proxy_client(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
     try:
         head = await asyncio.wait_for(client_reader.readuntil(b"\r\n\r\n"), timeout=30)
@@ -145,7 +204,7 @@ async def _serve_proxy_client(client_reader: asyncio.StreamReader, client_writer
         pin = await resolve_target(url)
         if pin is None:
             raise UnsafeAddressError(f"{url!r} did not resolve")
-        upstream_reader, upstream_writer = await asyncio.open_connection(str(pin.pinned_address), pin.port)
+        upstream_reader, upstream_writer = await _connect_checked(pin)
     except (UnsafeAddressError, ValueError, OSError, asyncio.TimeoutError, asyncio.LimitOverrunError, asyncio.IncompleteReadError):
         with contextlib.suppress(ConnectionError, OSError):
             client_writer.write(_PROXY_REFUSED)

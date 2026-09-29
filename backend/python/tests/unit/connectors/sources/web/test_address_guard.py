@@ -3,6 +3,7 @@
 import asyncio
 import ipaddress
 import socket
+from collections.abc import AsyncIterator, Callable, Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -65,6 +66,44 @@ class TestResolveTarget:
         assert await is_unsafe_url("http://nowhere.example/") is False
 
 
+@pytest.fixture
+def allowed_hosts(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[str], None]]:
+    def _allow(value: str) -> None:
+        monkeypatch.setenv(address_guard.ALLOWED_HOSTS_ENV, value)
+        address_guard._allowed_hosts.cache_clear()
+    yield _allow
+    address_guard._allowed_hosts.cache_clear()
+
+
+class TestAllowedHosts:
+    async def test_an_allowed_host_on_a_private_address_is_pinned(self, dns, allowed_hosts) -> None:
+        allowed_hosts("web-fixtures, wiki.corp.example")
+        dns.return_value = _answers(ipaddress.ip_address("172.18.0.5"))
+        target = await resolve_target("http://web-fixtures:8080/site/")
+        assert target is not None
+        assert (target.host, target.port, target.pinned_address) == ("web-fixtures", 8080, ipaddress.ip_address("172.18.0.5"))
+
+    async def test_other_private_hosts_stay_refused(self, dns, allowed_hosts) -> None:
+        allowed_hosts("web-fixtures")
+        dns.return_value = _answers(ipaddress.ip_address("172.18.0.6"))
+        assert await is_unsafe_url("http://intranet.example/") is True
+        assert await is_unsafe_url("http://10.0.0.1/") is True
+
+    @pytest.mark.parametrize("address", ["169.254.169.254", "fd00:ec2::254", "100.100.100.200"])
+    async def test_an_allowed_host_can_not_reach_cloud_metadata(self, dns, allowed_hosts, address) -> None:
+        allowed_hosts("web-fixtures")
+        dns.return_value = _answers(ipaddress.ip_address(address))
+        assert await is_unsafe_url("http://web-fixtures/") is True
+
+    async def test_the_session_resolver_lets_an_allowed_host_through(self, monkeypatch, allowed_hosts) -> None:
+        allowed_hosts("web-fixtures")
+        resolver = GuardedResolver()
+        answer = [{"hostname": "web-fixtures", "host": "172.18.0.5", "port": 80, "family": socket.AF_INET, "proto": 0, "flags": 0}]
+        monkeypatch.setattr(resolver._resolver, "resolve", AsyncMock(return_value=answer))
+        assert await resolver.resolve("web-fixtures", 80) == answer
+        await resolver.close()
+
+
 class TestGuardedResolver:
     async def test_refuses_a_private_answer(self, monkeypatch) -> None:
         resolver = GuardedResolver()
@@ -102,7 +141,7 @@ async def _through_proxy(proxy_port: int, request: bytes) -> bytes:
 
 class TestGuardProxy:
     @pytest.fixture
-    async def site(self):
+    async def site(self) -> AsyncIterator[tuple[int, list[bytes]]]:
         """A local server standing in for a website; records the raw requests it gets."""
         received: list[bytes] = []
 
@@ -117,7 +156,7 @@ class TestGuardProxy:
         server.close()
 
     @pytest.fixture
-    async def proxy_port(self):
+    async def proxy_port(self) -> AsyncIterator[int]:
         proxy = await start_guard_proxy()
         yield proxy.sockets[0].getsockname()[1]
         proxy.close()
