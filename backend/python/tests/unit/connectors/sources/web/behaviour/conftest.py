@@ -110,7 +110,7 @@ async def site(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
 async def browser(site: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
     """crawl4ai's browser renders from the fake websites; the shared fetcher starts fresh."""
     monkeypatch.setattr(crawl4ai_fetcher, "AsyncWebCrawler", browser_crawler_class(site))
-    monkeypatch.setattr(crawl4ai_fetcher, "AsyncPlaywrightCrawlerStrategy", lambda **kw: SimpleNamespace(set_hook=lambda *_: None, **kw))
+    monkeypatch.setattr(crawl4ai_fetcher, "AsyncPlaywrightCrawlerStrategy", lambda **kw: SimpleNamespace(**kw))
     monkeypatch.setattr(crawl4ai_fetcher, "UndetectedAdapter", lambda: SimpleNamespace())
     monkeypatch.setattr(crawl4ai_fetcher, "_shared_instance", None)
     monkeypatch.setattr(crawl4ai_fetcher, "_ref_count", 0)

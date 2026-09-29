@@ -11,30 +11,12 @@ T = TypeVar("T")
 
 _HTTP_STATUS_RE = re.compile(r"HTTP\s+(\d{3})")
 
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode, ProxyConfig
 from crawl4ai.async_dispatcher import SemaphoreDispatcher
 from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
 from crawl4ai.browser_adapter import UndetectedAdapter
 
-from app.connectors.sources.web.address_guard import is_unsafe_url
-
-
-async def _continue_if_safe(route: Any) -> None:
-    url = route.request.url
-    if url.startswith(("http://", "https://")) and await is_unsafe_url(url):
-        await route.abort("blockedbyclient")
-    else:
-        await route.continue_()
-
-
-async def _refuse_unsafe_requests(page: Any, context: Any, **_: Any) -> Any:
-    """Chromium resolves and connects on its own, so every request it makes (subresources, script
-    navigations) is checked here and aborted if its host isn't a public address. Playwright doesn't
-    route a redirect's later hops; the connector walks a page's redirects before the browser loads it."""
-    if not getattr(context, "_pipeshub_address_guard", False):
-        context._pipeshub_address_guard = True
-        await context.route("**/*", _continue_if_safe)
-    return page
+from app.connectors.sources.web.address_guard import start_guard_proxy
 
 
 class _SharedSemaphoreDispatcher(SemaphoreDispatcher):
@@ -321,6 +303,7 @@ for (const p of __panels) {
         self._concurrency = concurrency
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._crawler: Optional[AsyncWebCrawler] = None
+        self._proxy: Optional[asyncio.Server] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -348,14 +331,27 @@ for (const p of __panels) {
         return asyncio.Semaphore(self._concurrency)
 
     async def _create_and_start_crawler(self) -> AsyncWebCrawler:
+        self._proxy = await start_guard_proxy()
+        proxy_port = self._proxy.sockets[0].getsockname()[1]
+        # Playwright also sends loopback through the proxy (<-loopback>), so the proxy refuses it.
+        self._browser_config.proxy_config = ProxyConfig(server=f"http://127.0.0.1:{proxy_port}")
         strategy = AsyncPlaywrightCrawlerStrategy(
             browser_config=self._browser_config,
             browser_adapter=UndetectedAdapter(),
         )
-        strategy.set_hook("on_page_context_created", _refuse_unsafe_requests)
         crawler = AsyncWebCrawler(crawler_strategy=strategy)
         await crawler.start()
         return crawler
+
+    async def _close_proxy(self) -> None:
+        """Stop the proxy and the browser connections it still relays, before the loop stops."""
+        assert self._proxy is not None
+        self._proxy.close()
+        self._proxy = None
+        relays = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        for relay in relays:
+            relay.cancel()
+        await asyncio.gather(*relays, return_exceptions=True)
 
     async def _run_in_browser_thread(self, coro: Coroutine[Any, Any, T]) -> T:
         """Schedule a coroutine on the browser thread's loop and await the result."""
@@ -366,6 +362,8 @@ for (const p of __panels) {
         if self._crawler and self._loop:
             await self._run_in_browser_thread(self._crawler.close())
             self._crawler = None
+        if self._proxy and self._loop:
+            await self._run_in_browser_thread(self._close_proxy())
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)
             self._loop = None

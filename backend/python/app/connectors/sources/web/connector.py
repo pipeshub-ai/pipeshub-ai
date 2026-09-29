@@ -3120,7 +3120,7 @@ class WebConnector(BaseConnector):
                 download_endpoint = f"{storage_url}/api/v1/document/internal/{record.storage_document_id}/download"
 
                 # Not self.session: the storage service is internal, which the crawl's session refuses.
-                session = aiohttp.ClientSession()
+                session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
                 try:
                     async with session.get(
                         download_endpoint,

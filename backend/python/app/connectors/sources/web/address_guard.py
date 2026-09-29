@@ -7,6 +7,7 @@ Each check resolves the host once and the request is sent to that answer, so a s
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import socket
 from typing import TYPE_CHECKING
@@ -102,3 +103,64 @@ def create_guarded_session(**kwargs: object) -> aiohttp.ClientSession:
         middlewares=(_guard_request,),
         **kwargs,  # type: ignore[arg-type]
     )
+
+
+_PROXY_HEAD_LIMIT = 64 * 1024
+_PROXY_REFUSED = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+
+
+async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    try:
+        while data := await reader.read(65536):
+            writer.write(data)
+            await writer.drain()
+    except (ConnectionError, OSError):
+        pass
+    finally:
+        writer.close()
+
+
+def _origin_form(method: str, target: str, version: str, header_lines: list[bytes]) -> bytes:
+    """A proxied plain-http request as the origin server expects it. Unless it's an upgrade
+    (WebSocket), the connection closes after one answer, so Chromium can't reuse it for another
+    host that this connection was never checked for."""
+    parts = urlsplit(target)
+    path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    upgrade = any(line.lower().startswith(b"upgrade:") for line in header_lines)
+    kept = [
+        line for line in header_lines
+        if upgrade or not line.lower().startswith((b"connection:", b"proxy-connection:", b"keep-alive:"))
+    ]
+    if not upgrade:
+        kept.append(b"Connection: close")
+    return f"{method} {path} {version}\r\n".encode("latin-1") + b"".join(line + b"\r\n" for line in kept) + b"\r\n"
+
+
+async def _serve_proxy_client(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
+    try:
+        head = await asyncio.wait_for(client_reader.readuntil(b"\r\n\r\n"), timeout=30)
+        request_line, *header_lines = head[:-4].split(b"\r\n")
+        method, target, version = request_line.decode("latin-1").split(" ", 2)
+        url = f"https://{target}/" if method == "CONNECT" else target
+        pin = await resolve_target(url)
+        if pin is None:
+            raise UnsafeAddressError(f"{url!r} did not resolve")
+        upstream_reader, upstream_writer = await asyncio.open_connection(str(pin.pinned_address), pin.port)
+    except (UnsafeAddressError, ValueError, OSError, asyncio.TimeoutError, asyncio.LimitOverrunError, asyncio.IncompleteReadError):
+        with contextlib.suppress(ConnectionError, OSError):
+            client_writer.write(_PROXY_REFUSED)
+            await client_writer.drain()
+        client_writer.close()
+        return
+    if method == "CONNECT":
+        client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+    else:
+        upstream_writer.write(_origin_form(method, target, version, header_lines))
+    await asyncio.gather(_pipe(client_reader, upstream_writer), _pipe(upstream_reader, client_writer))
+
+
+async def start_guard_proxy() -> asyncio.Server:
+    """An HTTP proxy on loopback for the headless browser. Chromium sends every request through it,
+    redirect hops, subresources and WebSockets included, and it connects only to an address that
+    passed the check, so the browser can't reach an internal address or be moved by a second DNS answer."""
+    return await asyncio.start_server(_serve_proxy_client, "127.0.0.1", 0, limit=_PROXY_HEAD_LIMIT)
