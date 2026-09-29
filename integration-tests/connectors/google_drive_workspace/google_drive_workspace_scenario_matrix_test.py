@@ -40,8 +40,8 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (
     wait_until_drive_files_listed,
 )
 from connectors.scenario_matrix import (
+    FILTER_KEEPS_EXCLUDED_ITEM,
     ConnectorScenarioMatrix,
-    FilterOutcome,
     Role,
     ScenarioAdapter,
     SourceItem,
@@ -60,12 +60,6 @@ _SYNC_TIMEOUT_SEC = int(os.getenv("GOOGLE_DRIVE_WORKSPACE_SYNC_TIMEOUT", "300"))
 
 class DriveWorkspaceAdapter(ScenarioAdapter):
     source = "Google Drive Workspace"
-    # A folder_ids change runs a full sync that drops every sync edge and writes
-    # them back only for the new scope. The scope-exit delete in
-    # sources/google/drive/team/connector.py (_delete_on_scope_exit) runs only
-    # for items the changes feed reports, not on a filter change, so the node
-    # stays (the Drive suite's TC-FF-013 relies on the same).
-    filter_outcome = FilterOutcome.DESCOPED
 
     def __init__(
         self, *, drive: GoogleDriveDataSource, main_id: str, filtered_id: str, **kwargs: Any
@@ -215,7 +209,9 @@ async def scenario_adapter(
             except Exception as e:  # noqa: BLE001 - teardown must not mask the test result
                 logger.warning("TEARDOWN: delete/clean failed for %s: %s", connector_id, e)
         # Deleting the tree removes every file in it and every share made on them.
-        await delete_drive_folder(drive, root_id)
+        # root_id stays None when setup failed before the tree was made.
+        if root_id:
+            await delete_drive_folder(drive, root_id)
 
 
 @pytest.mark.integration
@@ -223,6 +219,7 @@ async def scenario_adapter(
 class TestDriveWorkspaceScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "Google Drive Workspace"
     KNOWN_BUGS = {
+        "filter_change": FILTER_KEEPS_EXCLUDED_ITEM,
         "incr_delete": (
             "A file deleted from My Drive keeps its record and its vectors: the changes "
             "feed reports it as removed, and sources/google/drive/team/connector.py "

@@ -36,9 +36,9 @@ from connectors.confluence.confluence_v1_test_utils import (
     wait_until_confluence_condition,
 )
 from connectors.scenario_matrix import (
+    FILTER_KEEPS_EXCLUDED_ITEM,
     Action,
     ConnectorScenarioMatrix,
-    FilterOutcome,
     Role,
     ScenarioAdapter,
     SourceItem,
@@ -62,11 +62,6 @@ def _storage(text: str) -> dict[str, Any]:
 
 class ConfluenceAdapter(ScenarioAdapter):
     source = "Confluence"
-    # A page_ids change runs a full sync that drops every sync edge and writes
-    # them back only for pages still selected. The connector has no scope-exit
-    # delete (confluence_cloud/connector.py only sweeps placeholder ancestors),
-    # so the excluded page's node and vectors stay.
-    filter_outcome = FilterOutcome.DESCOPED
 
     def __init__(
         self, *, confluence: ConfluenceDataSource, space_id: str, space_key: str, **kwargs: Any
@@ -230,6 +225,7 @@ class TestConfluenceScenarioMatrix(ConnectorScenarioMatrix):
         ),
     }
     KNOWN_BUGS = {
+        "filter_change": FILTER_KEEPS_EXCLUDED_ITEM,
         "incr_delete": (
             "A page deleted in Confluence is never removed: the connector finds changes "
             "with a lastModified content search (sources/atlassian/confluence_cloud/"

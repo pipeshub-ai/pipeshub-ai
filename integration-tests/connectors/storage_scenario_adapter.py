@@ -12,7 +12,7 @@ the run folder (the "Folders" sync filter); the exclusion filter narrows it to
 ``kept/``. Narrowing that filter is the one sync filter all six connectors
 share, and all six remove what falls outside it (``clean_up_scope`` in
 ``core/registry/folder_scope.py``, or the prune of unseen items for Azure Files
-and SMB), so the excluded record is expected to be deleted, not only descoped.
+and SMB), which is what the matrix requires of every connector.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from connector_lifecycle import (
     destructor,
     ensure_resource_exists,
 )
-from connectors.scenario_matrix import FilterOutcome, Role, ScenarioAdapter, SourceItem
+from connectors.scenario_matrix import Role, ScenarioAdapter, SourceItem
 from helper.graph_provider import GraphProviderProtocol
 from helper.graph_provider_utils import wait_for_sync_completion
 from helper.run_folder import folder_filter, new_run_folder
@@ -47,8 +47,6 @@ APP_LEVEL_PERMISSIONS = (
 
 class StorageScenarioAdapter(ScenarioAdapter):
     """Source actions against one bucket, container or share. Subclasses do the I/O."""
-
-    filter_outcome = FilterOutcome.REMOVED
 
     def __init__(self, *, storage: Any, resource: str, folder: str, **kwargs: Any) -> None:
         super().__init__(**kwargs)

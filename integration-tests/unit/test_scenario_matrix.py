@@ -358,3 +358,64 @@ async def test_content_texts_pages_through_every_collection_and_skips_the_summar
     assert only.must[0].key == "metadata.virtualRecordId"
     assert only.must[0].match.value == "vr-1"
     assert only.must_not[0].key == "metadata.isRecordSummary"
+
+
+class _Resp:
+    """The parts of a ``requests.Response`` the search wait reads."""
+
+    def __init__(self, status: int, body: Any = None) -> None:
+        self.status_code = status
+        self._body = body
+
+    def json(self) -> Any:
+        if self._body is None:
+            raise ValueError("no JSON body")
+        return self._body
+
+
+def _hits(*vrids: str) -> dict[str, Any]:
+    """A 200 search body as the API sends it: hits under searchResponse.searchResults."""
+    return {"searchResponse": {"searchResults": [
+        {"content": "chunk", "metadata": {"virtualRecordId": v}} for v in vrids
+    ]}}
+
+
+def test_search_verdict_counts_a_miss_only_after_a_parsed_200() -> None:
+    assert sm.search_verdict(200, _hits("vr-1"), "vr-1") is True
+    assert sm.search_verdict(200, _hits("vr-2"), "vr-1") is False
+    assert sm.search_verdict(200, _hits(), "vr-1") is False
+    assert sm.search_verdict(500, None, "vr-1") is None
+    assert sm.search_verdict(200, {"searchResponse": {}}, "vr-1") is None
+    assert sm.search_verdict(200, "oops", "vr-1") is None
+    assert sm.search_verdict(401, None, "vr-1") is None
+    assert sm.search_verdict(404, None, "vr-1") is None
+    assert sm.search_verdict(404, None, "vr-1", denial_is_miss=True) is False
+    assert sm.search_verdict(500, None, "vr-1", denial_is_miss=True) is None
+
+
+def _search_run(monkeypatch, responses: list[_Resp]) -> MatrixRun:
+    monkeypatch.setattr(sm, "POLL_INTERVAL_SEC", 0.01)
+    run = _run(_Source(), _NO_SHARE_OR_FILTER)
+    queue = list(responses)
+    run._search = lambda query, as_user: queue.pop(0) if len(queue) > 1 else queue[0]  # type: ignore[method-assign]
+    return run
+
+
+async def test_search_down_never_passes_as_a_miss(monkeypatch) -> None:
+    run = _search_run(monkeypatch, [_Resp(500)])
+    with pytest.raises(AssertionError, match=r"last search: HTTP 500, no usable answer"):
+        await run.wait_search("q", "vr-1", expect=False, timeout=0.3)
+
+
+async def test_a_found_needs_a_200_hit(monkeypatch) -> None:
+    run = _search_run(monkeypatch, [_Resp(500), _Resp(200, {"searchResponse": {}})])
+    with pytest.raises(AssertionError, match=r"HTTP 200, no usable answer"):
+        await run.wait_search("q", "vr-1", expect=True, timeout=0.3)
+
+    run = _search_run(monkeypatch, [_Resp(500), _Resp(200, _hits("vr-1"))])
+    await run.wait_search("q", "vr-1", expect=True, timeout=5)
+
+
+async def test_a_miss_settles_on_a_200_without_the_record(monkeypatch) -> None:
+    run = _search_run(monkeypatch, [_Resp(503), _Resp(200, _hits("vr-2"))])
+    await run.wait_search("q", "vr-1", expect=False, timeout=5)

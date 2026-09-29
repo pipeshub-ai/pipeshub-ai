@@ -29,8 +29,8 @@ from connectors.bookstack.bookstack_source_helper import (
     BookStackSourceHelper,
 )
 from connectors.scenario_matrix import (
+    FILTER_KEEPS_EXCLUDED_ITEM,
     ConnectorScenarioMatrix,
-    FilterOutcome,
     Role,
     ScenarioAdapter,
     SourceItem,
@@ -44,9 +44,6 @@ SHAREE_PASSWORD = "Pipeshub-matrix-2026!"
 
 class BookStackAdapter(ScenarioAdapter):
     source = "BookStack"
-    # A book filter change runs a full sync that drops every sync edge and lists
-    # only the pages of books the filter keeps; nothing deletes the others.
-    filter_outcome = FilterOutcome.DESCOPED
 
     def __init__(
         self, *, bookstack: BookStackSourceHelper, books: dict[str, int], role_id: int,
@@ -171,7 +168,7 @@ _DELETE_BUG = (
     "page_delete audit events and then skips them (the _handle_page_delete_event call "
     "is commented out, sources/bookstack/connector.py:1945-1950)"
 )
-_KNOWN_BUGS = {"incr_delete": _DELETE_BUG}
+_KNOWN_BUGS = {"incr_delete": _DELETE_BUG, "filter_change": FILTER_KEEPS_EXCLUDED_ITEM}
 
 # A page shared with a role is a Role -> Record PERMISSION edge. The record page
 # accepts Group or Role there (neo4j_provider._check_record_permissions), but

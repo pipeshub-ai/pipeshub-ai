@@ -21,9 +21,9 @@ import pytest_asyncio
 
 from connectors.nextcloud.nextcloud_source_helper import NextcloudSourceHelper
 from connectors.scenario_matrix import (
+    FILTER_KEEPS_EXCLUDED_ITEM,
     Action,
     ConnectorScenarioMatrix,
-    FilterOutcome,
     Role,
     ScenarioAdapter,
     SourceItem,
@@ -38,9 +38,6 @@ FILTERED_EXTENSION = "md"
 
 class NextcloudAdapter(ScenarioAdapter):
     source = "Nextcloud"
-    # A sync-filter change runs a full sync that drops every sync edge and writes
-    # them back only for files the filter keeps; the connector deletes nothing.
-    filter_outcome = FilterOutcome.DESCOPED
 
     def __init__(self, *, nextcloud: NextcloudSourceHelper, folder: str, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -150,6 +147,7 @@ async def scenario_adapter(
 @pytest.mark.nextcloud
 class TestNextcloudScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "Nextcloud"
+    KNOWN_BUGS = {"filter_change": FILTER_KEEPS_EXCLUDED_ITEM}
     SCHEDULED_SYNC = True
     UNSUPPORTED = {
         Action.CHANGE_PERMISSION.value: (

@@ -22,9 +22,9 @@ import pytest_asyncio
 from connector_lifecycle import create_connector_and_await_sync, destructor
 
 from connectors.scenario_matrix import (
+    FILTER_KEEPS_EXCLUDED_ITEM,
     Action,
     ConnectorScenarioMatrix,
-    FilterOutcome,
     Role,
     ScenarioAdapter,
     SourceItem,
@@ -47,9 +47,6 @@ def title_from_file_name(path: str) -> str:
 
 class WebAdapter(ScenarioAdapter):
     source = "Web"
-    # A filter change runs a full crawl that drops every sync edge and keeps only
-    # pages the filter lets through; a page it leaves out is not deleted.
-    filter_outcome = FilterOutcome.DESCOPED
 
     def __init__(self, *, fixtures: WebFixtures, root: str, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -167,6 +164,7 @@ async def scenario_adapter(
 @pytest.mark.web
 class TestWebScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "Web"
+    KNOWN_BUGS = {"filter_change": FILTER_KEEPS_EXCLUDED_ITEM}
     UNSUPPORTED = {
         Action.CHANGE_PERMISSION.value: (
             "a crawled site has no per-page access: every page of a team crawl is shared "

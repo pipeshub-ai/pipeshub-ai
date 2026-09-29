@@ -24,7 +24,6 @@ from connectors.mariadb.mariadb_source_helper import MariaDBSourceHelper
 from connectors.scenario_matrix import (
     Action,
     ConnectorScenarioMatrix,
-    FilterOutcome,
     Role,
     ScenarioAdapter,
     SourceItem,
@@ -38,9 +37,6 @@ ROW_TITLE = "matrix"
 
 class MariaDBAdapter(ScenarioAdapter):
     source = "MariaDB"
-    # A table filter change runs a full sync whose _remove_stale_tables deletes
-    # the record of every table the filter no longer lists.
-    filter_outcome = FilterOutcome.REMOVED
 
     def __init__(self, *, mariadb: MariaDBSourceHelper, **kwargs: Any) -> None:
         super().__init__(**kwargs)

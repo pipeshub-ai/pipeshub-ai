@@ -34,7 +34,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 @pytest.fixture(scope="class")
-def scenario_run(request: pytest.FixtureRequest, scenario_adapter, vector_store):
+def scenario_run(
+    request: pytest.FixtureRequest, scenario_adapter, vector_store, blob_store, mongo_store,
+    test_org_id: str,
+):
     """One connector's walk through ``scenario_matrix``; ``scenario_adapter`` comes from its module."""
     from connectors.scenario_matrix import MatrixRun
 
@@ -43,4 +46,7 @@ def scenario_run(request: pytest.FixtureRequest, scenario_adapter, vector_store)
         unsupported=dict(getattr(request.cls, "UNSUPPORTED", {})),
         known_bugs=dict(getattr(request.cls, "KNOWN_BUGS", {})),
         vector=vector_store,
+        blob=blob_store,
+        mongo=mongo_store,
+        org_id=test_org_id,
     )

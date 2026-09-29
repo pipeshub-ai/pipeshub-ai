@@ -24,9 +24,9 @@ import pytest_asyncio
 from connector_lifecycle import create_connector_and_await_sync, destructor
 
 from connectors.scenario_matrix import (
+    FILTER_KEEPS_EXCLUDED_ITEM,
     Action,
     ConnectorScenarioMatrix,
-    FilterOutcome,
     Role,
     ScenarioAdapter,
     SourceItem,
@@ -41,9 +41,6 @@ logger = logging.getLogger("zammad-scenario-matrix")
 
 class ZammadAdapter(ScenarioAdapter):
     source = "Zammad"
-    # A group filter change runs a full sync that drops every sync edge and reads
-    # tickets only from the groups the filter keeps; nothing deletes the others.
-    filter_outcome = FilterOutcome.DESCOPED
 
     def __init__(
         self, *, zammad: ZammadSourceHelper, run: str, groups: dict[str, int], sharee_id: int,
@@ -191,4 +188,4 @@ class TestZammadScenarioMatrix(ConnectorScenarioMatrix):
             "(articles are append-only), so old text can never leave a ticket"
         ),
     }
-    KNOWN_BUGS = {"incr_delete": _DELETE_BUG}
+    KNOWN_BUGS = {"incr_delete": _DELETE_BUG, "filter_change": FILTER_KEEPS_EXCLUDED_ITEM}

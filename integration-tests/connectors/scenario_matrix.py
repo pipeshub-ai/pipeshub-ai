@@ -16,8 +16,9 @@ connector, and asks every store:
 - delete: the record, its vectors and its search hit are gone;
 - full sync: every record survives with the same id and stays searchable, and
   an item the connector never saw is picked up;
-- filter change: an already-synced item that the new filter excludes ends up
-  the way the product says it should (see ``FilterOutcome``);
+- filter change: an already-synced item that the new filter excludes is removed
+  from every store (graph, vectors, blob storage and MongoDB), and the rest stay
+  searchable;
 - indexing settings change: with manual indexing switched on, a new item is
   synced but not indexed;
 - scheduled sync: with a one-minute schedule, a change lands without anyone
@@ -59,13 +60,18 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, ClassVar, Iterable
 
 import pytest
 
-from helper.connector_visibility import found, search_connector_as, search_connector_as_admin
+from helper.connector_visibility import search_connector_as, search_connector_as_admin
+from helper.cross_store import RecordFootprint, assert_fully_deleted
 from helper.graph_provider_utils import async_poll_until, wait_for_sync_completion
 from helper.record_access import access_matches, record_access_status, wait_for_record_access
+from helper.second_user import NO_ACCESS_STATUSES
 from helper.storage_incremental import restart_sync
+from retrieval.ranking import virtual_id_of
 
 if TYPE_CHECKING:
+    from helper.blob_store import BlobStoreProbe
     from helper.graph_provider import GraphProviderProtocol
+    from helper.mongo_store import MongoStoreProbe
     from helper.second_user import SecondUser
     from helper.vector_store import VectorStoreProbe
     from pipeshub_client import PipeshubClient
@@ -85,6 +91,13 @@ SCHEDULED_PICKUP_TIMEOUT_SEC = 420
 SCHEDULED_ELSEWHERE = (
     "runs on the Nextcloud matrix only: the scheduler publishes the same sync event for "
     "every connector type, and each run waits on a real scheduler tick"
+)
+
+FILTER_KEEPS_EXCLUDED_ITEM = (
+    "a narrowed sync filter must remove the excluded item from every store (record, "
+    "vectors, stored files). This connector's full sync only drops the item's sync edges "
+    "(event_service.py, delete_connector_sync_edges) and never deletes it, so its record "
+    "and vectors stay behind where nobody can find them"
 )
 
 INDEXED = "COMPLETED"
@@ -134,23 +147,6 @@ _ROLE_NEEDS: dict[Role, Action] = {
     Role.DELETE: Action.DELETE,
     Role.FILTERED: Action.SET_FILTER,
 }
-
-
-class FilterOutcome(str, enum.Enum):
-    """What happens to an already-synced item that a changed sync filter now excludes.
-
-    A sync filter change marks the connector ``pendingFullSync``. The full sync
-    that follows deletes every sync edge the connector wrote (``BELONGS_TO``,
-    ``PERMISSION``, ``INHERIT_PERMISSIONS`` and the rest, see
-    ``event_service.py`` and ``delete_connector_sync_edges``) and writes them
-    again only for what is still in scope. Nodes and vectors are not deleted.
-    """
-
-    # The record node and its vectors stay, but with no permission edge left
-    # nobody reaches it: search and the record page both leave it out.
-    DESCOPED = "descoped"
-    # The connector deletes the record itself, so its vectors go with it.
-    REMOVED = "removed"
 
 
 @dataclass
@@ -224,6 +220,28 @@ def item_text(role: Role, token: str) -> str:
     )
 
 
+def search_verdict(
+    status: int, body: Any, virtual_record_id: str, *, denial_is_miss: bool = False,
+) -> bool | None:
+    """What one search proved: ``True`` a hit, ``False`` a miss, ``None`` nothing.
+
+    A miss needs a 200 whose hit list parsed. A 5xx, an expired login, or a body
+    without ``searchResults`` proves nothing, so a delete or unshare check must
+    keep polling rather than pass while search is down. For someone other than
+    the owner, an explicit refusal (403/404: the connector does not resolve for
+    them at all) is the answer to "can they find it", so it counts as a miss.
+    """
+    if denial_is_miss and status in NO_ACCESS_STATUSES:
+        return False
+    if status != 200 or not isinstance(body, dict):
+        return None
+    response = body.get("searchResponse") or body
+    hits = response.get("searchResults") if isinstance(response, dict) else None
+    if not isinstance(hits, list):
+        return None
+    return any(isinstance(h, dict) and virtual_id_of(h) == virtual_record_id for h in hits)
+
+
 class ScenarioAdapter:
     """Source-side actions for one connector. Subclass per connector.
 
@@ -235,7 +253,6 @@ class ScenarioAdapter:
     """
 
     source: ClassVar[str] = "the source"
-    filter_outcome: ClassVar[FilterOutcome] = FilterOutcome.DESCOPED
     # Some connectors recreate every record on each sync (Local FS reading a
     # folder); for them "the same record survives" is not a claim to check.
     record_ids_survive_sync: ClassVar[bool] = True
@@ -391,12 +408,18 @@ class MatrixRun:
         unsupported: dict[str, str],
         vector: "VectorStoreProbe",
         known_bugs: dict[str, str] | None = None,
+        blob: "BlobStoreProbe | None" = None,
+        mongo: "MongoStoreProbe | None" = None,
+        org_id: str = "",
     ) -> None:
         self.adapter = adapter
         self.client = adapter.client
         self.graph = adapter.graph
         self.connector_id = adapter.connector_id
         self.vector = vector
+        self.blob = blob
+        self.mongo = mongo
+        self.org_id = org_id
         self.unsupported = unsupported
         self.known_bugs = dict(known_bugs or {})
         self.items: dict[Role, SourceItem] = {}
@@ -492,11 +515,23 @@ class MatrixRun:
         as_user: "SecondUser | None" = None, who: str = "the owner",
         timeout: int = SEARCH_TIMEOUT_SEC,
     ) -> None:
-        async def _settled() -> bool:
-            hit = await asyncio.to_thread(
-                lambda: found(self._search(query, as_user), virtual_record_id)
+        last: dict[str, Any] = {}
+
+        def _ask() -> bool | None:
+            resp = self._search(query, as_user)
+            try:
+                body = resp.json()
+            except ValueError:
+                body = None
+            last.update(status=resp.status_code, verdict=None)
+            verdict = search_verdict(
+                resp.status_code, body, virtual_record_id, denial_is_miss=as_user is not None,
             )
-            return hit == expect
+            last["verdict"] = verdict
+            return verdict
+
+        async def _settled() -> bool:
+            return await asyncio.to_thread(_ask) is expect
 
         try:
             await async_poll_until(
@@ -504,10 +539,12 @@ class MatrixRun:
                 description=f"search as {who} {'to find' if expect else 'to miss'} {virtual_record_id}",
             )
         except TimeoutError as exc:
+            seen = {True: "a hit", False: "a miss", None: "no usable answer"}[last.get("verdict")]
             raise AssertionError(
                 f"{self.adapter.source}: search as {who} for {query!r} should "
                 f"{'find' if expect else 'not find'} virtual record {virtual_record_id}, "
-                f"and still did not after {timeout}s."
+                f"and still did not after {timeout}s (last search: HTTP "
+                f"{last.get('status', 'none')}, {seen})."
             ) from exc
 
     async def wait_gone(self, item: SourceItem, timeout: int = SYNC_TIMEOUT_SEC) -> None:
@@ -815,35 +852,31 @@ class ConnectorScenarioMatrix:
     @pytest.mark.order(7)
     @needs(Action.CREATE, Action.SET_FILTER)
     async def test_matrix_filter_change(self, scenario_run: MatrixRun) -> None:
-        """Excluding an already-synced item leaves it where FilterOutcome says; the rest stay searchable."""
+        """An already-synced item a narrowed filter excludes leaves every store; the rest stay searchable."""
         run = scenario_run
         await run.add_round()
         excluded = run.item(Role.FILTERED)
         before = run.added[Role.FILTERED]
         kept = [run.item(Role.KEEP)]
+        vrid = before.virtual_record_id or ""
+        prefix = f"{run.org_id}/PipesHub/records/{vrid}"
+        vendor = (await run.mongo.storage_vendor_under_path(prefix) if run.mongo else None) or "local"
 
         async def body() -> None:
             await run.adapter.apply_filters(await run.adapter.exclusion_filter(excluded, kept))
             await run.settle()
 
         await run.rounds.run("filter", body)
-        vrid = before.virtual_record_id or ""
-        outcome = run.adapter.filter_outcome
-        if outcome is FilterOutcome.REMOVED:
-            await run.wait_gone(excluded)
-            await run.vector.assert_embeddings_gone(vrid)
+        # Graph by name, so wait on the record first: the other stores follow its delete.
+        await run.wait_gone(excluded)
+        await assert_fully_deleted(
+            RecordFootprint(
+                record_name=excluded.record_name, virtual_record_id=vrid,
+                org_id=run.org_id, connector_id=run.connector_id,
+            ),
+            run.graph, run.vector, run.blob, run.mongo, storage_vendor=vendor,
+        )
         await run.wait_search(excluded.text, vrid, expect=False, as_user=run.adapter.owner)
-        if outcome is FilterOutcome.DESCOPED:
-            view = await run.record(excluded)
-            assert view is not None, (
-                f"{run.adapter.source}: the excluded record was deleted; this connector's "
-                "filter_outcome says DESCOPED (node kept, edges dropped). Update the adapter "
-                "if that changed on purpose."
-            )
-            assert await run.vector.count_for_virtual_record(vrid) > 0, (
-                f"{run.adapter.source}: the excluded record's vectors were deleted while "
-                "its record was kept"
-            )
         keep = run.item(Role.KEEP)
         await _admin_can_find(run, keep, await run.wait_indexed(keep))
 
