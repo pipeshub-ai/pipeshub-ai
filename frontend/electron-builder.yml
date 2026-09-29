@@ -7,6 +7,7 @@ files:
   - electron/compile/main.js
   - electron/compile/preload.js
   - electron/compile/deep-link.js
+  - electron/compile/navigation.js
   - electron/package.json
   - electron/compile/local-sync/**/*.js
   - "!electron/compile/local-sync/**/*.test.js"

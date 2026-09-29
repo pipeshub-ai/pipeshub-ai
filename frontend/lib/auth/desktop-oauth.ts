@@ -32,7 +32,7 @@ export function getFrontendOrigin(): string | null {
   return backendFrontendOrigin;
 }
 
-export type DesktopOAuthProvider = 'google' | 'microsoft' | 'github';
+export type DesktopOAuthProvider = 'google' | 'microsoft' | 'github' | 'saml' | 'oauth';
 
 /**
  * Marks a `state` as belonging to a desktop flow, so the callback page knows
@@ -69,4 +69,21 @@ export function buildDesktopDeepLink(
     if (value) search.set(key, value);
   }
   return `${DEEP_LINK_SCHEME}://auth/${provider}/callback?${search.toString()}`;
+}
+
+function base64Url(bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+export async function pkceChallenge(verifier: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return base64Url(new Uint8Array(digest));
+}
+
+/** RFC 7636 S256 pair: the verifier stays in memory, only the challenge leaves the app. */
+export async function createPkcePair(): Promise<{ verifier: string; challenge: string }> {
+  const verifier = base64Url(crypto.getRandomValues(new Uint8Array(32)));
+  return { verifier, challenge: await pkceChallenge(verifier) };
 }

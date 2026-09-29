@@ -96,6 +96,7 @@ describe('createSamlRouter', () => {
     container.bind<Logger>('Logger').toConstantValue(mockLogger as any);
     container.bind<IamService>('IamService').toConstantValue(mockIamService as any);
     container.bind<SessionService>('SessionService').toConstantValue(mockSessionService as any);
+    container.bind<any>('SamlDesktopHandoffService').toConstantValue({ issue: sinon.stub(), redeem: sinon.stub() });
     container.bind<SamlController>('SamlController').toConstantValue(mockSamlController as any);
     container.bind<MailService>('MailService').toConstantValue(mockMailService as any);
     container.bind<ConfigurationManagerService>('ConfigurationManagerService').toConstantValue(mockConfigService as any);
@@ -185,8 +186,8 @@ describe('createSamlRouter', () => {
       const router = createSamlRouter(container);
       const routes = router.stack.filter((layer: any) => layer.route);
 
-      // GET /signIn, POST /signIn/callback, POST /updateAppConfig = 3
-      expect(routes.length).to.equal(3);
+      // GET /signIn, POST /signIn/callback, POST /desktop/exchange, POST /updateAppConfig
+      expect(routes.length).to.equal(4);
     });
   });
 
@@ -490,6 +491,7 @@ describe('SAML Routes - handler coverage', () => {
   let mockSessionService: any
   let mockIamService: any
   let mockJitProvisioningService: any
+  let mockHandoffService: any
 
   beforeEach(() => {
     container = new Container()
@@ -542,6 +544,11 @@ describe('SAML Routes - handler coverage', () => {
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<any>('AppConfig').toConstantValue(mockConfig)
     container.bind<any>('SessionService').toConstantValue(mockSessionService)
+    mockHandoffService = {
+      issue: sinon.stub().resolves('a'.repeat(64)),
+      redeem: sinon.stub().resolves({ accessToken: 'at', refreshToken: 'rt' }),
+    }
+    container.bind<any>('SamlDesktopHandoffService').toConstantValue(mockHandoffService)
     container.bind<any>('IamService').toConstantValue(mockIamService)
     container.bind<any>('SamlController').toConstantValue(mockSamlController)
     container.bind<any>('JitProvisioningService').toConstantValue(mockJitProvisioningService)
@@ -757,6 +764,76 @@ describe('SAML Routes - handler coverage', () => {
       // With no orgAuthConfig, samlAllowed is false, so redirect with saml_sso_disabled
       expect(res.redirect.calledOnce).to.be.true
       expect(res.redirect.firstCall.args[0]).to.include('saml_sso_disabled')
+    })
+  })
+
+  describe('desktop sign-in', () => {
+    const desktopRelay = {
+      orgId: '507f1f77bcf86cd799439011',
+      client: 'desktop',
+      state: 'phd.abc123',
+      codeChallenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+    }
+    const samlReq = () => ({
+      user: { email: 'test@test.com', orgId: desktopRelay.orgId },
+      body: {},
+      query: {},
+      headers: {},
+    })
+
+    it('hands a code to the success page instead of setting cookies', async () => {
+      const handler = findHandler('/signIn/callback', 'post')
+      mockSamlController.parseRelayState.returns(desktopRelay)
+      mockIamService.getUserByEmail.resolves({
+        statusCode: 200,
+        data: { _id: '507f1f77bcf86cd799439012', email: 'test@test.com', orgId: desktopRelay.orgId, hasLoggedIn: true },
+      })
+      const res = mockRes()
+
+      await handler(samlReq(), res, sinon.stub())
+
+      expect(res.cookie.called).to.be.false
+      expect(mockHandoffService.issue.firstCall.args[1]).to.equal(desktopRelay.codeChallenge)
+      const url = new URL(res.redirect.firstCall.args[0])
+      expect(url.pathname).to.equal('/auth/sign-in/samlSso/success')
+      expect(url.searchParams.get('state')).to.equal('phd.abc123')
+      expect(url.searchParams.get('code')).to.equal('a'.repeat(64))
+      expect(url.search).to.not.include('accessToken')
+    })
+
+    it('sends desktop errors to the success page with the state', async () => {
+      const handler = findHandler('/signIn/callback', 'post')
+      mockSamlController.parseRelayState.returns(desktopRelay)
+      ;(OrgAuthConfig.findOne as sinon.SinonStub).resolves(null)
+      const res = mockRes()
+
+      await handler(samlReq(), res, sinon.stub())
+
+      const url = new URL(res.redirect.firstCall.args[0])
+      expect(url.pathname).to.equal('/auth/sign-in/samlSso/success')
+      expect(url.searchParams.get('saml_error')).to.equal('saml_sso_disabled')
+      expect(url.searchParams.get('state')).to.equal('phd.abc123')
+    })
+
+    it('ignores a desktop flag without a valid challenge', async () => {
+      const handler = findHandler('/signIn/callback', 'post')
+      mockSamlController.parseRelayState.returns({ ...desktopRelay, codeChallenge: 'short' })
+      ;(OrgAuthConfig.findOne as sinon.SinonStub).resolves(null)
+      const res = mockRes()
+
+      await handler(samlReq(), res, sinon.stub())
+
+      expect(res.redirect.firstCall.args[0]).to.equal('http://localhost:3000/login?saml_error=saml_sso_disabled')
+    })
+
+    it('POST /desktop/exchange returns the redeemed tokens', async () => {
+      const handler = findHandler('/desktop/exchange', 'post')
+      const res = mockRes()
+
+      await handler({ body: { code: 'c', codeVerifier: 'v' } }, res, sinon.stub())
+
+      expect(mockHandoffService.redeem.calledWith('c', 'v')).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({ accessToken: 'at', refreshToken: 'rt' })
     })
   })
 

@@ -4063,7 +4063,10 @@
       "orgEmailVerifiedTitle": "Organisation verified",
       "orgEmailVerifiedDescription": "Your organisation is now active. Sign in to continue.",
       "orgEmailVerifyFailedTitle": "Verification failed",
-      "orgEmailVerifyFailedDescription": "The link may be invalid or expired. Please sign up again."
+      "orgEmailVerifyFailedDescription": "The link may be invalid or expired. Please sign up again.",
+      "loadFailedTitle": "Couldn't load sign-in",
+      "loadFailedDescription": "PipesHub couldn't reach the server to load sign-in options. Check your connection or server address and try again.",
+      "retry": "Try again"
     },
     "common": {
       "signIn": "Sign In",

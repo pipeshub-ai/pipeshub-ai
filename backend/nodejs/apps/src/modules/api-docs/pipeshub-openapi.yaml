@@ -18274,6 +18274,29 @@ paths:
             for maintaining authentication state across the SAML flow.
           schema:
             type: string
+        - name: client
+          in: query
+          required: false
+          description: |
+            `desktop` for a sign-in started by the PipesHub desktop app. Needs `state`
+            and `code_challenge`; without both it is ignored. The callback then sends
+            no cookies and redirects to `/auth/sign-in/samlSso/success` with `state`
+            and a single-use `code` (or `saml_error`), redeemed at `/saml/desktop/exchange`.
+          schema:
+            type: string
+            enum: [desktop]
+        - name: state
+          in: query
+          required: false
+          description: Desktop flow identifier, echoed back on the success page. Starts with `phd.`.
+          schema:
+            type: string
+        - name: code_challenge
+          in: query
+          required: false
+          description: PKCE S256 challenge (43 base64url characters) for the desktop handoff code.
+          schema:
+            type: string
       responses:
         '302':
           description: Redirect to SAML Identity Provider login page
@@ -18398,6 +18421,53 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthError'
+
+  /saml/desktop/exchange:
+    post:
+      tags:
+        - SAML
+      summary: Redeem a desktop SAML handoff code
+      description: |
+        Exchanges the single-use code from a desktop SAML sign-in (see `client=desktop`
+        on `/saml/signIn`) for PipesHub tokens. The code expires after 2 minutes and is
+        consumed by the first attempt, whether or not the verifier matches.
+      operationId: exchangeSamlDesktopCode
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                code:
+                  type: string
+                  description: Handoff code from the success page redirect
+                codeVerifier:
+                  type: string
+                  description: PKCE verifier matching the `code_challenge` sent to `/saml/signIn`
+              required:
+                - code
+                - codeVerifier
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                  refreshToken:
+                    type: string
+        '401':
+          description: Unknown, expired, already used, or verifier mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /saml/updateAppConfig:
     post:

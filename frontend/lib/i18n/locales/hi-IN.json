@@ -4063,7 +4063,10 @@
       "orgEmailVerifiedTitle": "संगठन सत्यापित",
       "orgEmailVerifiedDescription": "आपका संगठन अब सक्रिय है। जारी रखने के लिए साइन इन करें।",
       "orgEmailVerifyFailedTitle": "सत्यापन विफल",
-      "orgEmailVerifyFailedDescription": "लिंक अमान्य या समयाप्त हो सकता है। कृपया पुनः साइन अप करें।"
+      "orgEmailVerifyFailedDescription": "लिंक अमान्य या समयाप्त हो सकता है। कृपया पुनः साइन अप करें।",
+      "loadFailedTitle": "साइन-इन लोड नहीं हो सका",
+      "loadFailedDescription": "PipesHub साइन-इन विकल्प लोड करने के लिए सर्वर से कनेक्ट नहीं कर सका। अपना कनेक्शन या सर्वर पता जाँचें और फिर से प्रयास करें।",
+      "retry": "फिर से प्रयास करें"
     },
     "common": {
       "signIn": "साइन इन",

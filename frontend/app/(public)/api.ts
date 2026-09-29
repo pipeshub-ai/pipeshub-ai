@@ -217,6 +217,15 @@ export const AuthApi = {
     );
   },
 
+  /** Redeem the single-use code a desktop SAML sign-in hands back by deep link. */
+  async exchangeSamlDesktopCode(code: string, codeVerifier: string): Promise<SignInResponse> {
+    const { data } = await publicAuthClient.post<SignInResponse>(
+      '/api/v1/saml/desktop/exchange',
+      { code, codeVerifier },
+    );
+    return data;
+  },
+
   /**
    * Exchange OAuth authorization code for application tokens.
    */

@@ -4068,7 +4068,10 @@
       "orgEmailVerifiedTitle": "組織已驗證",
       "orgEmailVerifiedDescription": "您的組織現已啟用。請登入以繼續。",
       "orgEmailVerifyFailedTitle": "驗證失敗",
-      "orgEmailVerifyFailedDescription": "連結可能無效或已過期。請重新註冊。"
+      "orgEmailVerifyFailedDescription": "連結可能無效或已過期。請重新註冊。",
+      "loadFailedTitle": "無法載入登入",
+      "loadFailedDescription": "PipesHub 無法連線至伺服器以載入登入選項。請檢查網路連線或伺服器位址，然後再試一次。",
+      "retry": "重試"
     },
     "common": {
       "signIn": "登入",

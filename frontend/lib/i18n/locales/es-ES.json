@@ -4091,7 +4091,10 @@
       "orgEmailVerifiedTitle": "Organización verificada",
       "orgEmailVerifiedDescription": "Tu organización ya está activa. Inicia sesión para continuar.",
       "orgEmailVerifyFailedTitle": "Verificación fallida",
-      "orgEmailVerifyFailedDescription": "El enlace puede ser inválido o haber expirado. Por favor, regístrate nuevamente."
+      "orgEmailVerifyFailedDescription": "El enlace puede ser inválido o haber expirado. Por favor, regístrate nuevamente.",
+      "loadFailedTitle": "No se pudo cargar el inicio de sesión",
+      "loadFailedDescription": "PipesHub no pudo conectar con el servidor para cargar las opciones de inicio de sesión. Comprueba tu conexión o la dirección del servidor e inténtalo de nuevo.",
+      "retry": "Reintentar"
     },
     "common": {
       "signIn": "Iniciar sesión",

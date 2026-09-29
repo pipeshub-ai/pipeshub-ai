@@ -34,6 +34,7 @@ import {
   parseOAuthDeepLink,
   type OAuthDeepLink,
 } from './deep-link';
+import { isAppUrl, isExternalWebUrl } from './navigation';
 
 // Directory where `next build` (static export) output lands after electron:copy
 // Static export lives at electron/out/ (see electron-prepare); main runs from electron/compile/
@@ -187,6 +188,18 @@ function createWindow(): void {
       // ignore malformed URLs
     }
     return { action: 'deny' };
+  });
+
+  // See electron/navigation.ts for why the window must never leave app://.
+  const keepInApp = (event: { preventDefault(): void }, url: string): void => {
+    if (isAppUrl(url, SCHEME)) return;
+    event.preventDefault();
+    if (isExternalWebUrl(url)) void shell.openExternal(url);
+  };
+  mainWindow.webContents.on('will-navigate', keepInApp);
+  mainWindow.webContents.on('will-redirect', keepInApp);
+  mainWindow.webContents.on('did-navigate', (_event, url) => {
+    if (!isAppUrl(url, SCHEME)) void mainWindow?.loadURL(`${SCHEME}://./login/`);
   });
 
   mainWindow.loadURL(`${SCHEME}://./chat/`);
@@ -509,17 +522,15 @@ app.whenReady().then(() => {
   });
 
   // The renderer cannot open a browser window itself — setWindowOpenHandler
-  // denies every popup. https-only so that a renderer-side injection cannot
+  // denies every popup. Web URLs only, so that a renderer-side injection cannot
   // turn this into "launch any URL, in any scheme, as a trusted local app".
+  // http is allowed because SAML starts at the PipesHub server itself, which
+  // self-hosted installs often serve without TLS.
   ipcMain.handle('oauth/open-external', async (_event: IpcMainInvokeEvent, payload: { url?: string }) => {
     const url = payload?.url;
     if (!url) return { ok: false, error: 'No URL supplied.' };
-    try {
-      if (new URL(url).protocol !== 'https:') {
-        return { ok: false, error: 'Only https URLs can be opened externally.' };
-      }
-    } catch {
-      return { ok: false, error: 'Malformed URL.' };
+    if (!isExternalWebUrl(url)) {
+      return { ok: false, error: 'Only http and https URLs can be opened externally.' };
     }
     await shell.openExternal(url);
     return { ok: true };

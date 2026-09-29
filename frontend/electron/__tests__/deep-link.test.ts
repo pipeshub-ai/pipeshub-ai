@@ -74,3 +74,14 @@ test('returns null when argv holds no link', () => {
   assert.equal(findDeepLinkInArgv(['/opt/PipesHub/pipeshub', '--no-sandbox']), null);
   assert.equal(findDeepLinkInArgv([]), null);
 });
+
+test('extracts a SAML handoff code', () => {
+  const link = parseOAuthDeepLink('pipeshub://auth/saml/callback?state=phd.a1&code=abc');
+  assert.deepEqual(link, { provider: 'saml', params: { state: 'phd.a1', code: 'abc' } });
+});
+
+test('extracts a custom OAuth code', () => {
+  const link = parseOAuthDeepLink('pipeshub://auth/oauth/callback?code=xyz&state=phd.b2');
+  assert.equal(link?.provider, 'oauth');
+  assert.equal(link?.params.code, 'xyz');
+});

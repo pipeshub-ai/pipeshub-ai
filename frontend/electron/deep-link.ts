@@ -14,7 +14,7 @@
 
 export const DEEP_LINK_SCHEME = 'pipeshub';
 
-const SUPPORTED_PROVIDERS = ['google', 'microsoft', 'github'] as const;
+const SUPPORTED_PROVIDERS = ['google', 'microsoft', 'github', 'saml', 'oauth'] as const;
 
 export type DeepLinkProvider = (typeof SUPPORTED_PROVIDERS)[number];
 

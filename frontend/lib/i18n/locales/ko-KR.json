@@ -4068,7 +4068,10 @@
       "orgEmailVerifiedTitle": "조직이 인증되었습니다",
       "orgEmailVerifiedDescription": "조직이 이제 활성화되었습니다. 계속하려면 로그인하세요.",
       "orgEmailVerifyFailedTitle": "인증 실패",
-      "orgEmailVerifyFailedDescription": "링크가 유효하지 않거나 만료되었을 수 있습니다. 다시 가입해 주세요."
+      "orgEmailVerifyFailedDescription": "링크가 유효하지 않거나 만료되었을 수 있습니다. 다시 가입해 주세요.",
+      "loadFailedTitle": "로그인을 불러올 수 없습니다",
+      "loadFailedDescription": "PipesHub가 로그인 옵션을 불러오기 위해 서버에 연결하지 못했습니다. 연결 또는 서버 주소를 확인한 후 다시 시도하세요.",
+      "retry": "다시 시도"
     },
     "common": {
       "signIn": "로그인",
