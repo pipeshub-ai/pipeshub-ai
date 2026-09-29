@@ -2221,9 +2221,10 @@ export class UserAccountController {
         { email },
         { new: true },
       );
-      if (user) {
-        await this.publishEmailChanged(user);
+      if (!user) {
+        throw new NotFoundError('User not found');
       }
+      await this.publishEmailChanged(user);
 
       await UserActivities.create({
         orgId: orgId,
