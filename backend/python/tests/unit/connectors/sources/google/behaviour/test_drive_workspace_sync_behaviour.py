@@ -464,6 +464,60 @@ async def test_a_delete_the_owner_cannot_confirm_yet_is_retried_next_sync(ws: Wo
     assert "a1" not in ws.records.records
 
 
+async def test_a_delete_that_fails_to_save_is_retried_next_sync(ws: Workspace) -> None:
+    ws.world.add_item("a1", "plan.txt", parent="root-alice", owner=ALICE)
+    await ws.sync()
+    checkpoint = ws.user_checkpoint(ALICE)
+
+    ws.world.delete("a1")
+    ws.records.fail_writes_for.add("a1")
+    await ws.sync()
+
+    assert "a1" in ws.records.records
+    assert ws.user_checkpoint(ALICE) == checkpoint
+
+    ws.records.fail_writes_for.discard("a1")
+    await ws.sync()
+
+    assert "a1" not in ws.records.records
+
+
+async def test_an_owner_lookup_that_fails_holds_the_change_for_next_sync(ws: Workspace) -> None:
+    ws.world.add_item("a1", "plan.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
+    await ws.sync()
+    checkpoints = ws.user_checkpoint(ALICE), ws.user_checkpoint(BOB)
+
+    ws.world.delete("a1")
+    ws.records.fail_owner_lookup = True
+    await ws.sync()
+
+    assert "a1" in ws.records.records
+    assert BOB in ws.records.perm_emails("a1")
+    assert (ws.user_checkpoint(ALICE), ws.user_checkpoint(BOB)) == checkpoints
+
+    ws.records.fail_owner_lookup = False
+    await ws.sync()
+
+    assert "a1" not in ws.records.records
+
+
+async def test_an_organizer_leaving_a_shared_drive_does_not_delete_its_files(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer", BOB: "organizer"})
+    ws.world.add_item("sd-f1", "spec.txt", parent="sd-1", perms=[{"type": "user", "role": "organizer", "emailAddress": ALICE}])
+    await ws.sync()
+    assert "sd-f1" in ws.records.records
+
+    def alice_leaves() -> None:
+        del ws.world.drives["sd-1"]["members"][ALICE]
+        ws.world.files["sd-f1"].perms = []
+
+    ws.world._mutate("sd-f1", alice_leaves)
+    await ws.sync()
+
+    assert "sd-f1" in ws.records.records
+    assert ws.records.deleted == []
+
+
 async def test_a_file_owned_outside_the_workspace_only_loses_the_removed_users_access(ws: Workspace) -> None:
     ws.world.files["ext-root"] = FileState(
         {"id": "ext-root", "name": "My Drive", "mimeType": FOLDER, "owners": [{"emailAddress": PARTNER}], "parents": []}
@@ -912,6 +966,18 @@ async def test_narrowing_the_extension_filter_removes_the_excluded_files(ws: Wor
     assert ws.names() == {"notes.txt"}
 
 
+async def test_a_file_whose_name_has_no_extension_is_checked_by_its_stored_one(ws: Workspace) -> None:
+    ws.world.add_item("q1", "Quarterly Report", parent="root-alice", owner=ALICE)
+    ws.world.files["q1"].meta["fileExtension"] = "pdf"
+    ws.world.add_item("t1", "notes.txt", parent="root-alice", owner=ALICE)
+    await ws.sync()
+
+    narrow(ws, file_extensions={"operator": "in", "type": "multiselect", "value": ["pdf"]})
+    await ws.sync()
+
+    assert ws.names() == {"Quarterly Report"}
+
+
 async def test_filters_that_did_not_change_remove_nothing_on_later_syncs(ws: Workspace) -> None:
     selected_tree(ws)
     await ws.sync()
@@ -955,6 +1021,35 @@ async def test_a_failed_record_listing_removes_nothing_and_is_retried(ws: Worksp
 
     assert "drop.txt" not in ws.names()
     assert "keep.txt" in ws.names()
+
+
+async def test_a_file_trashed_before_the_filters_were_saved_is_removed_by_the_full_sync(ws: Workspace) -> None:
+    ws.world.add_item("a1", "binned.txt", parent="root-alice", owner=ALICE)
+    ws.world.add_item("a2", "keep.txt", parent="root-alice", owner=ALICE)
+    await ws.sync()
+
+    ws.world.trash("a1")
+    narrow(ws, file_extensions={"operator": "in", "type": "multiselect", "value": ["txt"]})
+    await ws.sync()
+
+    assert ws.names() == {"keep.txt"}
+
+
+async def test_a_removal_that_fails_to_save_is_retried_next_sync(ws: Workspace) -> None:
+    selected_tree(ws)
+    await ws.sync()
+
+    narrow(ws, folder_ids={"operator": "in", "type": "list", "value": ["main"]})
+    ws.records.fail_writes_for.add("drop")
+    await ws.sync()
+
+    assert "drop.txt" in ws.names()
+
+    ws.records.fail_writes_for.discard("drop")
+    await ws.sync()
+
+    assert "drop.txt" not in ws.names()
+    assert {"Main", "keep.txt"} <= ws.names()
 
 
 # --- streaming and reindex ----------------------------------------------------

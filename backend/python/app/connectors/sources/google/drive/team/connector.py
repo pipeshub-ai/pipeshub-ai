@@ -85,6 +85,7 @@ from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     fetch_folder_children,
     has_entered_scope,
     has_exited_scope,
+    is_permission_denied_403,
     is_retryable_403,
     is_unrecognised_403,
     pass_folder_filter,
@@ -1658,10 +1659,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Apply a `removed` change from one user's changes feed.
 
         Drive reports `removed` both when a file is deleted and when only this user lost
-        access to it. The file's owner can tell the two apart, so the owner is asked: a
-        clean "not found", or a file in the trash, deletes the record, and anything else
-        drops just this user's access. A transient error raises, so the change is read
-        again next run instead of being lost.
+        access to it. For a My Drive file the owner can tell the two apart, so the owner
+        is asked: a clean "not found", or a file in the trash, deletes the record, and a
+        file that is still there, or an owner who can't be asked, drops just this user's
+        access. A shared drive file only ever loses this user's access here.
+        Any failed read or delete raises, so the user's checkpoint stays put and the
+        change is read again next sync.
         """
         if not file_id:
             return
@@ -1670,7 +1673,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         )
         if record is None:
             return
-        if await self._owner_reports_file_gone(record, owner_sources):
+        # A shared drive file's OWNER edges are its organizers, and an organizer who
+        # left the drive gets "not found" too; sync_shared_drives handles its deletes.
+        in_shared_drive = record.external_record_group_id in self._listed_shared_drive_ids
+        if not in_shared_drive and await self._owner_reports_file_gone(record, owner_sources):
             await self._delete_record_tree(record)
             return
         # Deleting only their direct USER edge would leave group- and drive-derived
@@ -1683,40 +1689,63 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def _owner_reports_file_gone(
         self, record: Record, owner_sources: dict[str, GoogleDriveDataSource]
     ) -> bool:
-        owner_email = await self.data_entities_processor.get_record_owner_source_user_email(record.id)
+        owner_email = await self.data_entities_processor.get_record_owner_source_user_email(
+            record.id, raise_on_error=True
+        )
+        # A suspended owner can't be impersonated, and an owner outside the Workspace
+        # can't be asked at all.
         owner = next(
-            (u for u in self.synced_users if owner_email and u.email.lower() == owner_email.lower()),
+            (
+                u for u in self.synced_users
+                if u.is_active and owner_email and u.email.lower() == owner_email.lower()
+            ),
             None,
         )
         if owner is None:
             return False
         source = owner_sources.get(owner.email)
         if source is None:
-            try:
-                source = await self._build_user_drive_data_source(owner)
-            except Exception as e:
-                self.logger.warning(
-                    f"Could not act as {owner.email} to check whether {record.record_name} "
-                    f"still exists: {e}; keeping the record"
-                )
-                return False
+            source = await self._build_user_drive_data_source(owner)
             owner_sources[owner.email] = source
         try:
             metadata = await source.files_get(
                 fileId=record.external_record_id, supportsAllDrives=True, fields="id, trashed"
             )
         except HttpError as e:
-            status = e.resp.status
-            if status == HttpStatusCode.NOT_FOUND.value:
+            if e.resp.status == HttpStatusCode.NOT_FOUND.value:
                 return True
-            if status == HttpStatusCode.TOO_MANY_REQUESTS.value or status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value or is_retryable_403(e):
-                raise
-            self.logger.warning(
-                f"Google Drive refused to say whether {record.record_name} still exists "
-                f"(HTTP {status}); keeping the record"
-            )
-            return False
+            if is_permission_denied_403(e):
+                self.logger.info(
+                    f"{owner.email} can no longer open {record.record_name}; keeping the record"
+                )
+                return False
+            raise
         return bool(metadata.get("trashed"))
+
+    async def _delete_trashed_records(
+        self, drive_data_source: GoogleDriveDataSource, **list_params: object
+    ) -> None:
+        """Delete the stored records of files that are now in the trash.
+
+        A full sync starts a fresh changes feed, so a file trashed since the last
+        checkpoint is never reported as a change, and the listing leaves the trash out.
+        A failed page raises, so the new start token is not saved.
+        """
+        page_token: str | None = None
+        while True:
+            params: dict[str, object] = {
+                "q": "trashed = true",
+                "fields": "nextPageToken, files(id)",
+                **list_params,
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            response = await drive_data_source.files_list(**params)
+            for item in response.get("files", []):
+                await self._delete_gone_item(item.get("id"))
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
 
     async def _delete_gone_item(self, file_id: str | None) -> None:
         """Delete the record of a file that is in the trash or deleted, if one was synced."""
@@ -1769,6 +1798,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         metadata = {
             "id": record.external_record_id,
             "name": record.record_name,
+            "fileExtension": getattr(record, "extension", None),
             "mimeType": record.mime_type,
             "parents": [parent] if parent else [],
             "createdTime": self._epoch_ms_to_iso(record.source_created_at),
@@ -2709,6 +2739,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             batch_records, batch_count = await self._process_remaining_batch_records(
                 batch_records, f"user {user.email}"
             )
+            await self._delete_trashed_records(user_drive_data_source)
 
             # Seed shared-drive items shared individually with this user. Runs before the
             # page token is stored so a failure here replays on the next run instead of
@@ -3303,6 +3334,13 @@ class GoogleDriveTeamConnector(BaseConnector):
                             # Process remaining records
                             batch_records, batch_count = await self._process_remaining_batch_records(
                                 batch_records, f"drive '{drive_name}' for user {user.email}"
+                            )
+                            await self._delete_trashed_records(
+                                user_drive_data_source,
+                                driveId=drive_id,
+                                corpora="drive",
+                                supportsAllDrives=True,
+                                includeItemsFromAllDrives=True,
                             )
 
                             # Save start page token to sync point after initial sync

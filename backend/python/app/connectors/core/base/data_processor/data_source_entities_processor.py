@@ -3366,9 +3366,13 @@ class DataSourceEntitiesProcessor:
                 node_id, node_collection
             )
 
-    async def get_record_owner_source_user_email(self, record_id: str) -> str | None:
+    async def get_record_owner_source_user_email(
+        self, record_id: str, *, raise_on_error: bool = False
+    ) -> str | None:
         async with self.data_store_provider.transaction() as tx_store:
-            return await tx_store.get_record_owner_source_user_email(record_id)
+            return await tx_store.get_record_owner_source_user_email(
+                record_id, raise_on_error=raise_on_error
+            )
 
     async def get_record_by_conversation_index(
         self, connector_id: str, conversation_index: str, thread_id: str, user_id: str

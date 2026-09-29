@@ -376,6 +376,8 @@ class DriveWorld:
         compact = atom.replace(" ", "")
         if compact == "trashed=false":
             return not state.meta.get("trashed")
+        if compact == "trashed=true":
+            return bool(state.meta.get("trashed"))
         if compact == "sharedWithMe=true":
             return self._shared_with_me(state, email)
         if m := re.fullmatch(r"mimeType='([^']+)'", compact):

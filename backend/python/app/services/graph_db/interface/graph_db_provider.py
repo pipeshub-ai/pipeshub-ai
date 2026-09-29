@@ -3185,7 +3185,9 @@ class IGraphDBProvider(ABC):
     async def get_record_owner_source_user_email(
         self,
         record_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> str | None:
         """
         Get the owner's source email for a record.
@@ -3193,6 +3195,8 @@ class IGraphDBProvider(ABC):
         Args:
             record_id (str): Record ID
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Propagate a failed read instead of answering
+                None, which a caller would take for "no owner"
 
         Returns:
             Optional[str]: Owner email if found, None otherwise

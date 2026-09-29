@@ -300,6 +300,7 @@ class FakeEntitiesProcessor:
         self.new_record_batches: list[list[str]] = []
         self.fail_writes_for: set[str] = set()
         self.fail_record_listing = False
+        self.fail_owner_lookup = False
 
     def _check_write(self, external_id: Optional[str]) -> None:
         if external_id in self.fail_writes_for:
@@ -354,7 +355,12 @@ class FakeEntitiesProcessor:
         )
         return found[:limit] if limit else found
 
-    async def get_record_owner_source_user_email(self, record_id: str) -> str | None:
+    async def get_record_owner_source_user_email(self, record_id: str, *, raise_on_error: bool = False) -> str | None:
+        if self.fail_owner_lookup:
+            # Both stores log the failure and answer None unless asked to raise.
+            if raise_on_error:
+                raise RuntimeError("graph unavailable while reading the record's owner")
+            return None
         record = self.by_id(record_id)
         if record is None:
             return None

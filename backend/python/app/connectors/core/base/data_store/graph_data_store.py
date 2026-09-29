@@ -220,8 +220,12 @@ class GraphTransactionStore(TransactionStore):
     async def get_app_user_by_email(self, email: str, connector_id: str) -> Optional[AppUser]:
         return await self.graph_provider.get_app_user_by_email(email, connector_id, transaction=self.txn)
 
-    async def get_record_owner_source_user_email(self, record_id: str) -> Optional[str]:
-        return await self.graph_provider.get_record_owner_source_user_email(record_id, transaction=self.txn)
+    async def get_record_owner_source_user_email(
+        self, record_id: str, *, raise_on_error: bool = False
+    ) -> str | None:
+        return await self.graph_provider.get_record_owner_source_user_email(
+            record_id, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
         return await self.graph_provider.get_user_by_user_id(user_id)

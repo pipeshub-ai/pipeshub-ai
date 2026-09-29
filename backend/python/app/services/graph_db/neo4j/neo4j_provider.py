@@ -6255,7 +6255,9 @@ class Neo4jProvider(IGraphDBProvider):
     async def get_record_owner_source_user_email(
         self,
         record_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> str | None:
         """Get record owner source user email"""
         try:
@@ -6275,6 +6277,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get record owner email failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     # ==================== File/Parent Operations ====================

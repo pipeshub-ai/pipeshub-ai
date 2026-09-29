@@ -363,7 +363,7 @@ class TestGraphTransactionStore:
     async def test_get_record_owner_source_user_email(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_record_owner_source_user_email("rec1")
         mock_graph_provider.get_record_owner_source_user_email.assert_awaited_once_with(
-            "rec1", transaction="txn-123"
+            "rec1", transaction="txn-123", raise_on_error=False
         )
 
     @pytest.mark.asyncio
