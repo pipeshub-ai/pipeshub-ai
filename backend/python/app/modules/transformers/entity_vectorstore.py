@@ -576,16 +576,18 @@ class EntityVectorStore:
         1. **Scroll** all entity points matching this connector.
         2. **Delete RECORD entities** outright — a record belongs to exactly
            one connector, so there is no shared membership to preserve.
-        3. **Delete RECORD_GROUP entities** outright (same reasoning) and
-           **collect their recordGroupIds** for phase 5.
+        3. **Delete RECORD_GROUP entities** outright (same reasoning).
         4. **Delete exclusive taxonomy entities** — those whose
            ``connectorIds`` contains *only* this connector.  Their
            ``recordGroupIds`` (if any) must also belong to this connector,
            so the entire point is orphaned.
         5. **Strip membership from shared taxonomy entities** — remove
            *connector_id* from ``connectorIds`` **and** remove any of the
-           deleted connector's recordGroupIds (collected in phase 3) from
-           ``recordGroupIds``.  Re-upsert with ``merge_membership=False``
+           deleted connector's recordGroupIds from ``recordGroupIds``.  Those
+           ids are gathered from every RECORD and RECORD_GROUP point before
+           any point is classified, since scroll order is by hashed point id
+           and RECORD_GROUP points are best-effort (skipped for nameless
+           groups), so neither can be relied on alone.  Re-upsert with ``merge_membership=False``
            so the removed ids are not immediately re-unioned back in.
 
         Going through the normal upsert path for phase 5 keeps writes
@@ -613,9 +615,16 @@ class EntityVectorStore:
             if offset is None:
                 break
 
+        connector_record_group_ids: set[str] = {
+            rg_id
+            for point in all_points
+            if (point.payload.get("metadata") or {}).get("entityType")
+            in (EntityType.RECORD.value, EntityType.RECORD_GROUP.value)
+            for rg_id in (point.payload.get(RECORD_GROUP_IDS_FIELD) or [])
+        }
+
         to_delete: list[tuple[str, str]] = []
         to_reupsert: list[EntityRecord] = []
-        connector_record_group_ids: set[str] = set()
 
         for point in all_points:
             meta = point.payload.get("metadata") or {}
@@ -624,15 +633,8 @@ class EntityVectorStore:
             if not entity_id or not entity_type_str:
                 continue
 
-            # Phase 2: RECORD entities — delete immediately
-            if entity_type_str == EntityType.RECORD.value:
-                to_delete.append((entity_type_str, entity_id))
-                continue
-
-            # Phase 3: RECORD_GROUP entities — collect their IDs, then delete
-            if entity_type_str == EntityType.RECORD_GROUP.value:
-                for rg_id in (point.payload.get(RECORD_GROUP_IDS_FIELD) or []):
-                    connector_record_group_ids.add(rg_id)
+            # Phases 2 & 3: RECORD / RECORD_GROUP entities — delete immediately
+            if entity_type_str in (EntityType.RECORD.value, EntityType.RECORD_GROUP.value):
                 to_delete.append((entity_type_str, entity_id))
                 continue
 

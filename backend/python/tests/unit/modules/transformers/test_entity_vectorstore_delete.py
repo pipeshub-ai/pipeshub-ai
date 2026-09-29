@@ -218,6 +218,57 @@ class TestPhase3RecordGroupEntities:
         assert point.payload["connectorIds"] == ["conn-b"]
         assert point.payload["recordGroupIds"] == ["rg-2"]
 
+    @pytest.mark.asyncio
+    async def test_record_group_ids_stripped_when_group_scrolls_after_shared_entity(
+        self,
+    ) -> None:
+        """Scroll order is by hashed point id, so a shared entity may come
+        before the RECORD_GROUP point whose id it must drop."""
+        vector_db_service = MagicMock()
+        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
+        vector_db_service.scroll = AsyncMock(
+            return_value=ScrollResult(
+                points=[
+                    _point("cat-1", "category", ["conn-a", "conn-b"], ["rg-1", "rg-2"]),
+                    _point("rg-1", "record_group", ["conn-a"], ["rg-1"]),
+                ],
+                next_offset=None,
+            )
+        )
+        vector_db_service.delete_points = AsyncMock()
+        vector_db_service.upsert_points = AsyncMock()
+        store = _make_store(vector_db_service)
+
+        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
+
+        (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
+        assert point.payload["connectorIds"] == ["conn-b"]
+        assert point.payload["recordGroupIds"] == ["rg-2"]
+
+    @pytest.mark.asyncio
+    async def test_record_group_ids_from_record_points_are_stripped(self) -> None:
+        """A nameless group has no RECORD_GROUP point; its id is still known
+        from the connector's RECORD points and must be stripped."""
+        vector_db_service = MagicMock()
+        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
+        vector_db_service.scroll = AsyncMock(
+            return_value=ScrollResult(
+                points=[
+                    _point("cat-1", "category", ["conn-a", "conn-b"], ["rg-1", "rg-2"]),
+                    _point("r1", "record", ["conn-a"], ["rg-1"]),
+                ],
+                next_offset=None,
+            )
+        )
+        vector_db_service.delete_points = AsyncMock()
+        vector_db_service.upsert_points = AsyncMock()
+        store = _make_store(vector_db_service)
+
+        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
+
+        (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
+        assert point.payload["recordGroupIds"] == ["rg-2"]
+
 
 # ======================================================================
 # Phase 4 — Exclusive taxonomy entities deleted
