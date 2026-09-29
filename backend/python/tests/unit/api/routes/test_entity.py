@@ -1,13 +1,16 @@
 """Unit tests for app.api.routes.entity module."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from app.api.routes.entity import (
+    UserEmailUpdateRequest,
     _validate_and_filter_owner_updates,
     _validate_owner_removal,
     create_team,
@@ -18,6 +21,7 @@ from app.api.routes.entity import (
     get_user_teams,
     get_users,
     update_team,
+    update_user_email,
 )
 
 
@@ -1227,4 +1231,64 @@ class TestGetTeamUsers:
             await get_team_users(req, "team-1")
         assert exc.value.status_code == 403
 
+
+class TestUpdateUserEmail:
+    def test_updates_graph_email(self):
+        async def _run() -> None:
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.apply_verified_user_email.return_value = {
+                "email": "new@example.com",
+                "mergedStubKeys": [],
+            }
+            body = UserEmailUpdateRequest(email="New@Example.com")
+
+            resp = await update_user_email(req, body)
+
+            assert resp.status_code == 200
+            gp.apply_verified_user_email.assert_awaited_once_with(
+                "user-1", "org-1", "new@example.com"
+            )
+            payload = json.loads(resp.body.decode())
+            assert payload["email"] == "new@example.com"
+            assert payload["mergedStubKeys"] == []
+
+        asyncio.run(_run())
+
+    def test_404_when_graph_user_missing(self):
+        async def _run() -> None:
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.apply_verified_user_email.return_value = None
+
+            with pytest.raises(HTTPException) as exc:
+                await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
+            assert exc.value.status_code == 404
+
+        asyncio.run(_run())
+
+    def test_409_when_email_belongs_to_another_login(self):
+        async def _run() -> None:
+            from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
+
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.apply_verified_user_email.side_effect = GraphUserEmailConflictError(
+                "Email already belongs to another login user in the graph",
+                conflicting_user_id="other",
+            )
+
+            with pytest.raises(HTTPException) as exc:
+                await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
+            assert exc.value.status_code == 409
+
+        asyncio.run(_run())
+
+    def test_400_when_email_invalid(self):
+        with pytest.raises(ValidationError):
+            UserEmailUpdateRequest(email="not-an-email")
+        with pytest.raises(ValidationError):
+            UserEmailUpdateRequest(email="user@")
+        with pytest.raises(ValidationError):
+            UserEmailUpdateRequest(email="@example.com")
 

@@ -54,6 +54,7 @@ describe('UserAccountController', () => {
       frontendUrl: 'http://frontend:3000',
       jwtSecret: 'test-jwt-secret',
       scopedJwtSecret: 'test-scoped-secret',
+      connectorBackend: 'http://connectors:8088',
       cookieSecret: 'test-cookie-secret',
       rsAvailable: 'false',
       skipDomainCheck: false,
@@ -3900,6 +3901,9 @@ describe('UserAccountController', () => {
 
   describe('validateEmailChange', () => {
     const verifiedUser = { _id: 'u1', orgId: 'org1', fullName: 'Ada Lovelace', email: 'new@example.com' }
+    beforeEach(() => {
+      sinon.stub(controller as any, 'syncVerifiedEmailToGraph').resolves()
+    })
 
     it('should update email successfully when new email is not in use', async () => {
       sinon.stub(Users, 'findOne').resolves(null)
@@ -3916,6 +3920,12 @@ describe('UserAccountController', () => {
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0].message).to.equal('Email updated successfully')
       expect((Users.findByIdAndUpdate as any).calledWith('u1', sinon.match({ email: 'new@example.com' }))).to.be.true
+      expect((controller as any).syncVerifiedEmailToGraph.calledOnce).to.be.true
+      expect((controller as any).syncVerifiedEmailToGraph.firstCall.args).to.deep.equal([
+        'u1',
+        'org1',
+        'new@example.com',
+      ])
     })
 
     it('should throw BadRequestError when email is already in use', async () => {
@@ -3931,6 +3941,23 @@ describe('UserAccountController', () => {
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
       expect(next.firstCall.args[0].message).to.include('already in use')
+    })
+
+    it('does not sync the graph when Mongo has no user for the token', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves(null)
+
+      const req: any = {
+        tokenPayload: { userId: 'u1', newEmail: 'new@example.com', orgId: 'org1' },
+        ip: '127.0.0.1',
+      }
+
+      await controller.validateEmailChange(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError)
+      expect((controller as any).syncVerifiedEmailToGraph.called).to.be.false
+      expect(res.status.called).to.be.false
     })
 
     it('should call next on unexpected error', async () => {
