@@ -242,3 +242,21 @@ def test_a_target_uri_on_a_non_azure_host_is_a_config_error(monkeypatch: pytest.
     with pytest.raises(JudgeConfigError, match="JUDGE_AZURE_ENDPOINT"):
         judge_model_from_env()
     assert built == []
+
+
+@pytest.mark.parametrize("resource", [
+    "evil.com/foo", "evil.com", "acme-ai.services.ai.azure.com", "https://acme-ai", "acme ai", "-acme", "acme-", "a" * 64,
+])
+def test_a_foundry_resource_that_is_not_a_single_name_is_a_config_error(
+    monkeypatch: pytest.MonkeyPatch, built: list[dict], resource: str
+) -> None:
+    _set(monkeypatch, FOUNDRY_JUDGE | {"JUDGE_FOUNDRY_RESOURCE": resource})
+    with pytest.raises(JudgeConfigError, match="JUDGE_FOUNDRY_RESOURCE"):
+        judge_model_from_env()
+    assert built == [], "the key must not reach a client built from a bad resource"
+
+
+def test_a_foundry_resource_name_is_accepted_in_any_case(monkeypatch: pytest.MonkeyPatch, built: list[dict]) -> None:
+    _set(monkeypatch, FOUNDRY_JUDGE | {"JUDGE_FOUNDRY_RESOURCE": " Claude-Res2 "})
+    judge_model_from_env()
+    assert built[0]["resource"] == "claude-res2"

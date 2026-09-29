@@ -121,8 +121,10 @@ def resolve_model(
 JUDGE_PROVIDERS = ("azure_openai", "anthropic_foundry", "openai", "anthropic")
 
 # Azure resource hosts whose first label is the resource name Foundry needs.
+# One DNS label: AnthropicFoundry puts the resource into https://{resource}.services.ai.azure.com.
+_RESOURCE_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 _AZURE_RESOURCE_HOST = re.compile(
-    r"^(?P<resource>[a-z0-9][a-z0-9-]*)\.(?:cognitiveservices\.azure\.com|openai\.azure\.com|services\.ai\.azure\.com)$"
+    rf"^(?P<resource>{_RESOURCE_LABEL})\.(?:cognitiveservices\.azure\.com|openai\.azure\.com|services\.ai\.azure\.com)$"
 )
 
 
@@ -185,7 +187,13 @@ def build_foundry_judge_client(
 def _foundry_judge(key: str | None, model: str) -> JudgeModel:
     model = model or os.getenv("JUDGE_AZURE_DEPLOYMENT") or ""
     endpoint = os.getenv("JUDGE_AZURE_ENDPOINT") or ""
-    resource = os.getenv("JUDGE_FOUNDRY_RESOURCE")
+    resource = (os.getenv("JUDGE_FOUNDRY_RESOURCE") or "").strip().lower() or None
+    if resource and not re.fullmatch(_RESOURCE_LABEL, resource):
+        # Anything but a bare name ("evil.com/x") would send the judge's key to another host.
+        raise JudgeConfigError(
+            "JUDGE_FOUNDRY_RESOURCE must be the Azure resource name alone (letters, digits and hyphens), "
+            "not a host or URL."
+        )
     base_url = None if resource else foundry_base_url(endpoint)
     if not resource and not base_url and endpoint:
         resource = foundry_resource(endpoint)
