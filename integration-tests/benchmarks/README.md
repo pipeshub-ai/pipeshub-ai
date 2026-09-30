@@ -28,6 +28,9 @@ implementation.
 
 ## Quick start
 
+To reproduce the published board end to end (building PipesHub, preparing the
+stack, the three runs and what to expect), follow [REPRODUCE.md](REPRODUCE.md).
+
 Run from `integration-tests/` against a running stack (see
 `.github/workflows/frames-benchmark.yml` for the CI bring-up).
 
