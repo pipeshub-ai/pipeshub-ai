@@ -157,3 +157,19 @@ class TestMaxBlocksPerRecord:
 
         outcomes = context.tool_state["fetch_render_outcomes"]
         assert [outcomes[rid][-1]["blocksRendered"] for rid in ("r0", "r1")] == [3, 3]
+
+
+class TestTraceOfAFetchedTable:
+    @pytest.mark.asyncio
+    async def test_the_trace_names_every_row_the_model_read(self) -> None:
+        """A table is one rendered unit, so `blocksRendered` alone made a
+        fetched table look like its first few blocks."""
+        from tests.unit.agents.actions.knowledge_graph.test_fetch import _fetch_records
+
+        record = _table_record([f"row {i}" for i in range(40)], lead=["Intro one.", "Intro two."])
+
+        _text_out, context = await _fetch_records([record])
+
+        outcome = context.tool_state["fetch_render_outcomes"]["rec-t"][-1]
+        assert outcome["blocksRendered"] < 40
+        assert outcome["shownBlocks"] == list(range(42))

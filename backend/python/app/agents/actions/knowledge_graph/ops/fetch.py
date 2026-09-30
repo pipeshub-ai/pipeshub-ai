@@ -351,6 +351,7 @@ async def execute_fetch_record(
                     "startBlock": start_block,
                     "blocksRendered": outcome.blocks_rendered,
                     "complete": outcome.complete,
+                    "shownBlocks": sorted(outcome.shown_blocks),
                 })
 
         _register_shown_blocks(context.tool_state, text, result["records"], budget)

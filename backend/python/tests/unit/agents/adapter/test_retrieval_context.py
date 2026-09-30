@@ -76,7 +76,7 @@ class TestWirePayload:
             "virtualRecordId", "recordId", "blockIndices", "summaryHit", "fetched",
         }
         assert wire["records"][0]["fetched"] == [
-            {"startBlock": 0, "blocksRendered": 5, "complete": True}
+            {"startBlock": 0, "blocksRendered": 5, "complete": True, "shownBlocks": []}
         ]
 
     def test_extra_fields_are_rejected(self) -> None:
@@ -246,6 +246,18 @@ class TestLedger:
             FetchedRangePayload(startBlock=0, blocksRendered=12, complete=False)
         ]
         assert [f.startBlock for f in second.records[0].fetched] == [12]
+
+    def test_a_fetch_reports_the_exact_blocks_it_showed(self) -> None:
+        """`blocksRendered` counts units; a table unit is one of them however
+        many rows it showed, so only the indices say what the model read."""
+        outcome = {
+            "virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 3, "complete": False,
+            "shownBlocks": [0, 1, 2, 3, 4, 48, 125],
+        }
+
+        delta = RetrievalContextLedger().take_delta(_state(fetch_render_outcomes={"rec-7": [outcome]}))
+
+        assert delta.records[0].fetched[0].shownBlocks == [0, 1, 2, 3, 4, 48, 125]
 
     def test_malformed_entries_are_skipped(self) -> None:
         state = _state(final_results=["junk", {"block_index": 1}, _block("vr-1", 2)])

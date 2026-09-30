@@ -186,6 +186,8 @@ class FetchedRange(_Wire):
     start_block: int
     blocks_rendered: int
     complete: bool
+    # Exact indices shown; older backends send only the unit count above.
+    shown_blocks: list[int] = Field(default_factory=list)
 
 
 class RetrievedRecordRef(_Wire):

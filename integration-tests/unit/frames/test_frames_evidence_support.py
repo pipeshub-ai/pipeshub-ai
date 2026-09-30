@@ -196,6 +196,17 @@ class TestPipesHubReconstruction:
         # A rendered fetch may have shown any table row; the summary it did not.
         assert "Row: Fredonia | Home" in texts and "The record summary." not in texts
 
+    def test_a_fetch_that_names_its_shown_blocks_is_rebuilt_from_them(self) -> None:
+        """`blocks_rendered` counts units: a table is one unit however many
+        rows it showed, so the range under-reports a fetched table."""
+        evidence, _ = self._build(RetrievedRecordRef(
+            virtual_record_id="vr", record_name="F",
+            fetched=[FetchedRange(start_block=0, blocks_rendered=1, complete=False, shown_blocks=[0, 4])],
+        ))
+        texts = [p.text for p in evidence.passages]
+        assert texts[:2] == ["Block zero.", "Block four."]
+        assert "Block one. It has two sentences." not in texts
+
     def test_summary_hit_is_the_record_summary_and_its_block_less_points(self) -> None:
         evidence, _ = self._build(RetrievedRecordRef(virtual_record_id="vr", record_name="F", summary_hit=True))
         texts = [p.text for p in evidence.passages]

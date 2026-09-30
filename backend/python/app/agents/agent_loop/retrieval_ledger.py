@@ -199,6 +199,7 @@ class RetrievalContextLedger:
                     startBlock=int(entry.get("startBlock") or 0),
                     blocksRendered=int(entry.get("blocksRendered") or 0),
                     complete=bool(entry.get("complete")),
+                    shownBlocks=[int(i) for i in entry.get("shownBlocks") or ()],
                 )
                 key: FetchKey = (str(record_id), fetched.startBlock, fetched.blocksRendered)
                 if key in self._seen_fetches:

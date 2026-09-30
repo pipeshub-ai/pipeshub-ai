@@ -134,7 +134,10 @@ class RecordPointsCache:
 def _wanted_blocks(ref: RetrievedRecordRef) -> list[int]:
     wanted = list(ref.block_indices)
     for fetched in ref.fetched:
-        wanted.extend(range(fetched.start_block, fetched.start_block + fetched.blocks_rendered))
+        if fetched.shown_blocks:
+            wanted.extend(fetched.shown_blocks)
+        else:
+            wanted.extend(range(fetched.start_block, fetched.start_block + fetched.blocks_rendered))
     return list(dict.fromkeys(wanted))
 
 

@@ -29,6 +29,9 @@ class FetchedRangePayload(BaseModel):
     startBlock: int
     blocksRendered: int
     complete: bool
+    # Block indices the model could read in full. `blocksRendered` counts
+    # units, and one table unit can hold hundreds of rows.
+    shownBlocks: list[int] = Field(default_factory=list)
 
 
 class RetrievedRecordPayload(BaseModel):
