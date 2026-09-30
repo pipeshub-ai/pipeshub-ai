@@ -51,6 +51,9 @@ class FakeSnowflake:
         self.refuse_views = False
         self.refuse_columns = False
         self.refuse_ddl = False
+        # Stage files past this index come back in a second SQL API partition.
+        self.files_in_first_partition: int | None = None
+        self.refuse_second_partition = False
 
     async def list_databases(self, **_: object) -> SimpleNamespace:
         return _ok([{"name": DB}])
@@ -71,8 +74,24 @@ class FakeSnowflake:
     async def list_stages(self, database: str, schema: str, **_: object) -> SimpleNamespace:
         return _ok([{"name": STAGE, "type": "INTERNAL"}])
 
+    def _file_rows(self) -> list[list[object]]:
+        return [[path, 1, "2026-01-01", md5] for path, md5 in self.files.items()]
+
     async def list_stage_files(self, **_: object) -> SimpleNamespace:
-        return _ok({"data": [[path, 1, "2026-01-01", md5] for path, md5 in self.files.items()]})
+        rows = self._file_rows()
+        split = self.files_in_first_partition
+        if split is None:
+            return _ok({"data": rows})
+        return _ok({
+            "statementHandle": "h-1",
+            "resultSetMetaData": {"partitionInfo": [{"rowCount": split}, {"rowCount": len(rows) - split}]},
+            "data": rows[:split],
+        })
+
+    async def get_statement_status(self, statement_handle: str, partition: int) -> SimpleNamespace:
+        if self.refuse_second_partition:
+            return _refused()
+        return _ok({"data": self._file_rows()[self.files_in_first_partition:]})
 
     async def execute_sql(self, statement: str, **_: object) -> SimpleNamespace:
         if "INFORMATION_SCHEMA.COLUMNS" in statement:
@@ -377,3 +396,33 @@ async def test_failed_view_definition_keeps_the_old_revision_for_a_retry(env) ->
     await env.sync()
     assert env.processor.upserted == [V1]
     assert env.processor.records[V1].definition == "SELECT id FROM T1"
+
+
+FILE_B = f"{DB}.{SCHEMA}.{STAGE}/b.csv"
+
+
+@pytest.mark.asyncio
+async def test_stage_files_are_read_from_every_result_partition(env) -> None:
+    env.source.files["b.csv"] = "md5-b"
+    await env.sync()
+    env.source.files_in_first_partition = 1
+    env.source.files["b.csv"] = "md5-b2"
+
+    await env.sync()
+
+    assert env.processor.deleted == []
+    assert env.processor.upserted == [FILE_B]
+
+
+@pytest.mark.asyncio
+async def test_an_unread_result_partition_does_not_delete_its_files(env) -> None:
+    env.source.files["b.csv"] = "md5-b"
+    await env.sync()
+    env.source.files_in_first_partition = 1
+    env.source.refuse_second_partition = True
+    del env.source.files["a.csv"]
+
+    await env.sync()
+
+    assert env.processor.deleted == []
+    assert FILE_B in env.processor.records

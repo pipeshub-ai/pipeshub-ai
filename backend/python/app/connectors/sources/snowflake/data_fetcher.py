@@ -504,8 +504,13 @@ class SnowflakeDataFetcher:
             self.hierarchy.unreadable.add(unreadable_key("files", stage_fqn))
             return []
         
+        data = await self._read_all_partitions(response.data)
+        if data is None:
+            logger.error("Could not read every result partition of stage files for %s", stage_fqn)
+            self.hierarchy.unreadable.add(unreadable_key("files", stage_fqn))
+            return []
+
         files = []
-        data = response.data.get("data", []) if isinstance(response.data, dict) else []
         logger.debug("Stage %s: received %d file entries from Snowflake", stage_fqn, len(data))
         for item in data:
             if isinstance(item, list) and len(item) >= 1:
@@ -521,6 +526,35 @@ class SnowflakeDataFetcher:
                 ))
         return files
     
+    async def _read_all_partitions(self, data: object) -> Optional[List[Any]]:
+        """Every row of a SQL API result, or None if any part of it could not be read.
+
+        The SQL API returns only partition 0 inline and lists the rest in
+        resultSetMetaData.partitionInfo; a statement still running (HTTP 202)
+        returns no rows at all. Either would pass for a complete, shorter list.
+        """
+        if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+            return None
+        rows = list(data["data"])
+        partitions = (data.get("resultSetMetaData") or {}).get("partitionInfo") or []
+        if len(partitions) <= 1:
+            return rows
+        handle = data.get("statementHandle")
+        if not handle:
+            return None
+        for partition in range(1, len(partitions)):
+            response = await self.data_source.get_statement_status(
+                statement_handle=handle, partition=partition
+            )
+            if (
+                not response.success
+                or not isinstance(response.data, dict)
+                or not isinstance(response.data.get("data"), list)
+            ):
+                return None
+            rows.extend(response.data["data"])
+        return rows
+
     def _deduce_folders(
         self,
         files: List[SnowflakeFile],
