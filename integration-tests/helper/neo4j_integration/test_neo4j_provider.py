@@ -1122,6 +1122,7 @@ class TestNeo4jProvider(Neo4jProvider):
             OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
             WITH collect(DISTINCT r) + collect(DISTINCT t) AS nodes
             UNWIND nodes AS n
+            WITH n WHERE n.id IS NOT NULL
             RETURN DISTINCT labels(n)[0] + '/' + n.id AS handle
             """,
             {"ids": list(record_ids)},

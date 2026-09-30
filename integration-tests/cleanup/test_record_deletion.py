@@ -255,16 +255,24 @@ class TestDeletingOneOfTwoIdenticalRecords:
 
     @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=BLOB_ISSUE)
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_the_deleted_copys_own_upload_is_removed(
-        self, one_copy_deleted, blob_store, mongo_store
+    async def test_the_deleted_copys_own_upload_leaves_blob_storage(
+        self, one_copy_deleted, blob_store
     ) -> None:
         """The original file is per record, not shared, so it goes with its record."""
         copies = one_copy_deleted["copies"]
         document_id = one_copy_deleted["first"].upload_document_id
-        await fp.assert_documents_gone(mongo_store, copies, [f"id:{document_id}"])
         await fp.assert_blobs_gone(
             blob_store, copies, [copies.upload_paths[document_id]], vendor=one_copy_deleted["vendor"]
         )
+
+    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=MONGO_ISSUE)
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_the_deleted_copys_own_upload_leaves_mongodb(
+        self, one_copy_deleted, mongo_store
+    ) -> None:
+        copies = one_copy_deleted["copies"]
+        document_id = one_copy_deleted["first"].upload_document_id
+        await fp.assert_documents_gone(mongo_store, copies, [f"id:{document_id}"])
 
 
 class TestDeletingTheLastCopy:
