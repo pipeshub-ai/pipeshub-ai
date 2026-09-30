@@ -2,6 +2,8 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import axios from 'axios';
+import http from 'http';
+import type { AddressInfo } from 'net';
 import * as mdToMrkdwn from '../../../src/integrations/slack-bot/src/utils/md_to_mrkdwn';
 import {
   userInfoCache,
@@ -19,6 +21,8 @@ import {
   resolveTextAttachmentMimetype,
   isReadableUtf8Text,
   uploadSlackAttachments,
+  downloadSlackFile,
+  SlackFileTooLargeError,
   buildSkippedAttachmentsNotice,
   postSkippedAttachmentsNotice,
   handleIncomingAttachments,
@@ -480,6 +484,40 @@ describe('slack-bot/helpers', () => {
       });
     });
 
+    describe('downloadSlackFile against a real HTTP server', () => {
+      let server: http.Server;
+      let baseUrl: string;
+
+      before(async () => {
+        server = http.createServer((req, res) => {
+          const size = req.url === '/big' ? MAX_ATTACHMENT_BYTES + 1 : 16;
+          res.writeHead(200, { 'Content-Type': 'text/plain' });
+          res.end(Buffer.alloc(size, 0x61));
+        });
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+        baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      });
+
+      after(async () => {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      });
+
+      it('stops a transfer over the limit with SlackFileTooLargeError', async () => {
+        let caught: unknown;
+        try {
+          await downloadSlackFile({ id: 'big', url_private: `${baseUrl}/big` }, 'xoxb-bot');
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).to.be.instanceOf(SlackFileTooLargeError);
+      });
+
+      it('downloads a file within the limit', async () => {
+        const body = await downloadSlackFile({ id: 'small', url_private: `${baseUrl}/small` }, 'xoxb-bot');
+        expect(body.length).to.equal(16);
+      });
+    });
+
     describe('uploadSlackAttachments (mocked Slack download and backend upload)', () => {
       const utf8Markdown = Buffer.from('# Plan\n\n- Café ✓\n', 'utf8');
 
@@ -572,6 +610,22 @@ describe('slack-bot/helpers', () => {
 
         expect(result).to.deep.equal({ attachments: [], unreadable: [], oversized: [file] });
         expect(postStub.called).to.equal(false);
+      });
+
+      it('caps the Slack download at the size limit and reports a capped file as oversized', async () => {
+        const file = { id: 'o', name: 'huge.md', mimetype: 'text/plain', url_private: 'https://files.slack.test/o' };
+        const getStub = sinon.stub(axios, 'get').rejects(new SlackFileTooLargeError('o'));
+        const postStub = sinon.stub(axios, 'post');
+
+        const result = await uploadSlackAttachments([file], 'xoxb-bot', 'access');
+
+        expect(result).to.deep.equal({ attachments: [], unreadable: [], oversized: [file] });
+        expect(postStub.called).to.equal(false);
+        getStub.restore();
+
+        const capStub = sinon.stub(axios, 'get').resolves({ data: Buffer.from('x') } as any);
+        await downloadSlackFile(file, 'xoxb-bot');
+        expect(capStub.firstCall.args[1]!.maxContentLength).to.equal(MAX_ATTACHMENT_BYTES);
       });
 
       it('keeps uploading images and PDFs with their own MIME type', async () => {

@@ -380,18 +380,36 @@ export function extractSupportedAttachments(files: unknown[] | undefined): Slack
   return classifySlackFiles(files).supported;
 }
 
+export class SlackFileTooLargeError extends Error {
+  constructor(fileId: string) {
+    super(`Slack file ${fileId} is larger than ${MAX_ATTACHMENT_BYTES} bytes`);
+    this.name = "SlackFileTooLargeError";
+  }
+}
+
+function isAxiosMaxContentLengthError(error: unknown): boolean {
+  return axios.isAxiosError(error) && /maxContentLength size of \d+ exceeded/.test(error.message);
+}
+
 export async function downloadSlackFile(
   file: SlackFile,
   botToken: string,
 ): Promise<Buffer> {
   const url = file.url_private_download || file.url_private;
   if (!url) throw new Error(`No download URL for file ${file.id}`);
-  const response = await axios.get(url, {
-    headers: { Authorization: `Bearer ${botToken}` },
-    responseType: "arraybuffer",
-    timeout: 60_000,
-  });
-  return Buffer.from(response.data);
+  try {
+    const response = await axios.get(url, {
+      headers: { Authorization: `Bearer ${botToken}` },
+      responseType: "arraybuffer",
+      timeout: 60_000,
+      // Slack's size field is optional, so cap the transfer itself.
+      maxContentLength: MAX_ATTACHMENT_BYTES,
+    });
+    return Buffer.from(response.data);
+  } catch (error) {
+    if (isAxiosMaxContentLengthError(error)) throw new SlackFileTooLargeError(file.id);
+    throw error;
+  }
 }
 
 export async function uploadSlackAttachments(
@@ -405,13 +423,19 @@ export async function uploadSlackAttachments(
   const result: SlackAttachmentUploadResult = { attachments: [], unreadable: [], oversized: [] };
 
   const binaries = await Promise.all(
-    files.map((file) => downloadSlackFile(file, botToken)),
+    files.map(async (file) => {
+      try {
+        return await downloadSlackFile(file, botToken);
+      } catch (error) {
+        if (error instanceof SlackFileTooLargeError) return null;
+        throw error;
+      }
+    }),
   );
   let appended = 0;
   files.forEach((file, i) => {
-    const binary = binaries[i]!;
-    // Slack's reported size is optional, so check what was actually downloaded.
-    if (binary.length > MAX_ATTACHMENT_BYTES) {
+    const binary = binaries[i];
+    if (!binary || binary.length > MAX_ATTACHMENT_BYTES) {
       result.oversized.push(file);
       return;
     }
