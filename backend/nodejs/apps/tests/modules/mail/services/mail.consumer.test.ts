@@ -178,6 +178,26 @@ describe('MailConsumer - asynchronous mail delivery', () => {
     expect((event.mail as any).templateData).to.not.have.property('link');
   });
 
+  it('notifies instead of silently dropping when the reset link cannot be built', async () => {
+    const failing = new MailConsumer(
+      mockConsumer,
+      mockLogger,
+      mockSender,
+      mockNotificationProducer,
+      () => {
+        throw new Error('config unavailable');
+      },
+    );
+    const event = payload({
+      passwordResetLinkFor: { userId: 'u1', orgId: 'o1', email: 'a@b.co' },
+    });
+
+    await (failing as any).deliver(event);
+
+    expect(mockSender.send.called).to.be.false;
+    expect(mockNotificationProducer.publishEvent.calledOnce).to.be.true;
+  });
+
   it('does not attempt delivery when SMTP is unconfigured', async () => {
     mockSender.getSmtpConfig.returns(null);
 
@@ -209,21 +229,32 @@ describe('MailConsumer - asynchronous mail delivery', () => {
     expect(mockNotificationProducer.publishEvent.callCount).to.equal(1);
   });
 
-  it('notifies again after the window and reports what was suppressed', async () => {
+  it('reports the suppressed failures when the window closes', async () => {
     mockSender.send.resolves({ status: 'permanent', error: '550 rejected' });
 
-    await deliver(payload());
-    await deliver(payload());
-    await deliver(payload());
+    for (const to of ['a@x.co', 'b@x.co', 'c@x.co']) {
+      await deliver(payload({ mail: { ...payload().mail, sendEmailTo: [to] } }));
+    }
     expect(mockNotificationProducer.publishEvent.callCount).to.equal(1);
 
     await clock.tickAsync(5 * 60_000 + 1_000);
-    await deliver(payload());
 
     expect(mockNotificationProducer.publishEvent.callCount).to.equal(2);
-    const second = mockNotificationProducer.publishEvent.secondCall.args[0];
-    expect(second.payload.payload.suppressedFailures).to.equal(2);
-    expect(second.payload.message).to.contain('suppressed');
+    const summary = mockNotificationProducer.publishEvent.secondCall.args[0];
+    expect(summary.payload.payload.suppressedFailures).to.equal(2);
+    expect(summary.payload.payload.recipients).to.deep.equal(['b@x.co', 'c@x.co']);
+    expect(summary.payload.message).to.contain('2 more');
+  });
+
+  it('sends no summary when nothing was suppressed, and starts a fresh window after', async () => {
+    mockSender.send.resolves({ status: 'permanent', error: '550 rejected' });
+
+    await deliver(payload());
+    await clock.tickAsync(5 * 60_000 + 1_000);
+    expect(mockNotificationProducer.publishEvent.callCount).to.equal(1);
+
+    await deliver(payload());
+    expect(mockNotificationProducer.publishEvent.callCount).to.equal(2);
   });
 
   it('throttles per org, not globally', async () => {

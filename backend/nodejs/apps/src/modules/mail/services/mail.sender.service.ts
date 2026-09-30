@@ -275,6 +275,13 @@ export class MailSenderService {
       const code = errorCode(error);
       if (code && SMTP_CONNECTION_ERROR_CODES.has(code)) {
         this.recordConnectionFailure(key);
+      } else if (
+        code === 'EAUTH' ||
+        typeof (error as { responseCode?: unknown } | null)?.responseCode ===
+          'number'
+      ) {
+        // The server answered, so it is reachable: the streak is not consecutive.
+        this.recordSuccess(key);
       }
       if (code === SMTP_DEADLINE_ERROR_CODE) {
         this.logger.error('Mail send deadline exceeded; not retrying', {

@@ -195,6 +195,20 @@ describe('MailSenderService', () => {
     expect(sendMailStub.callCount).to.equal(10);
   });
 
+  it('resets the failure streak when the server answers with a rejection', async () => {
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+    const conn = Object.assign(new Error('down'), { code: 'ECONNECTION' });
+    const rejected = Object.assign(new Error('550'), { responseCode: 550 });
+
+    sendMailStub.rejects(conn);
+    for (let i = 0; i < 4; i++) await sender.send(body, smtp);
+    sendMailStub.rejects(rejected);
+    await sender.send(body, smtp);
+    sendMailStub.rejects(conn);
+
+    expect((await sender.send(body, smtp)).status).to.equal('transient');
+  });
+
   it('lets the old pool finish in-flight sends before closing it on an SMTP change', async () => {
     let finishOldSend!: () => void;
     const oldClose = sinon.stub();

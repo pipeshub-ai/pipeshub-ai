@@ -30,6 +30,15 @@ const MIN_ATTEMPT_MS = 15_000;
 // Without this, one bad SMTP server during a 1000-address import raises a
 // notification per recipient, per admin.
 const FAILURE_NOTIFY_WINDOW_MS = 5 * 60_000;
+const SUPPRESSED_RECIPIENT_SAMPLE = 10;
+
+interface SuppressedFailures {
+  count: number;
+  recipients: string[];
+  emailTemplateType?: string;
+  lastError: string;
+  timer: NodeJS.Timeout;
+}
 
 /**
  * Delivers mail jobs off the request path. Retries in-handler rather than by
@@ -38,10 +47,9 @@ const FAILURE_NOTIFY_WINDOW_MS = 5 * 60_000;
  */
 @injectable()
 export class MailConsumer {
-  private readonly failureNotifyState = new Map<
-    string,
-    { last: number; suppressed: number }
-  >();
+  // Presence means a notification went out for this org in the current window;
+  // the timer closes the window and reports whatever was suppressed meanwhile.
+  private readonly failureNotifyState = new Map<string, SuppressedFailures>();
 
   constructor(
     @inject('MessageConsumer') private readonly consumer: IMessageConsumer,
@@ -60,6 +68,10 @@ export class MailConsumer {
   }
 
   async stop(): Promise<void> {
+    for (const state of this.failureNotifyState.values()) {
+      clearTimeout(state.timer);
+    }
+    this.failureNotifyState.clear();
     if (this.consumer.isConnected()) {
       await this.consumer.disconnect();
     }
@@ -112,7 +124,17 @@ export class MailConsumer {
       return;
     }
 
-    const mail = this.withPasswordResetLink(payload);
+    let mail: MailBody;
+    try {
+      mail = this.withPasswordResetLink(payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error('Mail event dropped: could not build reset link', {
+        error: message,
+      });
+      await this.notifyFailure(payload, message);
+      return;
+    }
     const giveUpAt = Date.now() + MAIL_MESSAGE_BUDGET_MS;
     let attempt = 0;
     let lastError = 'unknown error';
@@ -210,15 +232,6 @@ export class MailConsumer {
     };
   }
 
-  /** Drops idle orgs so the throttle map cannot grow without bound. */
-  private pruneFailureNotifyState(now: number): void {
-    for (const [orgId, entry] of this.failureNotifyState) {
-      if (now - entry.last > FAILURE_NOTIFY_WINDOW_MS) {
-        this.failureNotifyState.delete(orgId);
-      }
-    }
-  }
-
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -236,42 +249,90 @@ export class MailConsumer {
       return;
     }
 
-    const now = Date.now();
-    const state = this.failureNotifyState.get(payload.orgId);
-    if (state && now - state.last < FAILURE_NOTIFY_WINDOW_MS) {
-      state.suppressed += 1;
+    const recipients = payload.mail.sendEmailTo ?? [];
+    const orgId = payload.orgId;
+    const open = this.failureNotifyState.get(orgId);
+    if (open) {
+      open.count += 1;
+      open.lastError = error;
+      if (open.recipients.length < SUPPRESSED_RECIPIENT_SAMPLE) {
+        open.recipients.push(...recipients);
+      }
+      open.emailTemplateType ??= payload.mail.emailTemplateType;
       this.logger.warn('Mail failure notification suppressed', {
-        orgId: payload.orgId,
-        suppressed: state.suppressed,
+        orgId,
+        suppressed: open.count,
         error,
       });
       return;
     }
-    const suppressed = state?.suppressed ?? 0;
-    this.failureNotifyState.set(payload.orgId, { last: now, suppressed: 0 });
-    this.pruneFailureNotifyState(now);
 
-    const recipients = payload.mail.sendEmailTo ?? [];
-    const alsoFailed =
-      suppressed > 0 ? ` (${suppressed} further failure(s) suppressed)` : '';
+    const timer = setTimeout(
+      () => void this.flushSuppressed(orgId),
+      FAILURE_NOTIFY_WINDOW_MS,
+    );
+    timer.unref();
+    this.failureNotifyState.set(orgId, {
+      count: 0,
+      recipients: [],
+      lastError: error,
+      timer,
+    });
+
+    await this.publishFailure(orgId, {
+      message: `Could not deliver "${payload.mail.subject ?? payload.mail.emailTemplateType}" to ${recipients.join(', ') || 'the recipient'}: ${error}`,
+      emailTemplateType: payload.mail.emailTemplateType,
+      recipients,
+      error,
+      suppressedFailures: 0,
+    });
+  }
+
+  /** Reports failures the window swallowed, so admins learn the real count. */
+  private async flushSuppressed(orgId: string): Promise<void> {
+    const state = this.failureNotifyState.get(orgId);
+    this.failureNotifyState.delete(orgId);
+    if (!state || state.count === 0) return;
+
+    const sample = state.recipients.slice(0, SUPPRESSED_RECIPIENT_SAMPLE);
+    const more = state.count > sample.length ? ', ...' : '';
+    await this.publishFailure(orgId, {
+      message: `${state.count} more email(s) could not be delivered in the last ${FAILURE_NOTIFY_WINDOW_MS / 60_000} minutes (${sample.join(', ')}${more}): ${state.lastError}`,
+      emailTemplateType: state.emailTemplateType,
+      recipients: sample,
+      error: state.lastError,
+      suppressedFailures: state.count,
+    });
+  }
+
+  private async publishFailure(
+    orgId: string,
+    details: {
+      message: string;
+      emailTemplateType?: string;
+      recipients: string[];
+      error: string;
+      suppressedFailures: number;
+    },
+  ): Promise<void> {
     try {
       await this.notificationProducer.start();
       await this.notificationProducer.publishEvent({
         eventType: NotificationEventType.NewNotificationEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: payload.orgId,
+          orgId,
           type: 'mail.deliveryFailed',
           recipientRoles: ['admin'],
           title: 'Email delivery failed',
-          message: `Could not deliver "${payload.mail.subject ?? payload.mail.emailTemplateType}" to ${recipients.join(', ') || 'the recipient'}: ${error}${alsoFailed}`,
+          message: details.message,
           severity: 'error',
           status: 'unread',
           payload: {
-            emailTemplateType: payload.mail.emailTemplateType,
-            recipients,
-            error,
-            suppressedFailures: suppressed,
+            emailTemplateType: details.emailTemplateType,
+            recipients: details.recipients,
+            error: details.error,
+            suppressedFailures: details.suppressedFailures,
           },
         } as unknown as INotification,
       });
