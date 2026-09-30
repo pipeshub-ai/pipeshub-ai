@@ -1704,8 +1704,10 @@ class BookStackConnector(BaseConnector):
             pages_page = pages_data["data"]
 
             if not pages_page:
-                self.logger.info("No more pages to sync.")
-                listing_complete = True
+                # Complete only if the total says so: an empty page short of it is a cut-off listing.
+                listing_complete = offset >= pages_data.get("total", 0)
+                if not listing_complete:
+                    self.logger.warning("BookStack stopped listing pages before the total it reported")
                 break
 
             # Apply book ID filter

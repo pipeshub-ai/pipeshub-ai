@@ -351,6 +351,22 @@ async def test_a_page_list_that_ends_before_its_total_removes_nothing_and_looks_
     assert store.deleted == ["page/2"]
 
 
+async def test_a_full_listing_that_ends_before_its_total_removes_nothing(world) -> None:
+    source, store, connector = world
+    await connector._sync_records()
+    source.pages.pop(3)
+
+    source.listing_ends_early_at = 2
+    _full_sync(connector)
+    await connector._sync_records()
+    assert store.deleted == []
+    assert source.lookups == 0, "a cut-off listing must not fall back to one lookup per page"
+
+    source.listing_ends_early_at = None
+    await connector._sync_records()
+    assert store.deleted == ["page/3"]
+
+
 async def test_a_narrowed_book_filter_removes_the_pages_it_now_leaves_out(world) -> None:
     _, store, connector = world
     await connector._sync_records()
