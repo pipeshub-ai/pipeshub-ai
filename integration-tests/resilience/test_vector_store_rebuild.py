@@ -255,7 +255,7 @@ async def _wait_until_deployment_idle(graph_provider) -> None:
     """
     deadline = asyncio.get_event_loop().time() + TIMEOUT
     while True:
-        locked = rebuild_lock_held()
+        locked = await rebuild_lock_held()
         busy = await records_in_flight(graph_provider)
         if not locked and not busy:
             return
@@ -348,10 +348,12 @@ async def journey(pipeshub_client, kb_client: KBClient, vector_store, blob_store
         )
         yield state
     finally:
+        restore_error: Exception | None = None
         if not state.restored:
             try:
                 await _restore(state, pipeshub_client, kb_client, vector_store, graph_provider)
-            except Exception as exc:  # noqa: BLE001 - teardown must not mask the result
+            except Exception as exc:  # noqa: BLE001 - re-raised below, after the flag
+                restore_error = exc
                 logger.error("Could not put the org's embeddings and models back: %s", exc)
                 # Never leave the flag on for the rest of the stack's tests.
                 try:
@@ -364,6 +366,10 @@ async def journey(pipeshub_client, kb_client: KBClient, vector_store, blob_store
                     )
                 except Exception as flag_exc:  # noqa: BLE001
                     logger.error("Could not restore the Labs flag: %s", flag_exc)
+        if restore_error is not None:
+            # The rebuild may still be reading these records; keep them, and
+            # the evidence, rather than delete underneath it.
+            raise restore_error
         try:
             kb_client.delete_kb(kb_id)
         except Exception as exc:  # noqa: BLE001
