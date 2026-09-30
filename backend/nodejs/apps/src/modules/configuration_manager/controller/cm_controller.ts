@@ -3177,7 +3177,7 @@ export const addAIModelProvider =
       };
 
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/health-check/${modelType}`,
+        uri: `${appConfig.aiBackend}/api/v1/health-check/${encodeURIComponent(String(modelType))}`,
         method: HttpMethod.POST,
         headers: req.headers as Record<string, string>,
         body: healthCheckPayload,
@@ -3871,7 +3871,7 @@ export const updateDefaultAIModel =
         const aiCommandOptions: AICommandOptions = {
           uri: isEmbedding
             ? `${appConfig.aiBackend}/api/v1/embedding-health-check`
-            : `${appConfig.aiBackend}/api/v1/health-check/${targetModelType}`,
+            : `${appConfig.aiBackend}/api/v1/health-check/${encodeURIComponent(targetModelType)}`,
           method: HttpMethod.POST,
           headers: req.headers as Record<string, string>,
           body: isEmbedding ? [healthCheckPayload] : healthCheckPayload,

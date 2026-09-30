@@ -1868,6 +1868,28 @@ describe('Knowledge Base Controller', () => {
   })
 
   describe('getRecordBuffer (happy path)', () => {
+    // The route's guardPathParams rejects these first; the controller must still
+    // encode them so a route that skips the guard can't widen the connector path.
+    it('should percent-encode recordId in the connector URL (GHSA-rfmg-j28j-f635)', async () => {
+      const mockStream = { pipe: sinon.stub(), on: sinon.stub() }
+      const axiosGet = sinon.stub(axios, 'get').resolves({ headers: {}, data: mockStream })
+      const handler = getRecordBuffer('http://localhost:8088')
+
+      for (const [recordId, encoded] of [
+        ['../records', '..%2Frecords'],
+        ['abc?x=1#frag', 'abc%3Fx%3D1%23frag'],
+        ['r1/../../internal/stream/record/r2/', 'r1%2F..%2F..%2Finternal%2Fstream%2Frecord%2Fr2%2F'],
+      ]) {
+        axiosGet.resetHistory()
+        const req = createMockRequest({ params: { recordId }, query: { convertTo: 'pdf' } })
+        await handler(req, createMockResponse(), createMockNext())
+        expect(axiosGet.calledOnce).to.be.true
+        expect(axiosGet.firstCall.args[0]).to.equal(
+          `http://localhost:8088/api/v1/stream/record/${encoded}?convertTo=pdf`,
+        )
+      }
+    })
+
     it('should stream record buffer to client', async () => {
       const mockStream = {
         pipe: sinon.stub(),

@@ -2676,7 +2676,7 @@ export const shareConversationById =
             }
             try {
               const iamCommand = new IAMServiceCommand({
-                uri: `${appConfig.iamBackend}/api/v1/users/${id}`,
+                uri: `${appConfig.iamBackend}/api/v1/users/${encodeURIComponent(String(id))}`,
                 method: HttpMethod.GET,
                 headers: req.headers as Record<string, string>,
               });
@@ -4837,7 +4837,7 @@ export const shareSearch =
           }
           try {
             const iamCommand = new IAMServiceCommand({
-              uri: `${appConfig.iamBackend}/api/v1/users/${id}`,
+              uri: `${appConfig.iamBackend}/api/v1/users/${encodeURIComponent(id)}`,
               method: HttpMethod.GET,
               headers: req.headers as Record<string, string>,
             });
@@ -4944,7 +4944,7 @@ export const unshareSearch =
           }
           try {
             const iamCommand = new IAMServiceCommand({
-              uri: `${appConfig.iamBackend}/api/v1/users/${id}`,
+              uri: `${appConfig.iamBackend}/api/v1/users/${encodeURIComponent(id)}`,
               method: HttpMethod.GET,
               headers: req.headers as Record<string, string>,
             });
@@ -5266,7 +5266,7 @@ export const getAgent =
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
-      const agentKey = req.params.agentKey;
+      const agentKey = req.params.agentKey as string;
       if (!orgId) {
         throw new BadRequestError('Organization ID is required');
       }
@@ -5274,7 +5274,7 @@ export const getAgent =
         throw new BadRequestError('User ID is required');
       }
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}`,
+        uri: `${appConfig.aiBackend}/api/v1/agent/${encodeURIComponent(agentKey)}`,
         method: HttpMethod.GET,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -5469,7 +5469,7 @@ export const updateAgent =
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
-      const agentKey = req.params.agentKey;
+      const agentKey = req.params.agentKey as string;
       if (!orgId) {
         throw new BadRequestError('Organization ID is required');
       }
@@ -5477,7 +5477,7 @@ export const updateAgent =
         throw new BadRequestError('User ID is required');
       }
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}`,
+        uri: `${appConfig.aiBackend}/api/v1/agent/${encodeURIComponent(agentKey)}`,
         method: HttpMethod.PUT,
         body: req.body,
         headers: {
@@ -5513,7 +5513,7 @@ export const deleteAgent =
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
-      const agentKey = req.params.agentKey;
+      const agentKey = req.params.agentKey as string;
       if (!orgId) {
         throw new BadRequestError('Organization ID is required');
       }
@@ -5521,7 +5521,7 @@ export const deleteAgent =
         throw new BadRequestError('User ID is required');
       }
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}`,
+        uri: `${appConfig.aiBackend}/api/v1/agent/${encodeURIComponent(agentKey)}`,
         method: HttpMethod.DELETE,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -7021,7 +7021,7 @@ export const regenerateAgentAnswers =
         ],
       }),
       buildAIEndpoint: (appConfig, agentKey) =>
-        `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat/stream`,
+        `${appConfig.aiBackend}/api/v1/agent/${encodeURIComponent(agentKey as string)}/chat/stream`,
     });
   };
 
