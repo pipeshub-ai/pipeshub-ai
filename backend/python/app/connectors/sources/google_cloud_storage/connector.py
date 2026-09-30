@@ -8,6 +8,7 @@ uses the native GCS API with service account authentication.
 import asyncio
 import mimetypes
 import uuid
+from collections.abc import Container
 from datetime import datetime, timezone
 from itertools import accumulate
 from logging import Logger
@@ -48,6 +49,7 @@ from app.connectors.core.registry.folder_scope import (
     FolderScope,
     clean_up_scope,
     listed_record_ids,
+    recorded_ids,
     remove_records_not_listed,
 )
 from app.connectors.core.registry.connector_builder import (
@@ -847,14 +849,30 @@ class GCSConnector(BaseConnector):
         scope = FolderScope.from_filters(sync_filters)
         if not scope.is_everything:
             self.logger.info(f"Folder filter for bucket {bucket_name}: {scope.describe()}")
+        recorded = await recorded_ids(self.data_entities_processor, self.connector_id, bucket_name)
+        listed: set[str] = set()
+        complete = True
         for prefix in scope.list_prefixes:
-            await self._sync_bucket_prefix(bucket_name, prefix, scope)
+            prefix_listed, prefix_complete = await self._sync_bucket_prefix(bucket_name, prefix, scope, recorded)
+            listed |= prefix_listed
+            complete = complete and prefix_complete
+        # One pass after every prefix: a rename into a folder listed later is
+        # still stored under its old path until that folder is processed.
+        if complete:
+            await remove_records_not_listed(
+                self.data_entities_processor, self.connector_id, bucket_name, scope.list_prefixes, listed, self.logger
+            )
+        else:
+            self.logger.info(f"Not removing records in bucket {bucket_name}: a listing did not cover every object")
         await clean_up_scope(
             self.data_entities_processor, self.record_sync_point, self.connector_id, bucket_name, scope, self.logger
         )
 
-    async def _sync_bucket_prefix(self, bucket_name: str, prefix: str, scope: FolderScope) -> None:
-        """Sync objects under one prefix of a bucket ("" for all of it), with pagination and incremental sync."""
+    async def _sync_bucket_prefix(self, bucket_name: str, prefix: str, scope: FolderScope, recorded: Container[str]) -> tuple[set[str], bool]:
+        """Sync objects under one prefix of a bucket ("" for all of it), with pagination and incremental sync.
+
+        Returns the record ids the listing keeps, and whether it covered every object.
+        """
         if not self.data_source:
             raise ConnectionError("GCS connector is not initialized.")
 
@@ -961,8 +979,15 @@ class GCSConnector(BaseConnector):
                             listed |= listed_record_ids(bucket_name, key)
                             judged = True
 
-                            if last_sync_time and not self._pass_date_filters(
-                                obj, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
+                            # Only an unchanged object with a record of its own is skipped: one whose
+                            # content another key's record holds must be processed, so it takes that
+                            # record over before the removal pass deletes it.
+                            if (
+                                last_sync_time
+                                and f"{bucket_name}/{key.lstrip('/')}" in recorded
+                                and not self._pass_date_filters(
+                                    obj, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
+                                )
                             ):
                                 continue
 
@@ -1043,7 +1068,7 @@ class GCSConnector(BaseConnector):
             # A saved resume token would skip the pages holding the failures.
             await self.record_sync_point.update_sync_point(sync_point_key, {"page_token": None})
         if listing_failed:
-            return
+            return listed, False
         checkpoint = failed.checkpoint(max_timestamp)
         # The listing reached its end, so the saved token is spent even when no time was seen.
         done: dict[str, Any] = {"page_token": None}
@@ -1051,14 +1076,7 @@ class GCSConnector(BaseConnector):
             done["last_sync_time"] = checkpoint
         await self.record_sync_point.update_sync_point(sync_point_key, done)
 
-        if resumed or unjudged:
-            self.logger.info(
-                f"Not removing records in bucket {bucket_name}: this listing did not cover every object"
-            )
-            return
-        await remove_records_not_listed(
-            self.data_entities_processor, self.connector_id, bucket_name, prefix, listed, self.logger
-        )
+        return listed, not (resumed or unjudged)
 
     async def _ensure_parent_folders_exist(
         self, bucket_name: str, path_segments: list[str]

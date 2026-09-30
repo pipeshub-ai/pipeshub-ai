@@ -1281,9 +1281,10 @@ class TestFolderFilter:
 
         assert prefixes == ["reports/"]
         assert self._processed(connector) == ["reports/a.pdf", "reports/2026/b.pdf"]
-        # One read looks for deletions in the listed folder, one for records outside the scope.
+        # Each sync reads the bucket's records before listing and again to find deletions;
+        # the first sync with this scope also cleans up what it leaves out.
         reads = connector.data_entities_processor.get_records_in_record_group.await_args_list
-        assert [c.args for c in reads] == [(connector.connector_id, "b1", 500, None)] * 2
+        assert [c.args for c in reads] == [(connector.connector_id, "b1", 500, None)] * 3
 
     @pytest.mark.asyncio
     async def test_exclude_lists_everything_and_skips_the_folder(self, connector):
@@ -1307,7 +1308,9 @@ class TestFolderFilter:
         saved = connector.record_sync_point.saved
         assert not any("last_sync_time" in v for v in saved.values())
         assert {"continuation_token": "t1"} in saved.values()
-        connector.data_entities_processor.get_records_in_record_group.assert_awaited_once()
+        # The read before listing and the scope cleanup; the failed listing looks for no deletions.
+        assert connector.data_entities_processor.get_records_in_record_group.await_count == 2
+        connector.data_entities_processor.on_record_deleted.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_failed_object_clears_the_resume_token(self, connector):
@@ -1348,8 +1351,8 @@ class TestFolderFilter:
         await connector._sync_bucket("b1")
         await connector._sync_bucket("b1")
 
-        # Each listing looks for deletions; the unchanged scope is cleaned up once.
-        assert connector.data_entities_processor.get_records_in_record_group.await_count == 3
+        # Two reads per sync; the unchanged scope is cleaned up once.
+        assert connector.data_entities_processor.get_records_in_record_group.await_count == 5
 
     @pytest.mark.asyncio
     async def test_a_failed_cleanup_is_retried_next_sync(self, connector):
@@ -1364,8 +1367,8 @@ class TestFolderFilter:
         await connector._sync_bucket("b1")
 
         assert processor.on_record_deleted.await_count == 2
-        # Three deletion checks, plus a scope cleanup until one succeeds.
-        assert processor.get_records_in_record_group.await_count == 5
+        # Two reads per sync, plus a scope cleanup until one succeeds.
+        assert processor.get_records_in_record_group.await_count == 8
 
     @pytest.mark.asyncio
     async def test_a_changed_scope_is_cleaned_again(self, connector):
@@ -1375,8 +1378,8 @@ class TestFolderFilter:
         connector.sync_filters = _folder_filter(["docs"])
         await connector._sync_bucket("b1")
 
-        # Two deletion checks and two scope cleanups.
-        assert connector.data_entities_processor.get_records_in_record_group.await_count == 4
+        # Two reads per sync, and each new scope is cleaned up.
+        assert connector.data_entities_processor.get_records_in_record_group.await_count == 6
 
     @pytest.mark.asyncio
     async def test_no_filter_syncs_everything_and_removes_nothing(self, connector):
@@ -1388,6 +1391,13 @@ class TestFolderFilter:
         assert prefixes == [None]
         connector.data_entities_processor.on_record_deleted.assert_not_awaited()
 
+
+
+class _AllRecorded:
+    """Every listed object already has a record, so the date cutoff alone decides what is skipped."""
+
+    def __contains__(self, _: object) -> bool:
+        return True
 
 _JAN = [datetime(2026, 1, day, tzinfo=timezone.utc) for day in (1, 2, 3)]
 
@@ -1434,7 +1444,7 @@ class TestFailedObjectCheckpoint:
     async def _sync(connector):
         from app.connectors.core.registry.folder_scope import FolderScope
 
-        await connector._sync_bucket_prefix("b1", "", FolderScope())
+        await connector._sync_bucket_prefix("b1", "", FolderScope(), _AllRecorded())
 
     @pytest.mark.asyncio
     async def test_a_failed_object_holds_the_checkpoint_before_it(self, connector):

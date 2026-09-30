@@ -1542,8 +1542,8 @@ class TestFolderFilter:
 
         assert prefixes == ["reports/"]
         assert [c.args[0]["Key"] for c in connector._process_gcs_object.await_args_list] == ["reports/a.pdf"]
-        # One read looks for deletions in the listed folder, one for records outside the scope.
-        assert connector.data_entities_processor.get_records_in_record_group.await_count == 2
+        # Read before listing, read to find deletions, and the scope cleanup.
+        assert connector.data_entities_processor.get_records_in_record_group.await_count == 3
 
     @pytest.mark.asyncio
     async def test_an_already_cleaned_scope_is_not_scanned_again(self, connector):
@@ -1553,8 +1553,8 @@ class TestFolderFilter:
         await connector._sync_bucket("b1")
         await connector._sync_bucket("b1")
 
-        # Each listing looks for deletions; the unchanged scope is cleaned up once.
-        assert connector.data_entities_processor.get_records_in_record_group.await_count == 3
+        # Two reads per sync; the unchanged scope is cleaned up once.
+        assert connector.data_entities_processor.get_records_in_record_group.await_count == 5
 
     @pytest.mark.asyncio
     def _page_then_listing_error(self, connector, processed):
@@ -1611,6 +1611,13 @@ class TestFolderFilter:
         assert [c.args[0]["Key"] for c in connector._process_gcs_object.await_args_list] == ["a.pdf"]
 
 
+
+class _AllRecorded:
+    """Every listed object already has a record, so the date cutoff alone decides what is skipped."""
+
+    def __contains__(self, _: object) -> bool:
+        return True
+
 _JAN = [datetime(2026, 1, day, tzinfo=timezone.utc) for day in (1, 2, 3)]
 
 
@@ -1656,7 +1663,7 @@ class TestFailedObjectCheckpoint:
     async def _sync(connector):
         from app.connectors.core.registry.folder_scope import FolderScope
 
-        await connector._sync_bucket_prefix("b1", "", FolderScope())
+        await connector._sync_bucket_prefix("b1", "", FolderScope(), _AllRecorded())
 
     @pytest.mark.asyncio
     async def test_a_failed_object_holds_the_checkpoint_before_it(self, connector):

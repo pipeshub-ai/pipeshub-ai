@@ -77,6 +77,62 @@ class TestDeleteAtTheSource:
         assert db.by_path()[path("z.txt")].id == record_id
         assert db.deleted == []
 
+    @pytest.mark.asyncio
+    async def test_the_surviving_copy_of_shared_content_keeps_a_record(
+        self, connector: BaseConnector, store: FakeObjectStore, db: FakeRecordsDb,
+    ) -> None:
+        # Equal content at a second key is taken as a move of the first key's record,
+        # so one record can stand for both; deleting the key it names must not lose it.
+        store.put("a.txt", "same bytes")
+        await connector.run_sync()
+        store.put("b.txt", "same bytes")
+        await connector.run_incremental_sync()
+        owners = {p for p in db.paths() if p in {path("a.txt"), path("b.txt")}}
+        assert owners
+        owner = sorted(owners)[0]
+        survivor = path("b.txt") if owner == path("a.txt") else path("a.txt")
+
+        store.delete(owner[len(BUCKET) + 1:])
+        await connector.run_incremental_sync()
+
+        assert survivor in db.paths()
+        assert owner not in db.paths()
+
+
+class TestRenameAcrossChosenFolders:
+    @pytest.mark.asyncio
+    async def test_a_rename_into_a_later_folder_keeps_its_record(
+        self, connector: BaseConnector, store: FakeObjectStore, db: FakeRecordsDb, config: FakeConfigService,
+    ) -> None:
+        config.set_folders(["legal", "reports"])
+        store.put("legal/a.txt", "contract")
+        store.put("reports/x.txt", "numbers")
+        await connector.run_sync()
+        record_id = db.by_path()[path("legal/a.txt")].id
+
+        store.rename("legal/a.txt", "reports/b.txt")
+        await connector.run_incremental_sync()
+
+        assert db.by_path()[path("reports/b.txt")].id == record_id
+        assert record_id not in db.deleted
+        assert path("legal/a.txt") not in db.paths()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_later_folder_stops_removal_in_the_earlier_one(
+        self, connector: BaseConnector, store: FakeObjectStore, db: FakeRecordsDb, config: FakeConfigService,
+    ) -> None:
+        config.set_folders(["legal", "reports"])
+        store.put("legal/a.txt", "contract")
+        store.put("reports/x.txt", "numbers")
+        await connector.run_sync()
+
+        store.rename("legal/a.txt", "reports/b.txt")
+        store.fail_prefix = "reports/"
+        await connector.run_incremental_sync()
+
+        assert db.deleted == []
+        assert path("legal/a.txt") in db.paths()
+
 
 class TestFailedListing:
     @staticmethod
