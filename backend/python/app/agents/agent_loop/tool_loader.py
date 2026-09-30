@@ -159,12 +159,18 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 blob_store=state.get("blob_store"),
                 config_service=config_service,
                 tool_state=state,
+                user_id=state.get("user_id"),
             )
             setattr(slack_thread_tool, "_original_name", "slack.fetch_slack_thread")
             a, t = split_original_tool_name(slack_thread_tool)
             tools.append(PipesHubStructuredToolAdapter(slack_thread_tool, a, t))
 
-            slack_nearby_tool = create_fetch_slack_nearby_messages_tool(config_service=config_service)
+            slack_nearby_tool = create_fetch_slack_nearby_messages_tool(
+                config_service=config_service,
+                graph_provider=state.get("graph_provider"),
+                org_id=state.get("org_id"),
+                user_id=state.get("user_id"),
+            )
             setattr(slack_nearby_tool, "_original_name", "slack.fetch_slack_nearby_messages")
             a, t = split_original_tool_name(slack_nearby_tool)
             tools.append(PipesHubStructuredToolAdapter(slack_nearby_tool, a, t))
