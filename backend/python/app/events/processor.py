@@ -1510,13 +1510,8 @@ class Processor:
         )
 
         try:
-            # Convert binary to string
-            if isinstance(html_binary, bytes):
-                html_content = html_binary.decode("utf-8")
-            else:
-                html_content = html_binary
-
-            html_content = html_content.strip()
+            # The record mime type carries no charset, so a <meta charset> is the only declaration here.
+            html_content = decode_text(html_binary, html=True).strip()
 
             if not html_content:
                 try:
@@ -1659,13 +1654,7 @@ class Processor:
         )
 
         try:
-            # Convert binary to string
-            if isinstance(md_binary, bytes):
-                md_content = md_binary.decode("utf-8")
-            else:
-                md_content = md_binary
-
-            markdown = md_content.strip()
+            markdown = decode_text(md_binary).strip()
 
             if markdown is None or markdown == "":
                 try:
