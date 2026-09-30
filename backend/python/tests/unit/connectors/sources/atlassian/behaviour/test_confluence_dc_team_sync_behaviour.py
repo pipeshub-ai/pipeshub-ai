@@ -25,7 +25,7 @@ from fastapi import HTTPException
 from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     ConfluenceDataCenterConnector,
 )
-from app.models.entities import RecordType
+from app.models.entities import Record, RecordType
 from app.models.permission import EntityType, PermissionType
 from app.sources.client.confluence.confluence import ConfluenceRESTClientViaToken
 from app.sources.external.confluence.confluence import ConfluenceDataSource
@@ -43,6 +43,7 @@ class TeamDb(FakeRecordsDb):
     def __init__(self) -> None:
         super().__init__()
         self.migrations: list[dict[str, Any]] = []
+        self.fail_delete_for = set()
 
     async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> object:
         return next((u for u in reversed(self.app_users) if u.source_user_id == source_user_id), None)
@@ -55,6 +56,83 @@ class TeamDb(FakeRecordsDb):
 
     async def migrate_group_to_user_by_external_id(self, **kwargs: str) -> None:
         self.migrations.append(kwargs)
+
+    # ---- what removal reads and writes, answered the way the graph stores do ----
+
+    fail_scan = False
+    fail_delete_for: set[str] = set()
+
+    def _by_id(self, record_id: str) -> Record | None:
+        return next((r for r in self.records.values() if r.id == record_id), None)
+
+    async def get_records_in_record_group(
+        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None
+    ) -> list[Record]:
+        """Typed records of one group, keyset-paged by id, as ``get_records_by_status`` returns them."""
+        if self.fail_scan:
+            raise RuntimeError("graph unavailable")
+        if external_group_id not in self.record_groups:
+            return []
+        ordered = sorted(
+            (r for r in self.records.values() if r.external_record_group_id == external_group_id), key=lambda r: r.id
+        )
+        return [r.model_copy() for r in ordered if after_key is None or r.id > after_key][:limit]
+
+    async def get_records_by_status(
+        self, connector_id: str, status_filters: list[str] | None, limit: int | None = None,
+        after_key: str | None = None, **_: object,
+    ) -> list[Record]:
+        if self.fail_scan:
+            raise RuntimeError("graph unavailable")
+        ordered = sorted(self.records.values(), key=lambda r: r.id)
+        page = [r.model_copy() for r in ordered if after_key is None or r.id > after_key]
+        return page[:limit] if limit else page
+
+    async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> object:
+        return self.record_groups.get(external_id)
+
+    async def on_record_group_deleted(self, external_group_id: str, connector_id: str) -> bool:
+        return self.record_groups.pop(external_group_id, None) is not None
+
+    async def on_record_deleted(self, record_id: str, **_: object) -> None:
+        record = self._by_id(record_id)
+        if record is not None and record.external_record_id in self.fail_delete_for:
+            raise RuntimeError(f"delete of {record_id} failed")
+        self.deleted.append(record_id)
+        if record is not None:
+            del self.records[record.external_record_id]
+
+    async def on_records_deleted_cascade(
+        self, record_ids: list[str], connector_id: str, cascade_children: bool = True
+    ) -> dict[str, Any]:
+        """Like ``delete_records_recursive``: files under a record are ATTACHMENT edges, everything
+        else PARENT_CHILD, which only a full cascade follows; a survivor's parent link is cleared."""
+        from app.models.entities import RecordType as RT
+
+        containers = {RT.CONFLUENCE_PAGE, RT.CONFLUENCE_BLOGPOST, RT.COMMENT, RT.INLINE_COMMENT}
+        doomed: list[Any] = []
+        pending = [r for r in (self._by_id(i) for i in record_ids) if r is not None]
+        while pending:
+            record = pending.pop()
+            if record in doomed:
+                continue
+            doomed.append(record)
+            for child in self.records.values():
+                if child.parent_external_record_id != record.external_record_id:
+                    continue
+                is_attachment = child.record_type == RT.FILE and record.record_type in containers
+                if cascade_children or is_attachment:
+                    pending.append(child)
+        if any(r.external_record_id in self.fail_delete_for for r in doomed):
+            return {"success": False, "failed_count": len(doomed), "deleted_records": []}
+        roots = {r.external_record_id for r in doomed if r.id in record_ids}
+        for record in doomed:
+            del self.records[record.external_record_id]
+            self.deleted.append(record.id)
+        for survivor in self.records.values():
+            if survivor.parent_external_record_id in roots:
+                survivor.parent_external_record_id = None
+        return {"success": True, "failed_count": 0, "deleted_records": [r.id for r in doomed]}
 
     def members_of(self, group_name: str) -> Optional[list[str]]:
         for group, members in reversed(self.user_groups):
@@ -165,14 +243,24 @@ def user(key: str, email: Optional[str]) -> dict[str, Any]:
 
 
 class ContentSearch:
-    """Answers ``/content/search`` per (type, start) and remembers each CQL."""
+    """Answers ``/content/search`` per (type, start) and remembers each CQL.
+
+    ``/content``, the space's database listing, holds by default every item the
+    search pages have ever returned; ``existing`` replaces that per type.
+    """
 
     def __init__(self) -> None:
         self.pages: dict[tuple[str, int], Any] = {}
         self.cql: list[str] = []
+        self.ever_listed: dict[str, dict[str, dict[str, Any]]] = {"page": {}, "blogpost": {}}
+        self.existing: dict[str, list[dict[str, Any]] | httpx.Response] = {}
+        self.archived: list[dict[str, Any]] | httpx.Response = []
 
     def add(self, ctype: str, start: int, response: object) -> None:
         self.pages[(ctype, start)] = response
+        if isinstance(response, dict):
+            for item in response.get("results", []):
+                self.ever_listed[ctype][str(item["id"])] = item
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         q = AtlassianApiStub.query(request)
@@ -182,11 +270,26 @@ class ContentSearch:
         response = self.pages.get((ctype, int(q.get("start", 0))), listing([]))
         return response if isinstance(response, httpx.Response) else json_response(response)
 
+    def database(self, request: httpx.Request) -> httpx.Response:
+        q = AtlassianApiStub.query(request)
+        ctype = q["type"]
+        if q.get("status") == "archived":
+            items = self.archived if ctype == "page" else []
+        else:
+            items = self.existing.get(ctype, list(self.ever_listed[ctype].values()))
+        if isinstance(items, httpx.Response):
+            return httpx.Response(items.status_code, headers=items.headers, content=items.content)
+        start, limit = int(q.get("start", 0)), int(q.get("limit", 25))
+        page = items[start:start + limit]
+        more = start + limit < len(items)
+        return json_response(listing(page, next_start=start + limit if more else None))
+
 
 @pytest.fixture
 def search(atlassian_api: AtlassianApiStub) -> ContentSearch:
     handler = ContentSearch()
     atlassian_api.on("GET", f"{API}/content/search", handler)
+    atlassian_api.on("GET", f"{API}/content", handler.database)
     return handler
 
 
@@ -657,6 +760,7 @@ class TestContentSync:
         atlassian_api.on("GET", f"{API}/content/500", content("500"))
         atlassian_api.on("GET", f"{API}/content/500/restriction/relevantViewRestrictions", restricted_to(users=[{"userKey": "alice"}]))
         search.add("page", 0, listing([content("p1")]))
+        search.existing["page"] = [content("p1"), content("500")]
 
         await connector.run_sync()
 
@@ -717,7 +821,7 @@ class TestAuditLogRestrictionChanges:
         atlassian_api.on("GET", AUDIT, lambda r: json_response(pages[AtlassianApiStub.query(r).get("pageCursor")]))
         atlassian_api.on("GET", f"{API}/content/p1", {**content("p1"), "type": "page"})
         atlassian_api.on("GET", f"{API}/content/p1/restriction/relevantViewRestrictions", restricted_to(users=[{"userKey": "alice"}]))
-        db.records["gone"] = db.records["p2"].model_copy(update={"external_record_id": "gone"})
+        db.records["gone"] = db.records["p2"].model_copy(update={"id": "gone-id", "external_record_id": "gone"})
         atlassian_api.on("GET", f"{API}/content/gone", json_response({"message": "no"}, status=404))
 
         await connector.run_sync()
@@ -1147,3 +1251,184 @@ class TestAuditPassEdgeCases:
         assert db.records["b1"].inherit_permissions is False
         assert db.records["b1"].record_type == RecordType.CONFLUENCE_BLOGPOST
         assert db.records["p1"] is before, "content whose type changed is left as it was"
+
+
+def child_of(cid: str, parent: str) -> dict[str, Any]:
+    return {**content(cid), "ancestors": [{"id": parent}]}
+
+
+class TestRemovalFromSource:
+    """What leaves Confluence, or the sync filters, leaves PipesHub; a failed read removes nothing."""
+
+    @staticmethod
+    async def _two_pages_synced(atlassian_api, db, store, search, filters=None) -> ConfluenceDataCenterConnector:
+        connector = await make_connector(atlassian_api, db, store, filters=filters)
+        atlassian_api.on("GET", f"{API}/content/p2/child/comment", {"results": [comment("c1")], "_links": {"base": BASE}})
+        search.add("page", 0, listing([content("p1"), content("p2", attachments=[attachment("a2")]), child_of("p3", "p2")]))
+        await connector.run_sync()
+        assert {"p1", "p2", "a2", "c1", "p3"} <= set(db.records)
+        assert store.values_for("confluence_pages/ENG")["last_sync_time"]
+        search.add("page", 0, listing([]))
+        return connector
+
+    @staticmethod
+    def _hold_checkpoint(store) -> str:
+        key = next(k for k in store.sync_points if k.endswith("confluence_pages/ENG"))
+        store.sync_points[key]["last_sync_time"] = "2024-01-01T00:00:00.000Z"
+        return "2024-01-01T00:00:00.000Z"
+
+    async def test_a_trashed_page_leaves_with_its_files_and_comments_and_its_child_page_stays(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        search.existing["page"] = [content("p1"), child_of("p3", "p1")]
+
+        await connector.run_sync()
+
+        assert not {"p2", "a2", "c1"} & set(db.records)
+        assert db.records["p3"].parent_external_record_id is None, "the child page moves to the space root"
+        assert "p1" in db.records
+
+    async def test_a_page_the_account_can_no_longer_see_is_removed_and_returns_when_visible_again(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        search.existing["page"] = [content("p2"), child_of("p3", "p2")]
+        await connector.run_sync()
+        assert "p1" not in db.records
+
+        # Regaining access changes nothing Confluence dates, so the change search still leaves it out.
+        search.existing["page"] = [content("p1"), content("p2"), child_of("p3", "p2")]
+        search.cql.clear()
+
+        def by_id(request: httpx.Request) -> httpx.Response:
+            cql = AtlassianApiStub.query(request)["cql"]
+            search.cql.append(cql)
+            found = [content("p1")] if "id in (p1)" in cql else []
+            return json_response(listing(found))
+
+        atlassian_api.on("GET", f"{API}/content/search", by_id)
+        await connector.run_sync()
+
+        assert "p1" in db.records
+        asked = [c for c in search.cql if "id in (p1)" in c]
+        assert asked and all("lastModified >" not in c for c in asked)
+
+    async def test_an_archived_page_the_account_can_see_is_kept(self, atlassian_api, db, store, search) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        search.existing["page"] = [content("p2"), child_of("p3", "p2")]
+        search.archived = [content("p1")]
+
+        await connector.run_sync()
+
+        assert "p1" in db.records
+
+    @pytest.mark.parametrize("answer", [
+        pytest.param(json_response({"message": "busy"}, status=503), id="server-error"),
+        pytest.param(json_response({"message": "no results list"}), id="no-results-list"),
+        pytest.param(json_response(listing([], next_start=25)), id="empty-page-pointing-further"),
+    ])
+    async def test_a_listing_that_cannot_be_read_removes_nothing_and_holds_the_checkpoint(
+        self, atlassian_api, db, store, search, answer
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        held = self._hold_checkpoint(store)
+        search.add("page", 0, listing([content("p1", version=2)]))
+        search.existing["page"] = answer
+
+        await connector.run_sync()
+
+        assert {"p1", "p2", "p3"} <= set(db.records)
+        assert store.values_for("confluence_pages/ENG")["last_sync_time"] == held
+
+    async def test_a_failed_record_read_removes_nothing(self, atlassian_api, db, store, search) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        search.existing["page"] = [content("p1")]
+        db.fail_scan = True
+
+        await connector.run_sync()
+
+        assert {"p2", "p3"} <= set(db.records)
+
+    async def test_a_failed_delete_holds_the_checkpoint_and_the_next_sync_finishes_it(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        held = self._hold_checkpoint(store)
+        search.add("page", 0, listing([content("p1", version=2)]))
+        search.existing["page"] = [content("p1"), child_of("p3", "p1")]
+        db.fail_delete_for = {"p2"}
+
+        await connector.run_sync()
+        assert "p2" in db.records
+        assert store.values_for("confluence_pages/ENG")["last_sync_time"] == held
+
+        db.fail_delete_for = set()
+        await connector.run_sync()
+        assert "p2" not in db.records
+        assert store.values_for("confluence_pages/ENG")["last_sync_time"] != held
+
+    async def test_a_narrowed_page_filter_removes_the_page_and_the_pages_below_it(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        connector.config_service.config["filters"] = {
+            "sync": {"values": {"page_ids": {"operator": "not_in", "type": "list", "value": ["p2"]}}}
+        }
+        store.sync_points.clear()
+        search.add("page", 0, listing([content("p1")]))
+
+        await connector.run_sync()
+
+        assert "p1" in db.records
+        assert not {"p2", "a2", "c1", "p3"} & set(db.records)
+
+    async def test_a_modified_date_filter_removes_only_what_it_clearly_leaves_out(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        cutoff = int(datetime(2024, 5, 2, tzinfo=timezone.utc).timestamp() * 1000)
+        connector.config_service.config["filters"] = {
+            "sync": {"values": {"modified": {"operator": "is_after", "type": "datetime", "value": {"start": cutoff}}}}
+        }
+        store.sync_points.clear()
+        old = {**content("p1"), "version": {"number": 1, "when": "2024-03-01T10:00:00.000Z"}}
+        search.existing["page"] = [old, content("p2", attachments=[attachment("a2")]), child_of("p3", "p2")]
+
+        await connector.run_sync()
+
+        assert "p1" not in db.records, "modified two months before the cutoff"
+        assert {"p2", "p3"} <= set(db.records), "a day inside the margin: the filter's own search decides"
+
+    async def test_a_narrowed_space_filter_removes_the_space_and_a_re_added_space_is_read_in_full(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        atlassian_api.on("GET", f"{API}/space", {"results": [space("ENG", 10), space("HR", 20)], "_links": {"base": BASE}})
+        await connector.run_sync()
+        assert "20" in db.record_groups
+
+        connector.config_service.config["filters"] = {
+            "sync": {"values": {"space_keys": {"operator": "not_in", "type": "list", "value": ["ENG"]}}}
+        }
+        store.sync_points.clear()
+        await connector.run_sync()
+
+        assert "10" not in db.record_groups
+        assert not {"p1", "p2", "p3"} & set(db.records)
+        assert store.values_for("confluence_pages/ENG")["last_sync_time"] == ""
+
+    @pytest.mark.parametrize("answer", [
+        pytest.param(json_response({"message": "busy"}, status=503), id="failed"),
+        pytest.param({"results": [], "_links": {"base": BASE}}, id="empty"),
+    ])
+    async def test_a_space_listing_that_is_empty_or_failed_removes_no_space(
+        self, atlassian_api, db, store, search, answer
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        atlassian_api.on("GET", f"{API}/space", answer)
+
+        await connector.run_sync()
+
+        assert "10" in db.record_groups
+        assert {"p1", "p2"} <= set(db.records)
