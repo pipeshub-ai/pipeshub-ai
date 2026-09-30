@@ -1,6 +1,7 @@
 """Zammad Connector Implementation"""
 import base64
 import re
+from dataclasses import dataclass
 from collections import defaultdict
 from datetime import datetime, timezone
 from logging import Logger
@@ -121,15 +122,29 @@ FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup:excluded_groups"
 TICKET_ATTACHMENT_ID_PATTERN = re.compile(r"^(\d+)_\d+_\d+$")
 
 
+@dataclass(frozen=True)
+class BurstResume:
+    """Where to pick up an updated_at window too dense to split, read by ticket id.
+
+    Every ticket in [low, high] with an id below ``next_id`` has been read.
+    """
+
+    low: int
+    high: int
+    next_id: int
+
+
 class ZammadReadError(Exception):
     """A read from Zammad failed, so what depends on it must wait for the next sync.
 
-    ``read_until`` is the updated_at below which every ticket was read, when known.
+    ``read_until`` is the updated_at below which every ticket was read, when known;
+    ``burst`` says how far a dense window was read by id.
     """
 
-    def __init__(self, message: str, read_until: int | None = None) -> None:
+    def __init__(self, message: str, read_until: int | None = None, burst: BurstResume | None = None) -> None:
         super().__init__(message)
         self.read_until = read_until
+        self.burst = burst
 
 
 # Zammad link type to RecordRelations mapping
@@ -884,6 +899,7 @@ class ZammadConnector(BaseConnector):
 
                 # Read group-level sync point (using group name as key)
                 last_sync_time = await self._get_group_sync_checkpoint(group_name)
+                burst_resume = await self._get_burst_resume(group_name)
 
                 if last_sync_time:
                     self.logger.info(f"🔄 Incremental sync for group {group_name} from {last_sync_time}")
@@ -900,7 +916,8 @@ class ZammadConnector(BaseConnector):
                     async for batch_records in self._fetch_tickets_for_group_batch(
                         group_id=int(group_id),
                         group_name=group_name,
-                        last_sync_time=last_sync_time
+                        last_sync_time=last_sync_time,
+                        burst_resume=burst_resume,
                     ):
                         if not batch_records:
                             continue
@@ -934,9 +951,13 @@ class ZammadConnector(BaseConnector):
                     )
                     if e.read_until and e.read_until != last_sync_time:
                         await self._update_group_sync_checkpoint(group_name, e.read_until)
+                    if e.burst is not None and e.burst != burst_resume:
+                        await self._save_burst_resume(group_name, e.burst)
 
                 # Search results are not ordered by updated_at, so the checkpoint
                 # moves only once every page and every ticket has been read.
+                if listing_complete and burst_resume is not None:
+                    await self._save_burst_resume(group_name, None)
                 if listing_complete and max_ticket_updated_at:
                     await self._update_group_sync_checkpoint(group_name, max_ticket_updated_at + 1000)
                 elif listing_complete and total_tickets > 0:
@@ -995,10 +1016,14 @@ class ZammadConnector(BaseConnector):
             query_parts.append(f"created_at:[* TO {_iso(created_before)}]")
         return " AND ".join(query_parts)
 
-    def _split_window(self, low: int | None, high: int | None) -> list[tuple[int | None, int | None]] | None:
-        """Halves of an updated_at window, or None when it is already as narrow as it may get."""
+    def _window_bounds(self, low: int | None, high: int | None) -> tuple[int, int]:
         lo = low if low is not None else (self._date_filter_bounds(SyncFilterKey.MODIFIED)[0] or 0)
         hi = high if high is not None else get_epoch_timestamp_in_ms()
+        return lo, hi
+
+    def _split_window(self, low: int | None, high: int | None) -> list[tuple[int | None, int | None]] | None:
+        """Halves of an updated_at window, or None when it is already as narrow as it may get."""
+        lo, hi = self._window_bounds(low, high)
         if hi - lo < 2 * MIN_SPLIT_WINDOW_MS:
             return None
         mid = (lo + hi) // 2
@@ -1008,15 +1033,19 @@ class ZammadConnector(BaseConnector):
         self,
         group_id: int,
         group_name: str,
-        last_sync_time: Optional[int]
+        last_sync_time: Optional[int],
+        burst_resume: BurstResume | None = None,
     ) -> AsyncGenerator[List[Tuple[Record, List[Permission]]], None]:
         """
         Fetch tickets for a specific group with pagination and incremental sync support.
 
         One search can page through only SEARCH_RESULT_WINDOW tickets, so a
         group with more is read in updated_at windows, halved until each fits.
-        A failed page or ticket raises ``ZammadReadError`` carrying
-        ``read_until``: every ticket updated before it has been read.
+        A window too narrow to halve (a bulk edit that stamped one time on that
+        many tickets) is read in ticket-id ranges instead. A failed page or
+        ticket raises ``ZammadReadError`` carrying ``read_until``: every ticket
+        updated before it has been read, and ``burst``: how far a dense window
+        was read by id, so the next sync carries on from there.
 
         Args:
             group_id: Zammad group ID to fetch tickets for
@@ -1030,6 +1059,11 @@ class ZammadConnector(BaseConnector):
         limit = 50
         batch_size = 50
         windows: list[tuple[int | None, int | None]] = [(last_sync_time, None)]
+        # A dense window a failed sync stopped in is finished first, from the id it reached.
+        resume_from: dict[tuple[int | None, int | None], int] = {}
+        if burst_resume is not None and self._window_bounds(last_sync_time, None)[0] == burst_resume.low:
+            windows = [(last_sync_time, burst_resume.high), (burst_resume.high, None)]
+            resume_from[windows[0]] = burst_resume.next_id
         read_until = last_sync_time
         # Ticket id -> updated_at already written this sync; a split window reads some tickets twice.
         written: dict[str, Any] = {}
@@ -1040,9 +1074,9 @@ class ZammadConnector(BaseConnector):
             query = self._build_ticket_search_query(group_id, low, until=high)
             self.logger.debug(f"Fetching tickets for group '{group_name}' with query: {query}")
             offset = 0
-            overflowed = False
+            overflowed = (low, high) in resume_from
 
-            while True:
+            while not overflowed:
                 if offset + limit > SEARCH_RESULT_WINDOW:
                     overflowed = True
                     break
@@ -1061,40 +1095,22 @@ class ZammadConnector(BaseConnector):
                     break
 
                 self.logger.debug(f"Fetched {len(tickets_data)} tickets for group '{group_name}' from offset {offset}")
-                batch_records: List[Tuple[Record, List[Permission]]] = []
-                for ticket_data in tickets_data:
-                    ticket_key = str(ticket_data.get("id", "unknown"))
-                    if ticket_key in written and written[ticket_key] == ticket_data.get("updated_at"):
-                        continue
-                    try:
-                        batch_records.extend(await self._ticket_records(ticket_data))
-                        written[ticket_key] = ticket_data.get("updated_at")
-                        failed_tickets.discard(ticket_key)
-                    except Exception as e:
-                        failed_tickets.add(ticket_key)
-                        self.logger.error(f"❌ Error processing ticket {ticket_key}: {e}", exc_info=True)
-                        continue
-
-                    if len(batch_records) >= batch_size:
-                        yield batch_records
-                        batch_records = []
-
-                if batch_records:
+                async for batch_records in self._ticket_batches(tickets_data, written, failed_tickets, batch_size):
                     yield batch_records
                 if len(tickets_data) < limit:
                     break
                 offset += limit
 
             if overflowed:
-                halves = self._split_window(low, high)
-                if halves is None:
-                    raise ZammadReadError(
-                        f"more than {SEARCH_RESULT_WINDOW} tickets in group '{group_name}' changed "
-                        "within one window too narrow to split",
-                        read_until=read_until,
-                    )
-                windows[0:0] = halves
-                continue
+                halves = None if (low, high) in resume_from else self._split_window(low, high)
+                if halves is not None:
+                    windows[0:0] = halves
+                    continue
+                async for batch_records in self._read_dense_window(
+                    datasource, query, group_name, self._window_bounds(low, high), read_until,
+                    resume_from.get((low, high), 0), written, failed_tickets, limit, batch_size,
+                ):
+                    yield batch_records
             if high is not None and not failed_tickets:
                 read_until = high
 
@@ -1103,6 +1119,99 @@ class ZammadConnector(BaseConnector):
                 f"tickets {', '.join(sorted(failed_tickets))} in group '{group_name}' could not be read",
                 read_until=read_until,
             )
+
+    async def _ticket_batches(
+        self,
+        tickets_data: list[dict[str, Any]],
+        written: dict[str, Any],
+        failed_tickets: set[str],
+        batch_size: int,
+    ) -> AsyncGenerator[list[tuple[Record, list[Permission]]], None]:
+        """Records for one page of tickets, in batches. A ticket that fails joins ``failed_tickets``."""
+        batch_records: list[tuple[Record, list[Permission]]] = []
+        for ticket_data in tickets_data:
+            ticket_key = str(ticket_data.get("id", "unknown"))
+            if ticket_key in written and written[ticket_key] == ticket_data.get("updated_at"):
+                continue
+            try:
+                batch_records.extend(await self._ticket_records(ticket_data))
+                written[ticket_key] = ticket_data.get("updated_at")
+                failed_tickets.discard(ticket_key)
+            except Exception as e:
+                failed_tickets.add(ticket_key)
+                self.logger.error(f"❌ Error processing ticket {ticket_key}: {e}", exc_info=True)
+                continue
+            if len(batch_records) >= batch_size:
+                yield batch_records
+                batch_records = []
+        if batch_records:
+            yield batch_records
+
+    async def _read_dense_window(
+        self,
+        datasource: ZammadDataSource,
+        query: str,
+        group_name: str,
+        bounds: tuple[int, int],
+        read_until: int | None,
+        next_id: int,
+        written: dict[str, Any],
+        failed_tickets: set[str],
+        limit: int,
+        batch_size: int,
+    ) -> AsyncGenerator[list[tuple[Record, list[Permission]]], None]:
+        """Read an updated_at window that halving can't bring under the search window, by ticket id.
+
+        Each id range is at most SEARCH_RESULT_WINDOW - limit ids wide, so it
+        holds no more tickets than that and its pages never pass the window.
+        The read starts at ``next_id`` (every ticket in the window with a lower
+        id was read by an earlier sync), and stops, saying how far it got, at a
+        range that failed or held a ticket that couldn't be read.
+        """
+        low, high = bounds
+        span = SEARCH_RESULT_WINDOW - limit
+
+        def stopped(reason: str) -> ZammadReadError:
+            return ZammadReadError(
+                f"{reason} while reading group '{group_name}' by ticket id from {next_id}",
+                read_until=read_until,
+                burst=BurstResume(low, high, next_id),
+            )
+
+        while True:
+            probe = await datasource.search_tickets(query=f"{query} AND id:[{next_id} TO *]", limit=1, offset=0)
+            if not probe.success or not isinstance(probe.data, list):
+                raise stopped("a ticket search failed")
+            if not probe.data:
+                return
+            ranged = f"{query} AND id:[{next_id} TO {next_id + span - 1}]"
+            offset = 0
+            while True:
+                response = await datasource.search_tickets(query=ranged, limit=limit, offset=offset)
+                if not response.success or not isinstance(response.data, list):
+                    raise stopped("a ticket search failed")
+                async for batch_records in self._ticket_batches(response.data, written, failed_tickets, batch_size):
+                    yield batch_records
+                if len(response.data) < limit:
+                    break
+                offset += limit
+            if failed_tickets:
+                raise stopped(f"tickets {', '.join(sorted(failed_tickets))} could not be read")
+            next_id += span
+
+    async def _get_burst_resume(self, group_name: str) -> BurstResume | None:
+        data = await self.tickets_sync_point.read_sync_point(group_name) or {}
+        if not data.get("burst_next_id"):
+            return None
+        return BurstResume(int(data["burst_low"]), int(data["burst_high"]), int(data["burst_next_id"]))
+
+    async def _save_burst_resume(self, group_name: str, burst: BurstResume | None) -> None:
+        # The store merges fields, so clearing is an explicit write of zeros.
+        await self.tickets_sync_point.update_sync_point(group_name, {
+            "burst_low": burst.low if burst else 0,
+            "burst_high": burst.high if burst else 0,
+            "burst_next_id": burst.next_id if burst else 0,
+        })
 
     async def _ticket_records(self, ticket_data: dict[str, Any]) -> list[tuple[Record, list[Permission]]]:
         """A ticket and its attachments, ready for ``on_new_records``; raises if its articles can't be read."""

@@ -289,3 +289,48 @@ async def test_an_excluded_group_ticket_that_cannot_be_read_back_is_retried(worl
     del world.zammad.ticket_read_status[20]
     await world.sync()
     assert "20" not in world.db.external_ids()
+
+
+def _group_point(world: World, group_name: str) -> dict:
+    return next((v for k, v in world.store.sync_points.items() if k.endswith(group_name)), {})
+
+
+async def test_a_burst_past_the_search_window_at_one_timestamp_is_read_by_ticket_id(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _search_window(world, monkeypatch, 60)
+    for ticket_id in range(1000, 1150):
+        world.zammad.add_ticket(ticket_id, 1, day=5)
+    world.zammad.add_ticket(1200, 1, day=6)
+
+    await world.save_filters({})
+
+    assert all(str(t) in world.db.external_ids() for t in [*range(1000, 1150), 1200])
+    assert _checkpoint(world, "Support") > epoch_ms(6)
+    assert not _group_point(world, "Support").get("burst_next_id")
+
+
+async def test_a_burst_read_that_fails_part_way_carries_on_from_the_id_it_reached(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _search_window(world, monkeypatch, 60)
+    for ticket_id in range(1000, 1150):
+        world.zammad.add_ticket(ticket_id, 1, day=5)
+    world.zammad.add_ticket(1200, 1, day=6)
+    world.zammad.fail_search = lambda query: "id:[1100 TO 1109]" in query
+
+    await world.save_filters({})
+    assert all(str(t) in world.db.external_ids() for t in range(1000, 1100))
+    assert "1120" not in world.db.external_ids() and "1200" not in world.db.external_ids()
+    assert _group_point(world, "Support").get("burst_next_id") == 1100
+    assert (_checkpoint(world, "Support") or 0) < epoch_ms(5)
+
+    world.zammad.fail_search = lambda _query: False
+    world.zammad.search_queries.clear()
+    await world.sync()
+
+    assert all(str(t) in world.db.external_ids() for t in [*range(1100, 1150), 1200])
+    burst_reads = [q for q in world.zammad.search_queries if "updated_at" in q and " AND id:[" in q]
+    assert burst_reads and not any("id:[1000 TO" in q for q in burst_reads), "ranges already read are not read again"
+    assert _group_point(world, "Support").get("burst_next_id") == 0
+    assert _checkpoint(world, "Support") > epoch_ms(6)

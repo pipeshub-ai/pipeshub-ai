@@ -2983,9 +2983,10 @@ class TestSyncTicketsForGroupsCheckpoint:
         rg.name = "Support"
 
         connector._get_group_sync_checkpoint = AsyncMock(return_value=1000)
+        connector._get_burst_resume = AsyncMock(return_value=None)
         connector._update_group_sync_checkpoint = AsyncMock()
 
-        async def _empty_gen(group_id, group_name, last_sync_time):
+        async def _empty_gen(group_id, group_name, last_sync_time, burst_resume=None):
             return
             yield
 
@@ -3003,9 +3004,10 @@ class TestSyncTicketsForGroupsCheckpoint:
         ticket.source_updated_at = None
 
         connector._get_group_sync_checkpoint = AsyncMock(return_value=None)
+        connector._get_burst_resume = AsyncMock(return_value=None)
         connector._update_group_sync_checkpoint = AsyncMock()
 
-        async def _gen(group_id, group_name, last_sync_time):
+        async def _gen(group_id, group_name, last_sync_time, burst_resume=None):
             yield [(ticket, [])]
 
         connector._fetch_tickets_for_group_batch = _gen
@@ -3023,9 +3025,10 @@ class TestSyncTicketsForGroupsCheckpoint:
         file_rec = MagicMock(spec=FileRecord)
 
         connector._get_group_sync_checkpoint = AsyncMock(return_value=None)
+        connector._get_burst_resume = AsyncMock(return_value=None)
         connector._update_group_sync_checkpoint = AsyncMock()
 
-        async def _gen(group_id, group_name, last_sync_time):
+        async def _gen(group_id, group_name, last_sync_time, burst_resume=None):
             yield [(ticket, []), (file_rec, [])]
 
         connector._fetch_tickets_for_group_batch = _gen

@@ -89,7 +89,7 @@ class FakeZammad:
         if (offset or 0) + (limit or 10) > self.result_window:
             return ZammadResponse(success=False, message="search failed", status_code=400)
         group = int(re.search(r"group_id:(\d+)", query).group(1))
-        id_range = re.search(r"\bid:\[(\d+) TO (\d+)\]", query)
+        id_range = re.search(r"\bid:\[(\d+) TO (\d+|\*)\]", query)
         bounds = {
             (field_name, side): datetime.fromisoformat(value.replace("Z", "+00:00"))
             for field_name, side, value in (
@@ -108,7 +108,8 @@ class FakeZammad:
         hits = [
             self._public(t) for tid, t in sorted(self.tickets.items(), reverse=self.newest_first)
             if t["group_id"] == group and tid not in self.unindexed and matches(t)
-            and (id_range is None or int(id_range.group(1)) <= tid <= int(id_range.group(2)))
+            and (id_range is None or (int(id_range.group(1)) <= tid
+                                      and (id_range.group(2) == "*" or tid <= int(id_range.group(2)))))
         ]
         start = offset or 0
         return ZammadResponse(success=True, data=hits[start:start + (limit or 10)])
