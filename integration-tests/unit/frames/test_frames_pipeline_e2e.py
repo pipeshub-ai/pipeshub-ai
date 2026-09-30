@@ -366,3 +366,34 @@ def test_a_failed_ranking_is_retried_on_resume_not_fatal(tmp_path: Path, monkeyp
 
     ranked = {(r.system, r.question_id) for r in ctx.store.read("rankings.jsonl", RankedList)}
     assert ("fake_trace", "0") in ranked
+
+
+def test_an_unavailable_second_judge_defers_instead_of_stopping_the_scores(tmp_path: Path) -> None:
+    """The second judge only measures agreement; a provider's daily quota
+    must not stop the primary verdicts or the board. After the first failure
+    calls not yet started are skipped, and a later resume adds them."""
+    from benchmarks.harness.models import Judgment
+
+    def quota_exhausted(request):  # noqa: ANN001, ANN202
+        if request.model.provider == "gemini":
+            raise RuntimeError("429 You exceeded your current quota")
+        return _responder(request)
+
+    ctx = _context(tmp_path)
+    ctx.services.llm = FakeLLM(quota_exhausted)
+    run_pipeline([stage() for stage in STAGES], ctx)
+
+    judgments = ctx.store.read("judgments.jsonl", Judgment)
+    assert judgments and all(j.role == "primary" for j in judgments)
+    # Only calls already in flight when the first one failed are made.
+    gemini_calls = sum(r.model.provider == "gemini" for r in ctx.services.llm.requests)
+    assert gemini_calls <= ctx.config.grading.concurrency and gemini_calls < len(judgments)
+    board = {s.system: s for s in ctx.summary.systems}
+    assert board["oracle"].accuracy.value == 1.0 and board["fake_trace"].judge_agreement_kappa is None
+
+    resumed = _context(tmp_path, store=RunStore.resume(tmp_path / "reports", ctx.store.run_id, ctx.config))
+    run_pipeline([stage() for stage in STAGES], resumed)
+
+    roles = {j.role for j in resumed.store.read("judgments.jsonl", Judgment)}
+    assert roles == {"primary", "secondary"}
+    assert {s.system: s for s in resumed.summary.systems}["fake_trace"].judge_agreement_kappa is not None

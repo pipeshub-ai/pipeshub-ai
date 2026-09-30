@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import subprocess
+import threading
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -348,21 +349,48 @@ class GradeStage:
                 if key not in done:
                     todo.append((judge, subject))
         report = StageReport(self.name, skipped=len(predictions) * len(self._judges_cached(ctx)) - len(todo))
+        deferred = 0
+        secondary_down = threading.Event()
 
-        def _append(_item: object, judgment: Judgment) -> None:
+        def _grade(item: tuple[AnswerJudge, GradingSubject]) -> Judgment | None:
+            judge, subject = item
+            if judge.role == "primary":
+                return judge.grade(subject)
+            # The second judge only measures agreement; its provider's quota
+            # or outage must not stop the scores. Left unrecorded, the next
+            # resume asks it again. One call that fails after the client's
+            # retries (a daily quota, say) stops the rest being attempted.
+            if secondary_down.is_set():
+                return None
+            try:
+                return judge.grade(subject)
+            except Exception as exc:  # noqa: BLE001
+                if not secondary_down.is_set():
+                    logger.warning("secondary judge unavailable, deferring the rest of this stage: %s", exc)
+                secondary_down.set()
+                return None
+
+        def _append(_item: object, judgment: Judgment | None) -> None:
+            nonlocal deferred
+            if judgment is None:
+                deferred += 1
+                return
             ctx.store.append(JUDGMENTS_FILE, judgment)
             ctx.services.cost.add(judgment.cost_usd)
             report.processed += 1
             report.failed += not judgment.parse_ok
 
         run_parallel(
-            todo, lambda item: item[0].grade(item[1]),
+            todo, _grade,
             workers=ctx.config.grading.concurrency, on_result=_append,
-            is_failure=lambda judgment: not judgment.parse_ok,
+            is_failure=lambda judgment: judgment is not None and not judgment.parse_ok,
             breaker=CircuitBreaker(
                 ctx.config.limits.max_error_rate, ctx.config.limits.min_items_for_breaker,
             ),
         )
+        if deferred:
+            report.notes.append(f"{deferred} secondary judgments deferred to the next resume")
+            logger.warning("grade: %d secondary judgments deferred; resume the run to add them", deferred)
         if ctx.config.grading.claim_support:
             report.notes.append(f"claims judged for {self._grade_claims(ctx, predictions)} answers")
         return report

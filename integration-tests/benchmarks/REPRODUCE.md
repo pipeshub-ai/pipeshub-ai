@@ -37,7 +37,9 @@ Compare those first when two runs disagree.
   - Azure OpenAI with deployments named `gpt-5.6-luna` and
     `text-embedding-3-small`. Other providers work by changing `answerer:`
     and `embedding:` in the configs, but then the numbers are not comparable.
-  - Anthropic and Google Gemini keys for the two judges.
+  - Anthropic and Google Gemini keys for the two judges. A full board asks the second
+    judge about 16,000 times, more than a Gemini project's default
+    daily cap of 10,000 requests per model.
 
 ## 1. Install the harness
 
@@ -140,6 +142,12 @@ denominator. The published runs did this after each run finished:
 ```
 
 The report counts any answer that still failed as wrong.
+
+If the second judge's provider fails (a daily quota, an outage), grading
+carries on with the primary judge and leaves the second judge's verdicts for
+later; the log says how many were deferred. Resume the run once the provider
+is back to add them. Judge agreement is computed only on answers both judges
+graded, so check it is reported on every answer before publishing.
 
 ### How long, and what it costs
 
