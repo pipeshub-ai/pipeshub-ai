@@ -146,3 +146,18 @@ async def test_unchanged_survivor_passes_and_any_change_is_reported() -> None:
     message = str(caught.value)
     assert "graph edges 4 -> 3" in message
     assert f"embeddings {VRID}: 3 -> 1" in message
+
+
+@pytest.mark.asyncio
+async def test_a_record_missing_from_the_graph_fails_even_when_counts_match() -> None:
+    """Two found files bring two type nodes, which would cover two missing folders in a count."""
+    graph = AsyncMock()
+    graph.record_node_handles.return_value = ["records/f1", "files/f1", "records/f2", "files/f2"]
+    graph.count_edges_touching.return_value = 4
+
+    with pytest.raises(AssertionError, match="folder-1"):
+        await fp.graph_footprint_of_records(graph, ["f1", "f2", "folder-1", "folder-2"])
+
+    graph.record_node_handles.return_value = ["Record/f1", "File/f1"]
+    footprint = await fp.graph_footprint_of_records(graph, ["f1"])
+    assert footprint.handles == ("Record/f1", "File/f1")

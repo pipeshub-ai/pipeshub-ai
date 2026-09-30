@@ -122,6 +122,9 @@ class TestCreateDeleteCreate:
             f"{second['points']}. Fewer means records were matched to leftovers of the "
             "deleted instance instead of being indexed."
         )
+        for label, run in (("first", first), ("second", second)):
+            empty = sorted(name for name in run["records"] if not run["points_per_file"].get(name))
+            assert not empty, f"{label} instance: files with no chunks: {empty}"
         assert second["points_per_file"] == first["points_per_file"], (
             f"Chunks per file: first {first['points_per_file']}, second {second['points_per_file']}"
         )
