@@ -1655,6 +1655,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         file_id: str | None,
         user: AppUser,
         owner_sources: dict[str, GoogleDriveDataSource],
+        drive_id: str | None = None,
     ) -> None:
         """Apply a `removed` change from one user's changes feed.
 
@@ -1675,7 +1676,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             return
         # A shared drive file's OWNER edges are its organizers, and an organizer who
         # left the drive gets "not found" too; sync_shared_drives handles its deletes.
-        in_shared_drive = record.external_record_group_id in self._listed_shared_drive_ids
+        # The change's driveId covers a file from a drive the filters leave out, which
+        # is stored with no group.
+        in_shared_drive = bool(drive_id) or record.external_record_group_id in self._listed_shared_drive_ids
         if not in_shared_drive and await self._owner_reports_file_gone(record, owner_sources):
             await self._delete_record_tree(record)
             return
@@ -2817,7 +2820,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                     file_metadata = change.get("file")
 
                     if is_removed:
-                        await self._handle_removed_change(change.get("fileId"), user, owner_sources)
+                        await self._handle_removed_change(
+                            change.get("fileId"), user, owner_sources, drive_id=change.get("driveId")
+                        )
                         continue
 
                     if file_metadata and file_metadata.get("trashed"):

@@ -491,6 +491,9 @@ class DriveWorld:
             state = self.files[change.file_id]
             reachable = not state.deleted and bool(self.direct_role(change.file_id, email) or self.member_role(change.file_id, email))
             item: dict[str, Any] = {"changeType": "file", "fileId": change.file_id, "removed": not reachable}
+            # Like Drive, driveId is on the change itself (kept when `removed` drops the file), only when asked for.
+            if change.drive_id and "driveId" in (req.query.get("fields") or "").split("file(")[0]:
+                item["driveId"] = change.drive_id
             if reachable:
                 item["file"] = _project(state.meta, names)
             changes.append(item)

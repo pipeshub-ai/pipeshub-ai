@@ -518,6 +518,26 @@ async def test_an_organizer_leaving_a_shared_drive_does_not_delete_its_files(ws:
     assert ws.records.deleted == []
 
 
+async def test_a_file_from_a_filtered_out_drive_only_loses_the_removed_users_access(ws: Workspace) -> None:
+    ws.world.add_drive("sd-2", "Finance", {ALICE: "organizer"})
+    # A writer's view lists every permission, so the organizer is stored as an owner.
+    ws.world.add_item("f1", "fin.txt", parent="sd-2", perms=[{"type": "user", "role": "writer", "emailAddress": BOB}])
+    ws.filters(drive_ids={"operator": "not_in", "type": "list", "value": ["sd-2"]})
+    await ws.sync()
+    assert "f1" in ws.records.records
+    assert ws.records.records["f1"].external_record_group_id is None
+    assert ALICE in ws.records.perm_emails("f1"), "the organizer is stored as an owner"
+
+    def alice_leaves() -> None:
+        del ws.world.drives["sd-2"]["members"][ALICE]
+
+    ws.world._mutate("f1", alice_leaves)
+    await ws.sync()
+
+    assert "f1" in ws.records.records, "an organizer leaving is not a delete for everyone"
+    assert ws.records.deleted == []
+
+
 async def test_a_file_owned_outside_the_workspace_only_loses_the_removed_users_access(ws: Workspace) -> None:
     ws.world.files["ext-root"] = FileState(
         {"id": "ext-root", "name": "My Drive", "mimeType": FOLDER, "owners": [{"emailAddress": PARTNER}], "parents": []}
