@@ -1182,16 +1182,22 @@ async def delete_chat_attachment(
     """
     user = request.state.user or {}
     org_id = user.get("orgId")
+    user_id = user.get("userId")
     if not org_id:
         raise HTTPException(status_code=400, detail="Missing org context")
 
-    # Verify the record belongs to this org before deleting.
     record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
     if not record:
         # Already gone — treat as success so the client stays consistent.
         return
     if record.get("orgId") != org_id:
         raise HTTPException(status_code=403, detail="Attachment does not belong to this organisation")
+    # record_id comes from the client, so without these checks any member could
+    # delete any record in the org (KB and connector records included).
+    if record.get("connectorName") != Connectors.ATTACHMENTS.value:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    if not user_id or record_id not in await _records_owned_by(graph_provider, user_id, [record_id]):
+        raise HTTPException(status_code=404, detail="Attachment not found")
 
     # Remove the RECORDS node and all its incident edges
     # (IS_OF_TYPE to FILES, PERMISSION edges to the record).

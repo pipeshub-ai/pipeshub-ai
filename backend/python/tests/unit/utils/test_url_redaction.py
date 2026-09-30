@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.utils.url_redaction import redact_url
+from app.utils.url_redaction import redact_sensitive_query_params, redact_url
 
 
 class TestRedactUrl:
@@ -26,3 +26,18 @@ class TestRedactUrl:
 
     def test_unparseable_url(self) -> None:
         assert redact_url("https://[::1/x?token=x") == "<unparseable-url>"
+
+
+class TestRedactSensitiveQueryParams:
+    def test_signed_url_token_is_redacted(self):
+        assert (
+            redact_sensitive_query_params("/api/v1/index/o/drive/record/r?token=a.b.c&x=1")
+            == "/api/v1/index/o/drive/record/r?token=[REDACTED]&x=1"
+        )
+
+    def test_param_names_match_case_insensitively(self):
+        assert "secret" not in redact_sensitive_query_params("/cb?Code=secret")
+
+    @pytest.mark.parametrize("url", ["/api/v1/records", "/search?q=token", ""])
+    def test_urls_without_sensitive_params_are_unchanged(self, url):
+        assert redact_sensitive_query_params(url) == url
