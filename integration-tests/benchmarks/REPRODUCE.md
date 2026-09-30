@@ -130,6 +130,17 @@ it:
 # add --retry-errors to re-ask questions whose answer failed
 ```
 
+Before comparing systems, re-ask every failed answer (a provider 5xx or a
+timeout) until none remain, so that each system is scored on the same 824
+questions and a flaky call never removes a hard question from one system's
+denominator. The published runs did this after each run finished:
+
+```bash
+.venv/bin/python -m benchmarks.harness run --config $CFG/full-rag.yaml --resume <run id> --retry-errors
+```
+
+The report counts any answer that still failed as wrong.
+
 ### How long, and what it costs
 
 Measured on the machine described under Prerequisites:
