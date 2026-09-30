@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import EventTypes
-from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
+from app.exceptions.indexing_exceptions import ProcessingError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 DOC_ID = "65f1c0ffee0123456789abcd"
@@ -115,7 +115,7 @@ class TestDeleteStoredDocumentsEvent:
         )
 
         handler.producer.send_event.assert_not_awaited()
-        pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [])
+        pipeline.purge_stored_documents.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_once_the_records_are_gone_every_file_is_purged(self):
@@ -131,12 +131,20 @@ class TestDeleteStoredDocumentsEvent:
         pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [DOC_ID])
 
     @pytest.mark.asyncio
-    async def test_documents_still_stored_raise_for_a_retry(self):
+    async def test_files_storage_could_not_remove_are_rescheduled_after_a_pause(self, monkeypatch):
+        """Raising would spend the delivery attempts and then discard the ids for good."""
         handler, pipeline = _handler()
         pipeline.purge_stored_documents = AsyncMock(return_value=[DOC_ID])
+        pause = AsyncMock()
+        monkeypatch.setattr("app.services.messaging.kafka.handlers.record.asyncio.sleep", pause)
 
-        with pytest.raises(IndexingError):
-            await _run(handler, EventTypes.DELETE_STORED_DOCUMENTS.value, {"orgId": "org-1", "documentIds": [DOC_ID]})
+        events = await _run(handler, EventTypes.DELETE_STORED_DOCUMENTS.value, {"orgId": "org-1", "documentIds": [DOC_ID]})
+
+        assert len(events) == 2
+        pause.assert_awaited_once()
+        sent = handler.producer.send_event.await_args.kwargs
+        assert sent["payload"]["documentIds"] == [DOC_ID]
+        assert isinstance(sent["payload"]["scheduledAt"], int)
 
     @pytest.mark.asyncio
     async def test_an_event_without_an_org_is_dead_lettered_at_once(self):

@@ -65,7 +65,6 @@ from app.utils.user_errors import (
     unsupported_file_type,
 )
 
-
 STORED_DOCUMENTS_POLL_SECONDS = 5
 
 
@@ -83,6 +82,11 @@ def stored_documents_wait_seconds() -> float:
     than hold a worker longer.
     """
     return _seconds_from_env("STORED_DOCUMENTS_WAIT_SECONDS", 120.0)
+
+
+def stored_documents_retry_pause_seconds() -> float:
+    """Pause before re-publishing files storage could not remove."""
+    return _seconds_from_env("STORED_DOCUMENTS_RETRY_PAUSE_SECONDS", 30.0)
 
 
 def stored_documents_give_up_seconds() -> float:
@@ -371,44 +375,43 @@ class RecordEventHandler(BaseEventService):
                 return listed
             await asyncio.sleep(STORED_DOCUMENTS_POLL_SECONDS)
 
-    async def _reschedule_stored_documents(self, payload: dict, still_listed: set[str]) -> None:
-        """Put the event back for files a record still lists, without spending a delivery attempt.
+    async def _reschedule_stored_documents(
+        self, payload: dict, still_listed: set[str], not_removed: set[str]
+    ) -> None:
+        """Put the event back for files not yet removed, without spending a delivery attempt.
 
-        The event is published before the graph delete, so a slow delete keeps
-        its records for a while. Raising would spend the few, short delivery
-        attempts and then discard the ids, the only handle on the files. A fresh
-        event keeps them until the records are gone, up to a day after the delete
-        was scheduled. After that the records still exist, so their files are
-        theirs to keep.
+        Two reasons a file stays: a record still lists it (the event is published
+        before the graph delete, which may be slow), or storage could not remove
+        it. Raising would spend the few, short delivery attempts, after which the
+        event is discarded, and with it the ids, the only handle on the files. A
+        fresh event keeps them, up to a day after the delete was scheduled.
         """
         now = get_epoch_timestamp_in_ms()
         scheduled_at = int(payload.get("scheduledAt") or now)
         if now - scheduled_at >= stored_documents_give_up_seconds() * 1000:
+            # A file still listed a day on belongs to a record that was never deleted.
             self.logger.error(
-                "Records of %s still list %d file(s) a day after their delete was scheduled; "
-                "keeping the files: %s",
-                payload.get("connectorId"), len(still_listed), sorted(still_listed),
+                "Gave up removing the stored files of %s a day after their delete was scheduled: "
+                "%d still listed by a record (kept), %d storage could not remove (left in storage): %s",
+                payload.get("connectorId"), len(still_listed), len(not_removed),
+                sorted(still_listed | not_removed),
             )
             return
+        if not still_listed:
+            # Nothing was waited on, so pause before trying storage again.
+            await asyncio.sleep(stored_documents_retry_pause_seconds())
         if not self.producer:
             raise IndexingError("No messaging producer configured; cannot reschedule stored-file removal")
         await self.producer.send_event(
             topic=Topic.RECORD_EVENTS.value,
             event_type=EventTypes.DELETE_STORED_DOCUMENTS.value,
-            payload={**payload, "documentIds": sorted(still_listed), "scheduledAt": scheduled_at},
+            payload={
+                **payload,
+                "documentIds": sorted(still_listed | not_removed),
+                "scheduledAt": scheduled_at,
+            },
             key=str(payload.get("connectorId")),
         )
-
-    async def _purge_stored_documents(self, org_id: str, document_ids: list[str]) -> None:
-        pipeline = self.event_processor.processor.indexing_pipeline
-        still_stored = await pipeline.purge_stored_documents(org_id, document_ids)
-        if still_stored:
-            # Transient: redelivered with backoff, then dead-lettered, where it
-            # stays visible and replayable.
-            raise IndexingError(
-                "Some stored files of deleted records could not be removed",
-                details={"org_id": org_id, "document_ids": still_stored},
-            )
 
     async def _delete_vector_collection(self, payload: dict | None = None) -> AsyncGenerator[PipelineEvent, None]:
         # The cleanup job polls for a phase and otherwise waits out its whole
@@ -769,11 +772,11 @@ class RecordEventHandler(BaseEventService):
                 connector_id = payload.get("connectorId")
                 if connector_id:
                     still_listed = await self._wait_until_unlisted(connector_id, document_ids)
-                await self._purge_stored_documents(
-                    org_id, [d for d in document_ids if d not in still_listed]
-                )
-                if still_listed:
-                    await self._reschedule_stored_documents(payload, still_listed)
+                to_purge = [d for d in document_ids if d not in still_listed]
+                pipeline = self.event_processor.processor.indexing_pipeline
+                not_removed = set(await pipeline.purge_stored_documents(org_id, to_purge)) if to_purge else set()
+                if still_listed or not_removed:
+                    await self._reschedule_stored_documents(payload, still_listed, not_removed)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="stored_documents", count=len(document_ids)))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="stored_documents", count=len(document_ids)))
                 return
