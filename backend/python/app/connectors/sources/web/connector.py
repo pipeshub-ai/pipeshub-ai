@@ -1391,7 +1391,7 @@ class WebConnector(BaseConnector):
                 pass
 
         if await self._excluded_by_extension_filter(result):
-            await self._remove_filtered_out(result)
+            await self._remove_filtered_out(result, requested_url)
             return False
         if redirected:
             self._landed_urls.add(landed)
@@ -2087,7 +2087,7 @@ class WebConnector(BaseConnector):
 
     async def _excluded_by_extension_filter(self, result: FetchResponse) -> bool:
         """Checked after links are extracted: an "only PDFs" filter must still crawl the pages linking to them."""
-        content_type = result.headers.get("Content-Type", "").lower()
+        content_type = (self._header(result.headers, "Content-Type") or "").lower()
         if not content_type and result.status_code == HTTPStatus.NOT_MODIFIED:
             # A 304 has no body and often no Content-Type; without one, an extensionless
             # URL would read as html. The stored copy it vouches for says what the page is.
@@ -2141,10 +2141,11 @@ class WebConnector(BaseConnector):
                 result = await self._validate_fetch_result(url, depth, referer, raw)
                 if result is None:
                     return None
-                if await self._excluded_by_extension_filter(result):
-                    await self._remove_filtered_out(result)
-                    return None
+                # Robots first: a landing it refuses was never loaded, so its answer can't remove anything.
                 if not await self._robots_allows_landing(url, result):
+                    return None
+                if await self._excluded_by_extension_filter(result):
+                    await self._remove_filtered_out(result, url)
                     return None
 
             if result.status_code == HTTPStatus.NOT_MODIFIED:
@@ -2169,7 +2170,7 @@ class WebConnector(BaseConnector):
                 if result is None or result.status_code == HTTPStatus.NOT_MODIFIED:
                     return None
                 if await self._excluded_by_extension_filter(result):
-                    await self._remove_filtered_out(result)
+                    await self._remove_filtered_out(result, url)
                     return None
 
             final_url = result.final_url
@@ -2641,20 +2642,30 @@ class WebConnector(BaseConnector):
         self.logger.info("Removing %s: gone, or moved to another stored page, on two syncs in a row", url)
         await self._remove_record(record, url)
 
-    async def _remove_filtered_out(self, result: FetchResponse) -> None:
+    async def _remove_filtered_out(self, result: FetchResponse, requested_url: str) -> None:
         """Remove what we stored for a page whose answer the file-type filter now leaves out.
 
         Only a page the site actually answered gets here, so a narrowed filter removes
         what it excludes, and a fetch that failed removes nothing. The page is the one
-        the answer came from: a URL that now redirects to it keeps its own record, as
-        the redirect handling decides. Folder placeholders stay: they hold the tree
+        the answer came from. A requested URL that now redirects to it keeps its own
+        record unless the filter leaves out that record's type too: a landing the
+        filter drops is never kept, so the usual redirect cleanup does not run for it.
+        Folder placeholders stay: they hold the tree
         together, not content.
         """
         record = await self._stored_record(result.final_url)
-        if record is None or record.is_internal:
+        if record is not None and not record.is_internal:
+            self.logger.info("Removing %s: the file-type filter now leaves it out", result.final_url)
+            await self._remove_record(record, result.final_url)
+        if self._normalize_url(requested_url) == self._normalize_url(result.final_url):
             return
-        self.logger.info("Removing %s: the file-type filter now leaves it out", result.final_url)
-        await self._remove_record(record, result.final_url)
+        old = await self._stored_record(requested_url)
+        if old is None or old.is_internal or (record is not None and old.id == record.id):
+            return
+        _, old_extension = self._determine_mime_type(requested_url, (old.mime_type or "").lower())
+        if not self._pass_extension_filter(old_extension):
+            self.logger.info("Removing %s: the file-type filter now leaves it out", requested_url)
+            await self._remove_record(old, requested_url)
 
     async def _remove_record(self, record: Record, url: str) -> None:
         await self.data_entities_processor.on_record_deleted(record.id)

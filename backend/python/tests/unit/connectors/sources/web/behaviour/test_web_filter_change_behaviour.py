@@ -130,3 +130,18 @@ async def test_a_not_modified_extensionless_page_is_classified_from_its_stored_c
     assert site.not_modified == [START_URL]
     assert db.deleted == []
     assert db.pages()[START_URL].id == kept.id
+
+
+async def test_a_url_redirecting_to_a_page_the_filter_leaves_out_loses_its_record_too(
+    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+) -> None:
+    # A landing the filter drops is never kept, so the redirect cleanup a kept landing
+    # gets never runs; the old name is a text file the filter leaves out too, so it goes.
+    connector = await _crawl_then_narrow(site, db, checkpoints, make_connector)
+    site.redirect(NOTES, "/moved.txt", status=301)
+    site.add("http://site.test/moved.txt", Page(body=b"meeting notes", content_type="text/plain"))
+
+    await connector.run_sync()
+
+    assert NOTES not in db.pages()
+    assert set(db.pages()) == {START_URL, ABOUT}
