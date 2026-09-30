@@ -189,6 +189,12 @@ export interface ConsentData {
     description: string
     category: string
   }>
+  // Requested but outside the app's allowed scopes; shown, never granted.
+  notGrantedScopes?: Array<{
+    name: string
+    description: string
+    category: string
+  }>
   user: {
     email: string
     name?: string

@@ -35,6 +35,7 @@ interface AppInfo {
 interface ConsentData {
   app: AppInfo;
   scopes: ScopeInfo[];
+  notGrantedScopes?: ScopeInfo[];
   user: {
     email: string;
     name?: string;
@@ -482,6 +483,7 @@ export function OAuthAuthorizeView() {
   }
 
   const appName = consentData.app.name;
+  const notGrantedScopes = consentData.notGrantedScopes ?? [];
 
   return (
     <Flex
@@ -609,6 +611,43 @@ export function OAuthAuthorizeView() {
               </Flex>
             ))}
           </Box>
+
+          {notGrantedScopes.length > 0 ? (
+            <Flex direction="column" gap="2" width="100%">
+              <Text as="p" size="2" color="gray">
+                {t('oauthConsent.notGrantedHeading')}
+              </Text>
+              {notGrantedScopes.map((scopeItem) => (
+                <Flex
+                  key={scopeItem.name}
+                  direction="column"
+                  gap="1"
+                  align="start"
+                  p="3"
+                  width="100%"
+                  style={{
+                    borderRadius: 'var(--radius-2)',
+                    border: '1px dashed var(--gray-6)',
+                  }}
+                >
+                  <Text as="div" size="2" color="gray" style={{ width: '100%' }}>
+                    {scopeItem.name}
+                  </Text>
+                  <Text as="div" size="1" color="gray" style={{ width: '100%' }}>
+                    {scopeItem.description}
+                  </Text>
+                </Flex>
+              ))}
+              <Text as="p" size="2" color="gray">
+                {t('oauthConsent.notGrantedAdminHint')}
+              </Text>
+              {notGrantedScopes.some((s) => s.name === 'offline_access') ? (
+                <Text as="p" size="2" color="amber">
+                  {t('oauthConsent.notGrantedOfflineAccess')}
+                </Text>
+              ) : null}
+            </Flex>
+          ) : null}
 
           <Separator size="4" />
 
