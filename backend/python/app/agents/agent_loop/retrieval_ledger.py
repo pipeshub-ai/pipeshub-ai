@@ -11,7 +11,7 @@ covered without touching this module.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +22,7 @@ from app.agents.agent_loop.protocol.retrieval_context import (
     RetrievalStatus,
     RetrievedRecordPayload,
 )
+from app.utils.chat_helpers import group_child_results
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
@@ -76,6 +77,23 @@ class RetrievalDelta:
 
 def _str_or_none(value: object) -> str | None:
     return str(value) if value not in (None, "") else None
+
+
+def _block_index(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _unit_block_indices(unit: Mapping[str, Any]) -> Iterator[int]:
+    """Every block index a search result renders: its own and, for a table or
+    group, its children's."""
+    own = _block_index(unit.get("block_index"))
+    if own is not None:
+        yield own
+    for child in group_child_results(dict(unit)) or ():
+        if isinstance(child, Mapping):
+            index = _block_index(child.get("block_index"))
+            if index is not None:
+                yield index
 
 
 class RetrievalContextLedger:
@@ -145,21 +163,26 @@ class RetrievalContextLedger:
             virtual_record_id = _str_or_none(block.get("virtual_record_id"))
             if virtual_record_id is None:
                 continue
-            raw_index = block.get("block_index")
-            block_index = int(raw_index) if isinstance(raw_index, int) else None
-            key: BlockKey = (virtual_record_id, block_index)
-            if key in self._seen_blocks:
+            # A table or group unit renders its child rows too; recording only
+            # the unit's own index hid every row after the first.
+            indices: list[int | None] = list(dict.fromkeys(_unit_block_indices(block))) or [None]
+            keys: list[BlockKey] = [
+                (virtual_record_id, index) for index in indices
+                if (virtual_record_id, index) not in self._seen_blocks
+            ]
+            if not keys:
                 continue
-            self._seen_blocks.add(key)
+            self._seen_blocks.update(keys)
             metadata = block.get("metadata")
             delta = self._delta_for(
                 virtual_record_id, records_map, deltas,
                 metadata if isinstance(metadata, Mapping) else None,
             )
-            if block_index is None:
-                delta.summary_hit = True
-            else:
-                delta.block_indices.append(block_index)
+            for _vrid, index in keys:
+                if index is None:
+                    delta.summary_hit = True
+                else:
+                    delta.block_indices.append(index)
             delta.observe_score(block.get("score"))
 
     def _collect_fetches(
