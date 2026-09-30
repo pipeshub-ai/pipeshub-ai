@@ -137,3 +137,36 @@ async def test_the_delete_route_publishes_every_payload() -> None:
 
     published = [c.args[1]["payload"]["virtualRecordId"] for c in kafka.publish_event.await_args_list]
     assert published == ["vr-mail", "vr-att"]
+
+
+async def test_the_delete_route_reports_the_record_whose_cleanup_did_not_go_out() -> None:
+    from unittest.mock import patch
+
+    from app.connectors.api.router import delete_record
+    from tests.unit.connectors.api.test_router_part1 import _mock_request
+
+    graph = AsyncMock()
+    graph.check_record_access_with_details = AsyncMock(return_value={"record": {}})
+    graph.delete_record = AsyncMock(return_value={
+        "success": True,
+        "eventData": {
+            "eventType": "deleteRecord", "topic": "record-events",
+            "payload": {"recordId": "mail-1", "virtualRecordId": "vr-mail"},
+            "payloads": [{"recordId": "mail-1", "virtualRecordId": "vr-mail"},
+                         {"recordId": "att-1", "virtualRecordId": "vr-att"}],
+        },
+    })
+
+    async def publish(thunk, **_kwargs):
+        event = thunk.__defaults__[0]
+        if event["payload"]["recordId"] == "att-1":
+            raise RuntimeError("broker down")
+        return await thunk()
+
+    container = MagicMock()
+    container.logger = MagicMock(return_value=MagicMock())
+    with patch("app.connectors.api.router.retry_async", side_effect=publish):
+        response = await delete_record("mail-1", _mock_request(container=container), graph, AsyncMock())
+
+    assert response["vectorCleanupPending"] is True
+    assert response["vectorCleanupFailedRecordIds"] == ["att-1"]

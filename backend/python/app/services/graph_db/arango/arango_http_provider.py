@@ -13691,7 +13691,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             if not attachment or not attachment.get("virtualRecordId"):
                 continue
-            file_doc = await self.get_document(attachment_id, CollectionNames.FILES.value)
+            file_doc = await self.get_document(attachment_id, CollectionNames.FILES.value, transaction)
             payload = await self._create_deleted_record_event_payload(attachment, file_doc)
             if payload:
                 payload["connectorName"] = attachment.get("connectorName")
@@ -13722,7 +13722,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             attachment_ids = attachment_ids if attachment_ids else []
             # Read before the delete: the payloads carry the virtualRecordIds.
-            mail_record = await self.get_document(record_id, CollectionNames.MAILS.value)
+            mail_record = await self.get_document(record_id, CollectionNames.MAILS.value, transaction)
             attachment_payloads = await self._attachment_delete_payloads(attachment_ids, transaction)
 
             # Delete all attachments first
