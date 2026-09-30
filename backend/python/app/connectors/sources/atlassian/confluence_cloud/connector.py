@@ -1533,7 +1533,8 @@ class ConfluenceConnector(BaseConnector):
             raise
 
     async def _sync_content(
-        self, space_key: str, record_type: RecordType, *, defer_checkpoint: bool = False
+        self, space_key: str, record_type: RecordType, *, defer_checkpoint: bool = False,
+        within_ids: list[str] | None = None,
     ) -> ContentListing:
         """
         Unified sync for pages and blogposts from Confluence using v1 API.
@@ -1547,6 +1548,8 @@ class ConfluenceConnector(BaseConnector):
 
             defer_checkpoint: Leave the checkpoint to the caller, which saves it only
                 once the space's removals have succeeded.
+            within_ids: Sync only these items, whatever their last modified time,
+                still within the sync filters; the checkpoint is neither read nor moved.
 
         Returns:
             What the listing read, for removing records the source no longer has.
@@ -1583,7 +1586,7 @@ class ConfluenceConnector(BaseConnector):
             sync_point_key = generate_record_sync_point_key(
                 RecordType.WEBPAGE.value, f"confluence_{content_type}s", space_key
             )
-            last_sync_data = await self.pages_sync_point.read_sync_point(sync_point_key)
+            last_sync_data = None if within_ids else await self.pages_sync_point.read_sync_point(sync_point_key)
             last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
             if last_sync_time:
                 self.logger.info(f"🔄 Incremental sync: Fetching {content_type}s modified after {last_sync_time}")
@@ -1658,7 +1661,8 @@ class ConfluenceConnector(BaseConnector):
                         order_by="lastModified",
                         sort_order="asc",
                         expand=CONTENT_EXPAND_PARAMS,
-                        time_offset_hours=TIME_OFFSET_HOURS
+                        time_offset_hours=TIME_OFFSET_HOURS,
+                        within_ids=within_ids,
                     )
                 else:  # CONFLUENCE_BLOGPOST
                     response = await datasource.get_blogposts_v1(
@@ -1675,7 +1679,8 @@ class ConfluenceConnector(BaseConnector):
                         order_by="lastModified",
                         sort_order="asc",
                         expand=CONTENT_EXPAND_PARAMS,
-                        time_offset_hours=TIME_OFFSET_HOURS
+                        time_offset_hours=TIME_OFFSET_HOURS,
+                        within_ids=within_ids,
                     )
 
                 # Check response
@@ -1959,7 +1964,7 @@ class ConfluenceConnector(BaseConnector):
                     "this window could be read, so the next sync reads it again"
                 )
             current_sync_time = None
-            if listing_complete and total_synced > 0:
+            if listing_complete and total_synced > 0 and not within_ids:
                 current_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
                 if not defer_checkpoint:
                     await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": current_sync_time})
@@ -2028,6 +2033,8 @@ class ConfluenceConnector(BaseConnector):
             return False
 
         settled = True
+        if not listing.full:
+            settled = await self._sync_listed_but_not_stored(space, record_type, existing, stored, listing)
         doomed = [r for r in stored if r.external_record_id not in existing]
         if doomed:
             self.logger.info(
@@ -2062,6 +2069,41 @@ class ConfluenceConnector(BaseConnector):
         if doomed:
             settled = await self._delete_content_records(doomed) and settled
         return settled
+
+    async def _sync_listed_but_not_stored(
+        self,
+        space: RecordGroup,
+        record_type: RecordType,
+        existing: dict[str, str],
+        stored: list[Record],
+        listing: ContentListing,
+    ) -> bool:
+        """Sync current items the space lists that are not stored, whatever their last modified time.
+
+        An item removed because the account lost sight of it comes back here once
+        the account can see it again: regaining access does not change its last
+        modified time, so the incremental search would never return it. The sync
+        filters still apply, so an item they leave out stays out. Returns False
+        when a read failed, so the caller holds the checkpoint.
+        """
+        stored_ids = {r.external_record_id for r in stored}
+        unseen = sorted(
+            item_id for item_id, status in existing.items()
+            if status == "current" and item_id not in stored_ids and item_id not in listing.seen
+        )
+        if not unseen:
+            return True
+        self.logger.info(
+            f"Syncing {len(unseen)} {record_type.value} items space {space.short_name} lists but PipesHub does not hold"
+        )
+        complete = True
+        for start in range(0, len(unseen), ID_SEARCH_CHUNK):
+            result = await self._sync_content(
+                space.short_name, record_type, defer_checkpoint=True,
+                within_ids=unseen[start:start + ID_SEARCH_CHUNK],
+            )
+            complete = complete and result.complete
+        return complete
 
     async def _list_space_content(self, space_id: str, record_type: RecordType) -> dict[str, str] | None:
         """Status by id of every page or blog post in a space the account can see; None unless read to the end.
@@ -2254,14 +2296,21 @@ class ConfluenceConnector(BaseConnector):
         archived, or the account lost access; it comes back on a later sync if it
         is listed again, and clearing its checkpoints makes that a full re-read.
         Runs only after a space listing read to the end, and only when the listed
-        set differs from the one last cleaned up.
+        set differs from the one last cleaned up or a removal is still unfinished.
+        A listing with no spaces at all removes nothing: that is the account
+        itself failing, not every space leaving. A space whose removal failed part
+        way stays pending, so its space and checkpoints go once its records have.
         """
         if not self._space_listing_complete:
             return
         in_scope = sorted({str(s.external_group_id) for s in spaces})
+        if not in_scope:
+            self.logger.warning("The space listing came back empty; no space is removed")
+            return
         key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_space_scope", "all")
-        cleaned = await self.pages_sync_point.read_sync_point(key)
-        if cleaned and cleaned.get("space_ids") == in_scope:
+        cleaned = await self.pages_sync_point.read_sync_point(key) or {}
+        pending = {str(p) for p in (cleaned.get("pending") or []) if str(p) not in in_scope}
+        if cleaned.get("space_ids") == in_scope and not pending:
             return
 
         wanted = set(in_scope)
@@ -2282,12 +2331,19 @@ class ConfluenceConnector(BaseConnector):
             self.logger.warning(f"Could not read the stored spaces; no space removed: {e}")
             return
 
-        all_removed = True
-        for space_id, records in by_space.items():
-            if not await self._remove_space(space_id, records):
-                all_removed = False
-        if all_removed:
-            await self.pages_sync_point.update_sync_point(key, {"space_ids": in_scope})
+        unfinished: list[str] = []
+        for space_id in sorted(set(by_space) | pending):
+            try:
+                removed = await self._remove_space(space_id, by_space.get(space_id, []))
+            except Exception as e:
+                removed = False
+                self.logger.warning(f"Could not finish removing space {space_id}; retrying next sync: {e}")
+            if not removed:
+                unfinished.append(space_id)
+        # The store merges fields, so an empty list clears what an earlier run left pending.
+        await self.pages_sync_point.update_sync_point(
+            key, {"pending": unfinished} if unfinished else {"space_ids": in_scope, "pending": []}
+        )
 
     async def _remove_space(self, space_id: str, records: list[Record]) -> bool:
         """Delete one space's records, clear its checkpoints, then drop the space; True if all of it worked."""
@@ -2315,7 +2371,11 @@ class ConfluenceConnector(BaseConnector):
                 generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_blogposts", group.short_name),
             ):
                 await self.pages_sync_point.update_sync_point(checkpoint_key, {"last_sync_time": ""})
-        await self.data_entities_processor.on_record_group_deleted(space_id, self.connector_id)
+        if group is not None and not await self.data_entities_processor.on_record_group_deleted(
+            space_id, self.connector_id
+        ):
+            self.logger.warning(f"Could not delete space {space_id}; retrying next sync")
+            return False
         return True
 
     async def _sync_permission_changes_from_audit_log(self) -> None:

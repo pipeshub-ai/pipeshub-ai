@@ -10,6 +10,7 @@ import logging
 import re
 from collections.abc import Callable
 from typing import Any, Optional
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -1029,10 +1030,40 @@ class TestContentGoneFromSource:
         await connector._sync_spaces_content([ENG])
         assert "11" not in db.records and "att2" not in db.records
 
-        search.by_cursor = {None: search_page([v1_page("11", version=3)])}
+        # Regaining access changes nothing Confluence dates: the change search still leaves it out.
+        search.by_cursor = {None: search_page([])}
+        search.indexed = {"10": v1_page("10"), "11": v1_page("11")}
+        search.queries.clear()
         api.on("GET", f"{V2}/spaces/77/pages", in_space("10", "11"))
         await connector._sync_spaces_content([ENG])
         assert "11" in db.records
+        by_id = [q["cql"] for q in search.queries if "id in (11)" in q["cql"]]
+        assert by_id and all("lastModified >" not in cql for cql in by_id), (
+            "the listed-but-missing page is asked for by id, whatever its last modified time"
+        )
+
+    async def test_a_listed_page_the_filters_leave_out_is_not_brought_back(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        self._refilter(connector, checkpoints, search, "11")
+        search.indexed = {"10": v1_page("10"), "11": v1_page("11")}
+        await connector._sync_spaces_content([ENG])
+        assert "11" not in db.records
+
+        search.by_cursor = {None: search_page([])}
+        await connector._sync_spaces_content([ENG])
+        assert "11" not in db.records, "the id search runs with the filters, so an excluded page stays out"
+
+    async def test_a_failed_search_for_a_listed_page_holds_the_checkpoint(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10"))
+        await connector._sync_spaces_content([ENG])
+        self._hold_checkpoint_at_old_value(checkpoints)
+
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10", "11"))
+        search.indexed = json_response({"message": "Service Unavailable"}, status=503)
+        await connector._sync_spaces_content([ENG])
+        assert "11" not in db.records
+        assert self._checkpoint(checkpoints) == OLD_CHECKPOINT
 
     async def test_an_archived_page_the_account_can_see_is_kept(self, api, db, checkpoints, search) -> None:
         connector = await self._two_pages_synced(api, db, checkpoints, search)
@@ -1307,10 +1338,37 @@ class TestSpacesOutOfScope:
         await connector._remove_spaces_out_of_scope(spaces)
         assert "990" in db.records and "99" in db.record_groups
         assert checkpoints.values_for("confluence_pages/HR")["last_sync_time"]
-        assert checkpoints.values_for("confluence_space_scope/all") is None
+        scope = checkpoints.values_for("confluence_space_scope/all")
+        assert "space_ids" not in scope and scope["pending"] == ["99"]
 
         await connector._remove_spaces_out_of_scope(spaces)
         assert "990" not in db.records and "99" not in db.record_groups
+        assert checkpoints.values_for("confluence_space_scope/all")["pending"] == []
+
+    async def test_a_space_whose_records_went_but_not_the_space_is_finished_next_sync(
+        self, api, db, checkpoints, search
+    ) -> None:
+        connector = await self._synced_in(db, checkpoints, search)
+        self._spaces(api, ("77", "ENG"))
+        real_delete = db.on_record_group_deleted
+        db.on_record_group_deleted = AsyncMock(return_value=False)
+
+        spaces = await connector._sync_spaces()
+        await connector._remove_spaces_out_of_scope(spaces)
+        assert "990" not in db.records and "99" in db.record_groups, "its records went, the space did not"
+
+        db.on_record_group_deleted = real_delete
+        await connector._remove_spaces_out_of_scope(spaces)
+        assert "99" not in db.record_groups, "the pending space is finished though no record points at it"
+
+    async def test_an_empty_space_listing_removes_nothing(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced_in(db, checkpoints, search)
+        self._spaces(api)
+
+        spaces = await connector._sync_spaces()
+        await connector._remove_spaces_out_of_scope(spaces)
+
+        assert "990" in db.records and "99" in db.record_groups
 
     async def test_a_failed_graph_read_removes_nothing(self, api, db, checkpoints, search) -> None:
         connector = await self._synced_in(db, checkpoints, search)
