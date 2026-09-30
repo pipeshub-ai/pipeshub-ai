@@ -44,3 +44,34 @@ def test_bad_requests_are_rejected() -> None:
         rerank_response(_FakeReranker(), "/v1/rerank", {"documents": ["a"]})  # type: ignore[arg-type]
     with pytest.raises(LookupError):
         rerank_response(_FakeReranker(), "/elsewhere", {"query": "q"})  # type: ignore[arg-type]
+
+
+@pytest.fixture
+def server_url():  # noqa: ANN201
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from benchmarks.harness.systems.rag.rerank_server import make_handler
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(_FakeReranker()))  # type: ignore[arg-type]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+
+
+def test_a_remote_reranker_orders_chunks_as_the_served_model_scores_them(server_url: str) -> None:
+    from benchmarks.harness.systems.rag.rerank import RemoteReranker
+    from benchmarks.harness.systems.rag.retrieval import Chunk
+
+    chunks = [Chunk("r", i, text, 0.0) for i, text in enumerate(["a", "abcdef", "abcd"])]
+
+    ranked = RemoteReranker(server_url, "fake-cross-encoder").rerank("q", chunks, top_k=2)
+
+    assert [c.block_index for c in ranked] == [1, 2]
+
+
+def test_a_server_serving_another_model_is_refused(server_url: str) -> None:
+    from benchmarks.harness.systems.rag.rerank import RemoteReranker
+
+    with pytest.raises(ValueError, match="serves 'fake-cross-encoder'"):
+        RemoteReranker(server_url, "BAAI/bge-reranker-v2-m3")

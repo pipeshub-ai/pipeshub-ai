@@ -1,10 +1,10 @@
-# Every RAG technique on all 824 FRAMES questions, grounded (part C of 4):
-# small-to-big (the top 3 articles replaced by their full text) added to the
-# two strongest pipelines without it, hybrid + expansion on each index. The
-# other small-to-big rows, with decomposition, are in full-rag-rerank.yaml.
-# Parts A (full-rag.yaml) and B (full-rag-rerank.yaml) hold the rest; all three
-# share the stack, answering model, embeddings, judges and price table.
-run_name: full-rag-s2b
+# Every RAG technique on all 824 FRAMES questions, grounded (part D of 4):
+# the best pipeline, hybrid + expansion, reranked by a stronger cross-encoder
+# (BAAI/bge-reranker-v2-m3, 568M parameters) than the MiniLM model in
+# full-rag-rerank.yaml. It is too slow on CPU, so it runs in rerank_server on
+# the GPU; start that first (see REPRODUCE.md). Same stack, answering model,
+# embeddings, judges and price table as parts A to C.
+run_name: full-rag-rerank-bge
 dataset:
   split: all
 corpus:
@@ -35,8 +35,7 @@ pricing:
     long_context_output_multiplier: 1.5
     source: "OpenAI API pricing, standard tier, effective 2026-07-30"
 systems:
-  - {kind: advanced_rag, label: adv-hybrid-expand-s2b, concurrency: 10, options: {retrieval: hybrid, transform: expansion, small_to_big: 3}}
-  - {kind: advanced_rag, label: adv-std-hybrid-expand-rerank-s2b, concurrency: 4, options: {index: standard, retrieval: hybrid, transform: expansion, rerank: true, small_to_big: 3}}
+  - {kind: advanced_rag, label: adv-hybrid-expand-rerank-bge, concurrency: 4, options: {retrieval: hybrid, transform: expansion, rerank: true, reranker: BAAI/bge-reranker-v2-m3, reranker_url: "http://localhost:8788"}}
 grading:
   primary:
     model: claude-sonnet-5

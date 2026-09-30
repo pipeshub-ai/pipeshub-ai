@@ -45,7 +45,7 @@ from benchmarks.harness.systems.baselines.answering import (
     dated_system_prompt,
     usage_fields,
 )
-from benchmarks.harness.systems.rag.rerank import DEFAULT_RERANKER, CrossEncoderReranker
+from benchmarks.harness.systems.rag.rerank import DEFAULT_RERANKER, CrossEncoderReranker, RemoteReranker
 from benchmarks.harness.systems.rag.retrieval import Chunk, RetrievalMode, interleave, rrf_merge
 from benchmarks.harness.systems.rag.transforms import decompose, expand
 
@@ -86,6 +86,8 @@ class RagOptions(BaseModel):
     candidate_k: int | None = Field(default=None, ge=1, le=1000)
     rerank: bool = False
     reranker: str = DEFAULT_RERANKER
+    # A `rerank_server` serving `reranker`, for a model too slow on CPU.
+    reranker_url: str | None = None
     transform: Transform = "none"
     n_queries: int = Field(default=3, ge=1, le=10)
     max_subquestions: int = Field(default=5, ge=1, le=10)
@@ -96,6 +98,12 @@ class RagOptions(BaseModel):
     @property
     def depth(self) -> int:
         return self.candidate_k or (self.top_k * 2 if self.rerank else self.top_k)
+
+
+def _reranker(options: RagOptions) -> CrossEncoderReranker | RemoteReranker:
+    if options.reranker_url:
+        return RemoteReranker(options.reranker_url, options.reranker)
+    return CrossEncoderReranker(options.reranker)
 
 
 @dataclass(frozen=True)
@@ -198,7 +206,7 @@ class RagAnswerer:
         corpus: CorpusView,
         price: ModelPrice | None = None,
         current_time: datetime = FRAMES_SNAPSHOT,
-        reranker: CrossEncoderReranker | None = None,
+        reranker: CrossEncoderReranker | RemoteReranker | None = None,
     ) -> None:
         self.system_id = system_id
         self._llm = llm
@@ -209,7 +217,7 @@ class RagAnswerer:
         self._corpus = corpus
         self._price = price
         self._current_time = current_time
-        self._reranker = reranker or (CrossEncoderReranker(options.reranker) if options.rerank else None)
+        self._reranker = reranker or (_reranker(options) if options.rerank else None)
         self._index: tuple[ChunkSearcher, dict[str, RecordRef]] | None = None
         self._lock = threading.Lock()
 

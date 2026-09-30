@@ -105,7 +105,7 @@ registers the answerer and both judges. It is safe to run again.
 
 ## 4. Run the board
 
-Four runs share one stack and one index. A run asks its systems one after
+Five runs share one stack and one index. A run asks its systems one after
 another, so the RAG runs go side by side.
 
 ```bash
@@ -117,6 +117,11 @@ CFG=benchmarks/datasets/frames/configs
 # Once full-rag's log shows "stage prepare: processed", in other terminals:
 .venv/bin/python -m benchmarks.harness run --config $CFG/full-rag-rerank.yaml
 .venv/bin/python -m benchmarks.harness run --config $CFG/full-rag-s2b.yaml
+# The stronger reranker is served from the GPU (mps on Apple silicon, cuda on
+# NVIDIA); start it and wait for "reranking with" in its log first.
+.venv/bin/python -m benchmarks.harness.systems.rag.rerank_server \
+  --port 8788 --model BAAI/bge-reranker-v2-m3 --device mps &
+.venv/bin/python -m benchmarks.harness run --config $CFG/full-rag-rerank-bge.yaml
 .venv/bin/python -m benchmarks.harness run --config $CFG/full-pipeshub.yaml
 ```
 
@@ -173,13 +178,13 @@ system's own evidence), memory-suspect answers, a dev versus held-out split,
 retrieval recall, citation checks, cost, latency and paired McNemar tests.
 `summary.json` holds the same numbers for tooling.
 
-The four runs together form one board. Combine them, with the system list
+The five runs together form one board. Combine them, with the system list
 taken from the first run that has each system:
 
 ```bash
 .venv/bin/python -m benchmarks.harness combine \
   --run <full-rag run id> --run <full-rag-rerank run id> --run <full-rag-s2b run id> \
-  --run <full-pipeshub run id> \
+  --run <full-rag-rerank-bge run id> --run <full-pipeshub run id> \
   --out benchmarks/datasets/frames/results/<date>-full
 ```
 

@@ -18,7 +18,7 @@ import argparse
 import json
 import logging
 import math
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from typing import Any
 
 from benchmarks.harness.systems.rag.rerank import DEFAULT_RERANKER, CrossEncoderReranker
@@ -87,12 +87,16 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0")  # noqa: S104 — reached from containers
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--model", default=DEFAULT_RERANKER)
+    parser.add_argument("--device", default="cpu", help="cpu, mps or cuda")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
-    reranker = CrossEncoderReranker(args.model)
+    reranker = CrossEncoderReranker(args.model, device=args.device)
     reranker.scores("warm up", ["the model loads before the first request"])
-    logger.info("reranking with %s on %s:%d", args.model, args.host, args.port)
-    ThreadingHTTPServer((args.host, args.port), make_handler(reranker)).serve_forever()
+    logger.info("reranking with %s on %s, %s:%d", args.model, args.device, args.host, args.port)
+    # torch's MPS backend hangs off the main thread, so a GPU server answers
+    # one request at a time on it; the model lock serialises them anyway.
+    server = ThreadingHTTPServer if args.device == "cpu" else HTTPServer
+    server((args.host, args.port), make_handler(reranker)).serve_forever()
 
 
 if __name__ == "__main__":
