@@ -235,6 +235,10 @@ class TestDeletingOneOfTwoIdenticalRecords:
         assert await mongo_store.find_document(second_upload) is not None, (
             "The surviving copy's own uploaded file lost its storage document."
         )
+        upload_path = copies.upload_paths[second_upload]
+        assert await blob_store.count_under(upload_path, one_copy_deleted["vendor"]) == copies.blobs[upload_path], (
+            "The surviving copy's own uploaded file lost bytes in blob storage."
+        )
 
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_other_copy_is_still_in_the_graph_and_readable(

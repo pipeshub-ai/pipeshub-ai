@@ -125,9 +125,11 @@ async def graph_footprint_of_records(
 ) -> GraphFootprint:
     ids = sorted(set(record_ids))
     handles = tuple(await graph.record_node_handles(ids))
-    assert len(handles) >= len(ids), (
-        f"Only {len(handles)} graph node(s) found for {len(ids)} record(s); every "
-        "record should be in the graph before it is deleted."
+    # By id, not by count: a found record's type node would make up for a missing one.
+    found = {h.split("/", 1)[1] for h in handles if h.split("/", 1)[0] in ("records", "Record")}
+    missing = [i for i in ids if i not in found]
+    assert not missing, (
+        f"Records {missing} are not in the graph; every record should be there before it is deleted."
     )
     return GraphFootprint(handles, await graph.count_edges_touching(handles))
 
