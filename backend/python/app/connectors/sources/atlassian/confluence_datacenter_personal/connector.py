@@ -610,6 +610,8 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             base_url = None  # Extract from first response
             record_groups = []
             self._space_listing_complete = False
+            # A listed space that couldn't be processed would look like one that left.
+            skipped_a_space = False
 
             while True:
                 datasource = await self._get_fresh_datasource()
@@ -640,7 +642,9 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
 
                 if not spaces_data:
                     # Only a missing next link ends the listing; an empty page that points further is a failed read.
-                    self._space_listing_complete = not (response_data.get("_links") or {}).get("next")
+                    self._space_listing_complete = (
+                        not (response_data.get("_links") or {}).get("next") and not skipped_a_space
+                    )
                     break
 
                 # Apply client-side exclusion filter if NOT_IN
@@ -663,6 +667,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                         space_key = space_data.get("key")
 
                         if not space_id or not space_name or not space_key:
+                            skipped_a_space = skipped_a_space or bool(space_id)
                             continue
 
                         self.logger.debug(f"Processing space: {space_name} ({space_id})")
@@ -670,6 +675,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                         # Create RecordGroup for space
                         record_group = self._transform_to_space_record_group(space_data, base_url)
                         if not record_group:
+                            skipped_a_space = True
                             continue
 
                         # Grant ConnectorGroup permission (Jira DC Personal pattern)
@@ -683,6 +689,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                             )
 
                     except Exception as space_error:
+                        skipped_a_space = True
                         self.logger.error(f"❌ Failed to process space {space_data.get('name')}: {space_error}")
                         continue
 
@@ -697,7 +704,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 if token is None:
                     # Counted before the exclusion filter, which can shorten a full page.
                     if listed_count < batch_size:
-                        self._space_listing_complete = not next_url
+                        self._space_listing_complete = not next_url and not skipped_a_space
                         break
                     start_offset += batch_size
                 else:

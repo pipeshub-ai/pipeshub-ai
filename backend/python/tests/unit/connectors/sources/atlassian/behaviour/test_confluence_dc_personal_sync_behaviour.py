@@ -1211,6 +1211,26 @@ class TestRemovalFromSource:
         assert not {"p1", "p2", "p3"} & set(records_db.records)
         assert checkpoints.values_for("confluence_pages/ENG")["last_sync_time"] == ""
 
+    async def test_a_listed_space_that_fails_to_process_keeps_its_records(
+        self, atlassian_api, records_db, checkpoints, search, monkeypatch
+    ) -> None:
+        connector = await self._synced(atlassian_api, records_db, checkpoints, search)
+        stub_spaces(atlassian_api, space_page([space("ENG", 10), space("HR", 20)]))
+        real_transform = connector._transform_to_space_record_group
+
+        def fails_for_eng(space_data: dict[str, Any], base_url: str | None = None) -> object:
+            if space_data.get("key") == "ENG":
+                raise RuntimeError("could not build the space")
+            return real_transform(space_data, base_url)
+
+        monkeypatch.setattr(connector, "_transform_to_space_record_group", fails_for_eng)
+        checkpoints.sync_points.clear()
+
+        await connector.run_sync()
+
+        assert "10" in records_db.record_groups
+        assert {"p1", "p2", "p3"} <= set(records_db.records), "a space Confluence listed is not treated as gone"
+
     @pytest.mark.parametrize("answer", [
         pytest.param(json_response({"message": "busy"}, status=503), id="failed"),
         pytest.param(space_page([]), id="empty"),
