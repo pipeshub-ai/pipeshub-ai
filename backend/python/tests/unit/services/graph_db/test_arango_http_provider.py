@@ -4318,6 +4318,8 @@ class TestUpdateQueuedDuplicatesStatus:
             # Verify extraction status is EMPTY
             call_args = mock_update.call_args[0][0]
             assert call_args[0]["extractionStatus"] == "EMPTY"
+            # The primary's reconcile flag rides in the same write as the promotion.
+            assert call_args[-1] == {"id": "r1", "duplicateReconcilePending": True}
 
     @pytest.mark.asyncio
     async def test_failed_status_includes_reason(self, connected_provider):
@@ -14230,13 +14232,23 @@ class TestFindNextQueuedDuplicate:
     async def test_found(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(
             side_effect=[
-                [{"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 1024}],
+                [{"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 1024, "orgId": "org-1"}],
                 [{"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}],
             ]
         )
         result = await connected_provider.find_next_queued_duplicate("r1")
         assert result is not None
         assert result["_key"] == "r2"
+
+    @pytest.mark.asyncio
+    async def test_record_without_org_looks_for_nothing(self, connected_provider):
+        """Without an org there is no scope; another org's queued record must
+        never be picked, as in update_queued_duplicates_status."""
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"_key": "r1", "md5Checksum": "abc"}]
+        )
+        assert await connected_provider.find_next_queued_duplicate("r1") is None
+        assert connected_provider.http_client.execute_aql.await_count == 1
 
     @pytest.mark.asyncio
     async def test_no_queued(self, connected_provider):
@@ -14399,7 +14411,9 @@ class TestGetTaxonomyEntitiesForRecord:
         assert first_call.kwargs.get("txn_id") == "txn-1"
 
     @pytest.mark.asyncio
-    async def test_one_group_failure_does_not_abort_the_others(self, connected_provider):
+    async def test_one_group_failure_raises(self, connected_provider):
+        """A partial result would read as the record having fewer entities, so
+        its duplicate never joined the rest of them."""
         connected_provider.http_client.execute_aql = AsyncMock(
             side_effect=[
                 RuntimeError("category query failed"),
@@ -14409,10 +14423,8 @@ class TestGetTaxonomyEntitiesForRecord:
             ]
         )
 
-        result = await connected_provider.get_taxonomy_entities_for_record("rec-1")
-
-        assert len(result) == 1
-        assert result[0]["entityId"] == "dept-1"
+        with pytest.raises(RuntimeError, match="category query failed"):
+            await connected_provider.get_taxonomy_entities_for_record("rec-1")
 
 
 # ---------------------------------------------------------------------------

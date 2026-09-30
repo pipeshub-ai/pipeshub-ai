@@ -849,11 +849,10 @@ class EventService:
                     f"Orphaned configuration may remain."
                 )
 
-            # Remove connector-scoped entities from the entity vector store.
-            # This is a single filtered delete on (orgId, connectorId) — entities
-            # not scoped to a specific connector (e.g. cross-connector taxonomy
-            # entities) are untouched. The graph DB remains the source of truth;
-            # reindexing the affected records restores anything still valid.
+            # Shared taxonomy entities lose this connector and its record
+            # groups; everything only it referenced is deleted. The record
+            # group ids come from the graph deletion, since the groups are gone
+            # from the graph now and some never had an entity point.
             if hasattr(self.app_container, "entity_vector_store"):
                 try:
                     entity_vector_store = await self.app_container.entity_vector_store()
@@ -861,6 +860,12 @@ class EventService:
                         await entity_vector_store.delete_entities_by_connector(
                             org_id=org_id,
                             connector_id=connector_id,
+                            # [] means the graph knew of none; only a missing key
+                            # makes the store scan its own points for them.
+                            record_group_ids=result.get("record_group_ids"),
+                            membership_lookup=lambda refs: self.graph_provider.get_taxonomy_entity_membership(
+                                refs, org_id,
+                            ),
                         )
                         self.logger.info(
                             f"✅ Entity vector store entries removed for connector {connector_id}"

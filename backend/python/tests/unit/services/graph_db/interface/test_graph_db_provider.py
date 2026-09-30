@@ -249,6 +249,7 @@ class TestAbstractMethodInventory:
         # Knowledge-graph taxonomy entities
         "get_taxonomy_entities_for_record",
         "get_entity_candidate_records",
+        "get_taxonomy_entity_membership",
         "find_taxonomy_nodes",
         "create_taxonomy_node_if_absent",
         "add_taxonomy_aliases",

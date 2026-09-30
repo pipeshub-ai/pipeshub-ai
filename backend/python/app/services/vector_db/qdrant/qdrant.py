@@ -722,6 +722,22 @@ class QdrantService(IVectorDBService):
             next_offset=str(next_offset) if next_offset is not None else None,
         )
 
+    async def retrieve_points(
+        self,
+        collection_name: str,
+        ids: List[str],
+    ) -> List[VectorPoint]:
+        self._assert_connected()
+        if not ids:
+            return []
+        raw_points = await self.client.retrieve(  # type: ignore
+            collection_name=collection_name,
+            ids=list(ids),
+            with_payload=True,
+            with_vectors=False,
+        )
+        return [VectorPoint(id=str(p.id), payload=p.payload or {}) for p in raw_points]
+
     async def query_nearest_points(
         self,
         collection_name: str,
@@ -847,6 +863,22 @@ class QdrantService(IVectorDBService):
             collection_name=collection_name,
             payload=payload,
             points=FilterSelector(filter=qdrant_filter),
+            wait=True,
+        )
+
+    async def update_payload_by_ids(
+        self,
+        collection_name: str,
+        point_ids: List[str],
+        payload: dict,
+    ) -> None:
+        self._assert_connected()
+        if not point_ids:
+            return
+        await self.client.set_payload(  # type: ignore
+            collection_name=collection_name,
+            payload=payload,
+            points=list(point_ids),
             wait=True,
         )
 

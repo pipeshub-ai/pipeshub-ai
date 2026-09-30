@@ -99,6 +99,11 @@ CONTAINER_SCOPE_FILTER_KEYS = ("apps", "kb")
 #: `ChatQuery.strictScope` (see `api/routes/chatbot.py`).
 STRICT_SCOPE_FILTER_KEY = "strictScope"
 
+#: Set on a record by ``update_queued_duplicates_status`` in the same write
+#: that promotes its queued duplicates, and cleared by the indexing handler once
+#: their taxonomy has been copied. Declared in the strict records schema.
+DUPLICATE_RECONCILE_PENDING_FIELD = "duplicateReconcilePending"
+
 
 def requested_scope_ids(filters: "Mapping[str, Any] | None") -> tuple[str, ...] | None:
     """The app ids a request is scoped to, or None when it is unscoped.
@@ -359,8 +364,8 @@ class IGraphDBProvider(ABC):
     async def ensure_schema(self) -> bool:
         """
         Ensure database schema is initialized (collections, graphs, and any
-        required seed data). Should be called only from the connector service
-        during startup when schema init is enabled.
+        required seed data). Called at startup by the connector and indexing
+        services, so it must be idempotent.
 
         Returns:
             bool: True if schema was ensured successfully, False otherwise
@@ -2782,6 +2787,10 @@ class IGraphDBProvider(ABC):
             transaction (Optional[str]): Optional transaction ID
             reason (Optional[str]): Optional failure/status reason to set on duplicates
 
+        When at least one duplicate is promoted, the reference record is
+        marked ``duplicateReconcilePending`` in the same batch, so a crash
+        before its taxonomy is copied to them is repaired on its next event.
+
         Returns:
             int: Number of records updated
         """
@@ -3073,6 +3082,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         source_ids: list[str] | None = None,
         transaction: str | None = None,
+        exclude_app_ids: frozenset[str] = frozenset(),
     ) -> dict[str, Any] | None:
         """
         The apps and record groups a user can reach, for permission-scoping
@@ -3084,16 +3094,22 @@ class IGraphDBProvider(ABC):
           - KB apps (``type == "KB"``, ``orgId == org_id``) shared through a
             ``permission`` edge, directly (``type USER``) or via a team
             (``type TEAM``) — KB sharing never creates a ``userAppRelation``.
+          - The connector of each ``authenticatedAs`` link (a source account
+            the user authenticated that connector as).
           - Narrowed to ``source_ids`` when it is non-empty.
+          - Minus ``exclude_app_ids``, even when named in ``source_ids``; their
+            record groups drop out with them.
 
         Record groups (only for apps that are neither KB nor
         ``permissionModel == APP_LEVEL``):
           - Seeded by the Knowledge Hub RecordGroup paths: direct USER
             permission, group/role (GROUP/ROLE edge), org (ORG edge via the
-            user's ORGANIZATION ``belongsTo``), and team (TEAM edge).
+            user's ORGANIZATION ``belongsTo``), and team (TEAM edge). The
+            USER, group/role and team paths also run from each linked source
+            account, for record groups of that link's connector only.
           - Plus child record groups inheriting from a seed via
-            ``inheritPermissions`` (depth 1..5), skipping seeds with
-            ``hideChildren``.
+            ``inheritPermissions`` (depth 1..``CONTAINER_INHERIT_MAX_DEPTH``,
+            through record groups only), skipping seeds with ``hideChildren``.
           - Every group filtered by ``orgId == org_id``, not deleted, and
             ``connectorId`` in the qualifying apps above.
 
@@ -3102,6 +3118,8 @@ class IGraphDBProvider(ABC):
             org_id: Organization to scope apps and record groups to.
             source_ids: Optional app/KB ids to narrow the result to.
             transaction: Optional transaction id.
+            exclude_app_ids: Apps to leave out even where the user has access,
+                e.g. a demo connector the user switched off.
 
         Returns:
             ``None`` when the user does not exist, otherwise::
@@ -5363,6 +5381,38 @@ class IGraphDBProvider(ABC):
             ``{"_key", "recordName", "recordType", "connectorId",
             "virtualRecordId", "webUrl", "sourceLastModifiedTimestamp",
             "updatedAtTimestamp"}``. A ref with no rows maps to ``[]``.
+
+        Raises:
+            Exception: on any query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def get_taxonomy_entity_membership(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        transaction: str | None = None,
+    ) -> dict[tuple[str, str], dict[str, list[str]]]:
+        """Which connectors and record groups still reach each taxonomy entity,
+        from the graph: the distinct ``connectorId`` / ``recordGroupId`` of
+        non-deleted records in ``org_id`` with a ``belongsTo*`` edge to it.
+
+        The entity vector store's stored membership is only a projection of
+        this; connector cleanup uses it before deleting a point that looks
+        exclusive to the deleted connector.
+
+        Args:
+            refs: ``{"id": str, "type": str}`` for ``department``, ``category``,
+                ``subcategory`` (levels 1-3), ``topic`` or ``language``; other
+                types are ignored.
+            org_id: Organization scope. Empty returns ``{}`` without querying.
+            transaction: Optional transaction id.
+
+        Returns:
+            ``{(entity_type, entity_id): {"connectorIds": [...],
+            "recordGroupIds": [...]}}`` for every supported ref; an entity no
+            record reaches maps to empty lists.
 
         Raises:
             Exception: on any query failure.

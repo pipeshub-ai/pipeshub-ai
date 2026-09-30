@@ -76,7 +76,6 @@ class QueryAppContainer(BaseAppContainer):
     # configured (always, in practice), else in-process-only — see
     # `agents/agent_loop/cancellation/factory.py`.
     run_cancellation_registry = providers.Singleton(build_run_cancellation_registry)
-    # EntityVectorStore — used by the resolve_entity_filters agent tool
     # EntityVectorStore — backs the knowledgegraph search_entities tool
     entity_vector_store = providers.Resource(
         container_utils.create_entity_vector_store,

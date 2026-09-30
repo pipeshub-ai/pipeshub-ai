@@ -112,6 +112,7 @@ class ResolutionStats:
     names_deduped: int = 0
     tier0_hits: int = 0
     winners_offered: int = 0
+    stale_winners: int = 0
     model_calls: int = 0
     model_failures: int = 0
     vector_failures: int = 0

@@ -2406,7 +2406,7 @@ class TestDuplicateAndSyncOperations:
     async def test_find_next_queued_duplicate_success(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"record": {"id": "rec-1", "md5Checksum": "m1", "sizeInBytes": 10}}],
+                [{"record": {"id": "rec-1", "md5Checksum": "m1", "sizeInBytes": 10, "orgId": "org-1"}}],
                 [{"record": {"id": "rec-2"}}],
             ]
         )
@@ -2418,7 +2418,24 @@ class TestDuplicateAndSyncOperations:
         second_call = neo4j_provider.client.execute_query.await_args_list[1].kwargs
         assert second_call["parameters"]["queued_status"] == "QUEUED"
         assert second_call["parameters"]["size_in_bytes"] == 10
+        assert second_call["parameters"]["org_id"] == "org-1"
         assert second_call["txn_id"] == "txn-q"
+
+    @pytest.mark.asyncio
+    async def test_get_taxonomy_entities_for_record_without_a_client_raises(self, neo4j_provider: Neo4jProvider):
+        """[] would sync a duplicate's points without its taxonomy and log nothing."""
+        neo4j_provider.client = None
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_taxonomy_entities_for_record("rec-1")
+
+    @pytest.mark.asyncio
+    async def test_find_next_queued_duplicate_needs_an_org(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"record": {"id": "rec-1", "md5Checksum": "m1"}}]
+        )
+
+        assert await neo4j_provider.find_next_queued_duplicate("rec-1") is None
+        assert neo4j_provider.client.execute_query.await_count == 1
 
     @pytest.mark.asyncio
     async def test_find_next_queued_duplicate_scopes_to_reference_records_org(
@@ -2494,6 +2511,9 @@ class TestDuplicateAndSyncOperations:
 
         assert updated_count == 2
         payload = neo4j_provider.batch_update_nodes.await_args.args[0]
+        # The primary's reconcile flag rides in the same write as the promotion.
+        assert payload[-1] == {"id": "rec-1", "duplicateReconcilePending": True}
+        assert len(payload) == 3
         assert payload[0]["indexingStatus"] == "COMPLETED"
         assert payload[0]["extractionStatus"] == "COMPLETED"
         assert payload[0]["virtualRecordId"] == "v-1"
@@ -2694,9 +2714,10 @@ class TestDuplicateAndSyncOperations:
         assert all("nodeLabels" not in row for row in result)
 
     @pytest.mark.asyncio
-    async def test_get_taxonomy_entities_for_record_group_failure_is_isolated(
+    async def test_get_taxonomy_entities_for_record_group_failure_raises(
         self, neo4j_provider: Neo4jProvider
     ):
+        """A partial result would read as the record having fewer entities."""
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
                 RuntimeError("category query failed"),
@@ -2706,10 +2727,8 @@ class TestDuplicateAndSyncOperations:
             ]
         )
 
-        result = await neo4j_provider.get_taxonomy_entities_for_record("rec-1")
-
-        assert len(result) == 1
-        assert result[0]["entityId"] == "dept-1"
+        with pytest.raises(RuntimeError, match="category query failed"):
+            await neo4j_provider.get_taxonomy_entities_for_record("rec-1")
 
     @pytest.mark.asyncio
     async def test_get_user_apps_success_and_error(self, neo4j_provider: Neo4jProvider):

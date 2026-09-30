@@ -483,16 +483,56 @@ class TestDeleteKnowledgeBase:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
-            "success": True, "virtual_record_ids": [],
+            "success": True, "virtual_record_ids": [], "record_group_ids": ["rg-1", "rg-2"],
         })
         service.entity_vector_store = AsyncMock()
 
         result = await service.delete_knowledge_base("kb1", "user1", "org1")
 
         assert result["success"] is True
-        service.entity_vector_store.delete_entities_by_connector.assert_awaited_once_with(
-            org_id="org1", connector_id="kb1",
+        # The graph's record groups are gone after deletion; the entity store
+        # needs them to strip shared entities.
+        kwargs = service.entity_vector_store.delete_entities_by_connector.await_args.kwargs
+        assert kwargs["org_id"] == "org1" and kwargs["connector_id"] == "kb1"
+        assert kwargs["record_group_ids"] == ["rg-1", "rg-2"]
+        # Exclusive-looking entities are checked against the graph, in this org.
+        service.graph_provider.get_taxonomy_entity_membership = AsyncMock(return_value={})
+        await kwargs["membership_lookup"]([{"id": "t1", "type": "topic"}])
+        service.graph_provider.get_taxonomy_entity_membership.assert_awaited_once_with(
+            [{"id": "t1", "type": "topic"}], "org1",
         )
+
+    @pytest.mark.asyncio
+    async def test_an_empty_graph_list_is_passed_as_is(self, service):
+        """[] means the graph knew of no groups; None would make the store scan
+        every record point for them, which Redis cannot do past 10k."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [], "record_group_ids": [],
+        })
+        service.entity_vector_store = AsyncMock()
+
+        await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert service.entity_vector_store.delete_entities_by_connector.await_args.kwargs[
+            "record_group_ids"
+        ] == []
+
+    @pytest.mark.asyncio
+    async def test_no_record_groups_from_the_graph_lets_the_store_recover_them(self, service):
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [],
+        })
+        service.entity_vector_store = AsyncMock()
+
+        await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert service.entity_vector_store.delete_entities_by_connector.await_args.kwargs[
+            "record_group_ids"
+        ] is None
 
     @pytest.mark.asyncio
     async def test_missing_entity_vector_store_still_succeeds(self, service):

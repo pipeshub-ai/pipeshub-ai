@@ -10,7 +10,7 @@ import pytest
 
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
-from app.services.vector_db.models import ScrollResult, SearchResult, VectorPoint
+from app.services.vector_db.models import SearchResult, VectorPoint
 
 
 def _entity(
@@ -33,6 +33,8 @@ def _entity(
 def _make_store(vector_db_service: MagicMock | None = None) -> EntityVectorStore:
     vector_db_service = vector_db_service or MagicMock()
     vector_db_service.get_capabilities.return_value = MagicMock(supports_sparse_vectors=False)
+    if not isinstance(vector_db_service.retrieve_points, AsyncMock):
+        vector_db_service.retrieve_points = AsyncMock(return_value=[])
     store = EntityVectorStore(
         logger=MagicMock(),
         config_service=MagicMock(),
@@ -72,9 +74,7 @@ class TestUpsertPayloadShape:
         vector_db_service = MagicMock()
         vector_db_service.upsert_points = AsyncMock(return_value=None)
         vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(points=[], next_offset=None)
-        )
+        vector_db_service.retrieve_points = AsyncMock(return_value=[])
         store = _make_store(vector_db_service)
         entity = _entity(entity_id="e1", org_id="org-1", name="Legal", aliases=["Law"])
 
@@ -104,9 +104,7 @@ class TestUpsertPayloadShape:
         vector_db_service = MagicMock()
         vector_db_service.upsert_points = AsyncMock(return_value=None)
         vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(points=[], next_offset=None)
-        )
+        vector_db_service.retrieve_points = AsyncMock(return_value=[])
         store = _make_store(vector_db_service)
         entity = _entity(
             entity_id="e1",
@@ -155,9 +153,7 @@ class TestMembershipMerge:
                 "recordGroupIds": ["group_A"],
             },
         )
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(points=[existing_point], next_offset=None)
-        )
+        vector_db_service.retrieve_points = AsyncMock(return_value=[existing_point])
         store = _make_store(vector_db_service)
         entity = _entity(
             entity_id="eng",
@@ -186,9 +182,7 @@ class TestMembershipMerge:
                 "recordGroupIds": ["group_A"],
             },
         )
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(points=[existing_point], next_offset=None)
-        )
+        vector_db_service.retrieve_points = AsyncMock(return_value=[existing_point])
         store = _make_store(vector_db_service)
         entity = _entity(
             entity_id="eng",
@@ -210,9 +204,7 @@ class TestMembershipMerge:
         vector_db_service = MagicMock()
         vector_db_service.upsert_points = AsyncMock(return_value=None)
         vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(points=[], next_offset=None)
-        )
+        vector_db_service.retrieve_points = AsyncMock(return_value=[])
         store = _make_store(vector_db_service)
         entities = [
             _entity(
@@ -243,9 +235,7 @@ class TestMembershipMerge:
         ids. Skipping leaves the point intact for the next write."""
         vector_db_service = MagicMock()
         vector_db_service.upsert_points = AsyncMock(return_value=None)
-        vector_db_service.filter_collection = AsyncMock(
-            side_effect=RuntimeError("vector db down")
-        )
+        vector_db_service.retrieve_points = AsyncMock(side_effect=RuntimeError("vector db down"))
         store = _make_store(vector_db_service)
         entity = _entity(
             entity_id="eng",
@@ -259,30 +249,25 @@ class TestMembershipMerge:
         vector_db_service.upsert_points.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_merge_read_failure_skips_only_the_failing_entity(self) -> None:
-        """One bad read must not cost the other 63 entities in the batch."""
+    async def test_merge_read_failure_skips_only_its_batch(self) -> None:
+        """Membership is read once per batch; a failed read costs that batch,
+        never an overwrite, and the next batch still writes."""
         vector_db_service = MagicMock()
         vector_db_service.upsert_points = AsyncMock(return_value=None)
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(points=[], next_offset=None)
+        vector_db_service.retrieve_points = AsyncMock(
+            side_effect=[RuntimeError("vector db down"), []]
         )
-
-        async def _filter(must):
-            if must["metadata.entityId"] == "bad":
-                raise RuntimeError("vector db down")
-            return {"must": []}
-
-        vector_db_service.filter_collection = AsyncMock(side_effect=_filter)
         store = _make_store(vector_db_service)
         entities = [
             _entity(entity_id="bad", entity_type=EntityType.DEPARTMENT, name="Bad"),
             _entity(entity_id="good", entity_type=EntityType.DEPARTMENT, name="Good"),
         ]
 
-        await store.upsert_entities_batch(entities)
+        await store.upsert_entities_batch(entities, batch_size=1)
 
         (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
         assert point.payload["metadata"]["entityId"] == "good"
+        vector_db_service.upsert_points.assert_awaited_once()
 
 
 class TestConcurrentMergeIsSerialised:
@@ -304,19 +289,18 @@ class TestConcurrentMergeIsSerialised:
         vector_db_service = MagicMock()
         vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
 
-        async def _scroll(collection_name, scroll_filter, limit, offset=None) -> ScrollResult:
+        async def _retrieve(collection_name, ids) -> list[VectorPoint]:
             trace.append("read")
             if not state["recordGroupIds"]:
-                return ScrollResult(points=[], next_offset=None)
-            point = VectorPoint(
-                id="p1",
+                return []
+            return [VectorPoint(
+                id=ids[0],
                 payload={
                     "metadata": {},
                     "recordGroupIds": list(state["recordGroupIds"]),
                     "connectorIds": [],
                 },
-            )
-            return ScrollResult(points=[point], next_offset=None)
+            )]
 
         async def _upsert_points(collection_name, points) -> None:
             await asyncio.sleep(0.01)  # yield between read and write
@@ -324,7 +308,7 @@ class TestConcurrentMergeIsSerialised:
             (point,) = points
             state["recordGroupIds"] = point.payload["recordGroupIds"]
 
-        vector_db_service.scroll = AsyncMock(side_effect=_scroll)
+        vector_db_service.retrieve_points = AsyncMock(side_effect=_retrieve)
         vector_db_service.upsert_points = AsyncMock(side_effect=_upsert_points)
         store = _make_store(vector_db_service)
 
@@ -359,9 +343,7 @@ class TestConcurrentMergeIsSerialised:
 
         vector_db_service = MagicMock()
         vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(points=[], next_offset=None)
-        )
+        vector_db_service.retrieve_points = AsyncMock(return_value=[])
 
         async def _upsert_points(collection_name, points) -> None:
             active["n"] += 1

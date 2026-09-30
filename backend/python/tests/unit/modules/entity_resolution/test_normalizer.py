@@ -8,6 +8,7 @@ from app.modules.entity_resolution.normalizer import (
     display_form,
     is_acceptable_name,
     normalize_name,
+    spelling_key,
 )
 
 
@@ -43,6 +44,11 @@ class TestNormalizeName:
         assert normalize_name(raw) == ""
 
 
+    def test_zero_width_characters_are_noise(self) -> None:
+        assert normalize_name("Foo​") == normalize_name("Foo") == "foo"
+        assert normalize_name("﻿Road‍map") == "roadmap"
+
+
 class TestDisplayForm:
     def test_keeps_casing_and_strips_noise(self) -> None:
         assert display_form('  "Bug Bash Testing." ') == "Bug Bash Testing"
@@ -50,6 +56,38 @@ class TestDisplayForm:
     def test_display_and_normalized_agree(self) -> None:
         raw = "  Release Checklist!  "
         assert normalize_name(display_form(raw)) == normalize_name(raw)
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            'Project "Phoenix".',
+            "'Foo'.",
+            "\"'Nested'\"!",
+            ' " spaced " . ',
+            "“Curly”?",
+            "«Guillemets».",
+            '"Foo',
+            'ab"',
+            "Q&A.",
+        ],
+    )
+    def test_a_name_keys_the_same_as_its_display_form(self, raw) -> None:
+        """The resolver keys on the raw name and the graph transformer looks up
+        the display form; if they differ the name misses its node."""
+        assert normalize_name(display_form(raw)) == normalize_name(raw)
+        assert display_form(display_form(raw)) == display_form(raw)
+
+    def test_a_quoted_word_inside_a_name_keeps_both_quotes(self) -> None:
+        assert display_form('Project "Phoenix".') == 'Project "Phoenix"'
+
+
+class TestSpellingKey:
+    def test_presentation_only_differences_share_a_key(self) -> None:
+        assert spelling_key("release-checklist V2") == spelling_key("Release Checklist v2")
+
+    def test_added_or_dropped_words_do_not(self) -> None:
+        assert spelling_key("release-checklist v2 (draft)") != spelling_key("Release Checklist v2")
+        assert spelling_key("The release checklist") != spelling_key("Release checklist")
 
 
 class TestAcceptableName:

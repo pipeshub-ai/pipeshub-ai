@@ -191,6 +191,13 @@ async def initialize_container(container: IndexingAppContainer) -> bool:
         container._graph_provider = graph_provider
         logger.info("✅ Graph Database Provider initialized and connected")
 
+        # Idempotent, and not only the connector service's job: this service
+        # writes taxonomy nodes and alias nodes whose uniqueness constraints
+        # and indexes must exist before the first write, whichever service
+        # starts first after an upgrade.
+        await graph_provider.ensure_schema()
+        logger.info("✅ Schema ensured")
+
         await Health.system_health_check(container)
         return True
 

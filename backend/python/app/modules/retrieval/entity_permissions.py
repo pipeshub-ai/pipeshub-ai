@@ -122,20 +122,56 @@ async def get_entity_access_context(
     org_id: str,
     user_id: str,
     source_ids: Iterable[str] | None = None,
+    strict: bool = False,
+    exclude_app_ids: Iterable[str] | None = None,
 ) -> EntityAccessContext:
     """Resolve (or reuse for this request) the apps and record groups the
-    user can reach, narrowed to the agent's configured sources."""
+    user can reach, narrowed to the agent's configured sources.
+
+    ``strict`` with no sources reaches nothing, as in retrieval: without it an
+    empty scope means every app the user can access, which would widen a
+    project or agent whose sources were all removed.
+    """
     if not org_id or not user_id or graph_provider is None:
         raise EntityAccessError("Entity access needs an org, a user and a graph provider")
 
-    scope_key = tuple(sorted({s for s in (source_ids or ()) if s}))
+    scope = tuple(sorted({s for s in (source_ids or ()) if s}))
+    excluded = frozenset(a for a in (exclude_app_ids or ()) if a)
+    cache_key = (scope, bool(strict) and not scope, tuple(sorted(excluded)))
     cache = state.get(_ACCESS_CONTEXT_CACHE_KEY) if state is not None else None
-    if isinstance(cache, dict) and scope_key in cache:
-        return cache[scope_key]
+    if isinstance(cache, dict) and cache_key in cache:
+        return cache[cache_key]
 
+    if strict and not scope:
+        context = EntityAccessContext(
+            org_id=org_id,
+            user_key="",
+            app_level_app_ids=frozenset(),
+            record_level_app_ids=frozenset(),
+            record_group_ids=frozenset(),
+            app_names={},
+        )
+    else:
+        context = await _load_access_context(graph_provider, org_id, user_id, scope, excluded)
+
+    if state is not None:
+        if not isinstance(cache, dict):
+            cache = {}
+            state[_ACCESS_CONTEXT_CACHE_KEY] = cache
+        cache[cache_key] = context
+    return context
+
+
+async def _load_access_context(
+    graph_provider: "IGraphDBProvider",
+    org_id: str,
+    user_id: str,
+    scope: tuple[str, ...],
+    excluded: frozenset[str],
+) -> EntityAccessContext:
     try:
         raw = await graph_provider.get_entity_access_context(
-            user_id, org_id, list(scope_key) or None,
+            user_id, org_id, list(scope) or None, exclude_app_ids=excluded,
         )
     except Exception as exc:
         raise EntityAccessError("Could not resolve the user's entity access") from exc
@@ -161,7 +197,7 @@ async def get_entity_access_context(
         else:
             record_level.add(app_id)
 
-    context = EntityAccessContext(
+    return EntityAccessContext(
         org_id=org_id,
         user_key=user_key,
         app_level_app_ids=frozenset(app_level),
@@ -169,12 +205,6 @@ async def get_entity_access_context(
         record_group_ids=frozenset(r for r in raw.get("record_group_ids") or [] if r),
         app_names=app_names,
     )
-    if state is not None:
-        if not isinstance(cache, dict):
-            cache = {}
-            state[_ACCESS_CONTEXT_CACHE_KEY] = cache
-        cache[scope_key] = context
-    return context
 
 
 async def _filter_permitted_rows(

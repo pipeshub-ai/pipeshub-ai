@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app.agents.actions.knowledge_graph.ops.entity_filters import ENTITY_INDEX_CACHE_KEY
 from app.agents.agent_loop.hooks.memory import tool_names_used_in_history
 
 if TYPE_CHECKING:
@@ -66,6 +67,9 @@ def progressive_entity_tools(context: "AgentContext") -> "Middleware[ToolResultC
         from app.agents.agent_loop.hooks._tool_naming import resolve_tool_name
 
         if resolve_tool_name(ctx) not in _ENTITY_SEARCH_TRIGGER_NAMES:
+            return
+        # A failed or empty search leaves no entityId to pass it.
+        if not context.tool_state.get(ENTITY_INDEX_CACHE_KEY):
             return
 
         run_scope = ctx.scope.turn.run if ctx.scope is not None else None

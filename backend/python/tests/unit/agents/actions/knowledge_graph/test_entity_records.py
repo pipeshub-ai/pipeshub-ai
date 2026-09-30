@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.agents.actions.knowledge_graph.ops import entity_records
+from app.agents.actions.knowledge_graph.ops import entity_filters, entity_records
 from app.agents.actions.knowledge_graph.ops.entity_filters import ENTITY_INDEX_CACHE_KEY
 from app.agents.actions.knowledge_graph.ops.entity_records import (
     LOOKUP_FAILED_MSG,
@@ -14,6 +14,7 @@ from app.agents.actions.knowledge_graph.ops.entity_records import (
     resolve_entity_virtual_ids,
 )
 from app.modules.retrieval.entity_permissions import (
+    SEARCH_SCOPE_MAX_ENTITIES,
     EntityAccessContext,
     EntityAccessError,
     EntityRecordPage,
@@ -43,7 +44,7 @@ def _row(key: str, **extra: object) -> dict:
 def patched(monkeypatch: pytest.MonkeyPatch) -> tuple[AsyncMock, AsyncMock]:
     access = AsyncMock(return_value=CONTEXT)
     listing = AsyncMock(return_value=EntityRecordPage(records=[], next_cursor=None))
-    monkeypatch.setattr(entity_records, "get_entity_access_context", access)
+    monkeypatch.setattr(entity_filters, "get_entity_access_context", access)
     monkeypatch.setattr(entity_records, "list_accessible_entity_records", listing)
     return access, listing
 
@@ -146,11 +147,12 @@ class TestResolveEntityVirtualIds:
             EntityRecordPage(records=[_row("r3", virtualRecordId="v1")], next_cursor=None),
         ]
 
-        ids = await resolve_entity_virtual_ids(
+        scope = await resolve_entity_virtual_ids(
             _state(), [("rg-1", "record_group"), ("s1", "subcategory"), ("rg-1", "record_group")],
         )
 
-        assert ids == ["v1", "v2"]
+        assert scope.virtual_ids == ["v1", "v2"]
+        assert scope.truncated is False
         assert patched[1].await_count == 2
         assert patched[1].call_args_list[1].kwargs["entity_type"] == "subcategory"
 
@@ -159,3 +161,70 @@ class TestResolveEntityVirtualIds:
         patched[1].side_effect = EntityAccessError("db down")
         with pytest.raises(EntityAccessError):
             await resolve_entity_virtual_ids(_state(), [("rg-1", "record_group")])
+
+    @pytest.mark.asyncio
+    async def test_scan_budget_running_out_is_reported_as_truncated(self, patched) -> None:
+        """An empty scope that stopped at the scan budget is not "no records"."""
+        patched[1].return_value = EntityRecordPage(records=[], next_cursor="2000")
+
+        scope = await resolve_entity_virtual_ids(_state(), [("rg-1", "record_group")])
+
+        assert scope.virtual_ids == []
+        assert scope.truncated is True
+
+    @pytest.mark.asyncio
+    async def test_entities_past_the_cap_are_reported_as_truncated(self, patched) -> None:
+        entities = [(f"rg-{i}", "record_group") for i in range(SEARCH_SCOPE_MAX_ENTITIES + 1)]
+
+        scope = await resolve_entity_virtual_ids(_state(), entities)
+
+        assert scope.truncated is True
+        assert patched[1].await_count == SEARCH_SCOPE_MAX_ENTITIES
+
+
+class TestStrictAndExcludedScope:
+    @pytest.mark.asyncio
+    async def test_strict_scope_and_exclusions_reach_the_access_context(self, patched) -> None:
+        state = _state(
+            filters={"strictScope": True, "apps": ["conf-1"]},
+            excluded_app_ids=frozenset({"demo-1"}),
+        )
+
+        await execute_find_records_by_entity(state, "t1", entity_type="topic")
+
+        _, kwargs = patched[0].call_args
+        assert kwargs["strict"] is True
+        assert kwargs["source_ids"] == ["conf-1"]
+        assert kwargs["exclude_app_ids"] == frozenset({"demo-1"})
+
+    @pytest.mark.asyncio
+    async def test_strict_empty_scope_lists_nothing_without_a_graph_query(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        graph = MagicMock()
+        graph.get_entity_access_context = AsyncMock()
+        graph.get_entity_candidate_records = AsyncMock()
+        state = _state(graph_provider=graph, filters={"strictScope": True})
+
+        ok, text = await execute_find_records_by_entity(state, "t1", entity_type="topic")
+
+        assert (ok, text) == (True, NO_ACCESSIBLE_RECORDS_MSG)
+        graph.get_entity_access_context.assert_not_called()
+        graph.get_entity_candidate_records.assert_not_called()
+
+
+class TestEmptyWindow:
+    @pytest.mark.asyncio
+    async def test_empty_window_with_more_candidates_gives_the_continuation_cursor(
+        self, patched
+    ) -> None:
+        """The scan budget ran out before anything visible turned up; saying
+        "no accessible records" would hide records further down."""
+        patched[1].return_value = EntityRecordPage(records=[], next_cursor="1000")
+
+        ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+
+        assert ok is True
+        assert text not in (NO_ACCESSIBLE_RECORDS_MSG, NO_FURTHER_RECORDS_MSG)
+        assert 'cursor="1000"' in text
+        assert 'entity_id="t1"' in text

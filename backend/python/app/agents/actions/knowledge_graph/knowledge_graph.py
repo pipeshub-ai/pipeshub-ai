@@ -751,7 +751,7 @@ class KnowledgeGraph:
                 name="entity_ids",
                 type=ParameterType.ARRAY,
                 description=(
-                    "Optional entityIds returned by search_entities in this conversation — "
+                    "Optional entityIds returned by search_entities in this turn — "
                     "restricts the search to content connected to those entities. Accepts "
                     "department/category/subcategory/topic/language entities and record_group "
                     "entities (a Drive folder, Jira project, Slack channel, ...; restricts to "
@@ -906,7 +906,7 @@ class KnowledgeGraph:
                 description=(
                     "The entity's type: 'department', 'category', 'subcategory', 'topic', "
                     "'language', 'record_group' or 'record'. Optional when the entityId came "
-                    "from search_entities in this conversation."
+                    "from search_entities in this turn."
                 ),
                 required=False,
             ),

@@ -26,6 +26,7 @@ from app.agents.actions.knowledge_graph.ops.entity_records import (
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
 from app.modules.retrieval.entity_permissions import EntityAccessError
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
@@ -48,6 +49,21 @@ NARROWED_SEARCH_EMPTY_MESSAGE = (
     "exist, search again with source_ids omitted: a source's name rarely says "
     "everything it holds. Skip that only if the user asked to search just "
     "these sources."
+)
+
+UNKNOWN_ENTITY_IDS_MESSAGE = (
+    "None of the entity_ids {ids} came from knowledgegraph__search_entities in this "
+    "turn, so nothing was searched. Entity ids only work in the turn that returned "
+    "them, and record ids cannot scope a search. Call knowledgegraph__search_entities "
+    "again, or search without entity_ids."
+)
+
+# A record-group/subcategory scope that stopped at a cap or scan budget.
+ENTITY_SCOPE_INCOMPLETE_MESSAGE = (
+    "No accessible records turned up among the records checked for the requested "
+    "entities, but the check stopped before covering all of them, so this is not "
+    "conclusive. Search without entity_ids, or page through the entity with "
+    "knowledgegraph__find_records_by_entity."
 )
 
 _RECORD_NAME_RE = re.compile(r"^Name\s*:\s*(.+)$", re.MULTILINE)
@@ -98,6 +114,48 @@ def resolve_record_scoped_entities(
     return [(entity_id, known[entity_id]) for entity_id in entity_ids if entity_id in known]
 
 
+def unresolved_entity_ids(state: "ChatState", entity_ids: list[str] | None) -> list[str]:
+    """``entity_ids`` that can scope nothing: never returned by
+    ``search_entities`` in this request, or record ids, which have no scope."""
+    name_filtered: dict[str, Any] = state.get(ENTITY_ID_FILTER_KEY_CACHE_KEY) or {}
+    record_scoped: dict[str, str] = state.get(RECORD_SCOPED_ENTITY_CACHE_KEY) or {}
+    return [
+        entity_id
+        for entity_id in dict.fromkeys(entity_ids or [])
+        if entity_id and entity_id not in name_filtered and entity_id not in record_scoped
+    ]
+
+
+def _entity_notes(
+    *,
+    unknown_entity_ids: list[str],
+    filter_dropped: bool,
+    record_scope_applied: bool,
+    scope_truncated: bool,
+) -> str:
+    notes: list[str] = []
+    if unknown_entity_ids:
+        notes.append(
+            f"Note: entity_ids {unknown_entity_ids} were not returned by "
+            "search_entities in this turn and were ignored; the other entity_ids "
+            "still scope these results."
+        )
+    if filter_dropped:
+        scope_left = (
+            " The record group/subcategory scope still applies." if record_scope_applied else ""
+        )
+        notes.append(
+            "Note: nothing matched inside the requested department/category/topic/"
+            f"language, so these results are NOT limited to it.{scope_left}"
+        )
+    if scope_truncated:
+        notes.append(
+            "Note: the requested record group/subcategory has more records than one "
+            "search covers; only its newest accessible records were searched."
+        )
+    return "".join(f"{note}\n\n" for note in notes)
+
+
 def normalize_source_ids(value: Any) -> list[str] | None:
     """Normalize source_ids parameter (a string or list of strings)."""
     if value is None:
@@ -136,10 +194,11 @@ async def execute_search(
     ``entity_ids`` narrows results to records connected to specific
     departments/categories/topics/languages, or to the accessible records of a
     record group or subcategory. IDs must come from a ``search_entities`` call
-    in this request; unknown IDs are dropped. A record group or subcategory
-    that resolves to zero accessible records reports "no results", and a
-    failed permission lookup reports an error — neither silently widens to an
-    unscoped search.
+    in this request: if none is recognised the call fails without searching,
+    and unrecognised ones next to recognised ones are named in a note. A record
+    group or subcategory that resolves to zero accessible records reports "no
+    results", and a failed permission lookup reports an error — neither
+    silently widens to an unscoped search.
 
     Returns a plain-text string suitable for LLM consumption (same format as
     the legacy retrieval tool).
@@ -214,13 +273,24 @@ async def execute_search(
         resolved_apps = list(narrowed_scope.app_ids) if narrowed_scope else []
         resolved_kbs = list(narrowed_scope.kb_ids) if narrowed_scope else []
 
+        requested_entity_ids = [e for e in dict.fromkeys(entity_ids or []) if e]
+        unknown_entity_ids = unresolved_entity_ids(state, requested_entity_ids)
+        if requested_entity_ids and len(unknown_entity_ids) == len(requested_entity_ids):
+            # Searching anyway would return unscoped results the model would
+            # present as the entity's.
+            return json.dumps({
+                "status": "error",
+                "message": UNKNOWN_ENTITY_IDS_MESSAGE.format(ids=unknown_entity_ids),
+            })
+
         entity_filter_groups = resolve_entity_filter_groups(state, entity_ids)
 
         record_scoped_entities = resolve_record_scoped_entities(state, entity_ids)
         virtual_record_ids_from_tool: list[str] | None = None
+        entity_scope_truncated = False
         if record_scoped_entities:
             try:
-                virtual_record_ids_from_tool = await resolve_entity_virtual_ids(
+                entity_scope = await resolve_entity_virtual_ids(
                     state, record_scoped_entities,
                 )
             except EntityAccessError:
@@ -231,13 +301,18 @@ async def execute_search(
                     "status": "error",
                     "message": "Could not scope the search to the requested entities — try again.",
                 })
+            virtual_record_ids_from_tool = entity_scope.virtual_ids
+            entity_scope_truncated = entity_scope.truncated
             if not virtual_record_ids_from_tool:
                 # Every requested entity resolved to zero accessible
                 # records — report that plainly rather than silently
                 # falling through to an unscoped, org-wide search.
                 return json.dumps({
                     "status": "success",
-                    "message": "No accessible records found for the requested entities.",
+                    "message": (
+                        ENTITY_SCOPE_INCOMPLETE_MESSAGE if entity_scope_truncated
+                        else "No accessible records found for the requested entities."
+                    ),
                     "results": [],
                     "result_count": 0,
                 })
@@ -247,17 +322,24 @@ async def execute_search(
         per_source_fan_out = fan_out_sources
         failed_sources = 0
 
+        # Retrieval treats this key as a control flag, not a filter: with it, an
+        # empty scope searches nothing instead of everything the user can reach.
+        strict_scope = bool(agent_filters.get(STRICT_SCOPE_FILTER_KEY))
+
         async def _search_one(
             fg: dict[str, list[str]],
             entity_fg: dict[str, list[str]],
             vrids: list[str] | None,
         ) -> dict[str, Any] | None:
+            filter_groups_for_call: dict[str, Any] = merge_filter_groups(fg, entity_fg)
+            if strict_scope:
+                filter_groups_for_call[STRICT_SCOPE_FILTER_KEY] = True
             return await retrieval_service.search_with_filters(
                 queries=[query],
                 org_id=org_id,
                 user_id=user_id,
                 limit=adjusted_limit,
-                filter_groups=merge_filter_groups(fg, entity_fg),
+                filter_groups=filter_groups_for_call,
                 time_range=time_range,
                 virtual_record_ids_from_tool=vrids,
             )
@@ -395,6 +477,14 @@ async def execute_search(
             # model is told to look everywhere before concluding, as with dates.
             if narrowed_scope is not None and filter_groups != base_scope.to_filter_groups():
                 message = NARROWED_SEARCH_EMPTY_MESSAGE
+            notes = _entity_notes(
+                unknown_entity_ids=unknown_entity_ids,
+                filter_dropped=False,
+                record_scope_applied=bool(virtual_record_ids_from_tool),
+                scope_truncated=entity_scope_truncated,
+            )
+            if notes:
+                message = f"{message}\n\n{notes.strip()}"
             return json.dumps({
                 "status": "success",
                 "message": message,
@@ -537,16 +627,17 @@ async def execute_search(
                     content_string += item["text"]
             formatted_records.append(content_string)
 
-        entity_filter_note = (
-            "Note: nothing matched inside the requested entity, so these results "
-            "are NOT limited to it.\n\n"
-            if entity_filter_dropped else ""
+        entity_notes = _entity_notes(
+            unknown_entity_ids=unknown_entity_ids,
+            filter_dropped=entity_filter_dropped,
+            record_scope_applied=bool(virtual_record_ids_from_tool),
+            scope_truncated=entity_scope_truncated,
         )
         summary = (
             f"Top {len(final_results)} block{'s' if len(final_results) != 1 else ''} "
             f"from {len(virtual_record_id_to_result)} record{'s' if len(virtual_record_id_to_result) != 1 else ''} "
             "(ranked sample — other records may match).\n\n"
-            f"{entity_filter_note}"
+            f"{entity_notes}"
             f"{coverage_note}"
         )
         from app.agents.actions.retrieval.retrieval import compose_result_tail

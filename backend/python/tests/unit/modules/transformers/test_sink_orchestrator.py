@@ -286,7 +286,7 @@ class TestSyncRecordGroupEntity:
         await orch._sync_record_group_entity(ctx)
 
         orch.graph_provider.get_record_group_by_id.assert_not_awaited()
-        orch.entity_vector_store.upsert_entity.assert_not_awaited()
+        orch.entity_vector_store.upsert_entities_batch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_group_not_found_skips_sync(self):
@@ -295,7 +295,7 @@ class TestSyncRecordGroupEntity:
 
         await orch._sync_record_group_entity(ctx)
 
-        orch.entity_vector_store.upsert_entity.assert_not_awaited()
+        orch.entity_vector_store.upsert_entities_batch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_group_found_syncs_record_group_entity(self):
@@ -307,8 +307,11 @@ class TestSyncRecordGroupEntity:
         await orch._sync_record_group_entity(ctx)
 
         orch.graph_provider.get_record_group_by_id.assert_awaited_once_with("rg-42")
-        orch.entity_vector_store.upsert_entity.assert_awaited_once()
-        synced_entity = orch.entity_vector_store.upsert_entity.call_args[0][0]
+        orch.entity_vector_store.upsert_entities_batch.assert_awaited_once()
+        (synced_entity,) = orch.entity_vector_store.upsert_entities_batch.call_args[0][0]
+        assert orch.entity_vector_store.upsert_entities_batch.call_args.kwargs == {
+            "merge_membership": False,
+        }
         assert synced_entity.entity_id == "rg-42"
         assert synced_entity.entity_type == EntityType.RECORD_GROUP
         assert synced_entity.name == "Engineering Space"
@@ -319,13 +322,29 @@ class TestSyncRecordGroupEntity:
         assert synced_entity.record_group_ids == ["rg-42"]
 
     @pytest.mark.asyncio
+    async def test_record_name_entity_replaces_membership_instead_of_merging(self):
+        """A record has one connector and one group; merging kept the old group
+        after the record moved, so users of that group kept matching it."""
+        orch = self._make_orchestrator_with_evs()
+        ctx = self._make_ctx_with_group(record_group_id="rg-new")
+        ctx.record.record_name = "Q3 plan.pdf"
+
+        await orch._sync_record_name_entity(ctx)
+
+        call = orch.entity_vector_store.upsert_entities_batch.call_args
+        (entity,) = call[0][0]
+        assert entity.entity_type == EntityType.RECORD
+        assert entity.record_group_ids == ["rg-new"]
+        assert call.kwargs == {"merge_membership": False}
+
+    @pytest.mark.asyncio
     async def test_group_with_blank_name_is_skipped(self):
         orch = self._make_orchestrator_with_evs(group_doc={"groupName": "   "})
         ctx = self._make_ctx_with_group()
 
         await orch._sync_record_group_entity(ctx)
 
-        orch.entity_vector_store.upsert_entity.assert_not_awaited()
+        orch.entity_vector_store.upsert_entities_batch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_lookup_failure_is_non_fatal(self):
@@ -338,7 +357,7 @@ class TestSyncRecordGroupEntity:
         # Must not raise — this is best-effort.
         await orch._sync_record_group_entity(ctx)
 
-        orch.entity_vector_store.upsert_entity.assert_not_awaited()
+        orch.entity_vector_store.upsert_entities_batch.assert_not_awaited()
 
 
 # =========================================================================

@@ -332,6 +332,34 @@ class TestTier2:
         assert resolver._llm is None
         assert resolution.entries[(TOPICS, "bug bash testing session")].is_new
 
+    async def test_a_hung_model_call_times_out_and_falls_back(
+        self, make_resolver, fake_store, metadata_factory, ctx_factory, monkeypatch
+    ) -> None:
+        """A hung call would hold the record's indexing slot indefinitely."""
+        import asyncio
+
+        from app.models.entities import EntityRecord, EntityType
+        from app.modules.entity_resolution import resolver as resolver_module
+
+        async def _hang(*_args, **_kwargs):
+            await asyncio.sleep(10)
+
+        monkeypatch.setattr(resolver_module, "MERGE_CALL_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(resolver_module, "invoke_with_structured_output_and_reflection", _hang)
+        monkeypatch.setattr(
+            resolver_module, "get_llm_for_role", AsyncMock(return_value=(MagicMock(), {})),
+        )
+        await fake_store.upsert_entities_batch([
+            EntityRecord(entity_id="k-bug", entity_type=EntityType.TOPIC, name="Bug bash testing", org_id="acme"),
+        ])
+
+        resolution = await make_resolver().resolve(
+            ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash testing session"]))
+        )
+
+        assert resolution.stats.model_failures == 1
+        assert resolution.entries[(TOPICS, "bug bash testing session")].is_new
+
     async def test_unknown_and_duplicate_decisions_are_ignored(
         self, make_resolver, fake_store, metadata_factory, ctx_factory
     ) -> None:
@@ -370,3 +398,90 @@ class TestTier2:
         )
         assert model.calls == []
         assert resolution.stats.model_calls == 0
+
+
+class TestWinnerCheckedAgainstTheGraph:
+    """A vector point can outlive its node or point at a legacy node shared
+    across orgs; neither may be offered, or this org's aliases land on it."""
+
+    @staticmethod
+    async def _seed_point(fake_store, entity_id, name, org="acme") -> None:
+        from app.models.entities import EntityRecord, EntityType
+
+        await fake_store.upsert_entities_batch([
+            EntityRecord(entity_id=entity_id, entity_type=EntityType.TOPIC, name=name, org_id=org),
+        ])
+
+    async def _resolve(self, make_resolver, metadata_factory, ctx_factory, topic):
+        return await make_resolver().resolve(
+            ctx_factory("r1", "acme", metadata_factory(topics=[topic]))
+        )
+
+    async def test_valid_per_org_winner_is_offered(
+        self, make_resolver, fake_store, metadata_factory, ctx_factory, scripted_model
+    ) -> None:
+        await self._seed_point(fake_store, "k-bug", "Bug bash testing")
+        model = scripted_model({"bug bash testing session": ("same", "Bug bash testing")})
+
+        resolution = await self._resolve(make_resolver, metadata_factory, ctx_factory, "Bug bash testing session")
+
+        assert resolution.entries[(TOPICS, "bug bash testing")].key == "k-bug"
+        assert resolution.stats.winners_offered == 1
+        assert len(model.calls) == 1
+
+    @pytest.mark.parametrize(
+        "node",
+        [
+            pytest.param({"name": "Bug bash testing", "normalizedName": "bug bash testing", "orgId": "other"}, id="other-org"),
+            pytest.param({"name": "Bug bash testing"}, id="legacy-global"),
+            pytest.param(None, id="deleted"),
+        ],
+    )
+    async def test_stale_or_foreign_winner_is_not_offered(
+        self, node, make_resolver, fake_graph, fake_store, metadata_factory, ctx_factory, scripted_model
+    ) -> None:
+        await self._seed_point(fake_store, "k-bug", "Bug bash testing")
+        if node is None:
+            del fake_graph.nodes[(TOPICS, "k-bug")]
+        else:
+            fake_graph.nodes[(TOPICS, "k-bug")] = node
+        model = scripted_model()
+
+        resolution = await self._resolve(make_resolver, metadata_factory, ctx_factory, "Bug bash testing session")
+
+        entity = resolution.entries[(TOPICS, "bug bash testing session")]
+        assert entity.is_new is True
+        assert resolution.stats.winners_offered == 0
+        assert resolution.stats.stale_winners == 1
+        # The only reason to call the model was the winner.
+        assert model.calls == []
+        assert not any(name == "add_taxonomy_aliases" for name, _ in fake_graph.calls)
+
+    async def test_a_failed_check_offers_no_winner_and_does_not_raise(
+        self, make_resolver, fake_graph, fake_store, metadata_factory, ctx_factory, scripted_model
+    ) -> None:
+        await self._seed_point(fake_store, "k-bug", "Bug bash testing")
+        fake_graph.fail_node_lookup = True
+        scripted_model()
+
+        resolution = await self._resolve(make_resolver, metadata_factory, ctx_factory, "Bug bash testing session")
+
+        assert resolution.entries[(TOPICS, "bug bash testing session")].is_new is True
+        assert resolution.stats.winners_offered == 0
+
+    async def test_check_is_one_batched_call_per_kind(
+        self, make_resolver, fake_graph, fake_store, metadata_factory, ctx_factory, scripted_model
+    ) -> None:
+        await self._seed_point(fake_store, "k-bug", "Bug bash testing")
+        await self._seed_point(fake_store, "k-rel", "Release checklist")
+        scripted_model()
+
+        await make_resolver().resolve(ctx_factory(
+            "r1", "acme", metadata_factory(topics=["Bug bash session", "Release checklist v2"]),
+        ))
+
+        lookups = [args for name, args in fake_graph.calls if name == "get_nodes_by_field_in"]
+        assert len(lookups) == 1
+        collection, field, ids = lookups[0]
+        assert (collection, field) == (TOPICS, "id")
+        assert set(ids) <= {"k-bug", "k-rel"}

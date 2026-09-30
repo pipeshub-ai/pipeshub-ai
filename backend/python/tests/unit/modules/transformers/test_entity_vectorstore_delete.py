@@ -11,7 +11,8 @@ The five phases are:
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, call
+import copy
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -23,6 +24,10 @@ from app.services.vector_db.models import ScrollResult, VectorPoint
 def _make_store(vector_db_service: MagicMock | None = None) -> EntityVectorStore:
     vector_db_service = vector_db_service or MagicMock()
     vector_db_service.get_capabilities.return_value = MagicMock(supports_sparse_vectors=False)
+    if not isinstance(vector_db_service.collection_exists, AsyncMock):
+        vector_db_service.collection_exists = AsyncMock(return_value=True)
+    if not isinstance(vector_db_service.retrieve_points, AsyncMock):
+        vector_db_service.retrieve_points = AsyncMock(return_value=[])
     store = EntityVectorStore(
         logger=MagicMock(),
         config_service=MagicMock(),
@@ -110,602 +115,369 @@ class TestDeleteEntityFilter:
 
 
 # ======================================================================
-# Phase 2 — RECORD entities deleted immediately
+# Connector deletion — against an in-memory entities collection
 # ======================================================================
 
 
-class TestPhase2RecordEntities:
+def _field(payload: dict, key: str):
+    if key.startswith("metadata."):
+        return (payload.get("metadata") or {}).get(key.split(".", 1)[1])
+    return payload.get(key)
+
+
+def _hits(value, wanted) -> bool:
+    # Stored values are compared as strings, as Redis TAG and keyword fields do.
+    values = value if isinstance(value, list) else [value]
+    wants = wanted if isinstance(wanted, list) else [wanted]
+    return any(str(v) in {str(w) for w in wants} for v in values if v is not None)
+
+
+class _Entities:
+    """The entities collection, honouring the filter shapes the store builds:
+    ``must`` values match any-of (and array contains), ``must_not`` excludes."""
+
+    def __init__(self, *points: VectorPoint) -> None:
+        self.points = {p.id: p for p in points}
+        self.scrolls: list[tuple[dict, str | None]] = []
+        self.set_payload_calls: list[tuple[dict, dict, bool]] = []
+        self.delete_calls: list[tuple[dict, bool]] = []
+        self.fail_set_payload = False
+
+    def get_capabilities(self):
+        return MagicMock(supports_sparse_vectors=False)
+
+    async def collection_exists(self, collection_name) -> bool:
+        return True
+
+    async def filter_collection(self, must=None, must_not=None, **_):
+        return {"must": dict(must or {}), "must_not": dict(must_not or {})}
+
+    def _matches(self, payload: dict, flt: dict) -> bool:
+        if not all(_hits(_field(payload, k), v) for k, v in flt["must"].items()):
+            return False
+        return not any(_hits(_field(payload, k), v) for k, v in flt["must_not"].items())
+
+    async def scroll(self, collection_name, scroll_filter, limit, offset=None, with_payload=None):
+        self.scrolls.append((scroll_filter, offset))
+        matched = sorted(
+            (p for p in self.points.values() if self._matches(p.payload, scroll_filter)),
+            key=lambda p: p.id,
+        )
+        start = int(offset or 0)
+        page = matched[start:start + limit]
+        more = start + limit < len(matched)
+        return ScrollResult(
+            points=[VectorPoint(id=p.id, payload=copy.deepcopy(p.payload)) for p in page],
+            next_offset=str(start + limit) if more else None,
+        )
+
+    async def set_payload(self, collection_name, payload, filter, refresh=False):
+        self.set_payload_calls.append((payload, filter, refresh))
+        if self.fail_set_payload:
+            raise RuntimeError("vector db down")
+        for point in self.points.values():
+            if self._matches(point.payload, filter):
+                point.payload.update(copy.deepcopy(payload))
+
+    async def update_payload_by_ids(self, collection_name, ids, payload):
+        for point_id in ids:
+            if point_id in self.points:
+                self.points[point_id].payload.update(copy.deepcopy(payload))
+
+    async def delete_points(self, collection_name, filter, refresh=False):
+        self.delete_calls.append((filter, refresh))
+        for point_id in [i for i, p in self.points.items() if self._matches(p.payload, filter)]:
+            del self.points[point_id]
+
+
+def _store_over(entities: _Entities) -> EntityVectorStore:
+    store = EntityVectorStore(logger=MagicMock(), config_service=MagicMock(), vector_db_service=entities)
+    store._init_embeddings = AsyncMock(side_effect=AssertionError("deletion must not embed"))
+    return store
+
+
+def _entity_point(entity_id, entity_type, connectors, groups, org="org-1", **meta) -> VectorPoint:
+    return VectorPoint(
+        id=f"{entity_type}:{entity_id}",
+        payload={
+            "metadata": {"entityId": entity_id, "entityType": entity_type, "orgId": org,
+                         "name": meta.pop("name", entity_id), **meta},
+            "connectorIds": list(connectors),
+            "recordGroupIds": list(groups),
+        },
+    )
+
+
+def _membership(entities: _Entities, point_id: str) -> tuple[list, list]:
+    payload = entities.points[point_id].payload
+    return payload["connectorIds"], payload["recordGroupIds"]
+
+
+class TestConnectorDeletion:
     @pytest.mark.asyncio
-    async def test_record_entity_with_sole_connector_is_deleted(self) -> None:
-        """A RECORD entity with only this connectorId is deleted outright."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[_point("r1", "record", ["conn-a"], [])],
-                next_offset=None,
+    async def test_shared_entity_loses_the_connector_and_its_groups_without_reembedding(self) -> None:
+        entities = _Entities(
+            _entity_point("t1", "topic", ["conn-a", "conn-b"], ["ga", "gb"]),
+            _entity_point("rg-a", "record_group", ["conn-a"], ["ga"]),
+        )
+
+        await _store_over(entities).delete_entities_by_connector("org-1", "conn-a")
+
+        assert _membership(entities, "topic:t1") == (["conn-b"], ["gb"])
+        assert "record_group:rg-a" not in entities.points
+        (payload, _, refresh), = entities.set_payload_calls
+        assert payload == {"connectorIds": ["conn-b"], "recordGroupIds": ["gb"]}
+        assert refresh is True
+
+    @pytest.mark.asyncio
+    async def test_exclusive_taxonomy_entity_is_deleted(self) -> None:
+        entities = _Entities(
+            _entity_point("t1", "topic", ["conn-a"], ["ga", "g-other"]),
+            _entity_point("t2", "topic", ["conn-b"], []),
+        )
+
+        await _store_over(entities).delete_entities_by_connector("org-1", "conn-a")
+
+        assert list(entities.points) == ["topic:t2"]
+
+    @pytest.mark.asyncio
+    async def test_record_and_group_points_go_in_one_filtered_delete(self) -> None:
+        """A delete per record point was one round trip per record."""
+        entities = _Entities(*(
+            [_entity_point(f"r{i}", "record", ["conn-a"], ["ga"]) for i in range(250)]
+            + [_entity_point("rg-a", "record_group", ["conn-a"], ["ga"])]
+        ))
+
+        await _store_over(entities).delete_entities_by_connector(
+            "org-1", "conn-a", record_group_ids=["ga"],
+        )
+
+        assert entities.points == {}
+        (flt, _), = entities.delete_calls
+        assert flt["must"] == {"metadata.orgId": "org-1", "connectorIds": "conn-a"}
+
+    @pytest.mark.asyncio
+    async def test_entities_left_with_the_same_membership_share_one_write(self) -> None:
+        entities = _Entities(
+            _entity_point("t1", "topic", ["conn-a", "conn-b"], []),
+            _entity_point("t2", "topic", ["conn-a", "conn-b"], []),
+        )
+
+        await _store_over(entities).delete_entities_by_connector("org-1", "conn-a")
+
+        (payload, flt, _), = entities.set_payload_calls
+        assert sorted(flt["must"]["metadata.entityId"]) == ["t1", "t2"]
+
+    @pytest.mark.asyncio
+    async def test_graph_record_groups_are_stripped_even_without_a_group_point(self) -> None:
+        """Group points are best-effort (a nameless group has none), so the
+        graph's list is the one that covers every group."""
+        entities = _Entities(_entity_point("t1", "topic", ["conn-a", "conn-b"], ["g-nameless", "gb"]))
+
+        await _store_over(entities).delete_entities_by_connector(
+            "org-1", "conn-a", record_group_ids=["g-nameless"],
+        )
+
+        assert _membership(entities, "topic:t1") == (["conn-b"], ["gb"])
+
+    @pytest.mark.asyncio
+    async def test_without_graph_groups_record_points_supply_them(self) -> None:
+        entities = _Entities(
+            _entity_point("r1", "record", ["conn-a"], ["g-from-record"]),
+            _entity_point("t1", "topic", ["conn-a", "conn-b"], ["g-from-record", "gb"]),
+        )
+
+        await _store_over(entities).delete_entities_by_connector("org-1", "conn-a")
+
+        assert _membership(entities, "topic:t1") == (["conn-b"], ["gb"])
+
+    @pytest.mark.asyncio
+    async def test_with_graph_groups_record_points_are_not_scanned(self) -> None:
+        entities = _Entities(_entity_point("r1", "record", ["conn-a"], ["ga"]))
+
+        await _store_over(entities).delete_entities_by_connector(
+            "org-1", "conn-a", record_group_ids=["ga"],
+        )
+
+        group_scans = [f for f, _ in entities.scrolls if "metadata.entityType" in f["must"]]
+        assert [f["must"]["metadata.entityType"] for f in group_scans] == [["record_group"]]
+
+    @pytest.mark.asyncio
+    async def test_strip_loop_rereads_from_the_start_so_it_never_pages_deep(self) -> None:
+        """Processed points leave the filter, so every page is read at offset
+        0; Redis refuses search offsets past 10k."""
+        entities = _Entities(*(
+            [_entity_point(f"t{i:03}", "topic", ["conn-a", "conn-b"], []) for i in range(120)]
+            + [_entity_point(f"x{i:03}", "topic", ["conn-a"], []) for i in range(90)]
+        ))
+
+        await _store_over(entities).delete_entities_by_connector(
+            "org-1", "conn-a", record_group_ids=["ga"],
+        )
+
+        taxonomy_scans = [(f, o) for f, o in entities.scrolls if f["must_not"]]
+        assert len(taxonomy_scans) >= 3
+        assert all(offset is None for _, offset in taxonomy_scans)
+        assert sorted(entities.points) == [f"topic:t{i:03}" for i in range(120)]
+        assert all(refresh for _, refresh in entities.delete_calls[:-1])
+
+    @pytest.mark.asyncio
+    async def test_points_without_an_id_end_the_loop_and_fall_to_the_final_delete(self) -> None:
+        malformed = VectorPoint(id="bad", payload={"metadata": {"orgId": "org-1"},
+                                                   "connectorIds": ["conn-a", "conn-b"], "recordGroupIds": []})
+        entities = _Entities(malformed)
+
+        await _store_over(entities).delete_entities_by_connector(
+            "org-1", "conn-a", record_group_ids=["ga"],
+        )
+
+        assert entities.points == {}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_strip_raises_before_the_final_delete_and_a_retry_finishes(self) -> None:
+        """Deleting group points first left a retry nothing to recover the
+        connector's groups from, so shared entities kept them forever."""
+        entities = _Entities(
+            _entity_point("t1", "topic", ["conn-a", "conn-b"], ["ga", "gb"]),
+            _entity_point("rg-a", "record_group", ["conn-a"], ["ga"]),
+        )
+        entities.fail_set_payload = True
+        store = _store_over(entities)
+
+        with pytest.raises(RuntimeError):
+            await store.delete_entities_by_connector("org-1", "conn-a")
+        assert "record_group:rg-a" in entities.points
+
+        entities.fail_set_payload = False
+        await store.delete_entities_by_connector("org-1", "conn-a")
+
+        assert _membership(entities, "topic:t1") == (["conn-b"], ["gb"])
+        assert "record_group:rg-a" not in entities.points
+
+    @pytest.mark.asyncio
+    async def test_redis_type_guessed_ids_are_still_stripped(self) -> None:
+        entities = _Entities(_entity_point(2024, "subcategory", ["conn-a", "conn-b"], [], level=1))
+
+        await _store_over(entities).delete_entities_by_connector(
+            "org-1", "conn-a", record_group_ids=["ga"],
+        )
+
+        assert _membership(entities, "subcategory:2024") == (["conn-b"], [])
+
+    @pytest.mark.asyncio
+    async def test_other_orgs_are_untouched(self) -> None:
+        entities = _Entities(
+            _entity_point("t1", "topic", ["conn-a"], [], org="org-2"),
+            _entity_point("r1", "record", ["conn-a"], [], org="org-2"),
+        )
+
+        await _store_over(entities).delete_entities_by_connector(
+            "org-1", "conn-a", record_group_ids=["ga"],
+        )
+
+        assert len(entities.points) == 2
+
+    @pytest.mark.asyncio
+    async def test_missing_collection_is_a_no_op(self) -> None:
+        entities = _Entities(_entity_point("t1", "topic", ["conn-a"], []))
+        entities.collection_exists = AsyncMock(return_value=False)
+
+        await _store_over(entities).delete_entities_by_connector("org-1", "conn-a")
+
+        assert entities.scrolls == [] and entities.delete_calls == []
+
+
+class TestExclusiveLookingPointsAreCheckedAgainstTheGraph:
+    """Two indexing workers can each merge against the same stale read, so a
+    shared entity's point can miss a connector and look exclusive to the one
+    being deleted."""
+
+    @pytest.mark.asyncio
+    async def test_a_point_other_records_still_reach_is_rewritten_not_deleted(self) -> None:
+        entities = _Entities(_entity_point("t1", "topic", ["conn-a"], ["ga"]))
+        lookup = AsyncMock(return_value={
+            ("topic", "t1"): {"connectorIds": ["conn-b"], "recordGroupIds": ["gb"]},
+        })
+
+        await _store_over(entities).delete_entities_by_connector(
+            "org-1", "conn-a", record_group_ids=["ga"], membership_lookup=lookup,
+        )
+
+        assert _membership(entities, "topic:t1") == (["conn-b"], ["gb"])
+
+    @pytest.mark.asyncio
+    async def test_a_point_nothing_reaches_any_more_is_deleted(self) -> None:
+        entities = _Entities(_entity_point("t1", "topic", ["conn-a"], []))
+        lookup = AsyncMock(return_value={("topic", "t1"): {"connectorIds": [], "recordGroupIds": []}})
+
+        await _store_over(entities).delete_entities_by_connector(
+            "org-1", "conn-a", record_group_ids=["ga"], membership_lookup=lookup,
+        )
+
+        assert entities.points == {}
+
+    @pytest.mark.asyncio
+    async def test_one_lookup_per_page_and_only_for_exclusive_points(self) -> None:
+        entities = _Entities(
+            _entity_point("shared", "topic", ["conn-a", "conn-b"], []),
+            _entity_point("t1", "topic", ["conn-a"], []),
+            _entity_point("c1", "category", ["conn-a"], []),
+        )
+        lookup = AsyncMock(return_value={})
+
+        await _store_over(entities).delete_entities_by_connector(
+            "org-1", "conn-a", record_group_ids=["ga"], membership_lookup=lookup,
+        )
+
+        lookup.assert_awaited_once()
+        (refs,) = lookup.await_args.args
+        assert sorted((r["type"], r["id"]) for r in refs) == [("category", "c1"), ("topic", "t1")]
+
+    @pytest.mark.asyncio
+    async def test_the_deleted_connector_is_dropped_from_what_the_graph_reports(self) -> None:
+        """A sync racing the deletion can still name the connector; written
+        back, the point would never leave the cleanup filter."""
+        entities = _Entities(_entity_point("t1", "topic", ["conn-a"], ["ga"]))
+        lookup = AsyncMock(return_value={
+            ("topic", "t1"): {"connectorIds": ["conn-a", "conn-b"], "recordGroupIds": ["ga", "gb"]},
+        })
+
+        await _store_over(entities).delete_entities_by_connector(
+            "org-1", "conn-a", record_group_ids=["ga"], membership_lookup=lookup,
+        )
+
+        assert _membership(entities, "topic:t1") == (["conn-b"], ["gb"])
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_does_not_shrink_ends_the_loop(self) -> None:
+        """A backend whose writes do not take (or whose reads lag) must not
+        keep the deletion coroutine spinning; the final delete still runs."""
+        entities = _Entities(_entity_point("t1", "topic", ["conn-a", "conn-b"], []))
+        writes = {"n": 0}
+
+        async def _no_effect(collection_name, payload, filter, refresh=False):
+            writes["n"] += 1
+
+        entities.set_payload = _no_effect
+        store = _store_over(entities)
+
+        await store.delete_entities_by_connector("org-1", "conn-a", record_group_ids=[])
+
+        assert writes["n"] == 1
+        assert entities.points == {}
+        store.logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_changes_nothing_and_raises(self) -> None:
+        entities = _Entities(_entity_point("t1", "topic", ["conn-a"], []))
+        lookup = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with pytest.raises(RuntimeError):
+            await _store_over(entities).delete_entities_by_connector(
+                "org-1", "conn-a", record_group_ids=["ga"], membership_lookup=lookup,
             )
-        )
-        vector_db_service.delete_points = AsyncMock()
-        vector_db_service.upsert_points = AsyncMock()
-        store = _make_store(vector_db_service)
 
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        deleted = _deleted_entity_ids(vector_db_service)
-        assert ("record", "r1") in deleted
-        vector_db_service.upsert_points.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_record_entity_deleted_even_with_record_group_ids(self) -> None:
-        """A RECORD entity is deleted regardless of its recordGroupIds."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[_point("r1", "record", ["conn-a"], ["rg-1"])],
-                next_offset=None,
-            )
-        )
-        vector_db_service.delete_points = AsyncMock()
-        vector_db_service.upsert_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        deleted = _deleted_entity_ids(vector_db_service)
-        assert ("record", "r1") in deleted
-        vector_db_service.upsert_points.assert_not_called()
-
-
-# ======================================================================
-# Phase 3 — RECORD_GROUP entities deleted, IDs collected
-# ======================================================================
-
-
-class TestPhase3RecordGroupEntities:
-    @pytest.mark.asyncio
-    async def test_record_group_entity_is_deleted(self) -> None:
-        """A RECORD_GROUP entity is deleted outright."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[_point("rg-1", "record_group", ["conn-a"], ["rg-1"])],
-                next_offset=None,
-            )
-        )
-        vector_db_service.delete_points = AsyncMock()
-        vector_db_service.upsert_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        deleted = _deleted_entity_ids(vector_db_service)
-        assert ("record_group", "rg-1") in deleted
-        vector_db_service.upsert_points.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_record_group_ids_collected_for_shared_entity_cleanup(self) -> None:
-        """recordGroupIds from deleted RECORD_GROUP entities are stripped
-        from shared taxonomy entities (phase 5 depends on phase 3 collection)."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[
-                    # Phase 3: record group entity — its rg-1 should be collected
-                    _point("rg-1", "record_group", ["conn-a"], ["rg-1"]),
-                    # Phase 5: shared category — has rg-1 (from conn-a) and rg-2 (from conn-b)
-                    _point("cat-1", "category", ["conn-a", "conn-b"], ["rg-1", "rg-2"]),
-                ],
-                next_offset=None,
-            )
-        )
-        vector_db_service.delete_points = AsyncMock()
-        vector_db_service.upsert_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        # record_group deleted
-        deleted = _deleted_entity_ids(vector_db_service)
-        assert ("record_group", "rg-1") in deleted
-
-        # shared category re-upserted with rg-1 stripped
-        vector_db_service.upsert_points.assert_awaited_once()
-        (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
-        assert point.payload["connectorIds"] == ["conn-b"]
-        assert point.payload["recordGroupIds"] == ["rg-2"]
-
-    @pytest.mark.asyncio
-    async def test_record_group_ids_stripped_when_group_scrolls_after_shared_entity(
-        self,
-    ) -> None:
-        """Scroll order is by hashed point id, so a shared entity may come
-        before the RECORD_GROUP point whose id it must drop."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[
-                    _point("cat-1", "category", ["conn-a", "conn-b"], ["rg-1", "rg-2"]),
-                    _point("rg-1", "record_group", ["conn-a"], ["rg-1"]),
-                ],
-                next_offset=None,
-            )
-        )
-        vector_db_service.delete_points = AsyncMock()
-        vector_db_service.upsert_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
-        assert point.payload["connectorIds"] == ["conn-b"]
-        assert point.payload["recordGroupIds"] == ["rg-2"]
-
-    @pytest.mark.asyncio
-    async def test_record_group_ids_from_record_points_are_stripped(self) -> None:
-        """A nameless group has no RECORD_GROUP point; its id is still known
-        from the connector's RECORD points and must be stripped."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[
-                    _point("cat-1", "category", ["conn-a", "conn-b"], ["rg-1", "rg-2"]),
-                    _point("r1", "record", ["conn-a"], ["rg-1"]),
-                ],
-                next_offset=None,
-            )
-        )
-        vector_db_service.delete_points = AsyncMock()
-        vector_db_service.upsert_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
-        assert point.payload["recordGroupIds"] == ["rg-2"]
-
-
-# ======================================================================
-# Phase 4 — Exclusive taxonomy entities deleted
-# ======================================================================
-
-
-class TestPhase4ExclusiveTaxonomyEntities:
-    @pytest.mark.asyncio
-    async def test_exclusive_taxonomy_entity_deleted(self) -> None:
-        """A CATEGORY with only this connectorId and no recordGroupIds is deleted."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[_point("cat-1", "category", ["conn-a"], [])],
-                next_offset=None,
-            )
-        )
-        vector_db_service.delete_points = AsyncMock()
-        vector_db_service.upsert_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        deleted = _deleted_entity_ids(vector_db_service)
-        assert ("category", "cat-1") in deleted
-        vector_db_service.upsert_points.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_exclusive_taxonomy_entity_deleted_even_with_record_group_ids(self) -> None:
-        """A CATEGORY with only this connectorId but non-empty recordGroupIds
-        is still deleted — those recordGroupIds belong to this connector."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[_point("cat-1", "category", ["conn-a"], ["rg-1"])],
-                next_offset=None,
-            )
-        )
-        vector_db_service.delete_points = AsyncMock()
-        vector_db_service.upsert_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        deleted = _deleted_entity_ids(vector_db_service)
-        assert ("category", "cat-1") in deleted
-        vector_db_service.upsert_points.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_exclusive_department_entity_deleted(self) -> None:
-        """Verifies phase 4 works across entity types, not just categories."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[_point("dept-1", "department", ["conn-a"], [])],
-                next_offset=None,
-            )
-        )
-        vector_db_service.delete_points = AsyncMock()
-        vector_db_service.upsert_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        deleted = _deleted_entity_ids(vector_db_service)
-        assert ("department", "dept-1") in deleted
-        vector_db_service.upsert_points.assert_not_called()
-
-
-# ======================================================================
-# Phase 5 — Shared taxonomy entities: strip connectorId + recordGroupIds
-# ======================================================================
-
-
-class TestPhase5SharedTaxonomyEntities:
-    @pytest.mark.asyncio
-    async def test_shared_taxonomy_entity_survives_with_connector_stripped(self) -> None:
-        """A CATEGORY shared between two connectors survives with only the
-        remaining connector's ID."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[_point("cat-1", "category", ["conn-a", "conn-b"], [])],
-                next_offset=None,
-            )
-        )
-        vector_db_service.upsert_points = AsyncMock()
-        vector_db_service.delete_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        # Not deleted — re-upserted with conn-a removed
-        vector_db_service.upsert_points.assert_awaited_once()
-        (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
-        assert point.payload["connectorIds"] == ["conn-b"]
-
-    @pytest.mark.asyncio
-    async def test_shared_entity_also_strips_deleted_connector_record_group_ids(self) -> None:
-        """When a shared taxonomy entity carries recordGroupIds from the
-        deleted connector, those IDs are also removed."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[
-                    _point("rg-1", "record_group", ["conn-a"], ["rg-1"]),
-                    _point("cat-1", "category", ["conn-a", "conn-b"], ["rg-1", "rg-2"]),
-                ],
-                next_offset=None,
-            )
-        )
-        vector_db_service.upsert_points = AsyncMock()
-        vector_db_service.delete_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
-        assert point.payload["connectorIds"] == ["conn-b"]
-        assert point.payload["recordGroupIds"] == ["rg-2"]
-
-    @pytest.mark.asyncio
-    async def test_shared_entity_keeps_record_group_ids_from_other_connectors(self) -> None:
-        """Only the deleted connector's recordGroupIds are removed; IDs
-        belonging to other connectors are preserved."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[
-                    # rg-1 belongs to conn-a (collected in phase 3)
-                    _point("rg-1", "record_group", ["conn-a"], ["rg-1"]),
-                    # shared category has rg-1 (conn-a's) and rg-2, rg-3 (conn-b's)
-                    _point(
-                        "cat-1", "category",
-                        ["conn-a", "conn-b"],
-                        ["rg-1", "rg-2", "rg-3"],
-                    ),
-                ],
-                next_offset=None,
-            )
-        )
-        vector_db_service.upsert_points = AsyncMock()
-        vector_db_service.delete_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
-        assert point.payload["recordGroupIds"] == ["rg-2", "rg-3"]
-
-
-# ======================================================================
-# Mixed / integration scenarios
-# ======================================================================
-
-
-class TestMixedBatch:
-    @pytest.mark.asyncio
-    async def test_mixed_batch_records_groups_and_taxonomy(self) -> None:
-        """A single scroll result containing RECORD, RECORD_GROUP, exclusive
-        taxonomy, and shared taxonomy entities — all handled correctly."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[
-                    # Phase 2: record — deleted
-                    _point("r1", "record", ["conn-a"], ["rg-1"]),
-                    # Phase 3: record group — deleted, rg-1 collected
-                    _point("rg-1", "record_group", ["conn-a"], ["rg-1"]),
-                    # Phase 4: exclusive category — deleted
-                    _point("cat-excl", "category", ["conn-a"], ["rg-1"]),
-                    # Phase 5: shared category — stripped
-                    _point("cat-shared", "category", ["conn-a", "conn-b"], ["rg-1", "rg-2"]),
-                ],
-                next_offset=None,
-            )
-        )
-        vector_db_service.delete_points = AsyncMock()
-        vector_db_service.upsert_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        deleted = _deleted_entity_ids(vector_db_service)
-        assert ("record", "r1") in deleted
-        assert ("record_group", "rg-1") in deleted
-        assert ("category", "cat-excl") in deleted
-
-        # Only the shared category should be re-upserted
-        vector_db_service.upsert_points.assert_awaited_once()
-        (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
-        assert point.payload["metadata"]["entityId"] == "cat-shared"
-        assert point.payload["connectorIds"] == ["conn-b"]
-        assert point.payload["recordGroupIds"] == ["rg-2"]
-
-    @pytest.mark.asyncio
-    async def test_shared_entity_with_no_connector_ids_left_but_other_record_groups_survives(
-        self,
-    ) -> None:
-        """Edge case: after stripping connectorIds becomes empty but
-        recordGroupIds from another source remains — the entity survives.
-
-        This can happen if a taxonomy entity was referenced by records from
-        two connectors but only one connector's ID was in connectorIds
-        (e.g. a race during membership merge)."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[
-                    # shared category with only conn-a in connectorIds but rg-2
-                    # from another connector in recordGroupIds
-                    _point("cat-1", "category", ["conn-a"], ["rg-2"]),
-                ],
-                next_offset=None,
-            )
-        )
-        vector_db_service.upsert_points = AsyncMock()
-        vector_db_service.delete_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        # This is a taxonomy entity (not record/record_group), with only
-        # conn-a → phase 4 deletes it since connectorIds is now empty.
-        # rg-2 is from an unknown source but with no connectorId left,
-        # the entity is unreachable.
-        deleted = _deleted_entity_ids(vector_db_service)
-        assert ("category", "cat-1") in deleted
-
-
-# ======================================================================
-# Preserved fields
-# ======================================================================
-
-
-class TestPreservedFields:
-    @pytest.mark.asyncio
-    async def test_shrink_preserves_subcategory_level(self) -> None:
-        """`level` must survive the re-upsert — it is a filter key in
-        search_entities and the entity resolver."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[
-                    _point(
-                        "sub-1", "subcategory", ["conn-a", "conn-b"], [],
-                        name="Budgets", canonicalName="budgets", level="1",
-                    )
-                ],
-                next_offset=None,
-            )
-        )
-        vector_db_service.upsert_points = AsyncMock()
-        vector_db_service.delete_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
-        assert point.payload["metadata"]["level"] == "1"
-        assert point.payload["connectorIds"] == ["conn-b"]
-
-    @pytest.mark.asyncio
-    async def test_shrink_preserves_aliases(self) -> None:
-        """`aliases` must survive the re-upsert."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[
-                    _point(
-                        "cat-1", "category", ["conn-a", "conn-b"], [],
-                        name="ML", aliases=["Machine Learning", "AI/ML"],
-                    )
-                ],
-                next_offset=None,
-            )
-        )
-        vector_db_service.upsert_points = AsyncMock()
-        vector_db_service.delete_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
-        assert point.payload["metadata"]["aliases"] == ["Machine Learning", "AI/ML"]
-
-
-# ======================================================================
-# Pagination
-# ======================================================================
-
-
-class TestPagination:
-    @pytest.mark.asyncio
-    async def test_scroll_pagination_processes_all_pages(self) -> None:
-        """Both pages of scroll results are fully processed."""
-        page_one = ScrollResult(
-            points=[
-                _point("r1", "record", ["conn-a"], []),
-                _point("rg-1", "record_group", ["conn-a"], ["rg-1"]),
-            ],
-            next_offset="cursor-2",
-        )
-        page_two = ScrollResult(
-            points=[
-                _point("cat-1", "category", ["conn-a", "conn-b"], ["rg-1"]),
-            ],
-            next_offset=None,
-        )
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(side_effect=[page_one, page_two])
-        vector_db_service.delete_points = AsyncMock()
-        vector_db_service.upsert_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        assert vector_db_service.scroll.await_count == 2
-
-        # record and record_group deleted
-        deleted = _deleted_entity_ids(vector_db_service)
-        assert ("record", "r1") in deleted
-        assert ("record_group", "rg-1") in deleted
-
-        # shared category re-upserted with rg-1 stripped (collected from page 1)
-        vector_db_service.upsert_points.assert_awaited_once()
-        (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
-        assert point.payload["connectorIds"] == ["conn-b"]
-        assert point.payload["recordGroupIds"] == []
-
-
-# ======================================================================
-# Merge safety
-# ======================================================================
-
-
-class TestMergeSafety:
-    @pytest.mark.asyncio
-    async def test_reupsert_uses_merge_membership_false(self) -> None:
-        """The re-upsert for a shrunk entity must go through with
-        merge_membership=False — otherwise upsert_entities_batch's normal
-        union-merge would re-add the connector this call is removing."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[_point("cat-1", "category", ["conn-a", "conn-b"], [])],
-                next_offset=None,
-            )
-        )
-        vector_db_service.upsert_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        # merge_membership=False means no membership-merge scroll is issued
-        # from within upsert_entities_batch — only the one scroll call from
-        # _shrink_connector_membership itself.
-        assert vector_db_service.scroll.await_count == 1
-
-
-# ======================================================================
-# Error handling
-# ======================================================================
-
-
-class TestErrorHandling:
-    @pytest.mark.asyncio
-    async def test_malformed_point_skipped_not_fatal(self) -> None:
-        """A point with an unparseable typeCategory must not abort cleanup
-        for the rest of the connector's entities."""
-        bad_point = _point(
-            "bad-1", "department", ["conn-a", "conn-b"], [],
-            typeCategory="not-a-real-category",
-        )
-        good_point = _point("cat-1", "category", ["conn-a", "conn-b"], [])
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(points=[bad_point, good_point], next_offset=None)
-        )
-        vector_db_service.upsert_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        points = vector_db_service.upsert_points.call_args.kwargs["points"]
-        assert [p.payload["metadata"]["entityId"] for p in points] == ["cat-1"]
-
-    @pytest.mark.asyncio
-    async def test_reconcile_failure_logged_not_raised(self) -> None:
-        """A db failure during the scroll must not propagate to the caller."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(side_effect=RuntimeError("db down"))
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")  # must not raise
-
-
-# ======================================================================
-# No-op
-# ======================================================================
-
-
-class TestNoop:
-    @pytest.mark.asyncio
-    async def test_no_entities_found_is_noop(self) -> None:
-        """Empty scroll result → no deletes, no upserts."""
-        vector_db_service = MagicMock()
-        vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(points=[], next_offset=None)
-        )
-        vector_db_service.upsert_points = AsyncMock()
-        vector_db_service.delete_points = AsyncMock()
-        store = _make_store(vector_db_service)
-
-        await store.delete_entities_by_connector(org_id="org-1", connector_id="conn-a")
-
-        vector_db_service.upsert_points.assert_not_called()
-        vector_db_service.delete_points.assert_not_called()
-
-
-# ======================================================================
-# UpsertEntitiesBatch merge_membership flag (existing coverage)
-# ======================================================================
+        assert _membership(entities, "topic:t1") == (["conn-a"], [])
 
 
 class TestUpsertEntitiesBatchMergeMembershipFlag:
@@ -730,7 +502,7 @@ class TestUpsertEntitiesBatchMergeMembershipFlag:
 
         await store.upsert_entities_batch([entity], merge_membership=False)
 
-        vector_db_service.scroll.assert_not_called()
+        vector_db_service.retrieve_points.assert_not_called()
         (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
         assert point.payload["connectorIds"] == ["conn-b"]
 
@@ -740,20 +512,17 @@ class TestUpsertEntitiesBatchMergeMembershipFlag:
 
         vector_db_service = MagicMock()
         vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
-        vector_db_service.scroll = AsyncMock(
-            return_value=ScrollResult(
-                points=[
-                    VectorPoint(
-                        id="p1",
-                        payload={
-                            "metadata": {},
-                            "connectorIds": ["conn-a"],
-                            "recordGroupIds": [],
-                        },
-                    )
-                ],
-                next_offset=None,
-            )
+        vector_db_service.retrieve_points = AsyncMock(
+            return_value=[
+                VectorPoint(
+                    id=EntityVectorStore._point_id("org-1", "department", "eng"),
+                    payload={
+                        "metadata": {},
+                        "connectorIds": ["conn-a"],
+                        "recordGroupIds": [],
+                    },
+                )
+            ]
         )
         vector_db_service.upsert_points = AsyncMock()
         store = _make_store(vector_db_service)

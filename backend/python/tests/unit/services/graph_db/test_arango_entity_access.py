@@ -9,6 +9,10 @@ import pytest
 
 from app.config.constants.arangodb import Connectors, PermissionModel
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from app.services.graph_db.common.utils import (
+    CONTAINER_INHERIT_MAX_DEPTH,
+    ENTITY_CANDIDATE_SCAN_CAP,
+)
 
 
 @pytest.fixture
@@ -51,12 +55,24 @@ class TestGetEntityAccessContext:
             "user_id": "u1",
             "org_id": "org1",
             "source_ids": [],
+            "exclude_app_ids": [],
             "kb_type": Connectors.KNOWLEDGE_BASE.value,
             "app_level": PermissionModel.APP_LEVEL.value,
+            "inherit_max_depth": CONTAINER_INHERIT_MAX_DEPTH,
         }
 
         await provider.get_entity_access_context("u1", "org1", source_ids=["a1"])
         assert provider.execute_query.await_args.kwargs["bind_vars"]["source_ids"] == ["a1"]
+
+    @pytest.mark.asyncio
+    async def test_excluded_apps_are_bound_and_filtered(self, provider) -> None:
+        """Excluding at the app level also drops the app's record groups,
+        which are filtered by record_level_app_ids."""
+        await provider.get_entity_access_context(
+            "u1", "org1", exclude_app_ids=frozenset({"demo-2", "demo-1"}),
+        )
+        assert _bind_vars(provider)[0]["exclude_app_ids"] == ["demo-1", "demo-2"]
+        assert "FILTER app._key NOT IN @exclude_app_ids" in _queries(provider)[0]
 
     @pytest.mark.asyncio
     async def test_query_applies_access_filters(self, provider) -> None:
@@ -69,7 +85,7 @@ class TestGetEntityAccessContext:
             "rg.connectorId IN record_level_app_ids",
             "child.connectorId IN record_level_app_ids",
             "seed.hideChildren != true",
-            "INBOUND seed._id inheritPermissions",
+            "1..@inherit_max_depth INBOUND seed._id inheritPermissions",
             "PRUNE child.orgId != @org_id",
             # PRUNE stops the traversal past a node; it does not drop the node
             # itself from the result, so the FILTER is the load-bearing one.
@@ -89,6 +105,56 @@ class TestGetEntityAccessContext:
         provider.execute_query.side_effect = RuntimeError("boom")
         with pytest.raises(RuntimeError, match="boom"):
             await provider.get_entity_access_context("u1", "org1")
+
+    @pytest.mark.asyncio
+    async def test_linked_source_accounts_reach_their_connector(self, provider) -> None:
+        """A user who reaches a connector only through a linked source account
+        sees its records in content search; entity search must too."""
+        await provider.get_entity_access_context("u1", "org1")
+        query = _queries(provider)[0]
+        assert "FOR linked IN authenticatedAs" in query
+        assert "LET principals = APPEND([{ from: user_from, connectorId: null }], links, true)" in query
+        assert "UNION(direct_apps, team_apps, kb_apps_direct, kb_apps_team, linked_apps)" in query
+        # USER, group/role and team seeds run per principal, pinned to its connector.
+        assert query.count("FOR p IN principals") == 3
+        assert query.count("FILTER p.connectorId == null OR rg.connectorId == p.connectorId") == 3
+
+
+class TestGetTaxonomyEntityMembership:
+    @pytest.mark.asyncio
+    async def test_one_query_per_type_with_empty_lists_for_unlinked(self, provider) -> None:
+        provider.execute_query.side_effect = [
+            [{"id": "t1", "connectorIds": ["c1", "c2"], "recordGroupIds": ["g1"]}],
+            [{"id": "s1", "connectorIds": [], "recordGroupIds": []}],
+        ]
+
+        result = await provider.get_taxonomy_entity_membership(
+            [
+                {"id": "t1", "type": "topic"}, {"id": "t2", "type": "topic"},
+                {"id": "s1", "type": "subcategory"}, {"id": "rg", "type": "record_group"},
+            ],
+            "org1",
+        )
+
+        assert provider.execute_query.await_count == 2
+        assert result == {
+            ("topic", "t1"): {"connectorIds": ["c1", "c2"], "recordGroupIds": ["g1"]},
+            ("topic", "t2"): {"connectorIds": [], "recordGroupIds": []},
+            ("subcategory", "s1"): {"connectorIds": [], "recordGroupIds": []},
+        }
+        topic_query = _queries(provider)[0]
+        assert "FOR edge IN belongsToTopic" in topic_query
+        assert "rec.orgId == @org_id AND rec.isDeleted != true" in topic_query
+        # Aggregated inside the subquery: memory is bounded by distinct pairs,
+        # not by the records linked to a broad entity.
+        assert "COLLECT connectorId = rec.connectorId, recordGroupId = rec.recordGroupId" in topic_query
+        assert _bind_vars(provider)[0] == {"ref_ids": ["t1", "t2"], "org_id": "org1"}
+
+    @pytest.mark.asyncio
+    async def test_no_org_or_no_supported_ref_issues_no_query(self, provider) -> None:
+        assert await provider.get_taxonomy_entity_membership([{"id": "t", "type": "topic"}], "") == {}
+        assert await provider.get_taxonomy_entity_membership([{"id": "r", "type": "record"}], "o") == {}
+        provider.execute_query.assert_not_awaited()
 
 
 class TestGetEntityCandidateRecords:
@@ -129,6 +195,48 @@ class TestGetEntityCandidateRecords:
             {"id": "t1", "connectorIds": ["c1"]},
             {"id": "t2", "connectorIds": ["c2"]},
         ]
+
+    @pytest.mark.asyncio
+    async def test_scan_is_capped_before_the_sort(self, provider) -> None:
+        """Without a bound, an entity linked to most of an org's records is
+        loaded and sorted in full on every page."""
+        await provider.get_entity_candidate_records(
+            [{"id": "t1", "type": "topic", "connectorIds": ["c1"]}], "org1"
+        )
+        query = _queries(provider)[0]
+        cap = query.index("LIMIT @scan_cap")
+        assert query.index("FILTER rec.connectorId IN ref.connectorIds") < cap
+        assert cap < query.index("COLLECT key = rec._key") < query.index("SORT ")
+        assert _bind_vars(provider)[0]["scan_cap"] == ENTITY_CANDIDATE_SCAN_CAP
+
+    @pytest.mark.asyncio
+    async def test_only_indexed_records_are_candidates(self, provider) -> None:
+        """Search only returns indexed records; listing others offers records
+        whose content cannot be read."""
+        await provider.get_entity_candidate_records(
+            [{"id": "t1", "type": "topic", "connectorIds": ["c1"]},
+             {"id": "r1", "type": "record", "connectorIds": ["c1"]}], "org1"
+        )
+        for query, bind_vars in zip(_queries(provider), _bind_vars(provider)):
+            assert "rec.indexingStatus == @completed" in query
+            assert bind_vars["completed"] == "COMPLETED"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_refs_keep_the_first_refs_connectors(self, provider) -> None:
+        """As on Neo4j: a union would widen a ref's connector scope."""
+        await provider.get_entity_candidate_records(
+            [{"id": "t1", "type": "topic", "connectorIds": ["c1"]},
+             {"id": "t1", "type": "topic", "connectorIds": ["c2"]}], "org1"
+        )
+        assert _bind_vars(provider)[0]["refs"] == [{"id": "t1", "connectorIds": ["c1"]}]
+
+    @pytest.mark.asyncio
+    async def test_record_refs_bind_no_scan_cap(self, provider) -> None:
+        """Arango rejects bind vars the query does not reference."""
+        await provider.get_entity_candidate_records(
+            [{"id": "r1", "type": "record", "connectorIds": ["c1"]}], "org1"
+        )
+        assert "scan_cap" not in _bind_vars(provider)[0]
 
     @pytest.mark.asyncio
     async def test_subcategory_targets_all_levels(self, provider) -> None:

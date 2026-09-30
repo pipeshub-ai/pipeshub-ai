@@ -41,6 +41,7 @@ from app.modules.entity_resolution.normalizer import (
     display_form,
     is_acceptable_name,
     normalize_name,
+    spelling_key,
 )
 from app.modules.entity_resolution.prompt import build_prompt
 from app.telemetry.modules import entity_resolution_metrics as metrics
@@ -59,6 +60,10 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 LLM_ROLE = "indexing"
+
+# A hung model call would hold the record's indexing slot; past this the names
+# become new, as on any other model failure.
+MERGE_CALL_TIMEOUT_SECONDS = 60.0
 
 
 class EntityResolver:
@@ -303,12 +308,53 @@ class EntityResolver:
                     "names as new", entity_type, level, len(group), exc_info=True,
                 )
                 continue
+            candidates: dict[int, WinnerCandidate] = {}
             for name, match in zip(group, matches):
                 winner = self._winner_from_match(match, entity_type, level)
                 if winner is not None:
+                    candidates[name.index] = winner
+            if not candidates:
+                continue
+            live = await self._live_node_ids(
+                org_id, group[0].kind.collection, {w.entity_id for w in candidates.values()},
+            )
+            for index, winner in candidates.items():
+                if winner.entity_id in live:
                     stats.winners_offered += 1
-                winners[name.index] = winner
+                    winners[index] = winner
+                else:
+                    stats.stale_winners += 1
         return winners
+
+    async def _live_node_ids(self, org_id: str, collection: str, ids: set[str]) -> set[str]:
+        """The ``ids`` that are canonical nodes of ``org_id`` in the graph.
+
+        The vector store can point at a node that was deleted, or at a legacy
+        node shared across orgs (created before resolution, or copied onto a
+        duplicate); merging into either would write this org's aliases where
+        they do not belong. A failed check offers no winner, like a failed
+        vector lookup.
+        """
+        try:
+            rows = await self.graph_provider.get_nodes_by_field_in(
+                collection, "id", sorted(ids), return_fields=["id", "orgId", "normalizedName"],
+            )
+        except Exception:
+            metrics.record_fallback("winner_check_error", len(ids))
+            self.logger.warning(
+                "entity_resolution: winner check failed for %s; offering no winners",
+                collection, exc_info=True,
+            )
+            return set()
+        live = {
+            str(row.get("id") or row.get("_key"))
+            for row in rows or []
+            if (row.get("id") or row.get("_key"))
+            and row.get("orgId") == org_id
+            and row.get("normalizedName")
+        }
+        metrics.record_fallback("stale_winner", len(ids - live))
+        return live
 
     @staticmethod
     def _winner_from_match(
@@ -354,8 +400,11 @@ class EntityResolver:
         prompt = build_prompt(metadata.summary, unresolved, winners)
         try:
             llm = await self._get_llm()
-            response = await invoke_with_structured_output_and_reflection(
-                llm, [HumanMessage(content=prompt)], MergeDecisions,
+            response = await asyncio.wait_for(
+                invoke_with_structured_output_and_reflection(
+                    llm, [HumanMessage(content=prompt)], MergeDecisions,
+                ),
+                timeout=MERGE_CALL_TIMEOUT_SECONDS,
             )
         except Exception:
             response = None
@@ -450,7 +499,9 @@ class EntityResolver:
             if any(m.index in merged_to_winner for m in members):
                 continue
             head = min(members, key=lambda m: m.index)
-            display, normalized = self._canonical_form(head, proposed_new.get(head.index, ""))
+            display, normalized = self._canonical_form(
+                head, proposed_new.get(head.index, ""), stats,
+            )
             proposals[leader] = (display, normalized)
             if (head.kind.collection, normalized) not in resolution.entries:
                 pending_lookup.setdefault(head.kind.collection, []).append(normalized)
@@ -518,12 +569,23 @@ class EntityResolver:
         self._attach(resolution, name, entity)
         return entity
 
-    def _canonical_form(self, head: ExtractedName, canonical_name: str) -> tuple[str, str]:
+    def _canonical_form(
+        self, head: ExtractedName, canonical_name: str, stats: ResolutionStats,
+    ) -> tuple[str, str]:
+        """The model's cleaned display form, if it only changes presentation.
+
+        A form that adds or drops words would be looked up as an existing node
+        the model was never offered, merging unvalidated; the prompt allows
+        casing and punctuation fixes only, so that is all that is accepted.
+        """
         if canonical_name:
             display = display_form(canonical_name)
             normalized = normalize_name(display)
             if is_acceptable_name(normalized):
-                return display, normalized
+                if spelling_key(normalized) == spelling_key(head.normalized):
+                    return display, normalized
+                stats.rejected_decisions += 1
+                metrics.record_fallback("rejected_canonical")
         return head.display, head.normalized
 
     # ---- helpers -----------------------------------------------------
