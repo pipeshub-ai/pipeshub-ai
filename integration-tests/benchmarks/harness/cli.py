@@ -76,6 +76,10 @@ def build_parser() -> argparse.ArgumentParser:
     logs.add_argument("--resume", metavar="RUN_ID", required=True)
     logs.add_argument("--container", default="pipeshub-ai-pipeshub-ai-1")
     logs.add_argument("--dataset", default="frames", help="registered dataset name")
+    merge = commands.add_parser("combine", help="one board from several runs on the same questions and index")
+    merge.add_argument("--run", dest="runs", metavar="RUN_ID", action="append", required=True)
+    merge.add_argument("--out", type=Path, required=True)
+    merge.add_argument("--dataset", default="frames", help="registered dataset name")
     for name in (*PIPELINES, "seed-models", "setup-pipeshub"):
         command = commands.add_parser(name)
         command.add_argument("--config", type=Path, required=True)
@@ -163,6 +167,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _write_split(args)
         if args.command == "backend-logs":
             return _backend_logs(args)
+        if args.command == "combine":
+            from benchmarks.harness.combine import combine
+
+            combine([reports_dir(args.dataset) / run for run in args.runs], args.out)
+            return EXIT_OK
         config = load_config(args.config)
         if args.command == "setup-pipeshub":
             # Before Services: its session logs in, and the org may not exist yet.

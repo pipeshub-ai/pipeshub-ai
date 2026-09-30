@@ -164,6 +164,26 @@ system's own evidence), memory-suspect answers, a dev versus held-out split,
 retrieval recall, citation checks, cost, latency and paired McNemar tests.
 `summary.json` holds the same numbers for tooling.
 
+The three runs together form one board. Combine them, with the system list
+taken from the first run that has each system:
+
+```bash
+.venv/bin/python -m benchmarks.harness combine \
+  --run <full-rag run id> --run <full-rag-rerank run id> --run <full-pipeshub run id> \
+  --out benchmarks/datasets/frames/results/<date>-full
+```
+
+`board.md` holds three views of the same board:
+- every question;
+- only questions no system was refused on by the provider's content filter
+  (which system is refused depends on the text it retrieved, so this is the
+  fairest view of retrieval quality);
+- the held-out split alone.
+
+Each run's `summary.json`, `report.md`, `run_meta.json` and resolved config
+are copied next to it. This is exactly how the published results folder was
+made.
+
 To regrade or re-verify an existing run without asking again:
 
 ```bash
