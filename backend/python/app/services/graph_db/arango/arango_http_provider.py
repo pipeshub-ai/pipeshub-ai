@@ -7941,7 +7941,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         external_id: str,
         user_id: str,
         transaction: str | None = None
-    ) -> None:
+    ) -> dict | None:
         """
         Delete a record by external ID.
 
@@ -7962,7 +7962,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             if not record:
                 self.logger.warning(f"⚠️ Record {external_id} not found in {connector_id}")
-                return
+                return None
 
             # Delete record using the record's internal ID and user_id
             deletion_result = await self.delete_record(record.id, user_id, record.org_id, transaction=transaction)
@@ -7970,6 +7970,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Check if deletion was successful
             if deletion_result.get("success"):
                 self.logger.debug(f"✅ Record {external_id} deleted from {connector_id}")
+                return deletion_result
             else:
                 error_reason = deletion_result.get("reason", "Unknown error")
                 self.logger.error(f"❌ Failed to delete record {external_id}: {error_reason}")
@@ -13679,6 +13680,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # Delete main record
         await self.delete_nodes([record_key], CollectionNames.RECORDS.value, transaction)
 
+    async def _attachment_delete_payloads(
+        self, attachment_ids: list[str], transaction: str | None
+    ) -> list[dict]:
+        """deleteRecord payloads for an email's attachments, read before they are removed."""
+        payloads: list[dict] = []
+        for attachment_id in attachment_ids:
+            attachment = await self.http_client.get_document(
+                collection=CollectionNames.RECORDS.value, key=attachment_id, txn_id=transaction
+            )
+            if not attachment or not attachment.get("virtualRecordId"):
+                continue
+            file_doc = await self.get_document(attachment_id, CollectionNames.FILES.value)
+            payload = await self._create_deleted_record_event_payload(attachment, file_doc)
+            if payload:
+                payload["connectorName"] = attachment.get("connectorName")
+                payload["origin"] = attachment.get("origin")
+                payloads.append(payload)
+        return payloads
+
     async def _execute_outlook_record_deletion(
         self,
         record_id: str,
@@ -13701,6 +13721,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 txn_id=transaction
             )
             attachment_ids = attachment_ids if attachment_ids else []
+            # Read before the delete: the payloads carry the virtualRecordIds.
+            mail_record = await self.get_document(record_id, CollectionNames.MAILS.value)
+            attachment_payloads = await self._attachment_delete_payloads(attachment_ids, transaction)
 
             # Delete all attachments first
             for attachment_id in attachment_ids:
@@ -13720,10 +13743,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             self.logger.debug(f"✅ Deleted Outlook record {record_id} with {len(attachment_ids)} attachments")
 
+            payload = await self._create_deleted_record_event_payload(record, mail_record)
+            event_data = None
+            if payload:
+                payload["connectorName"] = Connectors.OUTLOOK.value
+                payload["origin"] = OriginTypes.CONNECTOR.value
+                event_data = {
+                    "eventType": "deleteRecord",
+                    "topic": "record-events",
+                    "payload": payload,
+                    "payloads": [payload, *attachment_payloads],
+                }
             return {
                 "success": True,
                 "record_id": record_id,
-                "attachments_deleted": len(attachment_ids)
+                "connector": Connectors.OUTLOOK.value,
+                "attachments_deleted": len(attachment_ids),
+                "eventData": event_data,
             }
 
         except Exception as e:
@@ -14017,6 +14053,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 txn_id=transaction
             )
             attachment_ids = attachment_ids if attachment_ids else []
+            attachment_payloads = await self._attachment_delete_payloads(attachment_ids, transaction)
 
             # Delete all attachments first
             for attachment_id in attachment_ids:
@@ -14057,7 +14094,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     event_data = {
                         "eventType": "deleteRecord",
                         "topic": "record-events",
-                        "payload": payload
+                        "payload": payload,
+                        "payloads": [payload, *attachment_payloads],
                     }
                 else:
                     event_data = None

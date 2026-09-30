@@ -2290,24 +2290,26 @@ async def delete_record(
                 vector_cleanup_pending = True
             elif has_valid_event_data:
                 timestamp = get_epoch_timestamp_in_ms()
-                event = {
-                    "eventType": event_data["eventType"],
-                    "timestamp": timestamp,
-                    "payload": event_data["payload"]
-                }
-                try:
-                    await retry_async(
-                        lambda: kafka_service.publish_event(event_data["topic"], event),
-                        logger=logger,
-                        description=f"publish {event_data['eventType']} event for record {record_id}",
-                    )
-                    logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
-                except Exception as e:
-                    logger.error(
-                        f"❌ Giving up publishing deletion event for record {record_id} "
-                        f"after retries; embeddings are orphaned until reconciliation: {str(e)}"
-                    )
-                    vector_cleanup_pending = True
+                # An email's attachments have vectors of their own.
+                for payload in event_data.get("payloads") or [event_data["payload"]]:
+                    event = {
+                        "eventType": event_data["eventType"],
+                        "timestamp": timestamp,
+                        "payload": payload,
+                    }
+                    try:
+                        await retry_async(
+                            lambda event=event: kafka_service.publish_event(event_data["topic"], event),
+                            logger=logger,
+                            description=f"publish {event_data['eventType']} event for record {record_id}",
+                        )
+                        logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                    except Exception as e:
+                        logger.error(
+                            f"❌ Giving up publishing deletion event for record {record_id} "
+                            f"after retries; embeddings are orphaned until reconciliation: {str(e)}"
+                        )
+                        vector_cleanup_pending = True
 
             # This route deletes directly, bypassing the processor's cascade
             # path, so it owns its own cache invalidation.

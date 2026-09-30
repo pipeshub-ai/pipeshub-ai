@@ -3663,7 +3663,7 @@ class IGraphDBProvider(ABC):
         external_id: str,
         user_id: str,
         transaction: str | None = None
-    ) -> None:
+    ) -> dict | None:
         """
         Delete a record by external ID.
 
@@ -3672,6 +3672,10 @@ class IGraphDBProvider(ABC):
             external_id (str): External record ID
             user_id (str): User ID performing the deletion
             transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            The ``delete_record`` result, whose ``eventData`` the caller publishes
+            after its transaction commits; None when there was no such record.
         """
         pass
 

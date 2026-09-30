@@ -1821,17 +1821,19 @@ class DataSourceEntitiesProcessor:
         # vertex is gone so indexing can strip/delete embeddings.
         event_payload = None
         async with self.data_store_provider.transaction() as tx_store:
-            existing = await tx_store.get_record_by_key(record_id)
+            # The stored document, not a Record: reading Record attributes off it
+            # found no virtualRecordId, so no delete ever published its cleanup.
+            existing = await tx_store.get_record_by_key(record_id) or {}
             await tx_store.delete_parent_child_edge_to_record(record_id)
             await tx_store.delete_record_by_key(record_id)
-            vrid = getattr(existing, "virtual_record_id", None) if existing is not None else None
+            vrid = existing.get("virtualRecordId")
             if isinstance(vrid, str) and vrid:
                 event_payload = {
-                    "orgId": getattr(existing, "org_id", self.org_id),
-                    "recordId": getattr(existing, "id", None) or record_id,
-                    "version": getattr(existing, "version", 1),
+                    "orgId": existing.get("orgId") or self.org_id,
+                    "recordId": existing.get("_key") or existing.get("id") or record_id,
+                    "version": existing.get("version", 1),
                     "virtualRecordId": vrid,
-                    "connectorId": getattr(existing, "connector_id", None),
+                    "connectorId": existing.get("connectorId"),
                 }
         await self._publish_delete_events(
             {"payloads": [event_payload]} if event_payload else None
@@ -3412,7 +3414,18 @@ class DataSourceEntitiesProcessor:
         self, connector_id: str, external_id: str, user_id: str | None = None
     ) -> None:
         async with self.data_store_provider.transaction() as tx_store:
-            await tx_store.delete_record_by_external_id(connector_id, external_id, user_id)
+            result = await tx_store.delete_record_by_external_id(connector_id, external_id, user_id)
+        # After the commit, as the other delete paths do: the provider returns the
+        # cleanup event for its caller to publish, and dropping it here left the
+        # deleted record's vectors in place.
+        event_data = (result or {}).get("eventData") if isinstance(result, dict) else None
+        event_data = event_data or {}
+        payloads = [
+            p for p in event_data.get("payloads") or [event_data.get("payload")]
+            if isinstance(p, dict) and p.get("virtualRecordId")
+        ]
+        if payloads:
+            await self._publish_delete_events({"payloads": payloads})
 
     async def delete_records_and_relations(
         self, record_key: str, hard_delete: bool = False

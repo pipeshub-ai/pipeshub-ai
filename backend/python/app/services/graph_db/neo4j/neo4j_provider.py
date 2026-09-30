@@ -7314,15 +7314,15 @@ class Neo4jProvider(IGraphDBProvider):
         external_id: str,
         user_id: str,
         transaction: str | None = None
-    ) -> None:
+    ) -> dict | None:
         """Delete a record by external ID"""
         try:
             record = await self.get_record_by_external_id(connector_id, external_id, transaction)
             if not record:
                 self.logger.warning(f"⚠️ Record {external_id} not found for connector {connector_id}")
-                return
+                return None
 
-            await self.delete_record(record.id, user_id, record.org_id, transaction)
+            return await self.delete_record(record.id, user_id, record.org_id, transaction)
 
         except Exception as e:
             self.logger.error(f"❌ Delete record by external ID failed: {str(e)}")
