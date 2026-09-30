@@ -81,7 +81,10 @@ def stored_documents_retry_delay_seconds(reschedules: int) -> float:
 
 
 def stored_documents_give_up_seconds() -> float:
-    """How long after the delete was scheduled a still-listed file keeps being retried."""
+    """How long after the delete was scheduled a file a record still lists keeps being retried.
+
+    Files storage could not remove are retried without a limit.
+    """
     return _seconds_from_env("STORED_DOCUMENTS_GIVE_UP_SECONDS", 24 * 3600.0)
 
 
@@ -381,15 +384,17 @@ class RecordEventHandler(BaseEventService):
         now = get_epoch_timestamp_in_ms()
         scheduled_at = int(payload.get("scheduledAt") or now)
         reschedules = int(payload.get("reschedules") or 0)
-        if now - scheduled_at >= stored_documents_give_up_seconds() * 1000:
+        if still_listed and now - scheduled_at >= stored_documents_give_up_seconds() * 1000:
             # A file still listed a day on belongs to a record that was never deleted.
             self.logger.error(
-                "Gave up removing the stored files of %s a day after their delete was scheduled: "
-                "%d still listed by a record (kept), %d storage could not remove (left in storage): %s",
-                payload.get("connectorId"), len(still_listed), len(not_removed),
-                sorted(still_listed | not_removed),
+                "Keeping %d file(s) of %s that records still list a day after their delete "
+                "was scheduled: %s",
+                len(still_listed), payload.get("connectorId"), sorted(still_listed),
             )
+            still_listed = set()
+        if not still_listed and not not_removed:
             return
+        # Files storage could not remove are never given up: nothing else holds their ids.
         if not self.producer:
             raise IndexingError("No messaging producer configured; cannot reschedule stored-file removal")
         await self.producer.send_event(

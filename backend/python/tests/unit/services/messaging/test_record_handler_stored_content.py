@@ -167,3 +167,20 @@ class TestDeleteStoredDocumentsEvent:
 
         with pytest.raises(ProcessingError):
             await _run(handler, EventTypes.DELETE_STORED_DOCUMENTS.value, {"documentIds": [DOC_ID]})
+
+
+class TestStorageFailuresAreNeverDropped:
+    @pytest.mark.asyncio
+    async def test_after_a_day_a_file_storage_could_not_remove_is_still_rescheduled(self):
+        """Its record is gone; the event holds the only copy of its id."""
+        handler, pipeline = _handler()
+        pipeline.purge_stored_documents = AsyncMock(return_value=[DOC_ID])
+        long_ago = get_epoch_timestamp_in_ms() - 25 * 3600 * 1000
+
+        await _run(
+            handler,
+            EventTypes.DELETE_STORED_DOCUMENTS.value,
+            {"orgId": "org-1", "documentIds": [DOC_ID], "scheduledAt": long_ago},
+        )
+
+        assert handler.producer.send_event.await_args.kwargs["payload"]["documentIds"] == [DOC_ID]
