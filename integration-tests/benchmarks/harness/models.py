@@ -16,6 +16,7 @@ from pydantic.alias_generators import to_camel
 
 Split = Literal["dev", "heldout"]
 FailureKind = Literal["run_error", "timeout", "protocol", "transport", "http", "llm"]
+_PROVIDER_REFUSAL_MARKERS = ("contentpolicyviolation", "content management policy", "content_filter", "content filter")
 
 
 class _Model(BaseModel):
@@ -244,6 +245,14 @@ class SystemFailure(_Model):
     kind: FailureKind
     code: str | None = None
     message: str
+
+    @property
+    def provider_refusal(self) -> bool:
+        """A content-safety refusal by the model provider, as each client
+        reports it (Azure's content management policy, LiteLLM's
+        ContentPolicyViolationError, PipesHub's classified content_filter)."""
+        text = f"{self.code or ''} {self.message}".lower()
+        return any(marker in text for marker in _PROVIDER_REFUSAL_MARKERS)
 
 
 class RunStats(_Model):
@@ -546,6 +555,9 @@ class QuestionScore(_Model):
     cached_tokens: int | None = None
     llm_calls: int | None = None
     error_kind: str | None = None
+    # The provider refused the prompt (a content-safety filter), which re-asking
+    # does not fix; reported apart from transient failures.
+    provider_refusal: bool = False
     policy_violation: bool = False
 
     @model_validator(mode="before")

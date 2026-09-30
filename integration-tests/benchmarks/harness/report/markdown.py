@@ -130,6 +130,21 @@ def _evidence_support(systems: Sequence[SystemSummary]) -> list[str]:
     return lines
 
 
+def _provider_refusals(systems: Sequence[SystemSummary]) -> list[str]:
+    refused = [s for s in systems if s.provider_refusal_questions]
+    if not refused:
+        return []
+    lines = [
+        "### Provider refusals",
+        "",
+        "The model provider's content filter refused these prompts; re-asking does not change that, so they "
+        "are graded wrong. Which system is refused depends on the text it retrieved.",
+        "",
+    ]
+    lines += [f"- **{s.system}** ({len(s.provider_refusal_questions)}): {', '.join(s.provider_refusal_questions)}" for s in refused]
+    return [*lines, ""]
+
+
 def _pairwise(title: str, tests: Sequence[PairwiseTest]) -> list[str]:
     if not tests:
         return []
@@ -156,6 +171,7 @@ def render_report(summary: RunSummary) -> str:
     lines += _breakdown_table("Accuracy by reasoning type", summary.systems, "by_reasoning_type")
     lines += _breakdown_table("Accuracy by gold-article count", summary.systems, "by_gold_count")
     lines += _failures(summary.systems)
+    lines += _provider_refusals(summary.systems)
     lines += _evidence_support(summary.systems)
     lines += _pairwise("Paired comparisons (exact McNemar)", summary.pairwise)
     lines += _pairwise("Paired comparisons on grounded correctness (exact McNemar)", summary.pairwise_grounded)

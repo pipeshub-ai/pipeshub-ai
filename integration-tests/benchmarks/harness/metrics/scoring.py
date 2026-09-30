@@ -68,7 +68,9 @@ class Scorer:
             tool_waves=p.trace.tool_waves if p.trace else 0,
             latency_ms=p.latency_ms, cost_usd=p.cost_usd,
             **_usage(p),
-            error_kind=p.error.kind if p.error else None, policy_violation=bool(p.policy_violations),
+            error_kind=p.error.kind if p.error else None,
+            provider_refusal=bool(p.error and p.error.provider_refusal),
+            policy_violation=bool(p.policy_violations),
         )
         update = {**self._retrieval(p, gold), **self._citations(p, gold, inputs.claims, base.correct)}
         scored = base.model_copy(update=update)

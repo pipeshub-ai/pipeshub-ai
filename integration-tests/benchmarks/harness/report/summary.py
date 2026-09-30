@@ -82,6 +82,8 @@ class SystemSummary(BaseModel):
     by_reasoning_type: dict[str, float] = {}
     by_gold_count: dict[str, float] = {}
     error_rate: float = 0.0
+    # Questions the provider refused on content-safety grounds; graded wrong.
+    provider_refusal_questions: list[str] = []
     policy_violations: int = 0
     latency_p50_ms: float | None = None
     latency_p95_ms: float | None = None
@@ -277,6 +279,7 @@ def summarize_system(
         by_reasoning_type=_breakdown(scores, lambda s: s.labels),
         by_gold_count=_breakdown(scores, lambda s: [_gold_bucket(s.gold_count)]),
         error_rate=_mean(1.0 if s.error_kind else 0.0 for s in scores) or 0.0,
+        provider_refusal_questions=sorted({s.question_id for s in scores if s.provider_refusal}, key=_qid_order),
         policy_violations=sum(1 for s in scores if s.policy_violation),
         latency_p50_ms=percentile(latencies, 50), latency_p95_ms=percentile(latencies, 95),
         **_cost(scores),
