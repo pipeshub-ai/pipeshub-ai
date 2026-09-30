@@ -1,7 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import jwt from 'jsonwebtoken'
+import jwt, { type JwtPayload } from 'jsonwebtoken'
 import {
   mailJwtGenerator,
   jwtGeneratorForForgotPasswordLink,
@@ -24,6 +24,8 @@ import {
 } from '../../../src/libs/utils/createJwt'
 import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum'
 import { deriveUserActionSecret } from '../../../src/libs/utils/jwtKeys'
+
+type SignedLifetime = JwtPayload & { exp: number; iat: number }
 
 describe('createJwt', () => {
   const secret = 'test-secret-key-12345'
@@ -112,7 +114,7 @@ describe('createJwt', () => {
           'org-456',
           secret,
         )
-        const decoded = jwt.verify(passwordResetToken, userActionSecret) as any
+        const decoded = jwt.verify(passwordResetToken, userActionSecret) as SignedLifetime
         expect(decoded.exp - decoded.iat).to.equal(60)
       })
 
@@ -131,7 +133,7 @@ describe('createJwt', () => {
           'org-456',
           secret,
         )
-        const decoded = jwt.verify(passwordResetToken, userActionSecret) as any
+        const decoded = jwt.verify(passwordResetToken, userActionSecret) as SignedLifetime
         return decoded.exp - decoded.iat
       }
 
@@ -147,7 +149,7 @@ describe('createJwt', () => {
         expect(passwordResetLinkLifetime().description).to.equal('30 minutes')
       })
 
-      for (const unusable of ['abc', '0', '-5', '10ms', '0.2s', '20 fortnights']) {
+      for (const unusable of ['abc', '0', '-5', '10ms', '0.2s', '0.5s', '9'.repeat(400), '20 fortnights']) {
         it(`refuses ${JSON.stringify(unusable)} with an error naming the variable`, () => {
           process.env.PASSWORD_RESET_LINK_EXPIRY = unusable
           expect(() => passwordResetLinkLifetime()).to.throw(

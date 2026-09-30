@@ -57,8 +57,10 @@ export const parseLinkLifetime = (
       ? LIFETIME_UNITS[0]
       : LIFETIME_UNITS.find(([, pattern]) => pattern.test(unitText));
   const amountText = match?.[1] ?? '';
-  const seconds = Math.round(Number(amountText) * (unit?.[2] ?? 0));
-  if (!match || !unit || !(seconds >= 1)) {
+  // Checked before rounding, so 0.5s is refused rather than rounded up to 1s.
+  const exactSeconds = Number(amountText) * (unit?.[2] ?? 0);
+  const seconds = Math.round(exactSeconds);
+  if (!match || !unit || !(exactSeconds >= 1) || !Number.isFinite(seconds)) {
     throw new Error(
       `${settingName === undefined ? '' : `${settingName}: `}"${text}" is not ` +
         'a usable link lifetime. Use a positive duration such as 20m, 1h or ' +
