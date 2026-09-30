@@ -16,6 +16,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
+
 from benchmarks.harness.llm.client import LLMClient, ResolvedModel
 
 logger = logging.getLogger(__name__)
@@ -23,6 +25,7 @@ logger = logging.getLogger(__name__)
 RetrievalMode = Literal["dense", "sparse", "hybrid"]
 SPARSE_MODEL = "Qdrant/bm25"
 _VRID_KEY = "metadata.virtualRecordId"
+_QDRANT_ATTEMPTS = 5
 
 
 @dataclass(frozen=True)
@@ -85,12 +88,33 @@ def hybrid_points(
         prefetch.append(models.Prefetch(
             query=models.SparseVector(indices=indices, values=values), using="sparse", limit=limit * 2,
         ))
-    response = client.query_points(
+    response = _query_with_retry(
+        client,
         collection_name=collection, prefetch=prefetch,
         query=models.FusionQuery(fusion=models.Fusion.RRF),
         query_filter=query_filter, limit=limit, with_payload=True,
     )
     return list(response.points)
+
+
+def _is_transient_qdrant_error(exc: BaseException) -> bool:
+    from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
+
+    if isinstance(exc, UnexpectedResponse):
+        return exc.status_code is None or exc.status_code == 429 or exc.status_code >= 500
+    return isinstance(exc, (ResponseHandlingException, TimeoutError, ConnectionError))
+
+
+@retry(
+    retry=retry_if_exception(_is_transient_qdrant_error),
+    stop=stop_after_attempt(_QDRANT_ATTEMPTS),
+    wait=wait_exponential_jitter(initial=1, max=30),
+    reraise=True,
+)
+def _query_with_retry(client: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+    # Several runs share one Qdrant; under that load a single query can time
+    # out, and one timeout must not end a run hours in.
+    return client.query_points(**kwargs)
 
 
 class ChunkIndex:

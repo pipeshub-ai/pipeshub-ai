@@ -339,3 +339,30 @@ def test_missing_prefetch_frame_is_a_contract_error(tmp_path: Path) -> None:
 
     with pytest.raises(BackendContractError):
         _check_trace_contract(Prediction(system="s", question_id="1", repeat=0, trace=StreamTrace()))
+
+
+def test_a_failed_ranking_is_retried_on_resume_not_fatal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A vector-store timeout on one question must not end a stage with hours
+    of other questions left; the next resume ranks the missing one."""
+    from benchmarks.harness.models import RankedList
+
+    original = FakeTraceSystem.ranked_search
+    fail_once = {"0"}
+
+    def flaky(self, item, prepared, k):  # noqa: ANN001, ANN202
+        if item.question_id in fail_once:
+            fail_once.discard(item.question_id)
+            raise TimeoutError("vector store timed out")
+        return original(self, item, prepared, k)
+
+    monkeypatch.setattr(FakeTraceSystem, "ranked_search", flaky)
+    ctx = _context(tmp_path)
+    run_pipeline([DatasetStage(), CorpusStage(), PrepareStage(), SearchStage()], ctx)
+
+    ranked = {(r.system, r.question_id) for r in ctx.store.read("rankings.jsonl", RankedList)}
+    assert ("fake_trace", "0") not in ranked and ("fake_trace", "1") in ranked
+
+    run_pipeline([SearchStage()], ctx)
+
+    ranked = {(r.system, r.question_id) for r in ctx.store.read("rankings.jsonl", RankedList)}
+    assert ("fake_trace", "0") in ranked

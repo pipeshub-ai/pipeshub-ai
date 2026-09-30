@@ -14,6 +14,7 @@ import subprocess
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from benchmarks.harness import HARNESS_VERSION
 from benchmarks.harness.concurrency import CircuitBreaker, run_parallel
@@ -303,17 +304,26 @@ class SearchStage:
             todo = [q for q in ctx.questions if (system.id, q.id) not in done]
             report.skipped += len(ctx.questions) - len(todo)
 
-            def _append(_q: Question, ranking: RankedList) -> None:
+            def _append(_q: Question, ranking: RankedList | None) -> None:
+                if ranking is None:
+                    report.failed += 1
+                    return
                 ctx.store.append(RANKINGS_FILE, ranking)
                 report.processed += 1
 
-            run_parallel(
-                todo,
-                lambda q: retriever.ranked_search(
-                    AskItem.from_question(q, with_gold=adapter.capabilities.needs_gold_refs), prepared, RANK_K,
-                ),
-                workers=system.concurrency, on_result=_append,
-            )
+            def _rank(q: Question, retriever: Any = retriever, prepared: Any = prepared,  # noqa: ANN401
+                      system_id: str = system.id, needs_gold: bool = adapter.capabilities.needs_gold_refs,
+                      ) -> RankedList | None:
+                # A retrieval that still fails after its own retries is left
+                # unrecorded, so the next resume ranks it again; it must not end
+                # a stage that has hours of other questions to finish.
+                try:
+                    return retriever.ranked_search(AskItem.from_question(q, with_gold=needs_gold), prepared, RANK_K)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("%s q%s: ranked search failed, left for the next resume: %s", system_id, q.id, exc)
+                    return None
+
+            run_parallel(todo, _rank, workers=system.concurrency, on_result=_append)
         return report
 
 
