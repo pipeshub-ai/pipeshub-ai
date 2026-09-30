@@ -7,6 +7,9 @@ from app.connectors.services.kafka_service import KafkaService
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.health.health import Health
+from app.services.vector_db.const.const import (
+    VECTOR_DB_ENTITIES_COLLECTION_NAME,
+)
 from app.utils.logger import create_logger
 
 load_dotenv(override=True)
@@ -87,6 +90,24 @@ class IndexingAppContainer(BaseAppContainer):
         collection_registry=collection_registry,
     )
 
+    entity_vector_store = providers.Resource(
+        container_utils.create_entity_vector_store,
+        logger=logger,
+        config_service=config_service,
+        vector_db_service=vector_db_service,
+        collection_name=VECTOR_DB_ENTITIES_COLLECTION_NAME,
+    )
+
+    # Canonicalises extracted taxonomy names before graph/vector writes —
+    # see app.modules.entity_resolution. Always on.
+    entity_resolver = providers.Resource(
+        container_utils.create_entity_resolver,
+        logger=logger,
+        config_service=config_service,
+        graph_provider=graph_provider,
+        entity_vector_store=entity_vector_store,
+    )
+
     sink_orchestrator = providers.Resource(
         container_utils.create_sink_orchestrator,
         logger=logger,
@@ -95,6 +116,8 @@ class IndexingAppContainer(BaseAppContainer):
         vector_store=vector_store,
         graph_provider=graph_provider,
         config_service=config_service,
+        entity_vector_store=entity_vector_store,
+        entity_resolver=entity_resolver,
     )
 
 

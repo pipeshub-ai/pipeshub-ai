@@ -6,6 +6,7 @@ from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.modules.reranker.reranker import RerankerService
+from app.services.vector_db.const.const import VECTOR_DB_ENTITIES_COLLECTION_NAME
 from app.utils.logger import create_logger
 
 
@@ -75,6 +76,15 @@ class QueryAppContainer(BaseAppContainer):
     # configured (always, in practice), else in-process-only — see
     # `agents/agent_loop/cancellation/factory.py`.
     run_cancellation_registry = providers.Singleton(build_run_cancellation_registry)
+    # EntityVectorStore — used by the resolve_entity_filters agent tool
+    # EntityVectorStore — backs the knowledgegraph search_entities tool
+    entity_vector_store = providers.Resource(
+        container_utils.create_entity_vector_store,
+        logger=logger,
+        config_service=config_service,
+        vector_db_service=vector_db_service,
+        collection_name=VECTOR_DB_ENTITIES_COLLECTION_NAME,
+    )
 
     # Query-specific wiring configuration
     wiring_config = containers.WiringConfiguration(

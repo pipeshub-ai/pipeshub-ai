@@ -18,12 +18,13 @@ def _candidate(
     blocks_held: int = 2,
     blocks_total: int = 10,
     topics: tuple[str, ...] = ("topic1",),
+    summary: str = "",
 ) -> FetchCandidate:
     return FetchCandidate(
         record_id=record_id,
         record_name=record_name,
         topics=topics,
-        summary="",
+        summary=summary,
         blocks_held=blocks_held,
         blocks_total=blocks_total,
     )
@@ -157,3 +158,13 @@ class TestRenderCandidateTable:
         plan = _plan(_candidate(blocks_held=3, blocks_total=10))
         result = render_candidate_table(plan)
         assert "you have 3 of 10 blocks (30%)" in result
+
+    def test_summary_rendered_when_present(self) -> None:
+        plan = _plan(_candidate(summary="This is a contract between Acme and Globex."))
+        result = render_candidate_table(plan)
+        assert "Summary: This is a contract between Acme and Globex." in result
+
+    def test_summary_omitted_when_empty(self) -> None:
+        plan = _plan(_candidate(summary=""))
+        result = render_candidate_table(plan)
+        assert "Summary:" not in result
