@@ -3,7 +3,10 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import jwt from 'jsonwebtoken'
 import mongoose from 'mongoose'
-import { hydrateScopedRequestAsUser } from '../../../../src/modules/enterprise_search/utils/scoped-request'
+import {
+  STAND_IN_TOKEN_TTL_SECONDS,
+  hydrateScopedRequestAsUser,
+} from '../../../../src/modules/enterprise_search/utils/scoped-request'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 
 describe('hydrateScopedRequestAsUser', () => {
@@ -34,5 +37,8 @@ describe('hydrateScopedRequestAsUser', () => {
     const claims = jwt.verify(token, 'session-secret') as Record<string, unknown>
     expect(claims.role).to.equal('member')
     expect(claims.email).to.equal('person@example.com')
+    // Node honours it like a session, so it must not outlive the request.
+    expect((claims.exp as number) - (claims.iat as number)).to.equal(STAND_IN_TOKEN_TTL_SECONDS)
+    expect(STAND_IN_TOKEN_TTL_SECONDS).to.be.at.most(60)
   })
 })
