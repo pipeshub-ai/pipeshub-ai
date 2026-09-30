@@ -243,3 +243,30 @@ async def test_containment_deeper_than_twenty_levels_is_followed(tree: _Tree) ->
     await tree.delete(["folder_a"])
     for name in (*levels, "deep_file_2"):
         assert not await tree.exists(name), f"{name} survived its folder's delete"
+
+
+async def test_what_is_reported_deleted_is_exactly_what_was_deleted(tree: _Tree) -> None:
+    """A record moved into the subtree after the inventory: reported iff actually removed."""
+    owner = tree.graph.client if isinstance(tree.graph, Neo4jProvider) else tree.graph
+    original = owner.execute_query
+    moved = False
+
+    async def move_in_after_the_inventory(query, *args, **kwargs):
+        nonlocal moved
+        result = await original(query, *args, **kwargs)
+        if not moved and "valid_root" in query:
+            moved = True
+            assert await tree.graph.delete_parent_child_edge_to_record(tree.ids["b1"])
+            await tree.link("sub", "b1", "PARENT_CHILD")
+        return result
+
+    owner.execute_query = move_in_after_the_inventory
+    try:
+        result = await tree.delete(["sub"], within_folder_id=tree.ids["folder_a"])
+    finally:
+        owner.execute_query = original
+
+    assert moved, "the test never reached the delete's own check"
+    reported = {r["record_id"] for r in result.get("deleted_records", [])}
+    gone = {tree.ids[n] for n in ("sub", "s1", "b1") if not await tree.exists(n)}
+    assert reported == gone, f"reported deleted {reported}, actually gone {gone}"

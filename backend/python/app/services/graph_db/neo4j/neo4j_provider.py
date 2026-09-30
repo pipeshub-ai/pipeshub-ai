@@ -10799,16 +10799,20 @@ class Neo4jProvider(IGraphDBProvider):
                 WITH collect(DISTINCT CASE
                         WHEN rec IS NOT NULL AND (rec.isDeleted IS NULL OR rec.isDeleted <> true) AND rec.connectorId = $connector_id
                              AND ($folder_id IS NULL OR EXISTS {
-                                 MATCH inside = (:Record {id: $folder_id})-[:RECORD_RELATION*1..""" + str(CONTAINMENT_MAX_DEPTH) + """]->(rec)
-                                 WHERE all(rel IN relationships(inside) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+                                 MATCH (:Record {id: $folder_id})
+                                       (()-[c:RECORD_RELATION WHERE c.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->()){1,""" + str(CONTAINMENT_MAX_DEPTH) + """}
+                                       (rec)
                              })
                         THEN rec ELSE null END) AS roots_raw
                 WITH [r IN roots_raw WHERE r IS NOT NULL] AS valid_roots
                 WITH valid_roots, [r IN valid_roots | r.id] AS valid_root_keys
                 // 2. Containment subtree, depth-0 inclusive
                 UNWIND (CASE WHEN size(valid_roots) = 0 THEN [null] ELSE valid_roots END) AS root
-                OPTIONAL MATCH path = (root)-[:RECORD_RELATION*0..""" + str(CONTAINMENT_MAX_DEPTH) + """]->(v:Record)
-                WHERE root IS NOT NULL AND all(rel IN relationships(path) WHERE rel.relationshipType IN """ + traversal_types + """)
+                // A quantified path stops expanding at the first non-containment edge.
+                OPTIONAL MATCH (root)
+                      (()-[c:RECORD_RELATION WHERE c.relationshipType IN """ + traversal_types + """]->()){0,""" + str(CONTAINMENT_MAX_DEPTH) + """}
+                      (v:Record)
+                WHERE root IS NOT NULL
                 WITH valid_root_keys, collect(DISTINCT v) AS all_vertices
                 // 3. Attach each record's isOfType type doc (any label)
                 UNWIND (CASE WHEN size(all_vertices) = 0 THEN [null] ELSE all_vertices END) AS vert
@@ -10880,18 +10884,21 @@ class Neo4jProvider(IGraphDBProvider):
                         MATCH (root:Record {id: rid, connectorId: $connector_id})
                         WHERE coalesce(root.isDeleted, false) = false
                           AND EXISTS {
-                              MATCH inside = (:Record {id: $folder_id})-[:RECORD_RELATION*1..""" + str(CONTAINMENT_MAX_DEPTH) + """]->(root)
-                              WHERE all(rel IN relationships(inside) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+                              MATCH (:Record {id: $folder_id})
+                                    (()-[c:RECORD_RELATION WHERE c.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->()){1,""" + str(CONTAINMENT_MAX_DEPTH) + """}
+                                    (root)
                           }
-                        MATCH sub = (root)-[:RECORD_RELATION*0..""" + str(CONTAINMENT_MAX_DEPTH) + """]->(v:Record)
-                        WHERE all(rel IN relationships(sub) WHERE rel.relationshipType IN """ + traversal_types + """)
+                        MATCH (root)
+                              (()-[c:RECORD_RELATION WHERE c.relationshipType IN """ + traversal_types + """]->()){0,""" + str(CONTAINMENT_MAX_DEPTH) + """}
+                              (v:Record)
                         WITH collect(DISTINCT root.id) AS root_ids, collect(DISTINCT v) AS vertices
                         UNWIND vertices AS v
                         OPTIONAL MATCH (v)-[:IS_OF_TYPE]->(t)
-                        WITH root_ids, v, v.id AS vid, collect(t) AS types
+                        WITH root_ids, v, properties(v) AS record, collect(t) AS types,
+                             collect(properties(t)) AS type_docs
                         FOREACH (t IN types | DETACH DELETE t)
                         DETACH DELETE v
-                        RETURN root_ids, collect(vid) AS deleted_ids
+                        RETURN root_ids, collect({record: record, type_doc: head(type_docs)}) AS deleted
                         """,
                         parameters={
                             "root_ids": valid_root_keys,
@@ -10901,12 +10908,10 @@ class Neo4jProvider(IGraphDBProvider):
                         txn_id=txn_id,
                     )
                     row = rows[0] if rows else {}
-                    deleted_ids = set(row.get("deleted_ids") or [])
                     kept_roots = [r for r in valid_root_keys if r not in set(row.get("root_ids") or [])]
-                    records_with_type = [
-                        rt for rt in records_with_type
-                        if (rt.get("record") or {}).get("id") in deleted_ids
-                    ]
+                    # What the statement deleted, which may differ from the inventory
+                    # above: the tree can change in between. Events follow the delete.
+                    records_with_type = list(row.get("deleted") or [])
                     failed_records += [
                         {"record_id": rid, "reason": "No longer in this folder"} for rid in kept_roots
                     ]
