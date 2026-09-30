@@ -4,19 +4,20 @@ from io import IOBase
 from typing import Any, Dict, Optional, Union
 
 try:
-    import aioboto3  # type: ignore
+    import aiobotocore  # type: ignore
     from botocore.config import Config  # type: ignore
     from botocore.exceptions import ClientError  # type: ignore
 except ImportError:
-    raise ImportError("aioboto3 is not installed. Please install it with `pip install aioboto3`")
+    raise ImportError("aiobotocore is not installed. Please install it with `pip install aiobotocore`")
 
 from app.sources.client.minio.minio import MinIOClient
 from app.sources.client.s3.s3 import S3Response
+from app.sources.client.s3.session import AioBotoSession
 
 
 class MinIODataSource:
     """
-    MinIO S3-compatible API client wrapper using aioboto3.
+    MinIO S3-compatible API client wrapper using aiobotocore.
 
     This class provides the same interface as S3DataSource but connects to a MinIO
     server instead of AWS S3. The key difference is the use of a custom endpoint_url
@@ -35,8 +36,8 @@ class MinIODataSource:
         self._use_ssl = credentials.get('use_ssl', True)
         self._verify_ssl = credentials.get('verify_ssl', True)
 
-    async def _get_aioboto3_session(self) -> aioboto3.Session:  # type: ignore[valid-type]
-        """Get or create the aioboto3 session."""
+    async def _get_aioboto3_session(self) -> AioBotoSession:
+        """Get or create the aiobotocore session."""
         if self._session is None:
             self._session = self._minio_client.get_session()
         return self._session

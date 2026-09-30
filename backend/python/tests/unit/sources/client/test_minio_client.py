@@ -63,7 +63,7 @@ class TestMinIORESTClientViaAccessKey:
         assert client.verify_ssl is True
         assert client.region_name == "us-east-1"
 
-    @patch("app.sources.client.minio.minio.aioboto3.Session")
+    @patch("app.sources.client.minio.minio.AioBotoSession")
     def test_create_session(self, mock_session_cls, rest_client):
         mock_session_cls.return_value = MagicMock()
         session = rest_client.create_session()
@@ -74,7 +74,7 @@ class TestMinIORESTClientViaAccessKey:
             region_name="us-east-1",
         )
 
-    @patch("app.sources.client.minio.minio.aioboto3.Session")
+    @patch("app.sources.client.minio.minio.AioBotoSession")
     def test_get_session(self, mock_session_cls, rest_client):
         mock_session_cls.return_value = MagicMock()
         session = rest_client.get_session()
@@ -84,7 +84,7 @@ class TestMinIORESTClientViaAccessKey:
         assert session is session2
 
     @pytest.mark.asyncio
-    @patch("app.sources.client.minio.minio.aioboto3.Session")
+    @patch("app.sources.client.minio.minio.AioBotoSession")
     async def test_get_s3_client(self, mock_session_cls):
         mock_session = MagicMock()
         mock_session.client.return_value = MagicMock()
@@ -203,7 +203,7 @@ class TestMinIOClient:
         client = MinIOClient(rest_client)
         assert client.get_endpoint_url() == "http://localhost:9000"
 
-    @patch("app.sources.client.minio.minio.aioboto3.Session")
+    @patch("app.sources.client.minio.minio.AioBotoSession")
     def test_get_session(self, mock_session_cls, rest_client):
         mock_session_cls.return_value = MagicMock()
         client = MinIOClient(rest_client)
@@ -313,7 +313,7 @@ class TestMinIOClient:
             )
 
     @pytest.mark.asyncio
-    @patch("app.sources.client.minio.minio.aioboto3.Session")
+    @patch("app.sources.client.minio.minio.AioBotoSession")
     async def test_get_s3_client_via_wrapper(self, mock_session_cls, rest_client):
         """Cover MinIOClient.get_s3_client (line 154)."""
         mock_session = MagicMock()

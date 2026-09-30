@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, type RefObject } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import {
@@ -42,9 +42,11 @@ function toValidPageNumber(value: unknown): number | null {
   return Math.trunc(normalized);
 }
 
-/** `window.PdfViewer` is the PdfHighlighter instance; `.viewer` is the pdf.js `PDFViewer`. */
-function getPdfJsViewer() {
-  return (window as unknown as { PdfViewer?: { viewer?: PdfJsViewer } }).PdfViewer?.viewer;
+type HighlighterRef = RefObject<PdfHighlighter<IHighlight> | null>;
+
+/** `.viewer` on the PdfHighlighter instance is the pdf.js `PDFViewer`. */
+function getPdfJsViewer(highlighterRef: HighlighterRef) {
+  return highlighterRef.current?.viewer as PdfJsViewer | undefined;
 }
 
 function clampToPageBounds(
@@ -139,7 +141,7 @@ function citationToHighlight(citation: PreviewCitation): IHighlight | null {
  * and the active citation is scrolled into view.
  *
  * Page tracking and navigation work by accessing the internal PDFViewer
- * exposed by react-pdf-highlighter via window.PdfViewer.
+ * on the PdfHighlighter instance (held in `highlighterRef`).
  */
 export function PDFRenderer({
   fileUrl,
@@ -151,6 +153,7 @@ export function PDFRenderer({
   onHighlightClick,
 }: PDFRendererProps) {
   const scrollViewerTo = useRef<(highlight: IHighlight) => void>(() => {});
+  const highlighterRef = useRef<PdfHighlighter<IHighlight> | null>(null);
   const [viewerReadyEpoch, setViewerReadyEpoch] = useState(0);
 
   // Stable ref to latest pagination callbacks — avoids effects re-running on every render
@@ -190,7 +193,7 @@ export function PDFRenderer({
       const pageNumber = toValidPageNumber(highlight.position.pageNumber);
       if (!pageNumber) return;
 
-      const viewer = getPdfJsViewer();
+      const viewer = getPdfJsViewer(highlighterRef);
       const safePageNumber = clampToPageBounds(
         pageNumber,
         paginationRef.current?.totalPages,
@@ -305,7 +308,7 @@ export function PDFRenderer({
 
     const detectCurrentPage = () => {
       if (isNavigating.current) return;
-      const viewer = getPdfJsViewer();
+      const viewer = getPdfJsViewer(highlighterRef);
       if (!viewer) return;
       const pageNum = toValidPageNumber(viewer.currentPageNumber);
       if (pageNum && pageNum !== lastReportedPage.current) {
@@ -321,7 +324,7 @@ export function PDFRenderer({
 
     // Poll until the viewer container is available (created after pagesinit)
     const timer = setInterval(() => {
-      const container = getPdfJsViewer()?.container;
+      const container = getPdfJsViewer(highlighterRef)?.container;
       if (container) {
         clearInterval(timer);
         scrollEl = container;
@@ -352,7 +355,7 @@ export function PDFRenderer({
     if (!targetPage) return;
     if (!isViewerReady.current) return;
 
-    const viewer = getPdfJsViewer();
+    const viewer = getPdfJsViewer(highlighterRef);
     if (!viewer) return;
     const safeTargetPage = clampToPageBounds(
       targetPage,
@@ -376,7 +379,7 @@ export function PDFRenderer({
   // scale (or a new document) changes once the global pdf.js viewer is present.
   const scale = pagination?.scale ?? 1;
   useEffect(() => {
-    const viewer = getPdfJsViewer();
+    const viewer = getPdfJsViewer(highlighterRef);
     if (!viewer) return;
     const container = viewer.container;
     if (container) {
@@ -504,6 +507,7 @@ export function PDFRenderer({
               onReport={handleDocumentLoaded}
             />
             <PdfHighlighter<IHighlight>
+              ref={highlighterRef}
               pdfDocument={pdfDocument}
               enableAreaSelection={(event: MouseEvent) => event.altKey}
               onScrollChange={() => {}}

@@ -3,23 +3,24 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 try:
-    import aioboto3  # type: ignore
+    import aiobotocore  # type: ignore
     from botocore.config import Config  # type: ignore
     from botocore.exceptions import ClientError  # type: ignore
 except ImportError:
-    raise ImportError("aioboto3 is not installed. Please install it with `pip install aioboto3`")
+    raise ImportError("aiobotocore is not installed. Please install it with `pip install aiobotocore`")
 
 from app.sources.client.s3.s3 import S3Client, S3Response
+from app.sources.client.s3.session import AioBotoSession
 
 
 class S3DataSource:
     """
-    Complete Amazon S3 API client wrapper with EXPLICIT METHOD SIGNATURES using aioboto3.
+    Complete Amazon S3 API client wrapper with EXPLICIT METHOD SIGNATURES using aiobotocore.
     All 102 S3 methods with proper parameter signatures:
     - Required parameters are explicitly typed (e.g., Bucket: str, Key: str)
     - Optional parameters use Optional[Type] = None
     - No **kwargs - every parameter is explicitly defined
-    - Matches aioboto3 S3 client signatures exactly
+    - Matches aiobotocore S3 client signatures exactly
     - Each parameter on separate line for better readability
     """
 
@@ -28,15 +29,15 @@ class S3DataSource:
         self._s3_client = s3_client
         self._session = None
 
-    async def _get_aioboto3_session(self) -> aioboto3.Session:  # type: ignore[valid-type]
-        """Get or create the aioboto3 session."""
+    async def _get_aioboto3_session(self) -> AioBotoSession:
+        """Get or create the aiobotocore session."""
         if self._session is None:
             # Option 1: Get the existing session directly from S3Client (recommended)
             self._session = self._s3_client.get_session()
 
             # Option 2: Create new session from credentials (if needed)
             # credentials = self._s3_client.get_credentials()
-            # self._session = aioboto3.Session(
+            # self._session = AioBotoSession(
             #     aws_access_key_id=credentials['aws_access_key_id'],
             #     aws_secret_access_key=credentials['aws_secret_access_key'],
             #     region_name=credentials['region_name']
@@ -4324,8 +4325,8 @@ class S3DataSource:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
     # Utility Methods
-    async def get_aioboto3_session(self) -> aioboto3.Session:
-        """Get the underlying aioboto3 session."""
+    async def get_aioboto3_session(self) -> AioBotoSession:
+        """Get the underlying aiobotocore session."""
         return await self._get_aioboto3_session()
 
     def get_s3_client(self) -> S3Client:
@@ -4336,7 +4337,7 @@ class S3DataSource:
         """Get information about the wrapped SDK methods."""
         info = {
             'total_methods': 102,
-            'sdk_version': aioboto3.__version__,
+            'sdk_version': aiobotocore.__version__,
             'service': 's3'
         }
         return S3Response(success=True, data=info)

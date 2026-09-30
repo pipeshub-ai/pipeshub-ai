@@ -84,7 +84,7 @@ class TestS3RESTClientViaAccessKey:
         assert rest_client.bucket_name == "my-bucket"
         assert rest_client.session is None
 
-    @patch("app.sources.client.s3.s3.aioboto3.Session")
+    @patch("app.sources.client.s3.s3.AioBotoSession")
     def test_create_session(self, mock_session_cls, rest_client):
         mock_session_cls.return_value = MagicMock()
         session = rest_client.create_session()
@@ -95,7 +95,7 @@ class TestS3RESTClientViaAccessKey:
             region_name="us-east-1",
         )
 
-    @patch("app.sources.client.s3.s3.aioboto3.Session")
+    @patch("app.sources.client.s3.s3.AioBotoSession")
     def test_get_session(self, mock_session_cls, rest_client):
         mock_session_cls.return_value = MagicMock()
         session = rest_client.get_session()
@@ -105,7 +105,7 @@ class TestS3RESTClientViaAccessKey:
         assert session is session2
 
     @pytest.mark.asyncio
-    @patch("app.sources.client.s3.s3.aioboto3.Session")
+    @patch("app.sources.client.s3.s3.AioBotoSession")
     async def test_get_s3_client(self, mock_session_cls):
         mock_session = MagicMock()
         mock_session.client.return_value = MagicMock()
@@ -201,7 +201,7 @@ class TestS3Client:
         client = S3Client(rest_client)
         assert client.get_region_name() == "us-east-1"
 
-    @patch("app.sources.client.s3.s3.aioboto3.Session")
+    @patch("app.sources.client.s3.s3.AioBotoSession")
     def test_get_session(self, mock_session_cls, rest_client):
         mock_session_cls.return_value = MagicMock()
         client = S3Client(rest_client)
@@ -302,7 +302,7 @@ class TestS3Client:
             )
 
     @pytest.mark.asyncio
-    @patch("app.sources.client.s3.s3.aioboto3.Session")
+    @patch("app.sources.client.s3.s3.AioBotoSession")
     async def test_get_s3_client_via_wrapper(self, mock_session_cls, rest_client):
         """Cover S3Client.get_s3_client (line 137)."""
         mock_session = MagicMock()

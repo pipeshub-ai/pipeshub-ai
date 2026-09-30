@@ -2,19 +2,15 @@ import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
-try:
-    import aioboto3  # type: ignore
-except ImportError:
-    raise ImportError("aioboto3 is not installed. Please install it with `pip install aioboto3`")
-
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
+from app.sources.client.s3.session import AioBotoSession
 
 
 class MinIORESTClientViaAccessKey:
-    """MinIO REST client via Access Key and Secret Key using aioboto3.
+    """MinIO REST client via Access Key and Secret Key using aiobotocore.
 
-    MinIO is S3-compatible, so we use aioboto3 with a custom endpoint_url.
+    MinIO is S3-compatible, so we use aiobotocore with a custom endpoint_url.
 
     Args:
         access_key_id: The MinIO access key ID
@@ -45,23 +41,23 @@ class MinIORESTClientViaAccessKey:
         self.region_name = region_name
         self.session = None
 
-    def create_session(self) -> aioboto3.Session:  # type: ignore[valid-type]
-        """Create aioboto3 session using access key and secret key"""
-        self.session = aioboto3.Session(
+    def create_session(self) -> AioBotoSession:
+        """Create aiobotocore session using access key and secret key"""
+        self.session = AioBotoSession(
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
             region_name=self.region_name
         )
         return self.session
 
-    def get_session(self) -> aioboto3.Session:  # type: ignore[valid-type]
-        """Get the aioboto3 session"""
+    def get_session(self) -> AioBotoSession:
+        """Get the aiobotocore session"""
         if self.session is None:
             self.session = self.create_session()
         return self.session
 
     async def get_s3_client(self) -> object:
-        """Get an S3 client context manager from aioboto3 session with MinIO endpoint.
+        """Get an S3 client context manager from aiobotocore session with MinIO endpoint.
 
         Note: SSL usage is determined by the URL scheme (http:// vs https://) in endpoint_url.
         The verify parameter controls SSL certificate verification.
@@ -103,7 +99,7 @@ class MinIORESTClientViaAccessKey:
 
 @dataclass
 class MinIOAccessKeyConfig:
-    """Configuration for MinIO REST client via Access Key and Secret Key using aioboto3
+    """Configuration for MinIO REST client via Access Key and Secret Key using aiobotocore
 
     Args:
         access_key_id: The MinIO access key ID
@@ -139,7 +135,7 @@ class MinIOAccessKeyConfig:
 
 
 class MinIOClient(IClient):
-    """Builder class for MinIO clients with different construction methods using aioboto3"""
+    """Builder class for MinIO clients with different construction methods using aiobotocore"""
 
     def __init__(self, client: MinIORESTClientViaAccessKey) -> None:
         """Initialize with a MinIO client object"""
@@ -150,11 +146,11 @@ class MinIOClient(IClient):
         return self.client
 
     async def get_s3_client(self) -> object:
-        """Return the aioboto3 S3 client context manager"""
+        """Return the aiobotocore S3 client context manager"""
         return await self.client.get_s3_client()
 
-    def get_session(self) -> aioboto3.Session:  # type: ignore[valid-type]
-        """Get the aioboto3 session"""
+    def get_session(self) -> AioBotoSession:
+        """Get the aiobotocore session"""
         return self.client.get_session()  # type: ignore[valid-type]
 
     def get_bucket_name(self) -> Optional[str]:

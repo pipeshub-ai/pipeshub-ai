@@ -154,7 +154,7 @@ class MinIOConnector(S3CompatibleBaseConnector):
     Connector for synchronizing data from MinIO S3-compatible object storage.
 
     MinIO is a high-performance, S3-compatible object storage server. This connector
-    uses the same S3 API through aioboto3 but connects to a MinIO server instead
+    uses the same S3 API through aiobotocore but connects to a MinIO server instead
     of AWS S3.
     """
 
