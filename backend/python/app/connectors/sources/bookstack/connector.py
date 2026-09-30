@@ -1885,8 +1885,13 @@ class BookStackConnector(BaseConnector):
                 if page.get("id") and self._page_passes_filters(page, book_ids, book_ids_operator, date_filters)
             )
             offset += len(pages)
-            if not pages or offset >= listing["total"]:
+            if offset >= listing["total"]:
                 break
+            if not pages:
+                self.logger.warning(
+                    "BookStack stopped listing pages before the total it reported, so purged pages are not removed this sync"
+                )
+                return False
         return await self._remove_pages_not_listed(listed, book_ids, book_ids_operator, date_filters)
 
     async def _delete_page_record(self, record: Record, page_id: int) -> bool:
@@ -2176,8 +2181,11 @@ class BookStackConnector(BaseConnector):
             batch = response.data['data']
             events.extend(batch)
             offset += len(batch)
-            if not batch or offset >= response.data['total']:
+            if offset >= response.data['total']:
                 return events, True
+            if not batch:
+                self.logger.warning("The audit log stopped before the total it reported; page deletions are read again next sync")
+                return events, False
 
     async def _handle_page_delete_event(self, page_id: int) -> bool:
         """Remove a page's record once BookStack confirms the page is gone.

@@ -36,6 +36,10 @@ class FakeBookStack:
         self.lookup_error_for: set[int] = set()
         self.missed_by_listing: set[int] = set()
         self.delete_log_errors = 0
+        # From this offset on, a listing answers with no rows but still reports the full total.
+        self.listing_ends_early_at: int | None = None
+        self.audit_ends_early_at: int | None = None
+        self.lookups = 0
 
     def add_page(self, page_id: int, book_id: int = KEPT_BOOK, revision: int = 1) -> None:
         self.pages[page_id] = {
@@ -62,6 +66,7 @@ class FakeBookStack:
     async def list_pages(self, count: int | None = None, offset: int | None = None,
                          sort: str | None = None, filter: dict[str, str] | None = None) -> BookStackResponse:  # noqa: A002
         if filter and "id" in filter:
+            self.lookups += 1
             page_id = int(filter["id"])
             if page_id in self.lookup_error_for:
                 return self._body({"error": {"code": 429, "message": "Too many requests"}})
@@ -71,7 +76,8 @@ class FakeBookStack:
         if self.listing_error_at_offset is not None and offset >= self.listing_error_at_offset:
             return self._body({"error": {"code": 500, "message": "Server Error"}})
         ordered = [self.pages[k] for k in sorted(self.pages) if k not in self.missed_by_listing]
-        return self._body({"data": ordered[offset:offset + (count or 100)], "total": len(ordered)})
+        rows = [] if self.listing_ends_early_at is not None and offset >= self.listing_ends_early_at else ordered[offset:offset + (count or 100)]
+        return self._body({"data": rows, "total": len(ordered)})
 
     async def list_audit_log(self, count: int | None = None, offset: int | None = None,
                              sort: str | None = None, filter: dict[str, str] | None = None) -> BookStackResponse:  # noqa: A002
@@ -82,6 +88,8 @@ class FakeBookStack:
         events = [e for e in self.audit if e["type"] == wanted]
         offset = offset or 0
         page = events[offset:offset + (count or 100)]
+        if self.audit_ends_early_at is not None and offset >= self.audit_ends_early_at:
+            page = []
         return BookStackResponse(success=True, data={"data": page, "total": len(events)})
 
     async def get_content_permissions(self, content_type: str, content_id: int) -> BookStackResponse:
@@ -303,6 +311,44 @@ async def test_every_delete_in_a_long_audit_log_is_applied(world) -> None:
         await connector._sync_records()
 
     assert sorted(store.deleted) == sorted(f"page/{i}" for i in range(100, 106))
+
+
+async def test_an_audit_log_that_ends_before_its_total_is_not_read_in_full(world) -> None:
+    # Reported as incomplete, the sync keeps its cursor and reads the unread deletions again.
+    source, store, connector = world
+    for page_id in range(100, 106):
+        source.add_page(page_id)
+    await connector._sync_records()
+    with patch("app.connectors.sources.bookstack.connector._AUDIT_LOG_PAGE_SIZE", 2):
+        for page_id in range(100, 106):
+            source.delete_page(page_id)
+        source.audit_ends_early_at = 2
+
+        events, complete = await connector._list_page_delete_events("2026-01-01T00:00:00Z")
+        assert (len(events), complete) == (2, False)
+
+        source.audit_ends_early_at = None
+        await connector._sync_records()
+
+    assert sorted(store.deleted) == sorted(f"page/{i}" for i in range(100, 106))
+
+
+async def test_a_page_list_that_ends_before_its_total_removes_nothing_and_looks_nothing_up(world) -> None:
+    source, store, connector = world
+    await connector._sync_records()
+    cursor = dict(connector.record_sync_point.points)
+    source.purge_page(2)
+    with patch("app.connectors.sources.bookstack.connector._AUDIT_LOG_PAGE_SIZE", 2):
+        source.listing_ends_early_at = 2
+        await connector._sync_records()
+        assert store.deleted == []
+        assert source.lookups == 0, "an incomplete list must not fall back to one lookup per page"
+        assert connector.record_sync_point.points == cursor
+
+        source.listing_ends_early_at = None
+        await connector._sync_records()
+
+    assert store.deleted == ["page/2"]
 
 
 async def test_a_narrowed_book_filter_removes_the_pages_it_now_leaves_out(world) -> None:
