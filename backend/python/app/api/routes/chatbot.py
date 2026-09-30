@@ -201,12 +201,9 @@ def _build_image_blocks(file_content: bytes, mime_type: str) -> BlocksContainer:
 async def _build_text_blocks(file_content: bytes) -> BlocksContainer:
     """Parse a plain-text or markdown file into a BlocksContainer using the default MarkdownParser."""
     from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
-    try:
-        text = file_content.decode("utf-8")
-    except UnicodeDecodeError:
-        text = file_content.decode("latin-1")
+    from app.modules.parsers.text_decoding import decode_text
     parser = MarkdownItParser()
-    return await parser.parse_to_blocks(text.strip())
+    return await parser.parse_to_blocks(decode_text(file_content).strip())
 
 
 async def _build_docx_blocks(
