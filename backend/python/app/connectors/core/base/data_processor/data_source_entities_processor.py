@@ -1838,6 +1838,24 @@ class DataSourceEntitiesProcessor:
         )
 
     @retry_on_deadlock()
+    async def on_records_detached_from_parent(self, record_ids: list[str]) -> None:
+        """Clear the parent link of records whose parent is being deleted without them.
+
+        Browse lists a record at its group's root only when it has no parent, so a
+        survivor still pointing at a deleted parent would vanish from it until the
+        source rewrote the record. Raises when any record was not updated.
+        """
+        if not record_ids:
+            return
+        async with self.data_store_provider.transaction() as tx_store:
+            updated = await tx_store.batch_update_nodes(
+                [{"id": record_id, "externalParentId": None} for record_id in record_ids],
+                CollectionNames.RECORDS.value,
+            )
+        if updated is False:
+            raise RuntimeError(f"Could not detach {len(record_ids)} records from their deleted parent")
+
+    @retry_on_deadlock()
     async def on_records_deleted_cascade(
         self, record_ids: list[str], connector_id: str,
         cascade_children: bool = True,

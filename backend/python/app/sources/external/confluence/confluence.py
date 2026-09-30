@@ -2836,6 +2836,7 @@ class ConfluenceDataSource:
         page_ids: Optional[List[str]] = None,
         page_ids_operator: Optional[Literal["in", "not_in"]] = None,
         include_children: bool = False,
+        within_ids: Optional[List[str]] = None,
         order_by: Optional[Literal["lastModified", "created", "title"]] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
         expand: Optional[str] = None,
@@ -2863,6 +2864,7 @@ class ConfluenceDataSource:
             page_ids: Filter specific pages by IDs (includes children if include_children=True)
             page_ids_operator: "in" to include pages, "not_in" to exclude (default: "in")
             include_children: Include child pages of specified page_ids (default: False)
+            within_ids: Only these page ids, on top of any ``page_ids`` filter
             order_by: CQL sort field - lastModified, created, or title (default: None, API default).
                       Must be specified together with sort_order, or neither.
             sort_order: Sort direction - asc or desc (default: None, API default).
@@ -2901,6 +2903,9 @@ class ConfluenceDataSource:
         # Add space filter if provided
         if space_key:
             cql_parts.append(f"space='{space_key}'")
+
+        if within_ids:
+            cql_parts.append(f"id in ({', '.join(within_ids)})")
 
         # Add page IDs filter with children support
         if page_ids:
@@ -2973,6 +2978,7 @@ class ConfluenceDataSource:
         space_key: Optional[str] = None,
         blogpost_ids: Optional[List[str]] = None,
         blogpost_ids_operator: Optional[Literal["in", "not_in"]] = None,
+        within_ids: Optional[List[str]] = None,
         order_by: Optional[Literal["lastModified", "created", "title"]] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
         expand: Optional[str] = None,
@@ -2998,6 +3004,7 @@ class ConfluenceDataSource:
             space_key: Filter blogposts by specific space key
             blogpost_ids: Filter specific blogposts by IDs
             blogpost_ids_operator: "in" to include blogposts, "not_in" to exclude (default: "in")
+            within_ids: Only these blog post ids, on top of any ``blogpost_ids`` filter
             order_by: CQL sort field - lastModified, created, or title (default: None, API default).
                       Must be specified together with sort_order, or neither.
             sort_order: Sort direction - asc or desc (default: None, API default).
@@ -3036,6 +3043,9 @@ class ConfluenceDataSource:
         # Add space filter if provided
         if space_key:
             cql_parts.append(f"space='{space_key}'")
+
+        if within_ids:
+            cql_parts.append(f"id in ({', '.join(within_ids)})")
 
         # Add blogpost IDs filter (no children for blogposts)
         if blogpost_ids:

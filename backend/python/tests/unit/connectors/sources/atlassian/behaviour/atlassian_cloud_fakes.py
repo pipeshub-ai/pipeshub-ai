@@ -62,6 +62,7 @@ class CloudRecordsDb(FakeRecordsDb):
         self.batch_upserted: list[Any] = []
         self.fail_permission_lookup = False
         self.fail_record_scan = False
+        self.detached: list[str] = []
 
     def add_user(self, source_id: str, email: str) -> None:
         self.users_by_source_id[source_id] = type("AppUserRow", (), {"email": email, "source_user_id": source_id})()
@@ -127,6 +128,19 @@ class CloudRecordsDb(FakeRecordsDb):
             raise RuntimeError("graph unavailable")
         rows = [r for r in self._stored_by_id(after_key) if r.external_record_group_id == external_group_id]
         return rows[:limit]
+
+    async def on_records_detached_from_parent(self, record_ids: list[str]) -> None:
+        """Clears the parent link like the store's partial update; raises if a record is missing."""
+        by_id = {r.id: r for r in self.records.values()}
+        missing = [i for i in record_ids if i not in by_id]
+        if missing:
+            raise RuntimeError(f"records not found: {missing}")
+        for record_id in record_ids:
+            by_id[record_id].parent_external_record_id = None
+        self.detached.extend(record_ids)
+
+    async def on_record_group_deleted(self, external_group_id: str, connector_id: str) -> bool:
+        return self.record_groups.pop(external_group_id, None) is not None
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Any:  # noqa: ANN401
         return self.record_groups.get(external_id)
