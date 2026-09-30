@@ -1314,6 +1314,39 @@ class TestRemovalFromSource:
         asked = [c for c in search.cql if "id in (p1)" in c]
         assert asked and all("lastModified >" not in c for c in asked)
 
+    async def test_a_page_synced_by_id_brings_back_only_itself_not_its_subtree(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        search.existing["page"] = [content("p1"), child_of("p3", "p1")]
+        await connector.run_sync()
+        assert "p2" not in db.records
+        search.existing["page"] = [content("p1"), content("p2"), child_of("p3", "p2")]
+        search.cql.clear()
+        await connector.run_sync()
+        by_id = [c for c in search.cql if "id in (p2)" in c]
+        assert by_id and all("ancestor in" not in c for c in by_id)
+
+    async def test_a_homepage_the_filters_leave_out_is_not_backfilled(self, atlassian_api, db, store, search) -> None:
+        filters = {"sync": {"values": {"page_ids": {"operator": "in", "type": "list", "value": ["p1"]}}}}
+        connector = await make_connector(atlassian_api, db, store, filters=filters)
+
+        def spaces(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("expand") == "homepage":
+                return json_response({"results": [{**space("ENG", 10), "homepage": {"id": 500, "title": "Home"}}]})
+            return json_response({"results": [space("ENG", 10)], "_links": {"base": BASE}})
+
+        atlassian_api.on("GET", f"{API}/space", spaces)
+        atlassian_api.on("GET", f"{API}/content/500", content("500"))
+        search.add("page", 0, listing([content("p1")]))
+        search.existing["page"] = [content("p1"), content("500")]
+
+        await connector.run_sync()
+        await connector.run_sync()
+
+        assert "500" not in db.records
+        assert db.deleted == [], "not created by the backfill and then removed by the filter check"
+
     async def test_an_archived_page_the_account_can_see_is_kept(self, atlassian_api, db, store, search) -> None:
         connector = await self._two_pages_synced(atlassian_api, db, store, search)
         search.existing["page"] = [content("p2"), child_of("p3", "p2")]

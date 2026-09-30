@@ -967,6 +967,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
             item_title = item_data.get("title")
             if not item_id or not item_title:
                 return 0
+            if self._listed_item_filtered_out(str(item_id), self._listed_item(item_data, "current"), record_type):
+                # Removal would take it out again next sync; both follow the same filter check.
+                self.logger.info("Not backfilling space homepage %s: the sync filters leave it out", item_id)
+                return 0
 
             existing_record = await self.data_entities_processor.get_record_by_external_id(
                 connector_id=self.connector_id,
@@ -1164,7 +1168,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         space_key=space_key,
                         page_ids=content_ids,
                         page_ids_operator=content_ids_operator_str,
-                        include_children=True,
+                        # By id, each item was checked against the filter itself; its subtree wasn't.
+                        include_children=only_ids is None,
                         order_by="lastModified",
                         sort_order="asc",
                         expand=CONTENT_EXPAND_PARAMS,
