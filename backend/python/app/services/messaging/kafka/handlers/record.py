@@ -69,16 +69,25 @@ from app.utils.user_errors import (
 STORED_DOCUMENTS_POLL_SECONDS = 5
 
 
-def stored_documents_wait_seconds() -> float:
-    """How long one delivery of deleteStoredDocuments waits for its records' delete to land.
-
-    Each of the (few) delivery attempts waits this long, so the window a
-    delete has to finish in is roughly attempts times this.
-    """
+def _seconds_from_env(name: str, default: float) -> float:
     try:
-        return max(0.0, float(os.getenv("STORED_DOCUMENTS_WAIT_SECONDS", "900")))
+        return max(0.0, float(os.getenv(name, str(default))))
     except ValueError:
-        return 900.0
+        return default
+
+
+def stored_documents_wait_seconds() -> float:
+    """How long one delivery of deleteStoredDocuments waits in place for its records' delete.
+
+    After that it re-publishes itself (see ``_reschedule_stored_documents``) rather
+    than hold a worker longer.
+    """
+    return _seconds_from_env("STORED_DOCUMENTS_WAIT_SECONDS", 120.0)
+
+
+def stored_documents_give_up_seconds() -> float:
+    """How long after the delete was scheduled a still-listed file keeps being retried."""
+    return _seconds_from_env("STORED_DOCUMENTS_GIVE_UP_SECONDS", 24 * 3600.0)
 
 
 class RecordEventHandler(BaseEventService):
@@ -361,6 +370,34 @@ class RecordEventHandler(BaseEventService):
             if not listed or asyncio.get_running_loop().time() >= deadline:
                 return listed
             await asyncio.sleep(STORED_DOCUMENTS_POLL_SECONDS)
+
+    async def _reschedule_stored_documents(self, payload: dict, still_listed: set[str]) -> None:
+        """Put the event back for files a record still lists, without spending a delivery attempt.
+
+        The event is published before the graph delete, so a slow delete keeps
+        its records for a while. Raising would spend the few, short delivery
+        attempts and then discard the ids, the only handle on the files. A fresh
+        event keeps them until the records are gone, up to a day after the delete
+        was scheduled. After that the records still exist, so their files are
+        theirs to keep.
+        """
+        now = get_epoch_timestamp_in_ms()
+        scheduled_at = int(payload.get("scheduledAt") or now)
+        if now - scheduled_at >= stored_documents_give_up_seconds() * 1000:
+            self.logger.error(
+                "Records of %s still list %d file(s) a day after their delete was scheduled; "
+                "keeping the files: %s",
+                payload.get("connectorId"), len(still_listed), sorted(still_listed),
+            )
+            return
+        if not self.producer:
+            raise IndexingError("No messaging producer configured; cannot reschedule stored-file removal")
+        await self.producer.send_event(
+            topic=Topic.RECORD_EVENTS.value,
+            event_type=EventTypes.DELETE_STORED_DOCUMENTS.value,
+            payload={**payload, "documentIds": sorted(still_listed), "scheduledAt": scheduled_at},
+            key=str(payload.get("connectorId")),
+        )
 
     async def _purge_stored_documents(self, org_id: str, document_ids: list[str]) -> None:
         pipeline = self.event_processor.processor.indexing_pipeline
@@ -736,10 +773,7 @@ class RecordEventHandler(BaseEventService):
                     org_id, [d for d in document_ids if d not in still_listed]
                 )
                 if still_listed:
-                    raise IndexingError(
-                        "Records still list some of these files; retrying after their delete",
-                        details={"connector_id": connector_id, "document_ids": sorted(still_listed)},
-                    )
+                    await self._reschedule_stored_documents(payload, still_listed)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="stored_documents", count=len(document_ids)))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="stored_documents", count=len(document_ids)))
                 return

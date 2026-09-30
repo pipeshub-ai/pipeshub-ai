@@ -39,7 +39,8 @@ async def test_the_removal_is_published_before_the_record_is_deleted():
     assert result["success"] is True
     assert order == [EventTypes.DELETE_STORED_DOCUMENTS.value, "delete"]
     provider.get_uploaded_document_ids.assert_awaited_once_with("kb-1", under_record_ids=["r1"])
-    assert kafka.publish_event.await_args.args[1]["payload"] == {
+    payload = kafka.publish_event.await_args.args[1]["payload"]
+    assert {k: v for k, v in payload.items() if k != "scheduledAt"} == {
         "orgId": "org-a", "connectorId": "kb-1", "documentIds": [DOC_ID],
     }
 

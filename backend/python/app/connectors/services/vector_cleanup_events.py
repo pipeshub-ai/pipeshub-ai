@@ -115,7 +115,13 @@ def build_stored_document_cleanup_events(
     return [
         _event(
             EventTypes.DELETE_STORED_DOCUMENTS.value,
-            {"orgId": org_id, "connectorId": connector_id, "documentIds": chunk},
+            {
+                "orgId": org_id,
+                "connectorId": connector_id,
+                "documentIds": chunk,
+                # When the retries for files a record still lists run out.
+                "scheduledAt": get_epoch_timestamp_in_ms(),
+            },
         )
         for chunk in _chunks(ids, MAX_VIRTUAL_RECORD_IDS_PER_EVENT)
     ]

@@ -8,6 +8,7 @@ import pytest
 
 from app.config.constants.arangodb import EventTypes
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 DOC_ID = "65f1c0ffee0123456789abcd"
 
@@ -76,24 +77,45 @@ class TestDeleteStoredDocumentsEvent:
         pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [DOC_ID])
 
     @pytest.mark.asyncio
-    async def test_a_file_a_record_still_lists_after_the_wait_is_kept_and_retried(self, monkeypatch):
-        """The graph delete failed, or is taking longer than the wait: keep the file, raise."""
+    async def test_a_file_still_listed_after_the_wait_is_rescheduled_not_retried(self, monkeypatch):
+        """No delivery attempt is spent, so a slow graph delete cannot lose the ids."""
         handler, pipeline = _handler()
         other = "65f1c0ffee0123456789abce"
         handler.event_processor.graph_provider.get_uploaded_document_ids = AsyncMock(return_value=[other])
         monkeypatch.setenv("STORED_DOCUMENTS_WAIT_SECONDS", "0")
+        scheduled = get_epoch_timestamp_in_ms() - 60_000
 
-        with pytest.raises(IndexingError):
-            await _run(
-                handler,
-                EventTypes.DELETE_STORED_DOCUMENTS.value,
-                {"orgId": "org-1", "connectorId": "kb-1", "documentIds": [DOC_ID, other]},
-            )
-
-        handler.event_processor.graph_provider.get_uploaded_document_ids.assert_awaited_once_with(
-            "kb-1", among=[DOC_ID, other]
+        events = await _run(
+            handler,
+            EventTypes.DELETE_STORED_DOCUMENTS.value,
+            {"orgId": "org-1", "connectorId": "kb-1", "documentIds": [DOC_ID, other], "scheduledAt": scheduled},
         )
+
+        assert len(events) == 2
         pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [DOC_ID])
+        handler.producer.send_event.assert_awaited_once()
+        sent = handler.producer.send_event.await_args.kwargs
+        assert sent["event_type"] == EventTypes.DELETE_STORED_DOCUMENTS.value
+        assert sent["payload"] == {
+            "orgId": "org-1", "connectorId": "kb-1", "documentIds": [other], "scheduledAt": scheduled,
+        }
+
+    @pytest.mark.asyncio
+    async def test_after_a_day_a_still_listed_file_is_kept_and_not_rescheduled(self, monkeypatch):
+        """Records that still list the file a day on were never deleted; the file is theirs."""
+        handler, pipeline = _handler()
+        handler.event_processor.graph_provider.get_uploaded_document_ids = AsyncMock(return_value=[DOC_ID])
+        monkeypatch.setenv("STORED_DOCUMENTS_WAIT_SECONDS", "0")
+        long_ago = get_epoch_timestamp_in_ms() - 25 * 3600 * 1000
+
+        await _run(
+            handler,
+            EventTypes.DELETE_STORED_DOCUMENTS.value,
+            {"orgId": "org-1", "connectorId": "kb-1", "documentIds": [DOC_ID], "scheduledAt": long_ago},
+        )
+
+        handler.producer.send_event.assert_not_awaited()
+        pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [])
 
     @pytest.mark.asyncio
     async def test_once_the_records_are_gone_every_file_is_purged(self):

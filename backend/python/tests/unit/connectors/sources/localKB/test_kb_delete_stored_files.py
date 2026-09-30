@@ -43,9 +43,10 @@ async def test_the_files_are_listed_and_their_removal_published_before_the_delet
     assert result["success"] is True
     assert order[:3] == ["list", EventTypes.DELETE_STORED_DOCUMENTS.value, "delete"]
     storage_events = [e for e in _published(service) if e["eventType"] == EventTypes.DELETE_STORED_DOCUMENTS.value]
-    assert [e["payload"] for e in storage_events] == [
+    assert [{k: v for k, v in e["payload"].items() if k != "scheduledAt"} for e in storage_events] == [
         {"orgId": "org1", "connectorId": "kb1", "documentIds": DOC_IDS}
     ]
+    assert all(isinstance(e["payload"]["scheduledAt"], int) for e in storage_events)
 
 
 @pytest.mark.asyncio
@@ -141,7 +142,9 @@ async def test_the_files_under_what_is_deleted_are_scheduled_first(service, kind
     assert order == ["publish", "delete"]
     service.graph_provider.get_uploaded_document_ids.assert_awaited_once_with("kb1", under_record_ids=ROOTS[kind])
     event = service.kafka_service.publish_event.await_args.args[1]
-    assert event["payload"] == {"orgId": "org1", "connectorId": "kb1", "documentIds": DOC_IDS}
+    assert {k: v for k, v in event["payload"].items() if k != "scheduledAt"} == {
+        "orgId": "org1", "connectorId": "kb1", "documentIds": DOC_IDS,
+    }
 
 
 @pytest.mark.asyncio
