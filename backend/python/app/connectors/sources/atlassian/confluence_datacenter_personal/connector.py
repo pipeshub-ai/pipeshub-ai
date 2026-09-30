@@ -62,6 +62,10 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterPersonalApp
+from app.connectors.sources.atlassian.core.confluence_dc_removal import (
+    ConfluenceDataCenterRemovalMixin,
+    ContentListing,
+)
 from app.connectors.sources.atlassian.core.confluence_html import prepare_streaming_html
 from app.sources.client.http.http_retry import call_with_retry
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -328,7 +332,7 @@ CONTENT_V1_ATTACHMENT_EXPAND = "version,history,metadata,extensions"
         ))
     )\
     .build_decorator()
-class ConfluenceDataCenterPersonalConnector(BaseConnector):
+class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, BaseConnector):
     """Personal Confluence DC: creator-only permissions, no user/group/permission API calls."""
 
     def __init__(
@@ -368,6 +372,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             )
 
         self.pages_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
+        self._space_listing_complete = False
 
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
@@ -534,17 +539,19 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                 len(spaces),
             )
 
-            # Sync content per space
+            await self._remove_spaces_out_of_scope(spaces)
+
+            # Sync content per space; each type's sync also removes what left the space
             for space in spaces:
                 space_key = space.short_name
 
                 # Pages
                 self.logger.info(f"Syncing pages for space: {space.name} ({space_key})")
-                await self._sync_content(space_key, RecordType.CONFLUENCE_PAGE)
+                await self._sync_content(space_key, RecordType.CONFLUENCE_PAGE, space=space)
 
                 # Blogposts
                 self.logger.info(f"Syncing blogposts for space: {space.name} ({space_key})")
-                await self._sync_content(space_key, RecordType.CONFLUENCE_BLOGPOST)
+                await self._sync_content(space_key, RecordType.CONFLUENCE_BLOGPOST, space=space)
 
             self.logger.info(
                 "✅ Confluence DC Personal connector %s sync completed",
@@ -602,6 +609,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             total_spaces_synced = 0
             base_url = None  # Extract from first response
             record_groups = []
+            self._space_listing_complete = False
 
             while True:
                 datasource = await self._get_fresh_datasource()
@@ -619,7 +627,11 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                     break
 
                 response_data = response.json()
-                spaces_data = response_data.get("results", [])
+                spaces_data = response_data.get("results") if isinstance(response_data, dict) else None
+                if not isinstance(spaces_data, list):
+                    self.logger.error("❌ The space listing had no results list; no space is removed this sync")
+                    break
+                listed_count = len(spaces_data)
 
                 # Extract base URL from first response
                 if not base_url and response_data.get("_links", {}).get("base"):
@@ -627,6 +639,8 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                     self.logger.debug(f"Base URL extracted: {base_url}")
 
                 if not spaces_data:
+                    # Only a missing next link ends the listing; an empty page that points further is a failed read.
+                    self._space_listing_complete = not (response_data.get("_links") or {}).get("next")
                     break
 
                 # Apply client-side exclusion filter if NOT_IN
@@ -681,7 +695,9 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                 next_url = response_data.get("_links", {}).get("next")
                 token = self._pagination_token_from_next_link(next_url)
                 if token is None:
-                    if len(spaces_data) < batch_size:
+                    # Counted before the exclusion filter, which can shorten a full page.
+                    if listed_count < batch_size:
+                        self._space_listing_complete = not next_url
                         break
                     start_offset += batch_size
                 else:
@@ -764,6 +780,10 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             item_title = item_data.get("title")
             if not item_id or not item_title:
                 return 0
+            if self._listed_item_filtered_out(str(item_id), self._listed_item(item_data, "current"), record_type):
+                # Removal would take it out again next sync; both follow the same filter check.
+                self.logger.info("Not backfilling space homepage %s: the sync filters leave it out", item_id)
+                return 0
 
             existing_record = await self.data_entities_processor.get_record_by_external_id(
                 connector_id=self.connector_id,
@@ -801,7 +821,14 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             )
             return 0
 
-    async def _sync_content(self, space_key: str, record_type: RecordType) -> None:
+    async def _sync_content(
+        self,
+        space_key: str,
+        record_type: RecordType,
+        *,
+        space: RecordGroup | None = None,
+        only_ids: list[str] | None = None,
+    ) -> bool:
         """
         Unified sync for pages and blogposts from Confluence using v1 API.
 
@@ -811,6 +838,13 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
         Args:
             space_key: The space key to sync content from
             record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
+            space: The space's record group; given, what left the space is removed
+                before the checkpoint moves, and the checkpoint holds if that fails.
+            only_ids: Sync only these items, whatever their last modified time, still
+                within the sync filters; the checkpoint is neither read nor moved.
+
+        Returns:
+            Whether the listing was read in full.
         """
         # Derive content_type from record_type for logging and sync point
         content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
@@ -842,11 +876,15 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                     action = "Excluding" if content_ids_operator_str == "not_in" else "Including"
                     self.logger.info(f"🔍 Filter: {action} {content_type}s by IDs: {content_ids}")
 
+            if only_ids is not None:
+                # The caller already kept only items the id filter admits.
+                content_ids, content_ids_operator_str = list(only_ids), "in"
+
             # Get last sync checkpoint (use content_type as suffix)
             sync_point_key = generate_record_sync_point_key(
                 RecordType.WEBPAGE.value, f"confluence_{content_type}s", space_key
             )
-            last_sync_data = await self.pages_sync_point.read_sync_point(sync_point_key)
+            last_sync_data = None if only_ids is not None else await self.pages_sync_point.read_sync_point(sync_point_key)
             last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
             if last_sync_time:
                 self.logger.info(f"🔄 Incremental sync: Fetching {content_type}s modified after {last_sync_time}")
@@ -890,7 +928,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
 
             space_homepage_id: Optional[str] = None
             homepage_seen_in_search = False
-            if record_type == RecordType.CONFLUENCE_PAGE:
+            if record_type == RecordType.CONFLUENCE_PAGE and only_ids is None:
                 space_homepage_id, _, _ = await self._fetch_space_homepage_info(space_key)
 
             # Pagination variables
@@ -901,6 +939,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             total_attachments_synced = 0
             total_comments_synced = 0
             listing_complete = True
+            seen: set[str] = set()
             # (id, title, last modified) of items that failed to save this run.
             failed_items: list[tuple[str, str, str]] = []
             # Items given up on, id -> last modified then; skipped until it changes.
@@ -941,7 +980,8 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                         space_key=space_key,
                         page_ids=content_ids,
                         page_ids_operator=content_ids_operator_str,
-                        include_children=True,
+                        # By id, each item was checked against the filter itself; its subtree wasn't.
+                        include_children=only_ids is None,
                         order_by="lastModified",
                         sort_order="asc",
                         expand=CONTENT_EXPAND_PARAMS,
@@ -972,14 +1012,20 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                     break
 
                 response_data = response.json()
-                items_data = response_data.get("results", [])
+                items_data = response_data.get("results") if isinstance(response_data, dict) else None
+                if not isinstance(items_data, list):
+                    self.logger.error(f"❌ {content_type.capitalize()} listing for space {space_key} had no results list")
+                    listing_complete = False
+                    break
 
                 # Extract api_base_url from response root for URL construction
                 api_base_url = (response_data.get("_links") or {}).get("base")
 
                 if not items_data:
+                    # Only a missing next link ends the listing; an empty page that points further is a failed read.
+                    if (response_data.get("_links") or {}).get("next"):
+                        listing_complete = False
                     break
-
 
                 # Transform items to WebpageRecords with permissions
                 records_with_permissions = []
@@ -987,6 +1033,9 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                     try:
                         item_id = item_data.get("id")
                         item_title = item_data.get("title")
+                        # Before anything can skip it: an item that fails or is given up on still exists.
+                        if item_id:
+                            seen.add(str(item_id))
 
                         if not item_id or not item_title:
                             continue
@@ -1174,22 +1223,37 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
 
             # Update sync checkpoint with current time (only if we synced something)
             # Using current time instead of last item's time avoids re-fetching due to the 24-hour offset
-            if not listing_complete:
+            settled = True
+            if space is not None and only_ids is None:
+                settled = await self._reconcile_space_content(space, record_type, ContentListing(
+                    full=not last_sync_time, complete=listing_complete, seen=frozenset(seen),
+                    checkpoint_key=sync_point_key, checkpoint_time=None,
+                ))
+            if only_ids is None and not listing_complete:
                 self.logger.warning(
                     f"Keeping the {content_type}s checkpoint for space {space_key}: not everything in "
                     "this window could be read, so the next sync reads it again"
                 )
-            else:
+            elif only_ids is None and not settled:
+                self.logger.warning(
+                    f"Keeping the {content_type}s checkpoint for space {space_key}: some removals "
+                    "could not be checked or made, so the next sync repeats them"
+                )
+            elif only_ids is None:
                 await self._save_content_checkpoint(
                     sync_point_key, last_sync_data, failed_items, given_up, content_type, space_key,
                     synced_any=total_synced > 0,
                 )
 
             self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}")
+            return listing_complete
 
         except Exception as e:
             self.logger.error(f"❌ {content_type.capitalize()} sync failed: {e}", exc_info=True)
             raise
+
+    async def _sync_content_by_ids(self, space: RecordGroup, record_type: RecordType, ids: list[str]) -> bool:
+        return await self._sync_content(space.short_name, record_type, only_ids=ids)
 
     async def _save_content_checkpoint(
         self,
