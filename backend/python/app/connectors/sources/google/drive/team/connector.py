@@ -323,6 +323,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # per-user and lives alongside the user being synced.
         self._synced_drive_ids: set = set()
         self._drive_has_member_cache: dict[str, bool] = {}
+        self._deployment_emails: set[str] | None = None
         # Every shared drive in the domain before the DRIVE_IDS filter, to tell a shared
         # drive's records from My Drive ones when that filter is checked.
         self._listed_shared_drive_ids: set = set()
@@ -467,6 +468,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._folders_probed = set()
             self._synced_drive_ids = set()
             self._drive_has_member_cache = {}
+            self._deployment_emails = None
             if self._folder_seed_ids:
                 self.logger.info(
                     f"📁 Folder filter active with {len(self._folder_seed_ids)} seed folder(s)"
@@ -1709,7 +1711,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         """
         if drive_id in self._drive_has_member_cache:
             return self._drive_has_member_cache[drive_id]
-        synced = {u.email.lower() for u in self.synced_users if u.is_active and u.email}
+        synced = await self._synced_user_emails()
         permissions, _, _ = await self._fetch_permissions(drive_id, is_drive=True)
         found = False
         for permission in permissions:
@@ -1724,6 +1726,13 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._drive_has_member_cache[drive_id] = found
         return found
 
+    async def _synced_user_emails(self) -> set[str]:
+        """Emails of the active users this deployment syncs, the only ones whose syncs walk drives."""
+        if self._deployment_emails is None:
+            users = await self._get_users_to_sync(self.synced_users)
+            self._deployment_emails = {u.email.lower() for u in users if u.is_active and u.email}
+        return self._deployment_emails
+
     async def _another_synced_user_can_open(
         self, record: Record, removed_for: AppUser, owner_sources: dict[str, GoogleDriveDataSource]
     ) -> bool:
@@ -1736,10 +1745,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         holders = await self.data_entities_processor.get_users_with_permission_to_node(
             record.id, CollectionNames.RECORDS.value, raise_on_error=True
         )
-        holder_emails = {(u.email or "").lower() for u in holders}
+        holder_emails = {(u.email or "").lower() for u in holders} & await self._synced_user_emails()
         askable = [
             u for u in self.synced_users
-            if u.is_active and u.email.lower() in holder_emails
+            if u.email and u.email.lower() in holder_emails
             and u.email.lower() != removed_for.email.lower()
         ]
         for other in askable:

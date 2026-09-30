@@ -567,6 +567,19 @@ async def test_a_file_deleted_from_a_drive_no_synced_user_belongs_to_is_removed(
     assert "g1" not in ws.records.records, "no synced member walks this drive, so the removed change decides"
 
 
+async def test_a_drive_whose_only_member_is_not_synced_by_this_deployment_is_not_walked(ws: Workspace) -> None:
+    ws.records.active_users = [u for u in ws.records.active_users if u.email == ALICE]
+    ws.world.add_drive("sd-5", "Legal", {BOB: "organizer"})
+    ws.world.add_item("l1", "nda.txt", parent="sd-5", perms=[{"type": "user", "role": "writer", "emailAddress": ALICE}])
+    await ws.sync()
+    assert "l1" in ws.records.records
+
+    ws.world.delete("l1")
+    await ws.sync()
+
+    assert "l1" not in ws.records.records, "Bob is in the Workspace but not synced here, so no sync walks the drive"
+
+
 async def test_a_member_drive_file_one_user_loses_is_kept(ws: Workspace) -> None:
     ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
     ws.world.add_item("e1", "spec.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": BOB}])
