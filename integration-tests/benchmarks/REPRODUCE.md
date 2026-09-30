@@ -105,8 +105,8 @@ registers the answerer and both judges. It is safe to run again.
 
 ## 4. Run the board
 
-Three runs share one stack and one index. A run asks its systems one after
-another, so the two RAG runs go side by side.
+Four runs share one stack and one index. A run asks its systems one after
+another, so the RAG runs go side by side.
 
 ```bash
 CFG=benchmarks/datasets/frames/configs
@@ -116,11 +116,12 @@ CFG=benchmarks/datasets/frames/configs
 
 # Once full-rag's log shows "stage prepare: processed", in other terminals:
 .venv/bin/python -m benchmarks.harness run --config $CFG/full-rag-rerank.yaml
+.venv/bin/python -m benchmarks.harness run --config $CFG/full-rag-s2b.yaml
 .venv/bin/python -m benchmarks.harness run --config $CFG/full-pipeshub.yaml
 ```
 
 The reranking pipelines load a cross-encoder locally, so `full-rag-rerank`
-is CPU-bound on the host. If you start the second and third runs before the
+and `full-rag-s2b` are CPU-bound on the host. If you start the other runs before the
 first has finished preparing, they will upload a second copy of the corpus.
 
 Each run writes to `reports/frames-benchmark/<run id>/`. If a run stops, for
@@ -172,12 +173,13 @@ system's own evidence), memory-suspect answers, a dev versus held-out split,
 retrieval recall, citation checks, cost, latency and paired McNemar tests.
 `summary.json` holds the same numbers for tooling.
 
-The three runs together form one board. Combine them, with the system list
+The four runs together form one board. Combine them, with the system list
 taken from the first run that has each system:
 
 ```bash
 .venv/bin/python -m benchmarks.harness combine \
-  --run <full-rag run id> --run <full-rag-rerank run id> --run <full-pipeshub run id> \
+  --run <full-rag run id> --run <full-rag-rerank run id> --run <full-rag-s2b run id> \
+  --run <full-pipeshub run id> \
   --out benchmarks/datasets/frames/results/<date>-full
 ```
 

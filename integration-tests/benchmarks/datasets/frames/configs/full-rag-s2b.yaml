@@ -1,0 +1,49 @@
+# Every RAG technique on all 824 FRAMES questions, grounded (part C of 3):
+# small-to-big (the top 3 articles replaced by their full text) added to the
+# two strongest pipelines without it, hybrid + expansion on each index. The
+# other small-to-big rows, with decomposition, are in full-rag-rerank.yaml.
+# Parts A (full-rag.yaml) and B (full-rag-rerank.yaml) hold the rest; all three
+# share the stack, answering model, embeddings, judges and price table.
+run_name: full-rag-s2b
+dataset:
+  split: all
+corpus:
+  tier: GD
+  scope: all
+  distractor_count: 10000
+pipeshub:
+  index_timeout_s: 172800
+  stream_timeout_s: 1800
+  # Every gold article, and all but ~12 of ~12.5k articles, must reach Qdrant.
+  min_gold_indexed_ratio: 1.0
+  min_indexed_ratio: 0.999
+answerer:
+  model: gpt-5.6-luna
+  provider: azureOpenAI
+  is_reasoning: true
+  reasoning_effort: high
+embedding:
+  model: text-embedding-3-small
+  provider: azureOpenAI
+pricing:
+  gpt-5.6-luna:
+    input_per_mtok: 0.20
+    cached_input_per_mtok: 0.02
+    output_per_mtok: 1.20
+    long_context_threshold: 272000
+    long_context_input_multiplier: 2.0
+    long_context_output_multiplier: 1.5
+    source: "OpenAI API pricing, standard tier, effective 2026-07-30"
+systems:
+  - {kind: advanced_rag, label: adv-hybrid-expand-s2b, concurrency: 10, options: {retrieval: hybrid, transform: expansion, small_to_big: 3}}
+  - {kind: advanced_rag, label: adv-std-hybrid-expand-rerank-s2b, concurrency: 4, options: {index: standard, retrieval: hybrid, transform: expansion, rerank: true, small_to_big: 3}}
+grading:
+  primary:
+    model: claude-sonnet-5
+    provider: anthropic
+  secondary:
+    model: gemini-3.8-flash
+    provider: gemini
+limits:
+  max_cost_usd: 600
+  max_error_rate: 0.2

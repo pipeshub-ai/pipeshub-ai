@@ -1,4 +1,4 @@
-# Every RAG technique on all 824 FRAMES questions, grounded (part B of 2):
+# Every RAG technique on all 824 FRAMES questions, grounded (part B of 3):
 # every pipeline with a cross-encoder reranker. Part A (full-rag.yaml) holds
 # the controls and the other pipelines; the two run side by side
 # on the same stack because systems within one run are asked one after another.
