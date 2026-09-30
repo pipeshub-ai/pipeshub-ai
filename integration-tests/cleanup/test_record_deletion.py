@@ -241,7 +241,6 @@ class TestDeletingOneOfTwoIdenticalRecords:
             blob_store, copies, [copies.upload_paths[document_id]], vendor=one_copy_deleted["vendor"]
         )
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=MONGO_ISSUE)
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_deleted_copys_own_upload_leaves_mongodb(
         self, one_copy_deleted, mongo_store
