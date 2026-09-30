@@ -157,7 +157,7 @@ async def test_the_delete_route_reports_the_record_whose_cleanup_did_not_go_out(
         },
     })
 
-    async def publish(thunk, **_kwargs):
+    async def publish(thunk: object, **_kwargs: object) -> object:
         event = thunk.__defaults__[0]
         if event["payload"]["recordId"] == "att-1":
             raise RuntimeError("broker down")
