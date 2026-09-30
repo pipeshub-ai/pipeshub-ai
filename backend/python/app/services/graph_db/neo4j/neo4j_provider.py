@@ -12132,7 +12132,6 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (u)-[kbEdge:PERMISSION {{type: "USER"}}]->(kb:App)
                 WHERE kb.orgId = $org_id
                     AND kb.type = "KB"
-                    AND kbEdge.role IN $kb_permissions
                     AND coalesce(kb.isHidden, false) = false
                 WITH u, COLLECT({{kb: kb, role: kbEdge.role}}) AS directKbs
 
@@ -12149,6 +12148,9 @@ class Neo4jProvider(IGraphDBProvider):
                 WITH u, kbAccess.kb AS kb, kbAccess.role AS role
                 ORDER BY coalesce($kb_role_priority[role], 0) DESC
                 WITH u, kb, head(collect(role)) AS kb_role
+                // The permissions filter applies to the role the user ends up with. A
+                // filtered-out KB becomes null rather than no row, for the reason above.
+                WITH u, CASE WHEN kb_role IN $kb_permissions THEN kb END AS kb, kb_role
 
                 OPTIONAL MATCH (kb)<-[:BELONGS_TO]-(kbRecord:Record)
                 WHERE kbRecord.orgId = $org_id
@@ -12249,21 +12251,25 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (u)-[kbEdge:PERMISSION {{type: "USER"}}]->(kb:App)
                 WHERE kb.orgId = $org_id
                     AND kb.type = "KB"
-                    AND kbEdge.role IN $kb_permissions
                     AND coalesce(kb.isHidden, false) = false
-                WITH u, COLLECT({{kb: kb}}) AS directKbs
+                WITH u, COLLECT({{kb: kb, role: kbEdge.role}}) AS directKbs
 
                 OPTIONAL MATCH (u)-[userTeamPerm:PERMISSION {{type: "USER"}}]->(team:Teams)
                 OPTIONAL MATCH (team)-[teamKbPerm:PERMISSION {{type: "TEAM"}}]->(kb2:App)
                 WHERE kb2.orgId = $org_id AND kb2.type = "KB" AND coalesce(kb2.isHidden, false) = false
-                WITH u, directKbs, COLLECT({{kb: kb2}}) AS teamKbs
+                WITH u, directKbs, COLLECT({{kb: kb2, role: userTeamPerm.role}}) AS teamKbs
 
                 WITH u, directKbs + teamKbs AS allKbAccess
                 // One null row when the user reaches no KB: UNWIND of an empty list ends
                 // the query, and the connector records below would be lost with it.
                 WITH u, [access IN allKbAccess WHERE access.kb IS NOT NULL] AS reachableKbs
                 UNWIND CASE WHEN size(reachableKbs) = 0 THEN [null] ELSE reachableKbs END AS kbAccess
-                WITH DISTINCT u, kbAccess.kb AS kb
+                WITH u, kbAccess.kb AS kb, kbAccess.role AS role
+                ORDER BY coalesce($kb_role_priority[role], 0) DESC
+                WITH u, kb, head(collect(role)) AS kb_role
+                // The permissions filter applies to the role the user ends up with. A
+                // filtered-out KB becomes null rather than no row, for the reason above.
+                WITH u, CASE WHEN kb_role IN $kb_permissions THEN kb END AS kb, kb_role
 
                 OPTIONAL MATCH (kb)<-[:BELONGS_TO]-(kbRecord:Record)
                 WHERE kbRecord.orgId = $org_id

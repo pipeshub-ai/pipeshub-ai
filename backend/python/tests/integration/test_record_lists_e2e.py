@@ -11,7 +11,9 @@ count query was sent bind parameters it never declared, and the KB list read
 ``user_permission`` as a collection name. The error was logged and swallowed,
 so users saw an empty list rather than a failure.
 
-Needs Docker services, and fails, naming the backend, when one is not reachable:
+Needs Docker services. A backend whose env var is set but cannot be reached
+fails, naming it; one that is not configured skips, so the bare unit job can
+collect this file:
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \
     up -d --wait neo4j-graph-it arango-graph-it
@@ -131,7 +133,10 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         try:
             graph = await (_connect_neo4j(monkeypatch) if request.param == "neo4j" else _connect_arango())
         except Exception as exc:
-            pytest.fail(f"{request.param} is not reachable, so nothing was checked: {exc!r}")
+            env = "NEO4J_IT_URI" if request.param == "neo4j" else "ARANGO_IT_URL"
+            if os.environ.get(env):
+                pytest.fail(f"{request.param} is configured ({env}) but not reachable: {exc!r}")
+            pytest.skip(f"{request.param} not configured ({env} unset) and not reachable locally: {exc!r}")
         disconnect = getattr(graph, "disconnect", None)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)
@@ -216,7 +221,7 @@ async def _seed(w: _World) -> None:
         collection=CollectionNames.RECORD_RELATIONS.value,
     )
 
-    # A second user who reaches the same KB only through two teams, with different roles.
+    # A second user who reaches the same KB through two teams and a direct grant, all different.
     teams = CollectionNames.TEAMS.value
     await g.batch_upsert_nodes(
         [{"id": w.team_user_key, "userId": f"team-user-{w.org_id}", "orgId": w.org_id,
@@ -232,6 +237,7 @@ async def _seed(w: _World) -> None:
     await g.batch_create_edges(
         [edge(w.team_user_key, users, w.team_ids[0], teams, role="READER", type="USER"),
          edge(w.team_user_key, users, w.team_ids[1], teams, role="WRITER", type="USER"),
+         edge(w.team_user_key, users, w.kb_id, apps, role="FILEORGANIZER", type="USER"),
          *(edge(t, teams, w.kb_id, apps, role="READER", type="TEAM") for t in w.team_ids)],
         collection=CollectionNames.PERMISSION.value,
     )
@@ -341,12 +347,34 @@ async def test_the_records_route_answers_404_for_an_unknown_caller(world: _World
     assert body == {"success": False, "code": 404, "reason": f"User not found for user_id: {stranger.user_id}"}
 
 
-async def test_a_kb_reached_through_two_teams_is_listed_once(world: _World) -> None:
-    """Each team grant used to add another copy of every record in the KB."""
+async def test_a_kb_reached_through_several_grants_is_listed_once(world: _World) -> None:
+    """Each team grant used to add another copy of every record in the KB.
+
+    The strongest grant wins, ranked as the providers rank a record's highest
+    permission: FILEORGANIZER, a write role, above WRITER and READER.
+    """
     records, total, _ = await world.graph.list_all_records(
         **_all_records_args(world, user_id=world.team_user_key)
     )
     ids = [r["id"] for r in records]
     assert sorted(ids) == sorted({world.ids["kb_root"], world.ids["kb_file"]})
     assert total == len(records)
-    assert {r["permission"]["role"] for r in records} == {"WRITER"}
+    assert {r["permission"]["role"] for r in records} == {"FILEORGANIZER"}
+
+
+@pytest.mark.parametrize(("wanted", "listed"), [
+    (["FILEORGANIZER"], True),
+    (["READER"], False),
+    (["WRITER"], False),
+    (["READER", "FILEORGANIZER"], True),
+])
+async def test_the_permissions_filter_sees_the_role_the_user_ends_up_with(
+    world: _World, wanted: list[str], listed: bool,
+) -> None:
+    """A READER filter must not return a KB the user holds as FILEORGANIZER through another grant."""
+    records, total, _ = await world.graph.list_all_records(
+        **_all_records_args(world, user_id=world.team_user_key, permissions=wanted)
+    )
+    kb_ids = {world.ids["kb_root"], world.ids["kb_file"]}
+    assert {r["id"] for r in records} == (kb_ids if listed else set())
+    assert total == len(records)

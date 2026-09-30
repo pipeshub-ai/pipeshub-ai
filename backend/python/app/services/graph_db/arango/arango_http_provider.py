@@ -10703,7 +10703,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             self.logger.debug(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
 
-            role_priority = KB_ROLE_PRIORITY
+            role_priority = {
+                "OWNER": 4,
+                "WRITER": 3,
+                "READER": 2,
+                "COMMENTER": 1,
+            }
 
             # Check direct and team permissions, return highest role (OWNER > WRITER > READER > COMMENTER)
             query = """
@@ -13224,7 +13229,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR kbEdge IN @@permission
                     FILTER kbEdge._from == user_from
                     FILTER kbEdge.type == "USER"
-                    FILTER kbEdge.role IN @kb_permissions
                     LET kb = DOCUMENT(kbEdge._to)
                     FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true
                     RETURN {{ kb_id: kb._key, kb_doc: kb, role: kbEdge.role }}
@@ -13243,7 +13247,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET allKbAccess = (
                 FOR access IN APPEND(directKbAccess, teamKbAccess)
                     COLLECT kb_id = access.kb_id INTO grants = access
-                    RETURN FIRST(FOR g IN grants SORT @kb_role_priority[g.role] || 0 DESC RETURN g)
+                    LET strongest = FIRST(FOR g IN grants SORT @kb_role_priority[g.role] || 0 DESC RETURN g)
+                    // The permissions filter applies to the role the user ends up with.
+                    FILTER strongest.role IN @kb_permissions
+                    RETURN strongest
             )
             LET kbRecords = {'(FOR access IN allKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" FILTER record.mimeType != "application/vnd.folder" ' + record_filter + ' RETURN { record: record, permission: { role: access.role, type: "USER" }, kb_id: kb._key, kb_name: kb.name })' if include_kb else '[]'}
             LET connectorRecords = {'(FOR permissionEdge IN @@permission FILTER permissionEdge._from == user_from FILTER permissionEdge.type == "USER" ' + perm_filter + ' LET record = DOCUMENT(permissionEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "CONNECTOR" ' + record_filter + ' RETURN { record: record, permission: { role: permissionEdge.role, type: permissionEdge.type } })' if include_connector else '[]'}
