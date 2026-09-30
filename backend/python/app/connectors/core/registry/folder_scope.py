@@ -11,12 +11,17 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple
 
-from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
+from app.connectors.core.registry.filters import (
+    FilterCollection,
+    FilterOperator,
+    SyncFilterKey,
+)
 
 if TYPE_CHECKING:
     import logging
     from collections.abc import AsyncIterator, Callable
 
+    from app.config.configuration_service import ConfigurationService
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
         DataSourceEntitiesProcessor,
     )
@@ -234,6 +239,81 @@ async def remove_records_not_listed(
         and f"{container_name}/{path}" not in listed,
         "missing from the latest listing", logger,
     )
+
+
+async def _saved_selection(
+    config_service: ConfigurationService, connector_id: str, filter_name: str, logger: logging.Logger,
+) -> set[str] | None:
+    """The containers the saved ``filter_name`` filter includes; None unless that is certain.
+
+    Read here rather than through ``load_connector_filters``, which answers a
+    failed or empty read with no filters, the same as a filter left unset.
+    """
+    try:
+        config = await config_service.get_config(f"/services/connectors/{connector_id}/config")
+    except Exception as e:  # an unreadable config removes nothing
+        logger.warning(f"Not removing de-selected {filter_name}: the connector config could not be read: {e}")
+        return None
+    if not isinstance(config, dict) or not config.get("enabled", True):
+        return None
+    filters = config.get("filters")
+    sync = filters.get("sync") if isinstance(filters, dict) else None
+    values = sync.get("values") if isinstance(sync, dict) else None
+    if not isinstance(values, dict):
+        return None
+    selection = FilterCollection.from_dict(values, logger).get(filter_name)
+    if selection is None or selection.is_empty() or selection.operator_value != FilterOperator.IN:
+        return None
+    raw = selection.value if isinstance(selection.value, list) else [selection.value]
+    return {name for name in raw if isinstance(name, str) and name}
+
+
+async def remove_deselected_containers(
+    data_entities_processor: DataSourceEntitiesProcessor,
+    config_service: ConfigurationService,
+    connector_id: str,
+    filter_name: str,
+    synced: list[str],
+    logger: logging.Logger,
+) -> None:
+    """Delete the records, then the record group, of each stored bucket or container
+    that the saved ``filter_name`` filter no longer includes.
+
+    ``synced`` is the selection this sync runs with. The saved filter is read
+    again and must match it, so a failed or empty read, a filter left unset (all
+    of them are synced) or one edited mid-sync removes nothing. What the cloud
+    API lists plays no part, so a failed listing is never taken for de-selection.
+    """
+    selected = await _saved_selection(config_service, connector_id, filter_name, logger)
+    if not selected or selected != {name for name in synced if isinstance(name, str) and name}:
+        return
+
+    from app.config.constants.arangodb import CollectionNames
+    from app.models.entities import RecordGroupType
+
+    try:
+        groups = await data_entities_processor.get_nodes_by_filters(
+            collection=CollectionNames.RECORD_GROUPS.value,
+            filters={"connectorId": connector_id, "groupType": RecordGroupType.BUCKET.value},
+        )
+    except Exception as e:  # retried on the next sync
+        logger.warning(f"Not removing de-selected {filter_name}: the stored ones could not be read: {e}")
+        return
+    stale = sorted({g.get("externalGroupId") for g in groups if isinstance(g, dict)} - selected - {None, ""})
+    for container_name in stale:
+        try:
+            result = await _remove_records(
+                data_entities_processor, connector_id, container_name, lambda record, path: True,
+                f"now that the {filter_name} filter leaves {container_name} out", logger,
+            )
+        except Exception as e:  # retried on the next sync
+            logger.warning(f"Could not read the records of de-selected {container_name}: {e}")
+            continue
+        if result.failed:
+            logger.warning(f"{result.failed} records of de-selected {container_name} could not be removed; retrying next sync")
+            continue
+        # The group goes last: while it stays, the next sync finds the container again.
+        await data_entities_processor.on_record_group_deleted(container_name, connector_id)
 
 
 async def clean_up_scope(

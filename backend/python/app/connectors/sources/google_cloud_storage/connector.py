@@ -50,6 +50,7 @@ from app.connectors.core.registry.folder_scope import (
     clean_up_scope,
     listed_record_ids,
     recorded_ids,
+    remove_deselected_containers,
     remove_records_not_listed,
 )
 from app.connectors.core.registry.connector_builder import (
@@ -535,6 +536,9 @@ class GCSConnector(BaseConnector):
             elif selected_buckets:
                 buckets_to_sync = selected_buckets
                 self.logger.info(f"Using filtered buckets: {buckets_to_sync}")
+                await remove_deselected_containers(
+                    self.data_entities_processor, self.config_service, self.connector_id, "buckets", selected_buckets, self.logger
+                )
             else:
                 self.logger.info("Listing all buckets...")
                 buckets_response = await self.data_source.list_buckets()
@@ -1787,6 +1791,9 @@ class GCSConnector(BaseConnector):
             elif selected_buckets:
                 buckets_to_sync = selected_buckets
                 self.logger.info(f"Using filtered buckets: {buckets_to_sync}")
+                await remove_deselected_containers(
+                    self.data_entities_processor, self.config_service, self.connector_id, "buckets", selected_buckets, self.logger
+                )
             else:
                 buckets_response = await self.data_source.list_buckets()
                 if buckets_response.success and buckets_response.data:

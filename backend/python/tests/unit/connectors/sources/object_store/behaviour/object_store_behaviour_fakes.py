@@ -95,18 +95,31 @@ def _md5(body: bytes) -> str:
     return hashlib.md5(body).hexdigest()
 
 
-class FakeS3DataSource:
-    """``list_objects_v2`` over a fake bucket, continuation tokens included."""
+class _FakeDataSource:
+    """One fake store per bucket or container; ``BUCKET`` is the first. ``hidden`` ones are left out of the bucket list."""
 
     def __init__(self, store: FakeObjectStore) -> None:
         self.store = store
+        self.stores: dict[str, FakeObjectStore] = {BUCKET: store}
+        self.hidden: set[str] = set()
+
+    def add_bucket(self, name: str) -> FakeObjectStore:
+        self.stores[name] = FakeObjectStore()
+        return self.stores[name]
+
+    def bucket_names(self) -> list[str]:
+        return [name for name in self.stores if name not in self.hidden]
+
+
+class FakeS3DataSource(_FakeDataSource):
+    """``list_objects_v2`` over fake buckets, continuation tokens included."""
 
     async def list_objects_v2(
         self, Bucket: str, MaxKeys: int = 1000, ContinuationToken: str | None = None, Prefix: str | None = None, **_: object,
     ) -> Response:
         start = int(ContinuationToken) if ContinuationToken else 0
         try:
-            objects, following = self.store.page(Prefix, start, MaxKeys)
+            objects, following = self.stores[Bucket].page(Prefix, start, MaxKeys)
         except _ListingFailed as e:
             return Response(False, error=f"ServiceUnavailable: {e}")
         data: dict[str, Any] = {"IsTruncated": following is not None, "KeyCount": len(objects)}
@@ -121,24 +134,21 @@ class FakeS3DataSource:
         return Response(True, data)
 
     async def list_buckets(self) -> Response:
-        return Response(True, {"Buckets": [{"Name": BUCKET, "CreationDate": self.store.clock}]})
+        return Response(True, {"Buckets": [{"Name": n, "CreationDate": self.store.clock} for n in self.bucket_names()]})
 
     async def get_bucket_location(self, Bucket: str, **_: object) -> Response:
         return Response(True, {"LocationConstraint": None})
 
 
-class FakeGCSDataSource:
-    """``list_blobs`` over a fake bucket, shaped as ``GCSDataSource.list_blobs`` returns it."""
-
-    def __init__(self, store: FakeObjectStore) -> None:
-        self.store = store
+class FakeGCSDataSource(_FakeDataSource):
+    """``list_blobs`` over fake buckets, shaped as ``GCSDataSource.list_blobs`` returns it."""
 
     async def list_blobs(
         self, bucket_name: str, max_results: int = 1000, page_token: str | None = None, prefix: str | None = None, **_: object,
     ) -> Response:
         start = int(page_token) if page_token else 0
         try:
-            objects, following = self.store.page(prefix, start, max_results)
+            objects, following = self.stores[bucket_name].page(prefix, start, max_results)
         except _ListingFailed as e:
             return Response(False, error=f"GCS API error: {e}")
         return Response(True, {
@@ -157,22 +167,19 @@ class FakeGCSDataSource:
         })
 
     async def list_buckets(self) -> Response:
-        return Response(True, {"Buckets": [{"name": BUCKET}]})
+        return Response(True, {"Buckets": [{"name": n} for n in self.bucket_names()]})
 
     async def get_bucket_properties(self, bucket_name: str) -> Response:
         return Response(True, {"name": bucket_name})
 
 
-class FakeAzureBlobDataSource:
-    """``list_blobs`` over a fake container: one async iterator that pages internally, like the SDK's."""
+class FakeAzureBlobDataSource(_FakeDataSource):
+    """``list_blobs`` over fake containers: one async iterator that pages internally, like the SDK's."""
 
     page_size = 2
 
-    def __init__(self, store: FakeObjectStore) -> None:
-        self.store = store
-
     async def list_blobs(self, container_name: str, prefix: str | None = None, **_: object) -> Response:
-        store, size = self.store, self.page_size
+        store, size = self.stores[container_name], self.page_size
 
         async def blobs() -> AsyncIterator[dict[str, Any]]:
             start = 0
@@ -198,7 +205,7 @@ class FakeAzureBlobDataSource:
         return Response(True, blobs())
 
     async def list_containers(self) -> Response:
-        return Response(True, [{"name": BUCKET}])
+        return Response(True, [{"name": n} for n in self.bucket_names()])
 
     async def get_container_properties(self, container_name: str) -> Response:
         return Response(True, {"name": container_name})
@@ -279,6 +286,19 @@ class FakeRecordsDb:
         for group, _ in groups:
             self.record_groups[group.external_group_id] = group
 
+    async def get_nodes_by_filters(
+        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Stored documents, camelCase keys as the graph providers return them; record groups only."""
+        self._check("get_nodes_by_filters")
+        if collection != "recordGroups":
+            raise NotImplementedError(collection)
+        docs = [g.to_arango_base_record_group() for g in self.record_groups.values()]
+        return [d for d in docs if all(d.get(k) == v for k, v in filters.items())]
+
+    async def on_record_group_deleted(self, external_group_id: str, connector_id: str) -> bool:
+        return self.record_groups.pop(external_group_id, None) is not None
+
     async def on_record_deleted(self, record_id: str, **_: object) -> None:
         self._check("on_record_deleted")
         if self.records.pop(record_id, None) is not None:
@@ -319,6 +339,13 @@ class FakeConfigService:
 
     def __init__(self) -> None:
         self.sync_filters: dict[str, Any] = {}
+        # "raise" or "empty" makes reads of the config fail that way; ``fail_from`` is the first read (0-based) to fail.
+        self.fail_mode: str | None = None
+        self.fail_from = 0
+        self.reads = 0
+
+    def set_selection(self, filter_name: str, names: list[str], operator: str = "in") -> None:
+        self.sync_filters[filter_name] = {"operator": operator, "value": names, "type": "multiselect"}
 
     def set_folders(self, folders: list[str]) -> None:
         self.sync_filters["folder_paths"] = {"operator": "in", "value": folders, "type": "list"}
@@ -328,6 +355,11 @@ class FakeConfigService:
 
     async def get_config(self, path: str, default: object = None, **_: object) -> object:
         if path == f"/services/connectors/{CONNECTOR_ID}/config":
+            self.reads += 1
+            if self.fail_mode and self.reads > self.fail_from:
+                if self.fail_mode == "raise":
+                    raise ConnectionError("configuration store unavailable")
+                return None
             return {"auth": {}, "filters": {"sync": {"values": dict(self.sync_filters)}}}
         return default
 
