@@ -194,9 +194,15 @@ async def initialize_container(container: IndexingAppContainer) -> bool:
         # Idempotent, and not only the connector service's job: this service
         # writes taxonomy nodes and alias nodes whose uniqueness constraints
         # and indexes must exist before the first write, whichever service
-        # starts first after an upgrade.
-        await graph_provider.ensure_schema()
-        logger.info("✅ Schema ensured")
+        # starts first after an upgrade. Not fatal: the connector service runs
+        # the same bootstrap.
+        if await graph_provider.ensure_schema():
+            logger.info("✅ Schema ensured")
+        else:
+            logger.warning(
+                "⚠️ Graph schema bootstrap failed; taxonomy and alias constraints "
+                "may be missing until a service that runs it starts successfully"
+            )
 
         await Health.system_health_check(container)
         return True

@@ -449,10 +449,14 @@ class TestExclusiveLookingPointsAreCheckedAgainstTheGraph:
         assert _membership(entities, "topic:t1") == (["conn-b"], ["gb"])
 
     @pytest.mark.asyncio
-    async def test_a_page_that_does_not_shrink_ends_the_loop(self) -> None:
-        """A backend whose writes do not take (or whose reads lag) must not
-        keep the deletion coroutine spinning; the final delete still runs."""
-        entities = _Entities(_entity_point("t1", "topic", ["conn-a", "conn-b"], []))
+    async def test_a_page_that_does_not_shrink_raises_without_sweeping(self) -> None:
+        """OpenSearch's update_by_query skips a point rewritten underneath it.
+        The final delete would then remove a shared entity another connector
+        still reaches, so the page is retried and then the cleanup raises."""
+        entities = _Entities(
+            _entity_point("t1", "topic", ["conn-a", "conn-b"], []),
+            _entity_point("rec-1", "record", ["conn-a"], []),
+        )
         writes = {"n": 0}
 
         async def _no_effect(collection_name, payload, filter, refresh=False):
@@ -461,11 +465,53 @@ class TestExclusiveLookingPointsAreCheckedAgainstTheGraph:
         entities.set_payload = _no_effect
         store = _store_over(entities)
 
-        await store.delete_entities_by_connector("org-1", "conn-a", record_group_ids=[])
+        with pytest.raises(RuntimeError, match="no progress"):
+            await store.delete_entities_by_connector("org-1", "conn-a", record_group_ids=[])
 
-        assert writes["n"] == 1
-        assert entities.points == {}
-        store.logger.warning.assert_called()
+        assert writes["n"] == 2
+        assert _membership(entities, "topic:t1") == (["conn-a", "conn-b"], [])
+        assert "record:rec-1" in entities.points
+        assert entities.delete_calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_write_that_takes_on_the_second_attempt_completes(self) -> None:
+        entities = _Entities(
+            _entity_point("t1", "topic", ["conn-a", "conn-b"], ["ga", "gb"]),
+            _entity_point("rec-1", "record", ["conn-a"], ["ga"]),
+        )
+        real_set_payload = entities.set_payload
+        writes = {"n": 0}
+
+        async def _first_skipped(collection_name, payload, filter, refresh=False) -> None:
+            writes["n"] += 1
+            if writes["n"] > 1:
+                await real_set_payload(collection_name, payload, filter, refresh=refresh)
+
+        entities.set_payload = _first_skipped
+
+        await _store_over(entities).delete_entities_by_connector("org-1", "conn-a", record_group_ids=["ga"])
+
+        assert writes["n"] == 2
+        assert _membership(entities, "topic:t1") == (["conn-b"], ["gb"])
+        assert "record:rec-1" not in entities.points
+
+    @pytest.mark.asyncio
+    async def test_a_full_page_of_points_without_an_id_raises_and_deletes_nothing(self) -> None:
+        """Shared points may sit behind a full page that cannot be processed."""
+        malformed = [
+            VectorPoint(id=f"a-bad-{i}", payload={"metadata": {"orgId": "org-1"},
+                                                  "connectorIds": ["conn-a"], "recordGroupIds": []})
+            for i in range(2)
+        ]
+        entities = _Entities(*malformed, _entity_point("t1", "topic", ["conn-a", "conn-b"], []))
+        store = _store_over(entities)
+
+        with pytest.raises(RuntimeError, match="without an entity id"):
+            await store._shrink_connector_membership("org-1", "conn-a", record_group_ids=[], page_size=2)
+
+        assert _membership(entities, "topic:t1") == (["conn-a", "conn-b"], [])
+        assert len(entities.points) == 3
+        assert entities.delete_calls == []
 
     @pytest.mark.asyncio
     async def test_a_failed_lookup_changes_nothing_and_raises(self) -> None:

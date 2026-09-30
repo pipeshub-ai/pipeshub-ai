@@ -16,6 +16,7 @@ from qdrant_client.http.models import (  # type: ignore
     Distance,
     Filter,
     FilterSelector,
+    HasIdCondition,
     HnswConfigDiff,
     KeywordIndexParams,
     KeywordIndexType,
@@ -875,10 +876,12 @@ class QdrantService(IVectorDBService):
         self._assert_connected()
         if not point_ids:
             return
+        # A plain id list fails the whole call with a 404 if any id is missing;
+        # an id filter skips those, as the interface requires.
         await self.client.set_payload(  # type: ignore
             collection_name=collection_name,
             payload=payload,
-            points=list(point_ids),
+            points=FilterSelector(filter=Filter(must=[HasIdCondition(has_id=list(point_ids))])),
             wait=True,
         )
 

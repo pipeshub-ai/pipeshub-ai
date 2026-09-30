@@ -138,6 +138,22 @@ class TestInitializeContainer:
 
     @pytest.mark.asyncio
     @patch("app.containers.indexing.Health.health_check_connector_service", new_callable=AsyncMock)
+    @patch("app.containers.indexing.Health.system_health_check", new_callable=AsyncMock)
+    async def test_a_failed_schema_bootstrap_warns_and_continues(self, mock_sys_health, mock_conn_health) -> None:
+        container, logger = self._make_mock_container()
+        mock_gp = MagicMock()
+        mock_gp.ensure_schema = AsyncMock(return_value=False)
+        container.graph_provider = AsyncMock(return_value=mock_gp)
+
+        assert await initialize_container(container) is True
+
+        logger.warning.assert_called_once()
+        assert "schema" in logger.warning.call_args.args[0].lower()
+        assert not any("Schema ensured" in str(c.args[0]) for c in logger.info.call_args_list)
+        mock_sys_health.assert_awaited_once_with(container)
+
+    @pytest.mark.asyncio
+    @patch("app.containers.indexing.Health.health_check_connector_service", new_callable=AsyncMock)
     async def test_fails_on_connector_health_check(self, mock_conn_health):
         container, logger = self._make_mock_container()
         mock_conn_health.side_effect = Exception("connector down")

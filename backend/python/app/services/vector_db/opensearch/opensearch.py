@@ -118,6 +118,9 @@ _DEFAULT_SEGMENTS_PER_TIER = 4
 _DEFAULT_MAX_CONCURRENT_SEARCHES = 8
 _DEFAULT_CONFIDENCE_INTERVAL = 0.99
 _DEFAULT_RRF_RANK_CONSTANT = 60
+# A partial update re-reads the document when another write lands between its
+# read and write; without retries it fails the item with a 409.
+_UPDATE_RETRY_ON_CONFLICT = 3
 
 # Progress of the stemmed-field backfill, kept in the index's own ``_meta`` so
 # every replica reads the same state: {"task": <id>} while it runs, {"done":
@@ -1045,12 +1048,22 @@ class OpenSearchService(IVectorDBService):
             return
         doc = OpenSearchUtils.nest_dotted_keys(payload)
         actions = [
-            {"_op_type": "update", "_index": collection_name, "_id": point_id, "doc": doc}
+            {
+                "_op_type": "update", "_index": collection_name, "_id": point_id,
+                "doc": doc, "retry_on_conflict": _UPDATE_RETRY_ON_CONFLICT,
+            }
             for point_id in point_ids
         ]
-        await os_helpers.async_bulk(
+        _, errors = await os_helpers.async_bulk(
             self.client, actions, raise_on_error=False, refresh=False,
         )
+        # A missing id is ignored by contract; any other item error is a lost write.
+        failed = [e for e in errors if (e.get("update") or {}).get("status") != 404]
+        if failed:
+            raise RuntimeError(
+                f"update_payload_by_ids on '{collection_name}' failed for "
+                f"{len(failed)} of {len(point_ids)} point(s): {failed[0]}"
+            )
 
     # ------------------------------------------------------------------
     # Performance utilities

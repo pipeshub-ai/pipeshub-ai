@@ -849,11 +849,17 @@ class TestQdrantConfig:
 
 class TestUpdatePayloadByIds:
     @pytest.mark.asyncio
-    async def test_sets_payload_on_the_listed_points(self, connected_service):
+    async def test_sets_payload_on_the_listed_points_by_id_filter(self, connected_service) -> None:
+        """A plain id list makes Qdrant 404 the whole call when one id is
+        missing; the interface says missing ids are ignored."""
         await connected_service.update_payload_by_ids("entities", ["p1", "p2"], {"connectorIds": ["c1"]})
-        connected_service.client.set_payload.assert_awaited_once_with(
-            collection_name="entities", payload={"connectorIds": ["c1"]}, points=["p1", "p2"], wait=True,
-        )
+
+        kwargs = connected_service.client.set_payload.await_args.kwargs
+        assert kwargs["collection_name"] == "entities"
+        assert kwargs["payload"] == {"connectorIds": ["c1"]}
+        assert kwargs["wait"] is True
+        (condition,) = kwargs["points"].filter.must
+        assert condition.has_id == ["p1", "p2"]
 
     @pytest.mark.asyncio
     async def test_no_ids_makes_no_call(self, connected_service):

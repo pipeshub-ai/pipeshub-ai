@@ -103,6 +103,8 @@ _CONFIDENCE_THRESHOLD = 0.0
 # A failed initialisation (embedding endpoint down, dimension mismatch) is not
 # retried for this long, so every caller does not re-send a probe embedding.
 _INIT_RETRY_SECONDS = 30.0
+# Times connector cleanup processes the same unchanged page before giving up.
+_CLEANUP_PAGE_ATTEMPTS = 2
 
 _QUERY_VECTOR_CACHE_SIZE = 64
 
@@ -670,6 +672,11 @@ class EntityVectorStore:
            caps search offsets at 10k) and an interrupted run resumes.
         3. Delete everything still naming the connector in one filtered call:
            its RECORD and RECORD_GROUP points, and any point without an id.
+
+        Step 3 would also delete shared taxonomy points, so it runs only once
+        step 2 has drained them. A page that stays unchanged (OpenSearch's
+        ``update_by_query`` skips a point rewritten underneath it) is retried,
+        then raises, as does a full page of points without an id.
         """
         from app.models.entities import EntityType
 
@@ -687,6 +694,7 @@ class EntityVectorStore:
             must_not={"metadata.entityType": scoped_types},
         )
         previous_page: set[str] = set()
+        attempts = 0
         while True:
             page = await self.vector_db_service.scroll(
                 collection_name=self.collection_name,
@@ -700,20 +708,26 @@ class EntityVectorStore:
             if not page.points:
                 break
             page_ids = {point.id for point in page.points}
-            if page_ids == previous_page:
-                # Nothing left the filter: a write that did not take, or a
-                # backend whose reads lag its writes. Stop; the final delete
-                # sweeps the rest rather than looping forever.
-                self.logger.warning(
-                    "Connector cleanup made no progress on %d points (org=%s connector=%s)",
-                    len(page_ids), org_id, connector_id,
+            attempts = attempts + 1 if page_ids == previous_page else 1
+            if attempts > _CLEANUP_PAGE_ATTEMPTS:
+                raise RuntimeError(
+                    f"Connector cleanup made no progress on {len(page_ids)} points "
+                    f"(org={org_id} connector={connector_id}); a retry resumes it"
                 )
-                break
             previous_page = page_ids
-            if not await self._strip_or_delete(
+            if await self._strip_or_delete(
                 page.points, org_id, connector_id, group_ids, membership_lookup,
             ):
+                continue
+            # Only points without an entity id or type are on this page. A
+            # short page is everything left in the filter, so the sweep below
+            # removes them; a full one may hide shared points behind it.
+            if len(page.points) < page_size:
                 break
+            raise RuntimeError(
+                f"Connector cleanup found {len(page.points)} points without an entity "
+                f"id or type (org={org_id} connector={connector_id})"
+            )
 
         remaining = await self.vector_db_service.filter_collection(
             must={"metadata.orgId": org_id, CONNECTOR_IDS_FIELD: connector_id},

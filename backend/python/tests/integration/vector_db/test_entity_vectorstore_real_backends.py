@@ -9,13 +9,17 @@ server can show:
   30s ``refresh_interval``).
 - Metadata read back from Redis keeps its string types: a level-``"1"``
   subcategory still matches, and an unchanged point is not re-embedded.
-- A membership-only change is written with ``set_payload`` and leaves the
-  point's text, metadata and vector in place.
+- A membership-only change is written with ``update_payload_by_ids`` and
+  leaves the point's text, metadata and vector in place; an id with no point
+  is ignored.
 - Connector cleanup strips shared entities, deletes exclusive ones and the
   connector's record and record-group points, pages by re-reading from the
   start, and leaves other orgs alone; a point the graph still links is
   rewritten rather than deleted.
 - Deletes never touch the embedding model.
+
+Searches, filtered scrolls and filtered deletes are served from the last
+refresh on OpenSearch, so tests publish their writes before one of those.
 
 Embeddings are a deterministic stub (no model download). Each backend is
 its own fixture, so the suite runs on whichever services are up and skips
@@ -174,6 +178,11 @@ async def _point(store: EntityVectorStore, org: str, entity_type: str, entity_id
     return points[0].payload if points else None
 
 
+async def _publish_writes(store: EntityVectorStore) -> None:
+    if getattr(store, "backend", None) == "opensearch":
+        await store.vector_db_service.client.indices.refresh(index=store.collection_name)  # type: ignore[attr-defined]
+
+
 class TestMembershipReads:
     async def test_a_second_writer_sees_the_first_writers_membership(self, store: EntityVectorStore) -> None:
         org = f"org-{uuid.uuid4().hex[:6]}"
@@ -192,12 +201,14 @@ class TestMembershipReads:
         entity = _entity("2024", EntityType.SUBCATEGORY, org=org, name="2024", level="1", connectors=["c1"], aliases=["FY24"])
         await store.upsert_entities_batch([entity])
         store.vector_db_service.upsert_points = AsyncMock(wraps=store.vector_db_service.upsert_points)
-        store.vector_db_service.set_payload = AsyncMock(wraps=store.vector_db_service.set_payload)
+        store.vector_db_service.update_payload_by_ids = AsyncMock(
+            wraps=store.vector_db_service.update_payload_by_ids,
+        )
 
         await store.upsert_entities_batch([entity])
 
         store.vector_db_service.upsert_points.assert_not_awaited()
-        store.vector_db_service.set_payload.assert_not_awaited()
+        store.vector_db_service.update_payload_by_ids.assert_not_awaited()
 
     async def test_membership_only_change_keeps_text_and_metadata(self, store: EntityVectorStore) -> None:
         org = f"org-{uuid.uuid4().hex[:6]}"
@@ -214,8 +225,22 @@ class TestMembershipReads:
         assert payload["metadata"]["name"] == "Release checklist"
         assert list(payload["metadata"]["aliases"]) == ["RC"]
         # The vector was kept: the entity is still found by its name.
+        await _publish_writes(store)
         (match,) = await store.find_best_matches(["Release checklist"], org, "topic")
         assert match["entityId"] == "t1"
+
+    async def test_updating_a_missing_point_is_ignored(self, store: EntityVectorStore) -> None:
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([_entity("t1", org=org, connectors=["c1"])])
+        present = store._point_id(org, "topic", "t1")
+        missing = store._point_id(org, "topic", "never-written")
+
+        await store.vector_db_service.update_payload_by_ids(
+            store.collection_name, [present, missing], {"connectorIds": ["c2"]},
+        )
+
+        assert (await _point(store, org, "topic", "t1"))["connectorIds"] == ["c2"]
+        assert await _point(store, org, "topic", "never-written") is None
 
 
 class TestMatchesAndSearch:
@@ -225,6 +250,7 @@ class TestMatchesAndSearch:
             _entity("2024", EntityType.SUBCATEGORY, org=org, name="2024", level="1", connectors=["c1"]),
             _entity("other", EntityType.SUBCATEGORY, org=org, name="Other plan", level="2", connectors=["c1"]),
         ])
+        await _publish_writes(store)
 
         (level_one,) = await store.find_best_matches(["2024"], org, "subcategory", level="1")
         (level_three,) = await store.find_best_matches(["2024"], org, "subcategory", level="3")
@@ -242,6 +268,7 @@ class TestMatchesAndSearch:
             _entity("theirs", org=other, name="Quarterly planning", connectors=["c1"], groups=["g1"]),
             _entity("unreachable", org=org, name="Quarterly planning review", connectors=["c9"], groups=["g9"]),
         ])
+        await _publish_writes(store)
 
         hits = await store.search_entities("quarterly planning", org, {"g1"}, set(), top_k=5)
         wide = await store.search_entities("quarterly planning", org, set(), set(), top_k=5, allow_org_wide=True)
@@ -260,6 +287,7 @@ class TestConnectorDeletion:
             _entity("elsewhere", org=f"{org}-other", connectors=["A"], groups=["ga"]),
             *(_entity(f"rec-{i}", EntityType.RECORD, org=org, connectors=["A"], groups=["ga"]) for i in range(records)),
         ], merge_membership=False)
+        await _publish_writes(store)
 
     async def test_strips_shared_and_deletes_the_rest(self, store: EntityVectorStore) -> None:
         org = f"org-{uuid.uuid4().hex[:6]}"
@@ -307,6 +335,7 @@ class TestConnectorDeletion:
             *(_entity(f"only-{i}", org=org, connectors=["A"]) for i in range(130)),
             *(_entity(f"rec-{i}", EntityType.RECORD, org=org, connectors=["A"]) for i in range(150)),
         ], merge_membership=False)
+        await _publish_writes(store)
         store.vector_db_service.scroll = AsyncMock(wraps=store.vector_db_service.scroll)
 
         await store._shrink_connector_membership(org, "A", record_group_ids=[], page_size=50)
@@ -315,6 +344,7 @@ class TestConnectorDeletion:
         taxonomy_scans = [c for c in store.vector_db_service.scroll.await_args_list if c.kwargs["scroll_filter"] is not None]
         assert len(taxonomy_scans) >= 5
         assert all(o is None for o in offsets[1:]), offsets
+        await _publish_writes(store)
         remaining = await store.vector_db_service.scroll(
             store.collection_name,
             await store.vector_db_service.filter_collection(must={"metadata.orgId": org}),
@@ -329,6 +359,7 @@ class TestDeletesWithoutEmbeddings:
     async def test_record_delete_when_the_embedding_model_is_down(self, store: EntityVectorStore) -> None:
         org = f"org-{uuid.uuid4().hex[:6]}"
         await store.upsert_entities_batch([_entity("r1", EntityType.RECORD, org=org, connectors=["A"])])
+        await _publish_writes(store)
         fresh = EntityVectorStore(
             logger=logger, config_service=MagicMock(),
             vector_db_service=store.vector_db_service, collection_name=store.collection_name,
