@@ -218,6 +218,7 @@ class FakeRecordsDb:
         self.records: dict[str, FileRecord] = {}
         self.record_groups: dict[str, Any] = {}
         self.deleted: list[str] = []
+        self.written: list[str] = []
         self.failing: set[str] = set()
 
     def _check(self, method: str) -> None:
@@ -267,6 +268,7 @@ class FakeRecordsDb:
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
         self._check("on_new_records")
         for record, _ in records_with_permissions:
+            self.written.append(record.external_record_id)
             # The processor upserts by external id, keeping the stored record's id.
             same_path = self.by_path().get(record.external_record_id)
             if same_path and same_path.id != record.id:

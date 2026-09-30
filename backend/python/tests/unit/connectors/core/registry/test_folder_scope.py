@@ -327,11 +327,12 @@ class TestRemoveRecordsNotListed:
             record("kept-folder", "b1/reports", folder=True),
             record("gone", "b1/reports/q2.pdf"),
             record("other-prefix", "b1/legal/contract.pdf"),
+            record("other-folder", "b1/other/x.pdf"),
         ])
         processor.on_record_deleted = AsyncMock()
         listed = listed_record_ids("b1", "reports/q1.pdf")
 
-        result = await remove_records_not_listed(processor, "c", "b1", "reports/", listed, logging.getLogger("t"))
+        result = await remove_records_not_listed(processor, "c", "b1", ["reports/"], listed, logging.getLogger("t"))
 
         assert [c.args[0] for c in processor.on_record_deleted.await_args_list] == ["gone"]
         assert result == CleanupResult(removed=1, failed=0)

@@ -2804,7 +2804,7 @@ class TestFailedBlobCheckpoint:
     async def _sync(connector):
         from app.connectors.core.registry.folder_scope import FolderScope
 
-        await connector._sync_container_prefix("c1", "", FolderScope(), _AllRecorded())
+        await connector._sync_container_prefix("c1", "", FolderScope(), _AllRecorded(), [])
 
     @pytest.mark.asyncio
     async def test_a_failed_blob_holds_the_checkpoint_before_it(self, azure_blob_connector):

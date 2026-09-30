@@ -888,14 +888,16 @@ class AzureBlobConnector(BaseConnector):
             self.logger.info(f"Folder filter for container {container_name}: {scope.describe()}")
         recorded = await recorded_ids(self.data_entities_processor, self.connector_id, container_name)
         listed: set[str] = set()
+        unrecorded: list[dict] = []
         complete = True
         for prefix in scope.list_prefixes:
-            prefix_listed, prefix_complete = await self._sync_container_prefix(container_name, prefix, scope, recorded)
+            prefix_listed, prefix_complete = await self._sync_container_prefix(container_name, prefix, scope, recorded, unrecorded)
             listed |= prefix_listed
             complete = complete and prefix_complete
         # One pass after every prefix: a rename into a folder listed later is
         # still stored under its old path until that folder is processed.
         if complete:
+            await self._claim_records_of_gone_copies(container_name, unrecorded, listed)
             await remove_records_not_listed(
                 self.data_entities_processor, self.connector_id, container_name, scope.list_prefixes, listed, self.logger
             )
@@ -905,7 +907,46 @@ class AzureBlobConnector(BaseConnector):
             self.data_entities_processor, self.record_sync_point, self.connector_id, container_name, scope, self.logger
         )
 
-    async def _sync_container_prefix(self, container_name: str, prefix: str, scope: FolderScope, recorded: Container[str]) -> tuple[set[str], bool]:
+    async def _claim_records_of_gone_copies(self, container_name: str, unrecorded: list[dict], listed: set[str]) -> None:
+        """Process the unchanged blobs that have no record of their own, when that is safe.
+
+        The connectors take equal content at a new key for a move, so one record can
+        stand for two keys. Before the removal pass deletes a record whose key is gone,
+        a listed copy of its content takes it over. A copy whose content is held by a
+        key that is still listed, or by another container, is left alone, so the record
+        does not move back and forth between two live keys.
+        """
+        prefix = f"{container_name}/"
+        for blob_dict in unrecorded:
+            blob_name = blob_dict.get("name", "")
+            holder = None
+            try:
+                revision = self._get_azure_blob_revision_id(blob_dict)
+                holder = (
+                    await self.data_entities_processor.get_record_by_external_revision_id(self.connector_id, revision)
+                    if revision else None
+                )
+                if holder is not None:
+                    held_at = holder.external_record_id or ""
+                    if not held_at.startswith(prefix) or held_at in listed:
+                        continue
+                segments = get_folder_path_segments_from_blob_name(blob_name)
+                if segments:
+                    await self._ensure_parent_folders_exist(container_name, segments)
+                record, permissions = await self._process_azure_blob(blob_dict, container_name)
+                if record:
+                    await self.data_entities_processor.on_new_records([(record, permissions)])
+                elif holder is not None:
+                    listed.add(held_at)
+            except Exception as e:
+                self.logger.error(f"Error giving {blob_name} the record of its content: {e}", exc_info=True)
+                if holder is not None:
+                    # Keep the record rather than delete content that is still listed.
+                    listed.add(holder.external_record_id or "")
+
+    async def _sync_container_prefix(
+        self, container_name: str, prefix: str, scope: FolderScope, recorded: Container[str], unrecorded: list[dict],
+    ) -> tuple[set[str], bool]:
         """Sync blobs under one prefix of a container ("" for all of it), with incremental sync support.
 
         The Azure SDK's list_blobs method returns an AsyncItemPaged object which is an
@@ -1006,16 +1047,12 @@ class AzureBlobConnector(BaseConnector):
                         listed |= listed_record_ids(container_name, blob_name)
                         judged = True
 
-                        # Only an unchanged blob with a record of its own is skipped: one whose
-                        # content another key's record holds must be processed, so it takes that
-                        # record over before the removal pass deletes it.
-                        if (
-                            last_sync_time
-                            and f"{container_name}/{blob_name.lstrip('/')}" in recorded
-                            and not self._pass_date_filters(
-                                blob_dict, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
-                            )
+                        if last_sync_time and not self._pass_date_filters(
+                            blob_dict, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
                         ):
+                            if not is_folder and f"{container_name}/{blob_name.lstrip('/')}" not in recorded:
+                                # Its content may be held by another key's record; decided once every prefix is listed.
+                                unrecorded.append(blob_dict)
                             continue
 
                         # Track max timestamp for incremental sync

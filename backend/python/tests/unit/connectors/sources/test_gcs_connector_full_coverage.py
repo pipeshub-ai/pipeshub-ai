@@ -1663,7 +1663,7 @@ class TestFailedObjectCheckpoint:
     async def _sync(connector):
         from app.connectors.core.registry.folder_scope import FolderScope
 
-        await connector._sync_bucket_prefix("b1", "", FolderScope(), _AllRecorded())
+        await connector._sync_bucket_prefix("b1", "", FolderScope(), _AllRecorded(), [])
 
     @pytest.mark.asyncio
     async def test_a_failed_object_holds_the_checkpoint_before_it(self, connector):

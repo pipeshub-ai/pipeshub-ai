@@ -98,6 +98,26 @@ class TestDeleteAtTheSource:
         assert survivor in db.paths()
         assert owner not in db.paths()
 
+    @pytest.mark.asyncio
+    async def test_a_record_shared_by_two_live_copies_stays_put(
+        self, connector: BaseConnector, store: FakeObjectStore, db: FakeRecordsDb,
+    ) -> None:
+        # The copy without a record of its own must not take the record while its holder is listed,
+        # or the record moves back and forth between the two keys on every sync.
+        store.put("a.txt", "same bytes")
+        await connector.run_sync()
+        store.put("b.txt", "same bytes")
+        await connector.run_incremental_sync()
+        before = {r.id: r.external_record_id for r in db.records.values()}
+        db.written.clear()
+
+        for _ in range(2):
+            await connector.run_incremental_sync()
+        # The copy without a record is left alone; before, it took the record on every sync.
+        assert path("a.txt") not in db.written
+        assert {r.id: r.external_record_id for r in db.records.values()} == before
+        assert db.deleted == []
+
 
 class TestRenameAcrossChosenFolders:
     @pytest.mark.asyncio
