@@ -752,3 +752,57 @@ class TestMetrics:
         assert "### Evidence verification" not in report
         rag_row = next(line for line in report.splitlines() if line.startswith("| rag | 50.0"))
         assert rag_row.split(" | ")[2] == "–" and rag_row.split(" | ")[3] == "–"
+
+
+def _supported_if_bridge(request: LLMRequest) -> str:
+    evidence = request.messages[-1].content.split("Evidence the system was shown:\n", 1)[1].split("Judge only")[0]
+    return f"Reason: r.\nEvidence support: {'SUPPORTED' if 'Ballou' in evidence else 'UNSUPPORTED'}"
+
+
+# Many passages that match the question and answer, and one bridge fact that
+# shares no word with either: the cut keeps the former and drops the latter.
+LONG = captured(
+    [_passage(f"Question 0 answer 1911, note {i}: 1911 again for question 0.") for i in range(80)]
+    + [_passage("Her maiden name was Ballou.")],
+    "t",
+)
+
+
+class TestRecheckOfCutEvidence:
+    SETTINGS = {"max_evidence_tokens": 500, "recheck_evidence_tokens": 20_000}
+
+    def test_a_cut_that_dropped_the_bridge_fact_is_rechecked_in_full(self, tmp_path: Path) -> None:
+        llm = FakeLLM(_supported_if_bridge)
+        ctx = _context(tmp_path, llm, evidence_support=self.SETTINGS)
+        _record(ctx, "rag", "0", "1911", correct=True, evidence=LONG)
+        SupportStage().run(ctx)
+
+        verdicts = ctx.store.read(SUPPORT_FILE, SupportJudgment)
+        assert [(j.label, j.selection.selected) for j in verdicts] == [("UNSUPPORTED", True), ("SUPPORTED", False)]
+        assert verdicts[-1].verifier.endswith(":judge-model:20000")
+
+    def test_only_cut_evidence_without_support_is_rechecked(self, tmp_path: Path) -> None:
+        llm = FakeLLM(_supported_if_1911)
+        ctx = _context(tmp_path, llm, evidence_support=self.SETTINGS)
+        _record(ctx, "rag", "0", "1911", correct=True, evidence=LONG)  # cut, but SUPPORTED
+        _record(ctx, "rag", "1", "1911", correct=True, evidence=captured([_passage("Signed in 1912.")], "t"))  # not cut
+        SupportStage().run(ctx)
+
+        assert len(llm.requests) == 2
+        verdicts = {j.question_id: j.label for j in ctx.store.read(SUPPORT_FILE, SupportJudgment)}
+        assert verdicts == {"0": "SUPPORTED", "1": "UNSUPPORTED"}
+
+    def test_resume_does_not_recheck_again(self, tmp_path: Path) -> None:
+        llm = FakeLLM(_supported_if_bridge)
+        ctx = _context(tmp_path, llm, evidence_support=self.SETTINGS)
+        _record(ctx, "rag", "0", "1911", correct=True, evidence=LONG)
+        SupportStage().run(ctx)
+        assert SupportStage().run(ctx).processed == 0
+        assert len(llm.requests) == 2
+
+    def test_recheck_can_be_turned_off(self, tmp_path: Path) -> None:
+        llm = FakeLLM(_supported_if_bridge)
+        ctx = _context(tmp_path, llm, evidence_support={"max_evidence_tokens": 500, "recheck_evidence_tokens": None})
+        _record(ctx, "rag", "0", "1911", correct=True, evidence=LONG)
+        SupportStage().run(ctx)
+        assert [j.label for j in ctx.store.read(SUPPORT_FILE, SupportJudgment)] == ["UNSUPPORTED"]

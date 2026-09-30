@@ -19,6 +19,7 @@ from typing import Any
 
 from benchmarks.harness import HARNESS_VERSION
 from benchmarks.harness.concurrency import CircuitBreaker, run_parallel
+from benchmarks.harness.config import ModelSelector
 from benchmarks.harness.corpus.manifest import (
     MANIFEST_FILE,
     load_manifest,
@@ -58,6 +59,7 @@ from benchmarks.harness.models import (
     Question,
     QuestionScore,
     RankedList,
+    SUPPORTED,
     RunMeta,
     SupportJudgment,
     answer_fingerprint,
@@ -525,7 +527,47 @@ class SupportStage:
         selected = Counter(s.system for s in todo if s.selection is not None and s.selection.selected)
         for system, count in sorted(selected.items()):
             logger.warning("verify: %s: evidence of %d answers cut to %d tokens", system, count, settings.max_evidence_tokens)
-        judge = EvidenceSupportJudge(ctx.services.llm, ctx.services.judge_model(selector) if calls else None)
+        self._judge_all(ctx, selector, todo, report, "verify")
+        if settings.recheck_evidence_tokens and settings.recheck_evidence_tokens > settings.max_evidence_tokens:
+            self._recheck_cut(ctx, selector, correct, questions, verifier, settings.recheck_evidence_tokens, report)
+        return report
+
+    def _recheck_cut(
+        self, ctx: RunContext, selector: ModelSelector, correct: dict[tuple[str, str, int], Prediction],
+        questions: dict[str, Question], first_verifier: str, budget_tokens: int, report: StageReport,
+    ) -> None:
+        """Checks again, with the larger budget, every answer whose evidence
+        was cut and not judged SUPPORTED. Appended after the first verdict,
+        the re-check is the one scoring reads."""
+        latest: dict[tuple[str, str, int], SupportJudgment] = {}
+        for j in ctx.store.read(SUPPORT_FILE, SupportJudgment):
+            if j.verifier == first_verifier:
+                latest[(j.system, j.question_id, j.repeat)] = j
+        flagged = {
+            key: p for key, p in correct.items()
+            if (j := latest.get(key)) is not None and j.answer_sha == answer_fingerprint(p.answer)
+            and j.selection is not None and j.selection.selected and j.label != SUPPORTED
+        }
+        if not flagged:
+            return
+        verifier = verifier_id(selector.model, budget_tokens)
+        done = {j.key for j in ctx.store.read(SUPPORT_FILE, SupportJudgment)}
+        subjects = self._subjects(ctx, flagged, questions, done, verifier, budget_tokens)
+        todo = [s for s in subjects.values() if s.key not in done]
+        report.skipped += len(subjects) - len(todo)
+        logger.info(
+            "verify: %d answers had cut evidence and no SUPPORTED verdict; %d to re-check with up to %d tokens",
+            len(flagged), len(todo), budget_tokens,
+        )
+        self._project(ctx, selector.model, [s for s in todo if s.needs_call])
+        self._judge_all(ctx, selector, todo, report, "verify re-check")
+
+    @staticmethod
+    def _judge_all(
+        ctx: RunContext, selector: ModelSelector, todo: list[SupportSubject], report: StageReport, label: str,
+    ) -> None:
+        needs_model = any(s.needs_call for s in todo)
+        judge = EvidenceSupportJudge(ctx.services.llm, ctx.services.judge_model(selector) if needs_model else None)
         labels: Counter[str] = Counter()
         spent = 0.0
 
@@ -543,8 +585,7 @@ class SupportStage:
             is_failure=lambda judgment: not judgment.parse_ok,
             breaker=CircuitBreaker(ctx.config.limits.max_error_rate, ctx.config.limits.min_items_for_breaker),
         )
-        logger.info("verify: labels %s, judge spend $%.4f", dict(sorted(labels.items())), spent)
-        return report
+        logger.info("%s: labels %s, judge spend $%.4f", label, dict(sorted(labels.items())), spent)
 
     @staticmethod
     def _project(ctx: RunContext, model: str, calls: list[SupportSubject]) -> None:

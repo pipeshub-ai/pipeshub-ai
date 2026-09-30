@@ -155,6 +155,10 @@ class EvidenceSupportConfig(_Frozen):
     # What one check may show the judge; larger evidence is cut to the
     # passages (and their neighbours) that best match the question and answer.
     max_evidence_tokens: int = Field(default=6_000, ge=500, le=200_000)
+    # A cut can drop a multi-hop answer's bridge facts, which share no words
+    # with the question or answer. Answers whose cut evidence was not judged
+    # SUPPORTED are checked again with up to this many tokens; None disables.
+    recheck_evidence_tokens: int | None = Field(default=128_000, ge=500, le=200_000)
     # System ids to verify; None = every system except closed book, which is
     # shown nothing and so has nothing to check.
     systems: tuple[str, ...] | None = None
