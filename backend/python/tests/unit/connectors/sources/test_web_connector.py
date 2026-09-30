@@ -3076,9 +3076,10 @@ class TestUploadNewToStorage:
         assert session.calls[0]["method"] == "post"
         assert session.calls[0].get("allow_redirects") is False
         assert session.calls[1]["method"] == "put"
-        assert session.calls[1]["url"] == presigned
+        assert str(session.calls[1]["url"]) == presigned
         assert session.calls[1]["data"] == content
         assert session.calls[1]["headers"]["Content-Length"] == str(len(content))
+        assert session.calls[1].get("skip_auto_headers") == {"Content-Type"}
         assert session.calls[1].get("allow_redirects") is False
 
     @pytest.mark.asyncio
@@ -3115,7 +3116,7 @@ class TestUploadNewToStorage:
         # fake session's response Location must never trigger a follow-up call.
         assert len(session.calls) == 2
         assert session.calls[1]["method"] == "put"
-        assert session.calls[1]["url"] == presigned
+        assert str(session.calls[1]["url"]) == presigned
         assert session.calls[1].get("allow_redirects") is False
 
     @pytest.mark.asyncio
