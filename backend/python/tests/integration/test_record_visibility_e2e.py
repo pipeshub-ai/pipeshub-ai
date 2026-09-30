@@ -15,7 +15,9 @@ and checks each answer against its class there:
 Arango enforces the records schema strictly, so the Arango run also proves the
 new fields are declared: an undeclared one would reject the seed.
 
-Needs Docker services, and fails, naming the backend, when one is not reachable:
+Needs Docker services. A backend whose env var is set but cannot be reached
+fails, naming it; one that is not configured skips, so the bare unit job can
+collect this file:
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \
     up -d --wait neo4j-graph-it arango-graph-it
@@ -162,7 +164,10 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         try:
             graph = await (_connect_neo4j(monkeypatch) if request.param == "neo4j" else _connect_arango())
         except Exception as exc:
-            pytest.fail(f"{request.param} is not reachable, so nothing was checked: {exc!r}")
+            env = "NEO4J_IT_URI" if request.param == "neo4j" else "ARANGO_IT_URL"
+            if os.environ.get(env):
+                pytest.fail(f"{request.param} is configured ({env}) but not reachable: {exc!r}")
+            pytest.skip(f"{request.param} not configured ({env} unset) and not reachable locally: {exc!r}")
         disconnect = getattr(graph, "disconnect", None)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)
