@@ -309,7 +309,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ Coding sandbox warmup complete (%s)", settings.backend)
         except Exception as warmup_error:
             app.state.sandbox_health = {
-                "backend": os.getenv("SANDBOX_MODE", "local").lower(),
+                "backend": (os.getenv("SANDBOX_MODE") or "").strip().lower() or "unset",
                 "available": False,
                 "reason": f"{type(warmup_error).__name__}: {warmup_error}",
             }
