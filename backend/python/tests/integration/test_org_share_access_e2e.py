@@ -59,6 +59,7 @@ class _Env:
     kb_id: str
     records: dict[str, tuple[str, str]] = field(default_factory=dict)
     anyone_ids: list[str] = field(default_factory=list)
+    record_group_ids: list[str] = field(default_factory=list)
     user_keys: list[str] = field(default_factory=list)
 
 
@@ -70,7 +71,6 @@ async def _connect_neo4j(monkeypatch: pytest.MonkeyPatch) -> IGraphDBProvider:
     provider = Neo4jProvider(logger, MagicMock())
     if not await asyncio.wait_for(provider.connect(), timeout=60):
         raise ConnectionError("Neo4jProvider.connect returned False")
-    await provider.ensure_schema()
     return provider
 
 
@@ -82,7 +82,6 @@ async def _connect_arango() -> IGraphDBProvider:
     provider = ArangoHTTPProvider(logger, config_service)
     if not await asyncio.wait_for(provider.connect(), timeout=60):
         raise ConnectionError("ArangoHTTPProvider.connect returned False")
-    await provider.ensure_schema()
     return provider
 
 
@@ -94,7 +93,10 @@ async def _remove_test_data(env: _Env) -> None:
             "MATCH (n) WHERE n.id IN $ids OR n.connectorId = $c OR n.orgId = $o OR n.organization = $o "
             "DETACH DELETE n",
             parameters={
-                "ids": [*record_ids, *env.user_keys, env.org_id, env.connector_id, env.kb_id, *env.anyone_ids],
+                "ids": [
+                    *record_ids, *env.user_keys, *env.record_group_ids,
+                    env.org_id, env.connector_id, env.kb_id, *env.anyone_ids,
+                ],
                 "c": env.connector_id,
                 "o": env.org_id,
             },
@@ -111,6 +113,7 @@ async def _remove_test_data(env: _Env) -> None:
         )
     for collection, keys in (
         (CollectionNames.RECORDS.value, record_ids),
+        (CollectionNames.RECORD_GROUPS.value, env.record_group_ids),
         (CollectionNames.USERS.value, env.user_keys),
         (CollectionNames.ORGS.value, [env.org_id]),
         (CollectionNames.APPS.value, [env.connector_id, env.kb_id]),
@@ -179,10 +182,13 @@ async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
         try:
             graph = await (_connect_neo4j(monkeypatch) if request.param == "neo4j" else _connect_arango())
         except Exception as exc:
+            # Only an unreachable server skips (and backend-matrix fails on any skip).
             pytest.skip(f"{request.param} not available: {exc}")
         disconnect = getattr(graph, "disconnect", None)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)
+        # Outside the try: a schema that cannot be set up on a reachable server is a failure.
+        assert await graph.ensure_schema() is not False, f"ensure_schema failed on {request.param}"
 
         suffix = uuid.uuid4().hex[:10]
         environment = _Env(
@@ -200,6 +206,8 @@ async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
             [{
                 "id": environment.connector_id, "name": "Web", "type": "Web", "appGroup": "Web",
                 "scope": "team", "orgId": environment.org_id, "isActive": True,
+                # Without it the container filter declines to narrow this connector at all.
+                "vectorMembershipBackfilled": True,
                 "createdAtTimestamp": now, "updatedAtTimestamp": now,
             }],
             collection=CollectionNames.APPS.value,
@@ -280,3 +288,38 @@ async def test_a_knowledge_bases_sharing_list_leaves_out_inactive_users(env: _En
 
     assert env.user_key in listed, f"an active user shared the knowledge base must be listed: {listed}"
     assert deleted_key not in listed, f"a deleted (inactive) user must not be listed: {listed}"
+
+
+async def _add_record_group(env: _Env, label: str) -> str:
+    now = get_epoch_timestamp_in_ms()
+    group_id = f"rg-{label}-{env.suffix}"
+    await env.graph.batch_upsert_nodes(
+        [{
+            "id": group_id, "groupName": f"{label} group", "externalGroupId": f"ext-{group_id}",
+            "groupType": "PROJECT", "connectorName": "WEB", "connectorId": env.connector_id,
+            "orgId": env.org_id, "createdAtTimestamp": now, "updatedAtTimestamp": now,
+        }],
+        collection=CollectionNames.RECORD_GROUPS.value,
+    )
+    env.record_group_ids.append(group_id)
+    await env.graph.batch_create_edges(
+        [_edge(env.org_id, CollectionNames.ORGS.value, group_id, CollectionNames.RECORD_GROUPS.value,
+               type="ORG" if label == "org" else "DOMAIN", role="READER")],
+        collection=CollectionNames.PERMISSION.value,
+    )
+    return group_id
+
+
+async def test_the_container_filter_follows_org_shares_only(env: _Env) -> None:
+    """The filter chat builds when containers are searched, not records one by one."""
+    org_group = await _add_record_group(env, "org")
+    domain_group = await _add_record_group(env, "domain")
+
+    containers = await env.graph.get_accessible_containers(env.user_id, env.org_id)
+
+    assert containers.fallback_reason is None, containers.fallback_reason
+    assert org_group in containers.record_group_ids, "a record group shared with the whole org must be searchable"
+    assert domain_group not in containers.record_group_ids, "a domain-typed org edge must not open a record group"
+    direct = set(containers.direct_records) | set(containers.direct_records.values())
+    assert env.records["org"][0] in direct, "a record shared with the whole org must be searchable"
+    assert env.records["domain"][0] not in direct, "a domain-typed org edge must not open a record"

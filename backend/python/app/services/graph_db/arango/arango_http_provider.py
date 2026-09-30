@@ -19918,7 +19918,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR org, belongsEdge IN 1..1 ANY user_from {CollectionNames.BELONGS_TO.value}
                     FILTER belongsEdge.entityType == "ORGANIZATION"
                     FOR rg, orgPerm IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                        FILTER orgPerm.type == "ORG"
+                        FILTER orgPerm.type IN @org_share_types
                         FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", rg)
                         LET rg_app = DOCUMENT(CONCAT("{CollectionNames.APPS.value}/", rg.connectorId))
                         FILTER rg.orgId == @org_id
@@ -20001,7 +20001,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 (FOR org, belongsEdge IN 1..1 ANY user_from {CollectionNames.BELONGS_TO.value}
                     FILTER belongsEdge.entityType == "ORGANIZATION"
                     FOR rec, orgPerm IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                        FILTER orgPerm.type == "ORG"
+                        FILTER orgPerm.type IN @org_share_types
                         FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", rec)
                         FILTER rec.orgId == @org_id
                         FILTER @scope_ids == null OR rec.connectorId IN @scope_ids
@@ -20070,6 +20070,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     # Always bound: Arango rejects a query that declares a bind
                     # variable it is not sent.
                     "scope_ids": sorted(scope_set) if scope_set is not None else None,
+                    "org_share_types": list(ORG_SHARE_PERMISSION_TYPES),
                 },
             )
             row = rows[0] if rows else None

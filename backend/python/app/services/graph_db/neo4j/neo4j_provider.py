@@ -5258,7 +5258,8 @@ class Neo4jProvider(IGraphDBProvider):
         CALL {
             WITH u, reachable_apps
             OPTIONAL MATCH (u)-[:BELONGS_TO]->(:Organization)
-                           -[:PERMISSION]->(rg:RecordGroup {orgId: $org_id})
+                           -[orgPerm:PERMISSION]->(rg:RecordGroup {orgId: $org_id})
+            WHERE orgPerm.type IN $org_share_types
             OPTIONAL MATCH (rgApp:App {id: rg.connectorId})
             WITH rg, rgApp, reachable_apps
             WHERE rg IS NOT NULL
@@ -5337,8 +5338,9 @@ class Neo4jProvider(IGraphDBProvider):
         CALL {
             WITH u
             OPTIONAL MATCH (u)-[:BELONGS_TO]->(:Organization)
-                           -[:PERMISSION]->(r3:Record {orgId: $org_id})
-            WHERE $scope_ids IS NULL OR r3.connectorId IN $scope_ids
+                           -[orgPerm:PERMISSION]->(r3:Record {orgId: $org_id})
+            WHERE orgPerm.type IN $org_share_types
+              AND ($scope_ids IS NULL OR r3.connectorId IN $scope_ids)
             RETURN collect(DISTINCT r3) AS d3
         }
         WITH reachable_apps, app_level_ids, unsafe_app_ids, kb_app_ids, all_rgs,
@@ -5407,6 +5409,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "direct_probe_limit": MAX_DIRECT_GRANT_RECORDS + 1,
                     # Always bound: the query references it unconditionally.
                     "scope_ids": sorted(scope_set) if scope_set is not None else None,
+                    "org_share_types": list(ORG_SHARE_PERMISSION_TYPES),
                 },
             )
             row = rows[0] if rows else None
