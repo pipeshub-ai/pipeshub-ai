@@ -644,17 +644,20 @@ async def handle_model_change(
         try:
             await recreate_collection(retrieval_service, embedding_size, logger)
         except Exception as e:
-            # The rebuild drops the old collection first, so a failure can leave
-            # the store unusable. Reporting success would let the caller save
-            # (or delete) the model on top of it.
+            # Reporting success would let the caller save (or delete) the model.
+            # The rebuild drops each collection before creating it, so the empty
+            # collection may be gone; the manifest keeps it, and the write path
+            # creates it again at the dimension of the model then in use.
             raise HTTPException(
                 status_code=503,
                 detail={
                     "status": "not healthy",
                     "error": (
                         "The vector store could not be rebuilt for the new embedding "
-                        "model, so nothing was changed. Check that the vector store is "
-                        "reachable and try again."
+                        "model, so the model was not changed. The empty collection "
+                        "may already have been removed; it is created again on the "
+                        "next upload. Check that the vector store is reachable and "
+                        "try again."
                     ),
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
