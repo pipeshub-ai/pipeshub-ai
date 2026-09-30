@@ -29,15 +29,29 @@ class TestRedactUrl:
 
 
 class TestRedactSensitiveQueryParams:
-    def test_signed_url_token_is_redacted(self):
+    def test_signed_url_token_is_redacted(self) -> None:
         assert (
             redact_sensitive_query_params("/api/v1/index/o/drive/record/r?token=a.b.c&x=1")
             == "/api/v1/index/o/drive/record/r?token=[REDACTED]&x=1"
         )
 
-    def test_param_names_match_case_insensitively(self):
+    def test_param_names_match_case_insensitively(self) -> None:
         assert "secret" not in redact_sensitive_query_params("/cb?Code=secret")
 
-    @pytest.mark.parametrize("url", ["/api/v1/records", "/search?q=token", ""])
-    def test_urls_without_sensitive_params_are_unchanged(self, url):
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "/api/v1/index/o/drive/record/r?safe=1#token=a.b.c",
+            "/api/v1/index/o/drive/record/r#token=a.b.c",
+            "/cb?code=a.b.c",
+        ],
+    )
+    def test_raw_hash_segments_are_redacted(self, url: str) -> None:
+        """uvicorn's h11 protocol keeps a literal ``#`` in the logged path."""
+        assert "a.b.c" not in redact_sensitive_query_params(url)
+
+    @pytest.mark.parametrize(
+        "url", ["/api/v1/records", "/search?q=token", "/docs#section", "/a?b=1#c", ""]
+    )
+    def test_urls_without_sensitive_params_are_unchanged(self, url: str) -> None:
         assert redact_sensitive_query_params(url) == url
