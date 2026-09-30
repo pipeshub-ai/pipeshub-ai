@@ -1390,7 +1390,7 @@ class WebConnector(BaseConnector):
             except Exception:
                 pass
 
-        if self._excluded_by_extension_filter(result):
+        if await self._excluded_by_extension_filter(result):
             await self._remove_filtered_out(result)
             return False
         if redirected:
@@ -2085,9 +2085,14 @@ class WebConnector(BaseConnector):
             "Raise the Maximum Size in MB setting to include it, then sync again."
         )
 
-    def _excluded_by_extension_filter(self, result: FetchResponse) -> bool:
+    async def _excluded_by_extension_filter(self, result: FetchResponse) -> bool:
         """Checked after links are extracted: an "only PDFs" filter must still crawl the pages linking to them."""
         content_type = result.headers.get("Content-Type", "").lower()
+        if not content_type and result.status_code == HTTPStatus.NOT_MODIFIED:
+            # A 304 has no body and often no Content-Type; without one, an extensionless
+            # URL would read as html. The stored copy it vouches for says what the page is.
+            stored = await self._stored_record(result.final_url)
+            content_type = (stored.mime_type or "").lower() if stored else ""
         _, extension = self._determine_mime_type(result.final_url, content_type)
         return not self._pass_extension_filter(extension)
 
@@ -2136,7 +2141,7 @@ class WebConnector(BaseConnector):
                 result = await self._validate_fetch_result(url, depth, referer, raw)
                 if result is None:
                     return None
-                if self._excluded_by_extension_filter(result):
+                if await self._excluded_by_extension_filter(result):
                     await self._remove_filtered_out(result)
                     return None
                 if not await self._robots_allows_landing(url, result):
@@ -2163,7 +2168,7 @@ class WebConnector(BaseConnector):
                 result = await self._validate_fetch_result(url, depth, referer, refetched)
                 if result is None or result.status_code == HTTPStatus.NOT_MODIFIED:
                     return None
-                if self._excluded_by_extension_filter(result):
+                if await self._excluded_by_extension_filter(result):
                     await self._remove_filtered_out(result)
                     return None
 

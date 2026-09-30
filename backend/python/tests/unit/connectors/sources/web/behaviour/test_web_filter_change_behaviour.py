@@ -90,3 +90,43 @@ async def test_a_single_page_crawl_removes_its_page_once_the_filter_leaves_it_ou
     await connector.run_sync()
 
     assert db.pages() == {}
+
+
+def _only(*extensions: str) -> dict:
+    return {"sync": {"values": {"file_extensions": {"operator": "in", "value": list(extensions), "type": "multiselect"}}}}
+
+
+async def test_a_not_modified_extensionless_page_is_classified_from_its_stored_copy_under_not_in(
+    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+) -> None:
+    # The 304 carries no Content-Type and the URL no extension, so only the stored
+    # record says this page is text; read as html, "not in txt" would keep it.
+    site.add(START_URL, Page(body=b"plain text start", content_type="text/plain; charset=utf-8", etag='"v1"'))
+    connector = await make_connector(crawl_type="single")
+    await connector.run_sync()
+    assert START_URL in db.pages()
+
+    connector.config_service.filters = _exclude("txt")
+    checkpoints.sync_points.clear()
+    await connector.run_sync()
+
+    assert site.not_modified == [START_URL]
+    assert db.pages() == {}
+
+
+async def test_a_not_modified_extensionless_page_is_classified_from_its_stored_copy_under_in(
+    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+) -> None:
+    # Read as html, "in pdf" would delete a PDF the 304 says is unchanged.
+    site.add(START_URL, Page(body=b"%PDF-1.4 v1", content_type="application/pdf", etag='"v1"'))
+    connector = await make_connector(crawl_type="single")
+    await connector.run_sync()
+    kept = db.pages()[START_URL]
+
+    connector.config_service.filters = _only("pdf")
+    checkpoints.sync_points.clear()
+    await connector.run_sync()
+
+    assert site.not_modified == [START_URL]
+    assert db.deleted == []
+    assert db.pages()[START_URL].id == kept.id
