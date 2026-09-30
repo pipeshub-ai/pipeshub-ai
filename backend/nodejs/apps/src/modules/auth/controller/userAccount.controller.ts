@@ -99,6 +99,10 @@ const {
 export const SALT_ROUNDS = 10;
 export const ACCOUNT_NO_LONGER_ACTIVE =
   'Your account is no longer active. Contact your admin.';
+
+// The users service answers with a JSON user document; anything else means no account.
+const isAccountRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
 const SESSION_INVALIDATE_TOKEN_DELAY_MS = 1000;
 
@@ -1232,8 +1236,8 @@ export class UserAccountController {
   private async activeAccountForRefresh(
     userId: string,
     orgId: string,
-  ): Promise<Record<string, any>> {
-    let result: { statusCode: number; data?: Record<string, any> };
+  ): Promise<Record<string, unknown>> {
+    let result: { statusCode: number; data?: unknown };
     try {
       result = await this.iamService.getUserById(
         userId,
@@ -1256,7 +1260,11 @@ export class UserAccountController {
     }
 
     const user = result.data;
-    if (result.statusCode !== 200 || !user || user.isDisabled === true) {
+    if (
+      result.statusCode !== 200 ||
+      !isAccountRecord(user) ||
+      user.isDisabled === true
+    ) {
       throw new UnauthorizedError(ACCOUNT_NO_LONGER_ACTIVE);
     }
     return user;

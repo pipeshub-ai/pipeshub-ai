@@ -3,7 +3,8 @@ import bcrypt from 'bcryptjs';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
-import { UserController } from '../../../../src/modules/user_management/controller/users.controller';
+import { UserController, USER_DELETE_NOT_RECORDED } from '../../../../src/modules/user_management/controller/users.controller';
+import { ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
 import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
@@ -1697,10 +1698,12 @@ describe('UserController', () => {
         }),
         'the deletion is recorded as ending the account\'s sessions',
       ).to.be.true;
-      expect(recordActivity.calledAfter(mockUser.save)).to.be.true;
+      // Recorded before anything is changed, so a deletion always leaves one.
+      expect(recordActivity.calledBefore(UserGroups.updateMany as sinon.SinonStub)).to.be.true;
+      expect(recordActivity.calledBefore(mockUser.save)).to.be.true;
     });
 
-    it('still deletes the user when recording the deletion fails', async () => {
+    it('deletes nothing, and says to retry, when the deletion cannot be recorded', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
       const mockUser = {
         _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
@@ -1718,9 +1721,15 @@ describe('UserController', () => {
 
       await controller.deleteUser(req, res, next);
 
-      expect(next.called).to.be.false;
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
-      expect(res.json.calledWith({ message: 'User deleted successfully' })).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error).to.be.instanceOf(ServiceUnavailableError);
+      expect(error.message).to.equal(USER_DELETE_NOT_RECORDED);
+      expect(mockUser.isDeleted).to.be.false;
+      expect(mockUser.save.called).to.be.false;
+      expect((UserGroups.updateMany as sinon.SinonStub).called).to.be.false;
+      expect((UserCredentials.updateOne as sinon.SinonStub).called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(res.json.called).to.be.false;
     });
   });
 
@@ -2075,6 +2084,12 @@ describe('UserController', () => {
   });
 
   describe('deleteUser (additional)', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should call next with BadRequestError when userId or orgId is missing', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
 
@@ -2264,6 +2279,12 @@ describe('UserController', () => {
   });
 
   describe('deleteUser (additional cases)', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should throw NotFoundError when user._id or orgId is missing', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
 
@@ -3303,6 +3324,12 @@ describe('UserController', () => {
   });
 
   describe('deleteUser - admin check', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should throw BadRequestError when deleting admin user', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
 
@@ -4030,6 +4057,12 @@ describe('UserController', () => {
   // deleteUser - full success flow
   // -----------------------------------------------------------------------
   describe('deleteUser - full success flow', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should soft delete user, remove from groups, clear password, and publish event', async () => {
       req.params = { id: '507f1f77bcf86cd799439013' };
 
@@ -4064,6 +4097,12 @@ describe('UserController', () => {
   // deleteUser - OAuth apps soft-delete cascade
   // -----------------------------------------------------------------------
   describe('deleteUser - OAuth apps cascade', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     function stubOAuthAppQueryChain(appsFromExec: unknown[]) {
       const chain = {
         select: sinon.stub(),
@@ -5281,6 +5320,12 @@ describe('UserController', () => {
   // Branch coverage: deleteUser - userId/orgId null check
   // -----------------------------------------------------------------------
   describe('deleteUser - userId/orgId branches', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should throw NotFoundError when user._id is falsy', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
       sinon.stub(Users, 'findOne').resolves({

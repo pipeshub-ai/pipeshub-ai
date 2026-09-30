@@ -16,6 +16,7 @@ import {
   InternalServerError,
   LargePayloadError,
   NotFoundError,
+  ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import {
@@ -121,6 +122,8 @@ function normalizedEmail(value: unknown): string {
 }
 
 export const MAX_BULK_INVITE = 1000;
+export const USER_DELETE_NOT_RECORDED =
+  "We couldn't delete this user just now, and nothing was changed. Please try again in a moment.";
 
 // Linear-time email check: each segment excludes its following separator
 // (`@`/`.`), so there is no ambiguous backtracking (avoids ReDoS).
@@ -1625,6 +1628,31 @@ export class UserController {
         );
       }
 
+      // Recorded first, before anything is changed: it ends the sessions and
+      // refresh tokens issued before the deletion, and keeps them ended if the
+      // account is later restored. A deletion without it would leave no
+      // revocation marker, so if it cannot be written nothing is deleted.
+      try {
+        await UserActivities.create({
+          orgId,
+          userId,
+          email: user.email,
+          activityType: userActivitiesType.ACCOUNT_DELETED,
+          ipAddress: req.ip ?? '',
+        });
+      } catch (activityError) {
+        this.logger.error('Deletion not recorded; the user was not deleted', {
+          userId: userId.toString(),
+          error:
+            activityError instanceof Error
+              ? activityError.message
+              : String(activityError),
+        });
+        throw markClientSafe(
+          new ServiceUnavailableError(USER_DELETE_NOT_RECORDED),
+        );
+      }
+
       await UserGroups.updateMany(
         { orgId, users: userId },
         { $pull: { users: userId } },
@@ -1664,28 +1692,6 @@ export class UserController {
       );
 
       await user.save();
-
-      // Ends the sessions and refresh tokens issued before the deletion, and
-      // keeps them ended if the account is later restored. Best effort, as for
-      // a role change: the account is already deleted, and its tokens are
-      // refused on that alone while it stays deleted.
-      try {
-        await UserActivities.create({
-          orgId,
-          userId,
-          email: user.email,
-          activityType: userActivitiesType.ACCOUNT_DELETED,
-          ipAddress: req.ip ?? '',
-        });
-      } catch (activityError) {
-        this.logger.error('Failed to record the deletion as ending sessions', {
-          userId: userId.toString(),
-          error:
-            activityError instanceof Error
-              ? activityError.message
-              : String(activityError),
-        });
-      }
 
       await this.eventService.start();
       const event: Event = {
