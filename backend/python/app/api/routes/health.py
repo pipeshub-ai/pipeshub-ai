@@ -253,9 +253,11 @@ def _rejected_settings_message(code: str, kind: str, model_config: dict, model: 
             "Check the key in Workspace > AI Models, then try again."
         )
     if code == "model_not_found":
+        # A bare 404 can also mean a wrong endpoint path (an OpenAI-compatible base URL without /v1).
         return (
-            f"{provider} couldn't find the model \"{model}\". "
-            "Check the model name (or deployment name) in Workspace > AI Models, then try again."
+            f"{provider} couldn't find the model \"{model}\" at this endpoint. "
+            "Check the model name (or deployment name) and the endpoint address "
+            "in Workspace > AI Models, then try again."
         )
     return (
         f"{provider} refused these {kind} settings. Check the model name and its options "

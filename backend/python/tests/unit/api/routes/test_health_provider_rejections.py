@@ -80,6 +80,8 @@ async def test_a_missing_model_is_a_400_that_names_the_model() -> None:
 
     assert resp.status_code == 400
     assert '"gpt-4o"' in body["message"] and "model name" in body["message"]
+    # A bare 404 can be a wrong endpoint path too, so the advice names both.
+    assert "endpoint address" in body["message"]
     assert body["details"]["error_code"] == "model_not_found"
 
 

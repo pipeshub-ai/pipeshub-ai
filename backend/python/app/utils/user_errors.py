@@ -149,9 +149,9 @@ def _ai_messages(model: str) -> dict[str, str]:
             "admin can update the key in Workspace → AI Models, then Reindex the file."
         ),
         "model_not_found": (
-            f"The {model}'s provider couldn't find the model it names, so this file wasn't "
-            "indexed. An admin can check the model name in Workspace → AI Models, then "
-            "Reindex the file."
+            f"The {model}'s provider couldn't find the model it names at its endpoint, so "
+            "this file wasn't indexed. An admin can check the model name and endpoint in "
+            "Workspace → AI Models, then Reindex the file."
         ),
         "server_error": unreachable,
         "timeout": unreachable,

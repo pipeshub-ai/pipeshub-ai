@@ -104,8 +104,8 @@ _USER_MESSAGES: dict[str, str] = {
         "check the key in Workspace → AI Models."
     ),
     "model_not_found": (
-        "The AI model's provider couldn't find this model. Ask a workspace admin to "
-        "check the model name in Workspace → AI Models."
+        "The AI model's provider couldn't find this model at its endpoint. Ask a "
+        "workspace admin to check the model name and endpoint in Workspace → AI Models."
     ),
     "request_too_large": (
         "This conversation is too long for the selected model. Shorten your "
