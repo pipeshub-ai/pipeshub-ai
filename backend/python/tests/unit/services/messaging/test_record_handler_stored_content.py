@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -58,54 +59,70 @@ class TestDeleteStoredDocumentsEvent:
         pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [DOC_ID])
 
     @pytest.mark.asyncio
-    async def test_it_waits_for_the_records_delete_without_spending_an_attempt(self, monkeypatch):
-        """The event is published before the graph delete, so the records are usually still there."""
-        handler, pipeline = _handler()
-        listings = iter([[DOC_ID], [DOC_ID], []])
-        handler.event_processor.graph_provider.get_uploaded_document_ids = AsyncMock(
-            side_effect=lambda *a, **k: next(listings)
-        )
-        monkeypatch.setattr("app.services.messaging.kafka.handlers.record.asyncio.sleep", AsyncMock())
-
-        events = await _run(
-            handler, EventTypes.DELETE_STORED_DOCUMENTS.value,
-            {"orgId": "org-1", "connectorId": "kb-1", "documentIds": [DOC_ID]},
-        )
-
-        assert len(events) == 2
-        assert handler.event_processor.graph_provider.get_uploaded_document_ids.await_count == 3
-        pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [DOC_ID])
-
-    @pytest.mark.asyncio
-    async def test_a_file_still_listed_after_the_wait_is_rescheduled_not_retried(self, monkeypatch):
-        """No delivery attempt is spent, so a slow graph delete cannot lose the ids."""
+    async def test_a_file_still_listed_is_rescheduled_with_a_delay_not_retried(self):
+        """No wait holding a permit, no delivery attempt spent: a fresh, delayed event."""
         handler, pipeline = _handler()
         other = "65f1c0ffee0123456789abce"
         handler.event_processor.graph_provider.get_uploaded_document_ids = AsyncMock(return_value=[other])
-        monkeypatch.setenv("STORED_DOCUMENTS_WAIT_SECONDS", "0")
         scheduled = get_epoch_timestamp_in_ms() - 60_000
+        before = time.time()
 
         events = await _run(
             handler,
             EventTypes.DELETE_STORED_DOCUMENTS.value,
-            {"orgId": "org-1", "connectorId": "kb-1", "documentIds": [DOC_ID, other], "scheduledAt": scheduled},
+            {"orgId": "org-1", "connectorId": "kb-1", "documentIds": [DOC_ID, other],
+             "scheduledAt": scheduled, "_retry_tracking_id": "old"},
         )
 
         assert len(events) == 2
+        handler.event_processor.graph_provider.get_uploaded_document_ids.assert_awaited_once_with(
+            "kb-1", among=[DOC_ID, other]
+        )
         pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [DOC_ID])
-        handler.producer.send_event.assert_awaited_once()
         sent = handler.producer.send_event.await_args.kwargs
         assert sent["event_type"] == EventTypes.DELETE_STORED_DOCUMENTS.value
-        assert sent["payload"] == {
-            "orgId": "org-1", "connectorId": "kb-1", "documentIds": [other], "scheduledAt": scheduled,
-        }
+        payload = sent["payload"]
+        assert payload["documentIds"] == [other]
+        assert payload["scheduledAt"] == scheduled
+        assert payload["reschedules"] == 1
+        assert "_retry_tracking_id" not in payload
+        assert before + 15 <= payload["_retry_not_before"] <= time.time() + 15
+
+    @pytest.mark.asyncio
+    async def test_the_delay_grows_and_is_capped(self):
+        handler, _ = _handler()
+        handler.event_processor.graph_provider.get_uploaded_document_ids = AsyncMock(return_value=[DOC_ID])
+
+        await _run(
+            handler,
+            EventTypes.DELETE_STORED_DOCUMENTS.value,
+            {"orgId": "org-1", "connectorId": "kb-1", "documentIds": [DOC_ID], "reschedules": 9},
+        )
+
+        payload = handler.producer.send_event.await_args.kwargs["payload"]
+        assert payload["reschedules"] == 10
+        assert payload["_retry_not_before"] - time.time() <= 300
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_graph_reschedules_every_file(self):
+        """A failed read must not spend attempts: the ids are the only handle on the files."""
+        handler, pipeline = _handler()
+        handler.event_processor.graph_provider.get_uploaded_document_ids = AsyncMock(side_effect=RuntimeError("timeout"))
+
+        await _run(
+            handler,
+            EventTypes.DELETE_STORED_DOCUMENTS.value,
+            {"orgId": "org-1", "connectorId": "kb-1", "documentIds": [DOC_ID]},
+        )
+
+        pipeline.purge_stored_documents.assert_not_awaited()
+        assert handler.producer.send_event.await_args.kwargs["payload"]["documentIds"] == [DOC_ID]
 
     @pytest.mark.asyncio
     async def test_after_a_day_a_still_listed_file_is_kept_and_not_rescheduled(self, monkeypatch):
         """Records that still list the file a day on were never deleted; the file is theirs."""
         handler, pipeline = _handler()
         handler.event_processor.graph_provider.get_uploaded_document_ids = AsyncMock(return_value=[DOC_ID])
-        monkeypatch.setenv("STORED_DOCUMENTS_WAIT_SECONDS", "0")
         long_ago = get_epoch_timestamp_in_ms() - 25 * 3600 * 1000
 
         await _run(
@@ -131,17 +148,15 @@ class TestDeleteStoredDocumentsEvent:
         pipeline.purge_stored_documents.assert_awaited_once_with("org-1", [DOC_ID])
 
     @pytest.mark.asyncio
-    async def test_files_storage_could_not_remove_are_rescheduled_after_a_pause(self, monkeypatch):
+    async def test_files_storage_could_not_remove_are_rescheduled_with_a_delay(self):
         """Raising would spend the delivery attempts and then discard the ids for good."""
         handler, pipeline = _handler()
         pipeline.purge_stored_documents = AsyncMock(return_value=[DOC_ID])
-        pause = AsyncMock()
-        monkeypatch.setattr("app.services.messaging.kafka.handlers.record.asyncio.sleep", pause)
 
         events = await _run(handler, EventTypes.DELETE_STORED_DOCUMENTS.value, {"orgId": "org-1", "documentIds": [DOC_ID]})
 
         assert len(events) == 2
-        pause.assert_awaited_once()
+        assert handler.producer.send_event.await_args.kwargs["payload"]["_retry_not_before"] > time.time()
         sent = handler.producer.send_event.await_args.kwargs
         assert sent["payload"]["documentIds"] == [DOC_ID]
         assert isinstance(sent["payload"]["scheduledAt"], int)

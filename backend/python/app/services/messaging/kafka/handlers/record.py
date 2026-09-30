@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
@@ -65,8 +66,6 @@ from app.utils.user_errors import (
     unsupported_file_type,
 )
 
-STORED_DOCUMENTS_POLL_SECONDS = 5
-
 
 def _seconds_from_env(name: str, default: float) -> float:
     try:
@@ -75,18 +74,10 @@ def _seconds_from_env(name: str, default: float) -> float:
         return default
 
 
-def stored_documents_wait_seconds() -> float:
-    """How long one delivery of deleteStoredDocuments waits in place for its records' delete.
-
-    After that it re-publishes itself (see ``_reschedule_stored_documents``) rather
-    than hold a worker longer.
-    """
-    return _seconds_from_env("STORED_DOCUMENTS_WAIT_SECONDS", 120.0)
-
-
-def stored_documents_retry_pause_seconds() -> float:
-    """Pause before re-publishing files storage could not remove."""
-    return _seconds_from_env("STORED_DOCUMENTS_RETRY_PAUSE_SECONDS", 30.0)
+def stored_documents_retry_delay_seconds(reschedules: int) -> float:
+    """Delay before a rescheduled deleteStoredDocuments is picked up again: 15s doubling to 5 min."""
+    base = _seconds_from_env("STORED_DOCUMENTS_RETRY_DELAY_SECONDS", 15.0)
+    return min(300.0, base * (2 ** min(reschedules, 10)))
 
 
 def stored_documents_give_up_seconds() -> float:
@@ -357,23 +348,21 @@ class RecordEventHandler(BaseEventService):
             return False
         return bool(containers.get("blocks") or containers.get("block_groups"))
 
-    async def _wait_until_unlisted(self, connector_id: str, document_ids: list[str]) -> set[str]:
-        """Wait for the graph delete that follows this event, then return what records still list.
-
-        The event is published before the records are deleted, so the first look
-        usually finds them. Waiting here, instead of raising, keeps an ordinary
-        delete from spending the delivery attempts, which are few and short.
-        """
-        deadline = asyncio.get_running_loop().time() + stored_documents_wait_seconds()
-        while True:
-            listed = set(
+    async def _still_listed(self, connector_id: str, document_ids: list[str]) -> set[str]:
+        """Files a record still lists. The event is published before the graph delete,
+        so this is often all of them. An unreadable graph counts every file as listed."""
+        try:
+            return set(
                 await self.event_processor.graph_provider.get_uploaded_document_ids(
                     connector_id, among=list(document_ids)
                 )
             )
-            if not listed or asyncio.get_running_loop().time() >= deadline:
-                return listed
-            await asyncio.sleep(STORED_DOCUMENTS_POLL_SECONDS)
+        except Exception as exc:
+            self.logger.warning(
+                "Could not check which files of %s records still list; trying later: %s",
+                connector_id, exc,
+            )
+            return set(document_ids)
 
     async def _reschedule_stored_documents(
         self, payload: dict, still_listed: set[str], not_removed: set[str]
@@ -383,11 +372,15 @@ class RecordEventHandler(BaseEventService):
         Two reasons a file stays: a record still lists it (the event is published
         before the graph delete, which may be slow), or storage could not remove
         it. Raising would spend the few, short delivery attempts, after which the
-        event is discarded, and with it the ids, the only handle on the files. A
-        fresh event keeps them, up to a day after the delete was scheduled.
+        event is discarded, and with it the ids, the only handle on the files.
+        Waiting here would hold an index permit and let another consumer claim
+        the idle entry. A fresh event carries ``_retry_not_before``, which both
+        consumers honour before taking a permit, until a day after the delete
+        was scheduled.
         """
         now = get_epoch_timestamp_in_ms()
         scheduled_at = int(payload.get("scheduledAt") or now)
+        reschedules = int(payload.get("reschedules") or 0)
         if now - scheduled_at >= stored_documents_give_up_seconds() * 1000:
             # A file still listed a day on belongs to a record that was never deleted.
             self.logger.error(
@@ -397,18 +390,17 @@ class RecordEventHandler(BaseEventService):
                 sorted(still_listed | not_removed),
             )
             return
-        if not still_listed:
-            # Nothing was waited on, so pause before trying storage again.
-            await asyncio.sleep(stored_documents_retry_pause_seconds())
         if not self.producer:
             raise IndexingError("No messaging producer configured; cannot reschedule stored-file removal")
         await self.producer.send_event(
             topic=Topic.RECORD_EVENTS.value,
             event_type=EventTypes.DELETE_STORED_DOCUMENTS.value,
             payload={
-                **payload,
+                **{k: v for k, v in payload.items() if k != "_retry_tracking_id"},
                 "documentIds": sorted(still_listed | not_removed),
                 "scheduledAt": scheduled_at,
+                "reschedules": reschedules + 1,
+                "_retry_not_before": time.time() + stored_documents_retry_delay_seconds(reschedules),
             },
             key=str(payload.get("connectorId")),
         )
@@ -771,7 +763,7 @@ class RecordEventHandler(BaseEventService):
                 still_listed: set[str] = set()
                 connector_id = payload.get("connectorId")
                 if connector_id:
-                    still_listed = await self._wait_until_unlisted(connector_id, document_ids)
+                    still_listed = await self._still_listed(connector_id, document_ids)
                 to_purge = [d for d in document_ids if d not in still_listed]
                 pipeline = self.event_processor.processor.indexing_pipeline
                 not_removed = set(await pipeline.purge_stored_documents(org_id, to_purge)) if to_purge else set()
