@@ -965,7 +965,7 @@ class IndexingPipeline:
             )
             return {"action": "noop", "collections": scope.collection_names}
 
-        result = await self.bulk_delete_embeddings(virtual_record_ids)
+        result = await self.bulk_delete_embeddings(virtual_record_ids, org_id=ctx.org_id or None)
         # The scope names the connector's *own* collection(s); the delete itself
         # is keyed on virtualRecordId across every managed one, because a VRID
         # whose last record just went away must not be left behind in a
@@ -1093,7 +1093,8 @@ class IndexingPipeline:
 
     async def bulk_delete_embeddings(
         self,
-        virtual_record_ids: List[str]
+        virtual_record_ids: List[str],
+        org_id: str | None = None,
     ) -> Dict[str, Any]:
         """
         Bulk delete embeddings for multiple records in a single operation.
@@ -1297,7 +1298,9 @@ class IndexingPipeline:
 
             # Mapping last: it is how an orphaned point set (and its stored
             # content) is found again, so it must outlive the deletes it describes.
-            storage_pending = await self._forget_virtual_record_mappings(deleted_virtual_record_ids)
+            storage_pending = await self._forget_virtual_record_mappings(
+                deleted_virtual_record_ids, org_id=org_id
+            )
 
             safe_virtual_record_ids = deleted_virtual_record_ids
 

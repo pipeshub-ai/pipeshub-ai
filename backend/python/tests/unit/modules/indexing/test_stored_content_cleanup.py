@@ -108,6 +108,20 @@ class TestReleaseVirtualRecords:
         blob.purge_virtual_record_documents.assert_not_awaited()
 
 
+class TestAMappingRowWithoutAnOwner:
+    @pytest.mark.asyncio
+    async def test_is_kept_for_a_retry_not_released(self):
+        """The row is the sweeper's only marker for the envelope."""
+        cleanup, graph, blob = _cleanup()
+        graph.get_document = AsyncMock(return_value={"id": "vr-1", "documentId": "doc"})
+
+        failed = await cleanup.release_virtual_records(["vr-1"])
+
+        assert failed == ["vr-1"]
+        blob.purge_virtual_record_documents.assert_not_awaited()
+        graph.delete_nodes.assert_not_awaited()
+
+
 class TestPurgeDocuments:
     @pytest.mark.asyncio
     async def test_reports_only_the_documents_still_stored(self):

@@ -1228,7 +1228,7 @@ class TestPurgeConnector:
         ctx = DeleteContext(org_id="org-1", connector_id="conn-1")
         result = await pipeline.purge_connector_by_virtual_record_ids(ctx, ["vr-1", "vr-2"])
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr-1", "vr-2"])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr-1", "vr-2"], org_id="org-1")
         pipeline.vector_db_service.delete_points.assert_not_awaited()
         assert result["action"] == "filtered_delete"
         assert result["virtual_record_ids_processed"] == 2
@@ -1305,7 +1305,7 @@ class TestPurgeConnector:
         ctx = DeleteContext(org_id="org-1", connector_id="conn-1")
         result = await pipeline.purge_connector_by_virtual_record_ids(ctx, [])
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr-1"])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr-1"], org_id="org-1")
         pipeline.vector_db_service.delete_points.assert_not_awaited()
         assert result["action"] == "filtered_delete"
 

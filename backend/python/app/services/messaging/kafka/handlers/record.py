@@ -351,21 +351,25 @@ class RecordEventHandler(BaseEventService):
             return False
         return bool(containers.get("blocks") or containers.get("block_groups"))
 
-    async def _still_listed(self, connector_id: str, document_ids: list[str]) -> set[str]:
-        """Files a record still lists. The event is published before the graph delete,
-        so this is often all of them. An unreadable graph counts every file as listed."""
+    async def _still_listed(
+        self, connector_id: str, document_ids: list[str]
+    ) -> tuple[set[str], set[str]]:
+        """(files a record still lists, files the graph could not be asked about).
+
+        The event is published before the graph delete, so the first set is often
+        all of them.
+        """
         try:
-            return set(
-                await self.event_processor.graph_provider.get_uploaded_document_ids(
-                    connector_id, among=list(document_ids)
-                )
+            listed = await self.event_processor.graph_provider.get_uploaded_document_ids(
+                connector_id, among=list(document_ids)
             )
+            return set(listed), set()
         except Exception as exc:
             self.logger.warning(
                 "Could not check which files of %s records still list; trying later: %s",
                 connector_id, exc,
             )
-            return set(document_ids)
+            return set(), set(document_ids)
 
     async def _reschedule_stored_documents(
         self, payload: dict, still_listed: set[str], not_removed: set[str]
@@ -714,7 +718,9 @@ class RecordEventHandler(BaseEventService):
                         delete_ctx, virtual_record_ids
                     )
                 else:
-                    result = await indexing_pipeline.bulk_delete_embeddings(virtual_record_ids)
+                    result = await indexing_pipeline.bulk_delete_embeddings(
+                        virtual_record_ids, org_id=payload.get("orgId") or None
+                    )
 
                 self.logger.info(
                     f"✅ Bulk deletion complete: {result}"
@@ -766,14 +772,17 @@ class RecordEventHandler(BaseEventService):
                         details={"payload_keys": sorted(payload.keys())},
                     )
                 still_listed: set[str] = set()
+                unread: set[str] = set()
                 connector_id = payload.get("connectorId")
                 if connector_id:
-                    still_listed = await self._still_listed(connector_id, document_ids)
-                to_purge = [d for d in document_ids if d not in still_listed]
+                    still_listed, unread = await self._still_listed(connector_id, document_ids)
+                to_purge = [d for d in document_ids if d not in still_listed and d not in unread]
                 pipeline = self.event_processor.processor.indexing_pipeline
                 not_removed = set(await pipeline.purge_stored_documents(org_id, to_purge)) if to_purge else set()
-                if still_listed or not_removed:
-                    await self._reschedule_stored_documents(payload, still_listed, not_removed)
+                # Neither a failed read nor a failed purge says the delete never happened,
+                # so only files a record was seen to list can be given up on.
+                if still_listed or not_removed or unread:
+                    await self._reschedule_stored_documents(payload, still_listed, not_removed | unread)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="stored_documents", count=len(document_ids)))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="stored_documents", count=len(document_ids)))
                 return
@@ -804,7 +813,9 @@ class RecordEventHandler(BaseEventService):
 
             # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
-                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([ virtual_record_id])
+                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
+                    [virtual_record_id], org_id=payload.get("orgId") or None
+                )
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))

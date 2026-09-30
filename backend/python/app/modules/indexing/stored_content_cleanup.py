@@ -72,10 +72,19 @@ class StoredContentCleanup:
             if remaining_record_keys(records):
                 in_use.add(vrid)
                 return
-            owner = org_id or await self._org_of(vrid)
-            if owner:
-                await self.blob_storage.purge_virtual_record_documents(owner, vrid)
-            # No mapping row means nothing was filed that this id can reach.
+            owner = org_id
+            if not owner:
+                row = await self.graph_provider.get_document(
+                    vrid, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+                )
+                if row is None:
+                    # No mapping row: nothing was filed that this id can reach.
+                    return
+                owner = row.get("orgId")
+                if not owner:
+                    # The row is the sweeper's only marker for this content; keep it.
+                    raise ValueError(f"mapping row for {vrid} names no organisation")
+            await self.blob_storage.purge_virtual_record_documents(owner, vrid)
 
         failed = await self._run_all(ids, purge, "virtual record")
         if in_use:
@@ -111,12 +120,6 @@ class StoredContentCleanup:
             await self.blob_storage.purge_document(org_id, document_id)
 
         return await self._run_all(ids, purge, "storage document")
-
-    async def _org_of(self, virtual_record_id: str) -> str | None:
-        row = await self.graph_provider.get_document(
-            virtual_record_id, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-        )
-        return (row or {}).get("orgId")
 
     async def _run_all(
         self, ids: list[str], purge: Callable[[str], Awaitable[Any]], what: str

@@ -23153,7 +23153,13 @@ paths:
       security:
         - scopedToken: []
       parameters:
-        - $ref: '#/components/parameters/InternalDocumentId'
+        - name: documentId
+          in: path
+          required: true
+          description: The document's id, a 24-character hex MongoDB ObjectId.
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
       responses:
         '200':
           description: How many documents were removed (0 if it was already gone).

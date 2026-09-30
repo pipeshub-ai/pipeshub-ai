@@ -42,7 +42,7 @@ class TestDeleteRecordLeavesStorageToItsOwnEvent:
 
         await _run(handler, EventTypes.DELETE_RECORD.value, {"recordId": "r1", "orgId": "org-1", "virtualRecordId": "vr1"})
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id="org-1")
         pipeline.purge_stored_documents.assert_not_awaited()
 
 
@@ -183,4 +183,20 @@ class TestStorageFailuresAreNeverDropped:
             {"orgId": "org-1", "documentIds": [DOC_ID], "scheduledAt": long_ago},
         )
 
+        assert handler.producer.send_event.await_args.kwargs["payload"]["documentIds"] == [DOC_ID]
+
+    @pytest.mark.asyncio
+    async def test_after_a_day_an_unreadable_graph_still_reschedules(self):
+        """A failed read is no evidence the delete never happened."""
+        handler, pipeline = _handler()
+        handler.event_processor.graph_provider.get_uploaded_document_ids = AsyncMock(side_effect=RuntimeError("timeout"))
+        long_ago = get_epoch_timestamp_in_ms() - 25 * 3600 * 1000
+
+        await _run(
+            handler,
+            EventTypes.DELETE_STORED_DOCUMENTS.value,
+            {"orgId": "org-1", "connectorId": "kb-1", "documentIds": [DOC_ID], "scheduledAt": long_ago},
+        )
+
+        pipeline.purge_stored_documents.assert_not_awaited()
         assert handler.producer.send_event.await_args.kwargs["payload"]["documentIds"] == [DOC_ID]
