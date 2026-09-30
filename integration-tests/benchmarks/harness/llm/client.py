@@ -132,7 +132,7 @@ def _is_retryable_llm_error(exc: BaseException) -> bool:
 
     return isinstance(exc, (
         litellm.RateLimitError, litellm.APIConnectionError, litellm.Timeout,
-        litellm.InternalServerError, litellm.ServiceUnavailableError,
+        litellm.InternalServerError, litellm.BadGatewayError, litellm.ServiceUnavailableError,
     ))
 
 
