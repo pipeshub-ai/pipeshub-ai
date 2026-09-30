@@ -50,9 +50,13 @@ async def neo4j_provider() -> AsyncIterator[Any]:
     client = Neo4jClient(
         uri=NEO4J_URI, username="neo4j", password=NEO4J_PASSWORD, database="neo4j", logger=logger
     )
-    # A skip here would pass CI without running anything, so an unreachable Neo4j fails.
-    if not await client.connect():
-        raise ConnectionError(f"Neo4j not available at {NEO4J_URI}")
+    # Unreachable is a skip (the unit-test job has no Neo4j; backend-matrix fails on any skip).
+    try:
+        connected = await client.connect()
+    except Exception as exc:
+        pytest.skip(f"Neo4j not available at {NEO4J_URI}: {exc}")
+    if not connected:
+        pytest.skip(f"Neo4j not available at {NEO4J_URI}")
 
     provider = Neo4jProvider.__new__(Neo4jProvider)
     provider.logger = logger
@@ -70,8 +74,13 @@ async def arango_provider() -> AsyncIterator[Any]:
     client = ArangoHTTPClient(
         base_url=ARANGO_URL, username="root", password=ARANGO_PASSWORD, database=ARANGO_DB, logger=logger
     )
-    # Fails rather than skips: a skipped schema setup would pass CI without running anything.
-    await _ensure_arango_schema(ARANGO_URL, ARANGO_PASSWORD, ARANGO_DB)
+    # Unreachable is a skip, as for Neo4j; a bad status while creating the schema fails.
+    import aiohttp
+
+    try:
+        await _ensure_arango_schema(ARANGO_URL, ARANGO_PASSWORD, ARANGO_DB)
+    except aiohttp.ClientConnectionError as exc:
+        pytest.skip(f"ArangoDB not available at {ARANGO_URL}: {exc}")
 
     provider = ArangoHTTPProvider.__new__(ArangoHTTPProvider)
     provider.logger = logger
