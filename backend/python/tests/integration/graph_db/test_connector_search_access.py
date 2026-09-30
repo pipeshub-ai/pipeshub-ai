@@ -1,7 +1,8 @@
 """``_get_virtual_ids_for_connector`` against a real Neo4j and a real ArangoDB.
 
-Requires: docker compose -f tests/integration/compose/graph-db.yml up -d
-Run: pytest tests/integration/graph_db/ -m integration
+Requires the graph stack from deployment/docker-compose/docker-compose.integration.graph-db.yml.
+Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD (the
+backend-matrix workflow sets these and finds this file by them).
 
 This is the set of records a user's search may return from one connector, so
 both backends must agree on it. BookStack shares a page with a role as
@@ -22,6 +23,12 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 ORG = "org-it-search"
 
+NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
+NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
+ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
+ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
+ARANGO_DB = "connector_search_access_it"
+
 _DOC_COLLECTIONS = (
     "users", "records", "recordGroups", "groups", "roles", "organizations", "anyone",
 )
@@ -36,21 +43,16 @@ def _log() -> logging.Logger:
 
 @pytest.fixture(scope="module")
 async def neo4j_provider() -> AsyncIterator[Any]:
-    pytest.importorskip("neo4j", reason="neo4j driver not installed")
     from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
-    uri = os.environ.get("NEO4J_TEST_URI", "bolt://localhost:7699")
-    password = os.environ.get("NEO4J_TEST_PASSWORD", "testpassword")
     logger = _log()
     client = Neo4jClient(
-        uri=uri, username="neo4j", password=password, database="neo4j", logger=logger
+        uri=NEO4J_URI, username="neo4j", password=NEO4J_PASSWORD, database="neo4j", logger=logger
     )
-    try:
-        if not await client.connect():
-            pytest.skip(f"Neo4j not available at {uri}")
-    except Exception as exc:
-        pytest.skip(f"Neo4j not available at {uri} — {exc}")
+    # A skip here would pass CI without running anything, so an unreachable Neo4j fails.
+    if not await client.connect():
+        raise ConnectionError(f"Neo4j not available at {NEO4J_URI}")
 
     provider = Neo4jProvider.__new__(Neo4jProvider)
     provider.logger = logger
@@ -61,21 +63,15 @@ async def neo4j_provider() -> AsyncIterator[Any]:
 
 @pytest.fixture(scope="module")
 async def arango_provider() -> AsyncIterator[Any]:
-    pytest.importorskip("aiohttp", reason="aiohttp not installed")
     from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
     from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
-    url = os.environ.get("ARANGO_TEST_URL", "http://localhost:8539")
-    password = os.environ.get("ARANGO_TEST_PASSWORD", "testpassword")
-    db = os.environ.get("ARANGO_TEST_DB", "es")
     logger = _log()
     client = ArangoHTTPClient(
-        base_url=url, username="root", password=password, database=db, logger=logger
+        base_url=ARANGO_URL, username="root", password=ARANGO_PASSWORD, database=ARANGO_DB, logger=logger
     )
-    try:
-        await _ensure_arango_schema(url, password, db)
-    except Exception as exc:
-        pytest.skip(f"ArangoDB not available at {url} — {exc}")
+    # Fails rather than skips: a skipped schema setup would pass CI without running anything.
+    await _ensure_arango_schema(ARANGO_URL, ARANGO_PASSWORD, ARANGO_DB)
 
     provider = ArangoHTTPProvider.__new__(ArangoHTTPProvider)
     provider.logger = logger
