@@ -169,6 +169,23 @@ class TestLedger:
 
         assert ledger.take_delta(state).is_empty
 
+    def test_a_tables_matched_rows_are_all_reported(self) -> None:
+        """A table unit's own index is its first row; the other rows the model
+        read are children, and a trace without them looks like the model cited
+        rows it was never shown."""
+        table = {
+            **_block("vr-1", 3), "block_type": "table",
+            "content": ("Countries by area", [_block("vr-1", 3), _block("vr-1", 9), _block("vr-1", 12)]),
+        }
+        ledger = RetrievalContextLedger()
+
+        delta = ledger.take_delta(_state(final_results=[table]))
+
+        assert delta.records[0].blockIndices == [3, 9, 12]
+        assert delta.records[0].summaryHit is False
+        assert delta.cumulative_blocks == 3
+        assert ledger.take_delta(_state(final_results=[table, _block("vr-1", 9)])).is_empty
+
     def test_summary_hit_has_no_block_index(self) -> None:
         delta = RetrievalContextLedger().take_delta(_state(final_results=[_block("vr-1", None)]))
 

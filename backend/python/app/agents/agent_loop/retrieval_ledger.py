@@ -24,6 +24,7 @@ from app.agents.agent_loop.protocol.retrieval_context import (
 )
 from app.modules.retrieval.context.ordering import RELEVANCE_RANK_KEY
 from app.modules.retrieval.context.ranking import RERANK_SCORE_KEY
+from app.modules.retrieval.context.units import unit_block_indices
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
@@ -162,21 +163,26 @@ class RetrievalContextLedger:
             virtual_record_id = _str_or_none(block.get("virtual_record_id"))
             if virtual_record_id is None:
                 continue
-            raw_index = block.get("block_index")
-            block_index = int(raw_index) if isinstance(raw_index, int) else None
-            key: BlockKey = (virtual_record_id, block_index)
-            if key in self._seen_blocks:
+            # A table or group unit renders its child rows too; recording only
+            # the unit's own index hid every row after the first.
+            indices: list[int | None] = list(dict.fromkeys(unit_block_indices(block))) or [None]
+            keys: list[BlockKey] = [
+                (virtual_record_id, index) for index in indices
+                if (virtual_record_id, index) not in self._seen_blocks
+            ]
+            if not keys:
                 continue
-            self._seen_blocks.add(key)
+            self._seen_blocks.update(keys)
             metadata = block.get("metadata")
             delta = self._delta_for(
                 virtual_record_id, records_map, deltas,
                 metadata if isinstance(metadata, Mapping) else None,
             )
-            if block_index is None:
-                delta.summary_hit = True
-            else:
-                delta.block_indices.append(block_index)
+            for _vrid, index in keys:
+                if index is None:
+                    delta.summary_hit = True
+                else:
+                    delta.block_indices.append(index)
             delta.observe_score(block.get("score"))
             delta.observe_rank(block.get(RELEVANCE_RANK_KEY))
             delta.observe_rerank_score(block.get(RERANK_SCORE_KEY))
