@@ -322,6 +322,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Decides where a shared-with-me item is filed, not whether it syncs: membership is
         # per-user and lives alongside the user being synced.
         self._synced_drive_ids: set = set()
+        self._drive_has_member_cache: dict[str, bool] = {}
         # Every shared drive in the domain before the DRIVE_IDS filter, to tell a shared
         # drive's records from My Drive ones when that filter is checked.
         self._listed_shared_drive_ids: set = set()
@@ -465,6 +466,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._folder_probe_403s = {}
             self._folders_probed = set()
             self._synced_drive_ids = set()
+            self._drive_has_member_cache = {}
             if self._folder_seed_ids:
                 self.logger.info(
                     f"📁 Folder filter active with {len(self._folder_seed_ids)} seed folder(s)"
@@ -1677,7 +1679,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             return
         # A shared drive file's OWNER edges are its organizers, and an organizer who
         # left the drive gets "not found" too, so the owner is never asked for one.
-        if drive_id and drive_id not in self._synced_drive_ids:
+        if drive_id and (
+            drive_id not in self._synced_drive_ids or not await self._drive_has_synced_member(drive_id)
+        ):
             # sync_shared_drives never walks this drive, so nothing else would notice a
             # delete: the record goes once no other synced user can still open the file.
             if not await self._another_synced_user_can_open(record, user, owner_sources):
@@ -1696,6 +1700,29 @@ class GoogleDriveTeamConnector(BaseConnector):
         await self.data_entities_processor.delete_permission_from_record(
             record_id=record.id, user_email=user.email
         )
+
+    async def _drive_has_synced_member(self, drive_id: str) -> bool:
+        """Whether an active synced user belongs to a shared drive, directly or through a group.
+
+        Only then does sync_shared_drives walk the drive and remove a file really
+        deleted from it. Read once per run; a failed read raises.
+        """
+        if drive_id in self._drive_has_member_cache:
+            return self._drive_has_member_cache[drive_id]
+        synced = {u.email.lower() for u in self.synced_users if u.is_active and u.email}
+        permissions, _, _ = await self._fetch_permissions(drive_id, is_drive=True)
+        found = False
+        for permission in permissions:
+            if permission.entity_type == EntityType.USER:
+                found = (permission.email or "").lower() in synced
+            elif permission.entity_type == EntityType.GROUP and permission.external_id:
+                # A group grant keeps the group's email in external_id.
+                members = await self._fetch_group_members(permission.external_id)
+                found = any((m.get("email") or "").lower() in synced for m in members)
+            if found:
+                break
+        self._drive_has_member_cache[drive_id] = found
+        return found
 
     async def _another_synced_user_can_open(
         self, record: Record, removed_for: AppUser, owner_sources: dict[str, GoogleDriveDataSource]

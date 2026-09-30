@@ -555,6 +555,43 @@ async def test_a_file_deleted_from_a_filtered_out_drive_is_removed(ws: Workspace
     assert "f1" not in ws.records.records, "no drive sync walks this drive, so the removed change decides"
 
 
+async def test_a_file_deleted_from_a_drive_no_synced_user_belongs_to_is_removed(ws: Workspace) -> None:
+    ws.world.add_drive("sd-3", "Contractors", {"ghost@example.com": "organizer"})
+    ws.world.add_item("g1", "brief.txt", parent="sd-3", perms=[{"type": "user", "role": "writer", "emailAddress": BOB}])
+    await ws.sync()
+    assert "g1" in ws.records.records
+
+    ws.world.delete("g1")
+    await ws.sync()
+
+    assert "g1" not in ws.records.records, "no synced member walks this drive, so the removed change decides"
+
+
+async def test_a_member_drive_file_one_user_loses_is_kept(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
+    ws.world.add_item("e1", "spec.txt", parent="sd-1", perms=[{"type": "user", "role": "writer", "emailAddress": BOB}])
+    await ws.sync()
+
+    ws.world._mutate("e1", lambda: setattr(ws.world.files["e1"], "perms", []))
+    await ws.sync()
+
+    assert "e1" in ws.records.records, "Alice still walks the drive, so Bob losing access removes only his"
+    assert ws.records.deleted == []
+
+
+async def test_a_drive_whose_synced_member_joins_through_a_group_still_walks_its_deletes(ws: Workspace) -> None:
+    ws.world.add_group("eng@example.com", [ALICE])
+    ws.world.add_drive("sd-4", "Platform", {"eng@example.com": "organizer"})
+    ws.world.add_item("p1", "runbook.txt", parent="sd-4", perms=[{"type": "user", "role": "writer", "emailAddress": BOB}])
+    await ws.sync()
+    assert "p1" in ws.records.records
+
+    ws.world._mutate("p1", lambda: setattr(ws.world.files["p1"], "perms", []))
+    await ws.sync()
+
+    assert "p1" in ws.records.records, "a group member walks the drive, so one lost share isn't a delete"
+
+
 async def test_a_permission_lookup_that_fails_holds_the_removed_change(ws: Workspace) -> None:
     _file_in_filtered_out_drive(ws)
     await ws.sync()
