@@ -76,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     logs.add_argument("--resume", metavar="RUN_ID", required=True)
     logs.add_argument("--container", default="pipeshub-ai-pipeshub-ai-1")
     logs.add_argument("--dataset", default="frames", help="registered dataset name")
-    for name in (*PIPELINES, "seed-models"):
+    for name in (*PIPELINES, "seed-models", "setup-pipeshub"):
         command = commands.add_parser(name)
         command.add_argument("--config", type=Path, required=True)
         command.add_argument("--dataset-path", type=Path, help="local test.tsv (sha256-verified) instead of the HF download")
@@ -164,8 +164,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "backend-logs":
             return _backend_logs(args)
         config = load_config(args.config)
+        if args.command == "setup-pipeshub":
+            # Before Services: its session logs in, and the org may not exist yet.
+            from benchmarks.harness.systems.pipeshub.setup import setup_pipeshub
+
+            setup_pipeshub(config.pipeshub.base_url, config.embedding, Credentials.from_env())
         services = Services(config, Credentials.from_env(), dataset_path=args.dataset_path)
-        if args.command == "seed-models":
+        if args.command in ("seed-models", "setup-pipeshub"):
             return _seed_models(config, services)
         return _run_pipeline(args, config, services)
     except FramesError as exc:

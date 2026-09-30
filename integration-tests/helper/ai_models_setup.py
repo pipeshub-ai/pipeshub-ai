@@ -213,7 +213,7 @@ def _build_azure_configuration(
     deployment_name: str,
 ) -> Dict[str, Any]:
     return {
-        "endpoint": _env("TEST_AZURE_OPENAI_ENDPOINT") or "",
+        "endpoint": _env("TEST_AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_ENDPOINT") or "",
         "apiKey": api_key,
         "deploymentName": deployment_name,
         "model": model_name,
@@ -686,8 +686,8 @@ def seed_explicit_llm(
         )
     if provider == _PROVIDER_AZURE_OPENAI:
         deployment = _env("TEST_AZURE_OPENAI_DEPLOYMENT_NAME") or model_name
-        if not _env("TEST_AZURE_OPENAI_ENDPOINT"):
-            raise RuntimeError("TEST_AZURE_OPENAI_ENDPOINT is required for azureOpenAI")
+        if not _env("TEST_AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_ENDPOINT"):
+            raise RuntimeError("AZURE_OPENAI_ENDPOINT (or TEST_AZURE_OPENAI_ENDPOINT) is required for azureOpenAI")
         configuration = _build_azure_configuration(api_key, model_name, deployment_name=deployment)
     else:
         configuration = _build_openai_configuration(api_key, model_name)
@@ -700,6 +700,39 @@ def seed_explicit_llm(
         ),
         model_type=_DEFAULT_LLM_MODEL_TYPE,
         is_reasoning=is_reasoning,
+        is_multimodal=False,
+        is_default=is_default,
+    )
+
+
+def seed_explicit_embedding(
+    client: PipeshubClient,
+    *,
+    provider: str,
+    model_name: str,
+    api_key: Optional[str],
+    deployment_name: Optional[str] = None,
+    is_default: bool = True,
+) -> SeededAIModel:
+    """Register one NAMED embedding model, with no provider fallback.
+
+    The embedding model decides the index a benchmark measures, and the RAG
+    baselines embed their queries with the same model, so it must be exactly
+    the configured one.
+    """
+    if not api_key:
+        raise RuntimeError(f"no API key for provider {provider!r} to register embedding {model_name!r}")
+    if provider == _PROVIDER_AZURE_OPENAI:
+        if not _env("TEST_AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_ENDPOINT"):
+            raise RuntimeError("AZURE_OPENAI_ENDPOINT (or TEST_AZURE_OPENAI_ENDPOINT) is required for azureOpenAI")
+        configuration = _build_azure_configuration(api_key, model_name, deployment_name=deployment_name or model_name)
+    else:
+        configuration = _build_openai_configuration(api_key, model_name)
+    return _post_provider_model(
+        client,
+        candidate=_ProviderCandidate(provider=provider, model_name=model_name, configuration=configuration),
+        model_type=_DEFAULT_EMBEDDING_MODEL_TYPE,
+        is_reasoning=False,
         is_multimodal=False,
         is_default=is_default,
     )
