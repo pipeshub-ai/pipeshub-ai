@@ -52,7 +52,7 @@ async def scenario_adapter(
     )
     adapter = GitHubCodeAdapter(
         rest=github_rest,
-        owner=org,
+        repo_owner=org,
         repo=mutation["name"],
         branch=mutation["default_branch"],
         client=pipeshub_client,

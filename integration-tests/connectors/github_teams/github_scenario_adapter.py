@@ -38,16 +38,17 @@ UNSUPPORTED = {
 class GitHubCodeAdapter(ScenarioAdapter):
     source = "GitHub"
 
-    def __init__(self, *, rest: Any, owner: str, repo: str, branch: str, **kwargs: Any) -> None:
+    def __init__(self, *, rest: Any, repo_owner: str, repo: str, branch: str, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.rest = rest
-        self.owner = owner
+        # Not ``owner``: that is who the matrix searches as (None = the admin).
+        self.repo_owner = repo_owner
         self.repo = repo
         self.branch = branch
         self.live_paths: set[str] = set()
 
     async def _commit(self, changes: list[FileChange], message: str) -> None:
-        await commit_changes(self.rest, self.owner, self.repo, self.branch, changes, message)
+        await commit_changes(self.rest, self.repo_owner, self.repo, self.branch, changes, message)
 
     async def create_item(self, role: Role, text: str, token: str) -> SourceItem:
         path = it_path("mx", f"{role.value}-{token}.md")

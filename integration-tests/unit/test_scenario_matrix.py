@@ -391,6 +391,9 @@ def test_search_verdict_counts_a_miss_only_after_a_parsed_200() -> None:
     assert sm.search_verdict(404, None, "vr-1") is None
     assert sm.search_verdict(404, None, "vr-1", denial_is_miss=True) is False
     assert sm.search_verdict(500, None, "vr-1", denial_is_miss=True) is None
+    assert sm.search_verdict(200, {"searchResults": [None]}, "vr-1") is None
+    assert sm.search_verdict(200, {"searchResults": [{"content": "no id"}]}, "vr-1") is None
+    assert sm.search_verdict(200, {"searchResults": [{"virtual_record_id": "vr-1"}]}, "vr-1") is True
 
 
 def _search_run(monkeypatch, responses: list[_Resp]) -> MatrixRun:
@@ -419,3 +422,14 @@ async def test_a_found_needs_a_200_hit(monkeypatch) -> None:
 async def test_a_miss_settles_on_a_200_without_the_record(monkeypatch) -> None:
     run = _search_run(monkeypatch, [_Resp(503), _Resp(200, _hits("vr-2"))])
     await run.wait_search("q", "vr-1", expect=False, timeout=5)
+
+
+async def test_a_refusal_counts_as_a_miss_only_when_asked(monkeypatch) -> None:
+    """Only the sharee's searches accept a 403/404; for the owner it is a fault, not a miss."""
+    owner = object()
+    run = _search_run(monkeypatch, [_Resp(404)])
+    with pytest.raises(AssertionError, match=r"HTTP 404, no usable answer"):
+        await run.wait_search("q", "vr-1", expect=False, as_user=owner, timeout=0.3)  # type: ignore[arg-type]
+
+    run = _search_run(monkeypatch, [_Resp(404)])
+    await run.wait_search("q", "vr-1", expect=False, as_user=owner, denial_is_miss=True, timeout=5)  # type: ignore[arg-type]

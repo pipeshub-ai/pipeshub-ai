@@ -229,7 +229,8 @@ def search_verdict(
     without ``searchResults`` proves nothing, so a delete or unshare check must
     keep polling rather than pass while search is down. For someone other than
     the owner, an explicit refusal (403/404: the connector does not resolve for
-    them at all) is the answer to "can they find it", so it counts as a miss.
+    them at all) is the answer to "can they find it", so the sharee's searches
+    count it as a miss. The owner's never do: a refusal to the owner is a fault.
     """
     if denial_is_miss and status in NO_ACCESS_STATUSES:
         return False
@@ -239,7 +240,14 @@ def search_verdict(
     hits = response.get("searchResults") if isinstance(response, dict) else None
     if not isinstance(hits, list):
         return None
-    return any(isinstance(h, dict) and virtual_id_of(h) == virtual_record_id for h in hits)
+    record_ids: list[str] = []
+    for hit in hits:
+        record_id = virtual_id_of(hit) if isinstance(hit, dict) else None
+        # A hit that names no record cannot prove this record is absent.
+        if record_id is None:
+            return None
+        record_ids.append(record_id)
+    return virtual_record_id in record_ids
 
 
 class ScenarioAdapter:
@@ -513,7 +521,7 @@ class MatrixRun:
     async def wait_search(
         self, query: str, virtual_record_id: str, *, expect: bool,
         as_user: "SecondUser | None" = None, who: str = "the owner",
-        timeout: int = SEARCH_TIMEOUT_SEC,
+        timeout: int = SEARCH_TIMEOUT_SEC, denial_is_miss: bool = False,
     ) -> None:
         last: dict[str, Any] = {}
 
@@ -525,7 +533,7 @@ class MatrixRun:
                 body = None
             last.update(status=resp.status_code, verdict=None)
             verdict = search_verdict(
-                resp.status_code, body, virtual_record_id, denial_is_miss=as_user is not None,
+                resp.status_code, body, virtual_record_id, denial_is_miss=denial_is_miss,
             )
             last["verdict"] = verdict
             return verdict
@@ -782,7 +790,8 @@ class ConnectorScenarioMatrix:
             await run.sync_until(_revoked, "the unshare")
 
         await run.rounds.run("revoke", body)
-        await run.wait_search(item.text, vrid, expect=False, as_user=sharee, who="the sharee")
+        await run.wait_search(item.text, vrid, expect=False, as_user=sharee, who="the sharee",
+                              denial_is_miss=True)
         await _admin_can_find(run, item, view)
 
     @pytest.mark.order(5)
