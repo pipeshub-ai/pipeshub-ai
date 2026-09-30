@@ -395,6 +395,12 @@ async def _by_record_ids(w: _World, visibility: RecordVisibility) -> set[str]:
     ))
 
 
+async def _by_virtual_record_id(w: _World, visibility: RecordVisibility) -> set[str]:
+    return set(await w.graph.get_records_by_virtual_record_id(
+        w.shared_vrid, raise_on_error=True, visibility=visibility,
+    ))
+
+
 # method -> (probe, live names, trashed names) for the same seed
 PARAM_PROBES = {
     "get_record_by_external_id": (_by_external_id, {"live"}, {"trashed"}),
@@ -405,6 +411,7 @@ PARAM_PROBES = {
         {"trashed", "trashed_shared", "trashed_failed"},
     ),
     "get_records_by_record_ids": (_by_record_ids, {"live"}, {"trashed"}),
+    "get_records_by_virtual_record_id": (_by_virtual_record_id, {"live_shared"}, {"trashed_shared"}),
 }
 
 
@@ -430,7 +437,6 @@ EXERCISED_HERE: dict[str, str] = {
     "get_failed_records_by_org": "test_failed_records",
     "get_failed_records_with_active_users": "test_failed_records",
     "get_record_by_weburl": "test_weburl_lookup",
-    "get_records_by_virtual_record_id": "test_vector_delete_authority",
     "get_knowledge_hub_children": "test_knowledge_hub_browse",
     "get_knowledge_hub_search": "test_knowledge_hub_search",
     "get_record_by_id": "test_point_reads_return_the_trash_with_its_state",

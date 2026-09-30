@@ -102,6 +102,39 @@ def build_connector_vector_cleanup_events(
     ]
 
 
+def build_soft_delete_events(
+    *,
+    org_id: str | None,
+    connector_id: str | None,
+    virtual_record_ids: Sequence[str] | None,
+    batch_id: str,
+    delete_source: str,
+) -> list[dict[str, Any]]:
+    """``softDeleteRecords`` events for records just moved to the trash.
+
+    The consumer removes their vectors only: the record, its files and its
+    storage documents stay until the purge. Its own event type, so a consumer
+    that runs blob and Mongo cleanup on ``deleteRecord`` never sees these.
+    """
+    unique_ids = _unique_non_empty(virtual_record_ids)
+    chunks = _chunks(unique_ids, MAX_VIRTUAL_RECORD_IDS_PER_EVENT)
+    return [
+        _event(
+            EventTypes.SOFT_DELETE_RECORDS.value,
+            {
+                "orgId": org_id,
+                "connectorId": connector_id,
+                "virtualRecordIds": chunk,
+                "batchId": batch_id,
+                "deleteSource": delete_source,
+                "chunkIndex": index,
+                "chunkCount": len(chunks),
+            },
+        )
+        for index, chunk in enumerate(chunks)
+    ]
+
+
 def _event(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "eventType": event_type,

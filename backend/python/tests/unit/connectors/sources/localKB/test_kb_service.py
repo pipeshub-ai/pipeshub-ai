@@ -25,6 +25,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.arangodb import DeleteSource
+
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.utils.user_messages import action_failed
 from app.config.constants.service import DefaultEndpoints
@@ -716,7 +718,7 @@ class TestDeleteFolder:
 
         result = await service.delete_folder("kb1", "f1", "user1")
         assert result["success"] is True
-        service.processor.on_records_deleted_cascade.assert_awaited_once_with(["f1"], "kb1")
+        service.processor.on_records_deleted_cascade.assert_awaited_once_with(["f1"], "kb1", delete_source=DeleteSource.USER, deleted_by_user_id="uk1")
 
     @pytest.mark.asyncio
     async def test_not_owner(self, service):
@@ -978,7 +980,7 @@ class TestDeleteRecordsInKb:
 
         result = await service.delete_records_in_kb("kb1", ["r1", "r2"], "user1")
         assert result["success"] is True
-        service.processor.on_records_deleted_cascade.assert_awaited_once_with(["r1", "r2"], "kb1")
+        service.processor.on_records_deleted_cascade.assert_awaited_once_with(["r1", "r2"], "kb1", delete_source=DeleteSource.USER, deleted_by_user_id="uk1")
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, service):
@@ -1082,7 +1084,7 @@ class TestDeleteRecordsInFolder:
 
         result = await service.delete_records_in_folder("kb1", "f1", ["r1"], "user1")
         assert result["success"] is True
-        service.processor.on_records_deleted_cascade.assert_awaited_once_with(["r1"], "kb1")
+        service.processor.on_records_deleted_cascade.assert_awaited_once_with(["r1"], "kb1", delete_source=DeleteSource.USER, deleted_by_user_id="uk1")
 
     @pytest.mark.asyncio
     async def test_insufficient_permission(self, service):

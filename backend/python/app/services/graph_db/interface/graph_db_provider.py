@@ -2940,6 +2940,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[str]:
         """Keys of every live record sharing this virtualRecordId.
 
@@ -2960,6 +2961,9 @@ class IGraphDBProvider(ABC):
 
         ``accessible_record_ids`` narrows to a permission-filtered set for read
         paths; the delete path passes nothing and sees everything.
+
+        ``visibility=DELETED`` asks the other question the orphan sweeper needs:
+        does a record in the trash still hold this content for the purge?
 
         Args:
             virtual_record_id: The content identity to look up
@@ -3663,7 +3667,9 @@ class IGraphDBProvider(ABC):
         record_id: str,
         user_id: str,
         org_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
     ) -> dict:
         """
         Main entry point for record deletion - routes to connector-specific methods.
@@ -3673,6 +3679,10 @@ class IGraphDBProvider(ABC):
             user_id (str): User ID performing the deletion
             org_id (str): Caller's organization; records outside it are reported as not found
             transaction (Optional[str]): Optional transaction context
+            soft_delete (bool): After the same permission checks, move the record and
+                its containment subtree to the trash (``soft_delete_records``, source
+                USER) instead of removing them. The result's ``eventData`` is then a
+                ``softDeleteRecords`` event.
 
         Returns:
             Dict: Result with success status and reason
@@ -3737,6 +3747,39 @@ class IGraphDBProvider(ABC):
         All edges touching the deleted nodes are swept regardless of
         *cascade_children*, type docs removed, and a deleteRecord event emitted per
         record that carries a virtualRecordId (Qdrant cleanup).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def soft_delete_records(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+        *,
+        delete_source: str,
+        batch_id: str,
+        deleted_by_user_id: str | None = None,
+        follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
+        transaction: str | None = None,
+    ) -> dict:
+        """Move live records, and their live descendants, to the trash.
+
+        Sets ``isDeleted``, ``deletedAtTimestamp``, ``deleteSource``,
+        ``deleteBatchId`` and ``deletedByUserId`` in one transaction, in chunks.
+        Nodes, edges, permissions and type docs are kept, so the batch can be
+        restored as it was.
+
+        Roots are scoped by ``connector_id`` (the KB id for a KB) and must be
+        live. Descendants are reached through ``RECORD_RELATION`` edges whose
+        ``relationshipType`` is in ``follow``: both kinds for a folder subtree,
+        ``("ATTACHMENT",)`` to leave PARENT_CHILD children alone, ``()`` for the
+        roots only. A descendant already in the trash keeps its own batch.
+
+        Returns ``success``, ``soft_deleted_records`` ({record_id, name}),
+        ``failed_records`` (roots that were missing, trashed or out of scope),
+        ``total_requested``, ``successfully_deleted`` (roots),
+        ``failed_count``, ``virtual_record_ids`` (distinct, for vector cleanup),
+        ``org_id`` and ``batch_id``. A failure raises; nothing is marked.
         """
         raise NotImplementedError
 

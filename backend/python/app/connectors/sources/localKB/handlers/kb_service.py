@@ -6,6 +6,7 @@ from app.config.constants.arangodb import (
     CollectionNames,
     ConnectorScopes,
     Connectors,
+    DeleteSource,
     OriginTypes,
     ProgressStatus,
 )
@@ -1100,7 +1101,7 @@ class KnowledgeBaseService:
             # which cascades to remove the folder + all descendants (records/subfolders +
             # edges + files docs) and publishes a deleteRecord event per contained file,
             # so the router does not need to publish eventData for this path.
-            cascade_result = await self.processor.on_records_deleted_cascade([folder_id], kb_id)
+            cascade_result = await self.processor.on_records_deleted_cascade([folder_id], kb_id, delete_source=DeleteSource.USER, deleted_by_user_id=user_key)
             if not (cascade_result and cascade_result.get("success")):
                 # The recursive delete itself failed (not just the cleanup-event
                 # publish) — do not report a success the graph doesn't back up.
@@ -1283,7 +1284,7 @@ class KnowledgeBaseService:
             # Delete through the shared processor: recursively deletes each record + its
             # subtree, cascades all edges + type docs, publishes a deleteRecord per
             # indexed record (Qdrant cleanup). Returns the provider result for the response.
-            result = await self.processor.on_records_deleted_cascade(record_ids, kb_id)
+            result = await self.processor.on_records_deleted_cascade(record_ids, kb_id, delete_source=DeleteSource.USER, deleted_by_user_id=user_key)
             if result and result.get("success"):
                 result.pop("eventData", None)
                 # Bulk-delete best practice: none of the requested ids matched (foreign /
@@ -1341,7 +1342,7 @@ class KnowledgeBaseService:
             # Delete through the shared processor — same generic cascade as the KB-root
             # path (a folder is just a record). folder_id is no longer used to filter the
             # delete; records are scoped by the KB (connectorId == kb_id).
-            result = await self.processor.on_records_deleted_cascade(record_ids, kb_id)
+            result = await self.processor.on_records_deleted_cascade(record_ids, kb_id, delete_source=DeleteSource.USER, deleted_by_user_id=user_key)
             if result and result.get("success"):
                 result.pop("eventData", None)
                 # Bulk-delete best practice: none of the requested ids matched → 404.

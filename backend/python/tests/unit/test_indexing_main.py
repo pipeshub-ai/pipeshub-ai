@@ -13,6 +13,7 @@ from app.config.constants.arangodb import (
     EventTypes,
     ProgressStatus,
 )
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.messaging.config import MessageBrokerType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -1781,7 +1782,7 @@ class TestSweepStrandedRecordsOnInactiveConnectors:
 # ---------------------------------------------------------------------------
 
 
-def _orphan_graph(mappings, records_by_vrid):
+def _orphan_graph(mappings, records_by_vrid, trashed_by_vrid=None):
     """Graph stub paging virtualRecordToDocIdMapping.
 
     Signature spelled out for the same reason as _sweep_graph: AsyncMock would
@@ -1802,11 +1803,15 @@ def _orphan_graph(mappings, records_by_vrid):
         return state["rows"][skip : skip + limit]
 
     graph.get_documents_paginated = AsyncMock(side_effect=_paged)
-    async def _records(vrid, *_args, raise_on_error=False, **_kwargs):
+    async def _records(vrid, *_args, raise_on_error=False, visibility=RecordVisibility.LIVE, **_kwargs):
         # Asserted, not just accepted: this stub cannot fail, so without the
         # assertion every test here would still pass if the sweep went back to
         # a read that swallows -- the bug they exist to hold closed.
         assert raise_on_error is True
+        # As the providers answer: LIVE and DELETED are separate sets.
+        if visibility is RecordVisibility.DELETED:
+            return list((trashed_by_vrid or {}).get(vrid, []))
+        assert visibility is RecordVisibility.LIVE
         return list(records_by_vrid.get(vrid, []))
 
     graph.get_records_by_virtual_record_id = AsyncMock(side_effect=_records)
@@ -1852,6 +1857,27 @@ class TestSweepOrphanedVirtualRecordMappings:
         assert [
             c.args[0] for c in pipeline.rewrite_or_delete_vector_membership.await_args_list
         ] == ["vr-beyond-the-cap-1", "vr-beyond-the-cap-2"]
+
+    @pytest.mark.asyncio
+    async def test_content_held_by_a_trashed_record_is_left_for_the_purge(self) -> None:
+        """Its vectors went at soft delete; releasing the mapping row here would
+        also remove the stored content of a record that can still be restored."""
+        from app.indexing_main import _sweep_orphaned_virtual_record_mappings
+
+        graph = _orphan_graph(
+            [{"_key": "vr-trashed"}, {"_key": "vr-abandoned"}],
+            records_by_vrid={},
+            trashed_by_vrid={"vr-trashed": ["rec-in-trash"]},
+        )
+        pipeline = AsyncMock()
+        pipeline.rewrite_or_delete_vector_membership = AsyncMock(return_value="deleted")
+
+        swept = await _sweep_orphaned_virtual_record_mappings(
+            graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100,
+        )
+
+        assert swept == 1
+        pipeline.rewrite_or_delete_vector_membership.assert_awaited_once_with("vr-abandoned")
 
     @pytest.mark.asyncio
     async def test_vrid_with_no_records_is_cleaned_up(self):

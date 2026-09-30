@@ -28,6 +28,7 @@ from app.config.constants.arangodb import (
     CollectionNames,
     ConnectorScopes,
     Connectors,
+    DeleteSource,
     DepartmentNames,
     GraphNames,
     OriginTypes,
@@ -139,6 +140,11 @@ from app.services.graph_db.common.record_visibility import (
 )
 from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
+    SOFT_DELETE_CHUNK,
+    SOFT_DELETE_MAX_DEPTH,
+    empty_soft_delete_result,
+    soft_delete_request_result,
+    soft_delete_result,
     MAX_DIRECT_GRANT_RECORDS,
     ROOT_SCOPED_CONNECTOR_TYPES,
     build_connector_stats_response,
@@ -7896,7 +7902,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_id: str,
         user_id: str,
         org_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
     ) -> dict:
         """
         Main entry point for record deletion - routes to connector-specific methods.
@@ -7933,15 +7941,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Route to connector-specific deletion method
             if origin == OriginTypes.UPLOAD.value or connector_name == Connectors.KNOWLEDGE_BASE.value:
-                return await self.delete_knowledge_base_record(record_id, user_id, record, transaction)
+                return await self.delete_knowledge_base_record(record_id, user_id, record, transaction, soft_delete=soft_delete)
             elif connector_name == Connectors.GOOGLE_DRIVE.value:
-                return await self.delete_google_drive_record(record_id, user_id, record, transaction)
+                return await self.delete_google_drive_record(record_id, user_id, record, transaction, soft_delete=soft_delete)
             elif connector_name == Connectors.GOOGLE_MAIL.value:
-                return await self.delete_gmail_record(record_id, user_id, record, transaction)
+                return await self.delete_gmail_record(record_id, user_id, record, transaction, soft_delete=soft_delete)
             elif connector_name == Connectors.OUTLOOK.value:
-                return await self.delete_outlook_record(record_id, user_id, record, transaction)
+                return await self.delete_outlook_record(record_id, user_id, record, transaction, soft_delete=soft_delete)
             elif connector_name == Connectors.LOCAL_FS.value:
-                return await self.delete_local_fs_record(record_id, user_id, record, transaction)
+                return await self.delete_local_fs_record(record_id, user_id, record, transaction, soft_delete=soft_delete)
             else:
                 return {
                     "success": False,
@@ -8910,12 +8918,32 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     # ==================== Connector-Specific Delete Methods ====================
 
+    async def _soft_delete_for_request(
+        self,
+        record_id: str,
+        record: dict,
+        user_key: str | None,
+        transaction: str | None,
+    ) -> dict:
+        """The UI/API delete once permissions pass: the record and its subtree go to the trash."""
+        result = await self.soft_delete_records(
+            [record_id],
+            record.get("connectorId") or "",
+            delete_source=DeleteSource.USER.value,
+            batch_id=str(uuid.uuid4()),
+            deleted_by_user_id=user_key,
+            transaction=transaction,
+        )
+        return soft_delete_request_result(record_id, record, result)
+
     async def delete_knowledge_base_record(
         self,
         record_id: str,
         user_id: str,
         record: dict,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
     ) -> dict:
         """Delete a Knowledge Base record - handles uploads and KB-specific logic."""
         try:
@@ -8957,6 +8985,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
 
             # Execute KB-specific deletion
+            if soft_delete:
+                return await self._soft_delete_for_request(record_id, record, user_key, transaction)
             return await self._execute_kb_record_deletion(record_id, record, kb_context, transaction)
 
         except Exception as e:
@@ -8972,7 +9002,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_id: str,
         user_id: str,
         record: dict,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
     ) -> dict:
         """Delete a Google Drive record - handles Drive-specific permissions and logic."""
         try:
@@ -8999,6 +9031,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
 
             # Execute Drive-specific deletion
+            if soft_delete:
+                return await self._soft_delete_for_request(record_id, record, user_key, transaction)
             return await self._execute_drive_record_deletion(record_id, record, user_role, transaction)
 
         except Exception as e:
@@ -9014,7 +9048,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_id: str,
         user_id: str,
         record: dict,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
     ) -> dict:
         """Delete a Gmail record - handles Gmail-specific permissions and logic."""
         try:
@@ -9041,6 +9077,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
 
             # Execute Gmail-specific deletion
+            if soft_delete:
+                return await self._soft_delete_for_request(record_id, record, user_key, transaction)
             return await self._execute_gmail_record_deletion(record_id, record, user_role, transaction)
 
         except Exception as e:
@@ -9056,7 +9094,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_id: str,
         user_id: str,
         record: dict,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
     ) -> dict:
         """Delete an Outlook record - handles email and its attachments."""
         try:
@@ -9083,6 +9123,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
 
             # Execute deletion
+            if soft_delete:
+                return await self._soft_delete_for_request(record_id, record, user_key, transaction)
             return await self._execute_outlook_record_deletion(record_id, record, transaction)
 
         except Exception as e:
@@ -9098,7 +9140,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_id: str,
         user_id: str,
         record: dict,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
     ) -> dict:
         """
         Delete a Local FS record. Local FS DELETED events come from the
@@ -9143,6 +9187,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "reason": f"Only the connector owner can delete Local FS records. Role: {user_role}"
                 }
 
+            if soft_delete:
+                return await self._soft_delete_for_request(record_id, record, user.get('_key'), transaction)
             return await self._execute_local_fs_record_deletion(record_id, record, transaction)
 
         except Exception as e:
@@ -12610,6 +12656,91 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to delete records recursively: {str(e)}")
             return {"success": False, "reason": str(e), "code": 500, "eventData": None}
 
+
+    async def soft_delete_records(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+        *,
+        delete_source: str,
+        batch_id: str,
+        deleted_by_user_id: str | None = None,
+        follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
+        transaction: str | None = None,
+    ) -> dict:
+        """See ``IGraphDBProvider.soft_delete_records``."""
+        if not record_ids:
+            return empty_soft_delete_result(batch_id)
+        records = CollectionNames.RECORDS.value
+        txn_id = transaction
+        if transaction is None:
+            txn_id = await self.begin_transaction(
+                read=[records, CollectionNames.RECORD_RELATIONS.value], write=[records]
+            )
+        try:
+            inventory = await self.execute_query(
+                f"""
+                LET roots = (
+                    FOR rid IN @record_ids
+                        LET rec = DOCUMENT(@@records, rid)
+                        FILTER rec != null AND {aql_live_record("rec")}
+                        FILTER rec.connectorId == @connector_id
+                        RETURN rec
+                )
+                LET keys = UNIQUE(
+                    FOR root IN roots
+                        FOR v, e, p IN 0..@max_depth OUTBOUND root._id @@record_relations
+                            FILTER p.edges[*].relationshipType ALL IN @follow
+                            FILTER IS_SAME_COLLECTION(@@records, v) AND {aql_live_record("v")}
+                            RETURN v._key
+                )
+                RETURN {{ root_keys: roots[*]._key, keys: keys }}
+                """,
+                bind_vars={
+                    "record_ids": record_ids,
+                    "connector_id": connector_id,
+                    "follow": list(follow),
+                    "max_depth": SOFT_DELETE_MAX_DEPTH if follow else 0,
+                    "@records": records,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                },
+                transaction=txn_id,
+            )
+            found = inventory[0] if inventory else {"root_keys": [], "keys": []}
+            marked: list[dict] = []
+            now = get_epoch_timestamp_in_ms()
+            for start in range(0, len(found["keys"]), SOFT_DELETE_CHUNK):
+                marked += await self.execute_query(
+                    f"""
+                    FOR r IN @@records
+                        FILTER r._key IN @keys AND {aql_live_record("r")}
+                        UPDATE r WITH {{
+                            isDeleted: true,
+                            deletedAtTimestamp: @now,
+                            deleteSource: @source,
+                            deleteBatchId: @batch_id,
+                            deletedByUserId: @user_id
+                        }} IN @@records
+                        RETURN {{ id: NEW._key, name: NEW.recordName, vrid: NEW.virtualRecordId, orgId: NEW.orgId }}
+                    """,
+                    bind_vars={
+                        "keys": found["keys"][start:start + SOFT_DELETE_CHUNK],
+                        "now": now,
+                        "source": delete_source,
+                        "batch_id": batch_id,
+                        "user_id": deleted_by_user_id,
+                        "@records": records,
+                    },
+                    transaction=txn_id,
+                ) or []
+            if transaction is None:
+                await self.commit_transaction(txn_id)
+        except Exception as e:
+            if transaction is None and txn_id:
+                await self.rollback_transaction(txn_id)
+            self.logger.error("❌ Failed to move records to the trash: %s", e)
+            raise
+        return soft_delete_result(record_ids, found["root_keys"], marked, batch_id)
 
     async def delete_single_record(
         self,
@@ -20410,6 +20541,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[str]:
         """
         Get all record keys that have the given virtualRecordId.
@@ -20435,7 +20567,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.virtualRecordId == @virtual_record_id
-                AND record.isDeleted != true
+                AND {aql_record_visibility("record", visibility)}
             """
 
             # Add optional filter for record IDs

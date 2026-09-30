@@ -40,12 +40,15 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_records_by_status": (Rule.PARAM, "reindex, rebuild and sync sweeps must skip the trash"),
     "get_records_by_parent": (Rule.PARAM, "a folder whose children are all trashed reads as empty"),
     "get_records_by_record_ids": (Rule.PARAM, "search hydrates only live records"),
+    "get_records_by_virtual_record_id": (
+        Rule.PARAM,
+        "LIVE decides whether a VRID's vectors may be deleted; the orphan sweeper asks DELETED",
+    ),
     # Gates: a trashed record must never pass.
     "check_record_access_with_details": (Rule.LIVE, "the access check: trashed means no access"),
     "get_accessible_virtual_record_ids": (Rule.LIVE, "the search permission map"),
     "filter_accessible_virtual_record_ids": (Rule.LIVE, "search permission check"),
     "filter_accessible_record_ids": (Rule.LIVE, "search permission check"),
-    "get_records_by_virtual_record_id": (Rule.LIVE, "decides whether a VRID's vectors may be deleted"),
     "find_duplicate_records": (Rule.LIVE, "a copy must not take COMPLETED from a record without vectors"),
     "find_next_queued_duplicate": (Rule.LIVE, "dedup never hands work to a trashed record"),
     "update_queued_duplicates_status": (Rule.LIVE, "dedup never copies status onto a trashed record"),
@@ -103,4 +106,5 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "remove_user_access_to_record": (Rule.WRITE, "looks the record up with ALL"),
     "delete_records_recursive": (Rule.WRITE, ""),
     "delete_single_record": (Rule.WRITE, ""),
+    "soft_delete_records": (Rule.WRITE, "marks live records only"),
 }

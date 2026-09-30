@@ -30,6 +30,7 @@ from app.config.constants.arangodb import (
     CollectionNames,
     ConnectorScopes,
     Connectors,
+    DeleteSource,
     DepartmentNames,
     OriginTypes,
     PermissionModel,
@@ -85,6 +86,11 @@ from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_f
 from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
+    SOFT_DELETE_CHUNK,
+    SOFT_DELETE_MAX_DEPTH,
+    empty_soft_delete_result,
+    soft_delete_request_result,
+    soft_delete_result,
     MAX_DIRECT_GRANT_RECORDS,
     ROOT_SCOPED_CONNECTOR_TYPES,
     build_connector_stats_response,
@@ -2244,6 +2250,7 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[str]:
         """
         Get all record keys that have the given virtualRecordId.
@@ -2266,13 +2273,12 @@ class Neo4jProvider(IGraphDBProvider):
             # "does anything still reference this content", and a tombstone
             # answering yes would keep its vectors alive for ever.
             #
-            # `coalesce(...)` rather than the `<> true` used elsewhere in this
-            # file: in Cypher `null <> true` is null, which WHERE treats as
-            # false, so `<> true` silently drops every record predating the
-            # field instead of keeping it.
-            query = """
-            MATCH (r:Record {virtualRecordId: $virtual_record_id})
-            WHERE coalesce(r.isDeleted, false) = false
+            # The shared predicate rather than the `<> true` used elsewhere in
+            # this file: in Cypher `null <> true` is null, which WHERE treats as
+            # false, so `<> true` silently drops every record predating the field.
+            query = f"""
+            MATCH (r:Record {{virtualRecordId: $virtual_record_id}})
+            WHERE {cypher_record_visibility("r", visibility)}
             """
 
             # Add optional filter for record IDs
@@ -7242,7 +7248,9 @@ class Neo4jProvider(IGraphDBProvider):
         record_id: str,
         user_id: str,
         org_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
     ) -> dict:
         """Main entry point for record deletion. KB records require OWNER, WRITER, or FILEORGANIZER."""
         try:
@@ -7289,6 +7297,18 @@ class Neo4jProvider(IGraphDBProvider):
                         "code": 403,
                         "reason": "User lacks permission to delete records",
                     }
+
+            if soft_delete:
+                deleter = await self.get_user_by_user_id(user_id)
+                result = await self.soft_delete_records(
+                    [record_id],
+                    record.get("connectorId") or "",
+                    delete_source=DeleteSource.USER.value,
+                    batch_id=str(uuid.uuid4()),
+                    deleted_by_user_id=(deleter or {}).get("id") or (deleter or {}).get("_key"),
+                    transaction=transaction,
+                )
+                return soft_delete_request_result(record_id, record, result)
 
             # Get file record for event publishing before deletion
             file_record = None
@@ -10958,6 +10978,76 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to delete records recursively: {str(e)}")
             return {"success": False, "reason": str(e), "code": 500, "eventData": None}
+
+    async def soft_delete_records(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+        *,
+        delete_source: str,
+        batch_id: str,
+        deleted_by_user_id: str | None = None,
+        follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
+        transaction: str | None = None,
+    ) -> dict:
+        """See ``IGraphDBProvider.soft_delete_records``."""
+        if not record_ids:
+            return empty_soft_delete_result(batch_id)
+        max_depth = SOFT_DELETE_MAX_DEPTH if follow else 0
+        txn_id = transaction
+        if transaction is None:
+            txn_id = await self.begin_transaction(read=[], write=[CollectionNames.RECORDS.value])
+        try:
+            inventory = await self.client.execute_query(
+                f"""
+                UNWIND $record_ids AS rid
+                OPTIONAL MATCH (rec:Record {{id: rid}})
+                WHERE {cypher_live_record("rec")} AND rec.connectorId = $connector_id
+                WITH collect(DISTINCT rec) AS roots
+                UNWIND CASE WHEN size(roots) = 0 THEN [null] ELSE roots END AS root
+                OPTIONAL MATCH path = (root)-[:RECORD_RELATION*0..{max_depth}]->(v:Record)
+                WHERE root IS NOT NULL
+                  AND all(rel IN relationships(path) WHERE rel.relationshipType IN $follow)
+                  AND {cypher_live_record("v")}
+                RETURN [r IN roots | r.id] AS root_keys, collect(DISTINCT v.id) AS keys
+                """,
+                parameters={"record_ids": record_ids, "connector_id": connector_id, "follow": list(follow)},
+                txn_id=txn_id,
+            )
+            found = inventory[0] if inventory else {"root_keys": [], "keys": []}
+            keys = [k for k in found.get("keys") or [] if k]
+            marked: list[dict] = []
+            now = get_epoch_timestamp_in_ms()
+            for start in range(0, len(keys), SOFT_DELETE_CHUNK):
+                marked += await self.client.execute_query(
+                    f"""
+                    UNWIND $keys AS k
+                    MATCH (r:Record {{id: k}})
+                    WHERE {cypher_live_record("r")}
+                    SET r.isDeleted = true,
+                        r.deletedAtTimestamp = $now,
+                        r.deleteSource = $source,
+                        r.deleteBatchId = $batch_id,
+                        r.deletedByUserId = $user_id
+                    RETURN r.id AS id, r.recordName AS name, r.virtualRecordId AS vrid, r.orgId AS orgId
+                    """,
+                    parameters={
+                        "keys": keys[start:start + SOFT_DELETE_CHUNK],
+                        "now": now,
+                        "source": delete_source,
+                        "batch_id": batch_id,
+                        "user_id": deleted_by_user_id,
+                    },
+                    txn_id=txn_id,
+                ) or []
+            if transaction is None:
+                await self.commit_transaction(txn_id)
+        except Exception as e:
+            if transaction is None and txn_id:
+                await self.rollback_transaction(txn_id)
+            self.logger.error("❌ Failed to move records to the trash: %s", e)
+            raise
+        return soft_delete_result(record_ids, found.get("root_keys") or [], marked, batch_id)
 
     async def delete_single_record(
         self,

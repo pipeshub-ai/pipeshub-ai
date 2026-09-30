@@ -1052,7 +1052,9 @@ class IndexingPipeline:
 
     async def bulk_delete_embeddings(
         self,
-        virtual_record_ids: List[str]
+        virtual_record_ids: List[str],
+        *,
+        keep_mapping: bool = False,
     ) -> Dict[str, Any]:
         """
         Bulk delete embeddings for multiple records in a single operation.
@@ -1062,6 +1064,10 @@ class IndexingPipeline:
 
         Args:
             virtual_record_ids: List of virtual record IDs to delete embeddings for
+            keep_mapping: Delete the points only. The virtualRecordToDocIdMapping
+                row, and the stored content it leads to, stay for the purge. A
+                soft delete passes this: its records, files and storage documents
+                are kept until then.
 
         Returns:
             Dict with deletion statistics:
@@ -1256,7 +1262,7 @@ class IndexingPipeline:
 
             # Mapping last: it is how an orphaned point set is found again, so it
             # must outlive the deletes it describes.
-            if deleted_virtual_record_ids:
+            if deleted_virtual_record_ids and not keep_mapping:
                 try:
                     await self.graph_provider.delete_nodes(
                         keys=deleted_virtual_record_ids,

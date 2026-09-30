@@ -294,6 +294,27 @@ class GraphTransactionStore(TransactionStore):
             record_ids, connector_id, transaction=self.txn, cascade_children=cascade_children,
         )
 
+    async def soft_delete_records(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+        *,
+        delete_source: str,
+        batch_id: str,
+        deleted_by_user_id: str | None = None,
+        follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
+    ) -> dict:
+        """Move records to the trash within the active transaction."""
+        return await self.graph_provider.soft_delete_records(
+            record_ids,
+            connector_id,
+            delete_source=delete_source,
+            batch_id=batch_id,
+            deleted_by_user_id=deleted_by_user_id,
+            follow=follow,
+            transaction=self.txn,
+        )
+
     async def delete_single_record(self, record_id: str) -> dict:
         """Single-record delete within the active transaction — no containment walk."""
         return await self.graph_provider.delete_single_record(record_id, transaction=self.txn)

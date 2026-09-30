@@ -50,6 +50,7 @@ from app.config.constants.arangodb import (
     AppStatus,
     CollectionNames,
     Connectors,
+    DeleteSource,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
@@ -106,6 +107,7 @@ from app.connectors.core.registry.filters import sync_filter_selection_problems
 from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.vector_cleanup_events import build_soft_delete_events
 from app.connectors.services.vector_store_rebuild import (
     VectorStoreRebuildBusyError,
     VectorStoreRebuildConflictError,
@@ -123,7 +125,10 @@ from app.models.entities import Record, RecordType
 from app.modules.demo_data.access import is_hidden_demo_record
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
-from app.services.featureflag.platform_settings import read_platform_feature_flag
+from app.services.featureflag.platform_settings import (
+    is_soft_delete_enabled,
+    read_platform_feature_flag,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.rebuild_state import PHASE_DROPPING, get_cleanup_phase
 from app.utils.api_call import make_api_call
@@ -139,6 +144,7 @@ from app.utils.filename_utils import upload_extension
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import extract_oauth_error_message, fetch_oauth_config_by_id, get_oauth_config
+from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -2263,11 +2269,51 @@ async def delete_record(
                 detail="You do not have access to this record",
             )
 
+        soft_delete = await is_soft_delete_enabled(container.config_service())
         result = await graph_provider.delete_record(
             record_id=record_id,
             user_id=user_id,
             org_id=org_id,
+            soft_delete=soft_delete,
         )
+
+        if result["success"] and result.get("softDeleted"):
+            # In the trash: vectors go now, the record and its files at the purge.
+            failed_ids: list[str] = []
+            for event in build_soft_delete_events(
+                org_id=result.get("orgId") or org_id,
+                connector_id=result.get("connectorId"),
+                virtual_record_ids=result.get("virtualRecordIds"),
+                batch_id=result.get("batchId") or "",
+                delete_source=DeleteSource.USER.value,
+            ):
+                try:
+                    await retry_async(
+                        lambda event=event: kafka_service.publish_event("record-events", event),
+                        logger=logger,
+                        description=f"publish softDeleteRecords for record {record_id}",
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"❌ Giving up publishing softDeleteRecords for record {record_id}; "
+                        f"its vectors stay until the purge: {str(e)}"
+                    )
+                    failed_ids.extend(event["payload"]["virtualRecordIds"])
+            record_soft_deleted(DeleteSource.USER.value, len(result.get("softDeletedRecords") or []))
+            if result.get("isKb") and result.get("connectorId"):
+                await notify_kb_records_changed(result["connectorId"], result.get("orgId"))
+            response = {
+                "success": True,
+                "message": f"Record {record_id} moved to the trash",
+                "recordId": record_id,
+                "connector": result.get("connector"),
+                "softDeleted": True,
+                "batchId": result.get("batchId"),
+            }
+            if failed_ids:
+                response["vectorCleanupPending"] = True
+                response["vectorCleanupFailedVirtualRecordIds"] = failed_ids
+            return response
 
         if result["success"]:
             # Publish deletion event. The graph deletion above has already
