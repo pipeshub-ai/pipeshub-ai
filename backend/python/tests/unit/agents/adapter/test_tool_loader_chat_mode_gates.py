@@ -13,6 +13,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agent_loop_lib.tools.decorators import tool
+from app.agent_loop_lib.tools.tags import TAG_UI_ONLY
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader, _build_dynamic_tools
 
@@ -264,3 +265,42 @@ class TestModePolicyEndToEndGating:
     async def test_agent_mode_has_both_retrieval_and_web_tools(self) -> None:
         names = await self._load_for(has_knowledge=True, web_search_config={"provider": "tavily"})
         assert any("search_internal_knowledge" in n for n in names)
+
+
+class _FakeInteractiveToolset:
+    @tool(path="/tools/internaltools/ask_user_question", short_description="Ask", description="Ask the user", tags=[TAG_UI_ONLY])
+    async def ask_user_question(self, question: str) -> str:
+        return question
+
+    @tool(path="/tools/internaltools/calculator", short_description="Calc", description="Calculate")
+    async def calculator(self, expression: str) -> str:
+        return expression
+
+
+class TestUiOnlyToolGate:
+    """A UI-only tool asks the human watching the chat. With no UI client
+    (an API caller) nobody can answer: the run ended on the model's filler
+    text ("I'll verify ...") as if it were the answer."""
+
+    async def _load(self, has_ui_client: bool) -> list[str]:
+        fake_registry = MagicMock()
+        fake_registry.get_all_toolsets.return_value = {
+            "internaltools": {"class": _FakeInteractiveToolset, "isInternal": True, "description": ""},
+        }
+        with (
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=fake_registry),
+            patch("app.agents.agent_loop.tool_loader.ClientFactoryRegistry.get_factory", return_value=None),
+        ):
+            registry = await PipesHubToolLoader().load(_make_context(has_ui_client=has_ui_client))
+        return registry.names()
+
+    async def test_without_a_ui_client_ui_only_tools_are_withheld(self) -> None:
+        names = await self._load(has_ui_client=False)
+
+        assert not any("ask_user_question" in n for n in names)
+        assert any("calculator" in n for n in names)
+
+    async def test_with_a_ui_client_ui_only_tools_are_offered(self) -> None:
+        names = await self._load(has_ui_client=True)
+
+        assert any("ask_user_question" in n for n in names)

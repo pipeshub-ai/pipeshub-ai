@@ -114,6 +114,17 @@ class TestFocusedGrant:
         assert not granted & WITHHELD_TOOLS
         assert granted >= KEPT_TOOLS
 
+    async def test_an_api_caller_is_not_offered_the_ask_user_tool(self, env) -> None:
+        def api_state() -> dict[str, Any]:
+            state = chat_state_for_policy(INTERNAL_SEARCH_POLICY)
+            state["has_ui_client"] = False
+            return state
+
+        case = await build_case(api_state, INTERNAL_SEARCH_CASE[1])
+        assert "internaltools__ask_user_question" not in case["tool_names"]
+        assert "ask_user_question" not in case["prompt"]
+        assert _available_tools_listing(case["prompt"]) == set(case["tool_names"])
+
     async def test_withheld_toolsets_are_never_registered(self, env) -> None:
         case = await _internal_search()
         assert not {"artifacts", "image_generator", "skills", "skill_authoring"} & set(case["registry_toolsets"])

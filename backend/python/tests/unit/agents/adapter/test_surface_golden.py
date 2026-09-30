@@ -141,6 +141,7 @@ def _base_state() -> dict[str, Any]:
         "timezone": "UTC",
         "conversation_id": "conv-1",
         "entity_vector_store": MagicMock(),
+        "has_ui_client": True,
     }
 
 

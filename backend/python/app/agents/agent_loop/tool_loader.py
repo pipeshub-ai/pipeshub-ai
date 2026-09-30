@@ -32,6 +32,7 @@ from app.agent_loop_lib.tools.errors import (
     DuplicateToolPathError,
 )
 from app.agent_loop_lib.tools.registry import ToolRegistry
+from app.agent_loop_lib.tools.tags import TAG_UI_ONLY
 from app.agent_loop_lib.tools.toolset import ToolsetBuilder as AgentLoopToolsetBuilder
 from app.agents.agent_loop.instance_creator import ToolInstanceCreator, configured_name_matches
 from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter, split_original_tool_name
@@ -304,6 +305,16 @@ class PipesHubToolLoader:
                     context.withheld_tool_names.extend(
                         t.name for t in toolset.tools if not surface.permits_tool(t)
                     )
+                if not context.has_ui_client:
+                    # With no UI to render the question, the model's filler
+                    # text becomes the final answer and the run just ends.
+                    ui_only = [t.name for t in tools if TAG_UI_ONLY in t.tags]
+                    if ui_only:
+                        tools = [t for t in tools if TAG_UI_ONLY not in t.tags]
+                        logger.info(
+                            "PipesHubToolLoader: no UI client, withholding %s (conversation=%s)",
+                            ui_only, context.conversation_id,
+                        )
                 for t in tools:
                     try:
                         registry.register_tool(t)
