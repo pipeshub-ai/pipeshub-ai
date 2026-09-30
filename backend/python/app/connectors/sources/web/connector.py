@@ -20,6 +20,7 @@ from bs4 import BeautifulSoup, Tag
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from PIL import Image
+from yarl import URL
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -3701,11 +3702,13 @@ class WebConnector(BaseConnector):
         except Exception:
             data = None
         doc_id = self._storage_document_id_from_upload(resp.headers, data)
+        # The presigned URL is signed with an empty Content-Type; aiohttp would otherwise add one and break the signature.
         put_headers = {"Content-Length": str(len(content))}
         async with session.put(
-            location,
+            URL(location, encoded=True),
             data=content,
             headers=put_headers,
+            skip_auto_headers={"Content-Type"},
             allow_redirects=False,
         ) as put_resp:
             if put_resp.status < 200 or put_resp.status >= 300:
