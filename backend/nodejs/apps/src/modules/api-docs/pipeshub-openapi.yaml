@@ -17879,19 +17879,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/RefreshTokenResponse'
         '400':
-          description: Disabled user account
+          description: The account is locked after repeated failed sign-ins
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Invalid or expired refresh token - user must re-authenticate
+          description: |
+            The user must sign in again. Either the refresh token is invalid or
+            expired, or the session was ended by signing out or a password change.
+
+            If the account has been deleted or disabled, the message is
+            "Your account is no longer active. Contact your admin." Signing in
+            again will not help until an admin restores the account.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found (account may have been deleted), User credentials not found, or Organization not found
+          description: The user's credentials or organization could not be found
           content:
             application/json:
               schema:
