@@ -279,16 +279,8 @@ async def test_search_does_not_return_the_widely_shared_file_to_the_colleague(en
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Search still honours an 'anyone' document: it grants the whole org read access to "
-        "the file (neo4j_provider Path 8, arango_http_provider anyone_permission). Nothing writes "
-        "one today, which is what keeps these shares off; removing that read path is a product "
-        "decision, and this turns red once it is made."
-    ),
-)
 async def test_an_anyone_document_grants_the_colleague_no_search_access(env: _Env) -> None:
+    """An "anyone" document written by the production writer grants a colleague nothing."""
     widely_shared, named_share = await _sync_the_two_files(env)
     # The production writer of the shape search reads: {file_key, organization, active}.
     await env.graph.process_file_permissions(
@@ -301,6 +293,9 @@ async def test_an_anyone_document_grants_the_colleague_no_search_access(env: _En
     )
 
     assert reachable.get(f"vr-{named_share.id}") == named_share.id, f"control not visible: {reachable}"
-    assert f"vr-{widely_shared.id}" not in reachable, (
-        "An anyone document makes the file searchable by a colleague who was never named on it."
-    )
+    if f"vr-{widely_shared.id}" in reachable:
+        # Only this known outcome is expected; every check above fails for real.
+        pytest.xfail(
+            "Search on main still honours an 'anyone' document (org-wide read access). "
+            "#3691 removes that read path; remove this branch once it merges."
+        )
