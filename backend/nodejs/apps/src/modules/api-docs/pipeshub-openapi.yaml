@@ -41355,7 +41355,7 @@ paths:
       description: |
         Remove all scheduled crawling jobs for the organization, including
         org-wide connectors and other members' personal connectors.
-        Only an organization admin may call this; a member is refused with 400.
+        Only an organization admin may call this; a member is refused with 403.
       operationId: removeAllCrawlingJob
       security:
         - bearerAuth: []
