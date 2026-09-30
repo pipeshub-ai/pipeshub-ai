@@ -19,6 +19,7 @@ import {
   StorageUploadError,
   StorageDownloadError,
   StorageNotFoundError,
+  StorageDeleteError,
   StorageValidationError,
   MultipartUploadError,
   PresignedUrlError,
@@ -297,6 +298,68 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
    * @throws Error if document not found or retrieval fails
    * Handles both current and versioned document retrieval
    */
+  /**
+   * Deletes every blob backing a document: the current one and every entry in
+   * its version history.
+   *
+   * `deleteIfExists` with `deleteSnapshots: 'include'` so a blob carrying
+   * snapshots does not survive its own deletion. A blob that is already absent
+   * is the desired end state, not a failure.
+   *
+   * @param document - Metadata of the document whose blobs should be removed.
+   * @returns A promise resolving to the blob paths that were deleted.
+   * @throws {StorageDeleteError} If a blob exists and cannot be removed
+   */
+  async deleteDocumentFromStorageService(
+    document: Document,
+  ): Promise<StorageServiceResponse<{ deleted: string[] }>> {
+    const urls: string[] = [];
+    if (document?.azureBlob?.url) {
+      urls.push(document.azureBlob.url);
+    }
+    for (const version of document?.versionHistory || []) {
+      if (version?.azureBlob?.url) {
+        urls.push(version.azureBlob.url);
+      }
+    }
+
+    const blobPaths = Array.from(
+      new Set(urls.map((url) => this.getBlobPath(url))),
+    );
+    const deleted: string[] = [];
+
+    for (const blobPath of blobPaths) {
+      try {
+        const blobClient = this.containerClient.getBlockBlobClient(blobPath);
+        const response = await blobClient.deleteIfExists({
+          deleteSnapshots: 'include',
+        });
+        if (response.succeeded) {
+          deleted.push(blobPath);
+        } else {
+          this.logger.warn('Azure blob already absent', { path: blobPath });
+        }
+      } catch (error: any) {
+        throw new StorageDeleteError(
+          'Failed to delete document from Azure Blob Storage',
+          {
+            path: blobPath,
+            container: this.containerName,
+            originalError:
+              error instanceof Error ? error.message : 'Unknown error',
+          },
+        );
+      }
+    }
+
+    this.logger.info('Azure blobs deleted', {
+      container: this.containerName,
+      deleted,
+    });
+
+    return { statusCode: 200, data: { deleted } };
+  }
+
   async getBufferFromStorageService(
     document: Document,
     version?: number,
