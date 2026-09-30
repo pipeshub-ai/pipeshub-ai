@@ -6220,7 +6220,9 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         node_key: str,
         collection: str = CollectionNames.PERMISSION.value,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[User]:
         """Get users with permission to node"""
         try:
@@ -6250,6 +6252,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get users with permission failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_record_owner_source_user_email(

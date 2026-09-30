@@ -430,8 +430,12 @@ class GraphTransactionStore(TransactionStore):
     async def get_first_user_with_permission_to_node(self, node_id: str, node_collection: str) -> Optional[User]:
         return await self.graph_provider.get_first_user_with_permission_to_node(node_id, node_collection, transaction=self.txn)
 
-    async def get_users_with_permission_to_node(self, node_id: str, node_collection: str) -> list[User]:
-        return await self.graph_provider.get_users_with_permission_to_node(node_id, node_collection, transaction=self.txn)
+    async def get_users_with_permission_to_node(
+        self, node_id: str, node_collection: str, *, raise_on_error: bool = False
+    ) -> list[User]:
+        return await self.graph_provider.get_users_with_permission_to_node(
+            node_id, node_collection, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[dict]:
         return await self.graph_provider.get_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)

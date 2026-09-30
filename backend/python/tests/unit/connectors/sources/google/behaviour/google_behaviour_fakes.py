@@ -301,6 +301,7 @@ class FakeEntitiesProcessor:
         self.fail_writes_for: set[str] = set()
         self.fail_record_listing = False
         self.fail_owner_lookup = False
+        self.fail_permission_lookup = False
 
     def _check_write(self, external_id: Optional[str]) -> None:
         if external_id in self.fail_writes_for:
@@ -381,7 +382,14 @@ class FakeEntitiesProcessor:
     async def get_user_by_user_id(self, user_id: str) -> Optional[object]:
         return next((u for u in self.active_users if getattr(u, "id", None) == user_id), None)
 
-    async def get_users_with_permission_to_node(self, node_id: str, node_collection: str) -> list[Any]:
+    async def get_users_with_permission_to_node(
+        self, node_id: str, node_collection: str, *, raise_on_error: bool = False
+    ) -> list[Any]:
+        if self.fail_permission_lookup:
+            # Both stores log the failure and answer [] unless asked to raise.
+            if raise_on_error:
+                raise RuntimeError("graph unavailable while reading the record's permissions")
+            return []
         record = self.by_id(node_id)
         if record is None:
             return []

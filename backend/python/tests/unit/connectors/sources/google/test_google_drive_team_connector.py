@@ -2530,6 +2530,7 @@ class TestSyncPersonalDrive:
         mock_ds.files_list = AsyncMock(side_effect=[
             {"files": [_make_file_metadata()], "nextPageToken": "next"},
             {"files": []},
+            {"files": []},  # the full sync's trash sweep
         ])
 
         with patch.object(conn, "_process_drive_files_batch", new_callable=AsyncMock,
@@ -2538,6 +2539,7 @@ class TestSyncPersonalDrive:
                               return_value=([], 0)):
                 with patch.object(conn, "sync_shared_with_me", new_callable=AsyncMock):
                     await conn.sync_personal_drive(user, mock_ds, "perm-id", "drive-id")
+        assert mock_ds.files_list.await_args_list[-1].kwargs["q"] == "trashed = true"
 
     @pytest.mark.asyncio
     async def test_full_sync_no_start_token(self):

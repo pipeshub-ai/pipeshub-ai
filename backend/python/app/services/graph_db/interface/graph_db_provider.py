@@ -3145,7 +3145,9 @@ class IGraphDBProvider(ABC):
         self,
         node_id: str,
         node_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list['User']:
         """
         Get all users with permission to a node.
@@ -3154,6 +3156,8 @@ class IGraphDBProvider(ABC):
             node_id (str): Node ID
             node_collection (str): Node collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error: Raise when the read fails, instead of answering an
+                empty list that reads as "nobody has access"
 
         Returns:
             List[User]: List of user objects

@@ -524,7 +524,7 @@ class TestGraphTransactionStore:
     async def test_get_users_with_permission_to_node(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_users_with_permission_to_node("node1", "records")
         mock_graph_provider.get_users_with_permission_to_node.assert_awaited_once_with(
-            "node1", "records", transaction="txn-123"
+            "node1", "records", transaction="txn-123", raise_on_error=False
         )
 
     @pytest.mark.asyncio

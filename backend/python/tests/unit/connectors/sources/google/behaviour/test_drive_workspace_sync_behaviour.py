@@ -538,6 +538,39 @@ async def test_a_file_from_a_filtered_out_drive_only_loses_the_removed_users_acc
     assert ws.records.deleted == []
 
 
+def _file_in_filtered_out_drive(ws: Workspace) -> None:
+    ws.world.add_drive("sd-2", "Finance", {ALICE: "organizer"})
+    ws.world.add_item("f1", "fin.txt", parent="sd-2", perms=[{"type": "user", "role": "writer", "emailAddress": BOB}])
+    ws.filters(drive_ids={"operator": "not_in", "type": "list", "value": ["sd-2"]})
+
+
+async def test_a_file_deleted_from_a_filtered_out_drive_is_removed(ws: Workspace) -> None:
+    _file_in_filtered_out_drive(ws)
+    await ws.sync()
+    assert "f1" in ws.records.records
+
+    ws.world.delete("f1")
+    await ws.sync()
+
+    assert "f1" not in ws.records.records, "no drive sync walks this drive, so the removed change decides"
+
+
+async def test_a_permission_lookup_that_fails_holds_the_removed_change(ws: Workspace) -> None:
+    _file_in_filtered_out_drive(ws)
+    await ws.sync()
+    checkpoints = ws.user_checkpoint(ALICE), ws.user_checkpoint(BOB)
+
+    ws.world.delete("f1")
+    ws.records.fail_permission_lookup = True
+    await ws.sync()
+    assert "f1" in ws.records.records
+    assert (ws.user_checkpoint(ALICE), ws.user_checkpoint(BOB)) == checkpoints
+
+    ws.records.fail_permission_lookup = False
+    await ws.sync()
+    assert "f1" not in ws.records.records
+
+
 async def test_a_file_owned_outside_the_workspace_only_loses_the_removed_users_access(ws: Workspace) -> None:
     ws.world.files["ext-root"] = FileState(
         {"id": "ext-root", "name": "My Drive", "mimeType": FOLDER, "owners": [{"emailAddress": PARTNER}], "parents": []}

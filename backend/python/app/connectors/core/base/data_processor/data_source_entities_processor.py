@@ -2455,9 +2455,13 @@ class DataSourceEntitiesProcessor:
             return None
         return User.from_arango_user(raw) if isinstance(raw, dict) else raw
 
-    async def get_users_with_permission_to_node(self, node_id: str, node_collection: str) -> list[User]:
+    async def get_users_with_permission_to_node(
+        self, node_id: str, node_collection: str, *, raise_on_error: bool = False
+    ) -> list[User]:
         async with self.data_store_provider.transaction() as tx_store:
-            return await tx_store.get_users_with_permission_to_node(node_id, node_collection)
+            return await tx_store.get_users_with_permission_to_node(
+                node_id, node_collection, raise_on_error=raise_on_error
+            )
             
     async def get_user_by_source_id(
         self, source_user_id: str, connector_id: str

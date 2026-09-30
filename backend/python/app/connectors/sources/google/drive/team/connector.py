@@ -18,6 +18,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CollectionNames,
     Connectors,
     ExtensionTypes,
     MimeTypes,
@@ -1675,11 +1676,18 @@ class GoogleDriveTeamConnector(BaseConnector):
         if record is None:
             return
         # A shared drive file's OWNER edges are its organizers, and an organizer who
-        # left the drive gets "not found" too; sync_shared_drives handles its deletes.
-        # The change's driveId covers a file from a drive the filters leave out, which
-        # is stored with no group.
-        in_shared_drive = bool(drive_id) or record.external_record_group_id in self._listed_shared_drive_ids
-        if not in_shared_drive and await self._owner_reports_file_gone(record, owner_sources):
+        # left the drive gets "not found" too, so the owner is never asked for one.
+        if drive_id and drive_id not in self._synced_drive_ids:
+            # sync_shared_drives never walks this drive, so nothing else would notice a
+            # delete: the record goes once no other synced user can still open the file.
+            if not await self._another_synced_user_can_open(record, user, owner_sources):
+                await self._delete_record_tree(record)
+                return
+        elif (
+            not drive_id
+            and record.external_record_group_id not in self._listed_shared_drive_ids
+            and await self._owner_reports_file_gone(record, owner_sources)
+        ):
             await self._delete_record_tree(record)
             return
         # Deleting only their direct USER edge would leave group- and drive-derived
@@ -1688,6 +1696,46 @@ class GoogleDriveTeamConnector(BaseConnector):
         await self.data_entities_processor.delete_permission_from_record(
             record_id=record.id, user_email=user.email
         )
+
+    async def _another_synced_user_can_open(
+        self, record: Record, removed_for: AppUser, owner_sources: dict[str, GoogleDriveDataSource]
+    ) -> bool:
+        """Whether a synced user other than ``removed_for`` can still open the record's file.
+
+        Asks each active synced user the graph holds a permission for. "Not found",
+        a known permission refusal, or the trash count as unable; any other failure
+        raises, so the change is read again next sync.
+        """
+        holders = await self.data_entities_processor.get_users_with_permission_to_node(
+            record.id, CollectionNames.RECORDS.value, raise_on_error=True
+        )
+        holder_emails = {(u.email or "").lower() for u in holders}
+        askable = [
+            u for u in self.synced_users
+            if u.is_active and u.email.lower() in holder_emails
+            and u.email.lower() != removed_for.email.lower()
+        ]
+        for other in askable:
+            if await self._user_can_open(record, other, owner_sources):
+                return True
+        return False
+
+    async def _user_can_open(
+        self, record: Record, user: AppUser, sources: dict[str, GoogleDriveDataSource]
+    ) -> bool:
+        source = sources.get(user.email)
+        if source is None:
+            source = await self._build_user_drive_data_source(user)
+            sources[user.email] = source
+        try:
+            metadata = await source.files_get(
+                fileId=record.external_record_id, supportsAllDrives=True, fields="id, trashed"
+            )
+        except HttpError as e:
+            if e.resp.status == HttpStatusCode.NOT_FOUND.value or is_permission_denied_403(e):
+                return False
+            raise
+        return not metadata.get("trashed")
 
     async def _owner_reports_file_gone(
         self, record: Record, owner_sources: dict[str, GoogleDriveDataSource]

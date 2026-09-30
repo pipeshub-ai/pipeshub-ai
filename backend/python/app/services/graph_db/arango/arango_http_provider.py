@@ -6511,7 +6511,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         node_id: str,
         node_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[User]:
         """
         Get all users with permission to node.
@@ -6546,6 +6548,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get users with permission to node failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_record_owner_source_user_email(
