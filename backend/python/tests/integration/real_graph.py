@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -57,7 +57,7 @@ async def connect_arango(logger: logging.Logger, database: str) -> IGraphDBProvi
     return provider
 
 
-def backend_unavailable(backend: str, error: BaseException) -> None:
+def backend_unavailable(backend: str, error: BaseException) -> NoReturn:
     """Fail when the job said this backend is there (backend-matrix sets its URL); skip otherwise.
 
     The unit job collects these files on a runner with no graph, where a skip is

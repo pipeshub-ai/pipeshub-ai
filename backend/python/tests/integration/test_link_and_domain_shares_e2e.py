@@ -246,9 +246,16 @@ async def test_the_sync_writes_no_grant_for_link_style_shares(env: _Env) -> None
     edges = await env.graph.get_edges_to_node(
         f"{CollectionNames.RECORDS.value}/{widely_shared.id}", CollectionNames.PERMISSION.value
     )
-    assert edges, "The owner's permission was not written, so the permission step failed as a whole."
-    assert len(edges) == 1, (
-        f"Expected only the owner's permission on the widely shared file; found {len(edges)}: {edges}. "
+    sources = [
+        (e.get("from_collection") or e.get("_from", "").split("/")[0],
+         e.get("from_id") or e.get("_from", "").split("/")[-1])
+        for e in edges
+    ]
+    assert (CollectionNames.USERS.value, env.owner["id"]) in sources, (
+        f"The owner's permission was not written ({sources}), so the permission step failed as a whole."
+    )
+    assert sources == [(CollectionNames.USERS.value, env.owner["id"])], (
+        f"Expected only the owner's permission on the widely shared file; found {sources}. "
         "A domain, anyone or anyone-with-link share has started writing a permission."
     )
     assert await _anyone_documents_for(env.graph, widely_shared.id) == 0, (
@@ -269,4 +276,31 @@ async def test_search_does_not_return_the_widely_shared_file_to_the_colleague(en
     )
     assert f"vr-{widely_shared.id}" not in reachable, (
         "Search returns the domain / anyone / anyone-with-link file to a colleague who was never named on it."
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Search still honours an 'anyone' document: it grants the whole org read access to "
+        "the file (neo4j_provider Path 8, arango_http_provider anyone_permission). Nothing writes "
+        "one today, which is what keeps these shares off; removing that read path is a product "
+        "decision, and this turns red once it is made."
+    ),
+)
+async def test_an_anyone_document_grants_the_colleague_no_search_access(env: _Env) -> None:
+    widely_shared, named_share = await _sync_the_two_files(env)
+    # The production writer of the shape search reads: {file_key, organization, active}.
+    await env.graph.process_file_permissions(
+        env.org_id, widely_shared.id, [{"id": "anyone-perm", "type": "anyone", "role": "reader"}]
+    )
+    assert await _anyone_documents_for(env.graph, widely_shared.id) == 1, "the anyone document was not written"
+
+    reachable = await env.graph.get_accessible_virtual_record_ids(
+        env.colleague["userId"], env.org_id, raise_on_error=True
+    )
+
+    assert reachable.get(f"vr-{named_share.id}") == named_share.id, f"control not visible: {reachable}"
+    assert f"vr-{widely_shared.id}" not in reachable, (
+        "An anyone document makes the file searchable by a colleague who was never named on it."
     )

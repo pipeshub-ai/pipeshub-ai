@@ -29,11 +29,15 @@ LINK_STYLE = {"DOMAIN", "ANYONE", "ANYONE_WITH_LINK"}
 
 
 def _calls(tree: ast.AST) -> list[tuple[int, str]]:
-    return [
-        (node.lineno, node.func.attr)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-    ]
+    """Every call's name: ``x.writer(...)`` and a bare, imported ``writer(...)``."""
+    calls = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute):
+                calls.append((node.lineno, node.func.attr))
+            elif isinstance(node.func, ast.Name):
+                calls.append((node.lineno, node.func.id))
+    return calls
 
 
 def test_no_production_code_writes_anyone_documents() -> None:
