@@ -57,7 +57,9 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     SyncFilterKey,
     extension_passes_filter,
+    included_names,
     load_connector_filters,
+    name_passes_filter,
 )
 from app.models.entities import (
     AppUser,
@@ -407,8 +409,11 @@ class S3CompatibleBaseConnector(BaseConnector):
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
 
             # Get bucket filter if specified
-            bucket_filter = sync_filters.get("buckets")
-            selected_buckets = bucket_filter.value if bucket_filter and bucket_filter.value else []
+            selected_buckets = included_names(sync_filters, "buckets")
+            if not self.bucket_name:
+                await remove_deselected_containers(
+                    self.data_entities_processor, self.config_service, self.connector_id, "buckets", sync_filters, self.logger
+                )
 
             # List all buckets or use configured bucket
             buckets_to_sync: list[str] = []
@@ -419,9 +424,6 @@ class S3CompatibleBaseConnector(BaseConnector):
             elif selected_buckets:
                 buckets_to_sync = selected_buckets
                 self.logger.info(f"Using filtered buckets: {buckets_to_sync}")
-                await remove_deselected_containers(
-                    self.data_entities_processor, self.config_service, self.connector_id, "buckets", selected_buckets, self.logger
-                )
             else:
                 self.logger.info("Listing all buckets...")
                 buckets_response = await self.data_source.list_buckets()
@@ -442,6 +444,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                     list_buckets_payload = buckets_data["Buckets"]
                     buckets_to_sync = [
                         bucket.get("Name") for bucket in list_buckets_payload
+                        if name_passes_filter(sync_filters, "buckets", bucket.get("Name"))
                     ]
                     self.logger.info(f"Found {len(buckets_to_sync)} bucket(s) to sync")
                 else:
@@ -1626,8 +1629,11 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
 
-            bucket_filter = sync_filters.get("buckets")
-            selected_buckets = bucket_filter.value if bucket_filter and bucket_filter.value else []
+            selected_buckets = included_names(sync_filters, "buckets")
+            if not self.bucket_name:
+                await remove_deselected_containers(
+                    self.data_entities_processor, self.config_service, self.connector_id, "buckets", sync_filters, self.logger
+                )
 
             buckets_to_sync = []
             if self.bucket_name:
@@ -1636,9 +1642,6 @@ class S3CompatibleBaseConnector(BaseConnector):
             elif selected_buckets:
                 buckets_to_sync = selected_buckets
                 self.logger.info(f"Using filtered buckets: {buckets_to_sync}")
-                await remove_deselected_containers(
-                    self.data_entities_processor, self.config_service, self.connector_id, "buckets", selected_buckets, self.logger
-                )
             else:
                 buckets_response = await self.data_source.list_buckets()
                 if buckets_response.success and buckets_response.data:
@@ -1646,6 +1649,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                     if "Buckets" in buckets_data:
                         buckets_to_sync = [
                             bucket.get("Name") for bucket in buckets_data["Buckets"]
+                            if name_passes_filter(sync_filters, "buckets", bucket.get("Name"))
                         ]
 
             if not buckets_to_sync:

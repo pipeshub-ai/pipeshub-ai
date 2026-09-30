@@ -12,9 +12,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple
 
 from app.connectors.core.registry.filters import (
+    Filter,
     FilterCollection,
-    FilterOperator,
     SyncFilterKey,
+    name_passes_filter,
 )
 
 if TYPE_CHECKING:
@@ -241,10 +242,15 @@ async def remove_records_not_listed(
     )
 
 
-async def _saved_selection(
+def _names(names_filter: Filter) -> frozenset[str]:
+    raw = names_filter.value if isinstance(names_filter.value, list) else [names_filter.value]
+    return frozenset(name for name in raw if isinstance(name, str) and name)
+
+
+async def _saved_filter(
     config_service: ConfigurationService, connector_id: str, filter_name: str, logger: logging.Logger,
-) -> set[str] | None:
-    """The containers the saved ``filter_name`` filter includes; None unless that is certain.
+) -> tuple[FilterCollection, Filter] | None:
+    """The saved sync filters and their ``filter_name`` filter; None unless that filter was read and is set.
 
     Read here rather than through ``load_connector_filters``, which answers a
     failed or empty read with no filters, the same as a filter left unset.
@@ -261,11 +267,11 @@ async def _saved_selection(
     values = sync.get("values") if isinstance(sync, dict) else None
     if not isinstance(values, dict):
         return None
-    selection = FilterCollection.from_dict(values, logger).get(filter_name)
-    if selection is None or selection.is_empty() or selection.operator_value != FilterOperator.IN:
+    saved = FilterCollection.from_dict(values, logger)
+    names_filter = saved.get(filter_name)
+    if names_filter is None or names_filter.is_empty():
         return None
-    raw = selection.value if isinstance(selection.value, list) else [selection.value]
-    return {name for name in raw if isinstance(name, str) and name}
+    return saved, names_filter
 
 
 async def remove_deselected_containers(
@@ -273,19 +279,26 @@ async def remove_deselected_containers(
     config_service: ConfigurationService,
     connector_id: str,
     filter_name: str,
-    synced: list[str],
+    sync_filters: FilterCollection | None,
     logger: logging.Logger,
 ) -> None:
     """Delete the records, then the record group, of each stored bucket or container
-    that the saved ``filter_name`` filter no longer includes.
+    that the saved ``filter_name`` filter leaves out: one no longer named under In,
+    or newly named under Not in.
 
-    ``synced`` is the selection this sync runs with. The saved filter is read
-    again and must match it, so a failed or empty read, a filter left unset (all
+    ``sync_filters`` are the filters this sync runs with. The saved filter is read
+    again and must match them, so a failed or empty read, a filter left unset (all
     of them are synced) or one edited mid-sync removes nothing. What the cloud
     API lists plays no part, so a failed listing is never taken for de-selection.
     """
-    selected = await _saved_selection(config_service, connector_id, filter_name, logger)
-    if not selected or selected != {name for name in synced if isinstance(name, str) and name}:
+    current = sync_filters.get(filter_name) if sync_filters else None
+    if current is None or current.is_empty():
+        return
+    read = await _saved_filter(config_service, connector_id, filter_name, logger)
+    if read is None:
+        return
+    saved, saved_filter = read
+    if saved_filter.operator_value != current.operator_value or _names(saved_filter) != _names(current):
         return
 
     from app.config.constants.arangodb import CollectionNames
@@ -299,7 +312,8 @@ async def remove_deselected_containers(
     except Exception as e:  # retried on the next sync
         logger.warning(f"Not removing de-selected {filter_name}: the stored ones could not be read: {e}")
         return
-    stale = sorted({g.get("externalGroupId") for g in groups if isinstance(g, dict)} - selected - {None, ""})
+    stored = {g.get("externalGroupId") for g in groups if isinstance(g, dict)} - {None, ""}
+    stale = sorted(name for name in stored if not name_passes_filter(saved, filter_name, name))
     for container_name in stale:
         try:
             result = await _remove_records(

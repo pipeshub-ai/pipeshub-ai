@@ -1,6 +1,7 @@
-"""Buckets and containers taken out of the Bucket Names / Container Names filter in the object-store connectors.
+"""Buckets and containers left out by the Bucket Names / Container Names filter in the object-store connectors.
 
-Their records are removed at the start of the next sync. The decision comes from
+In syncs only the named ones and Not in every listed one but those. A bucket
+the filter newly leaves out has its records removed at the start of the next sync. The decision comes from
 the saved filter alone, so a failed read of it, or a bucket list that happens to
 leave a bucket out, removes nothing.
 """
@@ -99,16 +100,17 @@ class TestDeselectedBucket:
         assert OTHER in db.record_groups
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("operator", "named"), [("in", BUCKET), ("not_in", OTHER)])
     @pytest.mark.parametrize(
         ("fail_mode", "first_failing_read"),
         [("raise", 0), ("empty", 0), ("raise", 1), ("empty", 1)],
         ids=["every-read-raises", "every-read-empty", "second-read-raises", "second-read-empty"],
     )
     async def test_a_failed_read_of_the_filter_removes_nothing(
-        self, kind, connector, db, config, fail_mode, first_failing_read,
+        self, kind, connector, db, config, fail_mode, first_failing_read, operator, named,
     ) -> None:
         # The sync reads the config once for its filters, then again before removing anything.
-        config.set_selection(filter_name(kind), [BUCKET])
+        config.set_selection(filter_name(kind), [named], operator=operator)
         config.fail_mode, config.fail_from = fail_mode, config.reads + first_failing_read
 
         await connector.run_sync()
@@ -130,16 +132,6 @@ class TestDeselectedBucket:
         assert in_bucket(db, OTHER) == {f"{OTHER}/a.txt", f"{OTHER}/docs/b.txt", f"{OTHER}/docs"}
 
     @pytest.mark.asyncio
-    async def test_a_not_in_filter_removes_nothing(self, kind, connector, db, config) -> None:
-        # The sync reads the list as the buckets to sync whatever the operator, so Not in is not trusted to remove.
-        config.set_selection(filter_name(kind), [OTHER], operator="not_in")
-
-        await connector.run_sync()
-
-        assert db.deleted == []
-        assert OTHER in db.record_groups
-
-    @pytest.mark.asyncio
     async def test_a_bucket_fixed_in_the_settings_ignores_the_filter(self, kind, connector, db, config) -> None:
         if kind == "azure_blob":
             connector.container_name = BUCKET
@@ -151,3 +143,43 @@ class TestDeselectedBucket:
 
         assert db.deleted == []
         assert in_bucket(db, BUCKET) and in_bucket(db, OTHER)
+
+
+class TestNotIn:
+    @pytest.mark.asyncio
+    async def test_it_syncs_every_listed_bucket_but_the_named_ones(
+        self, kind, connector, store, other, db, config,
+    ) -> None:
+        third = connector.data_source.add_bucket("bucket-3")
+        for bucket in (store, other, third):
+            bucket.put("a.txt", f"{id(bucket)}")
+        config.set_selection(filter_name(kind), [OTHER], operator="not_in")
+
+        await connector.run_sync()
+
+        assert db.paths() == {f"{BUCKET}/a.txt", "bucket-3/a.txt"}
+        assert OTHER not in db.record_groups
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("both_synced")
+    @pytest.mark.parametrize("next_sync", ["run_sync", "run_incremental_sync"])
+    async def test_naming_a_bucket_removes_its_records(self, kind, connector, db, config, next_sync) -> None:
+        kept = in_bucket(db, BUCKET)
+
+        config.set_selection(filter_name(kind), [OTHER], operator="not_in")
+        await getattr(connector, next_sync)()
+
+        assert in_bucket(db, OTHER) == set()
+        assert OTHER not in db.record_groups
+        assert in_bucket(db, BUCKET) == kept
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("both_synced")
+    async def test_a_bucket_the_listing_leaves_out_is_not_removed(self, kind, connector, db, config) -> None:
+        config.set_selection(filter_name(kind), ["bucket-3"], operator="not_in")
+        connector.data_source.hidden.add(OTHER)
+
+        await connector.run_sync()
+
+        assert db.deleted == []
+        assert in_bucket(db, OTHER) == {f"{OTHER}/a.txt", f"{OTHER}/docs/b.txt", f"{OTHER}/docs"}
