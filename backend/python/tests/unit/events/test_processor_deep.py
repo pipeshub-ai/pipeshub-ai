@@ -2236,3 +2236,75 @@ class TestEventTypeForwarding:
         await _collect_events(
             proc.process_gmail_message("msg", "r1", "1", "gmail", "o1", b"<p>Hi</p>", "vr1", event_type="newRecord")
         )
+
+
+# ============================================================================
+# process_html_document / process_md_document — text encodings
+# ============================================================================
+
+class TestMarkdownAndHtmlDecoding:
+    """Windows editors save 0x80 as the euro sign and 0x93/0x94 as curly quotes."""
+
+    @staticmethod
+    def _html_parser() -> MagicMock:
+        html_parser = MagicMock()
+        html_parser.clean_html = MagicMock(side_effect=lambda x: x)
+        html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
+        html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
+        html_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
+        return html_parser
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param(
+                b"<p>\x93Price\x94 \x80 5</p>",
+                "<p>“Price” € 5</p>",
+                id="windows-1252",
+            ),
+            pytest.param(
+                b'<meta charset="windows-1251"><p>' + "Привет".encode("cp1251") + b"</p>",
+                '<meta charset="windows-1251"><p>Привет</p>',
+                id="declared-meta-charset",
+            ),
+            pytest.param(
+                b'<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1"><p>\x80 5</p>',
+                '<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1"><p>€ 5</p>',
+                id="iso-8859-1-label-read-as-windows-1252",
+            ),
+            pytest.param("<p>Zoë €</p>".encode(), "<p>Zoë €</p>", id="utf-8"),
+            pytest.param(b"\xef\xbb\xbf" + "<p>Zoë €</p>".encode(), "<p>Zoë €</p>", id="utf-8-with-bom"),
+        ],
+    )
+    async def test_html_encodings(self, raw: bytes, expected: str) -> None:
+        proc = _make_processor()
+        proc.graph_provider.get_document = AsyncMock(return_value=None)
+        html_parser = self._html_parser()
+        proc.parsers = {"html": html_parser}
+
+        await _collect_events(proc.process_html_document("page.html", "r1", "1", "web", "org1", raw, "vr1"))
+
+        html_parser.clean_html.assert_called_once_with(expected)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param(b"# \x93Price\x94\n\n\x80 5 \x96 each", "# “Price”\n\n€ 5 – each", id="windows-1252"),
+            pytest.param(b"caf\xe9 \x81 \x80", "café � €", id="undefined-windows-1252-byte"),
+            pytest.param("# Zoë €".encode(), "# Zoë €", id="utf-8"),
+            pytest.param(b"\xef\xbb\xbf" + "# Zoë €".encode(), "# Zoë €", id="utf-8-with-bom"),
+        ],
+    )
+    async def test_markdown_encodings(self, raw: bytes, expected: str) -> None:
+        proc = _make_processor()
+        proc.graph_provider.get_document = AsyncMock(return_value=None)
+        md_parser = MagicMock()
+        md_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
+        md_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
+        proc.parsers = {"md": md_parser}
+
+        await _collect_events(proc.process_md_document("notes.md", "r1", raw, "vr1"))
+
+        md_parser.extract_and_replace_images.assert_called_once_with(expected)
