@@ -125,6 +125,8 @@ flowchart LR
 
 About ten minutes once PipesHub is running with data indexed. Mint a Personal Access Token (no admin needed), connect your assistant (one command for Claude Code, one config file for Cursor or Codex), and ask *"why was the retry logic in the billing worker changed?"* It answers from the incident postmortem, the pull request, the chat thread and the design doc, each cited, and only if you're allowed to see them.
 
+Over MCP, assistants get PipesHub's search, chat and record tools today. The rest of the agent tool set (`grep`, `navigate`, entity lookups) is coming to MCP next.
+
 Want the same retrieval inside your own code, or behind a search box for your team? The [SDK starter and search example](https://github.com/pipeshub-ai/examples) cover both. Built something? [Show us](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml).
 
 ## PipesHub in Action
