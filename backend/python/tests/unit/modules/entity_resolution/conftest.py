@@ -104,6 +104,7 @@ class FakeGraph:
             for (coll, key), node in self.nodes.items()
             if coll == collection
             and node.get("orgId") == org_id
+            and not node.get("mergedInto")
             and (
                 node.get("normalizedName") in wanted
                 or wanted & set(node.get("normalizedAliases") or [])

@@ -83,7 +83,66 @@ without aliases, and another org's node is skipped.
 
 Subcategories only resolve within their own level, and per-org nodes never
 link across orgs. Legacy global nodes created before the feature are not
-migrated; a reindex moves a record onto canonical nodes.
+migrated automatically; a reindex moves a record onto canonical nodes, and an
+operator can migrate them (see Consolidation).
+
+## Consolidation
+
+Nodes that should have been one (created while the model was unavailable, or
+by two instances at once) stay separate until merged. Legacy nodes stay
+shared until migrated. Both are operator commands, dry runs unless `--apply`
+is given:
+
+```
+python -m app.scripts.kg_taxonomy duplicates --org ORG
+python -m app.scripts.kg_taxonomy consolidate --org ORG [--collection topics] [--apply]
+python -m app.scripts.kg_taxonomy merge|unmerge ...
+python -m app.scripts.kg_taxonomy legacy --org ORG
+python -m app.scripts.kg_taxonomy migrate-legacy --org ORG [--apply]
+python -m app.scripts.kg_taxonomy unmigrate-legacy ...
+```
+
+- `consolidate` only merges nodes of one org and collection whose names share
+  a spelling key: they differ in case, spacing or punctuation, never in words.
+  The oldest node wins.
+- A merge is a redirect, not a delete:
+  - the loser keeps its data and gets `mergedInto` and `mergedAt`;
+  - its record edges move to the winner with `extractedName` kept and
+    `mergedFrom` set;
+  - the winner learns the loser's spellings as aliases.
+- Lookups, the entity index and the stale-point sweep skip merged nodes.
+- A newly extracted name whose deterministic key is a merged node resolves
+  to the node it was merged into. Otherwise the record would link back to the
+  hidden node whenever the winner's alias list is full.
+- Merges record `mergedFrom` on the edges they move and migrations record
+  `migratedFrom`, so undoing one never hides the other's edges. An edge keeps
+  the origin of its first move, and a merge re-points older redirects at the
+  new winner. Chained merges (A into B, then B into C) therefore undo one node
+  at a time, and undo follows redirects to wherever the edges are now.
+- `unmerge` moves the marked edges back.
+- `migrate-legacy` moves one org's edges from a legacy node onto that org's
+  canonical node for the same name, created if absent. Other orgs keep the
+  legacy node.
+- Entity points are refreshed as each change is made; if that fails, the
+  background rebuild's sweep repairs them.
+- Finding legacy nodes walks the org's records and their taxonomy edges, so
+  run it off-peak on large tenants. Edges move in batches of 5,000.
+- Bulk commands carry on past a failed item, print it with `error`, and exit
+  1; each item is idempotent, so a re-run finishes it.
+- Known limits:
+  - `unmerge` restores only edges that moved. When a record linked to both
+    nodes, the loser's edge (and its `extractedName`) is dropped rather than
+    duplicated, so it is not recreated.
+  - Undoing the middle of a chain (B in A into B into C) leaves A redirecting
+    to C.
+  - A loser spelling that did not fit in the winner's alias list can still
+    become a new node when a later record extracts it, unless it is the
+    loser's own name.
+  - Aliases the winner learned are kept after `unmerge`. On Neo4j, the alias
+    nodes then point at both nodes.
+  - Indexing that resolved to the loser just before the merge can link to it
+    after the merge finished; re-running the merge moves those edges.
+  - Category hierarchy edges are not moved; nothing reads them today.
 
 ## Entity index rebuild
 

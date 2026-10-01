@@ -128,6 +128,7 @@ from app.services.graph_db.neo4j.neo4j_client import (
 )
 from app.services.graph_db.taxonomy import (
     TAXONOMY_COLLECTIONS,
+    TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
     alias_pairs as _alias_pairs,
     is_taxonomy_collection,
@@ -186,6 +187,24 @@ _METADATA_FILTERS: tuple[tuple[str, str, str, str, str], ...] = (
 )
 
 
+
+
+# Edges one statement moves; a hub node's millions go in batches.
+_EDGE_MOVE_BATCH = 5000
+
+
+_EDGE_PROVENANCE_FIELDS = frozenset({"mergedFrom", "migratedFrom"})
+
+
+def _check_edge_move(collection: str, from_key: str, to_key: str, org_id: str, provenance: str) -> None:
+    if provenance not in _EDGE_PROVENANCE_FIELDS:
+        raise ValueError(f"{provenance!r} is not an edge provenance field")
+    if not is_taxonomy_collection(collection):
+        raise ValueError(f"{collection!r} is not a taxonomy collection")
+    if not from_key or not to_key or not org_id:
+        raise ValueError("moving taxonomy edges needs both keys and an org")
+    if from_key == to_key:
+        raise ValueError("cannot move taxonomy edges onto the same node")
 
 # Promotions to these statuses leave the primary with taxonomy to copy to its
 # duplicates; see update_queued_duplicates_status.
@@ -16842,13 +16861,13 @@ class Neo4jProvider(IGraphDBProvider):
         )
         query = f"""
             MATCH (n:{label})
-            WHERE n.orgId = $org_id AND n.normalizedName IN $names
+            WHERE n.orgId = $org_id AND n.normalizedName IN $names AND n.mergedInto IS NULL
             {projection}
             UNION
             MATCH (a:{TAXONOMY_ALIAS_LABEL})
             WHERE a.orgId = $org_id AND a.collection = $collection AND a.normalized IN $names
             MATCH (a)-[:{TAXONOMY_ALIAS_REL}]->(n:{label})
-            WHERE n.orgId = $org_id
+            WHERE n.orgId = $org_id AND n.mergedInto IS NULL
             {projection}
         """
         rows = await self.client.execute_query(
@@ -16858,6 +16877,110 @@ class Neo4jProvider(IGraphDBProvider):
                 "collection": collection,
                 "names": list(dict.fromkeys(normalized_names)),
             },
+            txn_id=transaction,
+        )
+        return [dict(row) for row in rows or []]
+
+    async def move_taxonomy_edges(
+        self,
+        collection: str,
+        from_key: str,
+        to_key: str,
+        org_id: str,
+        *,
+        set_merged_from: str | None,
+        only_merged_from: str | None = None,
+        provenance: str = "mergedFrom",
+        dry_run: bool = False,
+        transaction: str | None = None,
+    ) -> int:
+        """See :meth:`IGraphDBProvider.move_taxonomy_edges`."""
+        _check_edge_move(collection, from_key, to_key, org_id, provenance)
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        label = collection_to_label(collection)
+        rel = edge_collection_to_relationship(TAXONOMY_EDGE_COLLECTIONS[collection])
+        match = f"""
+            MATCH (r:Record)-[e:{rel}]->(:{label} {{id: $from_key}})
+            WHERE r.orgId = $org_id
+              AND ($only_merged_from IS NULL OR e.{provenance} = $only_merged_from)
+        """
+        parameters = {
+            "from_key": from_key, "to_key": to_key, "org_id": org_id,
+            "set_merged_from": set_merged_from, "only_merged_from": only_merged_from,
+            "batch": _EDGE_MOVE_BATCH,
+        }
+        if dry_run:
+            rows = await self.client.execute_query(
+                match + "RETURN count(e) AS moved", parameters=parameters, txn_id=transaction,
+            )
+            return int((rows or [{}])[0].get("moved") or 0)
+        exists = await self.client.execute_query(
+            f"MATCH (t:{label} {{id: $to_key}}) RETURN count(t) AS n",
+            parameters={"to_key": to_key}, txn_id=transaction,
+        )
+        if not int((exists or [{}])[0].get("n") or 0):
+            raise ValueError(f"{collection}/{to_key} not found")
+        # Field names are interpolated, not parameters: they come from the
+        # whitelist checked above, and dynamic property writes need Neo4j 5.24+.
+        # Returning an edge to its legacy node clears its merge history too.
+        clear_merge = (
+            ", n.mergedFrom = null" if only_merged_from is not None and provenance == "migratedFrom" else ""
+        )
+        # A relationship's end node cannot change in Cypher, so each edge is
+        # recreated on the target with its properties, then deleted. A forward
+        # move keeps the edge's first mergedFrom, so a chain of merges still
+        # knows where each edge came from; a restore clears it. Batched so a
+        # hub node does not become one statement over millions of edges.
+        query = match + f"""
+            WITH r, e LIMIT $batch
+            MATCH (target:{label} {{id: $to_key}})
+            OPTIONAL MATCH (r)-[x:{rel}]->(target)
+            WITH r, e, target, count(x) AS existing
+            FOREACH (_ IN CASE WHEN existing = 0 THEN [1] ELSE [] END |
+                CREATE (r)-[n:{rel}]->(target)
+                SET n = properties(e),
+                    n.{provenance} = CASE WHEN $only_merged_from IS NULL
+                                          THEN coalesce(e.{provenance}, $set_merged_from)
+                                          ELSE $set_merged_from END{clear_merge}
+            )
+            DELETE e
+            RETURN count(*) AS moved
+        """
+        total = 0
+        while True:
+            rows = await self.client.execute_query(query, parameters=parameters, txn_id=transaction)
+            moved = int((rows or [{}])[0].get("moved") or 0)
+            total += moved
+            if moved < _EDGE_MOVE_BATCH:
+                return total
+
+    async def find_legacy_taxonomy_nodes(
+        self,
+        collection: str,
+        org_id: str,
+        limit: int,
+        after_key: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_legacy_taxonomy_nodes`."""
+        if not is_taxonomy_collection(collection):
+            raise ValueError(f"{collection!r} is not a taxonomy collection")
+        if not org_id:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        label = collection_to_label(collection)
+        rel = edge_collection_to_relationship(TAXONOMY_EDGE_COLLECTIONS[collection])
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (r:Record {{orgId: $org_id}})-[:{rel}]->(n:{label})
+            WHERE n.orgId IS NULL AND ($after_key IS NULL OR n.id > $after_key)
+            RETURN n.id AS _key, n.name AS name, count(DISTINCT r) AS records
+            ORDER BY _key
+            LIMIT $limit
+            """,
+            parameters={"org_id": org_id, "limit": max(1, int(limit)), "after_key": after_key},
             txn_id=transaction,
         )
         return [dict(row) for row in rows or []]
