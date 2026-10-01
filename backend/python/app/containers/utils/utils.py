@@ -169,10 +169,14 @@ class ContainerUtils:
         return vector_store
 
     async def create_entity_vector_store(
-        self, logger, config_service, vector_db_service, collection_name: str
+        self, logger, config_service, vector_db_service, collection_name: str,
+        recreate_on_dimension_mismatch: bool = False,
     ) -> EntityVectorStore:
         """Async factory for EntityVectorStore"""
-        return EntityVectorStore(logger, config_service, vector_db_service, collection_name)
+        return EntityVectorStore(
+            logger, config_service, vector_db_service, collection_name,
+            recreate_on_dimension_mismatch=recreate_on_dimension_mismatch,
+        )
 
     async def create_entity_resolver(
         self,

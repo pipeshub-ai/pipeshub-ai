@@ -44,8 +44,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.exceptions.indexing_exceptions import VectorStoreError
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
-from app.modules.transformers.entity_vectorstore import EntityVectorStore
+from app.modules.transformers.entity_vectorstore import (
+    EntityPointRef,
+    EntityVectorStore,
+)
 from app.services.vector_db.models import HealthStatus
 
 if TYPE_CHECKING:
@@ -131,6 +135,7 @@ async def store(request: pytest.FixtureRequest) -> AsyncIterator[EntityVectorSto
     async def _stub_embeddings() -> None:
         store._dense_embeddings = _StubEmbeddings()
         store._embedding_size = DIM
+        store._model_id = "stub:hash"
         # No sparse embedder: nothing here downloads a model.
 
     store._init_embeddings = _stub_embeddings  # type: ignore[method-assign]
@@ -459,3 +464,93 @@ class TestFinalSweep:
         assert remaining == []
         # Another connector's untyped point is outside the sweep.
         assert await store.vector_db_service.retrieve_points(store.collection_name, [other_untyped_id]) != []
+
+
+class TestRebuildSupport:
+    """What the entity index rebuild relies on, per backend."""
+
+    async def test_points_of_an_org_page_to_the_end(self, store: EntityVectorStore) -> None:
+        org, other = f"org-{uuid.uuid4().hex[:6]}", f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch(
+            [_entity(f"t{i}", org=org, connectors=["c1"]) for i in range(7)]
+            + [_entity("s1", EntityType.SUBCATEGORY, org=org, level="2", connectors=["c1"]),
+               _entity("t-other", org=other, connectors=["c1"])],
+        )
+        await store.upsert_entities_batch(
+            [_entity("g1", EntityType.RECORD_GROUP, org=org, connectors=["c1"], groups=["g1"]),
+             _entity("r1", EntityType.RECORD, org=org, connectors=["c1"])],
+            merge_membership=False,
+        )
+        await _publish_writes(store)
+
+        refs: list[EntityPointRef] = []
+        offset, pages = None, 0
+        while True:
+            page, offset = await store.page_entity_points(
+                org, ["topic", "subcategory", "record_group"], offset=offset, limit=3,
+            )
+            refs.extend(page)
+            pages += 1
+            if offset is None:
+                break
+            assert pages < 10, "paging did not terminate"
+
+        assert sorted((r.entity_type, r.entity_id, r.level) for r in refs) == sorted(
+            [("topic", f"t{i}", None) for i in range(7)]
+            + [("subcategory", "s1", "2"), ("record_group", "g1", None)]
+        )
+
+    async def test_delete_entities_removes_only_the_named_points(self, store: EntityVectorStore) -> None:
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([
+            _entity("t1", org=org, connectors=["c1"]),
+            _entity("t2", org=org, connectors=["c1"]),
+            _entity("t1", EntityType.CATEGORY, org=org, connectors=["c1"]),
+        ])
+        await _publish_writes(store)
+        await store.delete_entities(org, "topic", ["t1"])
+        assert await _point(store, org, "topic", "t1") is None
+        assert await _point(store, org, "topic", "t2") is not None
+        assert await _point(store, org, "category", "t1") is not None
+
+    async def test_a_model_change_reembeds_and_the_same_model_does_not(self, store: EntityVectorStore) -> None:
+        """Redis hands the recorded model back as a flattened string field;
+        it must still compare equal, or every write re-embeds."""
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        entity = _entity("t1", org=org, connectors=["c1"])
+        await store.upsert_entities_batch([entity], merge_membership=False)
+        store.vector_db_service.upsert_points = AsyncMock(wraps=store.vector_db_service.upsert_points)
+        await store.upsert_entities_batch([entity], merge_membership=False)
+        store.vector_db_service.upsert_points.assert_not_awaited()
+
+        store._model_id = "other:model"
+        assert await store.upsert_entities_batch([entity], merge_membership=False) == 0
+        store.vector_db_service.upsert_points.assert_awaited_once()
+        payload = await _point(store, org, "topic", "t1")
+        assert payload["metadata"]["embeddingModel"] == f"other:model:{DIM}"
+
+    async def test_dimension_change_recreates_only_when_enabled(self, store: EntityVectorStore) -> None:
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([_entity("t1", org=org, connectors=["c1"])])
+
+        def _wider(recreate: bool) -> EntityVectorStore:
+            wider = EntityVectorStore(
+                logger=logger, config_service=MagicMock(), vector_db_service=store.vector_db_service,
+                collection_name=store.collection_name, recreate_on_dimension_mismatch=recreate,
+            )
+
+            async def _stub() -> None:
+                wider._dense_embeddings = _StubEmbeddings()
+                wider._embedding_size = DIM * 2
+
+            wider._init_embeddings = _stub  # type: ignore[method-assign]
+            return wider
+
+        with pytest.raises(VectorStoreError):
+            await _wider(False)._ensure_initialized()
+        assert await _point(store, org, "topic", "t1") is not None
+
+        await _wider(True)._ensure_initialized()
+        info = await store.vector_db_service.get_collection_info(store.collection_name)
+        assert info.exists and info.dense_dimension == DIM * 2
+        assert await _point(store, org, "topic", "t1") is None

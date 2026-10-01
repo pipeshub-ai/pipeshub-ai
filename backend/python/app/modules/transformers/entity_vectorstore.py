@@ -53,8 +53,10 @@ import uuid
 import weakref
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.config.constants.arangodb import QdrantCollectionNames
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import VectorStoreError
@@ -98,6 +100,15 @@ class _MembershipReadError(Exception):
 
 _ENTITIES_COLLECTION = QdrantCollectionNames.ENTITIES.value
 
+
+@dataclass(frozen=True)
+class EntityPointRef:
+    """Which graph node an entity point projects; see ``page_entity_points``."""
+
+    entity_type: str
+    entity_id: str
+    level: str | None = None
+
 _CONFIDENCE_THRESHOLD = 0.0
 
 # A failed initialisation (embedding endpoint down, dimension mismatch) is not
@@ -108,8 +119,12 @@ _CLEANUP_PAGE_ATTEMPTS = 2
 
 _QUERY_VECTOR_CACHE_SIZE = 64
 
+# Metadata key recording which model embedded the point (``embedding_fingerprint``).
+EMBEDDING_MODEL_FIELD = "embeddingModel"
+
 _STRING_METADATA_FIELDS = (
     "entityId", "entityType", "orgId", "name", "canonicalName", "domain", "typeCategory", "level",
+    EMBEDDING_MODEL_FIELD,
 )
 
 
@@ -151,11 +166,18 @@ class EntityVectorStore:
         config_service: ConfigurationService,
         vector_db_service: IVectorDBService,
         collection_name: str = _ENTITIES_COLLECTION,
+        *,
+        recreate_on_dimension_mismatch: bool = False,
     ) -> None:
         self.logger = logger
         self.config_service = config_service
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
+        # Only the indexing service sets this: it runs the rebuild that
+        # repopulates the collection (app.modules.indexing.entity_index_rebuild).
+        self.recreate_on_dimension_mismatch = recreate_on_dimension_mismatch
+        self._model_id = ""
+        self._embedding_size = 0
 
         self._capabilities = vector_db_service.get_capabilities()
         self._dense_embeddings = None
@@ -213,11 +235,16 @@ class EntityVectorStore:
         embedding_configs = (ai_models or {}).get("embedding", [])
         if not embedding_configs:
             self._dense_embeddings = get_default_embedding_model()
+            self._model_id = f"default:{DEFAULT_EMBEDDING_MODEL}"
         else:
             config = next(
                 (c for c in embedding_configs if c.get("isDefault")), embedding_configs[0]
             )
             self._dense_embeddings = get_embedding_model(config["provider"], config)
+            # get_embedding_model uses the first of a comma-separated list.
+            models = str((config.get("configuration") or {}).get("model") or "")
+            model = next((m.strip() for m in models.split(",") if m.strip()), "")
+            self._model_id = f"{config['provider']}:{model}"
 
         loop = asyncio.get_running_loop()
         sample = await loop.run_in_executor(
@@ -236,14 +263,22 @@ class EntityVectorStore:
 
     async def _init_collection(self) -> None:
         info = await self.vector_db_service.get_collection_info(self.collection_name)
-        if info.exists:
-            if info.dense_dimension and info.dense_dimension != self._embedding_size:
+        if info.exists and info.dense_dimension and info.dense_dimension != self._embedding_size:
+            if not self.recreate_on_dimension_mismatch:
                 raise VectorStoreError(
                     f"Entity collection dimension mismatch: existing={info.dense_dimension}, "
-                    f"model={self._embedding_size}. Re-index by deleting the collection.",
+                    f"model={self._embedding_size}. The indexing service recreates it.",
                     details={"collection": self.collection_name},
                 )
-        else:
+            # The collection is a projection of the graph; the rebuild's
+            # marker includes the dimension, so every pass re-runs and fills it.
+            self.logger.warning(
+                "Recreating entity collection '%s': dimension %s, model now produces %s",
+                self.collection_name, info.dense_dimension, self._embedding_size,
+            )
+            await self.vector_db_service.delete_collection(self.collection_name)
+            info = None
+        if info is None or not info.exists:
             await self.vector_db_service.create_collection(
                 collection_name=self.collection_name,
                 config=CollectionConfig(
@@ -270,6 +305,17 @@ class EntityVectorStore:
                 field_name=field,
                 field_schema=schema,
             )
+
+    async def embedding_fingerprint(self) -> str:
+        """``provider:model:dimension`` of the model writing this collection.
+
+        Initialises the store. A different fingerprint means stored vectors
+        were embedded by another model and must be rewritten."""
+        await self._ensure_initialized()
+        return self._fingerprint()
+
+    def _fingerprint(self) -> str:
+        return f"{self._model_id}:{self._embedding_size}"
 
     # ------------------------------------------------------------------
     # Deterministic point ID
@@ -312,8 +358,11 @@ class EntityVectorStore:
         batch_size: int = 64,
         *,
         merge_membership: bool = True,
-    ) -> None:
+    ) -> int:
         """Batch-embed and upsert a list of EntityRecord objects.
+
+        Returns how many entities were not written (a failed batch, or a
+        merge skipped because stored membership could not be read).
 
         Failures within a batch are logged and skipped rather than aborting
         the entire batch (partial-failure tolerance).
@@ -326,9 +375,11 @@ class EntityVectorStore:
         same shared entity (e.g. two records both tagged "Engineering")
         cannot each merge against a stale read and drop the other's update.
 
-        Either way, a point whose stored text, metadata and membership already
-        match is not written, and one whose only change is membership has its
-        arrays rewritten by id without re-embedding.
+        Either way, a point whose stored text, metadata, membership and
+        embedding model already match is not written, and one whose only
+        change is membership has its arrays rewritten by id without
+        re-embedding. A point embedded by another model, or written before the
+        model was recorded, is re-embedded.
 
         ``merge_membership=False`` writes ``entity.connector_ids``/
         ``record_group_ids`` as-is instead of unioning with what is already
@@ -339,8 +390,9 @@ class EntityVectorStore:
         """
         await self._ensure_initialized()
         if not entities:
-            return
+            return 0
         entities = self._coalesce_by_key(entities)
+        failed = 0
 
         for start in range(0, len(entities), batch_size):
             batch = entities[start : start + batch_size]
@@ -381,6 +433,7 @@ class EntityVectorStore:
                                 self.logger.warning(
                                     "Skipping entity upsert batch, membership unknown: %s", exc
                                 )
+                                failed += len(named)
                                 continue
                             # Replacing never reads membership into the write;
                             # the read only lets an unchanged point be skipped.
@@ -405,7 +458,7 @@ class EntityVectorStore:
                         else:
                             connector_ids = self._union_ids([], entity.connector_ids)
                             record_group_ids = self._union_ids([], entity.record_group_ids)
-                        if existing is not None and self._same_content(existing, entity):
+                        if existing is not None and self._same_content(existing, entity, self._fingerprint()):
                             if (
                                 list(existing["connectorIds"]) != connector_ids
                                 or list(existing["recordGroupIds"]) != record_group_ids
@@ -441,7 +494,10 @@ class EntityVectorStore:
                     ):
                         payload = {
                             "page_content": entity.embedding_text,
-                            "metadata": entity.to_vector_payload(),
+                            "metadata": {
+                                **entity.to_vector_payload(),
+                                EMBEDDING_MODEL_FIELD: self._fingerprint(),
+                            },
                             CONNECTOR_IDS_FIELD: connector_ids,
                             RECORD_GROUP_IDS_FIELD: record_group_ids,
                         }
@@ -464,9 +520,11 @@ class EntityVectorStore:
                         len(points), start, len(batch) - len(points),
                     )
             except Exception as exc:
+                failed += len(batch)
                 self.logger.error(
                     "Failed to upsert entity batch starting at %d: %s", start, exc
                 )
+        return failed
 
     @staticmethod
     def _coalesce_by_key(entities: list["EntityRecord"]) -> list["EntityRecord"]:
@@ -564,13 +622,16 @@ class EntityVectorStore:
         return states
 
     @staticmethod
-    def _same_content(existing: dict[str, Any], entity: EntityRecord) -> bool:
+    def _same_content(existing: dict[str, Any], entity: EntityRecord, fingerprint: str) -> bool:
         """True when the stored text and metadata are what ``entity`` would
-        write, so its vector needs no re-embedding."""
-        return bool(
-            existing.get("exists")
-            and existing.get("page_content") == entity.embedding_text
-            and existing.get("metadata") == entity.to_vector_payload()
+        write and the stored vector came from the current model, so it needs
+        no re-embedding."""
+        if not existing.get("exists") or existing.get("page_content") != entity.embedding_text:
+            return False
+        metadata = dict(existing.get("metadata") or {})
+        return (
+            metadata.pop(EMBEDDING_MODEL_FIELD, None) == fingerprint
+            and metadata == entity.to_vector_payload()
         )
 
     @staticmethod
@@ -615,6 +676,52 @@ class EntityVectorStore:
             )
         except Exception as exc:
             self.logger.error("Failed to delete entity %s: %s", entity_id, exc)
+
+    async def delete_entities(
+        self, org_id: str, entity_type: str, entity_ids: list[str],
+    ) -> None:
+        """Delete ``entity_ids`` of one type in one org. Raises on failure.
+
+        Needs no embeddings."""
+        ids = [i for i in entity_ids if i]
+        # Providers drop empty filter values, which would widen the delete.
+        if not org_id or not entity_type or not ids:
+            return
+        if not await self.collection_exists():
+            return
+        await self.vector_db_service.delete_points(
+            self.collection_name, await self._entities_filter(org_id, entity_type, ids),
+        )
+
+    async def page_entity_points(
+        self,
+        org_id: str,
+        entity_types: list[str],
+        *,
+        offset: str | None = None,
+        limit: int = 500,
+    ) -> tuple[list[EntityPointRef], str | None]:
+        """One page of the org's points of ``entity_types``, and the offset of
+        the next (``None`` at the end). Needs no embeddings."""
+        if not org_id:
+            raise ValueError("page_entity_points needs an org")
+        if not entity_types or not await self.collection_exists():
+            return [], None
+        page = await self.vector_db_service.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=await self.vector_db_service.filter_collection(
+                must={"metadata.orgId": org_id, "metadata.entityType": list(entity_types)},
+            ),
+            limit=limit,
+            offset=offset,
+            with_payload=["metadata.entityId", "metadata.entityType", "metadata.level"],
+        )
+        refs = []
+        for point in page.points:
+            meta = _entity_metadata(point.payload)
+            if meta.get("entityId") and meta.get("entityType"):
+                refs.append(EntityPointRef(meta["entityType"], meta["entityId"], meta.get("level")))
+        return refs, page.next_offset
 
     async def delete_entities_for_org(self, org_id: str) -> None:
         """Remove ALL entity vectors for an organisation (e.g. on org deletion)."""

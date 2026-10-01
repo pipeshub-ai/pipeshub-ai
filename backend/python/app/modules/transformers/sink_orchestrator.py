@@ -246,23 +246,13 @@ class SinkOrchestrator(Transformer):
             if not group_name or not group_name.strip():
                 return
 
-            from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
+            from app.models.entities import EntityRecord
 
             # Always this connector and the group itself, so membership is
             # replaced rather than merged; an unchanged point is not rewritten.
             await self.entity_vector_store.upsert_entities_batch([
-                EntityRecord(
-                    entity_id=record.record_group_id,
-                    entity_type=EntityType.RECORD_GROUP,
-                    name=group_name,
-                    org_id=record.org_id,
-                    connector_ids=[record.connector_id] if record.connector_id else [],
-                    # Self-reference: a record group entity is only reachable
-                    # via `should={connectorIds}` in Stage 1's vector filter
-                    # without this — a user with record-group-level (but not
-                    # connector-level) access would otherwise never see it.
-                    record_group_ids=[record.record_group_id],
-                    type_category=EntityTypeCategory.PREDEFINED,
+                EntityRecord.for_record_group(
+                    record.record_group_id, group_name, record.org_id, record.connector_id,
                 )
             ], merge_membership=False)
         except Exception as exc:
@@ -287,20 +277,15 @@ class SinkOrchestrator(Transformer):
         if not record.record_name or not record.record_name.strip():
             return
         try:
-            from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
+            from app.models.entities import EntityRecord
 
             # A record has one connector and one group; a union kept the old
             # group after the record moved, so its old group's users kept
             # matching it.
             await self.entity_vector_store.upsert_entities_batch([
-                EntityRecord(
-                    entity_id=record.id,
-                    entity_type=EntityType.RECORD,
-                    name=record.record_name,
-                    org_id=record.org_id,
-                    connector_ids=[record.connector_id] if record.connector_id else [],
-                    record_group_ids=[record.record_group_id] if record.record_group_id else [],
-                    type_category=EntityTypeCategory.PREDEFINED,
+                EntityRecord.for_record(
+                    record.id, record.record_name, record.org_id, record.connector_id,
+                    record.record_group_id,
                 )
             ], merge_membership=False)
         except Exception as exc:
@@ -378,17 +363,9 @@ class SinkOrchestrator(Transformer):
             identities: list[EntityRecord] = []
             record_name = record_doc.get("recordName")
             if record_name and record_name.strip():
-                identities.append(
-                    EntityRecord(
-                        entity_id=str(record_key),
-                        entity_type=EntityType.RECORD,
-                        name=record_name,
-                        org_id=org_id,
-                        connector_ids=connector_ids,
-                        record_group_ids=record_group_ids,
-                        type_category=EntityTypeCategory.PREDEFINED,
-                    )
-                )
+                identities.append(EntityRecord.for_record(
+                    str(record_key), record_name, org_id, connector_id, record_group_id,
+                ))
 
             if record_group_id:
                 group_doc = await self.graph_provider.get_record_group_by_id(
@@ -400,17 +377,9 @@ class SinkOrchestrator(Transformer):
                     else None
                 )
                 if group_name and group_name.strip():
-                    identities.append(
-                        EntityRecord(
-                            entity_id=record_group_id,
-                            entity_type=EntityType.RECORD_GROUP,
-                            name=group_name,
-                            org_id=org_id,
-                            connector_ids=connector_ids,
-                            record_group_ids=[record_group_id],
-                            type_category=EntityTypeCategory.PREDEFINED,
-                        )
-                    )
+                    identities.append(EntityRecord.for_record_group(
+                        record_group_id, group_name, org_id, connector_id,
+                    ))
 
             if entities:
                 await self.entity_vector_store.upsert_entities_batch(entities)

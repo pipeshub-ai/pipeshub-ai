@@ -123,6 +123,10 @@ from app.services.graph_db.taxonomy import (
     is_taxonomy_collection,
     subcategory_level,
 )
+from app.services.graph_db.entity_index_queries import (
+    build_entity_index_candidate_cypher,
+    build_entity_index_source_page_cypher,
+)
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_cypher,
     build_page_records_for_vector_membership_backfill_cypher,
@@ -2584,6 +2588,51 @@ class Neo4jProvider(IGraphDBProvider):
             typed_records.append(typed_record)
 
         return typed_records
+
+    async def get_entity_index_candidate(
+        self,
+        collection: str,
+        marker: str,
+        *,
+        sweep_before: int | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """See :meth:`IGraphDBProvider.get_entity_index_candidate`."""
+        query = build_entity_index_candidate_cypher(
+            collection, with_sweep=sweep_before is not None,
+        )
+        parameters: dict = {"marker": marker}
+        if sweep_before is not None:
+            parameters["sweep_before"] = sweep_before
+        results = await self.client.execute_query(
+            query, parameters=parameters, txn_id=transaction,
+        )
+        if not results:
+            return None
+        node = results[0].get("n")
+        if node is None:
+            return None
+        return self._neo4j_to_arango_node(dict(node), collection)
+
+    async def page_entity_index_source(
+        self,
+        source: str,
+        scope_id: str,
+        after_key: str | None,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """See :meth:`IGraphDBProvider.page_entity_index_source`."""
+        query = build_entity_index_source_page_cypher(source, has_after_key=bool(after_key))
+        if not scope_id:
+            return []
+        parameters: dict = {"scope_id": scope_id, "limit": max(1, int(limit))}
+        if after_key:
+            parameters["after_key"] = after_key
+        results = await self.client.execute_query(
+            query, parameters=parameters, txn_id=transaction,
+        )
+        return [dict(row) for row in results or []]
 
     async def get_app_needing_vector_membership_backfill(
         self,

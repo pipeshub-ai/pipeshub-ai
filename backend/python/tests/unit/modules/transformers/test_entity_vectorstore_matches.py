@@ -5,7 +5,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.models.entities import EntityRecord, EntityType
-from app.modules.transformers.entity_vectorstore import EntityVectorStore
+from app.modules.transformers.entity_vectorstore import (
+    EMBEDDING_MODEL_FIELD,
+    EntityVectorStore,
+)
 from app.services.vector_db.models import (
     FusionMethod,
     ScrollResult,
@@ -23,6 +26,7 @@ def _make_store(vector_db_service=None) -> EntityVectorStore:
     vector_db_service.filter_collection = AsyncMock(side_effect=lambda **kw: kw)
     store = EntityVectorStore(logger=MagicMock(), config_service=MagicMock(), vector_db_service=vector_db_service)
     store._initialized = True
+    store._model_id, store._embedding_size = "test:model", 2
     store._dense_embeddings = MagicMock(embed_documents=MagicMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts]))
     store._dense_embeddings.embed_query = MagicMock(return_value=[0.1, 0.2])
     store._sparse_embedder = None
@@ -147,7 +151,8 @@ def _existing(entity: EntityRecord, connector_ids, record_group_ids) -> VectorPo
         id=EntityVectorStore._point_id(entity.org_id, entity.entity_type.value, entity.entity_id),
         payload={
             "page_content": entity.embedding_text,
-            "metadata": entity.to_vector_payload(),
+            # Embedded by the store's own model, so only content decides.
+            "metadata": {**entity.to_vector_payload(), EMBEDDING_MODEL_FIELD: "test:model:2"},
             "connectorIds": list(connector_ids),
             "recordGroupIds": list(record_group_ids),
         },

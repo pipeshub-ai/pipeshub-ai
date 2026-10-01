@@ -96,6 +96,9 @@ class IndexingAppContainer(BaseAppContainer):
         config_service=config_service,
         vector_db_service=vector_db_service,
         collection_name=VECTOR_DB_ENTITIES_COLLECTION_NAME,
+        # Indexing runs the entity index rebuild, which refills a recreated
+        # collection; query and connectors keep raising until it does.
+        recreate_on_dimension_mismatch=True,
     )
 
     # Canonicalises extracted taxonomy names before graph/vector writes —

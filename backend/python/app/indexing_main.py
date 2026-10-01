@@ -19,6 +19,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
 from app.modules.indexing.vector_membership_backfill import (
     run_vector_membership_backfill_loop,
 )
@@ -1364,12 +1365,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_vector_membership_backfill_loop(app_container, graph_provider),
             worker_loop,
         )
+        app.state.entity_index_future = asyncio.run_coroutine_threadsafe(
+            run_entity_index_rebuild_loop(app_container, graph_provider),
+            worker_loop,
+        )
     else:
         app.state.recovery_task = asyncio.create_task(
             run_stale_recovery_loop(app_container, graph_provider)
         )
         app.state.backfill_task = asyncio.create_task(
             run_vector_membership_backfill_loop(app_container, graph_provider)
+        )
+        app.state.entity_index_task = asyncio.create_task(
+            run_entity_index_rebuild_loop(app_container, graph_provider)
         )
 
     yield
@@ -1431,6 +1439,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         except Exception as e:
             logger.error(f"❌ Error during vector membership backfill future shutdown: {str(e)}")
+
+    entity_index_task = getattr(app.state, "entity_index_task", None)
+    if entity_index_task:
+        if not entity_index_task.done():
+            entity_index_task.cancel()
+        try:
+            await entity_index_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during entity index rebuild shutdown: {str(e)}")
+
+    entity_index_future = getattr(app.state, "entity_index_future", None)
+    if entity_index_future:
+        if not entity_index_future.done():
+            entity_index_future.cancel()
+        try:
+            await asyncio.wrap_future(entity_index_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during entity index rebuild future shutdown: {str(e)}")
 
     # Stop message consumers
     try:

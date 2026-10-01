@@ -1454,6 +1454,53 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_entity_index_candidate(
+        self,
+        collection: str,
+        marker: str,
+        *,
+        sweep_before: int | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """One app or org whose entity index projection is not at ``marker``.
+
+        ``collection`` is ``apps`` or ``organizations``; apps being deleted
+        are skipped. With ``sweep_before`` (epoch ms), an org whose stale-point
+        sweep last finished before it, or never, is also returned. See
+        ``app.modules.indexing.entity_index_rebuild``.
+
+        Raises:
+            ValueError: for any other collection.
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def page_entity_index_source(
+        self,
+        source: str,
+        scope_id: str,
+        after_key: str | None,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """One keyset page of ``source`` within ``scope_id``, ordered by key.
+
+        ``source`` is a key of ``ENTITY_INDEX_SOURCES``
+        (``app.services.graph_db.entity_index_queries``): records and record
+        groups are scoped by connector, taxonomy nodes and departments by org
+        (canonical nodes only; departments include global ones). Rows are
+        ``{"_key", "name", ...}`` plus the source's extra fields, unfiltered,
+        so a page shorter than ``limit`` means the source is exhausted. An
+        empty ``scope_id`` returns ``[]`` without querying.
+
+        Raises:
+            ValueError: for an unknown source.
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
     async def page_records_for_vector_membership_backfill(
         self,
         connector_id: str,

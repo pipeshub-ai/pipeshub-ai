@@ -177,6 +177,10 @@ from app.services.graph_db.taxonomy import (
     is_taxonomy_collection,
     subcategory_level,
 )
+from app.services.graph_db.entity_index_queries import (
+    build_entity_index_candidate_aql,
+    build_entity_index_source_page_aql,
+)
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_aql,
     build_page_records_for_vector_membership_backfill_aql,
@@ -4083,6 +4087,46 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         self.logger.debug(f"✅ Successfully retrieved {len(typed_records)} typed records for connector {connector_id}")
         return typed_records
+
+    async def get_entity_index_candidate(
+        self,
+        collection: str,
+        marker: str,
+        *,
+        sweep_before: int | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """See :meth:`IGraphDBProvider.get_entity_index_candidate`."""
+        query = build_entity_index_candidate_aql(
+            collection, with_sweep=sweep_before is not None,
+        )
+        bind_vars: dict = {"marker": marker}
+        if sweep_before is not None:
+            bind_vars["sweep_before"] = sweep_before
+        results = await self.http_client.execute_aql(
+            query, bind_vars=bind_vars, txn_id=transaction,
+        )
+        return results[0] if results else None
+
+    async def page_entity_index_source(
+        self,
+        source: str,
+        scope_id: str,
+        after_key: str | None,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """See :meth:`IGraphDBProvider.page_entity_index_source`."""
+        query = build_entity_index_source_page_aql(source, has_after_key=bool(after_key))
+        if not scope_id:
+            return []
+        bind_vars: dict = {"scope_id": scope_id, "limit": max(1, int(limit))}
+        if after_key:
+            bind_vars["after_key"] = after_key
+        results = await self.http_client.execute_aql(
+            query, bind_vars=bind_vars, txn_id=transaction,
+        )
+        return [dict(row) for row in results or []]
 
     async def get_app_needing_vector_membership_backfill(
         self,
