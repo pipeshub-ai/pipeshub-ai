@@ -40,6 +40,7 @@ from http import HTTPStatus
 # would be actively wrong.
 _CONTENT_FILTER_HINTS = (
     "content_filter",
+    "content filter",
     "content management policy",
     "content policy",
     "content_policy",
@@ -119,6 +120,15 @@ _USER_MESSAGES: dict[str, str] = {
         "happening, contact your workspace admin."
     ),
 }
+
+# An unclassified failure of the model call itself still tells the user more
+# than "something went wrong": the model call, not the search, failed.
+_MODEL_CALL_FAILURE_MARKERS = ("llm call failed", "transport error")
+_MODEL_CALL_FAILED_MESSAGE = (
+    "The call to the AI model failed while answering. Please try "
+    "again, and if it keeps happening, ask a workspace admin to check the "
+    "model in Workspace → AI Models."
+)
 
 _ERROR_PAYLOAD_RE = re.compile(
     r"Error code:\s*\d+\s*-\s*(\{.*\})\s*$",
@@ -212,6 +222,9 @@ def classify_error(error_msg: str) -> tuple[str, str]:
         if provider_msg:
             prefix = _USER_MESSAGES[error_code].split(".")[0]
             return error_code, f"{prefix}: {provider_msg}"
+
+    if error_code == "unknown" and any(marker in lower for marker in _MODEL_CALL_FAILURE_MARKERS):
+        return error_code, _MODEL_CALL_FAILED_MESSAGE
 
     return error_code, _USER_MESSAGES[error_code]
 

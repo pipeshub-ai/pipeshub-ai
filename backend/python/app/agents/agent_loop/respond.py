@@ -87,6 +87,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _EMPTY_ANSWER_FALLBACK = "I wasn't able to generate a response. Please try rephrasing."
+_MAX_LOGGED_ERROR_LEN = 1000
 
 
 def _tool_names_from_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -184,9 +185,15 @@ class AnswerFinalizer:
             )
 
         if not agent_success:
-            return await self._emit_error_response(
-                agent_error or "An error occurred", event_sink=event_sink
+            error_msg = agent_error or "An error occurred"
+            log.error(
+                "AnswerFinalizer: agent run failed, answering with an error message "
+                "(error_code=%s org_id=%s conversation_id=%s run_id=%s): %s",
+                classify_error(error_msg)[0], self._context.org_id,
+                self._context.conversation_id, self._context.run_id,
+                error_msg[:_MAX_LOGGED_ERROR_LEN],
             )
+            return await self._emit_error_response(error_msg, event_sink=event_sink)
 
         with maybe_start_named_span(
             enabled=is_opik_configured(),

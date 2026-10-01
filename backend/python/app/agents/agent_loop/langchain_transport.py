@@ -445,8 +445,11 @@ class LangChainTransport(LLMTransport):
                 status_code in (429, 500, 502, 503, 504, 529)
                 if status_code else _is_network_error(exc)
             )
+        # The class name keeps the cause classifiable when the provider
+        # raised with an empty message (a bare `TimeoutError()` read as an
+        # unknown failure).
         return TransportError(
-            f"LangChain transport error ({context}): {exc}",
+            f"LangChain transport error ({context}): {type(exc).__name__}: {exc}",
             status_code=status_code,
             retryable=retryable,
         )

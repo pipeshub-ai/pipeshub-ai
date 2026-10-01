@@ -86,6 +86,49 @@ class TestErrorPath:
         )
 
 
+class TestModelCallFailure:
+    async def test_unclassified_model_call_failure_is_logged_and_named(self) -> None:
+        context = make_context(conversation_id="conv-1", run_id="run-1")
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=False,
+            agent_error="LLM call failed: LangChain transport error (stream): APIError: upstream hiccup",
+            event_sink=sink,
+        )
+
+        assert result["errorCode"] == "unknown"
+        assert result["answer"] != _USER_MESSAGES["unknown"]
+        assert "AI model" in result["answer"]
+        assert [e["event"] for e in sink.events] == ["answer_chunk", "complete"]
+        context.logger.error.assert_called_once()
+        logged = context.logger.error.call_args.args
+        assert "unknown" in logged
+        assert "conv-1" in logged and "run-1" in logged and "org-1" in logged
+        assert "APIError: upstream hiccup" in logged[-1]
+
+    async def test_content_filter_refusal_is_logged_and_explained(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=False,
+            agent_error=(
+                "LLM call failed: LangChain transport error (stream): "
+                "ContentFilterFinishReasonError: Could not parse response content as "
+                "the request was rejected by the content filter"
+            ),
+            event_sink=sink,
+        )
+
+        assert result["errorCode"] == "content_filter"
+        assert result["answer"] == _USER_MESSAGES["content_filter"]
+        context.logger.error.assert_called_once()
+        assert "content_filter" in context.logger.error.call_args.args
+
+
 class TestSuccessPath:
     async def test_streamed_answer_matches_agent_output_emits_authoritative_chunk_then_complete(self) -> None:
         """When `TerminalAnswerStreamer` already streamed the text live, the
