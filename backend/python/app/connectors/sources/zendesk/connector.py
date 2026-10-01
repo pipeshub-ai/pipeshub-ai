@@ -2,7 +2,7 @@
 
 import base64
 import re
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from datetime import datetime
 from functools import partial
 from logging import Logger
@@ -95,12 +95,18 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 SYNC_POINT_KEY = "zendesk_incremental"
 ARTICLES_SYNC_POINT_KEY = "zendesk_articles_incremental"
-# Users, groups, memberships and organizations are always exported from here, never
-# from a checkpoint. on_new_user_groups deletes every membership edge before re-adding
-# from the list it is given, so the list has to be the whole truth — a window cannot
-# tell "unchanged" from "removed", and guessing wrong revokes real access. Only the
-# record stages (tickets, articles) resume from a sync point.
+# Agents, admins, groups and memberships are always exported from here, never from a
+# checkpoint. on_new_user_groups deletes every membership edge before re-adding from
+# the list it is given, so the list has to be the whole truth — a window cannot tell
+# "unchanged" from "removed", and guessing wrong revokes real access. Only the record
+# stages (tickets, articles) resume from a sync point.
 DEFAULT_INCREMENTAL_START_TIME = 1
+# The only roles synced as users. End users are never listed: a B2C desk has millions,
+# and the grants they need come from what the ticket pages sideload.
+STAFF_ROLES = ["agent", "admin"]
+# Sideloaded users are looked up while their page is processed, so one page is all that
+# has to fit. Bounded because the connector process outlives any one sync.
+SIDELOADED_USER_CACHE_SIZE = 20_000
 PAGE_SIZE = 100
 # Matches the Jira connectors: cap how many records go into one on_new_records call.
 BATCH_PROCESSING_SIZE = 100
@@ -262,6 +268,7 @@ class ZendeskConnector(BaseConnector):
         self.sync_filters: Any = None
         self.indexing_filters: Any = None
         self._user_id_to_data: Dict[str, Dict[str, Any]] = {}
+        self._sideloaded_users: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
         self._group_id_to_data: Dict[str, Dict[str, Any]] = {}
         self._section_id_to_data: Dict[str, Dict[str, Any]] = {}
         self._category_id_to_data: Dict[str, Dict[str, Any]] = {}
@@ -386,13 +393,16 @@ class ZendeskConnector(BaseConnector):
             )
 
         org_user_groups, orgs_complete = await self._fetch_organizations()
-        if org_user_groups and users_complete and orgs_complete:
-            await self.data_entities_processor.on_new_user_groups(org_user_groups)
-        elif org_user_groups:
+        if org_user_groups:
+            # Additive: each ticket page adds the end users it sideloads, and a rebuild
+            # from here would wipe whoever this sync has not seen yet.
+            await self.data_entities_processor.on_new_user_groups(
+                org_user_groups, replace_members=False
+            )
+        if not orgs_complete:
             self.logger.error(
-                "Zendesk: skipping organization membership sync — the %s export was "
-                "truncated and partial membership would revoke existing access",
-                "user" if not users_complete else "organization",
+                "Zendesk: organization export was truncated — organizations past the "
+                "break have no group, so their org-wide ticket grant is withheld"
             )
         self.logger.info(f"Zendesk: synced {len(org_user_groups)} organizations")
 
@@ -416,67 +426,57 @@ class ZendeskConnector(BaseConnector):
         )
 
     async def _fetch_users(self) -> Tuple[List[AppUser], Dict[str, AppUser], bool]:
-        # Full map, not just changed users: on_new_user_groups rebuilds membership
-        # from scratch, so a truncated one revokes access. Third value flags that.
-        start_time = DEFAULT_INCREMENTAL_START_TIME
-        users_data: List[Dict[str, Any]] = []
-        cursor: Optional[str] = None
-        complete = True
+        """Agents and admins only — the people who can hold a group or all-tickets grant.
 
-        while True:
-            response = await self._call_incremental(
-                "incremental_users",
-                start_time=start_time,
-                cursor=cursor,
-            )
-            if response is None or not response.success:
-                error = response.error if response else "retries exhausted"
-                self.logger.error(f"Zendesk incremental_users failed: {error}")
-                complete = False
-                break
-            if not response.data:
-                break
-            payload = response.data
-            users_data.extend(self._extract_list(payload, "users"))
-            next_cursor = payload.get("after_cursor") or payload.get("cursor")
-            if payload.get("end_of_stream", True):
-                break
-            # More pages remain but the cursor cannot reach them, so the list is short.
-            if not next_cursor or next_cursor == cursor:
-                self.logger.error(
-                    "Zendesk incremental_users stopped advancing before end_of_stream"
-                )
-                complete = False
-                break
-            cursor = next_cursor
+        The full list every sync, not just changed users: on_new_user_groups rebuilds
+        membership from scratch, so a truncated one revokes access. Third value flags
+        that. End users are left out; see STAFF_ROLES.
+        """
+        datasource = await self._get_fresh_datasource()
+        users_data, complete = await self._fetch_paginated_list_checked(
+            datasource.list_users, "users", roles_=STAFF_ROLES
+        )
 
+        # Rebuilt, not merged into: /users no longer lists someone who was deleted or
+        # demoted, and a stale entry would keep their all-tickets access until restart.
+        self._user_id_to_data = {}
+        self._user_id_to_app_user = {}
         users: List[AppUser] = []
         user_email_map: Dict[str, AppUser] = {}
         for user_data in users_data:
-            user_id = user_data.get("id")
-            email = user_data.get("email")
-            # Permissions resolve by email; a synthesised address matches nobody.
-            if not user_id or not email:
+            app_user = self._to_app_user(user_data)
+            if not app_user:
                 continue
-            full_name = user_data.get("name") or email
-            app_user = AppUser(
-                app_name=Connectors.ZENDESK,
-                connector_id=self.connector_id,
-                source_user_id=str(user_id),
-                org_id=self.data_entities_processor.org_id,
-                email=email,
-                full_name=full_name,
-                is_active=bool(user_data.get("active", True)),
-                source_created_at=self._parse_datetime(user_data.get("created_at")),
-                source_updated_at=self._parse_datetime(user_data.get("updated_at")),
-            )
             users.append(app_user)
-            user_email_map[str(user_id)] = app_user
-            user_email_map[email] = app_user
-            self._user_id_to_data[str(user_id)] = user_data
-            self._user_id_to_app_user[str(user_id)] = app_user
+            user_email_map[app_user.source_user_id] = app_user
+            user_email_map[app_user.email] = app_user
+            self._user_id_to_data[app_user.source_user_id] = user_data
+            self._user_id_to_app_user[app_user.source_user_id] = app_user
 
         return users, user_email_map, complete
+
+    def _to_app_user(self, user_data: Dict[str, Any]) -> Optional[AppUser]:
+        user_id = user_data.get("id")
+        email = user_data.get("email")
+        # Permissions resolve by email; a synthesised address matches nobody.
+        if not user_id or not email:
+            return None
+        return AppUser(
+            app_name=Connectors.ZENDESK,
+            connector_id=self.connector_id,
+            source_user_id=str(user_id),
+            org_id=self.data_entities_processor.org_id,
+            email=email,
+            full_name=user_data.get("name") or email,
+            is_active=bool(user_data.get("active", True)),
+            source_created_at=self._parse_datetime(user_data.get("created_at")),
+            source_updated_at=self._parse_datetime(user_data.get("updated_at")),
+        )
+
+    def _user_data(self, user_id: int | str | None) -> Dict[str, Any]:
+        """A user's record: staff from the sync, anyone else from the page that named them."""
+        key = str(user_id)
+        return self._user_id_to_data.get(key) or self._sideloaded_users.get(key) or {}
 
     async def _fetch_groups(
         self,
@@ -637,7 +637,7 @@ class ZendeskConnector(BaseConnector):
         """One group of every admin and all-access agent, granted on every ticket.
 
         Always returned, even when empty, so the grant on tickets never points at a
-        group that does not exist. Built from the cached full user export.
+        group that does not exist. Built from the agents and admins fetched this sync.
         """
         role_ticket_access, complete = await self._fetch_custom_role_ticket_access()
         members = [
@@ -667,12 +667,13 @@ class ZendeskConnector(BaseConnector):
     async def _fetch_organizations(self) -> Tuple[List[Tuple[AppUserGroup, List[AppUser]]], bool]:
         """Sync Zendesk organizations as user groups.
 
-        Membership comes from the users already fetched — Zendesk has no bulk
-        organization-membership endpoint. Not RecordGroups: nothing files a record
-        under one, so they would render empty; tickets carry the org permission.
+        Members here are only the agents and admins already fetched. End users join
+        their organization's group as the ticket pages sideload them
+        (``_add_sideloaded_org_members``), since listing them all is what this avoids.
+        Not RecordGroups: nothing files a record under one, so they would render empty;
+        tickets carry the org permission.
 
-        The second return value flags a truncated export: on_new_user_groups rebuilds
-        each group from scratch, so writing partial membership revokes real access.
+        The second return value flags a truncated export.
         """
         orgs_data: List[Dict[str, Any]] = []
         start_time = DEFAULT_INCREMENTAL_START_TIME
@@ -716,23 +717,46 @@ class ZendeskConnector(BaseConnector):
             if not org_id:
                 continue
             org_id = str(org_id)
-            name = org_data.get("name") or f"Organization {org_id}"
             self._org_id_to_data[org_id] = org_data
-
-            user_groups.append((
-                AppUserGroup(
-                    app_name=Connectors.ZENDESK,
-                    connector_id=self.connector_id,
-                    source_user_group_id=f"org_{org_id}",
-                    name=name,
-                    org_id=self.data_entities_processor.org_id,
-                    source_created_at=self._parse_datetime(org_data.get("created_at")),
-                    source_updated_at=self._parse_datetime(org_data.get("updated_at")),
-                ),
-                members_by_org.get(org_id, []),
-            ))
+            user_groups.append((self._org_user_group(org_id), members_by_org.get(org_id, [])))
 
         return user_groups, complete
+
+    def _org_user_group(self, org_id: str) -> AppUserGroup:
+        org_data = self._org_id_to_data[org_id]
+        return AppUserGroup(
+            app_name=Connectors.ZENDESK,
+            connector_id=self.connector_id,
+            source_user_group_id=f"org_{org_id}",
+            name=org_data.get("name") or f"Organization {org_id}",
+            org_id=self.data_entities_processor.org_id,
+            source_created_at=self._parse_datetime(org_data.get("created_at")),
+            source_updated_at=self._parse_datetime(org_data.get("updated_at")),
+        )
+
+    async def _add_sideloaded_org_members(self, payload: Dict[str, Any]) -> None:
+        """Put the end users a ticket page names into their organization's group.
+
+        Only organizations that share tickets matter: no other org's group is ever
+        granted on a ticket. Additive, never a rebuild — a page shows a slice of an
+        org's people, and rebuilding from it would drop everyone else.
+        """
+        members_by_org: Dict[str, Dict[str, AppUser]] = defaultdict(dict)
+        for user_data in self._extract_list(payload, "users"):
+            org_id = str(user_data.get("organization_id") or "")
+            if not (self._org_id_to_data.get(org_id) or {}).get("shared_tickets"):
+                continue
+            app_user = self._to_app_user(user_data)
+            if app_user:
+                members_by_org[org_id][app_user.source_user_id] = app_user
+        if members_by_org:
+            await self.data_entities_processor.on_new_user_groups(
+                [
+                    (self._org_user_group(org_id), list(members.values()))
+                    for org_id, members in members_by_org.items()
+                ],
+                replace_members=False,
+            )
 
     async def _sync_tickets(self) -> int:
         synced = 0
@@ -757,6 +781,7 @@ class ZendeskConnector(BaseConnector):
                 break
             payload = response.data
             self._cache_sideloads(payload)
+            await self._add_sideloaded_org_members(payload)
             tickets = self._extract_list(payload, "tickets")
 
             removed_ids = await self._resolve_removable_record_ids(tickets)
@@ -904,9 +929,9 @@ class ZendeskConnector(BaseConnector):
 
         record_id = existing_record.id if existing_record else str(uuid4())
         version = 0 if existing_record is None else existing_record.version + 1
-        requester = self._user_id_to_data.get(str(ticket_data.get("requester_id")), {})
-        assignee = self._user_id_to_data.get(str(ticket_data.get("assignee_id")), {})
-        submitter = self._user_id_to_data.get(str(ticket_data.get("submitter_id")), {})
+        requester = self._user_data(ticket_data.get("requester_id"))
+        assignee = self._user_data(ticket_data.get("assignee_id"))
+        submitter = self._user_data(ticket_data.get("submitter_id"))
         status = self.value_mapper.map_status(ticket_data.get("status")) or Status.UNKNOWN
         priority = self.value_mapper.map_priority(ticket_data.get("priority")) or Priority.UNKNOWN
         item_type = self.value_mapper.map_type(ticket_data.get("type")) or ItemType.UNKNOWN
@@ -1402,13 +1427,17 @@ class ZendeskConnector(BaseConnector):
     async def _fetch_ticket_permissions(self, ticket_id: str) -> List[Permission]:
         """Re-derive a ticket's grants for the streaming path, which only has its Record."""
         datasource = await self._get_fresh_datasource()
-        response = await self._call_api(datasource.show_ticket, ticket_id=int(ticket_id))
+        # The requester is usually an end user, who is not held between syncs.
+        response = await self._call_api(
+            datasource.show_ticket, ticket_id=int(ticket_id), include="users"
+        )
         ticket = self._extract_object(response.data, "ticket") if response.success else None
         if not ticket:
             raise ValueError(f"Failed to fetch Zendesk ticket {ticket_id} for its permissions")
+        self._cache_sideloads(response.data)
         return self._record_permissions(
             ticket.get("group_id"),
-            self._user_id_to_data.get(str(ticket.get("requester_id")), {}),
+            self._user_data(ticket.get("requester_id")),
             ticket.get("organization_id"),
         )
 
@@ -1425,7 +1454,7 @@ class ZendeskConnector(BaseConnector):
             children_records = await self._build_attachment_child_records(
                 comment, record, permissions
             )
-            author = self._user_id_to_data.get(str(comment.get("author_id")), {})
+            author = self._user_data(comment.get("author_id"))
             is_description = index == 0
             block_groups.append(BlockGroup(
                 id=str(uuid4()),
@@ -1500,7 +1529,7 @@ class ZendeskConnector(BaseConnector):
                 comment_body = html_to_markdown(
                     await self._inline_images_as_base64(comment_body)
                 )
-            author = self._user_id_to_data.get(str(comment.get("author_id")), {})
+            author = self._user_data(comment.get("author_id"))
             block_groups.append(BlockGroup(
                 id=str(uuid4()),
                 index=index,
@@ -1943,9 +1972,15 @@ class ZendeskConnector(BaseConnector):
             if by_cursor:
                 if not meta.get("has_more"):
                     break
-                after = meta.get("after_cursor")
-                if not after:
-                    break
+                next_after = meta.get("after_cursor")
+                # More pages remain but the cursor cannot reach them: the list is short,
+                # and a repeated cursor would otherwise loop forever.
+                if not next_after or next_after == after:
+                    self.logger.error(
+                        f"Zendesk {label} stopped advancing before the last page ({where})"
+                    )
+                    return results, False
+                after = next_after
             else:
                 if len(items) < PAGE_SIZE:
                     break
@@ -1974,7 +2009,11 @@ class ZendeskConnector(BaseConnector):
     def _cache_sideloads(self, payload: Dict[str, Any]) -> None:
         for user in self._extract_list(payload, "users"):
             if user.get("id") is not None:
-                self._user_id_to_data[str(user["id"])] = user
+                key = str(user["id"])
+                self._sideloaded_users[key] = user
+                self._sideloaded_users.move_to_end(key)
+        while len(self._sideloaded_users) > SIDELOADED_USER_CACHE_SIZE:
+            self._sideloaded_users.popitem(last=False)
         for group in self._extract_list(payload, "groups"):
             if group.get("id") is not None:
                 self._group_id_to_data[str(group["id"])] = group
