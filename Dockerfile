@@ -434,6 +434,19 @@ EOF
 
 RUN chmod +x /app/process_monitor.sh
 
+# Which build this image is; each service returns it from /health. Declared
+# last so a new commit rebuilds only these layers. With no build args the
+# variables are empty and the services report null.
+ARG APP_VERSION=""
+ARG GIT_COMMIT=""
+ARG BUILD_TIME=""
+ENV APP_VERSION=${APP_VERSION} \
+    GIT_COMMIT=${GIT_COMMIT} \
+    BUILD_TIME=${BUILD_TIME}
+LABEL org.opencontainers.image.version=${APP_VERSION} \
+      org.opencontainers.image.revision=${GIT_COMMIT} \
+      org.opencontainers.image.created=${BUILD_TIME}
+
 EXPOSE 3000 8002 8092 8093
 
 CMD ["/app/process_monitor.sh"]

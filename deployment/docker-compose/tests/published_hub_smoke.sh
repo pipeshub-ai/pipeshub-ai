@@ -25,6 +25,8 @@
 #   PIPESHUB_SMOKE_PORT    requested host port (default: 3997 slim, 3998 full, 3995 eval)
 #   HEALTH_WAIT_SECS       installer health deadline (default: 600 slim/eval, 720 full)
 #   PIPESHUB_SMOKE_KEEP=1  leave the stack running (skip uninstall)
+#   PIPESHUB_EXPECT_VERSION, PIPESHUB_EXPECT_COMMIT
+#                          when set, every core service must report this build
 #   PUBLISHED_HUB_SMOKE_DIAG  directory to copy logs/health.json on failure
 # ==============================================================================
 set -euo pipefail
@@ -259,6 +261,32 @@ if missing:
 PY
 then
   die "core services are not healthy at ${HEALTH_URL}"
+fi
+
+if [[ -n "${PIPESHUB_EXPECT_VERSION:-}" || -n "${PIPESHUB_EXPECT_COMMIT:-}" ]]; then
+  if ! python3 - "$WORK/health.json" "${PIPESHUB_EXPECT_VERSION:-}" "${PIPESHUB_EXPECT_COMMIT:-}" <<'PY'
+import json, sys
+path, version, commit = sys.argv[1:4]
+with open(path, encoding="utf-8") as fh:
+    builds = json.load(fh).get("builds") or {}
+wrong = []
+for name in ("nodejs", "query", "connector", "indexing", "docling"):
+    build = builds.get(name) or {}
+    if (version and build.get("version") != version) or (
+        commit and build.get("commitId") != commit
+    ):
+        wrong.append(f"{name}={build.get('version')!r}@{build.get('commitId')!r}")
+if wrong:
+    print(
+        f"published_hub_smoke: expected build {version!r}@{commit!r}, got: "
+        + ", ".join(wrong),
+        file=sys.stderr,
+    )
+    sys.exit(1)
+PY
+  then
+    die "the image does not report the build it was made from at ${HEALTH_URL}"
+  fi
 fi
 
 UI_CODE="$(curl --connect-timeout 10 --max-time 30 -s -o /dev/null -w '%{http_code}' \

@@ -48,6 +48,7 @@ from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.resource_governor import ResourceGovernor
 from app.telemetry.setup import setup_telemetry
+from app.utils.build_info import get_build_info
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
@@ -1511,6 +1512,7 @@ async def health_check(request: Request) -> JSONResponse:
         content: dict[str, Any] = {
             "status": "healthy",
             "timestamp": get_epoch_timestamp_in_ms(),
+            "build": get_build_info(),
         }
         if governor is not None:
             try:
@@ -1545,6 +1547,7 @@ async def health_check(request: Request) -> JSONResponse:
                 "status": "unhealthy",
                 "error": str(e),
                 "timestamp": get_epoch_timestamp_in_ms(),
+                "build": get_build_info(),
             },
         )
 

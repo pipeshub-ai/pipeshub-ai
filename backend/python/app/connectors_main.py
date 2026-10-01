@@ -22,6 +22,7 @@ from app.edition_config import (
 )
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.modules.demo_data.router import demo_data_router
+from app.utils.build_info import get_build_info
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
@@ -699,6 +700,7 @@ async def health_check() -> JSONResponse:
             content={
                 "status": "healthy",
                 "timestamp": get_epoch_timestamp_in_ms(),
+                "build": get_build_info(),
             },
         )
     except Exception:
@@ -708,6 +710,7 @@ async def health_check() -> JSONResponse:
             content={
                 "status": "fail",
                 "timestamp": get_epoch_timestamp_in_ms(),
+                "build": get_build_info(),
             },
         )
 

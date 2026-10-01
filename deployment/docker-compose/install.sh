@@ -1768,6 +1768,17 @@ should_pull_image() { # args: use_build flag_no_pull env_no_pull -> "true"|"fals
   echo true
 }
 
+# Version and commit of the checkout, as build args for the image. The running
+# container has no git history, so they are read here, on the host. A value
+# already in the environment wins; a checkout without git leaves them empty.
+export_build_info() { # args: repo_root
+  local repo_root="$1" tag
+  tag="$(git -C "$repo_root" describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+  export APP_VERSION="${APP_VERSION:-${tag#v}}"
+  export GIT_COMMIT="${GIT_COMMIT:-$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || true)}"
+  export BUILD_TIME="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+}
+
 _DO_PULL="$(should_pull_image "$_USE_BUILD" "$FLAG_NO_PULL" "${PIPESHUB_NO_PULL:-}")"
 # Rotation without --upgrade must not refresh images; the operator asked only
 # to replace signing secrets.
@@ -1792,6 +1803,7 @@ if $_USE_BUILD; then
   $FLAG_UPGRADE && info "Rebuilding image from source for tag: ${IMAGE_TAG:-local}..."
   info "Building image from source and starting containers..."
   info "(This may take 10–30+ minutes on first run)"
+  export_build_info "$(cd "${SCRIPT_DIR}/../../" && pwd)"
   if ! compose_up_with_mongo_heal "up --build" --build; then
     die "Fix the error above and re-run install.sh."
   fi

@@ -517,6 +517,34 @@ check "air-gapped guidance present" "$inner" "air-gapped host, preload the image
 # Must not have reverted to a blanket pull of every service image on the hot path.
 if [[ "$inner" == *"up -d --pull always"* ]]; then fail "must refresh only the app image, not force-pull all services"; else pass "does not force-pull all service images"; fi
 
+echo "== In-tree installer: build info for a local build (real function) =="
+# A built image has no git history, so --build reads the tag and the commit on
+# the host and hands them to the Dockerfile as build args.
+eval "$(extract_fn export_build_info "$INNER_INSTALLER")"
+BI_REPO="$TMP_ROOT/build-info-repo"
+mkdir -p "$BI_REPO"
+(
+  cd "$BI_REPO" && git init -q . \
+    && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m one \
+    && git tag v1.2.3 \
+    && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
+)
+BI_HEAD="$(git -C "$BI_REPO" rev-parse HEAD)"
+check "version is the newest release tag, without the v" \
+  "$(unset APP_VERSION GIT_COMMIT BUILD_TIME; export_build_info "$BI_REPO"; echo "[$APP_VERSION]")" "[1.2.3]"
+check "commit is the full HEAD SHA" \
+  "$(unset APP_VERSION GIT_COMMIT BUILD_TIME; export_build_info "$BI_REPO"; echo "[$GIT_COMMIT]")" "[$BI_HEAD]"
+check "build time is a UTC timestamp" \
+  "$(unset APP_VERSION GIT_COMMIT BUILD_TIME; export_build_info "$BI_REPO"; [[ "$BUILD_TIME" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$ ]] && echo utc)" "utc"
+check "values already in the environment win" \
+  "$(APP_VERSION=9.9.9 GIT_COMMIT=abc BUILD_TIME=then; export_build_info "$BI_REPO"; echo "[$APP_VERSION $GIT_COMMIT $BUILD_TIME]")" "[9.9.9 abc then]"
+check "a directory without git leaves version and commit empty" \
+  "$(unset APP_VERSION GIT_COMMIT BUILD_TIME; export_build_info "$TMP_ROOT"; echo "[$APP_VERSION|$GIT_COMMIT]")" "[|]"
+check "local build exports the build info before compose up" "$inner" 'export_build_info "$(cd "${SCRIPT_DIR}/../../" && pwd)"'
+for f in docker-compose.yml docker-compose.build.neo4j.yml; do
+  check "$f passes the build info as build args" "$(cat "$COMPOSE_DIR/$f")" 'GIT_COMMIT: ${GIT_COMMIT:-}'
+done
+
 echo "== In-tree installer: compose progress mode (real function) =="
 # Mapping must be tied to the TTY flag. Grepping for both "tty" and "plain"
 # in the script stays green if the branches are swapped.

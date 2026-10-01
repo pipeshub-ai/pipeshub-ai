@@ -32,6 +32,7 @@ from app.services.docling.docling_service import (
 from app.services.messaging.config import messaging_env
 from app.services.resource_governor import ResourceGovernor
 from app.telemetry.setup import setup_telemetry
+from app.utils.build_info import get_build_info
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -170,6 +171,7 @@ async def health_check() -> JSONResponse:
                     "service": "docling",
                     "error": "DoclingService not initialized",
                     "timestamp": get_epoch_timestamp_in_ms(),
+                    "build": get_build_info(),
                 },
             )
 
@@ -182,6 +184,7 @@ async def health_check() -> JSONResponse:
                     "service": "docling",
                     "error": "DoclingService does not have health_check method",
                     "timestamp": get_epoch_timestamp_in_ms(),
+                    "build": get_build_info(),
                 },
             )
 
@@ -193,6 +196,7 @@ async def health_check() -> JSONResponse:
                 "status": "healthy",
                 "service": "docling",
                 "timestamp": get_epoch_timestamp_in_ms(),
+                "build": get_build_info(),
             }
             governor: ResourceGovernor | None = getattr(app.state, "governor", None)
             if governor is not None:
@@ -213,6 +217,7 @@ async def health_check() -> JSONResponse:
                     "status": "unhealthy",
                     "service": "docling",
                     "timestamp": get_epoch_timestamp_in_ms(),
+                    "build": get_build_info(),
                 },
             )
     except Exception as e:
@@ -222,6 +227,7 @@ async def health_check() -> JSONResponse:
                 "status": "fail",
                 "error": str(e),
                 "timestamp": get_epoch_timestamp_in_ms(),
+                "build": get_build_info(),
             },
         )
 

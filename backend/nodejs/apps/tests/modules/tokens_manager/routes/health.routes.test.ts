@@ -3,6 +3,9 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { ConfigService } from '../../../../src/modules/tokens_manager/services/cm.service'
 import { createHealthRouter } from '../../../../src/modules/tokens_manager/routes/health.routes'
+import * as buildInfoUtils from '../../../../src/libs/utils/build-info.utils'
+
+const NODE_BUILD = { version: '0.9.1', commitId: 'a'.repeat(40), buildTime: '2026-09-30T10:12:00Z' }
 
 describe('tokens_manager/routes/health.routes', () => {
   let mockRedis: any
@@ -27,6 +30,7 @@ describe('tokens_manager/routes/health.routes', () => {
       readDeploymentConfig: sinon.stub().callsFake(() => Promise.resolve({ ...mockAppConfig.deployment })),
     }
     sinon.stub(ConfigService, 'getInstance').returns(mockConfigService as any)
+    sinon.stub(buildInfoUtils, 'getBuildInfo').returns(NODE_BUILD)
 
     mockRedis = { get: sinon.stub().resolves(null) }
     mockKafka = { healthCheck: sinon.stub().resolves(true) }
@@ -729,6 +733,18 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg).to.have.property('deployment')
     })
 
+    it('should report the build of the Node.js process', async () => {
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, sinon.stub())
+
+      expect(res.json.firstCall.args[0].build).to.deep.equal(NODE_BUILD)
+    })
+
     it('should include all expected deployment keys', async () => {
       const handler = findHandler('/', 'get')
       const res = mockRes()
@@ -1047,6 +1063,45 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.status).to.equal('unhealthy')
     })
 
+    it('should report a build per service so a partly upgraded deployment is visible', async () => {
+      const queryBuild = { version: '0.9.1', commitId: 'b'.repeat(40), buildTime: null }
+      const connectorBuild = { version: '0.9.0', commitId: 'c'.repeat(40), buildTime: null }
+      sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+        if (url.includes('8000')) {
+          return Promise.resolve({ status: 200, data: { status: 'healthy', build: queryBuild } })
+        }
+        if (url.includes('8088')) {
+          return Promise.resolve({ status: 200, data: { status: 'healthy', build: connectorBuild } })
+        }
+        if (url.includes('8091')) {
+          // Answers, but with an error status: axios rejects, the body still has the build.
+          return Promise.reject({
+            isAxiosError: true,
+            response: { status: 500, data: { status: 'unhealthy', build: queryBuild } },
+          })
+        }
+        if (url.includes('8081')) {
+          return Promise.reject(new Error('Connection refused'))
+        }
+        // An older service that does not report a build yet.
+        return Promise.resolve({ status: 200, data: { status: 'healthy' } })
+      })
+
+      const handler = findHandler('/services', 'get')
+      const res = mockRes()
+
+      await handler({}, res, sinon.stub())
+
+      expect(res.json.firstCall.args[0].builds).to.deep.equal({
+        nodejs: NODE_BUILD,
+        query: queryBuild,
+        connector: connectorBuild,
+        indexing: queryBuild,
+        docling: null,
+        embedding: null,
+      })
+    })
+
     it('should handle unexpected error in overall try-catch', async () => {
       // Make Promise.allSettled itself throw by breaking axiosModule
       sinon.stub(axiosModule, 'get').throws(new Error('Unexpected'))
@@ -1062,6 +1117,7 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.status).to.equal('unhealthy')
       expect(jsonArg.services.query).to.equal('unknown')
       expect(jsonArg.services.connector).to.equal('unknown')
+      expect(jsonArg.builds).to.deep.equal({ nodejs: NODE_BUILD })
     })
 
     it('should still be healthy when only indexing is down (non-critical)', async () => {
