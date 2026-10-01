@@ -99,25 +99,9 @@ flowchart LR
   P --> Consumers
 ```
 
-1. **One representation.** Indexing turns every file, page, message, ticket and table into Blocks. Each block keeps where it came from (page and bounding box, sheet cell, table row, slide, line), and each record gets a summary, topics and the entities it mentions.
-2. **Two maps over the Blocks.** Records keep the hierarchy of the system they came from. A knowledge graph links people, projects, customers and other entities to the records that mention them, with entity resolution merging duplicates.
-3. **Tools that disclose in stages.** A search returns each record's name, location, metadata, summary and matching blocks. From there the agent greps, navigates or follows entities. The full-record tool appears once the agent holds a record ID, and reads in pages.
-4. **Permissions on every call.** Every tool checks the requesting user's access against permissions synced from the source system. `grep` output drops lines from records that user cannot open.
-5. **A built-in agent loop.** PipesHub's own loop (ReAct, plan–critique–execute, or an orchestrator with sub-agents) runs chat, deep research and no-code agents. External agents connect over MCP.
+Every source becomes **Blocks**, one representation that keeps tables, threads and code intact and remembers the exact page, cell or line each block came from. Two maps sit over the Blocks: the **hierarchy** of the source system and a **knowledge graph** of entities. Agents explore both with **tools that disclose in stages**: search results lead with each record's metadata and summary, and the agent greps, navigates, follows entities or reads a full record only when it needs to. **Every tool call is checked against the source system's permissions** for the person the agent acts for.
 
-<details>
-<summary><b>The agent's retrieval tools</b></summary>
-
-| Tool | What the agent uses it for |
-| --- | --- |
-| `search` | Hybrid dense + BM25 search fused with RRF, plus LLM-written `grep` patterns run alongside it |
-| `run_command`, `find_records` | `grep`, `rg`, `find`, `ls`, `head`, `wc` and friends over records stored as files that mirror the source's layout (local storage) |
-| `navigate`, `list_files` | Walk app → space → folder → record, up to three levels at a time, with date filters |
-| `lookup_record` | Turn a URL, issue key or external ID into a record |
-| `search_entities`, `find_records_by_entity` | Find a person, project or customer, then every record that mentions them |
-| `fetch_full_record` | Read a whole record, block by block, once search has surfaced it |
-
-</details>
+**[Read how the context layer works →](docs/context-layer.md)** It covers the Block format, the hierarchy and graph, every agent tool and the code it lives in, permission enforcement, the agent loop, and current limitations.
 
 ## Use it from Claude Code, Cursor or Codex
 
@@ -234,16 +218,7 @@ cd pipeshub-ai
 Building local images from source requires this cloned-repo path (`./install.sh --build`);
 the one-command installer above always uses prebuilt images.
 
-#### Installer options
-
-| Flag | Description |
-|------|-------------|
-| `-y` / `--yes` | Accept all defaults; skip interactive prompts (CI-friendly) |
-| `--version TAG` | Pin a specific image tag, e.g. `--version 0.7.0` |
-| `--reconfigure` | Re-run the wizard and overwrite an existing `.env` |
-| `--print-env-only` | Write `.env` and print the compose command without starting containers |
-
-> **Advanced options:** CI environment variables, slim vs. full deployment types, manual Compose profile usage, and local source builds are covered in [Advanced Deployment Options](deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
+> **Advanced options:** installer flags (`--yes`, `--version`, `--reconfigure`, `--print-env-only`), CI environment variables, slim vs. full deployment types, manual Compose profile usage, and local source builds are covered in [Advanced Deployment Options](deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
 
 ## Build with PipesHub
 
@@ -268,24 +243,7 @@ Use PipesHub with any MCP-compatible client to bring your enterprise context int
 
 **Repository:** [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/)
 
-#### Connecting an Omnigent agent
-
-First, mint a long-lived credential: **workspace → Developer settings →
-Personal Access Tokens → New token**. Pick an expiry (30/90/365 days, or
-never) — this runs as *you*, so results respect your own per-user
-permissions, unlike an OAuth app's client-credentials flow.
-
-Three ways to connect, from least to most setup:
-
-1. **Attach in the Omnigent web UI (fastest, no clone).** Open a session's
-   info panel → Manage MCP Servers → add PipesHub's URL and an
-   `Authorization: Bearer <token>` header → restart the session.
-2. **Run the packaged example agent.** A ready-made agent bundle (tuned
-   prompt + instructions) ships with Omnigent:
-   `PIPESHUB_MCP_URL=... PIPESHUB_MCP_TOKEN=... omnigent run examples/pipeshub/`.
-3. **Use the connect kit** in [`integrations/omnigent/`](integrations/omnigent/)
-   (`setup.sh` / `run.sh`) for CI, service accounts, or password/OAuth
-   client-credentials auth instead of a personal token.
+Using [Omnigent](https://omnigent.ai)? See [`integrations/omnigent/`](integrations/omnigent/) for three ways to connect, from a web-UI attach to a scripted connect kit.
 
 ### SDKs
 
@@ -347,72 +305,11 @@ Most tools hand an AI model a few retrieved text chunks. PipesHub gives agents t
 
 PipesHub has 40+ connectors across 30+ systems, with real-time and scheduled indexing. See the [connectors overview](https://docs.pipeshub.com/connectors/overview).
 
-### What file formats can PipesHub index?
-
-PDF (including scans), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, plain text, and images. Audio and video can be stored but are not indexed yet. Storage accepts a wider set of MIME types — see [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
-
-### How do I deploy PipesHub?
-
-```bash
-curl -fsSL https://get.pipeshub.com/install | bash
-```
-
-This writes Compose files into `./pipeshub` and starts the interactive installer. Open **http://localhost:3000** when it finishes. Use HTTPS for cloud deployments — HTTP may cause frontend security blocks.
-
-Developers building from source should clone the repository and run `./install.sh` (or `./install.sh --build`) from the repo root. See the [Deployment Guide](#-deployment-guide).
-
 ### What LLM providers does PipesHub support?
 
 PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models.
 
-### What is the tech stack?
-
-PipesHub has three parts:
-
-- **Web app** (Next.js) — search, chat, and admin in the browser.
-- **API** (Node.js) — accounts, permissions, knowledge bases, and files.
-- **Python services** — connectors sync your sources; indexing parses documents; query answers with citations.
-
-Those services call **AI models you bring**. An **embedding model** turns parsed text into vectors for search. An **LLM** writes the cited answer. Use any provider or a local model (Ollama); a local embedding server is the default.
-
-Data sits in a knowledge graph (Neo4j by default, or ArangoDB), a vector store (Qdrant), and MongoDB. Redis is the cache. Files live on disk or object storage. Services hand work to each other over Redis on a local machine, or Kafka in a larger deployment. See the [system overview](https://docs.pipeshub.com/system-overview).
-
-### What is the Knowledge Graph Retrieval feature?
-
-At indexing time PipesHub extracts entities (people, projects, customers, products) and links them to the records that mention them, merging duplicates. At answer time agents use the graph two ways: search results are enriched with parent and related records, and agents can look up an entity and fetch every record that mentions it. The graph runs on Neo4j (default) or ArangoDB, alongside Qdrant for vector search.
-
-### Does PipesHub have an MCP server?
-
-Yes. PipesHub provides an MCP server for integration with any MCP-compatible client. Repository: [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/).
-
-### What SDKs are available?
-
-PipesHub provides SDKs for:
-- **Python**: [pipeshub-ai/pipeshub-sdk-python](https://github.com/pipeshub-ai/pipeshub-sdk-python)
-- **TypeScript**: [pipeshub-ai/pipeshub-sdk-typescript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript)
-- **Go**: [pipeshub-ai/pipeshub-sdk-go](https://github.com/pipeshub-ai/pipeshub-sdk-go)
-
-### Can I build AI agents without coding?
-
-Yes. PipesHub has a no-code agent builder. You can build agents visually and execute actions across enterprise tools without writing code.
-
-### What is the multimodal support?
-
-PipesHub supports image, diagram, and scanned-file understanding, plus voice-based interaction. It uses Docling and pdfplumber for document parsing, or a multimodal LLM (VLM) for scanned PDF OCR.
-
-### How do I troubleshoot deployment issues?
-
-1. Ensure HTTPS is configured for cloud deployments
-2. Check Docker compose logs: `docker compose logs`
-3. Verify environment variables in env.template
-4. Consult [docs.pipeshub.com](https://docs.pipeshub.com/) for detailed guides
-
-### Where can I get help?
-
-- [Discord](https://discord.com/invite/K5RskzJBm2) — Ask questions and get help
-- [GitHub Issues](https://github.com/pipeshub-ai/pipeshub-ai/issues) — Report bugs or request features
-- [PipesHub Docs](https://docs.pipeshub.com/) — Read the documentation
-
+**More questions:** file formats, tech stack, the knowledge graph, multimodal support and troubleshooting are answered in the [full FAQ](docs/FAQ.md).
 
 <hr>
 <div align="center">
