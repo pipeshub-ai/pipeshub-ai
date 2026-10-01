@@ -118,6 +118,9 @@ _DEFAULT_SEGMENTS_PER_TIER = 4
 _DEFAULT_MAX_CONCURRENT_SEARCHES = 8
 _DEFAULT_CONFIDENCE_INTERVAL = 0.99
 _DEFAULT_RRF_RANK_CONSTANT = 60
+# A partial update re-reads the document when another write lands between its
+# read and write; without retries it fails the item with a 409.
+_UPDATE_RETRY_ON_CONFLICT = 3
 
 # Progress of the stemmed-field backfill, kept in the index's own ``_meta`` so
 # every replica reads the same state: {"task": <id>} while it runs, {"done":
@@ -770,25 +773,7 @@ class OpenSearchService(IVectorDBService):
         hits = result.get("hits", {}).get("hits", [])
         if len(hits) > limit:
             hits = hits[:limit]
-        points = [
-            VectorPoint(
-                id=hit["_id"],
-                payload={
-                    "metadata": hit.get("_source", {}).get("metadata", {}),
-                    "page_content": hit.get("_source", {}).get("page_content", ""),
-                    CONNECTOR_IDS_FIELD: list(
-                        hit.get("_source", {}).get(CONNECTOR_IDS_FIELD) or []
-                    ),
-                    RECORD_GROUP_IDS_FIELD: list(
-                        hit.get("_source", {}).get(RECORD_GROUP_IDS_FIELD) or []
-                    ),
-                    ROOT_RECORD_GROUP_IDS_FIELD: list(
-                        hit.get("_source", {}).get(ROOT_RECORD_GROUP_IDS_FIELD) or []
-                    ),
-                },
-            )
-            for hit in hits
-        ]
+        points = [self._hit_to_point(hit) for hit in hits]
         # Return a cursor for the next page when the result set is full
         next_offset = None
         if len(hits) == limit and hits:
@@ -806,6 +791,36 @@ class OpenSearchService(IVectorDBService):
             next_offset = json.dumps(last_sort)
 
         return ScrollResult(points=points, next_offset=next_offset)
+
+    @staticmethod
+    def _hit_to_point(hit: Dict[str, Any]) -> VectorPoint:
+        source = hit.get("_source", {})
+        return VectorPoint(
+            id=hit["_id"],
+            payload={
+                "metadata": source.get("metadata", {}),
+                "page_content": source.get("page_content", ""),
+                CONNECTOR_IDS_FIELD: list(source.get(CONNECTOR_IDS_FIELD) or []),
+                RECORD_GROUP_IDS_FIELD: list(source.get(RECORD_GROUP_IDS_FIELD) or []),
+                ROOT_RECORD_GROUP_IDS_FIELD: list(source.get(ROOT_RECORD_GROUP_IDS_FIELD) or []),
+            },
+        )
+
+    async def retrieve_points(
+        self,
+        collection_name: str,
+        ids: List[str],
+    ) -> List[VectorPoint]:
+        """``mget`` is realtime: it sees documents indexed since the last refresh."""
+        await self._assert_connected()
+        if not ids:
+            return []
+        result = await self.client.mget(  # type: ignore
+            index=collection_name,
+            body={"ids": list(ids)},
+            _source_excludes=["dense_embedding"],
+        )
+        return [self._hit_to_point(doc) for doc in result.get("docs", []) if doc.get("found")]
 
     async def query_nearest_points(
         self,
@@ -1019,6 +1034,36 @@ class OpenSearchService(IVectorDBService):
                 "index. Populate at least one filter condition (e.g. virtualRecordId)."
             )
         await self.overwrite_payload(collection_name, payload, filter, refresh=refresh)
+
+    async def update_payload_by_ids(
+        self,
+        collection_name: str,
+        point_ids: List[str],
+        payload: dict,
+    ) -> None:
+        """A bulk partial update by ``_id`` reaches documents the index has
+        not refreshed yet, which ``update_by_query`` cannot."""
+        await self._assert_connected()
+        if not point_ids:
+            return
+        doc = OpenSearchUtils.nest_dotted_keys(payload)
+        actions = [
+            {
+                "_op_type": "update", "_index": collection_name, "_id": point_id,
+                "doc": doc, "retry_on_conflict": _UPDATE_RETRY_ON_CONFLICT,
+            }
+            for point_id in point_ids
+        ]
+        _, errors = await os_helpers.async_bulk(
+            self.client, actions, raise_on_error=False, refresh=False,
+        )
+        # A missing id is ignored by contract; any other item error is a lost write.
+        failed = [e for e in errors if (e.get("update") or {}).get("status") != 404]
+        if failed:
+            raise RuntimeError(
+                f"update_payload_by_ids on '{collection_name}' failed for "
+                f"{len(failed)} of {len(point_ids)} point(s): {failed[0]}"
+            )
 
     # ------------------------------------------------------------------
     # Performance utilities

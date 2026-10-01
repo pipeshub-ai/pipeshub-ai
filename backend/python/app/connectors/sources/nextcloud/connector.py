@@ -66,6 +66,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 
 # App-specific Nextcloud client imports
 from app.connectors.sources.nextcloud.common.apps import NextcloudApp
+from app.exceptions.graph_db_exceptions import GraphQueryError
 
 # Model imports
 from app.models.entities import (
@@ -2106,7 +2107,12 @@ class NextcloudConnector(BaseConnector):
             raise connector_not_ready(self.display_name)
 
         # Get file record and path (path may be stored or derived from parent-child graph)
-        file_record = await self.data_entities_processor.get_file_record_by_id(record.id)
+        try:
+            file_record = await self.data_entities_processor.get_file_record_by_id(record.id)
+        except GraphQueryError as e:
+            # Not a 404: the file may well be there, the store just didn't answer.
+            self.logger.error(f"Could not read the file record of {record.id}: {e}")
+            raise to_stream_error(e, connector=self.display_name) from e
         path = None
         if file_record:
             path = await self.data_entities_processor.get_record_path(record.id)

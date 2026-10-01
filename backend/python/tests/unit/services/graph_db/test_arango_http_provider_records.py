@@ -694,8 +694,22 @@ class TestGetFileRecordById:
 
     async def test_exception(self, connected_provider):
         connected_provider.http_client.get_document.side_effect = Exception("err")
-        result = await connected_provider.get_file_record_by_id("f1")
-        assert result is None
+        with pytest.raises(GraphQueryError, match="f1"):
+            await connected_provider.get_file_record_by_id("f1")
+
+    async def test_asks_the_client_to_raise_rather_than_answer_none(self, connected_provider) -> None:
+        # The client answers None for a 404, a 503 and a dead connection alike unless told to raise.
+        connected_provider.http_client.get_document.side_effect = [None, None]
+        await connected_provider.get_file_record_by_id("f1")
+        for call in connected_provider.http_client.get_document.await_args_list:
+            assert call.kwargs.get("raise_on_error") is True
+
+    async def test_a_server_error_from_the_client_raises(self, connected_provider) -> None:
+        connected_provider.http_client.get_document.side_effect = GraphQueryError(
+            "Could not read files/f1: ArangoDB answered 503"
+        )
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_file_record_by_id("f1")
 
 
 # ===================================================================
@@ -1315,7 +1329,7 @@ class TestGetDepartments:
 
 class TestUpdateQueuedDuplicatesStatus:
     async def test_no_duplicates(self, connected_provider):
-        ref_record = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100}
+        ref_record = {"_key": "r1", "orgId": "org-1", "md5Checksum": "abc", "sizeInBytes": 100}
         connected_provider.http_client.execute_aql.side_effect = [
             [ref_record],  # get reference record
             [],            # no queued duplicates
@@ -1341,7 +1355,7 @@ class TestUpdateQueuedDuplicatesStatus:
         assert result == 0
 
     async def test_with_duplicates_completed(self, connected_provider):
-        ref = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100}
+        ref = {"_key": "r1", "orgId": "org-1", "md5Checksum": "abc", "sizeInBytes": 100}
         dup = {"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}
         connected_provider.http_client.execute_aql.side_effect = [
             [ref],   # reference
@@ -1354,7 +1368,7 @@ class TestUpdateQueuedDuplicatesStatus:
         assert result == 1
 
     async def test_with_duplicates_empty_status(self, connected_provider):
-        ref = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100}
+        ref = {"_key": "r1", "orgId": "org-1", "md5Checksum": "abc", "sizeInBytes": 100}
         dup = {"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}
         connected_provider.http_client.execute_aql.side_effect = [
             [ref],
@@ -1367,7 +1381,7 @@ class TestUpdateQueuedDuplicatesStatus:
         assert result == 1
 
     async def test_batch_update_fails(self, connected_provider):
-        ref = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100}
+        ref = {"_key": "r1", "orgId": "org-1", "md5Checksum": "abc", "sizeInBytes": 100}
         dup = {"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}
         connected_provider.http_client.execute_aql.side_effect = [
             [ref],

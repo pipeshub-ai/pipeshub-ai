@@ -135,6 +135,12 @@ def needs_whole_document(marker: str | None, *texts: str) -> bool:
     return bool(_WEAK_OPERATION_RE.search(combined)) and (document_scoped or exhaustive)
 
 
+# The candidate list is a relevance gate, so the summary must carry enough to
+# judge one. Kept well under the summary's full length: the extraction prompt
+# front-loads type/subject/parties/date into the first sentences for this reason.
+_CANDIDATE_SUMMARY_CHARS = 600
+
+
 def build_candidates(
     *,
     coverage: dict[str, tuple[int, int]],
@@ -184,7 +190,7 @@ def build_candidates(
         record_name = record.get("record_name") or record.get("recordName") or ""
         sem = record.get("semantic_metadata") or {}
         topics: tuple[str, ...] = tuple(sem.get("topics") or [])
-        summary: str = (sem.get("summary") or "")[:200]
+        summary: str = (sem.get("summary") or "")[:_CANDIDATE_SUMMARY_CHARS]
 
         candidates.append(
             FetchCandidate(
