@@ -142,6 +142,11 @@ class _Entities:
         self.set_payload_calls: list[tuple[dict, dict, bool]] = []
         self.delete_calls: list[tuple[dict, bool]] = []
         self.fail_set_payload = False
+        self.before_read: list = []
+        self.by_id_writes: list[tuple[list[str], dict]] = []
+        # When set, scroll answers from this stale copy (OpenSearch search
+        # lags by-id writes until the index refreshes).
+        self.search_view: dict | None = None
 
     def get_capabilities(self):
         return MagicMock(supports_sparse_vectors=False)
@@ -159,8 +164,9 @@ class _Entities:
 
     async def scroll(self, collection_name, scroll_filter, limit, offset=None, with_payload=None):
         self.scrolls.append((scroll_filter, offset))
+        source = self.search_view if self.search_view is not None else self.points
         matched = sorted(
-            (p for p in self.points.values() if self._matches(p.payload, scroll_filter)),
+            (p for p in source.values() if self._matches(p.payload, scroll_filter)),
             key=lambda p: p.id,
         )
         start = int(offset or 0)
@@ -171,6 +177,11 @@ class _Entities:
             next_offset=str(start + limit) if more else None,
         )
 
+    async def retrieve_points(self, collection_name, ids):
+        if self.before_read:
+            self.before_read.pop(0)(self)
+        return [VectorPoint(id=i, payload=copy.deepcopy(self.points[i].payload)) for i in ids if i in self.points]
+
     async def set_payload(self, collection_name, payload, filter, refresh=False):
         self.set_payload_calls.append((payload, filter, refresh))
         if self.fail_set_payload:
@@ -180,6 +191,9 @@ class _Entities:
                 point.payload.update(copy.deepcopy(payload))
 
     async def update_payload_by_ids(self, collection_name, ids, payload):
+        self.by_id_writes.append((sorted(ids), copy.deepcopy(payload)))
+        if self.fail_set_payload:
+            raise RuntimeError("vector db down")
         for point_id in ids:
             if point_id in self.points:
                 self.points[point_id].payload.update(copy.deepcopy(payload))
@@ -225,9 +239,12 @@ class TestConnectorDeletion:
 
         assert _membership(entities, "topic:t1") == (["conn-b"], ["gb"])
         assert "record_group:rg-a" not in entities.points
-        (payload, _, refresh), = entities.set_payload_calls
+        # Written by id, which every backend applies at once; a search-based
+        # update skips a point rewritten since the last OpenSearch refresh.
+        assert entities.set_payload_calls == []
+        (ids, payload), = entities.by_id_writes
+        assert ids == ["topic:t1"]
         assert payload == {"connectorIds": ["conn-b"], "recordGroupIds": ["gb"]}
-        assert refresh is True
 
     @pytest.mark.asyncio
     async def test_exclusive_taxonomy_entity_is_deleted(self) -> None:
@@ -265,8 +282,8 @@ class TestConnectorDeletion:
 
         await _store_over(entities).delete_entities_by_connector("org-1", "conn-a")
 
-        (payload, flt, _), = entities.set_payload_calls
-        assert sorted(flt["must"]["metadata.entityId"]) == ["t1", "t2"]
+        (ids, _), = entities.by_id_writes
+        assert ids == ["topic:t1", "topic:t2"]
 
     @pytest.mark.asyncio
     async def test_graph_record_groups_are_stripped_even_without_a_group_point(self) -> None:
@@ -455,19 +472,19 @@ class TestExclusiveLookingPointsAreCheckedAgainstTheGraph:
 
     @pytest.mark.asyncio
     async def test_a_page_that_does_not_shrink_raises_without_sweeping(self) -> None:
-        """OpenSearch's update_by_query skips a point rewritten underneath it.
-        The final delete would then remove a shared entity another connector
-        still reaches, so the page is retried and then the cleanup raises."""
+        """A write that does not take leaves the point needing work. The final
+        delete would then remove a shared entity another connector still
+        reaches, so the page is retried and then the cleanup raises."""
         entities = _Entities(
             _entity_point("t1", "topic", ["conn-a", "conn-b"], []),
             _entity_point("rec-1", "record", ["conn-a"], []),
         )
         writes = {"n": 0}
 
-        async def _no_effect(collection_name, payload, filter, refresh=False):
+        async def _no_effect(collection_name, ids, payload):
             writes["n"] += 1
 
-        entities.set_payload = _no_effect
+        entities.update_payload_by_ids = _no_effect
         store = _store_over(entities)
 
         with pytest.raises(RuntimeError, match="no progress"):
@@ -484,15 +501,15 @@ class TestExclusiveLookingPointsAreCheckedAgainstTheGraph:
             _entity_point("t1", "topic", ["conn-a", "conn-b"], ["ga", "gb"]),
             _entity_point("rec-1", "record", ["conn-a"], ["ga"]),
         )
-        real_set_payload = entities.set_payload
+        real_update = entities.update_payload_by_ids
         writes = {"n": 0}
 
-        async def _first_skipped(collection_name, payload, filter, refresh=False) -> None:
+        async def _first_skipped(collection_name, ids, payload) -> None:
             writes["n"] += 1
             if writes["n"] > 1:
-                await real_set_payload(collection_name, payload, filter, refresh=refresh)
+                await real_update(collection_name, ids, payload)
 
-        entities.set_payload = _first_skipped
+        entities.update_payload_by_ids = _first_skipped
 
         await _store_over(entities).delete_entities_by_connector("org-1", "conn-a", record_group_ids=["ga"])
 
@@ -600,3 +617,70 @@ class TestUpsertEntitiesBatchMergeMembershipFlag:
 
         (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
         assert point.payload["connectorIds"] == ["conn-a", "conn-b"]
+
+
+
+class TestStripReadsFreshMembership:
+    """The strip phase re-reads each page by id, under the entities' locks,
+    before writing: a connector a concurrent index added after the page was
+    scrolled is kept (KG-34 residue)."""
+
+    @pytest.mark.asyncio
+    async def test_a_connector_added_after_the_scroll_is_kept(self) -> None:
+        entities = _Entities(_entity_point("t1", "topic", ["c-gone", "c-other"], ["g-gone", "g-other"]))
+
+        def _indexed_meanwhile(db: _Entities) -> None:
+            payload = db.points["topic:t1"].payload
+            payload["connectorIds"].append("c-new")
+            payload["recordGroupIds"].append("g-new")
+
+        entities.before_read = [_indexed_meanwhile]
+        await _store_over(entities).delete_entities_by_connector("org-1", "c-gone", record_group_ids=["g-gone"])
+
+        assert _membership(entities, "topic:t1") == (["c-other", "c-new"], ["g-other", "g-new"])
+
+    @pytest.mark.asyncio
+    async def test_a_point_reached_by_another_connector_meanwhile_is_not_deleted(self) -> None:
+        entities = _Entities(_entity_point("t1", "topic", ["c-gone"], []))
+
+        def _indexed_meanwhile(db: _Entities) -> None:
+            db.points["topic:t1"].payload["connectorIds"].append("c-new")
+
+        entities.before_read = [_indexed_meanwhile]
+        await _store_over(entities).delete_entities_by_connector("org-1", "c-gone", record_group_ids=[])
+
+        assert _membership(entities, "topic:t1") == (["c-new"], [])
+
+    @pytest.mark.asyncio
+    async def test_a_point_deleted_meanwhile_counts_as_progress(self) -> None:
+        entities = _Entities(_entity_point("t1", "topic", ["c-gone", "c-other"], []))
+
+        def _deleted_meanwhile(db: _Entities) -> None:
+            del db.points["topic:t1"]
+
+        entities.before_read = [_deleted_meanwhile]
+        await _store_over(entities).delete_entities_by_connector("org-1", "c-gone", record_group_ids=[])
+
+        assert "topic:t1" not in entities.points
+
+
+class TestStaleSearchPages:
+    @pytest.mark.asyncio
+    async def test_a_page_already_handled_but_still_in_search_is_stepped_past(self) -> None:
+        """OpenSearch keeps returning points this run already stripped until it
+        refreshes; the fresh by-id read says they are done, so the loop moves
+        on instead of reporting no progress."""
+        stale = _entity_point("t0", "topic", ["conn-a", "conn-b"], [])
+        entities = _Entities(
+            _entity_point("t0", "topic", ["conn-b"], []),  # already stripped
+            _entity_point("t1", "topic", ["conn-a", "conn-c"], []),
+        )
+        entities.search_view = {
+            "topic:t0": stale,
+            "topic:t1": entities.points["topic:t1"],
+        }
+
+        await _store_over(entities)._shrink_connector_membership("org-1", "conn-a", [], page_size=1)
+
+        assert _membership(entities, "topic:t1") == (["conn-c"], [])
+        assert _membership(entities, "topic:t0") == (["conn-b"], [])
