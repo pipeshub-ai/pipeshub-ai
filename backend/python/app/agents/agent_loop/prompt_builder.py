@@ -487,10 +487,15 @@ def _build_finding_information(
 
     if surfaces.exact_math:
         tools = " and ".join(f"`{name}`" for name in surfaces.exact_math)
+        counting = (
+            f" Count letters or words with `{surfaces.text_count}`, never by hand."
+            if surfaces.text_count else ""
+        )
         parts.append(
             "Numbers and dates in the answer: work out any calculation with "
             "more than one step, and any age or gap between two dates, with "
-            f"{tools} rather than in your head. Copy each figure exactly from "
+            f"{tools} rather than in your head, converting every operand to one "
+            f"unit first.{counting} Copy each figure exactly from "
             "its source, and give the result in the unit the question asks for."
         )
 

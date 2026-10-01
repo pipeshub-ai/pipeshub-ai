@@ -1,9 +1,10 @@
 """Exact arithmetic and calendar differences for the calculator tools.
 
 A model doing multi-step arithmetic in its head drops digits (1954 read back
-as 195) and converts day counts to months by eye (209 days as "7 months").
-These are the deterministic versions it can call instead. Pure functions: no
-I/O, no `eval`.
+as 195), converts day counts to months by eye (209 days as "7 months"),
+subtracts minutes from an h:mm:ss time as if they were seconds, and miscounts
+the letters of a word. These are the deterministic versions it can call
+instead. Pure functions: no I/O, no `eval`.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ import ast
 import calendar
 import math
 import operator
+import re
+import unicodedata
 from dataclasses import asdict, dataclass
 from datetime import date
 from typing import TYPE_CHECKING
@@ -60,18 +63,51 @@ _FUNCTIONS: dict[str, Callable[..., object]] = {
     "degrees": math.degrees,
 }
 _CONSTANTS: dict[str, float] = {"pi": math.pi, "e": math.e}
+# Their result is in the unit of their (alike) arguments, so
+# `max(hms("1:02:03"), minutes(50))` stays a duration.
+_UNIT_PRESERVING = frozenset({"abs", "min", "max", "floor", "ceil"})
+_SECONDS_PER: dict[str, int] = {"seconds": 1, "minutes": 60, "hours": 3600, "days": 86_400}
+_HMS = "hms"
+_CLOCK = re.compile(r"(\d+):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?")
+
+MAX_TEXT_CHARS = 2_000
 
 
 class ExpressionError(ValueError):
     """The expression is not plain arithmetic this evaluator accepts."""
 
 
-def evaluate_expression(expression: str) -> Number:
-    """The value of an arithmetic expression.
+@dataclass(frozen=True)
+class Evaluation:
+    """An expression's value; `unit` is `"seconds"` (or `"per second"`) when
+    it was built from the duration helpers, `None` for a plain number."""
 
-    Numbers, `pi`, `e`, `+ - * / // % **`, parentheses, and the functions in
-    `_FUNCTIONS` (rounding, roots, logs, trigonometry in radians). Anything
-    else -- other names, attributes, strings -- is refused.
+    result: Number
+    unit: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {"result": self.result}
+        if self.unit is not None:
+            payload["unit"] = self.unit
+        if self.unit == "seconds":
+            payload["hms"] = format_hms(self.result)
+        return payload
+
+
+def evaluate_expression(expression: str) -> Number:
+    """The value of an arithmetic expression; see `evaluate`."""
+    return evaluate(expression).result
+
+
+def evaluate(expression: str) -> Evaluation:
+    """The value of an arithmetic expression, with its unit.
+
+    Numbers, `pi`, `e`, `+ - * / // % **`, parentheses, the functions in
+    `_FUNCTIONS` (rounding, roots, logs, trigonometry in radians), and the
+    duration helpers `hms("h:mm:ss" | "mm:ss")`, `seconds(n)`, `minutes(n)`,
+    `hours(n)`, `days(n)`, which all return seconds. Adding a duration to a
+    plain number is refused rather than guessed at. Anything else -- other
+    names, attributes, strings outside `hms` -- is refused.
     """
     text = expression.strip()
     if not text:
@@ -82,7 +118,21 @@ def evaluate_expression(expression: str) -> Number:
         tree = ast.parse(text.replace("^", "**"), mode="eval")
     except SyntaxError as exc:
         raise ExpressionError(f"Not a valid arithmetic expression: {exc.msg}.") from exc
-    return _evaluate(tree.body)
+    value, dimension = _evaluate(tree.body)
+    units = {0: None, 1: "seconds", -1: "per second"}
+    if dimension not in units:
+        raise ExpressionError(f"The result is in seconds^{dimension}, which is not a usable unit.")
+    return Evaluation(value, units[dimension])
+
+
+def format_hms(seconds: Number) -> str:
+    """`4955` -> `"1:22:35"`. Hours are not folded into days."""
+    sign = "-" if seconds < 0 else ""
+    whole, fraction = divmod(abs(seconds), 1)
+    hours, rest = divmod(int(whole), 3600)
+    minutes, secs = divmod(rest, 60)
+    tail = f"{fraction:.3f}".rstrip("0")[1:] if fraction else ""
+    return f"{sign}{hours}:{minutes:02d}:{secs:02d}{tail}"
 
 
 def _number(value: object) -> Number:
@@ -92,42 +142,109 @@ def _number(value: object) -> Number:
     raise ExpressionError("The expression did not produce a real number.")
 
 
-def _evaluate(node: ast.AST) -> Number:
+# A value and its power of time: 0 a plain number, 1 seconds, -1 per second.
+Quantity = tuple[Number, int]
+
+
+def _require_alike(dimensions: list[int], action: str) -> int:
+    if len(set(dimensions)) > 1:
+        raise ExpressionError(
+            f"Cannot {action} a duration and a plain number: convert the plain "
+            "number with seconds(), minutes(), hours() or days() first.",
+        )
+    return dimensions[0] if dimensions else 0
+
+
+def _require_plain(dimensions: list[int], action: str) -> None:
+    if any(dimensions):
+        raise ExpressionError(f"Cannot {action} a duration; divide it by seconds(1), minutes(1), ... first.")
+
+
+def _evaluate(node: ast.AST) -> Quantity:
     if isinstance(node, ast.Constant):
-        return _number(node.value)
+        return _number(node.value), 0
     if isinstance(node, ast.Name) and node.id in _CONSTANTS:
-        return _CONSTANTS[node.id]
+        return _CONSTANTS[node.id], 0
     if isinstance(node, ast.BinOp):
-        left, right = _evaluate(node.left), _evaluate(node.right)
-        if isinstance(node.op, ast.Pow):
-            return _power(left, right)
-        function = _BINARY.get(type(node.op))
-        if function is None:
-            raise ExpressionError(f"Unsupported operator: {type(node.op).__name__}.")
-        try:
-            return _number(function(left, right))
-        except ZeroDivisionError as exc:
-            raise ExpressionError("Division by zero.") from exc
+        return _binary(node)
     if isinstance(node, ast.UnaryOp):
         function = _UNARY.get(type(node.op))
         if function is None:
             raise ExpressionError(f"Unsupported operator: {type(node.op).__name__}.")
-        return _number(function(_evaluate(node.operand)))
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id in _FUNCTIONS
-        and not node.keywords
-    ):
-        args = [_evaluate(arg) for arg in node.args]
-        try:
-            return _number(_FUNCTIONS[node.func.id](*args))
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ExpressionError(f"{node.func.id}(): {exc}.") from exc
+        value, dimension = _evaluate(node.operand)
+        return _number(function(value)), dimension
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
+        name = node.func.id
+        if name == _HMS:
+            return _parse_hms(node.args), 1
+        if name in _SECONDS_PER and len(node.args) == 1:
+            value, dimension = _evaluate(node.args[0])
+            _require_plain([dimension], f"take {name}() of")
+            return _number(value * _SECONDS_PER[name]), 1
+        if name in _FUNCTIONS:
+            return _call(name, [_evaluate(arg) for arg in node.args])
     raise ExpressionError(
-        "Only numbers, pi, e, + - * / // % **, parentheses and "
-        f"{', '.join(sorted(_FUNCTIONS))} are allowed.",
+        "Only numbers, pi, e, + - * / // % **, parentheses, "
+        f"{', '.join(sorted(_FUNCTIONS))} and the duration helpers "
+        f"{_HMS}, {', '.join(_SECONDS_PER)} are allowed.",
     )
+
+
+def _binary(node: ast.BinOp) -> Quantity:
+    (left, left_dim), (right, right_dim) = _evaluate(node.left), _evaluate(node.right)
+    op = type(node.op)
+    if op is ast.Pow:
+        _require_plain([left_dim, right_dim], "take a power of")
+        return _power(left, right), 0
+    if op is ast.Mult:
+        dimension = left_dim + right_dim
+    elif op in (ast.Div, ast.FloorDiv):
+        dimension = left_dim - right_dim
+    else:
+        dimension = _require_alike([left_dim, right_dim], "add, subtract or take the remainder of")
+    function = _BINARY.get(op)
+    if function is None:
+        raise ExpressionError(f"Unsupported operator: {op.__name__}.")
+    try:
+        return _number(function(left, right)), dimension
+    except ZeroDivisionError as exc:
+        raise ExpressionError("Division by zero.") from exc
+
+
+def _call(name: str, args: list[Quantity]) -> Quantity:
+    dimensions = [dimension for _, dimension in args]
+    if name in _UNIT_PRESERVING:
+        dimension = _require_alike(dimensions, f"mix in {name}()")
+    elif name == "round" and args:
+        _require_plain(dimensions[1:], "round to")
+        dimension = dimensions[0]
+    else:
+        _require_plain(dimensions, f"take {name}() of")
+        dimension = 0
+    try:
+        return _number(_FUNCTIONS[name](*(value for value, _ in args))), dimension
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ExpressionError(f"{name}(): {exc}.") from exc
+
+
+def _parse_hms(args: list[ast.expr]) -> Number:
+    if len(args) != 1 or not isinstance(args[0], ast.Constant) or not isinstance(args[0].value, str):
+        raise ExpressionError('hms() takes one quoted time, e.g. hms("2:00:35") or hms("38:10").')
+    text = args[0].value.strip()
+    match = _CLOCK.fullmatch(text)
+    if match is None:
+        raise ExpressionError(f'hms({text!r}): write it as "h:mm:ss" or "mm:ss".')
+    first, second, third = match.groups()
+    if third is None:
+        hours, minutes, seconds = 0, int(first), float(second)
+    else:
+        hours, minutes, seconds = int(first), int(second), float(third)
+        if minutes >= 60:
+            raise ExpressionError(f"hms({text!r}): minutes must be under 60.")
+    if seconds >= 60:
+        raise ExpressionError(f"hms({text!r}): seconds must be under 60.")
+    total = hours * 3600 + minutes * 60 + seconds
+    return int(total) if total.is_integer() else total
 
 
 def _power(base: Number, exponent: Number) -> Number:
@@ -206,10 +323,58 @@ def _parse_date(value: str) -> date:
         raise ValueError(f"Invalid date {value!r}: use YYYY-MM-DD.") from exc
 
 
+@dataclass(frozen=True)
+class TextCount:
+    """Counts over a short text, after NFC normalization so an accented
+    letter typed as base + combining mark counts once."""
+
+    # Alphabetic characters in any script (`str.isalpha`); digits, spaces,
+    # punctuation and combining marks are not letters.
+    letters: int
+    characters: int
+    characters_excluding_spaces: int
+    # Whitespace-separated tokens holding at least one letter or digit.
+    words: int
+    letter: str | None = None
+    # Case-insensitive, accent-sensitive: "é" is not "e".
+    letter_occurrences: int | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {key: value for key, value in asdict(self).items() if value is not None}
+
+
+def count_text(text: str, letter: str | None = None) -> TextCount:
+    """Letters, characters and words in `text`, and how often `letter` occurs."""
+    if not isinstance(text, str):
+        raise ValueError("The text must be a string.")
+    if len(text) > MAX_TEXT_CHARS:
+        raise ValueError(f"The text is longer than {MAX_TEXT_CHARS} characters.")
+    normalized = unicodedata.normalize("NFC", text)
+    target = unicodedata.normalize("NFC", letter.strip()) if letter else ""
+    if letter and (len(target) != 1 or not target.isalpha()):
+        raise ValueError(f"{letter!r} is not a single letter.")
+    return TextCount(
+        letters=sum(ch.isalpha() for ch in normalized),
+        characters=len(normalized),
+        characters_excluding_spaces=sum(not ch.isspace() for ch in normalized),
+        words=sum(any(ch.isalnum() for ch in token) for token in normalized.split()),
+        letter=target or None,
+        letter_occurrences=(
+            sum(ch.casefold() == target.casefold() for ch in normalized) if target else None
+        ),
+    )
+
+
 __all__ = [
     "MAX_EXPRESSION_CHARS",
+    "MAX_TEXT_CHARS",
     "DateDifference",
+    "Evaluation",
     "ExpressionError",
+    "TextCount",
+    "count_text",
     "date_difference",
+    "evaluate",
     "evaluate_expression",
+    "format_hms",
 ]

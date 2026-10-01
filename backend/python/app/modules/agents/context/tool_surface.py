@@ -82,6 +82,9 @@ class ToolSurfaces:
     """Granted exact-arithmetic tools, expression evaluator first, then the
     date difference; `()` when neither is granted."""
 
+    text_count: str | None = None
+    """Granted name of the letter/word counting tool, or `None`."""
+
     @classmethod
     def resolve(
         cls,
@@ -177,6 +180,7 @@ class ToolSurfaces:
             has_web_search=has_web_search,
             has_service_tools=has_service_tools,
             exact_math=exact_math,
+            text_count=granted("calculator.count_text", names_set),
         )
 
     # ── Convenience formatters ────────────────────────────────────────────────

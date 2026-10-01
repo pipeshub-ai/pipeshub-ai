@@ -16,6 +16,7 @@ from app.modules.agents.context.tool_surface import ToolSurfaces
 _KNOWLEDGE = "knowledgegraph__search"
 _EVALUATE = "calculator__evaluate_expression"
 _DATE_DIFF = "calculator__date_difference"
+_COUNT = "calculator__count_text"
 
 
 def _finding_information(tool_names: list[str]) -> str:
@@ -55,6 +56,24 @@ class TestTools:
         assert (payload["years"], payload["months"], payload["days"]) == (0, 6, 26)
 
     @pytest.mark.asyncio
+    async def test_a_duration_result_states_its_unit(self) -> None:
+        payload = json.loads(await Calculator().evaluate_expression('hms("2:00:35") - minutes(38)'))
+
+        assert (payload["result"], payload["unit"], payload["hms"]) == (4955, "seconds", "1:22:35")
+
+    @pytest.mark.asyncio
+    async def test_count_text_returns_the_counts(self) -> None:
+        payload = json.loads(await Calculator().count_text("Lumberjack", letter="k"))
+
+        assert (payload["letters"], payload["words"], payload["letter_occurrences"]) == (10, 1, 1)
+
+    @pytest.mark.asyncio
+    async def test_oversized_text_is_an_error_payload(self) -> None:
+        payload = json.loads(await Calculator().count_text("a" * 100_000))
+
+        assert "error" in payload
+
+    @pytest.mark.asyncio
     async def test_a_bad_date_is_an_error_payload(self) -> None:
         payload = json.loads(await Calculator().date_difference("sometime", "1916-11-04"))
 
@@ -74,6 +93,18 @@ class TestPromptRule:
 
         assert "calculator__" not in text
         assert "in your head" not in text
+
+    def test_counting_and_units_named_when_granted(self) -> None:
+        text = _finding_information([_KNOWLEDGE, _EVALUATE, _DATE_DIFF, _COUNT])
+
+        assert f"Count letters or words with `{_COUNT}`" in text
+        assert "every operand to one unit" in text
+
+    def test_counting_absent_when_not_granted(self) -> None:
+        text = _finding_information([_KNOWLEDGE, _EVALUATE, _DATE_DIFF])
+
+        assert _COUNT not in text
+        assert "Count letters" not in text
 
     def test_only_the_granted_tool_is_named(self) -> None:
         text = _finding_information([_KNOWLEDGE, _DATE_DIFF])

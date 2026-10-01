@@ -10,8 +10,11 @@ import pytest
 
 from app.agents.actions.calculator.exact import (
     MAX_EXPRESSION_CHARS,
+    MAX_TEXT_CHARS,
     ExpressionError,
+    count_text,
     date_difference,
+    evaluate,
     evaluate_expression,
 )
 
@@ -153,3 +156,93 @@ def _clamped(start: date, year: int, month: int, days: int, end: date) -> bool:
     if start.day <= last:
         return False
     return date(year, month, last) + timedelta(days=days + start.day - last) == end
+
+
+class TestDurations:
+    def test_minutes_off_a_clock_time(self) -> None:
+        """A race time minus 38 minutes: minutes must not be read as seconds."""
+        result = evaluate('hms("2:00:35") - minutes(38)')
+
+        assert result.to_dict() == {"result": 4955, "unit": "seconds", "hms": "1:22:35"}
+
+    @pytest.mark.parametrize(("expression", "expected"), [
+        ('hms("38:10")', 2290),
+        ('hms("1:02:03.5")', 3723.5),
+        ("hours(1.5) + minutes(30) + seconds(15)", 7215),
+        ("days(2)", 172_800),
+        ('max(hms("1:02:03"), minutes(50))', 3723),
+        ('round(hms("0:00:01.26"), 1)', 1.3),
+    ])
+    def test_every_duration_is_in_seconds(self, expression: str, expected: object) -> None:
+        result = evaluate(expression)
+
+        assert result.result == pytest.approx(expected)
+        assert result.unit == "seconds"
+
+    def test_dividing_by_a_unit_converts_to_it(self) -> None:
+        result = evaluate('(hms("2:00:35") - minutes(38)) / minutes(1)')
+
+        assert result.result == pytest.approx(82.5833, abs=1e-4)
+        assert result.unit is None
+
+    def test_a_rate_is_per_second(self) -> None:
+        assert evaluate("42 / hours(2)").unit == "per second"
+
+    @pytest.mark.parametrize("expression", [
+        'hms("2:00:35") - 38',
+        "minutes(38) + 1",
+        'max(hms("1:00"), 5)',
+        "sqrt(hours(1))",
+        "hours(1) * hours(1)",
+        'hms("1:00") ** 2',
+        'hms("1:75:00")',
+        'hms("0:61")',
+        'hms("two hours")',
+        "hms(120)",
+        'hms("1:00", "2:00")',
+        "minutes()",
+        "'1:00' + 1",
+    ])
+    def test_mixed_units_and_bad_durations_are_refused(self, expression: str) -> None:
+        with pytest.raises(ExpressionError):
+            evaluate(expression)
+
+    def test_plain_arithmetic_has_no_unit(self) -> None:
+        assert evaluate("(90 - 16) * 1954").to_dict() == {"result": 144_596}
+
+
+class TestCountText:
+    def test_a_ten_letter_word(self) -> None:
+        count = count_text("Lumberjack")
+
+        assert (count.letters, count.characters, count.words) == (10, 10, 1)
+
+    @pytest.mark.parametrize("text", ["Kraftwerké", "Kraftwerké"])
+    def test_an_accented_letter_counts_once_however_it_is_encoded(self, text: str) -> None:
+        assert count_text(text).letters == 10
+
+    def test_other_scripts_are_letters(self) -> None:
+        assert count_text("Москва 東京").letters == 8
+
+    def test_spaces_digits_and_punctuation_are_not_letters(self) -> None:
+        count = count_text("Saint-Étienne, 42!")
+
+        assert count.letters == 12
+        assert count.characters == 18
+        assert count.characters_excluding_spaces == 17
+        assert count.words == 2
+
+    def test_a_lone_dash_is_not_a_word(self) -> None:
+        assert count_text("before — after").words == 2
+
+    def test_one_letter_ignores_case_but_not_accents(self) -> None:
+        assert count_text("Eleven élites", letter="e").letter_occurrences == 4
+
+    @pytest.mark.parametrize("letter", ["ab", "3", "!"])
+    def test_a_letter_must_be_one_letter(self, letter: str) -> None:
+        with pytest.raises(ValueError):
+            count_text("anything", letter=letter)
+
+    def test_oversized_text_is_refused(self) -> None:
+        with pytest.raises(ValueError, match=str(MAX_TEXT_CHARS)):
+            count_text("a" * (MAX_TEXT_CHARS + 1))

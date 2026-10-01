@@ -6,9 +6,11 @@ from pydantic import BaseModel, Field
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.agents.actions.calculator.exact import (
+    MAX_TEXT_CHARS,
     ExpressionError,
+    count_text,
     date_difference,
-    evaluate_expression,
+    evaluate,
 )
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import (
@@ -129,7 +131,11 @@ class Calculator:
             "numbers, pi, e, + - * / // % ** and parentheses; abs, round, min, max, "
             "sqrt, floor, ceil, exp, log, log10; and sin, cos, tan, asin, acos, atan, "
             "atan2, radians, degrees (angles in radians). Use it for any calculation "
-            "with more than one step, copying the numbers exactly from their source."
+            "with more than one step, copying the numbers exactly from their source. "
+            "Durations: hms(\"h:mm:ss\") or hms(\"mm:ss\"), seconds(n), minutes(n), "
+            "hours(n), days(n) all return seconds, e.g. hms(\"2:00:35\") - minutes(38); "
+            "the result then carries unit and h:mm:ss. Mixing a duration with a bare "
+            "number in + or - is refused. Divide by minutes(1) etc. to get another unit."
         ),
         parameters=[
             ToolParameter(
@@ -141,9 +147,39 @@ class Calculator:
     )
     async def evaluate_expression(self, expression: str) -> str:
         try:
-            return json.dumps({"expression": expression, "result": evaluate_expression(expression)})
+            return json.dumps({"expression": expression, **evaluate(expression).to_dict()})
         except ExpressionError as exc:
             return json.dumps({"expression": expression, "error": str(exc)})
+
+    @tool(
+        path="/tools/calculator/count_text",
+        short_description="Count letters, characters and words in a text",
+        description=(
+            "Count the letters, characters and words in a short text (up to "
+            f"{MAX_TEXT_CHARS} characters), and optionally how often one letter occurs. "
+            "Letters are alphabetic characters in any script, accents included "
+            "('Brontë' has 6); spaces, digits and punctuation are not letters. "
+            "Words are whitespace-separated tokens containing a letter or digit. "
+            "The single-letter count ignores case but not accents. Use it instead "
+            "of counting by hand."
+        ),
+        parameters=[
+            ToolParameter(
+                name="text", type=ParameterType.STRING,
+                description="The text to count, copied exactly", required=True,
+            ),
+            ToolParameter(
+                name="letter", type=ParameterType.STRING,
+                description="Optional single letter to count occurrences of", required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
+    )
+    async def count_text(self, text: str, letter: str | None = None) -> str:
+        try:
+            return json.dumps(count_text(text, letter).to_dict())
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
 
     @tool(
         path="/tools/calculator/date_difference",
