@@ -117,7 +117,7 @@ flowchart LR
 | **エンタープライズ検索** | 40 以上のコネクターを横断する 1 つの検索ボックス。各ユーザーには閲覧できるものだけを表示し、引用付きで回答 | 組み込み · [サンプル](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search) |
 | **職場向け AI アシスタント** | 社内の知識を対象にしたチャットとディープリサーチ。Web 検索と音声入力にも対応 | 組み込み |
 | **コーディングエージェントのためのコンテキスト** | Claude Code、Cursor、Codex が、コードだけでなく設計ドキュメント、チケット、インシデント、チャットのスレッドをもとに回答 | [サンプル](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp) |
-| **ノーコードのエージェントと自動化** | Slack、Gmail、Jira、Confluence、GitHub、Linear、Notion、Salesforce、Zendesk、Freshdesk ほか 20 のツールでアクションを実行できるエージェントビルダー | 組み込み |
+| **ノーコードのエージェントとワークフロービルダー** | 社内の知識を Slack、Gmail、Jira、Confluence、GitHub、Linear、Notion、Salesforce、Zendesk、Freshdesk ほか 20 のツールでのアクションにつなぐ、ドラッグ＆ドロップのビジュアルビルダー。同じ API の上に独自のワークフロープロダクトを構築することもでき、どのステップにも権限を考慮したコンテキストが渡ります。 | 組み込み · [ヘッドレスで構築](#pipeshub-を-ui-なしのヘッドレスで使えますか) |
 | **カスタマーサポート向けコパイロット** | 過去のチケット、ランブック、ドキュメント（ServiceNow、Zammad、Jira、Confluence）をもとに回答し、チケット管理ツールでアクションも実行 | 組み込み · SDK |
 | **営業・アカウントインテリジェンス** | Salesforce の取引先、連絡先、商談をナレッジグラフに取り込み、同じ顧客に関するメール、ドキュメント、チャットと合わせて検索 | 組み込み |
 | **データベースへの質問** | Postgres、MariaDB、Snowflake のテーブルをスキーマや外部キーとともにインデックス化。分析用に SQL や Python を実行するサンドボックスも用意 | 組み込み |
@@ -326,7 +326,7 @@ Slack、Google Drive、GitHub、Microsoft 365、Notion などのシステムと�
 - **サービスアカウント：** バックグラウンドジョブ向けで、独自の権限を持ちます。
 - **OAuth アプリ：** アプリの各ユーザーが本人としてサインインできるようにします（「Sign in with PipesHub」）。
 
-チームはこれを使って、PipesHub の上に独自のプロダクトを構築しています。たとえば法務・契約管理（CLM）ツール、サポートコンソール、社内エージェントなどです。PipesHub の UI は表示しません。
+チームはこれを使って、PipesHub の上に独自のプロダクトを構築しています。たとえばワークフロービルダー、法務・契約管理（CLM）ツール、サポートコンソール、社内エージェントなどです。PipesHub の UI は表示しません。
 
 ### PipesHub は他の職場向け AI ツールと何が違うのですか？
 

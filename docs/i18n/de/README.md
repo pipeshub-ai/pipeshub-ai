@@ -117,7 +117,7 @@ Eine Kontextschicht, viele Produkte darauf. Nutzen Sie die integrierten Apps so,
 | **Unternehmenssuche** | Ein Suchfeld über mehr als 40 Konnektoren, das jeder Person nur zeigt, was sie sehen darf, mit zitierten Antworten | Integriert · [Beispiel](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search) |
 | **KI-Assistent für den Arbeitsplatz** | Chat und Deep Research über das Unternehmenswissen, dazu Websuche und Spracheingabe | Integriert |
 | **Kontext für Coding-Agenten** | Claude Code, Cursor und Codex antworten auf Basis von Design-Dokumenten, Tickets, Incidents und Chat-Threads, nicht nur des Codes | [Beispiel](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp) |
-| **No-Code-Agenten und Automatisierungen** | Ein Agent-Builder mit Aktionen in Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk und 20 weiteren Tools | Integriert |
+| **No-Code-Agenten und Workflow-Builder** | Ein visueller Drag-and-Drop-Builder, der Unternehmenswissen mit Aktionen in Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk und 20 weiteren Tools verbindet. Oder bauen Sie Ihr eigenes Workflow-Produkt auf derselben API, sodass jeder Schritt berechtigungsbewussten Kontext erhält. | Integriert · [Headless bauen](#kann-ich-pipeshub-headless-nutzen-ohne-die-oberfläche) |
 | **Copiloten für den Kundensupport** | Antworten aus früheren Tickets, Runbooks und Dokumentation (ServiceNow, Zammad, Jira, Confluence), mit Aktionen zurück im Ticketsystem | Integriert · SDKs |
 | **Vertriebs- und Account-Intelligence** | Salesforce-Accounts, -Kontakte und -Deals im Knowledge Graph, durchsuchbar zusammen mit den E-Mails, Dokumenten und Chats zu denselben Kunden | Integriert |
 | **Fragen an Ihre Datenbanken** | Postgres-, MariaDB- und Snowflake-Tabellen, indexiert mit ihren Schemas und Fremdschlüsseln, dazu Sandboxes, die SQL und Python für Analysen ausführen | Integriert |
@@ -326,7 +326,7 @@ Wählen Sie, wie sich Ihr Code anmeldet:
 - **Service-Account:** für Hintergrundjobs, mit eigenen Berechtigungen.
 - **OAuth-App:** lässt jeden Nutzer Ihrer App sich als er selbst anmelden („Sign in with PipesHub“).
 
-Teams nutzen das, um eigene Produkte auf PipesHub zu bauen, etwa Tools für Recht und Vertragsmanagement (CLM), Support-Konsolen und interne Agenten, ohne die PipesHub-Oberfläche zu zeigen.
+Teams nutzen das, um eigene Produkte auf PipesHub zu bauen, etwa Workflow-Builder, Tools für Recht und Vertragsmanagement (CLM), Support-Konsolen und interne Agenten, ohne die PipesHub-Oberfläche zu zeigen.
 
 ### Wie unterscheidet sich PipesHub von anderen KI-Tools für den Arbeitsplatz?
 

@@ -117,7 +117,7 @@ flowchart LR
 | **企业搜索** | 一个覆盖 40+ 个连接器的搜索框，每个人只能看到自己有权查看的内容，并提供带引用的回答 | 内置 · [示例](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search) |
 | **职场 AI 助手** | 基于公司知识的对话和深度研究，另有网页搜索和语音输入 | 内置 |
 | **编程智能体的上下文** | Claude Code、Cursor 和 Codex 不只依据代码作答，还能依据设计文档、工单、事故记录和聊天讨论串作答 | [示例](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp) |
-| **无代码智能体和自动化** | 一个智能体构建器，可在 Slack、Gmail、Jira、Confluence、GitHub、Linear、Notion、Salesforce、Zendesk、Freshdesk 以及其他 20 个工具中执行操作 | 内置 |
+| **无代码智能体和工作流构建器** | 一个可视化拖放构建器，把公司知识连接到 Slack、Gmail、Jira、Confluence、GitHub、Linear、Notion、Salesforce、Zendesk、Freshdesk 以及其他 20 个工具中的操作。你也可以基于同一套 API 构建自己的工作流产品，让每一步都获得感知权限的上下文。 | 内置 · [以 headless 方式构建](#我可以不用界面以-headless-方式使用-pipeshub-吗) |
 | **客服 Copilot** | 依据历史工单、运维手册和文档（ServiceNow、Zammad、Jira、Confluence）作答，并能回到工单系统中执行操作 | 内置 · SDK |
 | **销售与客户洞察** | Salesforce 中的客户、联系人和商机进入知识图谱，可与同一客户相关的邮件、文档和聊天一起搜索 | 内置 |
 | **对数据库提问** | 对 Postgres、MariaDB 和 Snowflake 表连同其 schema 和外键一起建立索引，另有可运行 SQL 和 Python 进行分析的沙箱 | 内置 |
@@ -325,7 +325,7 @@ PipesHub 是开源的 AI 智能体上下文层。它把分散在公司各个业�
 - **服务账号：** 用于后台任务，拥有自己的权限。
 - **OAuth 应用：** 让你的应用的每个用户都以自己的身份登录（“使用 PipesHub 登录”）。
 
-团队用它在 PipesHub 之上构建自己的产品，例如法律与合同管理（CLM）工具、客服控制台和内部智能体，而无需展示 PipesHub 的界面。
+团队用它在 PipesHub 之上构建自己的产品，例如工作流构建器、法律与合同管理（CLM）工具、客服控制台和内部智能体，而无需展示 PipesHub 的界面。
 
 ### PipesHub 与其他职场 AI 工具有什么不同？
 

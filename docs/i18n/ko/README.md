@@ -117,7 +117,7 @@ flowchart LR
 | **엔터프라이즈 검색** | 40개 이상의 커넥터를 아우르는 하나의 검색창. 각 사용자에게 볼 수 있는 것만 보여 주고 인용과 함께 답변 | 내장 · [예제](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search) |
 | **업무용 AI 어시스턴트** | 회사 지식을 대상으로 한 채팅과 딥 리서치, 그리고 웹 검색과 음성 입력 | 내장 |
 | **코딩 에이전트를 위한 컨텍스트** | Claude Code, Cursor, Codex가 코드뿐 아니라 설계 문서, 티켓, 장애 기록, 채팅 스레드를 바탕으로 답변 | [예제](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp) |
-| **노코드 에이전트와 자동화** | Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk 외 20개 도구에서 액션을 실행하는 에이전트 빌더 | 내장 |
+| **노코드 에이전트와 워크플로 빌더** | 회사 지식을 Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk 외 20개 도구의 액션과 연결하는 드래그 앤 드롭 비주얼 빌더입니다. 같은 API 위에 자체 워크플로 제품을 만들 수도 있으며, 모든 단계가 권한을 인식하는 컨텍스트를 받습니다. | 내장 · [헤드리스로 만들기](#ui-없이-pipeshub를-헤드리스로-사용할-수-있나요) |
 | **고객 지원 코파일럿** | 과거 티켓, 런북, 문서(ServiceNow, Zammad, Jira, Confluence)를 바탕으로 답변하고, 티켓 도구에서 바로 액션 실행 | 내장 · SDK |
 | **영업 및 고객 인텔리전스** | Salesforce의 고객사, 연락처, 거래를 지식 그래프에 담아, 같은 고객에 관한 이메일, 문서, 채팅과 함께 검색 | 내장 |
 | **데이터베이스에 질문하기** | Postgres, MariaDB, Snowflake 테이블을 스키마와 외래 키까지 함께 인덱싱하고, 분석용 SQL과 Python을 실행하는 샌드박스 제공 | 내장 |
@@ -325,7 +325,7 @@ Slack, Google Drive, GitHub, Microsoft 365, Notion 같은 시스템을 연결한
 - **서비스 계정:** 백그라운드 작업용이며, 자체 권한을 가집니다.
 - **OAuth 앱:** 앱의 각 사용자가 본인으로 로그인하게 합니다("Sign in with PipesHub").
 
-팀들은 이를 활용해 PipesHub 위에 자체 제품을 만듭니다. 법무 및 계약 관리(CLM) 도구, 지원 콘솔, 사내 에이전트 등이 그 예이며, PipesHub UI는 보이지 않습니다.
+팀들은 이를 활용해 PipesHub 위에 자체 제품을 만듭니다. 워크플로 빌더, 법무 및 계약 관리(CLM) 도구, 지원 콘솔, 사내 에이전트 등이 그 예이며, PipesHub UI는 보이지 않습니다.
 
 ### PipesHub는 다른 업무용 AI 도구와 무엇이 다른가요?
 

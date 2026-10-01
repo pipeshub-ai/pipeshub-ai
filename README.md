@@ -113,7 +113,7 @@ One context layer, many products on top of it. Use the built-in apps as they are
 | **Enterprise search** | One search box across 40+ connectors that shows each person only what they may see, with cited answers | Built in · [example](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search) |
 | **Workplace AI assistant** | Chat and deep research over company knowledge, plus web search and voice input | Built in |
 | **Context for coding agents** | Claude Code, Cursor and Codex answer from design docs, tickets, incidents and chat threads, not only the code | [example](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp) |
-| **No-code agents and automations** | An agent builder with actions in Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk and 20 more tools | Built in |
+| **No-code agents and workflow builders** | A visual drag-and-drop builder that wires company knowledge to actions in Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk and 20 more tools. Or build your own workflow product on the same API, so every step gets permission-aware context. | Built in · [Build headless](#can-i-use-pipeshub-headless-without-its-ui) |
 | **Customer support copilots** | Answers drawn from past tickets, runbooks and docs (ServiceNow, Zammad, Jira, Confluence), with actions back in the ticketing tool | Built in · SDKs |
 | **Sales and account intelligence** | Salesforce accounts, contacts and deals in the knowledge graph, searchable alongside the emails, documents and chats about the same customers | Built in |
 | **Questions over your databases** | Postgres, MariaDB and Snowflake tables indexed with their schemas and foreign keys, plus sandboxes that run SQL and Python for analysis | Built in |
@@ -322,7 +322,7 @@ Choose how your code signs in:
 - **Service account:** for background jobs, with its own permissions.
 - **OAuth app:** lets each user of your app sign in as themselves ("Sign in with PipesHub").
 
-Teams use this to build their own products on PipesHub, such as legal and contract-management (CLM) tools, support consoles and internal agents, without showing the PipesHub UI.
+Teams use this to build their own products on PipesHub, such as workflow builders, legal and contract-management (CLM) tools, support consoles and internal agents, without showing the PipesHub UI.
 
 ### How is PipesHub different from other workplace AI tools?
 

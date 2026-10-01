@@ -117,7 +117,7 @@ Một lớp ngữ cảnh, nhiều sản phẩm bên trên. Dùng các ứng dụ
 | **Tìm kiếm doanh nghiệp** | Một ô tìm kiếm trên hơn 40 trình kết nối, mỗi người chỉ thấy những gì mình được phép xem, kèm câu trả lời có trích dẫn | Có sẵn · [ví dụ](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search) |
 | **Trợ lý AI cho nơi làm việc** | Chat và nghiên cứu chuyên sâu trên tri thức công ty, cùng với tìm kiếm web và nhập liệu bằng giọng nói | Có sẵn |
 | **Ngữ cảnh cho tác nhân lập trình** | Claude Code, Cursor và Codex trả lời dựa trên tài liệu thiết kế, ticket, sự cố và luồng chat, không chỉ dựa trên mã | [ví dụ](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp) |
-| **Tác nhân và tự động hóa không cần lập trình** | Trình tạo tác nhân với các hành động trong Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk và 20 công cụ khác | Có sẵn |
+| **Tác nhân và trình xây dựng quy trình không cần lập trình** | Trình xây dựng trực quan kéo và thả, kết nối tri thức của công ty với các hành động trong Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk và 20 công cụ khác. Hoặc xây dựng sản phẩm quy trình của riêng bạn trên cùng API, để mỗi bước đều nhận được ngữ cảnh tôn trọng quyền truy cập. | Có sẵn · [Xây dựng headless](#tôi-có-thể-dùng-pipeshub-ở-chế-độ-headless-không-cần-giao-diện-của-nó-không) |
 | **Copilot hỗ trợ khách hàng** | Câu trả lời lấy từ ticket cũ, runbook và tài liệu (ServiceNow, Zammad, Jira, Confluence), với hành động ngược lại trong công cụ quản lý ticket | Có sẵn · SDK |
 | **Thông tin bán hàng và khách hàng** | Tài khoản, liên hệ và giao dịch Salesforce trong đồ thị tri thức, có thể tìm kiếm cùng với email, tài liệu và chat về chính những khách hàng đó | Có sẵn |
 | **Hỏi đáp trên cơ sở dữ liệu của bạn** | Bảng Postgres, MariaDB và Snowflake được lập chỉ mục cùng schema và khóa ngoại, cùng sandbox chạy SQL và Python để phân tích | Có sẵn |
@@ -326,7 +326,7 @@ Chọn cách mã của bạn đăng nhập:
 - **Tài khoản dịch vụ:** cho các tác vụ chạy nền, với quyền riêng.
 - **Ứng dụng OAuth:** cho phép mỗi người dùng ứng dụng của bạn đăng nhập với tư cách chính mình ("Sign in with PipesHub").
 
-Các nhóm dùng cách này để xây dựng sản phẩm của riêng họ trên PipesHub, như công cụ pháp lý và quản lý hợp đồng (CLM), bảng điều khiển hỗ trợ và tác nhân nội bộ, mà không hiển thị giao diện PipesHub.
+Các nhóm dùng cách này để xây dựng sản phẩm của riêng họ trên PipesHub, như trình xây dựng quy trình, công cụ pháp lý và quản lý hợp đồng (CLM), bảng điều khiển hỗ trợ và tác nhân nội bộ, mà không hiển thị giao diện PipesHub.
 
 ### PipesHub khác gì so với các công cụ AI cho nơi làm việc khác?
 

@@ -117,7 +117,7 @@ Tek bağlam katmanı, üzerinde birçok ürün. Yerleşik uygulamaları olduğu 
 | **Kurumsal arama** | 40'tan fazla bağlayıcı üzerinde, herkese yalnızca görebileceklerini gösteren ve kaynaklı yanıtlar veren tek bir arama kutusu | Yerleşik · [örnek](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search) |
 | **İş yeri yapay zekâ asistanı** | Şirket bilgisi üzerinde sohbet ve derin araştırma, ayrıca web araması ve sesli giriş | Yerleşik |
 | **Kodlama ajanları için bağlam** | Claude Code, Cursor ve Codex yalnızca koddan değil; tasarım belgelerinden, taleplerden, olaylardan ve sohbet dizilerinden de yanıt verir | [örnek](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp) |
-| **Kodsuz ajanlar ve otomasyonlar** | Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk ve 20 araçta daha eylem yapabilen bir ajan oluşturucu | Yerleşik |
+| **Kodsuz ajanlar ve iş akışı oluşturucular** | Şirket bilgisini Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk ve 20 araçta daha eylemlere bağlayan, sürükle-bırak ile çalışan görsel bir oluşturucu. Ya da aynı API üzerinde kendi iş akışı ürününüzü geliştirin; böylece her adım izinlere duyarlı bağlam alır. | Yerleşik · [Headless geliştirin](#pipeshubı-arayüzü-olmadan-headless-olarak-kullanabilir-miyim) |
 | **Müşteri desteği yardımcıları** | Geçmiş taleplerden, runbook'lardan ve belgelerden (ServiceNow, Zammad, Jira, Confluence) alınan yanıtlar; talep aracında geri eylemlerle birlikte | Yerleşik · SDK'lar |
 | **Satış ve hesap içgörüsü** | Salesforce hesapları, kişileri ve fırsatları bilgi grafında; aynı müşterilerle ilgili e-postalar, belgeler ve sohbetlerle birlikte aranabilir | Yerleşik |
 | **Veritabanlarınız üzerine sorular** | Şemaları ve yabancı anahtarlarıyla indekslenen Postgres, MariaDB ve Snowflake tabloları, ayrıca analiz için SQL ve Python çalıştıran korumalı alanlar | Yerleşik |
@@ -326,7 +326,7 @@ Kodunuzun nasıl oturum açacağını seçin:
 - **Hizmet hesabı:** arka plan işleri için, kendi izinleriyle.
 - **OAuth uygulaması:** uygulamanızın her kullanıcısının kendi kimliğiyle oturum açmasını sağlar ("Sign in with PipesHub").
 
-Ekipler bunu PipesHub üzerinde kendi ürünlerini geliştirmek için kullanır; örneğin hukuk ve sözleşme yönetimi (CLM) araçları, destek konsolları ve şirket içi ajanlar. Kullanıcılar PipesHub arayüzünü hiç görmez.
+Ekipler bunu PipesHub üzerinde kendi ürünlerini geliştirmek için kullanır; örneğin iş akışı oluşturucular, hukuk ve sözleşme yönetimi (CLM) araçları, destek konsolları ve şirket içi ajanlar. Kullanıcılar PipesHub arayüzünü hiç görmez.
 
 ### PipesHub diğer iş yeri yapay zekâ araçlarından nasıl ayrılır?
 
