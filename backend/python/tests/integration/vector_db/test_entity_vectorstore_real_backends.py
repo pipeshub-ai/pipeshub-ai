@@ -618,3 +618,31 @@ class TestWriteOutcomeAndLocks:
         await asyncio.gather(*(store.upsert_entities_batch([w]) for w in writers))
         payload = await _point(store, org, "department", "eng")
         assert sorted(payload["connectorIds"]) == [f"c{i}" for i in range(6)]
+
+    async def test_cleanup_keeps_a_connector_added_after_the_scroll(self, store: EntityVectorStore) -> None:
+        """KG-34 residue: the strip phase re-reads by id under the lock, so a
+        connector indexed between the page scroll and the write survives."""
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([_entity("t1", org=org, connectors=["c-gone", "c-other"])])
+        await _publish_writes(store)
+        service = store.vector_db_service
+        real_retrieve = service.retrieve_points
+        added = False
+
+        async def _retrieve_after_a_concurrent_index(collection: str, ids: list[str]) -> list:
+            nonlocal added
+            if not added:
+                added = True
+                await service.update_payload_by_ids(
+                    collection, [store._point_id(org, "topic", "t1")],
+                    {"connectorIds": ["c-gone", "c-other", "c-new"]},
+                )
+            return await real_retrieve(collection, ids)
+
+        service.retrieve_points = _retrieve_after_a_concurrent_index
+        try:
+            await store.delete_entities_by_connector(org, "c-gone", record_group_ids=[])
+        finally:
+            service.retrieve_points = real_retrieve
+        payload = await _point(store, org, "topic", "t1")
+        assert payload["connectorIds"] == ["c-other", "c-new"]

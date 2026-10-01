@@ -54,6 +54,7 @@ import weakref
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
@@ -100,6 +101,14 @@ class _MembershipReadError(Exception):
 
 
 _ENTITIES_COLLECTION = QdrantCollectionNames.ENTITIES.value
+
+
+class _Page(Enum):
+    """What connector cleanup did with one scrolled page."""
+
+    CHANGED = "changed"
+    ALREADY_DONE = "already_done"  # every point gone or already stripped
+    NO_ENTITIES = "no_entities"  # only points without an entity id or type
 
 
 # Ids of unwritten entities named in one warning; the count is always given.
@@ -864,11 +873,13 @@ class EntityVectorStore:
         )
         previous_page: set[str] = set()
         attempts = 0
+        offset: str | None = None
         while True:
             page = await self.vector_db_service.scroll(
                 collection_name=self.collection_name,
                 scroll_filter=taxonomy_filter,
                 limit=page_size,
+                offset=offset,
                 with_payload=[
                     "metadata.entityId", "metadata.entityType",
                     CONNECTOR_IDS_FIELD, RECORD_GROUP_IDS_FIELD,
@@ -884,9 +895,19 @@ class EntityVectorStore:
                     f"(org={org_id} connector={connector_id}); a retry resumes it"
                 )
             previous_page = page_ids
-            if await self._strip_or_delete(
+            result = await self._strip_or_delete(
                 page.points, org_id, connector_id, group_ids, membership_lookup,
-            ):
+            )
+            if result is _Page.ALREADY_DONE:
+                # Search lags by-id writes (OpenSearch refreshes every 30 s), so
+                # a page this run already handled can come back; step past it.
+                offset = page.next_offset
+                if offset is None:
+                    break
+                continue
+            if result is _Page.CHANGED:
+                # The page left the filter; start over so paging never goes deep.
+                offset = None
                 continue
             # Only points without an entity id or type are on this page. A
             # short page is everything left in the filter, so the sweep below
@@ -962,45 +983,62 @@ class EntityVectorStore:
         connector_id: str,
         group_ids: set[str],
         membership_lookup: MembershipLookup | None = None,
-    ) -> bool:
-        """Apply step 2 to one page. Returns whether any point was changed."""
-        stripped: dict[tuple[str, tuple[str, ...], tuple[str, ...]], list[str]] = {}
-        exclusive: dict[str, list[str]] = {}
-        for point in points:
-            meta = _entity_metadata(point.payload)
-            entity_id, entity_type = meta.get("entityId"), meta.get("entityType")
-            if not entity_id or not entity_type:
-                continue
-            connectors = tuple(
-                c for c in (point.payload.get(CONNECTOR_IDS_FIELD) or []) if c != connector_id
-            )
-            if not connectors:
-                exclusive.setdefault(entity_type, []).append(entity_id)
-                continue
-            groups = tuple(
-                g for g in (point.payload.get(RECORD_GROUP_IDS_FIELD) or []) if g not in group_ids
-            )
-            stripped.setdefault((entity_type, connectors, groups), []).append(entity_id)
+    ) -> _Page:
+        """Apply step 2 to one page.
 
-        for (entity_type, connectors, groups), entity_ids in stripped.items():
-            filter_expr = await self._entities_filter(org_id, entity_type, entity_ids)
-            await self.vector_db_service.set_payload(
-                self.collection_name,
-                {CONNECTOR_IDS_FIELD: list(connectors), RECORD_GROUP_IDS_FIELD: list(groups)},
-                filter_expr,
-                refresh=True,
-            )
-        progressed = bool(stripped or exclusive)
-        if exclusive and membership_lookup is not None:
-            exclusive = await self._rewrite_still_reached(
-                org_id, exclusive, membership_lookup, connector_id, group_ids,
-            )
-        for entity_type, entity_ids in exclusive.items():
-            filter_expr = await self._entities_filter(org_id, entity_type, entity_ids)
-            await self.vector_db_service.delete_points(
-                self.collection_name, filter_expr, refresh=True,
-            )
-        return progressed
+        The page's points are read again by id under their entities' locks,
+        and the stripped membership is computed from that read, not from the
+        scroll: a record indexed since the page was scrolled keeps the
+        connector it just added. Stripped membership is written by id, which
+        every backend applies at once; a search-based update would skip a
+        point rewritten since the last OpenSearch refresh.
+        """
+        refs = [
+            (point.id, meta["entityType"], meta["entityId"])
+            for point in points
+            if (meta := _entity_metadata(point.payload)).get("entityId") and meta.get("entityType")
+        ]
+        if not refs:
+            return _Page.NO_ENTITIES
+        async with contextlib.AsyncExitStack() as locks:
+            for key in sorted({self._entity_key(org_id, entity_type, entity_id) for _, entity_type, entity_id in refs}):
+                await locks.enter_async_context(self._entity_lock(key))
+            fresh = {
+                point.id: point.payload or {}
+                for point in await self.vector_db_service.retrieve_points(
+                    self.collection_name, [point_id for point_id, _, _ in refs],
+                )
+            }
+            stripped: dict[tuple[tuple[str, ...], tuple[str, ...]], list[str]] = {}
+            exclusive: dict[str, list[str]] = {}
+            for point_id, entity_type, entity_id in refs:
+                payload = fresh.get(point_id)
+                stored = list((payload or {}).get(CONNECTOR_IDS_FIELD) or [])
+                if payload is None or connector_id not in stored:
+                    continue  # gone, or already stripped
+                connectors = tuple(c for c in stored if c != connector_id)
+                if not connectors:
+                    exclusive.setdefault(entity_type, []).append(entity_id)
+                    continue
+                groups = tuple(g for g in (payload.get(RECORD_GROUP_IDS_FIELD) or []) if g not in group_ids)
+                stripped.setdefault((connectors, groups), []).append(point_id)
+            if not stripped and not exclusive:
+                return _Page.ALREADY_DONE
+
+            for (connectors, groups), point_ids in stripped.items():
+                await self.vector_db_service.update_payload_by_ids(
+                    self.collection_name, point_ids,
+                    {CONNECTOR_IDS_FIELD: list(connectors), RECORD_GROUP_IDS_FIELD: list(groups)},
+                )
+            if exclusive and membership_lookup is not None:
+                exclusive = await self._rewrite_still_reached(
+                    org_id, exclusive, membership_lookup, connector_id, group_ids,
+                    point_ids={(t, e): point_id for point_id, t, e in refs},
+                )
+            for entity_type, entity_ids in exclusive.items():
+                filter_expr = await self._entities_filter(org_id, entity_type, entity_ids)
+                await self.vector_db_service.delete_points(self.collection_name, filter_expr, refresh=True)
+        return _Page.CHANGED
 
     async def _rewrite_still_reached(
         self,
@@ -1009,6 +1047,7 @@ class EntityVectorStore:
         membership_lookup: MembershipLookup,
         connector_id: str,
         group_ids: set[str],
+        point_ids: dict[tuple[str, str], str] | None = None,
     ) -> dict[str, list[str]]:
         """Rewrite, from the graph, the exclusive-looking points that other
         connectors' records still reach. Returns the ids left to delete.
@@ -1030,12 +1069,12 @@ class EntityVectorStore:
                     to_delete.setdefault(entity_type, []).append(entity_id)
                     continue
                 groups = [g for g in membership.get("recordGroupIds") or [] if g not in group_ids]
-                filter_expr = await self._entities_filter(org_id, entity_type, [entity_id])
-                await self.vector_db_service.set_payload(
-                    self.collection_name,
+                point_id = (point_ids or {}).get((entity_type, entity_id)) or self._point_id(
+                    org_id, entity_type, entity_id,
+                )
+                await self.vector_db_service.update_payload_by_ids(
+                    self.collection_name, [point_id],
                     {CONNECTOR_IDS_FIELD: connectors, RECORD_GROUP_IDS_FIELD: groups},
-                    filter_expr,
-                    refresh=True,
                 )
         return to_delete
 
