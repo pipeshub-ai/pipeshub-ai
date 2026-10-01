@@ -85,6 +85,14 @@ export class ConnectorScheduleSweepService {
           concurrency: 1,
         },
       );
+      // BullMQ emits 'error' asynchronously; without a listener Node treats it as uncaught.
+      const logAsyncError = (message: string) => (error: unknown) => {
+        this.logger.error(message, {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      };
+      this.queue.on('error', logAsyncError('Connector schedule sweep queue error'));
+      this.worker.on('error', logAsyncError('Connector schedule sweep worker error'));
 
       // Idempotent across replicas and restarts; a changed interval replaces the old one.
       await this.queue.upsertJobScheduler(
@@ -125,14 +133,17 @@ export class ConnectorScheduleSweepService {
     };
 
     let desired: scheduledConnectorsClient.ScheduledConnectorRecord[];
+    let listingPartial = false;
     let snapshot: Awaited<ReturnType<CrawlingSchedulerService['listRepeatableSchedules']>>;
     try {
       // Snapshot before fetching: a schedule a user creates mid-sweep is not in
       // it, so it can never be mistaken for an orphan.
       snapshot = await this.scheduler.listRepeatableSchedules();
-      desired = await scheduledConnectorsClient.fetchAllScheduledConnectors(
+      const listing = await scheduledConnectorsClient.fetchAllScheduledConnectors(
         this.appConfig,
       );
+      desired = listing.items;
+      listingPartial = listing.partial;
     } catch (error) {
       this.logger.error('Connector schedule sweep aborted; nothing changed', {
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -165,10 +176,13 @@ export class ConnectorScheduleSweepService {
         const matching = current.filter((r) => Number(r.every) === every);
         const stale = current.filter((r) => Number(r.every) !== every);
 
-        for (const r of stale) {
-          await this.scheduler.removeRepeatableByKey(r.key);
-        }
+        // Drop extras only when a matching schedule is already present.
+        // Otherwise upsertRepeatingSchedule adds the replacement first, so a
+        // failed add does not leave the connector with no schedule.
         if (matching.length > 0) {
+          for (const r of stale) {
+            await this.scheduler.removeRepeatableByKey(r.key);
+          }
           continue;
         }
 
@@ -200,6 +214,16 @@ export class ConnectorScheduleSweepService {
       }
     }
 
+    if (listingPartial) {
+      // A failed config read omits that connector. Deleting its job would
+      // look the same as removing a real orphan.
+      this.logger.warn(
+        'Sweep connector list was partial; skipping orphan removal',
+        { schedules: snapshot.length },
+      );
+      return finish();
+    }
+
     if (desired.length === 0 && snapshot.length > 0) {
       // An empty list with live schedules is more likely a read failure than
       // every connector being disabled; disabling removes its job anyway.
@@ -211,6 +235,11 @@ export class ConnectorScheduleSweepService {
     }
 
     for (const r of snapshot) {
+      // Cron schedules (no `every`) are never removed as orphans. A listed
+      // connector's cron job is still replaced, since its config says interval.
+      if (r.every == null || r.every === '') {
+        continue;
+      }
       if (desiredNames.has(r.name)) {
         continue;
       }

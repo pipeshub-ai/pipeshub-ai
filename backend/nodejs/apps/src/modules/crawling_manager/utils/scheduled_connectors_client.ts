@@ -16,6 +16,14 @@ export interface ScheduledConnectorRecord {
 export interface ScheduledConnectorsPage {
   items: ScheduledConnectorRecord[];
   hasMore: boolean;
+  /** A config read failed, so `items` is not the full page. */
+  partial: boolean;
+}
+
+export interface ScheduledConnectorListing {
+  items: ScheduledConnectorRecord[];
+  /** True when any page omitted connectors because a config read failed. */
+  partial: boolean;
 }
 
 /** Page size sent to the Python all-scheduled endpoint. */
@@ -65,27 +73,32 @@ export const fetchScheduledConnectorsPage = async (
   const data = resp.data as {
     items?: ScheduledConnectorRecord[];
     hasMore?: boolean;
+    partial?: boolean;
   } | null;
 
   return {
     items: data?.items ?? [],
     hasMore: data?.hasMore ?? false,
+    partial: data?.partial === true,
   };
 };
 
 /**
  * Fetch every page. Throws on the first failed page or when the page cap is
- * hit, so callers never act on a partial list.
+ * hit. A page that loaded but omitted connectors whose config could not be
+ * read is returned with `partial` set, so callers can skip destructive work.
  */
 export const fetchAllScheduledConnectors = async (
   appConfig: AppConfig,
-): Promise<ScheduledConnectorRecord[]> => {
-  const all: ScheduledConnectorRecord[] = [];
+): Promise<ScheduledConnectorListing> => {
+  const items: ScheduledConnectorRecord[] = [];
+  let partial = false;
   for (let page = 1; page <= SCHEDULED_CONNECTORS_MAX_PAGES; page++) {
-    const { items, hasMore } = await fetchScheduledConnectorsPage(appConfig, page);
-    all.push(...items);
-    if (!hasMore) {
-      return all;
+    const pageResult = await fetchScheduledConnectorsPage(appConfig, page);
+    items.push(...pageResult.items);
+    partial = partial || pageResult.partial;
+    if (!pageResult.hasMore) {
+      return { items, partial };
     }
   }
   throw new Error(
