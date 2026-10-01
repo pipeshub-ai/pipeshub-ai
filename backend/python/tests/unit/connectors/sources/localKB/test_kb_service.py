@@ -28,16 +28,12 @@ import pytest
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.utils.user_messages import action_failed
 from app.config.constants.service import DefaultEndpoints
-<<<<<<< Updated upstream
-from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
-from app.exceptions.graph_db_exceptions import GraphQueryError
-=======
 from app.connectors.sources.localKB.handlers.kb_service import (
     FOLDER_DEPTH_LIMIT_REASON,
     KnowledgeBaseService,
     folder_levels_in_path,
 )
->>>>>>> Stashed changes
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import FileRecord
 from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH
 

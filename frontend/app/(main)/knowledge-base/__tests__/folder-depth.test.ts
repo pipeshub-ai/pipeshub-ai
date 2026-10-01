@@ -14,6 +14,15 @@ describe('folder depth helpers', () => {
     ).toBe(2);
   });
 
+  it('does not count a collection root that the API labels as a folder', () => {
+    const trail = [
+      { id: 'kb', name: 'Engineering', nodeType: 'folder' },
+      { id: 'f1', name: 'Designs', nodeType: 'folder' },
+    ];
+    expect(folderDepthOf(trail, 'kb')).toBe(1);
+    expect(folderDepthOf([{ id: 'kb', name: 'Engineering', nodeType: 'folder' }], 'kb')).toBe(0);
+  });
+
   it('counts the folder levels an upload path adds', () => {
     expect(folderLevelsInPath('notes.txt')).toBe(0);
     expect(folderLevelsInPath('top/notes.txt')).toBe(1);

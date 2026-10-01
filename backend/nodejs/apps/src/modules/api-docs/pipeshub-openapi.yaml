@@ -5733,6 +5733,7 @@ components:
         - breadcrumbs
         - counts
         - permissions
+        - maxFolderDepth
       properties:
         maxFolderDepth:
           type: integer

@@ -273,7 +273,7 @@ function KnowledgeBasePageContent() {
   const remainingFolderLevels =
     maxFolderDepth == null
       ? Infinity
-      : Math.max(maxFolderDepth - folderDepthOf(tableData?.breadcrumbs), 0);
+      : Math.max(maxFolderDepth - folderDepthOf(tableData?.breadcrumbs, selectedKbId), 0);
   const canAddFolderHere = remainingFolderLevels > 0;
 
   // Get table items directly from API response (no client-side filtering)

@@ -39,7 +39,6 @@ CONTAINER_FILTER_MAX_TERMS = 25_000
 # omitted is unrecoverable recall loss with nothing to notice.
 CONTAINER_INHERIT_MAX_DEPTH = 20
 
-<<<<<<< Updated upstream
 # Records considered per entity when listing an entity's records, taken
 # before the newest-first sort. Without a bound, a language or broad category
 # linked to most of an org's records is sorted in full on every page. Past the
@@ -56,6 +55,10 @@ CANONICAL_PARENT_RELATION_TYPES = (
 # the same externalRecordId, several BELONGS_TO parents), so this caps result
 # size; it is not a tuning knob.
 PATH_MAX_CANDIDATES = 64
+
+# Deepest a knowledge-base folder may sit; a folder directly in the collection is
+# depth 1. Enforced on folder create, upload and move.
+KB_MAX_FOLDER_DEPTH = 20
 
 
 def select_canonical_chain_names(
@@ -93,11 +96,6 @@ def select_canonical_chain_names(
                 break
     names.reverse()
     return names
-=======
-# Deepest a knowledge-base folder may sit; a folder directly in the collection is
-# depth 1. Enforced on folder create, upload and move.
-KB_MAX_FOLDER_DEPTH = 20
->>>>>>> Stashed changes
 
 
 def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:

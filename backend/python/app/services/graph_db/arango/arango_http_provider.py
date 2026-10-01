@@ -144,11 +144,8 @@ from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
-<<<<<<< Updated upstream
     ENTITY_CANDIDATE_SCAN_CAP,
-=======
     KB_MAX_FOLDER_DEPTH,
->>>>>>> Stashed changes
     MAX_DIRECT_GRANT_RECORDS,
     PATH_MAX_CANDIDATES,
     ROOT_SCOPED_CONNECTOR_TYPES,
