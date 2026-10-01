@@ -13,6 +13,7 @@ import pytest
 from app.config.constants.arangodb import EventTypes
 from app.connectors.services.vector_cleanup_events import (
     MAX_VIRTUAL_RECORD_IDS_PER_EVENT,
+    build_connector_cleanup_events,
     build_connector_vector_cleanup_events,
 )
 from app.services.graph_db.vector_membership_queries import can_use_membership_cleanup
@@ -161,3 +162,42 @@ class TestExhaustedBackfillGate:
             )
             is expected
         )
+
+
+
+class TestEntityCleanupEvent:
+    """Entity cleanup is its own event, always published: a connector or KB
+    can have entity points (synced record groups) and no indexed records, in
+    which case no record-cleanup event goes out at all (KG-45)."""
+
+    @pytest.mark.parametrize("backfilled", [True, False])
+    def test_is_always_last_and_present(self, backfilled) -> None:
+        events = build_connector_cleanup_events(
+            org_id="org-1", connector_id="conn-1", vector_membership_backfilled=backfilled,
+            connector_name="GOOGLE_DRIVE", record_group_ids=["rg-1", "rg-1", " "],
+            virtual_record_ids=[],
+        )
+        assert events[-1]["eventType"] == EventTypes.DELETE_CONNECTOR_ENTITIES.value
+        assert events[-1]["payload"] == {
+            "orgId": "org-1", "connectorId": "conn-1", "connectorName": "GOOGLE_DRIVE",
+            "recordGroupIds": ["rg-1"],
+        }
+
+    def test_record_events_come_first_unchanged(self) -> None:
+        kwargs = {"org_id": "org-1", "connector_id": "conn-1", "vector_membership_backfilled": True}
+        events = build_connector_cleanup_events(**kwargs)
+        assert [e["eventType"] for e in events[:-1]] == [
+            e["eventType"] for e in build_connector_vector_cleanup_events(**kwargs)
+        ]
+
+    def test_unknown_groups_stay_unknown(self) -> None:
+        """None lets the store recover groups from its own points; [] says the
+        graph knew of none. The event must not turn one into the other."""
+        unknown = build_connector_cleanup_events(
+            org_id="o", connector_id="c", vector_membership_backfilled=True, record_group_ids=None,
+        )
+        empty = build_connector_cleanup_events(
+            org_id="o", connector_id="c", vector_membership_backfilled=True, record_group_ids=[],
+        )
+        assert unknown[-1]["payload"]["recordGroupIds"] is None
+        assert empty[-1]["payload"]["recordGroupIds"] == []
