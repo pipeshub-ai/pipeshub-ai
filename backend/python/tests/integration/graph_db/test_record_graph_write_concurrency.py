@@ -38,6 +38,7 @@ from app.modules.transformers.graphdb import GraphDBTransformer
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import (
     Neo4jProvider,
+    collection_to_label,
     edge_collection_to_relationship,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -199,3 +200,37 @@ class TestConcurrentEnrichment:
         assert await _edges(provider, hierarchy, f"{SUBCATEGORY_1.collection}/{_key(org_id, SUBCATEGORY_1)}") == [
             _key(org_id, SUBCATEGORY_2)
         ]
+
+
+class TestConcurrentDepartmentSeed:
+    """KG-49: the indexing and connector services seed departments at start,
+    often together; both must leave one global node per department."""
+
+    async def test_two_seeds_at_once_leave_one_node_per_name(self, backend) -> None:
+        provider, _ = backend
+        departments = CollectionNames.DEPARTMENTS.value
+        if isinstance(provider, Neo4jProvider):
+            label = collection_to_label(departments)
+            await provider.client.execute_query(f"MATCH (d:{label}) WHERE d.orgId IS NULL DETACH DELETE d")
+            seed = provider._initialize_departments
+        else:
+            await provider.http_client.execute_aql(
+                f"FOR d IN {departments} FILTER d.orgId == null REMOVE d IN {departments}", {},
+            )
+            seed = provider._ensure_departments_seed
+
+        await asyncio.gather(seed(), seed(), seed())
+
+        if isinstance(provider, Neo4jProvider):
+            rows = await provider.client.execute_query(
+                f"MATCH (d:{label}) WHERE d.orgId IS NULL RETURN d.departmentName AS name, count(*) AS n",
+            )
+            counts = {r["name"]: r["n"] for r in rows}
+        else:
+            rows = await provider.http_client.execute_aql(
+                f"FOR d IN {departments} FILTER d.orgId == null "
+                "COLLECT name = d.departmentName WITH COUNT INTO n RETURN {name, n}",
+                {},
+            )
+            counts = {r["name"]: r["n"] for r in rows}
+        assert counts and set(counts.values()) == {1}, counts

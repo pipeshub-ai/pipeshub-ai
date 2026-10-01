@@ -446,3 +446,36 @@ class TestRecordWriteRetriesConflicts:
         assert sorted(e.name for e in entities) == ["Budget", "Finance"]
         store.rollback.assert_awaited_once()
         store.commit.assert_awaited_once()
+
+
+class TestDepartmentLookupIsOrgAware:
+    """KG-23: a department name links to the record's org's department, else
+    the global one, never another org's; ties resolve the same way each time."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("candidates", "expected"),
+        [
+            ([{"_key": "d-other", "orgId": "org-b"}, {"_key": "d-global", "orgId": None}], "d-global"),
+            ([{"_key": "d-global", "orgId": None}, {"_key": "d-mine", "orgId": "org-a"}], "d-mine"),
+            ([{"_key": "d-z", "orgId": None}, {"_key": "d-a", "orgId": None}], "d-a"),
+            ([{"_key": "d-other", "orgId": "org-b"}], None),
+        ],
+    )
+    async def test_the_right_department_is_linked(self, monkeypatch, candidates, expected) -> None:
+        transformer = _make_transformer()
+        store = _make_tx_store()
+        store.get_record_by_key = AsyncMock(return_value={"_key": "rec-1", "orgId": "org-a"})
+        store.get_nodes_by_filters = AsyncMock(
+            side_effect=lambda collection, filters: candidates if collection == "departments" else []
+        )
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_store.graph_data_store.GraphTransactionStore",
+            lambda provider, txn: store,
+        )
+        metadata = SemanticMetadata(categories=[], topics=[], languages=[], departments=["Engineering"])
+
+        entities = await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
+
+        departments = [e.entity_id for e in entities if e.entity_type.value == "department"]
+        assert departments == ([expected] if expected else [])

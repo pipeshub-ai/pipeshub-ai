@@ -401,3 +401,32 @@ async def test_neo4j_hierarchy_edge_retries_a_deadlock(monkeypatch) -> None:
     p.client.execute_query = AsyncMock(side_effect=[TransientError("DeadlockDetected"), []])
     await p.ensure_taxonomy_hierarchy_edge(CollectionNames.SUBCATEGORIES1.value, "s1", "c1")
     assert p.client.execute_query.await_count == 2
+
+
+class TestDepartmentSeedKeys:
+    """KG-49: indexing and connector pods seed departments at once; with a
+    deterministic key per name they converge on one node instead of two."""
+
+    async def test_arango_seed_uses_name_keys(self) -> None:
+        from app.services.graph_db.taxonomy import global_department_key
+
+        p = _arango([])
+        p.batch_upsert_nodes = AsyncMock()
+        await p._ensure_departments_seed()
+        nodes = p.batch_upsert_nodes.await_args.args[0]
+        assert nodes and all(n["id"] == global_department_key(n["departmentName"]) for n in nodes)
+
+    async def test_neo4j_seed_uses_name_keys(self) -> None:
+        from app.services.graph_db.taxonomy import global_department_key
+
+        p = _neo4j([])
+        p.batch_upsert_nodes = AsyncMock()
+        await p._initialize_departments()
+        nodes = p.batch_upsert_nodes.await_args.args[0]
+        assert nodes and all(n["id"] == global_department_key(n["departmentName"]) for n in nodes)
+
+    def test_keys_are_stable_per_name(self) -> None:
+        from app.services.graph_db.taxonomy import global_department_key
+
+        assert global_department_key("Engineering") == global_department_key("Engineering")
+        assert global_department_key("Engineering") != global_department_key("Sales")
