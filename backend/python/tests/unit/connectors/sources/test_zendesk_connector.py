@@ -14,11 +14,13 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
 )
 from app.connectors.sources.zendesk.connector import (
+    ALL_TICKETS_GROUP_ID,
     ARTICLES_SYNC_POINT_KEY,
     DEFAULT_INCREMENTAL_START_TIME,
     MAX_INLINE_IMAGE_BYTES,
     PAGE_SIZE,
     SYNC_POINT_KEY,
+    UNASSIGNED_GROUP_ID,
     ZendeskConnector,
 )
 from app.models.blocks import BlockGroup, DataFormat, GroupSubType, GroupType
@@ -845,7 +847,7 @@ class TestTruncatedExportGating:
 
 
 class TestUnknownGroupIsNotInvented:
-    async def test_ticket_in_unsynced_group_gets_no_record_group(self, zendesk_connector):
+    async def test_ticket_in_unsynced_group_goes_to_unassigned(self, zendesk_connector):
         """The processor would auto-create it unnamed, org-less and App-less."""
         zendesk_connector._group_id_to_data = {}
 
@@ -853,8 +855,26 @@ class TestUnknownGroupIsNotInvented:
             "id": 555, "subject": "Orphan group", "group_id": 999, "status": "open",
         })
 
-        assert record.external_record_group_id is None
-        assert record.record_group_type is None
+        assert record.external_record_group_id == UNASSIGNED_GROUP_ID
+        assert record.record_group_type == RecordGroupType.PROJECT
+
+
+class TestUnassignedTickets:
+    async def test_ticket_without_group_is_filed_under_unassigned(self, zendesk_connector):
+        record, permissions = await zendesk_connector._ticket_to_record({
+            "id": 556, "subject": "Untriaged", "group_id": None, "status": "new",
+        })
+
+        assert record.external_record_group_id == UNASSIGNED_GROUP_ID
+        assert record.record_group_type == RecordGroupType.PROJECT
+        assert [p.external_id for p in permissions if p.external_id] == [ALL_TICKETS_GROUP_ID]
+
+    def test_unassigned_record_group_is_granted_to_all_tickets_users_only(self, zendesk_connector):
+        record_group, permissions = zendesk_connector._build_unassigned_record_group()
+
+        assert record_group.external_group_id == UNASSIGNED_GROUP_ID
+        assert record_group.group_type == RecordGroupType.PROJECT
+        assert [p.external_id for p in permissions] == [ALL_TICKETS_GROUP_ID]
 
 
 # ===========================================================================
@@ -1609,7 +1629,9 @@ class TestFetchGroups:
             {"1": user}
         )
 
-        assert len(record_groups) == 1
+        assert [rg.external_group_id for rg, _ in record_groups] == [
+            "group_7", UNASSIGNED_GROUP_ID,
+        ]
         record_group, permissions = record_groups[0]
         assert record_group.external_group_id == "group_7"
         assert record_group.group_type == RecordGroupType.PROJECT
@@ -1648,7 +1670,9 @@ class TestFetchGroups:
 
         record_groups, user_groups, _ = await zendesk_connector._fetch_groups({})
 
-        assert [rg.external_group_id for rg, _ in record_groups] == ["group_7"]
+        assert [rg.external_group_id for rg, _ in record_groups] == [
+            "group_7", UNASSIGNED_GROUP_ID,
+        ]
         assert [ug.source_user_group_id for ug, _ in user_groups] == ["group_7"]
 
     async def test_deselected_group_is_still_cached(self, zendesk_connector):
