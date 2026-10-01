@@ -117,7 +117,7 @@ Une seule couche de contexte, de nombreux produits par-dessus. Utilisez les appl
 | **Recherche d'entreprise** | Une seule barre de recherche sur plus de 40 connecteurs, qui ne montre à chacun que ce qu'il a le droit de voir, avec des réponses citées | Intégré · [exemple](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search) |
 | **Assistant IA pour le travail** | Chat et recherche approfondie sur les connaissances de l'entreprise, plus la recherche web et la saisie vocale | Intégré |
 | **Contexte pour les agents de code** | Claude Code, Cursor et Codex répondent à partir des documents de conception, des tickets, des incidents et des fils de discussion, pas seulement du code | [exemple](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp) |
-| **Agents et automatisations sans code** | Un constructeur d'agents avec des actions dans Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk et 20 autres outils | Intégré |
+| **Agents sans code et constructeurs de workflows** | Un constructeur visuel par glisser-déposer qui relie le savoir de l'entreprise à des actions dans Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk et 20 autres outils. Ou construisez votre propre produit de workflows sur la même API, pour que chaque étape reçoive un contexte qui respecte les permissions. | Intégré · [Construire en headless](#puis-je-utiliser-pipeshub-en-mode-headless-sans-son-interface-) |
 | **Copilotes de support client** | Des réponses tirées des anciens tickets, des runbooks et de la documentation (ServiceNow, Zammad, Jira, Confluence), avec des actions renvoyées dans l'outil de ticketing | Intégré · SDK |
 | **Intelligence commerciale et comptes** | Les comptes, contacts et opportunités Salesforce dans le graphe de connaissances, consultables avec les e-mails, documents et conversations sur les mêmes clients | Intégré |
 | **Questions sur vos bases de données** | Les tables Postgres, MariaDB et Snowflake indexées avec leurs schémas et clés étrangères, plus des bacs à sable qui exécutent du SQL et du Python pour l'analyse | Intégré |
@@ -326,7 +326,7 @@ Choisissez comment votre code se connecte :
 - **Compte de service :** pour les tâches en arrière-plan, avec ses propres permissions.
 - **Application OAuth :** permet à chaque utilisateur de votre application de se connecter avec sa propre identité (« Sign in with PipesHub »).
 
-Des équipes s'en servent pour construire leurs propres produits sur PipesHub, comme des outils juridiques et de gestion des contrats (CLM), des consoles de support et des agents internes, sans afficher l'interface de PipesHub.
+Des équipes s'en servent pour construire leurs propres produits sur PipesHub, comme des constructeurs de workflows, des outils juridiques et de gestion des contrats (CLM), des consoles de support et des agents internes, sans afficher l'interface de PipesHub.
 
 ### En quoi PipesHub diffère-t-il des autres outils d'IA pour le travail ?
 

@@ -117,7 +117,7 @@ Uma camada de contexto, muitos produtos em cima dela. Use os apps integrados com
 | **Busca corporativa** | Uma caixa de busca sobre mais de 40 conectores que mostra a cada pessoa só o que ela pode ver, com respostas citadas | Integrado · [exemplo](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search) |
 | **Assistente de IA para o trabalho** | Chat e pesquisa aprofundada sobre o conhecimento da empresa, além de busca na web e entrada por voz | Integrado |
 | **Contexto para agentes de código** | Claude Code, Cursor e Codex respondem a partir de documentos de design, tickets, incidentes e threads de chat, não só do código | [exemplo](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp) |
-| **Agentes e automações no-code** | Um construtor de agentes com ações no Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk e mais 20 ferramentas | Integrado |
+| **Agentes e construtores de fluxos de trabalho no-code** | Um construtor visual de arrastar e soltar que liga o conhecimento da empresa a ações no Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk e mais 20 ferramentas. Ou construa seu próprio produto de fluxos de trabalho sobre a mesma API, para que cada etapa receba um contexto que respeita permissões. | Integrado · [Construir headless](#posso-usar-o-pipeshub-de-forma-headless-sem-a-interface) |
 | **Copilotos de suporte ao cliente** | Respostas tiradas de tickets antigos, runbooks e documentação (ServiceNow, Zammad, Jira, Confluence), com ações de volta na ferramenta de tickets | Integrado · SDKs |
 | **Inteligência de vendas e contas** | Contas, contatos e negócios do Salesforce no grafo de conhecimento, pesquisáveis junto com os e-mails, documentos e chats sobre os mesmos clientes | Integrado |
 | **Perguntas sobre seus bancos de dados** | Tabelas de Postgres, MariaDB e Snowflake indexadas com seus esquemas e chaves estrangeiras, além de sandboxes que rodam SQL e Python para análise | Integrado |
@@ -326,7 +326,7 @@ Escolha como o seu código faz login:
 - **Conta de serviço:** para tarefas em segundo plano, com permissões próprias.
 - **App OAuth:** permite que cada usuário do seu app faça login como ele mesmo ("Sign in with PipesHub").
 
-Equipes usam isso para construir seus próprios produtos sobre o PipesHub, como ferramentas jurídicas e de gestão de contratos (CLM), consoles de suporte e agentes internos, sem mostrar a interface do PipesHub.
+Equipes usam isso para construir seus próprios produtos sobre o PipesHub, como construtores de fluxos de trabalho, ferramentas jurídicas e de gestão de contratos (CLM), consoles de suporte e agentes internos, sem mostrar a interface do PipesHub.
 
 ### Em que o PipesHub difere de outras ferramentas de IA para o trabalho?
 

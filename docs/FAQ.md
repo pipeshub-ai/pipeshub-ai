@@ -19,7 +19,7 @@ Choose how your code signs in:
 - **Service account:** for background jobs, with its own permissions.
 - **OAuth app:** lets each user of your app sign in as themselves ("Sign in with PipesHub").
 
-Teams use this to build their own products on PipesHub, such as legal and contract-management (CLM) tools, support consoles and internal agents, without showing the PipesHub UI.
+Teams use this to build their own products on PipesHub, such as workflow builders, legal and contract-management (CLM) tools, support consoles and internal agents, without showing the PipesHub UI.
 
 ## How is PipesHub different from other workplace AI tools?
 
