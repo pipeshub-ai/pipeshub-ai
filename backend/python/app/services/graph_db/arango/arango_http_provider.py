@@ -4137,6 +4137,28 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self.logger.debug(f"✅ Successfully retrieved {len(typed_records)} typed records for connector {connector_id}")
         return typed_records
 
+    async def filter_records_shared_with_anyone(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """See :meth:`IGraphDBProvider.filter_records_shared_with_anyone`."""
+        ids = list(dict.fromkeys(r for r in record_ids if r))
+        if not ids or not org_id:
+            return set()
+        rows = await self.http_client.execute_aql(
+            """
+            FOR a IN @@anyone
+                FILTER a.file_key IN @record_ids AND a.organization == @org_id
+                FILTER a.active == true
+                RETURN DISTINCT a.file_key
+            """,
+            bind_vars={"@anyone": CollectionNames.ANYONE.value, "record_ids": ids, "org_id": org_id},
+            txn_id=transaction,
+        )
+        return {str(r) for r in rows or [] if r}
+
     async def get_entity_index_candidate(
         self,
         collection: str,

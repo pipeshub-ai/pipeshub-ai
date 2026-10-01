@@ -2640,6 +2640,28 @@ class Neo4jProvider(IGraphDBProvider):
 
         return typed_records
 
+    async def filter_records_shared_with_anyone(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """See :meth:`IGraphDBProvider.filter_records_shared_with_anyone`."""
+        ids = list(dict.fromkeys(r for r in record_ids if r))
+        if not ids or not org_id:
+            return set()
+        rows = await self.client.execute_query(
+            """
+            MATCH (a:Anyone)
+            WHERE a.file_key IN $record_ids AND a.organization = $org_id
+              AND coalesce(a.active, true) = true
+            RETURN DISTINCT a.file_key AS id
+            """,
+            parameters={"record_ids": ids, "org_id": org_id},
+            txn_id=transaction,
+        )
+        return {str(row["id"]) for row in rows or [] if row.get("id")}
+
     async def get_entity_index_candidate(
         self,
         collection: str,
