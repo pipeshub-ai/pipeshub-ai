@@ -784,8 +784,8 @@ class ZendeskConnector(BaseConnector):
                 # its own right and must exist even if its ticket is never indexed. This
                 # is also what rebuilds their edges after a full sync wipes them, so an
                 # unchanged ticket needs no forced reindex to get them back.
-                for record, _ in records_with_permissions:
-                    await self._sync_ticket_attachments(record)
+                for record, permissions in records_with_permissions:
+                    await self._sync_ticket_attachments(record, permissions)
 
             # Cursor export returns no end_time; resume from the newest ticket seen.
             for ticket_data in tickets:
@@ -1034,9 +1034,12 @@ class ZendeskConnector(BaseConnector):
                 records_with_permissions[start:start + BATCH_PROCESSING_SIZE]
             )
         # After the articles are published, so the parent exists before its children.
-        for record, _ in records_with_permissions:
+        for record, permissions in records_with_permissions:
             await self._build_article_attachment_child_records(
-                record.external_record_id.removeprefix("article_"), record
+                record.external_record_id.removeprefix("article_"),
+                record,
+                permissions,
+                refresh_permissions=True,
             )
 
         now_seconds = get_epoch_timestamp_in_ms() // 1000
@@ -1327,14 +1330,16 @@ class ZendeskConnector(BaseConnector):
         )
         self._apply_indexing_filter(record, IndexingFilterKey.KNOWLEDGE_BASE)
         # Restricted articles were filtered out above, so ORG is the right grant.
-        permissions = [
+        return record, self._article_permissions()
+
+    def _article_permissions(self) -> List[Permission]:
+        return [
             Permission(
                 type=PermissionType.READ,
                 entity_type=EntityType.ORG,
                 external_id=self.data_entities_processor.org_id,
             )
         ]
-        return record, permissions
 
     async def stream_record(
         self,
@@ -1380,7 +1385,9 @@ class ZendeskConnector(BaseConnector):
         )
         return [comment for comment in comments if comment.get("public", True)]
 
-    async def _sync_ticket_attachments(self, ticket_record: Record) -> None:
+    async def _sync_ticket_attachments(
+        self, ticket_record: Record, permissions: List[Permission]
+    ) -> None:
         """Publish the ticket's comment attachments as records during the sync.
 
         Zendesk hangs attachments off comments rather than the ticket, and the
@@ -1388,16 +1395,36 @@ class ZendeskConnector(BaseConnector):
         ticket. Jira gets the same records for free from ``fields.attachment``.
         """
         for comment in await self._fetch_public_comments(ticket_record.external_record_id):
-            await self._build_attachment_child_records(comment, ticket_record)
+            await self._build_attachment_child_records(
+                comment, ticket_record, permissions, refresh_permissions=True
+            )
+
+    async def _fetch_ticket_permissions(self, ticket_id: str) -> List[Permission]:
+        """Re-derive a ticket's grants for the streaming path, which only has its Record."""
+        datasource = await self._get_fresh_datasource()
+        response = await self._call_api(datasource.show_ticket, ticket_id=int(ticket_id))
+        ticket = self._extract_object(response.data, "ticket") if response.success else None
+        if not ticket:
+            raise ValueError(f"Failed to fetch Zendesk ticket {ticket_id} for its permissions")
+        return self._record_permissions(
+            ticket.get("group_id"),
+            self._user_id_to_data.get(str(ticket.get("requester_id")), {}),
+            ticket.get("organization_id"),
+        )
 
     async def _process_ticket_blockgroups_for_streaming(self, record: Record) -> bytes:
         comments = await self._fetch_public_comments(record.external_record_id)
+        permissions: List[Permission] = []
+        if any(comment.get("attachments") for comment in comments):
+            permissions = await self._fetch_ticket_permissions(record.external_record_id)
         block_groups: List[BlockGroup] = []
         for index, comment in enumerate(comments):
             body = comment.get("html_body") or comment.get("body") or ""
             if "<" in body and ">" in body:
                 body = html_to_markdown(await self._inline_images_as_base64(body))
-            children_records = await self._build_attachment_child_records(comment, record)
+            children_records = await self._build_attachment_child_records(
+                comment, record, permissions
+            )
             author = self._user_id_to_data.get(str(comment.get("author_id")), {})
             is_description = index == 0
             block_groups.append(BlockGroup(
@@ -1440,7 +1467,9 @@ class ZendeskConnector(BaseConnector):
         article = self._extract_object(response.data, "article")
         body = article.get("body") or ""
         body_md = html_to_markdown(await self._inline_images_as_base64(body)) if body else ""
-        children_records = await self._build_article_attachment_child_records(article_id, record)
+        children_records = await self._build_article_attachment_child_records(
+            article_id, record, self._article_permissions()
+        )
         block_groups: List[BlockGroup] = [BlockGroup(
             id=str(uuid4()),
             index=0,
@@ -1534,6 +1563,9 @@ class ZendeskConnector(BaseConnector):
         self,
         comment: Dict[str, Any],
         parent_record: Record,
+        permissions: List[Permission],
+        *,
+        refresh_permissions: bool = False,
     ) -> List[ChildRecord]:
         # An attachment has no ACL of its own — it inherits its comment's.
         if not comment.get("public", True):
@@ -1543,12 +1575,17 @@ class ZendeskConnector(BaseConnector):
             parent_record,
             f"ticket_{parent_record.external_record_id}_comment_{comment.get('id')}",
             self._rebuild_ticket_edges,
+            permissions,
+            refresh_permissions=refresh_permissions,
         )
 
     async def _build_article_attachment_child_records(
         self,
         article_id: str,
         parent_record: Record,
+        permissions: List[Permission],
+        *,
+        refresh_permissions: bool = False,
     ) -> List[ChildRecord]:
         """FileRecords for an article's non-inline attachments.
 
@@ -1571,6 +1608,8 @@ class ZendeskConnector(BaseConnector):
             parent_record,
             parent_record.external_record_id,
             self._rebuild_article_edges,
+            permissions,
+            refresh_permissions=refresh_permissions,
         )
 
     async def _emit_attachment_records(
@@ -1579,18 +1618,24 @@ class ZendeskConnector(BaseConnector):
         parent_record: Record,
         external_id_prefix: str,
         rebuild_edges: bool,
+        permissions: List[Permission],
+        *,
+        refresh_permissions: bool = False,
     ) -> List[ChildRecord]:
         """Publish FileRecords for a parent's attachments and return their child links.
 
         One attachment has one home: an image referenced from the content is embedded
         there as base64, everything else becomes a record. Never both.
 
-        No explicit permissions: ``inherit_permissions`` is on and the record lands in
-        the parent's record group, so it picks up that group's grants. That is the
-        Jira shape (``jira_cloud/connector.py:3596`` copies an always-empty list).
+        ``permissions`` are the parent's own grants. The record group only carries the
+        group grants; the requester and shared-org grants live on the parent record, so
+        without them an end user can read a ticket but not its attachments.
+        ``refresh_permissions`` replaces the grants of attachments that already exist —
+        only the sync path, which knows the parent's current grants, asks for it.
         """
         child_records: List[ChildRecord] = []
         records_with_permissions: List[Tuple[Record, List[Permission]]] = []
+        existing_records: List[Record] = []
         for attachment in attachments:
             attachment_id = attachment.get("id")
             content_url = attachment.get("content_url")
@@ -1613,6 +1658,10 @@ class ZendeskConnector(BaseConnector):
                 record_name=file_name,
                 record_type=RecordType.FILE,
                 external_record_id=external_id,
+                # Attachments never change, but the processor rewrites a stored record only
+                # when this changes: without it a move updates the edges and leaves the
+                # record's own group id stale, and the vector payload keeps both groups.
+                external_revision_id=f"{attachment_id}:{parent_record.external_record_group_id}",
                 parent_external_record_id=parent_record.external_record_id,
                 # Omitted, the processor writes PARENT_CHILD instead of ATTACHMENT.
                 parent_record_type=parent_record.record_type,
@@ -1643,7 +1692,9 @@ class ZendeskConnector(BaseConnector):
                 != file_record.external_record_group_id
             )
             if existing_record is None or rebuild_edges or moved:
-                records_with_permissions.append((file_record, []))
+                records_with_permissions.append((file_record, permissions))
+            if existing_record is not None and refresh_permissions and not rebuild_edges:
+                existing_records.append(file_record)
             child_records.append(ChildRecord(
                 child_type=ChildType.RECORD,
                 child_id=record_id,
@@ -1651,6 +1702,11 @@ class ZendeskConnector(BaseConnector):
             ))
         if records_with_permissions:
             await self.data_entities_processor.on_new_records(records_with_permissions)
+        # on_new_records only adds edges, so a grant the parent lost would linger.
+        for file_record in existing_records:
+            await self.data_entities_processor.on_updated_record_permissions(
+                file_record, permissions
+            )
         return child_records
 
     async def _process_file_for_streaming(self, record: Record) -> bytes:
