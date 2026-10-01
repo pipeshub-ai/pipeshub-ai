@@ -799,3 +799,29 @@ class TestDuplicatePathRowsCarryTheNodesOrg:
             await provider.http_client.execute_aql(
                 f"FOR d IN {TOPICS} FILTER d._key == @k REMOVE d IN {TOPICS}", {"k": legacy},
             )
+
+
+class TestNeo4jLegacyAliasHeal:
+    """KG-50: aliases stored as node lists before TaxonomyAlias nodes existed
+    are healed once at startup, so tier 0 matches them again."""
+
+    async def test_list_only_aliases_get_alias_nodes_once(self, neo4j) -> None:
+        provider, org_id = neo4j
+        key = f"{org_id}-legacy-alias"
+        await provider.client.execute_query(
+            "CREATE (:Topics {id: $key, name: 'Release', normalizedName: 'release', orgId: $org, "
+            "aliases: ['Go live'], normalizedAliases: ['go live']})",
+            parameters={"key": key, "org": org_id},
+        )
+        await provider.client.execute_query(
+            "MATCH (m:SchemaMigration {id: 'taxonomy_alias_nodes_v1'}) DELETE m",
+        )
+        assert await provider.find_taxonomy_nodes(TOPICS, org_id, ["go live"]) == []
+
+        assert await provider.heal_taxonomy_alias_nodes() > 0
+        rows = await provider.find_taxonomy_nodes(TOPICS, org_id, ["go live"])
+        assert [r["id"] for r in rows] == [key]
+        assert await provider.heal_taxonomy_alias_nodes() == 0
+        await provider.client.execute_query(
+            "MATCH (a:TaxonomyAlias {orgId: $org}) DETACH DELETE a", parameters={"org": org_id},
+        )
