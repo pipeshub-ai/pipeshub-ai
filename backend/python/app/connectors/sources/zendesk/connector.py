@@ -115,6 +115,7 @@ DELETED_TICKET_STATUS = "deleted"
 # whatever its group, so they cannot be derived from group membership.
 ALL_TICKETS_GROUP_ID = "role_all_tickets"
 ALL_TICKETS_ACCESS = "all"
+UNASSIGNED_GROUP_ID = "unassigned_tickets"
 # Custom roles exist on Enterprise plans only; other plans answer with one of these.
 CUSTOM_ROLES_UNAVAILABLE_STATUSES = frozenset({403, 404})
 # Base64 inflates by a third and the result is held in the record body.
@@ -552,8 +553,26 @@ class ZendeskConnector(BaseConnector):
             ]
             record_groups.append((record_group, permissions))
 
+        record_groups.append(self._build_unassigned_record_group())
+
         # Both feed a rebuild-from-scratch that would revoke whatever fell off the end.
         return record_groups, user_groups, groups_complete and memberships_complete
+
+    def _build_unassigned_record_group(self) -> Tuple[RecordGroup, List[Permission]]:
+        """Home for tickets with no usable group (every new ticket before triage).
+
+        A record with no record group gets no App edge and drops out of the tree, so
+        it would be visible to its requester alone.
+        """
+        record_group = RecordGroup(
+            org_id=self.data_entities_processor.org_id,
+            name="Unassigned",
+            external_group_id=UNASSIGNED_GROUP_ID,
+            connector_name=Connectors.ZENDESK,
+            connector_id=self.connector_id,
+            group_type=RecordGroupType.PROJECT,
+        )
+        return record_group, [self._all_tickets_permission()]
 
     async def _fetch_custom_role_ticket_access(self) -> Tuple[Dict[str, str], bool]:
         """Map custom role id -> ticket_access, plus whether the list is trustworthy.
@@ -893,11 +912,11 @@ class ZendeskConnector(BaseConnector):
         item_type = self.value_mapper.map_type(ticket_data.get("type")) or ItemType.UNKNOWN
         # A group we never synced would be auto-created unnamed, org-less and App-less.
         known_group = group_id is not None and str(group_id) in self._group_id_to_data
-        external_group_id = f"group_{group_id}" if known_group else None
+        external_group_id = f"group_{group_id}" if known_group else UNASSIGNED_GROUP_ID
         if group_id and not known_group:
             self.logger.warning(
-                "Zendesk: ticket %s references unknown group %s — filing it without a "
-                "record group rather than inventing one", ticket_id, group_id,
+                "Zendesk: ticket %s references unknown group %s — filing it under "
+                "Unassigned rather than inventing a group", ticket_id, group_id,
             )
 
         record = TicketRecord(
@@ -908,7 +927,7 @@ class ZendeskConnector(BaseConnector):
             external_record_id=str(ticket_id),
             external_revision_id=str(updated_at) if updated_at else None,
             external_record_group_id=external_group_id,
-            record_group_type=RecordGroupType.PROJECT if external_group_id else None,
+            record_group_type=RecordGroupType.PROJECT,
             version=version,
             origin=OriginTypes.CONNECTOR,
             connector_name=Connectors.ZENDESK,
