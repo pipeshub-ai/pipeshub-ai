@@ -61,6 +61,8 @@ import * as toolsetsRoutes from '../src/modules/toolsets/routes/toolsets_routes'
 import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes';
 import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
 import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
+import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
+import { BrokerTopic } from '../src/libs/types/messaging.types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -889,6 +891,27 @@ describe('Application', () => {
       } catch (err: any) {
         expect(err.message).to.equal('Redis disconnect error');
       }
+    });
+  });
+
+  describe('bootstrapMailBrokerConsumer()', () => {
+    it('subscribes from the start so mail queued before a new group exists is delivered', async () => {
+      const app = new Application();
+      (app as any).logger = mockLogger;
+      const consumer = {
+        start: sandbox.stub().resolves(),
+        subscribe: sandbox.stub().resolves(),
+        consume: sandbox.stub().resolves(),
+      };
+      const mailContainer = new Container();
+      mailContainer.bind<any>(MailConsumer).toConstantValue(consumer);
+      (app as any).mailServiceContainer = mailContainer;
+
+      (app as any).bootstrapMailBrokerConsumer();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(consumer.subscribe.calledOnceWithExactly([BrokerTopic.MAIL_EVENTS], true)).to.be.true;
+      expect(consumer.consume.calledOnce).to.be.true;
     });
   });
 

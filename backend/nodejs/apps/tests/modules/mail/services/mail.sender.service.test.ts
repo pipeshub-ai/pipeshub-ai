@@ -69,9 +69,21 @@ describe('MailSenderService', () => {
     const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
 
     const result = await sender.send(body, smtp);
+    await new Promise((resolve) => setImmediate(resolve));
 
     expect(result.status).to.equal('sent');
     expect(mockLogger.error.called).to.be.true;
+  });
+
+  it('reports sent without waiting for the audit record to save', async () => {
+    // A hung Mongo would otherwise hold the broker handler past its budget.
+    (MailModel.prototype.save as sinon.SinonStub).returns(new Promise(() => {}));
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+
+    const result = await sender.send(body, smtp);
+
+    expect(result.status).to.equal('sent');
+    expect((MailModel.prototype.save as sinon.SinonStub).calledOnce).to.be.true;
   });
 
   it('classifies an SMTP 5xx rejection as permanent', async () => {

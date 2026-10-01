@@ -197,6 +197,34 @@ export class MailSenderService {
     }
   }
 
+  /**
+   * Not awaited: the email is already delivered, so the audit write must not
+   * spend the send budget or turn a delivery into a failed, retried send.
+   */
+  private recordAudit(bodyData: MailBody, smtpConfig: SmtpConfig): void {
+    const logFailure = (persistError: unknown) =>
+      this.logger.error('Mail sent but audit record failed to save', {
+        error:
+          persistError instanceof Error
+            ? persistError.message
+            : String(persistError),
+      });
+    try {
+      new MailModel({
+        orgId: bodyData.orgId,
+        subject: bodyData.subject,
+        from: smtpConfig.fromEmail,
+        to: bodyData.sendEmailTo,
+        cc: bodyData.sendCcTo ? bodyData.sendCcTo : [],
+        emailTemplateType: bodyData.emailTemplateType,
+      })
+        .save()
+        .catch(logFailure);
+    } catch (persistError) {
+      logFailure(persistError);
+    }
+  }
+
   /** Returns the outcome instead of throwing, so the caller decides on retry. */
   async send(
     bodyData: MailBody,
@@ -243,27 +271,7 @@ export class MailSenderService {
         deadlineMs,
       );
       this.recordSuccess(key);
-
-      // Already delivered: a failed audit write must not trigger a duplicate send.
-      try {
-        const mailEntry = new MailModel({
-          orgId: bodyData.orgId,
-          subject: bodyData.subject,
-          from: smtpConfig.fromEmail,
-          to: bodyData.sendEmailTo,
-          cc: bodyData.sendCcTo ? bodyData.sendCcTo : [],
-          emailTemplateType: bodyData.emailTemplateType,
-        });
-        await mailEntry.save();
-      } catch (persistError) {
-        this.logger.error('Mail sent but audit record failed to save', {
-          error:
-            persistError instanceof Error
-              ? persistError.message
-              : String(persistError),
-        });
-      }
-
+      this.recordAudit(bodyData, smtpConfig);
       return { status: 'sent' };
     } catch (error) {
       const message =

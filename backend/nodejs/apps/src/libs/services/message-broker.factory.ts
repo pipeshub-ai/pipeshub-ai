@@ -256,6 +256,9 @@ export function createMailMessageConsumer(
       groupId: MAIL_CONSUMER_GROUP,
     }),
     claimMinIdleMs: MAIL_CONSUMER_LIVENESS_MS,
+    // A batch would idle later entries past claimMinIdleMs while earlier
+    // sends run, letting a replica that starts up reclaim and resend them.
+    readCount: 1,
   };
   return createMessageConsumerByParts(
     MessageBrokerType.REDIS,

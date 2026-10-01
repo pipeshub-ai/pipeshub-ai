@@ -100,6 +100,14 @@ describe('MessageBrokerFactory', () => {
         MAIL_MESSAGE_BUDGET_MS,
       );
     });
+
+    it('takes one redis mail job at a time so queued jobs do not idle into a reclaim', () => {
+      process.env.MESSAGE_BROKER = 'redis';
+
+      const consumer = createMailMessageConsumer(appConfig, mockLogger as any);
+
+      expect((consumer as any).count).to.equal(1);
+    });
   });
 
   // ================================================================

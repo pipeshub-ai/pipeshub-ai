@@ -339,7 +339,7 @@ export abstract class BaseRedisStreamsConsumerConnection
       config.groupId ?? `${config.clientId ?? 'redis-consumer'}-group`;
     this.consumerId = config.clientId ?? 'consumer-' + crypto.randomUUID();
     this.blockMs = REDIS_STREAMS_DEFAULTS.blockMs;
-    this.count = REDIS_STREAMS_DEFAULTS.count;
+    this.count = config.readCount ?? REDIS_STREAMS_DEFAULTS.count;
     this.redis = createStreamsClient(config);
     this.ackRedis = createStreamsClient(config);
     this.planner = new StreamReadPlanner(streamsProvider(config));
@@ -469,7 +469,7 @@ export abstract class BaseRedisStreamsConsumerConnection
             this.config.claimMinIdleMs ?? 30000,
             startId,
             'COUNT',
-            '10',
+            String(this.count),
           );
 
           // ioredis returns [nextStartId, [[id, fields], ...], deletedIds]

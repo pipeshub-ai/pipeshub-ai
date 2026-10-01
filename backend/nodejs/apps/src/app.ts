@@ -763,7 +763,10 @@ export class Application {
         const consumer =
           this.mailServiceContainer.get<MailConsumer>(MailConsumer);
         await consumer.start();
-        await consumer.subscribe([BrokerTopic.MAIL_EVENTS], false);
+        // From the start: an invite can be queued before a brand-new group
+        // exists, and starting at the tail would skip it. An existing group
+        // resumes from its own offsets, so delivered mail is not replayed.
+        await consumer.subscribe([BrokerTopic.MAIL_EVENTS], true);
         await consumer.consume(async () => {
           /* delivery, retry and failure notification live in MailConsumer */
         });
