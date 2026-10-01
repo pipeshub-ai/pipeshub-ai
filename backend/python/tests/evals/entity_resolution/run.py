@@ -116,7 +116,12 @@ class GoldOracle:
         self.node_entity.setdefault(node_key, entity)
 
     async def __call__(self, llm: object, messages: list, schema: object, **_: object) -> MergeDecisions:
-        items = json.loads(_PROMPT_ITEMS.search(messages[0].content).group(1))
+        found = _PROMPT_ITEMS.search(messages[0].content)
+        if found is None:
+            # Raised loudly: swallowed as a failed call, oracle mode would
+            # quietly score the same as no model.
+            raise AssertionError("merge prompt layout changed; update GoldOracle._PROMPT_ITEMS")
+        items = json.loads(found.group(1))
         first_of_entity: dict[str, int] = {}
         decisions = []
         for item in items:
@@ -138,7 +143,7 @@ def _model(spec: str) -> object | None:
         return None
     provider, _, name = spec.partition(":")
     if provider != "openai" or not name:
-        raise ValueError(f"unknown model {spec!r}; use none or openai:<model>")
+        raise ValueError(f"unknown model {spec!r}; use none, oracle or openai:<model>")
     if not os.environ.get("OPENAI_API_KEY"):
         raise SystemExit("OPENAI_API_KEY is not set")
     from langchain_openai import ChatOpenAI

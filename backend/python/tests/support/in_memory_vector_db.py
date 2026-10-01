@@ -73,8 +73,9 @@ def _lookup(payload: dict[str, Any], dotted: str) -> object:
 def _matches(payload: dict[str, Any], condition: FieldCondition) -> bool:
     found = _lookup(payload, condition.key)
     if condition.values_count_lte is not None:
+        # A single value counts as one, as every provider counts it.
         count_ok = found is _ABSENT or found is None or (
-            isinstance(found, list) and len(found) <= condition.values_count_lte
+            (len(found) if isinstance(found, list) else 1) <= condition.values_count_lte
         )
         if not count_ok:
             return False
@@ -95,6 +96,9 @@ def _passes(payload: dict[str, Any], expr: FilterExpression | None) -> bool:
     if any(_matches(payload, c) for c in expr.must_not):
         return False
     if expr.should:
+        # Qdrant's reading: at least one SHOULD must match even beside MUST.
+        # OpenSearch makes SHOULD optional with min_should_match=0 and Redis
+        # rejects the argument, so this is the strictest common behaviour.
         needed = expr.min_should_match or 1
         if sum(_matches(payload, c) for c in expr.should) < needed:
             return False
@@ -284,11 +288,16 @@ class InMemoryVectorDBService(IVectorDBService):
     ) -> None:
         if filter.is_empty():
             raise ValueError("refusing to delete with an empty filter")
+        if not filter.has_positive_match():
+            # A length bound alone also matches every point without the field.
+            raise ValueError("refusing to delete with a filter that matches no value")
         stored = self._points(collection_name)
         for point_id in [i for i, p in stored.items() if _passes(p.payload, filter)]:
             del stored[point_id]
 
     async def overwrite_payload(self, collection_name: str, payload: dict, points: FilterExpression) -> None:
+        if points.is_empty():
+            raise ValueError("refusing to overwrite payload with an empty filter")
         for point in self._points(collection_name).values():
             if _passes(point.payload, points):
                 point.payload = copy.deepcopy(payload)

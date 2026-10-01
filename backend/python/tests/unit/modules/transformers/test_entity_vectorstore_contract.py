@@ -54,3 +54,33 @@ TestFinalSweep = suite.TestFinalSweep
 TestRebuildSupport = suite.TestRebuildSupport
 TestWriteOutcomeAndLocks = suite.TestWriteOutcomeAndLocks
 TestSearchPasses = suite.TestSearchPasses
+
+
+class TestFakeKeepsTheProviderGuards:
+    """Guards every real provider enforces; a fake without them would pass a
+    unit test for a write that fails in production."""
+
+    async def test_a_delete_bounding_only_a_length_is_refused(self) -> None:
+        service = InMemoryVectorDBService()
+        await service.create_collection("c")
+        flt = await service.filter_collection(max_values={"connectorIds": 1})
+        with pytest.raises(ValueError):
+            await service.delete_points("c", flt)
+
+    async def test_an_overwrite_with_no_filter_is_refused(self) -> None:
+        from app.services.vector_db.models import FilterExpression
+
+        service = InMemoryVectorDBService()
+        await service.create_collection("c")
+        with pytest.raises(ValueError):
+            await service.overwrite_payload("c", {"x": 1}, FilterExpression())
+
+    async def test_a_single_value_counts_as_one_under_a_length_bound(self) -> None:
+        from app.services.vector_db.models import VectorPoint
+
+        service = InMemoryVectorDBService()
+        await service.create_collection("c")
+        await service.upsert_points("c", [VectorPoint(id="p", payload={"connectorIds": "x"})])
+        flt = await service.filter_collection(must={"connectorIds": "x"}, max_values={"connectorIds": 1})
+        page = await service.scroll("c", flt, limit=10)
+        assert [p.id for p in page.points] == ["p"]
