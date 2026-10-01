@@ -1,10 +1,12 @@
 """GraphDBTransformer with an EntityResolution: canonical nodes, aliases, edge provenance."""
 
+from functools import partial
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.blocks import SemanticMetadata
 from app.models.entities import EntityType
 from app.modules.entity_resolution.keys import taxonomy_node_key
@@ -47,6 +49,9 @@ def _transformer(store, provider=None) -> GraphDBTransformer:
     transformer.graph_data_store = MagicMock()
     transformer.graph_data_store.graph_provider = provider or AsyncMock()
     transformer.graph_data_store.transaction = MagicMock(return_value=ctx_mgr)
+    transformer.graph_data_store.execute_idempotent_in_transaction = partial(
+        GraphDataStore.execute_idempotent_in_transaction, transformer.graph_data_store,
+    )
     return transformer
 
 
@@ -126,17 +131,30 @@ class TestWithResolution:
         provider.add_taxonomy_aliases.assert_not_awaited()
 
     async def test_subcategory_entity_carries_level_and_hierarchy_edge(self) -> None:
+        """The hierarchy edge is shared by every record with the chain, so it
+        is written through the provider before the record's transaction
+        (KG-32), never inside it."""
         store = _tx_store()
+        provider = AsyncMock()
+        order: list[str] = []
+        provider.ensure_taxonomy_hierarchy_edge = AsyncMock(side_effect=lambda *a: order.append("edge"))
         cat = ResolvedEntity(kind=CATEGORY, key="k-cat", name="Legal", normalized="legal", is_new=True, decision="new", extracted_names=["Legal"])
         sub = ResolvedEntity(kind=SUBCATEGORY_1, key="k-sub", name="Contract", normalized="contract", is_new=True, decision="new", extracted_names=["Contract"])
-        touched = await _transformer(store).save_metadata_to_db(
+        transformer = _transformer(store, provider)
+        transformer.graph_data_store.transaction.side_effect = (
+            lambda: (order.append("txn"), transformer.graph_data_store.transaction.return_value)[1]
+        )
+        touched = await transformer.save_metadata_to_db(
             "rec-1", _metadata(categories=["Legal"], sub_category_level_1="Contract"), "vr-1",
             resolution=_resolution(cat, sub),
         )
         (record,) = [t for t in touched if t.entity_type is EntityType.SUBCATEGORY]
         assert record.level == "1" and record.entity_id == "k-sub"
-        (hierarchy,) = _created_edges(store, CollectionNames.INTER_CATEGORY_RELATIONS.value)
-        assert hierarchy["from_id"] == "k-sub" and hierarchy["to_id"] == "k-cat"
+        provider.ensure_taxonomy_hierarchy_edge.assert_awaited_once_with(
+            CollectionNames.SUBCATEGORIES1.value, "k-sub", "k-cat",
+        )
+        assert order == ["edge", "txn"]
+        assert _created_edges(store, CollectionNames.INTER_CATEGORY_RELATIONS.value) == []
 
     async def test_name_missing_from_resolution_links_its_per_org_node(self) -> None:
         """The legacy lookup is by name alone across orgs; with a resolution a
