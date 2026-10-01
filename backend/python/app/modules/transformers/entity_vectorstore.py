@@ -127,6 +127,17 @@ class EntityWriteOutcome:
 
 
 @dataclass(frozen=True)
+class EntitySearchPass:
+    """The membership one search pass is filtered to. ``org_wide`` allows a
+    pass with no ids, which searches the whole org (every hit must then be
+    checked against the graph)."""
+
+    record_group_ids: frozenset[str] = frozenset()
+    connector_ids: frozenset[str] = frozenset()
+    org_wide: bool = False
+
+
+@dataclass(frozen=True)
 class EntityPointRef:
     """Which graph node an entity point projects; see ``page_entity_points``."""
 
@@ -1157,99 +1168,111 @@ class EntityVectorStore:
         *,
         allow_org_wide: bool = False,
     ) -> list[dict[str, Any]]:
-        """Semantically search for entities matching *query*, scoped to what
-        the caller can reach.
+        """One scoped entity search; see ``search_entities_passes``."""
+        (hits,) = await self.search_entities_passes(
+            query, org_id,
+            [EntitySearchPass(
+                frozenset(accessible_record_group_ids), frozenset(accessible_connector_ids), allow_org_wide,
+            )],
+            entity_types=entity_types, top_k=top_k, score_threshold=score_threshold,
+        )
+        return hits
 
-        *accessible_record_group_ids*/*accessible_connector_ids* are
-        **required** (plain id sets, not an ACL object — this class stays
-        graph-free) so a direct call cannot silently produce an unfiltered,
-        org-wide search. Only ``allow_org_wide=True`` drops the membership
-        filter, for callers that verify every hit against the graph (see
-        ``app.modules.retrieval.entity_permissions``) — stored membership
-        can be empty or stale, so it is a recall hint, never an access check.
+    async def search_entities_passes(
+        self,
+        query: str,
+        org_id: str,
+        passes: list[EntitySearchPass],
+        *,
+        entity_types: list[str] | None = None,
+        top_k: int = 10,
+        score_threshold: float = _CONFIDENCE_THRESHOLD,
+    ) -> list[list[dict[str, Any]]]:
+        """Semantically search for entities matching *query* once per pass,
+        in a single vector request, returning one hit list per pass.
 
-        Filter shape: ``must={orgId[, entityType]}`` AND
-        ``should={recordGroupIds, connectorIds}`` (at least one must match —
-        no ``min_should_match``, since KB/Collection records have no record
-        group by design and are reachable only via ``connectorIds``; see
-        ``services/vector_db/membership.py``).
+        A pass's record group and connector ids are **required** (plain id
+        sets, not an ACL object; this class stays graph-free), so a direct
+        call cannot silently produce an unfiltered, org-wide search. Only
+        ``org_wide=True`` drops the membership filter, for callers that verify
+        every hit against the graph (``app.modules.retrieval.entity_permissions``).
+        Stored membership can be empty or stale, so it is a recall hint, never
+        an access check. A pass with no ids and not org-wide returns no hits.
 
-        Returns a list of dicts:
-            {entityId, entityType, name, score, connectorIds, recordGroupIds}
+        Filter shape per pass: ``must={orgId[, entityType]}`` AND
+        ``should={recordGroupIds, connectorIds}`` (at least one must match).
+        There is no ``min_should_match``, since KB records have no record group
+        by design and are reachable only via ``connectorIds``.
+
+        Each hit is ``{entityId, entityType, name, canonicalName, aliases,
+        score, connectorIds, recordGroupIds}``.
 
         Raises on a vector DB failure so callers can tell it apart from "no
         match".
         """
         await self._ensure_initialized()
-
-        if not query.strip() or not org_id:
-            return []
-
-        if not allow_org_wide and not accessible_record_group_ids and not accessible_connector_ids:
-            # Omitting the should-group here would leave only the org/type
-            # must-filter, silently widening back to an org-wide search.
-            return []
-
-        dense_vec, sparse_vec = await self._query_vectors(query)
-
-        must_conditions: dict[str, Any] = {"metadata.orgId": org_id}
-        if entity_types:
-            must_conditions["metadata.entityType"] = entity_types  # list → "any of" filter
-
-        should_conditions: dict[str, Any] = {}
-        if accessible_record_group_ids:
-            should_conditions[RECORD_GROUP_IDS_FIELD] = sorted(accessible_record_group_ids)
-        if accessible_connector_ids:
-            should_conditions[CONNECTOR_IDS_FIELD] = sorted(accessible_connector_ids)
-
-        filter_expr = await self.vector_db_service.filter_collection(
-            must=must_conditions,
-            should=should_conditions,
-        )
+        results: list[list[dict[str, Any]]] = [[] for _ in passes]
+        if not query.strip() or not org_id or not passes:
+            return results
+        searchable = [
+            index for index, scope in enumerate(passes)
+            # No ids would leave only the org/type must-filter, silently
+            # widening to an org-wide search.
+            if scope.org_wide or scope.record_group_ids or scope.connector_ids
+        ]
+        if not searchable:
+            return results
 
         from app.services.vector_db.models import FusionMethod, HybridSearchRequest
 
-        request = HybridSearchRequest(
-            dense_query=dense_vec,
-            sparse_query=sparse_vec,
-            text_query=query,
-            filter=filter_expr,
-            limit=top_k,
-            fusion_method=FusionMethod.RRF,
-            with_payload=True,
-        )
-
+        dense_vec, sparse_vec = await self._query_vectors(query)
+        must: dict[str, Any] = {"metadata.orgId": org_id}
+        if entity_types:
+            must["metadata.entityType"] = entity_types  # list → "any of" filter
+        requests = []
+        for index in searchable:
+            scope = passes[index]
+            should: dict[str, Any] = {}
+            if scope.record_group_ids:
+                should[RECORD_GROUP_IDS_FIELD] = sorted(scope.record_group_ids)
+            if scope.connector_ids:
+                should[CONNECTOR_IDS_FIELD] = sorted(scope.connector_ids)
+            requests.append(HybridSearchRequest(
+                dense_query=dense_vec,
+                sparse_query=sparse_vec,
+                text_query=query,
+                filter=await self.vector_db_service.filter_collection(must=must, should=should),
+                limit=top_k,
+                fusion_method=FusionMethod.RRF,
+                with_payload=True,
+            ))
         try:
-            batch_results: list[list[SearchResult]] = (
-                await self.vector_db_service.query_nearest_points(
-                    collection_name=self.collection_name,
-                    requests=[request],
-                )
+            batch = await self.vector_db_service.query_nearest_points(
+                collection_name=self.collection_name, requests=requests,
             )
         except Exception as exc:
             self.logger.error("Entity search failed for query '%s': %s", query, exc)
             await self._reset_if_collection_changed()
             raise
+        for index, hits in zip(searchable, batch or []):
+            results[index] = [
+                self._search_hit(hit) for hit in hits if hit.score >= score_threshold
+            ]
+        return results
 
-        results_for_query = batch_results[0] if batch_results else []
-        output: list[dict[str, Any]] = []
-        for hit in results_for_query:
-            if hit.score < score_threshold:
-                continue
-            meta = _entity_metadata(hit.payload)
-            output.append(
-                {
-                    "entityId": meta.get("entityId"),
-                    "entityType": meta.get("entityType"),
-                    "name": meta.get("name", hit.payload.get("page_content", "")),
-                    "canonicalName": meta.get("canonicalName"),
-                    "aliases": meta.get("aliases") or [],
-                    "score": round(hit.score, 4),
-                    "connectorIds": hit.payload.get(CONNECTOR_IDS_FIELD) or [],
-                    "recordGroupIds": hit.payload.get(RECORD_GROUP_IDS_FIELD) or [],
-                }
-            )
-        return output
+    @staticmethod
+    def _search_hit(hit: SearchResult) -> dict[str, Any]:
+        meta = _entity_metadata(hit.payload)
+        return {
+            "entityId": meta.get("entityId"),
+            "entityType": meta.get("entityType"),
+            "name": meta.get("name", hit.payload.get("page_content", "")),
+            "canonicalName": meta.get("canonicalName"),
+            "aliases": meta.get("aliases") or [],
+            "score": round(hit.score, 4),
+            "connectorIds": hit.payload.get(CONNECTOR_IDS_FIELD) or [],
+            "recordGroupIds": hit.payload.get(RECORD_GROUP_IDS_FIELD) or [],
+        }
 
     async def _query_vectors(self, query: str) -> tuple[list[float], Any]:
         """Dense and sparse vectors for ``query``, cached: one entity search

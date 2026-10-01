@@ -470,3 +470,40 @@ class TestInitialisationBackoff:
 
         assert store._init_embeddings.await_count == 2
         assert store._initialized is True
+
+
+class TestSearchPassesAreOneRequest:
+    """KG-08: every pass of an entity search goes to the vector DB at once."""
+
+    async def test_one_request_per_pass_in_a_single_call(self) -> None:
+        from app.modules.transformers.entity_vectorstore import EntitySearchPass
+        from app.services.vector_db.models import SearchResult
+
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock(return_value=[
+            [SearchResult(id="p1", score=0.9, payload={"metadata": {"entityId": "a", "entityType": "topic"}})],
+            [SearchResult(id="p2", score=0.8, payload={"metadata": {"entityId": "b", "entityType": "topic"}})],
+        ])
+        store = _make_store(service)
+
+        results = await store.search_entities_passes("q", "org-1", [
+            EntitySearchPass(frozenset({"g1"}), frozenset({"c1"})),
+            EntitySearchPass(frozenset(), frozenset()),  # no scope, not org-wide: skipped
+            EntitySearchPass(org_wide=True),
+        ])
+
+        service.query_nearest_points.assert_awaited_once()
+        requests = service.query_nearest_points.await_args.kwargs["requests"]
+        assert len(requests) == 2
+        assert requests[0].filter["should"] == {"recordGroupIds": ["g1"], "connectorIds": ["c1"]}
+        assert requests[1].filter["should"] == {}
+        assert [[h["entityId"] for h in r] for r in results] == [["a"], [], ["b"]]
+
+    async def test_no_searchable_pass_makes_no_request(self) -> None:
+        from app.modules.transformers.entity_vectorstore import EntitySearchPass
+
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock()
+        store = _make_store(service)
+        assert await store.search_entities_passes("q", "org-1", [EntitySearchPass()]) == [[]]
+        service.query_nearest_points.assert_not_awaited()
