@@ -163,7 +163,9 @@ Only needed for the connectors you actually run. If a credential is missing, tha
 
 | Variable                         | Used by      | Purpose |
 |----------------------------------|-------------|---------|
-| `SCOPED_JWT_SECRET`              | `storage/`  | The deployment's scoped JWT secret. Storage routes accept only storage service tokens, so the suite mints its own. The integration compose files start the stack with `pipeshub-integration-scoped-jwt-secret-test-only` unless you set another value, and the nightly passes the same value to pytest. Without it the suite is skipped locally and fails on the nightly. |
+| `SCOPED_JWT_SECRET`              | `storage/`, `security/` | The deployment's scoped JWT secret. Storage routes accept only storage service tokens, so the suite mints its own. The integration compose files start the stack with `pipeshub-integration-scoped-jwt-secret-test-only` unless you set another value, and the nightly passes the same value to pytest. Without it the suite is skipped locally and fails on the nightly. |
+| `MAILPIT_URL`                    | `response-validation/auth/` | Mailpit's web API, where the emailed sign-in tests read the reset link and sign-in code. Default `http://localhost:8025`, which the integration compose publishes. |
+| `PIPESHUB_CONNECTOR_URL`         | `security/` | The connector service, for the checks that an ended session is refused by the Python services too. Default: the host of `PIPESHUB_BASE_URL` on port 8088. Skipped when unreachable. |
 | `S3_ACCESS_KEY`                  | S3          | AWS access key for test bucket. |
 | `S3_SECRET_KEY`                  | S3          | AWS secret key. |
 | `S3_REGION`                      | S3          | Optional; default `us-east-1`. |

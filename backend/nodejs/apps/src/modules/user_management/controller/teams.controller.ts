@@ -195,7 +195,7 @@ export class TeamsController {
     next: NextFunction,
   ): Promise<void> {
     const requestId = req.context?.requestId;
-    const { teamId } = req.params;
+    const { teamId } = req.params as { teamId: string };
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
     if (!orgId) {
@@ -206,7 +206,7 @@ export class TeamsController {
     }
     try {
       const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/team/${teamId}`,
+        uri: `${this.config.connectorBackend}/api/v1/entity/team/${encodeURIComponent(teamId)}`,
         headers: {
           ...(req.headers as Record<string, string>),
           'Content-Type': 'application/json',
@@ -250,7 +250,7 @@ export class TeamsController {
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
-      const teamId = req.params.teamId;
+      const teamId = req.params.teamId as string;
       if (!orgId) {
         throw new BadRequestError('Organization ID is required');
       }
@@ -258,7 +258,7 @@ export class TeamsController {
         throw new BadRequestError('User ID is required');
       }
       const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/team/${teamId}`,
+        uri: `${this.config.connectorBackend}/api/v1/entity/team/${encodeURIComponent(teamId)}`,
         method: HttpMethod.PUT,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -303,7 +303,7 @@ export class TeamsController {
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
-      const teamId = req.params.teamId;
+      const teamId = req.params.teamId as string;
       if (!orgId) {
         throw new BadRequestError('Organization ID is required');
       }
@@ -311,7 +311,7 @@ export class TeamsController {
         throw new BadRequestError('User ID is required');
       }
       const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/team/${teamId}`,
+        uri: `${this.config.connectorBackend}/api/v1/entity/team/${encodeURIComponent(teamId)}`,
         method: HttpMethod.DELETE,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -346,7 +346,7 @@ export class TeamsController {
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
-      const teamId = req.params.teamId;
+      const teamId = req.params.teamId as string;
       if (!orgId) {
         throw new BadRequestError('Organization ID is required');
       }
@@ -361,7 +361,7 @@ export class TeamsController {
       const qs = queryParams.toString();
 
       const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/team/${teamId}/users${qs ? `?${qs}` : ''}`,
+        uri: `${this.config.connectorBackend}/api/v1/entity/team/${encodeURIComponent(teamId)}/users${qs ? `?${qs}` : ''}`,
         method: HttpMethod.GET,
         headers: {
           ...(req.headers as Record<string, string>),

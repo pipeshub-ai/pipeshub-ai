@@ -386,6 +386,24 @@ basic_edge_schema = {
     "message": "Document does not match the basic edge schema.",
 }
 
+# Record -> category / subcategory / language / topic. Carries the raw name the
+# model extracted for that record, so a wrong merge can be undone per record.
+taxonomy_edge_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "createdAtTimestamp": {"type": "number"},
+            "extractedName": {"type": ["string", "null"]},
+        },
+        "required": ["createdAtTimestamp"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the taxonomy edge schema.",
+}
+
 # User -> Agent
 # User -> Agent Template
 role_based_edge_schema = {

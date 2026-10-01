@@ -241,7 +241,7 @@ export function InviteUsersSidebar({
         });
       } else {
         // ── Create mode: send new invite ──
-        await UsersApi.inviteUsers(
+        const { queued } = await UsersApi.inviteUsers(
           validEmails,
           inviteGroupIds.length > 0 ? inviteGroupIds : undefined,
           isAdmin ? inviteRole || USER_ROLES.MEMBER : USER_ROLES.MEMBER,
@@ -251,15 +251,27 @@ export function InviteUsersSidebar({
           validEmails.length === 1
             ? validEmails[0]
             : `${validEmails.length} users`;
-        addToast({
-          variant: 'success',
-          title: t('workspace.users.invite.successTitle', 'Invite sent!'),
-          description: t('workspace.users.invite.successDescription', {
-            email: emailDisplay,
-            defaultValue: `${emailDisplay} has been invited`,
-          }),
-          duration: 3000,
-        });
+        addToast(
+          queued
+            ? {
+                variant: 'success',
+                title: t('workspace.users.invite.queuedTitle', 'Invites queued'),
+                description: t('workspace.users.invite.queuedDescription', {
+                  email: emailDisplay,
+                  defaultValue: `Emails to ${emailDisplay} are being sent in the background. You'll get a notification if any can't be delivered.`,
+                }),
+                duration: 5000,
+              }
+            : {
+                variant: 'success',
+                title: t('workspace.users.invite.successTitle', 'Invite sent!'),
+                description: t('workspace.users.invite.successDescription', {
+                  email: emailDisplay,
+                  defaultValue: `${emailDisplay} has been invited`,
+                }),
+                duration: 3000,
+              },
+        );
       }
 
       // Close panel and refresh parent list

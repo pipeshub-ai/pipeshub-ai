@@ -1477,6 +1477,8 @@ describe('UserAccountController sign-in flow', () => {
       bind('AppConfig', appConfig);
       bind('AuthMiddleware', { scopedTokenValidator: () => sinon.stub() });
       bind('SessionService', sessionService);
+      // These are web sign-ins; the desktop handoff is never reached.
+      bind('SamlDesktopHandoffService', {});
       bind('IamService', iamService);
       bind('JitProvisioningService', jitService);
       bind('ConfigurationManagerService', configService);
