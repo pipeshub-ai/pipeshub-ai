@@ -104,8 +104,10 @@ class TestSearchPreviewReportsTheCap:
     async def test_capped_entity_says_more_records_even_when_its_window_is_exhausted(self) -> None:
         graph = _graph([_row("r1")], capped=True)
         store = MagicMock()
-        store.search_entities = AsyncMock(return_value=[
-            {"entityId": "t1", "entityType": "topic", "name": "Security", "score": 0.9},
+        # Every pass in one call; the hit comes from the first.
+        store.search_entities_passes = AsyncMock(side_effect=lambda q, org, passes, **kw: [
+            [{"entityId": "t1", "entityType": "topic", "name": "Security", "score": 0.9}],
+            *([] for _ in passes[1:]),
         ])
         hits = await search_entities_for_user(store, graph, _context(), "security")
         assert len(hits) == 1
@@ -128,8 +130,10 @@ class TestEmptyCappedWindow:
     async def test_probe_with_an_empty_capped_window_says_more_records(self) -> None:
         graph = _graph([], capped=True)
         store = MagicMock()
-        store.search_entities = AsyncMock(return_value=[
-            {"entityId": "rg-1", "entityType": "record_group", "name": "Roadmaps", "score": 0.9},
+        # Every pass in one call; the hit comes from the first.
+        store.search_entities_passes = AsyncMock(side_effect=lambda q, org, passes, **kw: [
+            [{"entityId": "rg-1", "entityType": "record_group", "name": "Roadmaps", "score": 0.9}],
+            *([] for _ in passes[1:]),
         ])
         context = EntityAccessContext(
             org_id=ORG, user_key="ukey", app_level_app_ids=frozenset({"kb-1"}),

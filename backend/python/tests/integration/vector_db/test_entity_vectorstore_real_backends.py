@@ -646,3 +646,28 @@ class TestWriteOutcomeAndLocks:
             service.retrieve_points = real_retrieve
         payload = await _point(store, org, "topic", "t1")
         assert payload["connectorIds"] == ["c-other", "c-new"]
+
+
+class TestSearchPasses:
+    async def test_passes_answer_separately_in_one_request(self, store: EntityVectorStore) -> None:
+        """KG-08: every pass in one vector request, each with its own scope."""
+        from app.modules.transformers.entity_vectorstore import EntitySearchPass
+
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([
+            _entity("by-group", org=org, name="Quarterly planning", connectors=["c9"], groups=["g1"]),
+            _entity("by-connector", org=org, name="Quarterly planning notes", connectors=["c1"]),
+            _entity("unscoped", org=org, name="Quarterly planning review", connectors=[]),
+        ])
+        await _publish_writes(store)
+        group_pass, connector_pass, wide_pass = await store.search_entities_passes(
+            "quarterly planning", org,
+            [
+                EntitySearchPass(frozenset({"g1"}), frozenset()),
+                EntitySearchPass(frozenset(), frozenset({"c1"})),
+                EntitySearchPass(org_wide=True),
+            ],
+        )
+        assert {h["entityId"] for h in group_pass} == {"by-group"}
+        assert {h["entityId"] for h in connector_pass} == {"by-connector"}
+        assert {h["entityId"] for h in wide_pass} == {"by-group", "by-connector", "unscoped"}
