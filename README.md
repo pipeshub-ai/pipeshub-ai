@@ -103,6 +103,25 @@ Every source becomes **Blocks**, one representation that keeps tables, threads a
 
 **[Read how the context layer works →](docs/context-layer.md)** It covers the Block format, the hierarchy and graph, every agent tool and the code it lives in, permission enforcement, the agent loop, and current limitations.
 
+## What you can build with PipesHub
+
+One context layer, many products on top of it. Use the built-in apps as they are, or build your own over MCP and the SDKs.
+
+| Build | What PipesHub gives you | Start here |
+| --- | --- | --- |
+| **Agentic RAG pipelines** | Retrieval tools an agent calls in a loop (hybrid search, `grep`, navigation, entity lookups, full-record reads), with permission checks and block-level citations already done | [SDK starter](https://github.com/pipeshub-ai/examples/tree/main/sdk-starter) · [MCP](#use-it-from-claude-code-cursor-or-codex) |
+| **Enterprise search** | One search box across 40+ connectors that shows each person only what they may see, with cited answers | Built in · [example](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search) |
+| **Workplace AI assistant** | Chat and deep research over company knowledge, plus web search and voice input | Built in |
+| **Context for coding agents** | Claude Code, Cursor and Codex answer from design docs, tickets, incidents and chat threads, not only the code | [example](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp) |
+| **No-code agents and automations** | An agent builder with actions in Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk and 20 more tools | Built in |
+| **Customer support copilots** | Answers drawn from past tickets, runbooks and docs (ServiceNow, Zammad, Jira, Confluence), with actions back in the ticketing tool | Built in · SDKs |
+| **Sales and account intelligence** | Salesforce accounts, contacts and deals in the knowledge graph, searchable alongside the emails, documents and chats about the same customers | Built in |
+| **Questions over your databases** | Postgres, MariaDB and Snowflake tables indexed with their schemas and foreign keys, plus sandboxes that run SQL and Python for analysis | Built in |
+| **Reports, charts and dashboards** | Agents write and run code in a sandbox and return the result as a shareable artifact | Built in |
+| **Engineering knowledge search** | Code, pull requests and commits from GitHub and GitLab, linked to the tickets and docs around them | Built in |
+| **Your own apps on company knowledge** | Python, TypeScript and Go SDKs, "Sign in with PipesHub" so each user searches as themselves, and an upload API for documents no connector covers | [examples](https://github.com/pipeshub-ai/examples) |
+| **Private, on-prem AI** | Everything above, self-hosted, on any LLM provider or local models via Ollama, with data kept in your infrastructure | [Deploy](#-deployment-guide) |
+
 ## Use it from Claude Code, Cursor or Codex
 
 **[Give your coding assistant secure access to your company's knowledge →](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp)**
@@ -147,13 +166,6 @@ Want the same retrieval inside your own code, or behind a search box for your te
 - 🕸️ **Knowledge graph:** Entities and relations extracted at indexing time and used at answer time.
 - 🎙️ **Multimodal:** Images, diagrams and scanned files, plus voice input.
 - 🧠 **Bring your own model, fully self-hosted:** Any LLM provider or a local model, deployed in your own infrastructure.
-
-**What you can build**
-
-- 🔍 **Search, deep research and agents** on one context layer.
-- 🤖 **No-code agents and actions** across your enterprise tools.
-- 📊 **Artifacts and code execution** in a sandbox: reports, charts, dashboards.
-- 🛠️ **APIs, SDKs and MCP** for your own agents, plus custom connectors and independently scalable services.
 
 ## PipesHub Cloud
 
@@ -220,7 +232,7 @@ the one-command installer above always uses prebuilt images.
 
 > **Advanced options:** installer flags (`--yes`, `--version`, `--reconfigure`, `--print-env-only`), CI environment variables, slim vs. full deployment types, manual Compose profile usage, and local source builds are covered in [Advanced Deployment Options](deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
 
-## Build with PipesHub
+## Build on PipesHub: MCP and SDKs
 
 The built-in search experience is one way to use PipesHub. The same connected,
 permission-filtered context is available to your own agents and applications —
