@@ -115,7 +115,7 @@ export class ScheduledJobsBackfillMigration {
     let skipped = 0;
     let errored = await this.reconcilePending();
 
-    let { items, hasMore } = firstBatch;
+    let { items, hasMore, partial } = firstBatch;
     let page = 1;
 
     for (;;) {
@@ -181,6 +181,14 @@ export class ScheduledJobsBackfillMigration {
         }
       }
 
+      if (partial) {
+        errored++;
+        this.logger.warn(
+          'Backfill page omitted connectors whose config could not be read; completion flag NOT set',
+          { page },
+        );
+      }
+
       if (!hasMore) break;
 
       page++;
@@ -201,6 +209,7 @@ export class ScheduledJobsBackfillMigration {
         const nextBatch = await this.fetchBatch(page);
         items = nextBatch.items;
         hasMore = nextBatch.hasMore;
+        partial = nextBatch.partial;
         this.logger.debug('Fetched backfill batch', {
           page,
           batchSize: items.length,

@@ -9,6 +9,11 @@ import { FakeQueueStore, REDIS_CONFIG, schedulerOver } from '../fake-crawling-qu
 
 const DAY = 1440
 
+const listed = (items: ScheduledConnectorRecord[], partial = false) => ({
+  items,
+  partial,
+})
+
 const record = (
   connectorId: string,
   intervalMinutes: number | undefined = DAY,
@@ -35,7 +40,7 @@ describe('ConnectorScheduleSweepService', () => {
 
   // Seeds BullMQ the way a successful in-request reconcile would have.
   const seed = async (...records: ScheduledConnectorRecord[]) => {
-    fetchAll.resolves(records)
+    fetchAll.resolves(listed(records))
     await sweeper.sweep()
   }
 
@@ -52,7 +57,7 @@ describe('ConnectorScheduleSweepService', () => {
   })
 
   it('recreates a missing schedule for an active scheduled connector', async () => {
-    fetchAll.resolves([record('c1', DAY, 'org-b')])
+    fetchAll.resolves(listed([record('c1', DAY, 'org-b')]))
 
     const summary = await sweeper.sweep()
 
@@ -76,7 +81,7 @@ describe('ConnectorScheduleSweepService', () => {
 
   it('replaces a schedule whose interval no longer matches the config', async () => {
     await seed(record('c1', 5))
-    fetchAll.resolves([record('c1', DAY)])
+    fetchAll.resolves(listed([record('c1', DAY)]))
 
     const summary = await sweeper.sweep()
 
@@ -84,9 +89,21 @@ describe('ConnectorScheduleSweepService', () => {
     expect(schedulesFor('c1').map((r) => r.every)).to.deep.equal([String(DAY * 60_000)])
   })
 
+  it('keeps a stale schedule when the replacement cannot be added', async () => {
+    await seed(record('c1', 5))
+    sinon.stub(scheduler, 'upsertRepeatingSchedule').rejects(new Error('redis hiccup'))
+    fetchAll.resolves(listed([record('c1', DAY)]))
+
+    const summary = await sweeper.sweep()
+
+    expect(summary.errors).to.equal(1)
+    expect(summary.driftFixed).to.equal(0)
+    expect(schedulesFor('c1').map((r) => r.every)).to.deep.equal([String(5 * 60_000)])
+  })
+
   it('removes a schedule whose connector is no longer active and scheduled', async () => {
     await seed(record('c1'), record('c2'))
-    fetchAll.resolves([record('c2')])
+    fetchAll.resolves(listed([record('c2')]))
 
     const summary = await sweeper.sweep()
 
@@ -107,7 +124,7 @@ describe('ConnectorScheduleSweepService', () => {
 
   it('keeps existing schedules when the list comes back empty', async () => {
     await seed(record('c1'))
-    fetchAll.resolves([])
+    fetchAll.resolves(listed([]))
 
     const summary = await sweeper.sweep()
 
@@ -126,7 +143,7 @@ describe('ConnectorScheduleSweepService', () => {
         late.orgId,
         'user-1',
       )
-      return [record('c1')]
+      return listed([record('c1')])
     })
 
     await sweeper.sweep()
@@ -140,7 +157,7 @@ describe('ConnectorScheduleSweepService', () => {
       if (connectorId === 'c1') throw new Error('redis hiccup')
       return upsert(connector, connectorId, ...rest)
     })
-    fetchAll.resolves([record('c1'), record('c2')])
+    fetchAll.resolves(listed([record('c1'), record('c2')]))
 
     const summary = await sweeper.sweep()
 
@@ -151,10 +168,43 @@ describe('ConnectorScheduleSweepService', () => {
 
   it('keeps the existing schedule of a connector with an invalid interval', async () => {
     await seed(record('c1'))
-    fetchAll.resolves([record('c1', undefined)])
+    fetchAll.resolves(listed([record('c1', undefined)]))
 
     await sweeper.sweep()
 
+    expect(schedulesFor('c1')).to.have.length(1)
+  })
+
+  it('repairs listed connectors but does not remove orphans when the list is partial', async () => {
+    await seed(record('c1'), record('c2', 5))
+    fetchAll.resolves(listed([record('c2', DAY)], true))
+
+    const summary = await sweeper.sweep()
+
+    expect(summary.driftFixed).to.equal(1)
+    expect(summary.orphansRemoved).to.equal(0)
+    expect(schedulesFor('c1')).to.have.length(1)
+    expect(schedulesFor('c2').map((r) => r.every)).to.deep.equal([String(DAY * 60_000)])
+  })
+
+  it('leaves a cron schedule in place when removing interval orphans', async () => {
+    await seed(record('c1'))
+    store.repeatables.set('cron-key', {
+      key: 'cron-key',
+      name: scheduler.jobNameFor('Web', 'cron-1'),
+      id: null,
+      endDate: null,
+      tz: 'UTC',
+      pattern: '0 2 * * *',
+      every: null,
+      next: Date.now(),
+    })
+    fetchAll.resolves(listed([record('c1')]))
+
+    const summary = await sweeper.sweep()
+
+    expect(summary.orphansRemoved).to.equal(0)
+    expect(store.repeatables.has('cron-key')).to.be.true
     expect(schedulesFor('c1')).to.have.length(1)
   })
 
