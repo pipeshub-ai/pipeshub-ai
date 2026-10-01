@@ -248,7 +248,7 @@ async def execute_search(
     pattern_match_task: asyncio.Task[list[dict[str, Any]]] | None = None
     try:
         logger_instance = state.get("logger", logger)
-        logger_instance.info("knowledgegraph__search: query=%r", query[:100])
+        logger_instance.info("knowledgegraph__search: query_chars=%d", len(query))
 
         retrieval_service = state.get("retrieval_service")
         graph_provider = state.get("graph_provider")
@@ -524,8 +524,8 @@ async def execute_search(
         if not search_results and entity_filter_groups:
             logger_instance.info(
                 "knowledgegraph__search: entity-filtered search returned zero "
-                "results for query=%r filters=%r — retrying without entity filters",
-                query[:100], entity_filter_groups,
+                "results (query_chars=%d, filter_groups=%d) — retrying without entity filters",
+                len(query), len(entity_filter_groups),
             )
             # Only the name-based filter is dropped — record-scoped entities
             # are already permission-checked record membership, so an empty
