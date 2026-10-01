@@ -3153,6 +3153,38 @@ class ZendeskDataSource:
             )
 
 
+    async def list_custom_roles(
+        self,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> ZendeskResponse:
+        """List custom agent roles (Enterprise plans; other plans answer 403/404).
+
+        Not paginated: the endpoint returns every role in one response.
+        """
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=f"{self.base_url}/custom_roles.json",
+                headers=dict(headers or {}),
+                query={}
+            )
+            response = await self.http.execute(request=request)
+
+            return ZendeskResponse(
+                success=response.status < SUCCESS_CODE_IS_LESS_THAN,
+                data=response.json() if response.is_json else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                status_code=response.status,
+                headers=response.headers
+            )
+
+        except Exception as e:
+            return ZendeskResponse(
+                success=False,
+                error=str(e)
+            )
+
+
     async def show_group(
         self,
         group_id: int,
