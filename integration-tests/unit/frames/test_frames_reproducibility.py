@@ -92,6 +92,27 @@ class TestConfigHashScope:
         other = cfg.model_copy(update={"answerer": cfg.answerer.model_copy(update={"model": "other-model"})})
         assert cfg.config_hash() != other.config_hash()
 
+    def test_an_unset_custom_instruction_keeps_earlier_runs_resumable(self) -> None:
+        import hashlib
+
+        cfg = self._config()
+        before_the_field = cfg.model_dump_json(exclude={
+            "pipeshub": {"base_url", "connector_url", "custom_instructions"}, "qdrant": {"url"},
+            "answerer": {"provider", "call_provider", "deployment", "pipeshub_provider", "model_key"},
+            "embedding": {"provider", "call_provider", "deployment", "pipeshub_provider", "model_key"},
+            "grading": {"primary": {"provider", "call_provider", "deployment", "pipeshub_provider", "model_key"},
+                        "secondary": {"provider", "call_provider", "deployment", "pipeshub_provider", "model_key"},
+                        "evidence_support": True},
+            "limits": {"max_cost_usd", "max_error_rate", "min_items_for_breaker"}, "stats": {"bootstrap_samples"},
+            "systems": {"__all__": {"concurrency"}},
+        })
+        assert cfg.config_hash() == hashlib.sha256(before_the_field.encode()).hexdigest()
+
+    def test_a_custom_instruction_does_change_the_hash(self) -> None:
+        cfg = self._config()
+        other = cfg.model_copy(update={"pipeshub": cfg.pipeshub.model_copy(update={"custom_instructions": "Only the docs."})})
+        assert cfg.config_hash() != other.config_hash()
+
 
 class TestRunIsSelfSufficient:
     """The corpus cache is shared and not part of any run. Clearing it must not

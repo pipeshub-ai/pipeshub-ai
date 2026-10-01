@@ -24,6 +24,7 @@ from benchmarks.harness.guard import (
 
 FRAMES_SNAPSHOT = datetime(2024, 10, 15, tzinfo=UTC)
 _ENDPOINT_FIELDS = {"base_url", "connector_url"}
+_ADDED_PIPESHUB_FIELDS = ("custom_instructions",)
 _QDRANT_ENDPOINT_FIELDS = {"url"}
 # How a model is reached, not which model it is.
 _ROUTING_FIELDS = {"provider", "call_provider", "deployment", "pipeshub_provider", "model_key"}
@@ -252,8 +253,11 @@ class RunConfig(_Frozen):
         The evidence-support settings are left out too: they only audit
         answers already given, and runs started before the check existed
         must still resume to be verified."""
+        # A setting added later is hashed only once set, so runs started
+        # before it existed still resume.
+        unset = {name for name in _ADDED_PIPESHUB_FIELDS if getattr(self.pipeshub, name) is None}
         payload = self.model_dump_json(exclude={
-            "pipeshub": _ENDPOINT_FIELDS,
+            "pipeshub": _ENDPOINT_FIELDS | unset,
             "qdrant": _QDRANT_ENDPOINT_FIELDS,
             "answerer": _ROUTING_FIELDS,
             "embedding": _ROUTING_FIELDS,
