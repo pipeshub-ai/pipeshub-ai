@@ -39,6 +39,29 @@ async def test_an_unchanged_document_is_not_downloaded_again(
     assert db.content_updates == []
 
 
+async def test_a_document_whose_stored_validators_cannot_be_read_keeps_its_stored_copy(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    site.html(START_URL, "Home", "/manual.pdf")
+    site.add(PDF, Page(body=b"%PDF-1.4 v1", content_type="application/pdf", etag='"v1"'))
+    connector = await make_connector()
+    await connector.run_sync()
+    first = db.pages()[PDF]
+    db.unreadable_file_records.add(first.id)
+    site.add(PDF, Page(body=b"%PDF-1.4 v2", content_type="application/pdf"))
+
+    await connector.run_sync()
+
+    again = db.pages()[PDF]
+    assert (again.id, again.etag, again.external_revision_id) == (first.id, '"v1"', first.external_revision_id)
+    assert db.deleted == []
+
+    db.unreadable_file_records.clear()
+    await connector.run_sync()
+
+    assert [r.weburl for r in db.content_updates] == [PDF]
+
+
 async def test_a_changed_document_is_downloaded_and_re_indexed(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:

@@ -99,6 +99,11 @@ CONTAINER_SCOPE_FILTER_KEYS = ("apps", "kb")
 #: `ChatQuery.strictScope` (see `api/routes/chatbot.py`).
 STRICT_SCOPE_FILTER_KEY = "strictScope"
 
+#: Set on a record by ``update_queued_duplicates_status`` in the same write
+#: that promotes its queued duplicates, and cleared by the indexing handler once
+#: their taxonomy has been copied. Declared in the strict records schema.
+DUPLICATE_RECONCILE_PENDING_FIELD = "duplicateReconcilePending"
+
 
 def requested_scope_ids(filters: "Mapping[str, Any] | None") -> tuple[str, ...] | None:
     """The app ids a request is scoped to, or None when it is unscoped.
@@ -359,8 +364,8 @@ class IGraphDBProvider(ABC):
     async def ensure_schema(self) -> bool:
         """
         Ensure database schema is initialized (collections, graphs, and any
-        required seed data). Should be called only from the connector service
-        during startup when schema init is enabled.
+        required seed data). Called at startup by the connector and indexing
+        services, so it must be idempotent.
 
         Returns:
             bool: True if schema was ensured successfully, False otherwise
@@ -1906,7 +1911,13 @@ class IGraphDBProvider(ABC):
             transaction: Optional transaction context
 
         Returns:
-            Optional[Dict]: File record data if found, None otherwise
+            Optional[FileRecord]: The file record, or None when the file or its
+                record is not stored - never that the read failed.
+
+        Raises:
+            GraphQueryError: The file record could not be read. Callers act on
+                None by treating the file as gone, so a failure reported as
+                None would retire or skip a file that is still there.
         """
         pass
 
@@ -2431,6 +2442,56 @@ class IGraphDBProvider(ABC):
         """List records in a KB. Returns (records, total_count, available_filters)."""
         pass
 
+    @abstractmethod
+    async def list_accessible_artifacts(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: str | None,
+        artifact_types: list[str] | None,
+        conversation_id: str | None,
+        date_from: int | None,
+        date_to: int | None,
+        sort_by: str,
+        sort_order: str,
+    ) -> tuple[list[dict], int]:
+        """Permission-first listing of user-visible artifacts.
+
+        ``user_id`` is the graph user key (``_key`` / ``id``), not the
+        external auth ``userId``. The caller resolves that key first,
+        matching ``list_all_records``.
+
+        Display-policy filters must run in the query (not post-fetch) so
+        pagination totals stay correct:
+
+        - ``recordType == ARTIFACT``
+        - ``orgId`` match, ``isDeleted != true``
+        - ``visibility`` is ``VISIBLE`` or missing
+        - ``isTemporary != true``
+        - ``artifactType != TOOL_RESULT``
+
+        Store and query failures must propagate. An empty result means "nothing
+        visible", so swallowing an error here would show up as an empty gallery.
+        """
+        pass
+
+    @abstractmethod
+    async def get_artifact_detail(
+        self,
+        user_id: str,
+        org_id: str,
+        artifact_id: str,
+    ) -> dict | None:
+        """Return one artifact the user can access, or None to hide existence.
+
+        Same identity and display-policy contract as
+        ``list_accessible_artifacts``. ``None`` means not found or not visible;
+        store and query failures must propagate rather than return ``None``.
+        """
+        pass
+
     # ==================== Group Operations ====================
 
     @abstractmethod
@@ -2772,12 +2833,19 @@ class IGraphDBProvider(ABC):
         """
         Find all QUEUED duplicate records with the same md5 hash and update their status.
 
+        Scoped to the reference record's org; a reference record with no
+        orgId updates nothing.
+
         Args:
             record_id (str): The record ID to use as reference for finding duplicates
             new_indexing_status (str): The new indexing status to set
             virtual_record_id (Optional[str]): Optional virtual record ID to set
             transaction (Optional[str]): Optional transaction ID
             reason (Optional[str]): Optional failure/status reason to set on duplicates
+
+        When at least one duplicate is promoted, the reference record is
+        marked ``duplicateReconcilePending`` in the same batch, so a crash
+        before its taxonomy is copied to them is repaired on its next event.
 
         Returns:
             int: Number of records updated
@@ -3062,6 +3130,67 @@ class IGraphDBProvider(ABC):
         return AccessibleContainers(
             fallback_reason="provider does not implement container filtering"
         )
+
+    @abstractmethod
+    async def get_entity_access_context(
+        self,
+        user_id: str,
+        org_id: str,
+        source_ids: list[str] | None = None,
+        transaction: str | None = None,
+        exclude_app_ids: frozenset[str] = frozenset(),
+    ) -> dict[str, Any] | None:
+        """
+        The apps and record groups a user can reach, for permission-scoping
+        knowledge-graph entity search (``app.modules.retrieval.entity_permissions``).
+
+        Apps:
+          - Apps linked by ``userAppRelation``, directly or via a team the
+            user belongs to (same paths as ``get_user_apps``).
+          - KB apps (``type == "KB"``, ``orgId == org_id``) shared through a
+            ``permission`` edge, directly (``type USER``) or via a team
+            (``type TEAM``) — KB sharing never creates a ``userAppRelation``.
+          - The connector of each ``authenticatedAs`` link (a source account
+            the user authenticated that connector as).
+          - Narrowed to ``source_ids`` when it is non-empty.
+          - Minus ``exclude_app_ids``, even when named in ``source_ids``; their
+            record groups drop out with them.
+
+        Record groups (only for apps that are neither KB nor
+        ``permissionModel == APP_LEVEL``):
+          - Seeded by the Knowledge Hub RecordGroup paths: direct USER
+            permission, group/role (GROUP/ROLE edge), org (ORG edge via the
+            user's ORGANIZATION ``belongsTo``), and team (TEAM edge). The
+            USER, group/role and team paths also run from each linked source
+            account, for record groups of that link's connector only.
+          - Plus child record groups inheriting from a seed via
+            ``inheritPermissions`` (depth 1..``CONTAINER_INHERIT_MAX_DEPTH``,
+            through record groups only), skipping seeds with ``hideChildren``.
+          - Every group filtered by ``orgId == org_id``, not deleted, and
+            ``connectorId`` in the qualifying apps above.
+
+        Args:
+            user_id: The ``userId`` field of the user document.
+            org_id: Organization to scope apps and record groups to.
+            source_ids: Optional app/KB ids to narrow the result to.
+            transaction: Optional transaction id.
+            exclude_app_ids: Apps to leave out even where the user has access,
+                e.g. a demo connector the user switched off.
+
+        Returns:
+            ``None`` when the user does not exist, otherwise::
+
+                {
+                  "user_key": str,
+                  "apps": [{"id", "name", "type", "permissionModel"}],
+                  "record_group_ids": [str],
+                }
+
+        Raises:
+            Exception: on any query failure. Callers fail closed and report
+                the failure instead of treating it as "no access".
+        """
+        pass
 
     @abstractmethod
     async def get_records_by_record_ids(
@@ -5086,6 +5215,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         *,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> set[str]:
         """Return ids from ``nodes`` where the user has a non-empty KH permission_role.
 
@@ -5093,6 +5223,10 @@ class IGraphDBProvider(ABC):
         Reuses the same ``_get_permission_role_*`` fragments as
         ``get_knowledge_hub_node_access`` (full inheritPermissions paths).
         Apps are not checked here — callers keep App trail segments via ACL.
+
+        A query failure returns ``set()`` unless ``raise_on_error`` is true,
+        in which case it is re-raised so the caller can tell a failure apart
+        from "no access".
 
         Not suitable for adjudicating search results: it takes record ids rather
         than virtual record ids, so it cannot pick one record per VRID, and the
@@ -5226,5 +5360,199 @@ class IGraphDBProvider(ABC):
                 ],
               },
             }
+        """
+        pass
+
+    @abstractmethod
+    async def get_taxonomy_entities_for_record(
+        self,
+        record_key: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Taxonomy entities (category/subcategory/department/topic/language)
+        directly linked to a single record via its ``belongsTo*`` edges.
+
+        Not paginated and not org-scoped by traversal — the record itself
+        pins the scope. Used by
+        the MD5-dedup path (``SinkOrchestrator.sync_entities_for_duplicate``)
+        to re-project a deduplicated record's already-copied taxonomy edges
+        into the entities vector collection, so a shared category/topic/etc.
+        picks up the duplicate's ``connectorId``/``recordGroupId``.
+
+        Args:
+            record_key: The record's ``_key`` (Arango) / ``id`` (Neo4j).
+            transaction: Optional transaction ID.
+
+        Returns:
+            List of dicts shaped like ``EntityRecord`` source fields:
+            ``{entityId, entityType, name, aliases, level}``, where ``aliases``
+            is a list of strings and ``level`` is the subcategory level
+            (``"1"``/``"2"``/``"3"``) or None for every other entity type.
+            ``sync_entities_for_duplicate`` reads all five.
+        """
+        pass
+
+    @abstractmethod
+    async def get_entity_candidate_records(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        *,
+        record_types: list[str] | None = None,
+        limit_per_entity: int = 20,
+        offset: int = 0,
+        transaction: str | None = None,
+    ) -> dict[tuple[str, str], list[dict[str, Any]]]:
+        """Records linked to each knowledge-graph entity in ``refs``, scoped
+        to the org and to each ref's connectors. **No permission check** —
+        callers (``app.modules.retrieval.entity_permissions``) check every
+        row before exposing it.
+
+        Each ref is ``{"id": str, "type": str, "connectorIds": list[str]}``:
+          - taxonomy types (``department``/``category``/``subcategory``/
+            ``topic``/``language``): records with an outbound ``belongsTo*``
+            edge to the entity node; ``subcategory`` matches levels 1-3.
+          - ``record_group``: records with a ``belongsTo`` edge to the group
+            (direct members only), and the group itself must be in ``org_id``.
+          - ``record``: the record itself.
+          - any other type: no rows.
+
+        Every row satisfies ``orgId == org_id``, not deleted,
+        ``connectorId IN ref["connectorIds"]`` and, when ``record_types`` is
+        given, ``recordType IN record_types``. Rows are deduplicated per
+        entity, sorted by ``sourceLastModifiedTimestamp`` (falling back to
+        ``updatedAtTimestamp``) descending then key ascending, and paged per
+        entity with ``offset``/``limit_per_entity``. Runs at most one query
+        per entity type present in ``refs``; the type→collection/label/edge
+        mapping is fixed, never taken from caller input.
+
+        Args:
+            refs: Entities to list records for.
+            org_id: Organization scope. Empty returns ``{}`` without querying.
+            record_types: Optional record-type filter.
+            limit_per_entity: Max rows per entity.
+            offset: Rows to skip per entity.
+            transaction: Optional transaction id.
+
+        Returns:
+            ``{(entity_type, entity_id): [row, ...]}`` for every ref queried.
+            The key carries the type because ids are only unique within a
+            collection, so an id-keyed result would let one type's rows
+            overwrite another's. Each row is
+            ``{"_key", "recordName", "recordType", "connectorId",
+            "virtualRecordId", "webUrl", "sourceLastModifiedTimestamp",
+            "updatedAtTimestamp"}``. A ref with no rows maps to ``[]``.
+
+        Raises:
+            Exception: on any query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def get_taxonomy_entity_membership(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        transaction: str | None = None,
+    ) -> dict[tuple[str, str], dict[str, list[str]]]:
+        """Which connectors and record groups still reach each taxonomy entity,
+        from the graph: the distinct ``connectorId`` / ``recordGroupId`` of
+        non-deleted records in ``org_id`` with a ``belongsTo*`` edge to it.
+
+        The entity vector store's stored membership is only a projection of
+        this; connector cleanup uses it before deleting a point that looks
+        exclusive to the deleted connector.
+
+        Args:
+            refs: ``{"id": str, "type": str}`` for ``department``, ``category``,
+                ``subcategory`` (levels 1-3), ``topic`` or ``language``; other
+                types are ignored.
+            org_id: Organization scope. Empty returns ``{}`` without querying.
+            transaction: Optional transaction id.
+
+        Returns:
+            ``{(entity_type, entity_id): {"connectorIds": [...],
+            "recordGroupIds": [...]}}`` for every supported ref; an entity no
+            record reaches maps to empty lists.
+
+        Raises:
+            Exception: on any query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def find_taxonomy_nodes(
+        self,
+        collection: str,
+        org_id: str,
+        normalized_names: list[str],
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Canonical taxonomy nodes of ``org_id`` whose ``normalizedName`` or one
+        of whose ``normalizedAliases`` is in ``normalized_names`` (Tier 0 of
+        ``app.modules.entity_resolution``).
+
+        Only nodes written with ``orgId`` and ``normalizedName`` match; legacy
+        global nodes (created by name alone) are never returned, by design.
+        ``collection`` must be one of ``TAXONOMY_COLLECTIONS``
+        (``app.services.graph_db.taxonomy``); anything else returns ``[]``.
+
+        Returns:
+            ``[{"id", "name", "normalizedName", "aliases",
+            "normalizedAliases"}]``; the two alias fields are always lists and
+            aligned by position.
+
+        Raises:
+            Exception: on query failure. The resolver decides whether that
+                fails the record (apply mode) or is logged (shadow mode).
+        """
+        pass
+
+    @abstractmethod
+    async def create_taxonomy_node_if_absent(
+        self,
+        collection: str,
+        node: dict[str, Any],
+        transaction: str | None = None,
+    ) -> None:
+        """Insert a canonical taxonomy node, keeping the existing one if the
+        key is already taken.
+
+        ``node`` carries ``id`` (the deterministic key from
+        ``taxonomy_node_key``), ``name``, ``normalizedName``, ``orgId`` and
+        ``createdAtTimestamp``. The insert is idempotent and never updates an
+        existing document, so the first spelling to create a node stays its
+        display name and two concurrent creators converge on one node.
+        ``aliases`` are not written here; see ``add_taxonomy_aliases``.
+
+        Raises:
+            ValueError: when ``collection`` is not a taxonomy collection.
+            Exception: on write failure.
+        """
+        pass
+
+    @abstractmethod
+    async def add_taxonomy_aliases(
+        self,
+        collection: str,
+        key: str,
+        aliases: list[str],
+        normalized_aliases: list[str],
+        *,
+        max_aliases: int = 20,
+        transaction: str | None = None,
+    ) -> None:
+        """Union ``aliases`` into the node's ``aliases`` list and
+        ``normalized_aliases`` into ``normalizedAliases``, both capped at
+        ``max_aliases`` entries, in one atomic statement. The two lists are
+        positional pairs (display spelling, its normalized form). The union is
+        taken on pairs, keyed by normalized form, so the stored lists stay
+        aligned at the same length through dedupe and the cap.
+
+        A no-op when ``aliases`` is empty or the node does not exist.
+
+        Raises:
+            ValueError: when ``collection`` is not a taxonomy collection.
+            Exception: on write failure.
         """
         pass

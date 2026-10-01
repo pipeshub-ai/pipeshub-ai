@@ -18,12 +18,13 @@ def _candidate(
     blocks_held: int = 2,
     blocks_total: int = 10,
     topics: tuple[str, ...] = ("topic1",),
+    summary: str = "",
 ) -> FetchCandidate:
     return FetchCandidate(
         record_id=record_id,
         record_name=record_name,
         topics=topics,
-        summary="",
+        summary=summary,
         blocks_held=blocks_held,
         blocks_total=blocks_total,
     )
@@ -157,3 +158,28 @@ class TestRenderCandidateTable:
         plan = _plan(_candidate(blocks_held=3, blocks_total=10))
         result = render_candidate_table(plan)
         assert "you have 3 of 10 blocks (30%)" in result
+
+    def test_summary_rendered_when_present(self) -> None:
+        plan = _plan(_candidate(summary="This is a contract between Acme and Globex."))
+        result = render_candidate_table(plan)
+        assert "Summary: This is a contract between Acme and Globex." in result
+
+    def test_summary_omitted_when_empty(self) -> None:
+        plan = _plan(_candidate(summary=""))
+        result = render_candidate_table(plan)
+        assert "Summary:" not in result
+
+    def test_summary_newlines_do_not_break_the_numbered_list(self) -> None:
+        plan = _plan(_candidate(summary="Contract.\n\nParties: Acme\n2. Globex"))
+        result = render_candidate_table(plan)
+        assert "Summary: Contract. Parties: Acme 2. Globex" in result
+        assert "\n2. Globex" not in result
+
+    def test_only_the_first_candidates_carry_a_summary(self) -> None:
+        """Eight 600-character summaries on every search result cost ~1.2k tokens."""
+        plan = _plan(*(
+            _candidate(record_id=f"r{i}", record_name=f"Doc {i}", summary=f"summary {i}")
+            for i in range(1, 7)
+        ))
+        result = render_candidate_table(plan)
+        assert [f"summary {i}" in result for i in range(1, 7)] == [True] * 3 + [False] * 3

@@ -1469,6 +1469,19 @@ class TestDownloadAndReindex:
             await connector.stream_record(db.by_name("cat.png"))
         assert not_ready.value.status_code == 409
 
+    async def test_a_file_record_that_cannot_be_read_is_not_reported_as_missing(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        record = db.by_name("q1.pdf")
+        db.fail_file_record_for.add(record.id)
+        downloads = len(server.calls("GET", WEBDAV_PREFIX))
+
+        with pytest.raises(HTTPException) as failed:
+            await connector.stream_record(record)
+
+        assert failed.value.status_code == 500
+        assert "try again" in failed.value.detail
+        assert len(server.calls("GET", WEBDAV_PREFIX)) == downloads
+
     @pytest.mark.parametrize("name", ["Docs", "Reports"])
     async def test_a_folder_download_is_refused(self, server, db, store, name) -> None:
         connector = await synced(server, db, store)
