@@ -139,11 +139,12 @@ class FakeGraph:
         self.nodes[key] = stored
 
     async def add_taxonomy_aliases(
-        self, collection, key, aliases, normalized_aliases, *, max_aliases=20, transaction=None
+        self, collection, key, aliases, normalized_aliases, *, org_id, max_aliases=20, transaction=None
     ) -> None:
         self.calls.append(("add_taxonomy_aliases", (collection, key, list(aliases), list(normalized_aliases))))
         node = self.nodes.get((collection, key))
-        if node is None:
+        # Like both providers: only the writing org's node takes aliases.
+        if node is None or node.get("orgId") != org_id:
             return
         current = list(node.get("aliases") or [])
         current_normalized = list(node.get("normalizedAliases") or [])

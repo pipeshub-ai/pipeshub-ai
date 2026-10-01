@@ -295,7 +295,7 @@ class SinkOrchestrator(Transformer):
                 exc,
             )
 
-    async def sync_entities_for_duplicate(self, record_doc: dict) -> None:
+    async def sync_entities_for_duplicate(self, record_doc: dict) -> bool:
         """Re-project a deduplicated record's taxonomy into the entities
         vector collection, and create its own record / record_group points.
 
@@ -314,15 +314,23 @@ class SinkOrchestrator(Transformer):
         so this appends this record's connectorId/recordGroupId to whatever
         is already stored.
 
+        Only nodes of the record's org are projected with their aliases. A
+        node without an org (legacy, or a global department) is projected
+        with none, since its aliases may be any org's; another org's node is
+        skipped.
+
         Takes the raw graph record document (not a parsed ``Record``/
         ``TransformContext``) since the dedup path never parses one.
+
+        Returns whether every point was written; reconciliation keeps its
+        pending flag otherwise. Nothing to do counts as success.
         """
         if not self.entity_vector_store:
-            return
+            return True
         record_key = record_doc.get("_key") or record_doc.get("id")
         org_id = record_doc.get("orgId")
         if not record_key or not org_id:
-            return
+            return True
         connector_id = record_doc.get("connectorId")
         record_group_id = record_doc.get("recordGroupId")
         connector_ids = [connector_id] if connector_id else []
@@ -341,6 +349,13 @@ class SinkOrchestrator(Transformer):
                 entity_type = row.get("entityType")
                 if not entity_id or entity_type not in valid_types:
                     continue
+                node_org = row.get("orgId")
+                if node_org and node_org != org_id:
+                    self.logger.warning(
+                        "Duplicate record %s links to %s %s of another org; not projected",
+                        record_key, entity_type, entity_id,
+                    )
+                    continue
                 entities.append(
                     EntityRecord(
                         entity_id=str(entity_id),
@@ -348,7 +363,9 @@ class SinkOrchestrator(Transformer):
                         name=str(row.get("name") or entity_id),
                         org_id=org_id,
                         level=row.get("level"),
-                        aliases=[str(a) for a in (row.get("aliases") or []) if a],
+                        aliases=(
+                            [str(a) for a in (row.get("aliases") or []) if a] if node_org else []
+                        ),
                         connector_ids=connector_ids,
                         record_group_ids=record_group_ids,
                         # Matches GraphDBTransformer.save_metadata_to_db —
@@ -381,18 +398,26 @@ class SinkOrchestrator(Transformer):
                         record_group_id, group_name, org_id, connector_id,
                     ))
 
+            failed = 0
             if entities:
-                await self.entity_vector_store.upsert_entities_batch(entities)
+                failed += await self.entity_vector_store.upsert_entities_batch(entities) or 0
             if identities:
-                await self.entity_vector_store.upsert_entities_batch(
+                failed += await self.entity_vector_store.upsert_entities_batch(
                     identities, merge_membership=False,
+                ) or 0
+            if failed:
+                self.logger.warning(
+                    "Entity vector sync for deduplicated record %s left %d entities unwritten",
+                    record_key, failed,
                 )
+            return not failed
         except Exception as exc:
             self.logger.warning(
                 "Entity vector sync failed for deduplicated record %s (non-fatal): %s",
                 record_key,
                 exc,
             )
+            return False
 
     # A record with a handful of images is cheaper to describe outright than
     # to fetch its previous version for; past this many, the fetch pays for
