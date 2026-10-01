@@ -873,6 +873,30 @@ describe('SAML Routes - handler coverage', () => {
   })
 
   describe('POST /signIn/callback - existing user success flow', () => {
+    it('should not sign into an account that belongs to another org', async () => {
+      const handler = findHandler('/signIn/callback', 'post')
+      mockSamlController.parseRelayState.returns({ orgId: '507f1f77bcf86cd799439011' })
+      mockIamService.getUserByEmail.resolves({
+        statusCode: 200,
+        data: { _id: '507f1f77bcf86cd799439012', email: 'test@test.com', orgId: '507f1f77bcf86cd799439099', hasLoggedIn: true },
+      })
+
+      const req = {
+        user: { email: 'test@test.com', orgId: '507f1f77bcf86cd799439011' },
+        body: {},
+        query: {},
+        headers: {},
+        ip: '127.0.0.1',
+      }
+      const res = mockRes()
+
+      await handler(req, res, sinon.stub())
+
+      expect(res.cookie.called).to.be.false
+      expect(res.redirect.firstCall.args[0]).to.include('saml_error=unknown')
+      expect(mockSessionService.completeAuthentication.called).to.be.false
+    })
+
     it('should redirect on success for existing user', async () => {
       const handler = findHandler('/signIn/callback', 'post')
       const relayState = Buffer.from(JSON.stringify({ orgId: '507f1f77bcf86cd799439011', sessionToken: 'token123' })).toString('base64')

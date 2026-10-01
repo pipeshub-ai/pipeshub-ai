@@ -13,6 +13,7 @@ import {
 import { IamService } from '../services/iam.service';
 import {
   BadRequestError,
+  ForbiddenError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { SessionService } from '../services/session.service';
@@ -238,6 +239,11 @@ export function createSamlRouter(container: Container) {
         }
 
         if (!user) throw new NotFoundError("User not found");
+        // The assertion was verified against this org's IdP only; the email
+        // lookup above is not org-scoped, so never sign into another org's account.
+        if (String(user.orgId) !== String(orgId)) {
+          throw new ForbiddenError('SAML account does not belong to this organisation');
+        }
 
         await sessionService.completeAuthentication(session);
         // Now 'user' is guaranteed to be available here
