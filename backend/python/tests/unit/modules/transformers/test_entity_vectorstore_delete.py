@@ -684,3 +684,27 @@ class TestStaleSearchPages:
 
         assert _membership(entities, "topic:t1") == (["conn-c"], [])
         assert _membership(entities, "topic:t0") == (["conn-b"], [])
+
+    @pytest.mark.asyncio
+    async def test_a_verified_point_is_not_read_again_while_search_lags(self) -> None:
+        entities = _Entities(
+            _entity_point("t0", "topic", ["conn-b"], []),
+            _entity_point("t1", "topic", ["conn-a", "conn-c"], []),
+            _entity_point("t2", "topic", ["conn-a", "conn-d"], []),
+        )
+        stale = {k: copy.deepcopy(v) for k, v in entities.points.items()}
+        stale["topic:t0"].payload["connectorIds"] = ["conn-a", "conn-b"]
+        entities.search_view = stale
+        reads: list[list[str]] = []
+        real = entities.retrieve_points
+
+        async def _counting(collection_name: str, ids: list[str]) -> list[VectorPoint]:
+            reads.append(sorted(ids))
+            return await real(collection_name, ids)
+
+        entities.retrieve_points = _counting
+        await _store_over(entities)._shrink_connector_membership("org-1", "conn-a", [], page_size=1)
+
+        assert _membership(entities, "topic:t1") == (["conn-c"], [])
+        assert _membership(entities, "topic:t2") == (["conn-d"], [])
+        assert reads.count(["topic:t0"]) == 1

@@ -452,22 +452,35 @@ class EntityVectorStore:
                     )
             if not named:
                 continue
+            # Each entity is counted when its write lands; whatever a failure
+            # leaves unaccounted is counted failed, so none is counted twice.
+            settled: set[str] = set()
             try:
-                await self._upsert_batch(named, outcome, merge_membership=merge_membership)
+                await self._upsert_batch(named, outcome, settled, merge_membership=merge_membership)
             except _MembershipReadError as exc:
-                outcome.failed += len(named)
-                failed_keys.extend(f"{e.entity_type.value}/{e.entity_id}" for e in named)
                 self.logger.warning("Skipping entity upsert batch, membership unknown: %s", exc)
             except Exception as exc:
-                outcome.failed += len(named)
-                failed_keys.extend(f"{e.entity_type.value}/{e.entity_id}" for e in named)
                 self.logger.error("Failed to upsert entity batch starting at %d: %s", start, exc)
+            unwritten = [e for e in named if self._key_of(e) not in settled]
+            outcome.failed += len(unwritten)
+            failed_keys.extend(f"{e.entity_type.value}/{e.entity_id}" for e in unwritten)
         self._report(outcome, failed_keys)
         return outcome
 
+    def _key_of(self, entity: EntityRecord) -> str:
+        return self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)
+
     async def _upsert_batch(
-        self, named: list[EntityRecord], outcome: EntityWriteOutcome, *, merge_membership: bool,
+        self,
+        named: list[EntityRecord],
+        outcome: EntityWriteOutcome,
+        settled: set[str],
+        *,
+        merge_membership: bool,
     ) -> None:
+        """Write one batch, counting each entity in ``outcome`` and adding its
+        point id to ``settled`` only once its write has landed (or none was
+        needed). Raises on failure; the caller counts the rest as failed."""
         # Read and embed without the locks. A failed read in merge mode skips
         # the batch: merging against an assumed-empty state would drop every
         # other writer's membership.
@@ -518,6 +531,7 @@ class EntityVectorStore:
                         outcome.membership_only += 1
                     else:
                         outcome.unchanged += 1
+                    settled.add(point_id)
                     continue
                 pending.append((entity, connector_ids, record_group_ids))
 
@@ -546,6 +560,7 @@ class EntityVectorStore:
                 ))
             await self.vector_db_service.upsert_points(collection_name=self.collection_name, points=points)
             outcome.written += len(points)
+            settled.update(point.id for point in points)
 
     async def _embed_changed(
         self, entities: list[EntityRecord], states: dict[str, dict[str, Any]],
@@ -844,17 +859,25 @@ class EntityVectorStore:
            its RECORD_GROUP points (and on its RECORD points when the graph
            gave none). These points are only deleted in step 3, so a retry
            after a failure still finds them.
-        2. Page through the taxonomy points naming the connector, always from
-           the start: a shared point gets its stripped membership written back
-           with ``set_payload`` (no re-embedding), an exclusive one is deleted.
-           Either way it leaves the filter, so paging never goes deep (Redis
-           caps search offsets at 10k) and an interrupted run resumes.
+        2. Page through the taxonomy points naming the connector. Each page is
+           re-read by id under the entities' locks: a shared point gets its
+           stripped membership written by id (no re-embedding), an exclusive
+           one is deleted. A changed page leaves the filter, so paging starts
+           over from the top and never goes deep (Redis caps search offsets at
+           10k). A page the fresh read shows is already done (search lagging
+           by-id writes, as on OpenSearch) is stepped past by offset.
         3. Delete what is left of the connector in one filtered call: its
            RECORD and RECORD_GROUP points, and any point without a type.
            Taxonomy points are never swept; one that a concurrently indexed
-           record re-tagged with the connector is left and logged. A page that stays unchanged (OpenSearch's
-        ``update_by_query`` skips a point rewritten underneath it) is retried,
-        then raises, as does a full page of points without an id.
+           record re-tagged with the connector is left and logged.
+
+        The locks serialise this with writers in the same indexing process
+        only; another instance can still re-tag a point between the re-read
+        and the write. A page whose writes do not take is retried, then
+        raises, as does a full page of points without an id. Two cleanups of
+        one connector running at once on Redis can step past each other's
+        pages with a numeric offset; the second run's final check logs what
+        is left.
         """
         from app.models.entities import EntityType
 
@@ -874,6 +897,10 @@ class EntityVectorStore:
         previous_page: set[str] = set()
         attempts = 0
         offset: str | None = None
+        # Points a fresh read showed are done (stripped or gone). Search lags
+        # by-id writes on OpenSearch, so they keep coming back until the next
+        # refresh; skipping them costs no locks and no reads.
+        handled: set[str] = set()
         while True:
             page = await self.vector_db_service.scroll(
                 collection_name=self.collection_name,
@@ -896,7 +923,7 @@ class EntityVectorStore:
                 )
             previous_page = page_ids
             result = await self._strip_or_delete(
-                page.points, org_id, connector_id, group_ids, membership_lookup,
+                page.points, org_id, connector_id, group_ids, membership_lookup, handled=handled,
             )
             if result is _Page.ALREADY_DONE:
                 # Search lags by-id writes (OpenSearch refreshes every 30 s), so
@@ -983,6 +1010,8 @@ class EntityVectorStore:
         connector_id: str,
         group_ids: set[str],
         membership_lookup: MembershipLookup | None = None,
+        *,
+        handled: set[str] | None = None,
     ) -> _Page:
         """Apply step 2 to one page.
 
@@ -1000,6 +1029,10 @@ class EntityVectorStore:
         ]
         if not refs:
             return _Page.NO_ENTITIES
+        handled = handled if handled is not None else set()
+        refs = [ref for ref in refs if ref[0] not in handled]
+        if not refs:
+            return _Page.ALREADY_DONE
         async with contextlib.AsyncExitStack() as locks:
             for key in sorted({self._entity_key(org_id, entity_type, entity_id) for _, entity_type, entity_id in refs}):
                 await locks.enter_async_context(self._entity_lock(key))
@@ -1015,7 +1048,10 @@ class EntityVectorStore:
                 payload = fresh.get(point_id)
                 stored = list((payload or {}).get(CONNECTOR_IDS_FIELD) or [])
                 if payload is None or connector_id not in stored:
-                    continue  # gone, or already stripped
+                    # Verified done: gone, or already stripped. Only such
+                    # points are skipped later; a written one is re-checked.
+                    handled.add(point_id)
+                    continue
                 connectors = tuple(c for c in stored if c != connector_id)
                 if not connectors:
                     exclusive.setdefault(entity_type, []).append(entity_id)

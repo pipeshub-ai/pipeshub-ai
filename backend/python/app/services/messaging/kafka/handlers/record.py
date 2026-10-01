@@ -326,8 +326,7 @@ class RecordEventHandler(BaseEventService):
                 "deleteConnectorEntities needs orgId and connectorId",
                 details={"payload_keys": sorted(payload.keys())},
             )
-        sink = getattr(self.event_processor, "sink_orchestrator", None)
-        store = getattr(sink, "entity_vector_store", None)
+        store = self._entity_vector_store()
         if store is None:
             self.logger.info("No entity store; nothing to clean for connector %s", connector_id)
             return

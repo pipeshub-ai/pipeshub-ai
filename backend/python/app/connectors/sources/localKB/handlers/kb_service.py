@@ -30,7 +30,6 @@ if TYPE_CHECKING:
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
         DataSourceEntitiesProcessor,
     )
-    from app.modules.transformers.entity_vectorstore import EntityVectorStore
 
 read_collections = [
     collection.value for collection in CollectionNames
@@ -122,7 +121,6 @@ class KnowledgeBaseService:
         kafka_service : KafkaService,
         processor_for_kb: Callable[[str], Awaitable["DataSourceEntitiesProcessor"]] = None,
         config_service=None,
-        entity_vector_store: "EntityVectorStore | None" = None,
     ) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
@@ -134,7 +132,6 @@ class KnowledgeBaseService:
         self.config_service = config_service
         # Entities-collection cleanup on KB delete; optional so this class stays
         # constructible without it (e.g. in tests).
-        self.entity_vector_store = entity_vector_store
 
     def _mutation_failure(self, result: object, action: str) -> dict:
         """Turn a failed graph-provider write into something a person can act on.
