@@ -515,6 +515,21 @@ class FakeResponse:
         pass
 
 
+def _deliver(response: FakeResponse, content_callback: Callable[[bytes], object]) -> FakeResponse:
+    """What curl_cffi does with a content_callback: the body goes to the callback chunk by chunk and
+    not to ``content``, and a callback that answers CURL_WRITEFUNC_ERROR aborts the transfer, which
+    raises with the response read so far (curl error 23)."""
+    from curl_cffi.curl import CURL_WRITEFUNC_ERROR
+    from curl_cffi.requests.exceptions import RequestException
+
+    chunks = list(response.iter_content(16384))
+    response.content = b""
+    for chunk in chunks:
+        if content_callback(chunk) == CURL_WRITEFUNC_ERROR:
+            raise RequestException("Failure writing output to destination", 23, response)
+    return response
+
+
 class FakeRequestsClient:
     """Stands in for a curl_cffi Session (and the base of the cloudscraper fake): a cookie jar and
     a GET that follows redirects unless told not to, answered by the fake site."""
@@ -553,14 +568,16 @@ class FakeRequestsClient:
         return status, response_headers, body
 
     def get(self, url: str, headers: dict | None = None, timeout: object = None,
-            allow_redirects: bool = True, stream: bool = False) -> FakeResponse:
+            allow_redirects: bool = True, stream: bool = False,
+            content_callback: Callable[[bytes], object] | None = None) -> FakeResponse:
         for _ in range(11):
             status, response_headers, body = self._send(url, headers)
             location = response_headers.get("Location")
             if allow_redirects and status in (301, 302, 303, 307, 308) and location:
                 url = urljoin(url, location)
                 continue
-            return FakeResponse(status, response_headers, body, url)
+            response = FakeResponse(status, response_headers, body, url)
+            return response if content_callback is None else _deliver(response, content_callback)
         raise RuntimeError("too many redirects")
 
 
