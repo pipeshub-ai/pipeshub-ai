@@ -395,6 +395,7 @@ class FakeRecordsDb:
         self.deleted: list[str] = []
         self.content_updates: list[Any] = []
         self.fail_lookup_for: set[str] = set()
+        self.fail_file_record_for: set[str] = set()
         self.fail_write_for: set[str] = set()
         self.fail_delete_for: set[str] = set()
         self.unreadable_paths: set[str] = set()
@@ -526,7 +527,19 @@ class FakeRecordsDb:
         return self.record_groups.get(external_id)
 
     async def get_file_record_by_id(self, record_id: str) -> Optional[FileRecord]:
-        return self._by_id(record_id)
+        """A copy rebuilt as a ``FileRecord``, so changing it does not change what is stored.
+
+        None only when nothing is stored; a read that fails raises ``GraphQueryError``, as both providers do.
+        """
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+        from app.models.entities import FileRecord
+
+        if record_id in self.fail_file_record_for:
+            raise GraphQueryError(f"database unavailable for file record {record_id}")
+        stored = self._by_id(record_id)
+        if not isinstance(stored, FileRecord):
+            return None
+        return FileRecord.from_arango_record(stored.to_arango_record(), stored.to_arango_base_record())
 
     def _path(self, record_id: str) -> Optional[str]:
         record = self._by_id(record_id)

@@ -5,6 +5,11 @@ import { Box, Flex, Text } from '@radix-ui/themes';
 
 import { extractApiErrorMessage } from '@/lib/api/api-error';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+import { buildDesktopDeepLink, isDesktopOAuthState } from '@/lib/auth/desktop-oauth';
+import DesktopHandoffNotice from '@/app/(public)/auth/desktop-handoff-notice';
+
+/** One handoff per page load: React strict mode runs the effect twice. */
+let handedOff = false;
 
 async function readHttpErrorMessage(response: Response): Promise<string> {
   const status = response.status;
@@ -46,9 +51,28 @@ async function readHttpErrorMessage(response: Response): Promise<string> {
  */
 export default function OAuthCallbackPage() {
   const [error, setError] = useState('');
+  const [handoffLink, setHandoffLink] = useState<string | null>(null);
   const hasExchanged = useRef(false);
 
   useEffect(() => {
+    // A desktop sign-in: no opener to answer. Forward the code to the app,
+    // which redeems it, so tokens never reach this browser.
+    const params = new URLSearchParams(window.location.search);
+    const desktopState = params.get('state');
+    if (isDesktopOAuthState(desktopState)) {
+      if (handedOff) return;
+      handedOff = true;
+      const deepLink = buildDesktopDeepLink('oauth', {
+        state: desktopState,
+        code: params.get('code'),
+        error: params.get('error'),
+        error_description: params.get('error_description'),
+      });
+      setHandoffLink(deepLink);
+      window.location.href = deepLink;
+      return;
+    }
+
     const handleCallback = async () => {
       // Prevent double-invocation in React Strict Mode dev double-mount
       if (hasExchanged.current) return;
@@ -149,6 +173,8 @@ export default function OAuthCallbackPage() {
 
     handleCallback();
   }, []);
+
+  if (handoffLink) return <DesktopHandoffNotice deepLink={handoffLink} />;
 
   if (error) {
     return (

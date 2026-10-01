@@ -64,6 +64,7 @@
     "thinkingFallback": "생각하는 중…",
     "refiningResponse": "응답을 다듬는 중…",
     "errorFallback": "오류가 발생했습니다. 다시 시도해 주세요.",
+    "askQuestionResumeFailed": "답변을 보내지 못했습니다. 다시 제출해 주세요.",
     "copyCode": "복사",
     "copiedCode": "복사됨"
   },
@@ -233,6 +234,7 @@
   "nav": {
     "collections": "컬렉션",
     "allRecords": "모든 레코드",
+    "allArtifacts": "모든 아티팩트",
     "workspace": "워크스페이스",
     "shared": "나와 공유됨",
     "private": "내 컬렉션",
@@ -246,6 +248,31 @@
     "searchChats": "채팅 검색",
     "inbox": "받은 편지함",
     "notifications": "알림"
+  },
+  "artifacts": {
+    "title": "모든 아티팩트",
+    "empty": "아직 아티팩트가 없습니다",
+    "emptyHint": "에이전트가 채팅에서 만든 파일이 여기에 표시됩니다.",
+    "loadFailed": "아티팩트를 불러오지 못했습니다",
+    "previewFailed": "이 파일을 미리 볼 수 없습니다",
+    "downloadFailed": "이 파일을 다운로드할 수 없습니다",
+    "openInChat": "채팅에서 열기",
+    "searchPlaceholder": "아티팩트 검색",
+    "conversation": "대화",
+    "untitledChat": "—",
+    "name": "이름",
+    "size": "크기",
+    "showing": "{{total}}개 중 {{start}}-{{end}}",
+    "types": {
+      "IMAGE": "이미지",
+      "CHART": "차트",
+      "DOCUMENT": "문서",
+      "SPREADSHEET": "스프레드시트",
+      "PRESENTATION": "프레젠테이션",
+      "DATA_FILE": "데이터 파일",
+      "CODE": "코드",
+      "CODE_OUTPUT": "코드 출력"
+    }
   },
   "notifications": {
     "title": "알림",
@@ -1231,6 +1258,8 @@
         "send": "초대 보내기",
         "successTitle": "초대를 보냈습니다!",
         "successDescription": "{{email}}이(가) 초대되었습니다",
+        "queuedTitle": "초대가 대기열에 추가되었습니다",
+        "queuedDescription": "{{email}}에게 보내는 이메일이 백그라운드에서 전송 중입니다. 전달되지 않은 이메일이 있으면 알림을 받게 됩니다.",
         "invalidEmail": "잘못된 이메일 주소입니다",
         "errorGeneric": "초대를 보내지 못했습니다",
         "importNoEmails": "파일에서 이메일 주소를 찾을 수 없습니다",
@@ -4075,7 +4104,10 @@
       "orgEmailVerifiedTitle": "조직이 인증되었습니다",
       "orgEmailVerifiedDescription": "조직이 이제 활성화되었습니다. 계속하려면 로그인하세요.",
       "orgEmailVerifyFailedTitle": "인증 실패",
-      "orgEmailVerifyFailedDescription": "링크가 유효하지 않거나 만료되었을 수 있습니다. 다시 가입해 주세요."
+      "orgEmailVerifyFailedDescription": "링크가 유효하지 않거나 만료되었을 수 있습니다. 다시 가입해 주세요.",
+      "loadFailedTitle": "로그인을 불러올 수 없습니다",
+      "loadFailedDescription": "PipesHub가 로그인 옵션을 불러오기 위해 서버에 연결하지 못했습니다. 연결 또는 서버 주소를 확인한 후 다시 시도하세요.",
+      "retry": "다시 시도"
     },
     "common": {
       "signIn": "로그인",
@@ -4109,6 +4141,11 @@
       "hidePassword": "비밀번호 숨기기",
       "accountDisabled": "계정이 비활성화되었습니다.",
       "tooManyIncorrectCredentials": "잘못된 자격 증명을 너무 여러 번 입력했습니다"
+    },
+    "desktopHandoff": {
+      "title": "로그인이 PipesHub로 전송되었습니다",
+      "description": "이 탭을 닫고 PipesHub 앱으로 돌아가세요.",
+      "openApp": "PipesHub 열기"
     }
   },
   "healthGate": {

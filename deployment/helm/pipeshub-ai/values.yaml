@@ -119,6 +119,16 @@ telemetry:
       enabled: false
       insecure: false
 
+# Express `trust proxy` (TRUST_PROXY): how many proxies in front of the app
+# may set X-Forwarded-For, or a comma-separated list of their CIDRs. Empty
+# means "1" when ingress.enabled, otherwise trust no proxy. Use "2" when an L7
+# load balancer sits in front of the ingress controller (e.g. GCE, which adds
+# its own X-Forwarded-For entry). Never "true".
+trustProxy: ""
+
+# Per-IP limit for login, OTP and password endpoints.
+maxAuthRequestsPerMinute: 10
+
 ingress:
   enabled: false
   className: "" # Fill

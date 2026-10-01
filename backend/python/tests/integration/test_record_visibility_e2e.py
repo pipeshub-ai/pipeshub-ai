@@ -430,6 +430,7 @@ EXERCISED_HERE: dict[str, str] = {
     "get_failed_records_by_org": "test_failed_records",
     "get_failed_records_with_active_users": "test_failed_records",
     "get_record_by_weburl": "test_weburl_lookup",
+    "get_entity_candidate_records": "test_entity_candidate_records",
     "get_records_by_virtual_record_id": "test_vector_delete_authority",
     "get_knowledge_hub_children": "test_knowledge_hub_browse",
     "get_knowledge_hub_search": "test_knowledge_hub_search",
@@ -517,6 +518,16 @@ async def test_weburl_lookup(world: _World) -> None:
     g = world.graph
     assert (await g.get_record_by_weburl(world.url("live"), world.org_id)).id == world.ids["live"]
     assert await g.get_record_by_weburl(world.url("trashed"), world.org_id) is None
+
+
+async def test_entity_candidate_records(world: _World) -> None:
+    refs = [
+        {"id": world.ids[name], "type": "record", "connectorIds": [world.connector_id]}
+        for name in ("live", "trashed")
+    ]
+    got = await world.graph.get_entity_candidate_records(refs, world.org_id)
+    assert [row["_key"] for row in got[("record", world.ids["live"])]] == [world.ids["live"]]
+    assert got[("record", world.ids["trashed"])] == []
 
 
 async def test_vector_delete_authority(world: _World) -> None:

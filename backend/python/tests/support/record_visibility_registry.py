@@ -55,6 +55,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_records_by_parent_record": (Rule.LIVE, "reindex keyset walk"),
     "get_record_by_weburl": (Rule.LIVE, "resolves links and agent references"),
     "get_linked_records": (Rule.LIVE, "shown to users"),
+    "get_entity_candidate_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
     # Browse surfaces, already filtered.
     # Arango delegates to list_all_records. Neo4j's get_records takes record ids
     # instead (a signature mismatch that predates soft delete).
@@ -89,6 +90,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "is_record_folder": (Rule.ALL, _STRUCTURE),
     "is_record_descendant_of": (Rule.ALL, _STRUCTURE),
     "get_record_owner_source_user_email": (Rule.ALL, _STRUCTURE),
+    "get_taxonomy_entities_for_record": (Rule.ALL, _STRUCTURE),
     # Writes.
     "reindex_single_record": (Rule.WRITE, "refuses a deleted record"),
     "reindex_record_group_records": (Rule.WRITE, "walks with get_records_by_record_group"),

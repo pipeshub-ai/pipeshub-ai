@@ -92,6 +92,7 @@ from app.agent_loop_lib.hooks.middleware.builtin.tool_result_clearing import (
 )
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
+from app.agent_loop_lib.sandbox.coding.settings import SandboxUnavailableError
 from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import (
     RetrieveArtifactContentTool,
 )
@@ -117,6 +118,7 @@ from app.agents.agent_loop.hooks import (
     citation_tracking,
     completion_gate,
     conversation_enrichment,
+    progressive_entity_tools,
     resolve_attachments_for_goal,
     resolve_history_attachments,
     result_accumulation,
@@ -125,6 +127,11 @@ from app.agents.agent_loop.hooks import (
     shape_image_injection,
     shape_retrieved_image_injection,
     stash_tool_call_metadata,
+)
+from app.agents.agent_loop.hooks.progressive_tools import (
+    ENTITY_TOOL_NAMES,
+    PROGRESSIVE_TOOL_NAMES,
+    entity_tools_used_in_history,
 )
 from app.agents.agent_loop.image_guard import with_image_cap
 from app.agents.agent_loop.langchain_transport import (
@@ -255,6 +262,18 @@ def _composed_agents_enabled() -> bool:
     customer-facing setting, exists so a deployment can fall back to the
     flat all-tools agent without a code change."""
     return os.getenv("PIPESHUB_USE_COMPOSED_AGENTS", "true").strip().lower() == "true"
+
+
+def _initial_entity_tool_grant(tool_names: list[str], context: "AgentContext") -> list[str]:
+    """Entity tools are hidden when no entity store is wired (they could only
+    fail). ``find_records_by_entity`` needs an entityId, so it starts hidden
+    until ``search_entities`` runs (``hooks/progressive_tools.py``) — unless an
+    earlier turn already used an entity tool and its ids are in the history."""
+    if not context.tool_state.get("entity_vector_store"):
+        return [n for n in tool_names if n not in ENTITY_TOOL_NAMES]
+    if entity_tools_used_in_history(context.previous_conversations):
+        return tool_names
+    return [n for n in tool_names if n not in PROGRESSIVE_TOOL_NAMES]
 
 
 class PipesHubAgentFactory:
@@ -453,9 +472,26 @@ class PipesHubAgentFactory:
         sandbox_manager = None
         if code_exec_enabled:
             _mark("f:pre_sandbox")
-            sandbox_manager = await build_coding_sandbox_manager(
-                allow_network=network_enabled, ctx=context,
+            try:
+                sandbox_manager = await build_coding_sandbox_manager(
+                    allow_network=network_enabled, ctx=context,
+                )
+            except SandboxUnavailableError as exc:
+                # Fail closed but keep the chat: no SANDBOX_MODE (or a typo)
+                # means no code execution this turn, not an in-process
+                # fallback and not a 500.
+                code_exec_enabled = False
+                logger.warning(
+                    "PipesHubAgentFactory.create: coding-sandbox tools NOT registered "
+                    "(org_id=%s conversation_id=%s): %s",
+                    context.org_id, context.conversation_id, exc,
+                )
+        else:
+            logger.info(
+                "PipesHubAgentFactory.create: code execution disabled — coding-sandbox tools "
+                "(run_code/install_packages/read_sandbox_file) will NOT be available this turn"
             )
+        if sandbox_manager is not None:
             register_coding_sandbox_tools(tool_registry, sandbox_manager, allow_network=network_enabled)
             # Stashed on the context (not returned from create()) so
             # stream_bridge.py's finally block can tear it down without
@@ -465,11 +501,6 @@ class PipesHubAgentFactory:
                 "PipesHubAgentFactory.create: registered coding-sandbox tools: %s (network=%s)",
                 [n for n in tool_registry.names() if n in ("run_code", "install_packages", "read_sandbox_file")],
                 network_enabled,
-            )
-        else:
-            logger.info(
-                "PipesHubAgentFactory.create: code execution disabled — coding-sandbox tools "
-                "(run_code/install_packages/read_sandbox_file) will NOT be available this turn"
             )
 
         # Skills subsystem, gated by two layers that must BOTH be true:
@@ -533,9 +564,18 @@ class PipesHubAgentFactory:
             composition_plan.top_level_names if composition_plan is not None else tool_registry.names()
         )
 
+        resume_answers = query if is_ask_user_question_resume_query(query) else None
+        goal_query = (
+            last_real_user_query(context.previous_conversations, query)
+            if resume_answers
+            else query
+        )
+        if resume_answers:
+            context.tool_state["ask_user_question_resume"] = resume_answers
+
         loop, goal, clarifying_questions, mode = await select_loop_and_goal(
             chat_mode=chat_mode,
-            query=query,
+            query=goal_query,
             llm=llm,
             context=context,
             tool_names=composed_tool_names,
@@ -720,7 +760,8 @@ class PipesHubAgentFactory:
             if mode.loop_kind == "orchestrator":
                 runtime.spec_factory = domain_spec_factory(
                     provider=_transport_provider(), model_name=model_name,
-                    default_tool_names=composed_names, context=context,
+                    default_tool_names=_initial_entity_tool_grant(composed_names, context),
+                    context=context,
                 )
             elif mode.loop_kind == "plan_execute":
                 # `composition_plan` was snapshotted by `plan_domain_agents()`
@@ -739,9 +780,10 @@ class PipesHubAgentFactory:
             # this feature's pre-existing behavior.
             runtime.spec_factory = domain_spec_factory(
                 provider=_transport_provider(), model_name=model_name,
-                default_tool_names=[
-                    n for n in tool_registry.names() if n not in COORDINATION_TOOL_NAMES
-                ],
+                default_tool_names=_initial_entity_tool_grant(
+                    [n for n in tool_registry.names() if n not in COORDINATION_TOOL_NAMES],
+                    context,
+                ),
                 context=context,
             )
 
@@ -830,6 +872,8 @@ class PipesHubAgentFactory:
                 len(tool_names), context.org_id, context.conversation_id,
             )
 
+        tool_names = _initial_entity_tool_grant(tool_names, context)
+
         spec = AgentSpec(
             name="pipeshub-agent",
             system_prompt=prompt_builder,
@@ -863,6 +907,11 @@ class PipesHubAgentFactory:
             _mark("f:runtime+compose")
             await self._seed_conversation_history(agent, context.previous_conversations, context)
             _mark("f:seed_history")
+
+        if resume_answers:
+            # User already answered the card — do not re-emit clarification.
+            clarifying_questions = []
+            await inject_ask_user_question_resume(agent, resume_answers)
 
         return agent, runtime, goal, clarifying_questions
 
@@ -1002,6 +1051,7 @@ class PipesHubAgentFactory:
 
         collector = CitationCollector(context)
         hooks.on(HookEvent.POST_TOOL_USE).use(citation_tracking(context, collector))
+        hooks.on(HookEvent.POST_TOOL_USE).use(progressive_entity_tools(context))
 
         hooks.on(HookEvent.PRE_TOOL_USE).use(stash_tool_call_metadata)
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))
@@ -1158,6 +1208,93 @@ def _inject_images_into_message(
 _V1_NOTE_HEADER = "[SYSTEM NOTE — how to use the findings above in your answer]"
 _V2_NOTE_HEADER = "Guidance for using the findings above in the final answer:"
 _NEUTRAL_NOTE_HEADER = "About these findings:"
+
+ASK_USER_QUESTION_RESUME_PREFIX = "User selections:"
+_EMPTY_ANSWER_FALLBACK = "I wasn't able to generate a response. Please try rephrasing."
+
+
+def is_ask_user_question_resume_query(text: str | None) -> bool:
+    return isinstance(text, str) and text.lstrip().startswith(ASK_USER_QUESTION_RESUME_PREFIX)
+
+
+def _is_empty_fallback_assistant(msg: Message) -> bool:
+    return (
+        isinstance(msg, AssistantMessage)
+        and not msg.tool_calls
+        and (msg.text or "").strip() == _EMPTY_ANSWER_FALLBACK
+    )
+
+
+def last_real_user_query(previous_conversations: list[dict[str, Any]] | None, fallback: str) -> str:
+    """Original user goal when this request is an ask_user_question resume."""
+    for turn in reversed(previous_conversations or []):
+        if turn.get("role") != "user_query":
+            continue
+        content = str(turn.get("content") or "").strip()
+        if content and not is_ask_user_question_resume_query(content):
+            return content
+    return fallback
+
+
+async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
+    """Bind the user's card answers to the parked ask_user_question tool call.
+
+    Web workers cannot keep the first HTTP request blocked (no hil_store).
+    The first turn stops after the terminal tool; this injects the answer
+    as a ToolMessage so the next request continues that tool_use, not a
+    new user goal.
+
+    History replay already has the first request's tool result (the
+    questions payload) plus the empty-answer fallback AssistantMessage.
+    Appending a second ToolMessage after that text is invalid, so the
+    tail after the parked tool-call AssistantMessage is dropped first.
+    """
+    ctx = agent.context
+    if ctx is None:
+        return
+    messages = await ctx.messages()
+    # Only the newest user turn can still be parked on a card. Binding to an
+    # older turn's call — a card the user left unanswered before chatting on —
+    # would truncate every turn since; the synthetic branch below keeps them.
+    turn_start = 0
+    for i, msg in enumerate(messages):
+        if isinstance(msg, UserMessage):
+            turn_start = i
+    keep_through: int | None = None
+    tool_call_id: str | None = None
+    for i in range(turn_start, len(messages)):
+        msg = messages[i]
+        if not isinstance(msg, AssistantMessage) or not msg.tool_calls:
+            continue
+        for call in reversed(msg.tool_calls):
+            if "ask_user_question" in (call.name or ""):
+                keep_through = i
+                tool_call_id = call.id
+                break
+    if tool_call_id is None:
+        trimmed = list(messages)
+        while trimmed and _is_empty_fallback_assistant(trimmed[-1]):
+            trimmed.pop()
+        tool_call_id = "ask_user_question_resume"
+        await ctx.clear()
+        for msg in trimmed:
+            await ctx.add(msg)
+        await ctx.add(AssistantMessage(
+            content=[],
+            tool_calls=[ToolCall(
+                id=tool_call_id,
+                name="internaltools__ask_user_question",
+                arguments={},
+            )],
+        ))
+    else:
+        await ctx.clear()
+        for msg in messages[: keep_through + 1]:
+            await ctx.add(msg)
+    await ctx.add(ToolMessage(
+        content=json.dumps({"status": "answered", "answers": answers}, ensure_ascii=False),
+        tool_call_id=tool_call_id,
+    ))
 
 
 def _scrub_legacy_system_note(text: str) -> str:
