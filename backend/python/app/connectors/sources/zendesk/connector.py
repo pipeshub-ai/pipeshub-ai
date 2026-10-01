@@ -111,6 +111,12 @@ HTTP_ERROR_STATUS = 400
 CDN_FETCH_TIMEOUT_SECONDS = 60.0
 # Zendesk reports trashed tickets in the incremental export under this status.
 DELETED_TICKET_STATUS = "deleted"
+# Admins and agents whose role grants ticket_access "all" read every ticket in Zendesk
+# whatever its group, so they cannot be derived from group membership.
+ALL_TICKETS_GROUP_ID = "role_all_tickets"
+ALL_TICKETS_ACCESS = "all"
+# Custom roles exist on Enterprise plans only; other plans answer with one of these.
+CUSTOM_ROLES_UNAVAILABLE_STATUSES = frozenset({403, 404})
 # Base64 inflates by a third and the result is held in the record body.
 MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
 IMG_SRC_PATTERN = re.compile(r'(<img\b[^>]*?\bsrc=["\'])([^"\']+)(["\'])', re.IGNORECASE)
@@ -368,6 +374,16 @@ class ZendeskConnector(BaseConnector):
             await self.data_entities_processor.on_new_record_groups(group_record_groups)
         self.logger.info(f"Zendesk: synced {len(group_record_groups)} groups")
 
+        all_access_group, roles_complete = await self._build_all_tickets_group()
+        if users_complete and roles_complete:
+            await self.data_entities_processor.on_new_user_groups([all_access_group])
+        else:
+            self.logger.error(
+                "Zendesk: skipping all-tickets access group — the %s export was "
+                "truncated and the group is rebuilt from scratch on every write",
+                "user" if not users_complete else "custom role",
+            )
+
         org_user_groups, orgs_complete = await self._fetch_organizations()
         if org_user_groups and users_complete and orgs_complete:
             await self.data_entities_processor.on_new_user_groups(org_user_groups)
@@ -381,13 +397,13 @@ class ZendeskConnector(BaseConnector):
 
         # Without those AppUserGroups the group grant is dropped, and the advanced sync
         # point would stop any later run repairing it.
-        if users_complete and memberships_complete:
+        if users_complete and memberships_complete and roles_complete:
             ticket_count = await self._sync_tickets()
         else:
             ticket_count = 0
             self.logger.error(
-                "Zendesk: skipping ticket sync — group membership was not written, so "
-                "every ticket would land without its group grant and the advanced sync "
+                "Zendesk: skipping ticket sync — group or all-tickets membership was "
+                "not written, so every ticket would land without that grant and the advanced sync "
                 "point would stop any later run from repairing it"
             )
         article_count = await self._sync_help_center_articles()
@@ -531,12 +547,103 @@ class ZendeskConnector(BaseConnector):
                     external_id=f"group_{group_id}",
                     type=PermissionType.READ,
                     entity_type=EntityType.GROUP,
-                )
+                ),
+                self._all_tickets_permission(),
             ]
             record_groups.append((record_group, permissions))
 
         # Both feed a rebuild-from-scratch that would revoke whatever fell off the end.
         return record_groups, user_groups, groups_complete and memberships_complete
+
+    async def _fetch_custom_role_ticket_access(self) -> Tuple[Dict[str, str], bool]:
+        """Map custom role id -> ticket_access, plus whether the list is trustworthy.
+
+        Plans without custom roles answer 403/404 and have no agent carrying a
+        custom_role_id either, so that is an empty-but-complete answer. Anything else
+        is a truncated export: the all-tickets group is rebuilt from scratch from it.
+        """
+        datasource = await self._get_fresh_datasource()
+        try:
+            response = await call_with_retry(
+                partial(self._call_api, datasource.list_custom_roles),
+                logger=self.logger,
+                label="zendesk/list_custom_roles",
+            )
+        except httpx.HTTPStatusError as e:
+            self.logger.error(f"Zendesk list_custom_roles gave up after retries: {e}")
+            return {}, False
+        if response.status_code in CUSTOM_ROLES_UNAVAILABLE_STATUSES:
+            self.logger.info(
+                "Zendesk: custom roles unavailable on this plan (HTTP %s) — only the "
+                "built-in admin and agent roles apply", response.status_code,
+            )
+            return {}, True
+        if not response.success:
+            self.logger.error(f"Zendesk list_custom_roles failed: {response.error}")
+            return {}, False
+        access: Dict[str, str] = {}
+        for role in self._extract_list(response.data, "custom_roles"):
+            role_id = role.get("id")
+            if role_id is None:
+                continue
+            ticket_access = (role.get("configuration") or {}).get("ticket_access")
+            access[str(role_id)] = str(ticket_access or "")
+        return access, True
+
+    def _has_all_tickets_access(
+        self, user_data: Dict[str, Any], role_ticket_access: Dict[str, str]
+    ) -> bool:
+        """Whether Zendesk lets this user read every ticket regardless of group."""
+        if user_data.get("active") is False or user_data.get("suspended"):
+            return False
+        role = user_data.get("role")
+        if role == "admin":
+            return True
+        if role != "agent":
+            return False
+        custom_role_id = user_data.get("custom_role_id")
+        if custom_role_id is None:
+            # The built-in agent role is not restricted by group.
+            return True
+        ticket_access = role_ticket_access.get(str(custom_role_id))
+        if ticket_access is None:
+            self.logger.warning(
+                "Zendesk: agent %s has unknown custom role %s — withholding all-tickets access",
+                user_data.get("id"), custom_role_id,
+            )
+            return False
+        return ticket_access == ALL_TICKETS_ACCESS
+
+    async def _build_all_tickets_group(self) -> Tuple[Tuple[AppUserGroup, List[AppUser]], bool]:
+        """One group of every admin and all-access agent, granted on every ticket.
+
+        Always returned, even when empty, so the grant on tickets never points at a
+        group that does not exist. Built from the cached full user export.
+        """
+        role_ticket_access, complete = await self._fetch_custom_role_ticket_access()
+        members = [
+            app_user
+            for user_id, app_user in self._user_id_to_app_user.items()
+            if self._has_all_tickets_access(
+                self._user_id_to_data.get(user_id, {}), role_ticket_access
+            )
+        ]
+        group = AppUserGroup(
+            app_name=Connectors.ZENDESK,
+            connector_id=self.connector_id,
+            source_user_group_id=ALL_TICKETS_GROUP_ID,
+            name="Zendesk: all tickets access",
+            org_id=self.data_entities_processor.org_id,
+        )
+        self.logger.info(f"Zendesk: {len(members)} users have all-tickets access")
+        return (group, members), complete
+
+    def _all_tickets_permission(self) -> Permission:
+        return Permission(
+            external_id=ALL_TICKETS_GROUP_ID,
+            type=PermissionType.READ,
+            entity_type=EntityType.GROUP,
+        )
 
     async def _fetch_organizations(self) -> Tuple[List[Tuple[AppUserGroup, List[AppUser]]], bool]:
         """Sync Zendesk organizations as user groups.
@@ -653,6 +760,7 @@ class ZendeskConnector(BaseConnector):
                         records_with_permissions[start:start + BATCH_PROCESSING_SIZE]
                     )
                 synced += len(records_with_permissions)
+                await self._replace_changed_record_permissions(records_with_permissions)
                 # At sync time, not on the streaming path: an attachment is a record in
                 # its own right and must exist even if its ticket is never indexed. This
                 # is also what rebuilds their edges after a full sync wipes them, so an
@@ -697,6 +805,24 @@ class ZendeskConnector(BaseConnector):
                 f"Zendesk: removed {removed} tickets deleted at source or outside the filters"
             )
         return synced
+
+    async def _replace_changed_record_permissions(
+        self, records_with_permissions: List[Tuple[Record, List[Permission]]]
+    ) -> None:
+        """Swap the grants of tickets that already existed for the ones just computed.
+
+        on_new_records only adds permission edges, so a ticket moved to another group
+        or reassigned to another requester would keep the old grants and stay readable
+        by people Zendesk no longer lets see it. After a full sync the edges are gone
+        already, and adding is correct.
+        """
+        if self._rebuild_ticket_edges:
+            return
+        for record, permissions in records_with_permissions:
+            if record.version > 0:
+                await self.data_entities_processor.on_updated_record_permissions(
+                    record, permissions
+                )
 
     def _is_deleted_ticket(self, ticket_data: Dict[str, Any]) -> bool:
         return str(ticket_data.get("status") or "").lower() == DELETED_TICKET_STATUS
@@ -1490,7 +1616,14 @@ class ZendeskConnector(BaseConnector):
             self._apply_indexing_filter(file_record, IndexingFilterKey.ATTACHMENTS)
             # Attachments lost their edges to the same wipe, so a rebuild pass has to
             # resend the existing ones too, not just the new ones.
-            if existing_record is None or rebuild_edges:
+            # An attachment takes its parent's group, so a ticket moved to another
+            # group has to drag its existing attachments along.
+            moved = (
+                existing_record is not None
+                and existing_record.external_record_group_id
+                != file_record.external_record_group_id
+            )
+            if existing_record is None or rebuild_edges or moved:
                 records_with_permissions.append((file_record, []))
             child_records.append(ChildRecord(
                 child_type=ChildType.RECORD,
@@ -1802,7 +1935,7 @@ class ZendeskConnector(BaseConnector):
         requester: Dict[str, Any],
         organization_id: Any = None,
     ) -> List[Permission]:
-        permissions: List[Permission] = []
+        permissions: List[Permission] = [self._all_tickets_permission()]
         if group_id:
             permissions.append(Permission(
                 external_id=f"group_{group_id}",
@@ -1823,10 +1956,10 @@ class ZendeskConnector(BaseConnector):
                 type=PermissionType.READ,
                 entity_type=EntityType.USER,
             ))
-        if not permissions:
+        if len(permissions) == 1:
             self.logger.warning(
-                "Zendesk: no permissions resolved for a record (group_id=%s) — "
-                "it will not be visible to anyone",
+                "Zendesk: no group or requester grant for a record (group_id=%s) — "
+                "only all-tickets users will see it",
                 group_id,
             )
         return permissions
