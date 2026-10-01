@@ -25,6 +25,8 @@ CONNECTOR_ID = "conn-123"
 def mock_config_service() -> MagicMock:
     """Mock ConfigurationService with async get_config/set_config."""
     svc = MagicMock()
+    svc.get_config = AsyncMock(return_value=_connector_config())
+    svc.set_config = AsyncMock(return_value=True)
     svc.get_config_with_version = AsyncMock(return_value=({}, 1))
     svc.compare_and_set = AsyncMock(return_value=(True, ({}, 2)))
     return svc
@@ -203,6 +205,12 @@ class TestRotatingRefreshTokenSafety:
             expires_in=3600,
             created_at=datetime.now(),
         )
+        # get_config is called first by _perform_token_refresh_locked; return the
+        # already-rotated live config so _adopt_already_rotated_token detects it.
+        mock_config_service.get_config = AsyncMock(return_value={
+            "auth": _connector_config()["auth"],
+            "credentials": live.to_dict(),
+        })
         mock_config_service.get_config_with_version = AsyncMock(
             return_value=({
                 "auth": _connector_config()["auth"],
@@ -248,6 +256,7 @@ class TestRotatingRefreshTokenSafety:
             store.update(deepcopy(value))
             return True, (deepcopy(value), 2)
 
+        mock_config_service.get_config = AsyncMock(side_effect=lambda *a, **k: deepcopy(store))
         mock_config_service.get_config_with_version = AsyncMock(side_effect=get_config_with_version)
         mock_config_service.compare_and_set = AsyncMock(side_effect=compare_and_set)
 
@@ -309,8 +318,19 @@ class TestRotatingRefreshTokenSafety:
                 "credentials": {"access_token": "new-access", "refresh_token": "rt-new"},
             }), 1
 
+        mock_config_service.get_config = AsyncMock(return_value={
+            "auth": _connector_config()["auth"],
+            "filters": {"sync": "old"},
+            "credentials": {"access_token": "old-access", "refresh_token": "rt-old"},
+        })
         mock_config_service.get_config_with_version = AsyncMock(side_effect=get_config_with_version)
-        mock_config_service.compare_and_set = AsyncMock(return_value=(True, ({}, 2)))
+        # First CAS fails (simulating a concurrent write that updated the config between
+        # our initial read and persist); _persist_refreshed_credentials re-reads and gets
+        # the "new" config before the second CAS succeeds.
+        mock_config_service.compare_and_set = AsyncMock(side_effect=[
+            (False, ({}, 1)),
+            (True, ({}, 2)),
+        ])
         new_token = OAuthToken(access_token="new-access", refresh_token="rt-new", expires_in=3600)
 
         with (
@@ -345,6 +365,7 @@ class TestRotatingRefreshTokenSafety:
                 store.update(value)
             return ok, (dict(store), 2)
 
+        mock_config_service.get_config = AsyncMock(return_value=dict(store))
         mock_config_service.get_config_with_version = AsyncMock(side_effect=get_config_with_version)
         mock_config_service.compare_and_set = AsyncMock(side_effect=compare_and_set)
         new_token = OAuthToken(access_token="new-access", refresh_token="rt-new", expires_in=3600)
@@ -376,6 +397,7 @@ class TestRotatingRefreshTokenSafety:
             "credentials": {"access_token": "old-access", "refresh_token": "rt-old"},
         }
         # Like ConfigurationService, every read hands back the one cached dict.
+        mock_config_service.get_config = AsyncMock(return_value=dict(cached))
         mock_config_service.get_config_with_version = AsyncMock(return_value=(cached, 1))
         mock_config_service.compare_and_set = AsyncMock(return_value=(False, ({}, 2)))
         service._invalid_refresh_failures[CONNECTOR_ID] = 1

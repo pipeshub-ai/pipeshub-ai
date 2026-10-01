@@ -328,7 +328,11 @@ class TestRoundTrip:
 
         stored = h.raw_value("/services/connectors/x/config").decode("utf-8")
         assert "not-a-real-secret" not in stored
-        assert stored.strip('"').count(":") == 2
+        # For Redis, the store prepends REV:<uuid>: before the ciphertext; strip it first.
+        payload = stored
+        if h.kind == "redis" and payload.startswith("REV:") and len(payload) > 41 and payload[40] == ":":
+            payload = payload[41:]
+        assert payload.strip('"').count(":") == 2
         assert await h.store.get_key("/services/connectors/x/config") == secret
 
     async def test_excluded_keys_are_stored_as_plain_json(self, h) -> None:

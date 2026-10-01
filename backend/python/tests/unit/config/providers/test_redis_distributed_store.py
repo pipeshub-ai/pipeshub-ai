@@ -99,13 +99,26 @@ class TestCreateKey:
 
     @pytest.mark.asyncio
     async def test_create_with_ttl(self):
+        import uuid as _uuid
         store = _make_store()
         mock = _mock_client(store)
         result = await store.create_key("key1", {"data": 1}, ttl=60)
         assert result is True
-        mock.set.assert_called_once_with(
-            "test:kv:key1", json.dumps({"data": 1}).encode(), ex=60
-        )
+        mock.set.assert_called_once()
+        call_args = mock.set.call_args
+        actual_key = call_args[0][0]
+        actual_value = call_args[0][1]
+        actual_ex = call_args[1]["ex"]
+        assert actual_key == "test:kv:key1"
+        assert actual_ex == 60
+        # Value must be b"REV:<uuid>:<payload>"
+        assert actual_value.startswith(b"REV:")
+        # UUID is the 36 chars after "REV:" and before the second ":"
+        rev_part = actual_value[4:40].decode()
+        _uuid.UUID(rev_part)  # raises ValueError if not a valid UUID
+        payload = actual_value[41:]
+        assert payload == json.dumps({"data": 1}).encode()
+
 
     @pytest.mark.asyncio
     async def test_create_no_overwrite_key_exists(self):

@@ -529,6 +529,9 @@ class FakeConfigService:
         self.config = config
         self.others = dict(others or {})
         self.writes: list[dict[str, Any]] = []
+        # Version counter per path; starts at 1 so callers that seed
+        # get_config_with_version always start with a consistent baseline.
+        self._versions: dict[str, int] = {}
 
     @property
     def path(self) -> str:
@@ -548,12 +551,38 @@ class FakeConfigService:
         return True
 
     async def get_config_with_version(self, path: str, default: object = None, **kwargs: object) -> tuple[object, int]:
-        return await self.get_config(path, default, **kwargs), 1
+        value = await self.get_config(path, default, **kwargs)
+        return value, self._versions.get(path, 1)
 
-    async def compare_and_set(self, path: str, expected_version: int, value: Any, **_: object) -> tuple[bool, tuple[Any, int] | None]:
+    async def compare_and_set(
+        self,
+        path: str,
+        expected_version: int,
+        value: Any,
+        **_: object,
+    ) -> tuple[bool, tuple[Any, int] | None]:
+        """Write *value* only when *expected_version* matches the stored version.
+
+        * Match  → write succeeds, version increments, returns ``(True, (new_value, new_version))``.
+        * Stale  → write is rejected, stored value is unchanged,
+                   returns ``(False, (current_value, current_version))``.
+        """
+        current_version = self._versions.get(path, 1)
+        if expected_version != current_version:
+            # Conflict: return the current state without mutating it.
+            if path == self.path:
+                current_value = copy.deepcopy(self.config)
+            else:
+                current_value = copy.deepcopy(self.others.get(path))
+            return False, (current_value, current_version)
+
+        # Version matches — commit the write.
+        new_version = current_version + 1
+        self._versions[path] = new_version
+        written = copy.deepcopy(value)
         if path == self.path:
-            self.config = __import__('copy').deepcopy(value)
-            self.writes.append(__import__('copy').deepcopy(value))
+            self.config = written
+            self.writes.append(copy.deepcopy(written))
         else:
-            self.others[path] = __import__('copy').deepcopy(value)
-        return True, (__import__('copy').deepcopy(value), 2)
+            self.others[path] = written
+        return True, (copy.deepcopy(written), new_version)
