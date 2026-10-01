@@ -202,3 +202,19 @@ async def test_membership_still_merges_against_the_locked_read(merge: bool) -> N
     await store.upsert_entities_batch([_topic("a", connectors=("c2",))], merge_membership=merge)
     expected = ["c1", "c9", "c2"] if merge else ["c2"]
     assert db.points[_pid("a")]["connectorIds"] == expected
+
+
+async def test_a_failed_write_counts_only_the_entities_it_left_unwritten(caplog) -> None:
+    """The membership-only write landed before the upsert failed; that entity
+    is not also counted (and logged) as failed."""
+    db = _DB()
+    store = _store(db)
+    await store.upsert_entities_batch([_topic("same"), _topic("moved")], merge_membership=False)
+    db.fail_upserts = True
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        outcome = await store.upsert_entities_batch(
+            [_topic("same"), _topic("moved", connectors=("c2",)), _topic("new")], merge_membership=False,
+        )
+    assert outcome == EntityWriteOutcome(membership_only=1, unchanged=1, failed=1)
+    message = next(r.getMessage() for r in caplog.records if "not written" in r.getMessage())
+    assert "topic/new" in message and "topic/moved" not in message and "topic/same" not in message

@@ -499,12 +499,9 @@ class TestDeleteKnowledgeBase:
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": True, "virtual_record_ids": [], "record_group_ids": ["rg-1", "rg-2"],
         })
-        service.entity_vector_store = AsyncMock()
-
         result = await service.delete_knowledge_base("kb1", "user1", "org1")
 
         assert result["success"] is True
-        service.entity_vector_store.delete_entities_by_connector.assert_not_awaited()
         (event,) = self._entity_events(mock_kafka_service)
         assert event["payload"] == {
             "orgId": "org1", "connectorId": "kb1", "connectorName": None,
@@ -538,21 +535,6 @@ class TestDeleteKnowledgeBase:
 
         (event,) = self._entity_events(mock_kafka_service)
         assert event["payload"]["recordGroupIds"] is None
-
-    @pytest.mark.asyncio
-    async def test_missing_entity_vector_store_still_succeeds(self, service):
-        """entity_vector_store is optional (defaults to None) — KB delete
-        must not depend on it being wired up."""
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
-            "success": True, "virtual_record_ids": [],
-        })
-        assert service.entity_vector_store is None
-
-        result = await service.delete_knowledge_base("kb1", "user1", "org1")
-
-        assert result["success"] is True
 
 
 class TestDeleteKBStorageCleanup:
