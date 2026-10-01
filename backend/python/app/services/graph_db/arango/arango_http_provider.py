@@ -181,6 +181,7 @@ from app.services.graph_db.taxonomy import (
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
     alias_pairs as _alias_pairs,
+    global_department_key,
     hierarchy_edge_key,
     is_taxonomy_collection,
     subcategory_level,
@@ -985,7 +986,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             existing_names = set() if not existing else {r for r in existing if r is not None}
 
             new_departments = [
-                {"id": str(uuid.uuid4()), "departmentName": dept.value, "orgId": None}
+                {"id": global_department_key(dept.value), "departmentName": dept.value, "orgId": None}
                 for dept in DepartmentNames
                 if dept.value not in existing_names
             ]

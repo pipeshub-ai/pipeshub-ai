@@ -128,6 +128,7 @@ from app.services.graph_db.taxonomy import (
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
     alias_pairs as _alias_pairs,
+    global_department_key,
     is_taxonomy_collection,
     subcategory_level,
 )
@@ -348,7 +349,8 @@ class Neo4jProvider(IGraphDBProvider):
             # Create departments from DepartmentNames enum
             departments = [
                 {
-                    "id": str(uuid.uuid4()),
+                    # Keyed by name: services seeding at once converge on one node.
+                    "id": global_department_key(dept.value),
                     "departmentName": dept.value,
                     "orgId": None,
                 }

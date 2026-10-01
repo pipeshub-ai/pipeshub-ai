@@ -232,6 +232,15 @@ class GraphDBTransformer(Transformer):
                         collection, entity.key, exc,
                     )
 
+    @classmethod
+    def _department_for_org(cls, nodes: list[dict] | None, org_id: str) -> dict | None:
+        """The org's own department of that name, else the global one; never
+        another org's. Ties go to the lowest key, not to row order."""
+        usable = [n for n in nodes or [] if n.get("orgId") in (org_id, None) and cls._node_key(n)]
+        if not usable:
+            return None
+        return min(usable, key=lambda n: (n.get("orgId") is None, cls._node_key(n)))
+
     @staticmethod
     def _primary_category(metadata: SemanticMetadata) -> str | None:
         # An empty category used to create a node named ""; it is skipped,
@@ -453,8 +462,9 @@ class GraphDBTransformer(Transformer):
                         CollectionNames.DEPARTMENTS.value,
                         {"departmentName": department},
                     )
-                    if results:
-                        dept_key = self._node_key(results[0])
+                    chosen = self._department_for_org(results, org_id_placeholder)
+                    if chosen:
+                        dept_key = self._node_key(chosen)
                         dept_to = f"{CollectionNames.DEPARTMENTS.value}/{dept_key}"
                         new_dept_tos[dept_to] = department
                         touched_entities.append(EntityRecord(

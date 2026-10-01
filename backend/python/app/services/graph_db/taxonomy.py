@@ -42,6 +42,15 @@ CATEGORY_HIERARCHY_PARENTS: dict[str, str] = {
 _HIERARCHY_EDGE_NAMESPACE = uuid.UUID("6f6a0f53-1f3e-4c1b-9c55-6c2b2f0e8a11")
 
 
+_DEPARTMENT_NAMESPACE = uuid.UUID("0b7d1c52-8e0f-4f8e-9a3b-5d2a6f1c7e44")
+
+
+def global_department_key(department_name: str) -> str:
+    """Deterministic key of the global (org-less) department seeded for
+    ``department_name``, so services seeding at once create one node."""
+    return str(uuid.uuid5(_DEPARTMENT_NAMESPACE, department_name))
+
+
 def hierarchy_edge_key(child_key: str, parent_key: str) -> str:
     """Deterministic key of the hierarchy edge from ``child_key`` to
     ``parent_key``, so concurrent writers of one edge converge on one."""
