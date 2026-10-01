@@ -111,9 +111,7 @@ export class TelemetryService implements ITelemetryService {
         Number.isFinite(parsedInterval) && parsedInterval > 0
           ? parsedInterval
           : DEFAULTS.PUSH_INTERVAL;
-      this.enableMetricCollection = parseBoolean(
-        firstNonEmpty(config[keyValues.ENABLE_METRIC_COLLECTION], 'true'),
-      );
+      this.enableMetricCollection = this.resolveEnableMetricCollection(config);
 
       this.logConfig();
       await this.startOrStopMetricCollection();
@@ -131,6 +129,18 @@ export class TelemetryService implements ITelemetryService {
     }
   }
 
+  // Env wins over the stored config: that one is only reachable from the UI,
+  // and the first push has already happened by then (#3299). Blank = no override.
+  private resolveEnableMetricCollection(config: MetricsConfig): boolean {
+    const fromEnv = process.env.ENABLE_METRIC_COLLECTION;
+    if (fromEnv != null && fromEnv.trim() !== '') {
+      return parseBoolean(fromEnv);
+    }
+    return parseBoolean(
+      firstNonEmpty(config[keyValues.ENABLE_METRIC_COLLECTION], 'true'),
+    );
+  }
+
   private async persistMissingDefaults(config: MetricsConfig): Promise<void> {
     const defaults: [string, () => string][] = [
       [
@@ -141,7 +151,10 @@ export class TelemetryService implements ITelemetryService {
       [keyValues.INSTALL_ID, () => this.generateInstallId()],
       [keyValues.APP_VERSION, () => DEFAULTS.APP_VERSION],
       [keyValues.PUSH_INTERVAL, () => String(DEFAULTS.PUSH_INTERVAL)],
-      [keyValues.ENABLE_METRIC_COLLECTION, () => 'true'],
+      [
+        keyValues.ENABLE_METRIC_COLLECTION,
+        () => this.getEnv('ENABLE_METRIC_COLLECTION', 'true'),
+      ],
     ];
     let changed = false;
     for (const [key, makeDefault] of defaults) {

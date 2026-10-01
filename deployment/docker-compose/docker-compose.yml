@@ -116,6 +116,9 @@ services:
       # Public endpoints
       - FRONTEND_PUBLIC_URL=${FRONTEND_PUBLIC_URL:-}
 
+      # Telemetry: "false" opts out before the first push (#3299).
+      - ENABLE_METRIC_COLLECTION=${ENABLE_METRIC_COLLECTION:-}
+
       # Internal service URLs (fixed; all services share the container network)
       - QUERY_BACKEND=http://localhost:8000
       - CONNECTOR_BACKEND=http://localhost:8088
@@ -149,6 +152,8 @@ services:
       # Message broker: "redis" (default, uses Redis Streams) | "kafka"
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
+      # Indexing dead-letter backstop (#3298). Read by both brokers.
+      - REDIS_MAX_DELIVERIES=${REDIS_MAX_DELIVERIES:-}
 
       # Kafka (active when MESSAGE_BROKER=kafka)
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}

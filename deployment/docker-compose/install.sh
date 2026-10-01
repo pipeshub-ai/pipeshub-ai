@@ -1273,6 +1273,9 @@ ROTATE_SIGNING_SECRETS=${ROTATE_SIGNING_SECRETS}
 # Example: https://pipeshub.yourdomain.com
 FRONTEND_PUBLIC_URL=${FRONTEND_PUBLIC_URL}
 
+# Telemetry: uncomment to opt out before the first push (#3299).
+# ENABLE_METRIC_COLLECTION=false
+
 # Host port PipesHub is exposed on
 APP_PORT=${APP_PORT}
 
@@ -1298,6 +1301,8 @@ KV_STORE_TYPE=${KV_STORE}
 # "redis" (Redis Streams, default) | "kafka" (Kafka + Zookeeper)
 MESSAGE_BROKER=${BROKER}
 REDIS_STREAMS_MAXLEN=500000
+# Indexing dead-letter backstop (#3298). Read by both brokers.
+# REDIS_MAX_DELIVERIES=10
 
 # ── Redis ────────────────────────────────────────────────────────────────────
 REDIS_PASSWORD=${REDIS_PASSWORD}

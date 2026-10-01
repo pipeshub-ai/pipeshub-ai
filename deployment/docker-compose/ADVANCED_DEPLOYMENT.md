@@ -411,6 +411,56 @@ the table says.
 
 ---
 
+## Telemetry
+
+| Variable | Values | Default |
+|----------|--------|---------|
+| `ENABLE_METRIC_COLLECTION` | `true` \| `false` | unset (the in-app toggle decides) |
+
+Metric collection is on by default and the pusher starts shortly after boot, so by
+the time anyone reaches **Settings → Data collection** the first push has already
+gone out. Setting `ENABLE_METRIC_COLLECTION=false` in `.env` stops it before that
+first push. It is read by both the Node service and the Python services, and it
+wins over the stored setting; leave it unset to keep using the in-app toggle.
+`true` is accepted too, but is only useful to re-enable collection on a host whose
+stored setting was turned off.
+
+This is separate from the `telemetry` block in the Helm chart, which configures
+OpenTelemetry tracing, not the metrics collector.
+
+---
+
+## Indexing dead-letter backstop
+
+| Variable | Values | Default |
+|----------|--------|---------|
+| `REDIS_MAX_DELIVERIES` | integer | `10` |
+
+Every Redis Streams consumer (and the Kafka indexing consumer, which shares the same
+counter) dead-letters an indexing message once it has been delivered this many times.
+The counter is Redis's own `times_delivered`, which counts **every** delivery — the first
+read, a claim after a restart, and the consumer's own hold/release cycle.
+
+That last one is the trap. An entry held longer than the record-lease window is released
+back to the pending list and re-read, and each re-read counts. When the queue is long
+relative to throughput — a throttled indexer, a slow parser, a large corpus on a small
+host — every waiting record crosses the backstop and is marked `FAILED` at the moment it
+is finally processed, with no processing failure behind it:
+
+```text
+Released 50 entry(ies) held longer than 900s back to the pending list…
+… marked FAILED: Message discarded after 10 attempt(s): delivered 10 times (backstop 10)
+```
+
+Raise it above the number of hold/release cycles you expect to see before a record is
+reached. Setting it to `100000` disables the backstop in practice; the app-tracked failure
+counter is unaffected either way, so genuine processing failures are still caught after
+`MAX_DELIVERY_ATTEMPTS` attempts. Note that `MAX_DELIVERY_ATTEMPTS` is documented in
+`env.template` but is **not** forwarded by the compose files — only `.env` keys the
+compose file enumerates reach the container.
+
+---
+
 ## Container outbound connectivity
 
 PipesHub starts and indexes documents **without** outbound internet when models are

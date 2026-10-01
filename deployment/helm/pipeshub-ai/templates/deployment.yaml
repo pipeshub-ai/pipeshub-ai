@@ -173,6 +173,9 @@ spec:
               value: {{ .Values.config.connectorPublicBackend | quote }}
             - name: FRONTEND_PUBLIC_URL
               value: {{ .Values.config.frontendPublicUrl | quote }}
+            # Telemetry opt-out before the first push (#3299).
+            - name: ENABLE_METRIC_COLLECTION
+              value: {{ .Values.config.enableMetricCollection | default "" | quote }}
             
             # Internal service URLs
             - name: QUERY_BACKEND
@@ -232,6 +235,8 @@ spec:
               value: {{ .Values.messageBroker.type | default "redis" | quote }}
             - name: REDIS_STREAMS_MAXLEN
               value: {{ .Values.messageBroker.redisStreamsMaxLen | default "500000" | quote }}
+            - name: REDIS_MAX_DELIVERIES
+              value: {{ .Values.messageBroker.redisMaxDeliveries | default "" | quote }}
 
             {{- if eq .Values.messageBroker.type "kafka" }}
             # Kafka config

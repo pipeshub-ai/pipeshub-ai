@@ -365,6 +365,40 @@ else
   pass "env.template does not pin pending indexing tasks 28"
 fi
 
+echo "== Indexing dead-letter backstop is operator-tunable =="
+# REDIS_MAX_DELIVERIES counts every delivery, including the consumer's own
+# hold/release re-reads, so a throttled indexer dead-letters healthy records
+# unless the operator can raise it. Compose forwards only what it enumerates.
+compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
+check "compose forwards REDIS_MAX_DELIVERIES" "$compose" 'REDIS_MAX_DELIVERIES=${REDIS_MAX_DELIVERIES:-}'
+if grep -E "^[[:space:]]+- REDIS_MAX_DELIVERIES=\\\$\\{REDIS_MAX_DELIVERIES:-[0-9]+\\}[[:space:]]*$" <<<"$compose" >/dev/null; then
+  fail "REDIS_MAX_DELIVERIES must not pin a numeric Compose default (overrides the in-tree default)"
+else
+  pass "REDIS_MAX_DELIVERIES is not numeric-defaulted"
+fi
+check "env.template documents REDIS_MAX_DELIVERIES" "$envtmpl" "REDIS_MAX_DELIVERIES"
+check "installer .env documents REDIS_MAX_DELIVERIES" "$inner" "REDIS_MAX_DELIVERIES"
+
+helm_values="$(cat "$REPO_ROOT/deployment/helm/pipeshub-ai/values.yaml")"
+check "helm values expose redisMaxDeliveries" "$helm_values" "redisMaxDeliveries"
+helm_tpl="$(cat "$REPO_ROOT/deployment/helm/pipeshub-ai/templates/deployment.yaml")"
+check "helm deployment wires REDIS_MAX_DELIVERIES" "$helm_tpl" "REDIS_MAX_DELIVERIES"
+
+echo "== Telemetry can be opted out of before boot =="
+# Compose forwards only what it enumerates, so the opt-out needs listing (#3299).
+compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
+check "compose forwards ENABLE_METRIC_COLLECTION" "$compose" 'ENABLE_METRIC_COLLECTION=${ENABLE_METRIC_COLLECTION:-}'
+# A default here would override the stored setting for everyone.
+if grep -E "^[[:space:]]+- ENABLE_METRIC_COLLECTION=\\\$\\{ENABLE_METRIC_COLLECTION:-[^}]+\\}[[:space:]]*$" <<<"$compose" >/dev/null; then
+  fail "ENABLE_METRIC_COLLECTION must not pin a Compose default (it would override the stored setting)"
+else
+  pass "ENABLE_METRIC_COLLECTION is not defaulted"
+fi
+check "env.template documents ENABLE_METRIC_COLLECTION" "$envtmpl" "ENABLE_METRIC_COLLECTION"
+check "installer .env documents ENABLE_METRIC_COLLECTION" "$inner" "ENABLE_METRIC_COLLECTION"
+check "helm values expose enableMetricCollection" "$helm_values" "enableMetricCollection"
+check "helm deployment wires ENABLE_METRIC_COLLECTION" "$helm_tpl" "ENABLE_METRIC_COLLECTION"
+
 echo "== OAuth device / DCR launch defaults =="
 envtmpl="$(cat "$COMPOSE_DIR/env.template")"
 compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
