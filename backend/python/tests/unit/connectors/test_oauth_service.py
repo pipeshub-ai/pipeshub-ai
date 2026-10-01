@@ -1270,8 +1270,8 @@ class TestStartAuthorization:
 
     @pytest.mark.asyncio
     async def test_start_authorization_non_dict_config(self, oauth_provider, mock_config_service):
-        """start_authorization handles non-dict config from get_config."""
-        mock_config_service.get_config = AsyncMock(return_value="not a dict")
+        """start_authorization handles non-dict config from get_config_with_version."""
+        mock_config_service.get_config_with_version = AsyncMock(return_value=("not a dict", 1))
 
         url = await oauth_provider.start_authorization()
         assert "state" in url
@@ -1279,7 +1279,7 @@ class TestStartAuthorization:
     @pytest.mark.asyncio
     async def test_start_authorization_extra_params(self, oauth_provider, mock_config_service):
         """Extra kwargs are passed through to URL."""
-        mock_config_service.get_config = AsyncMock(return_value={})
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({}, 1))
 
         url = await oauth_provider.start_authorization(login_hint="user@example.com")
         params = parse_qs(urlparse(url).query)
@@ -1327,12 +1327,12 @@ class TestHandleCallback:
     @pytest.mark.asyncio
     async def test_callback_state_mismatch_raises(self, oauth_provider, mock_config_service):
         """State mismatch raises ValueError."""
-        mock_config_service.get_config = AsyncMock(return_value={
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({
             "oauth": {
                 "state": "stored-state",
                 "used_codes": [],
             }
-        })
+        }, 1))
 
         with pytest.raises(ValueError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="wrong-state")
@@ -1367,7 +1367,7 @@ class TestHandleCallback:
     @pytest.mark.asyncio
     async def test_callback_state_mismatch_duplicate_malformed_creds(self, oauth_provider, mock_config_service):
         """State mismatch, code used, but creds are malformed raises ValueError."""
-        mock_config_service.get_config = AsyncMock(return_value={
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({
             "oauth": {
                 "state": "old-state",
                 "used_codes": ["auth-code"],
@@ -1376,7 +1376,7 @@ class TestHandleCallback:
                 "access_token": "tok",
                 # Will cause OAuthToken.from_dict to fail with TypeError by passing bad created_at
             }
-        })
+        }, 1))
 
         # We need to make from_dict raise. Patch it.
         with patch.object(OAuthToken, "from_dict", side_effect=TypeError("bad data")):
@@ -1455,8 +1455,8 @@ class TestHandleCallback:
 
     @pytest.mark.asyncio
     async def test_callback_non_dict_config(self, oauth_provider, mock_config_service):
-        """handle_callback with non-dict config from get_config raises due to no state."""
-        mock_config_service.get_config = AsyncMock(return_value="not a dict")
+        """handle_callback with non-dict config from get_config_with_version raises due to no state."""
+        mock_config_service.get_config_with_version = AsyncMock(return_value=("not a dict", 1))
 
         with pytest.raises(ValueError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="state")
@@ -1464,9 +1464,9 @@ class TestHandleCallback:
     @pytest.mark.asyncio
     async def test_callback_none_oauth_data(self, oauth_provider, mock_config_service):
         """handle_callback with None oauth data uses empty dict fallback."""
-        mock_config_service.get_config = AsyncMock(return_value={
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({
             "oauth": None,
-        })
+        }, 1))
 
         with pytest.raises(ValueError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="state")

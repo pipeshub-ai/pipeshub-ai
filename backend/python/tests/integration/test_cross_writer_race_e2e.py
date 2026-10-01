@@ -20,20 +20,44 @@ async def config_service(request):
     import logging
     logger = logging.getLogger("test_cas")
     store_type = request.param
+    store = None
     if store_type == "in_memory":
         store = InMemoryKeyValueStore(logger=logger)
     elif store_type == "redis":
-        store = RedisDistributedKeyValueStore(serializer=lambda x: json.dumps(x).encode(), deserializer=lambda x: json.loads(x.decode()), host="localhost", port=6379, db=0, key_prefix="test_cas:")
+        try:
+            import redis.asyncio as _redis
+            _probe = _redis.Redis(host="localhost", port=6379, socket_connect_timeout=2)
+            await _probe.ping()
+            await _probe.aclose()
+        except Exception:
+            pytest.skip("Redis not reachable at localhost:6379")
+        store = RedisDistributedKeyValueStore(
+            serializer=lambda x: json.dumps(x).encode(),
+            deserializer=lambda x: json.loads(x.decode()),
+            host="localhost", port=6379, db=0, key_prefix="test_cas:",
+        )
     elif store_type == "etcd":
-        store = Etcd3DistributedKeyValueStore(serializer=lambda x: json.dumps(x).encode(), deserializer=lambda x: json.loads(x.decode()), host="localhost", port=2379)
-        
+        try:
+            import asyncio as _asyncio
+            _, _w = await _asyncio.open_connection("localhost", 2379)
+            _w.close()
+        except Exception:
+            pytest.skip("etcd not reachable at localhost:2379")
+        store = Etcd3DistributedKeyValueStore(
+            serializer=lambda x: json.dumps(x).encode(),
+            deserializer=lambda x: json.loads(x.decode()),
+            host="localhost", port=2379,
+        )
+
     cs = ConfigurationService(logger=logger, key_value_store=store)
     yield cs
     if store_type == "redis":
-        keys = await store.client.keys("test_cas:*")
-        if keys:
-            await store.client.delete(*keys)
-        await store.close()
+        try:
+            keys = await store.client.keys("test_cas:*")
+            if keys:
+                await store.client.delete(*keys)
+        finally:
+            await store.close()
     elif store_type == "etcd":
         await store.close()
 

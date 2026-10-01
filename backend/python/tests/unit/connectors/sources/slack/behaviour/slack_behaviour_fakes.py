@@ -543,6 +543,7 @@ class FakeConfigService:
         return copy.deepcopy(self.others.get(path, default))
 
     async def set_config(self, path: str, value: Any) -> bool:  # noqa: ANN401 - any etcd value
+        self._versions[path] = self._versions.get(path, 1) + 1
         if path == self.path:
             self.config = copy.deepcopy(value)
             self.writes.append(copy.deepcopy(value))
