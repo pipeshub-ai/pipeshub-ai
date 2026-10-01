@@ -1238,6 +1238,8 @@
         "send": "Enviar invitación",
         "successTitle": "Invitaciones enviadas",
         "successDescription": "Se ha invitado a {{email}}",
+        "queuedTitle": "Invitaciones en cola",
+        "queuedDescription": "Los correos a {{email}} se están enviando en segundo plano. Recibirás una notificación si alguno no se puede entregar.",
         "invalidEmail": "Dirección de correo inválida",
         "errorGeneric": "No se pudieron enviar las invitaciones. Inténtalo de nuevo.",
         "importNoEmails": "No se encontraron direcciones de correo en el archivo",
@@ -4106,7 +4108,10 @@
       "orgEmailVerifiedTitle": "Organización verificada",
       "orgEmailVerifiedDescription": "Tu organización ya está activa. Inicia sesión para continuar.",
       "orgEmailVerifyFailedTitle": "Verificación fallida",
-      "orgEmailVerifyFailedDescription": "El enlace puede ser inválido o haber expirado. Por favor, regístrate nuevamente."
+      "orgEmailVerifyFailedDescription": "El enlace puede ser inválido o haber expirado. Por favor, regístrate nuevamente.",
+      "loadFailedTitle": "No se pudo cargar el inicio de sesión",
+      "loadFailedDescription": "PipesHub no pudo conectar con el servidor para cargar las opciones de inicio de sesión. Comprueba tu conexión o la dirección del servidor e inténtalo de nuevo.",
+      "retry": "Reintentar"
     },
     "common": {
       "signIn": "Iniciar sesión",
@@ -4140,6 +4145,11 @@
       "hidePassword": "Ocultar contraseña",
       "accountDisabled": "Su cuenta se ha deshabilitado.",
       "tooManyIncorrectCredentials": "Ha introducido credenciales incorrectas demasiadas veces"
+    },
+    "desktopHandoff": {
+      "title": "Inicio de sesión enviado a PipesHub",
+      "description": "Puedes cerrar esta pestaña y volver a la aplicación de PipesHub.",
+      "openApp": "Abrir PipesHub"
     }
   },
   "healthGate": {

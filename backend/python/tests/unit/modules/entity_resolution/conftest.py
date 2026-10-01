@@ -28,6 +28,15 @@ if TYPE_CHECKING:
 RECORDS = CollectionNames.RECORDS.value
 DEPARTMENTS = CollectionNames.DEPARTMENTS.value
 
+_TAXONOMY_COLLECTIONS: dict[tuple[str, str | None], str] = {
+    ("category", None): CollectionNames.CATEGORIES.value,
+    ("topic", None): CollectionNames.TOPICS.value,
+    ("language", None): CollectionNames.LANGUAGES.value,
+    ("subcategory", "1"): CollectionNames.SUBCATEGORIES1.value,
+    ("subcategory", "2"): CollectionNames.SUBCATEGORIES2.value,
+    ("subcategory", "3"): CollectionNames.SUBCATEGORIES3.value,
+}
+
 
 # ---------------------------------------------------------------------------
 # Fake graph: provider-level and transaction-level methods on one object
@@ -45,6 +54,7 @@ class FakeGraph:
         self.departments: dict[str, str] = {}
         self.calls: list[tuple[str, Any]] = []
         self.fail_find = False
+        self.fail_node_lookup = False
 
     # ---- setup helpers ----
     def add_record(self, key: str, org_id: str, connector_id: str = "conn-1",
@@ -97,6 +107,18 @@ class FakeGraph:
                 node.get("normalizedName") in wanted
                 or wanted & set(node.get("normalizedAliases") or [])
             )
+        ]
+
+    async def get_nodes_by_field_in(self, collection, field_name, field_values, return_fields=None, transaction=None) -> list[dict[str, Any]]:
+        self.calls.append(("get_nodes_by_field_in", (collection, field_name, list(field_values))))
+        if self.fail_node_lookup:
+            raise RuntimeError("graph down")
+        assert field_name == "id"
+        wanted = set(field_values)
+        return [
+            {"id": key, **node}
+            for (coll, key), node in self.nodes.items()
+            if coll == collection and key in wanted
         ]
 
     async def create_taxonomy_node_if_absent(self, collection, node, transaction=None) -> None:
@@ -197,12 +219,29 @@ class FakeEntityVectorStore:
     lets a scenario pin the winner for a query when overlap alone is a tie.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, graph: FakeGraph | None = None) -> None:
         self.points: dict[tuple[str, str, str], dict[str, Any]] = {}
         self.upserts: list[list[Any]] = []
         self.match_calls: list[tuple[list[str], str, str, str | None]] = []
         self.fail_matches = False
         self.force_winner: dict[str, str] = {}
+        self.graph = graph
+
+    def _back_with_graph_node(self, entity) -> None:
+        """Every real entity point is projected from a graph node; seeding a
+        point creates its per-org node so the resolver's winner check finds it."""
+        if self.graph is None:
+            return
+        collection = _TAXONOMY_COLLECTIONS.get((entity.entity_type.value, entity.level))
+        if collection is None or (collection, entity.entity_id) in self.graph.nodes:
+            return
+        self.graph.nodes[(collection, entity.entity_id)] = {
+            "name": entity.name,
+            "normalizedName": normalize_name(entity.name),
+            "orgId": entity.org_id,
+            "aliases": list(entity.aliases),
+            "normalizedAliases": [normalize_name(a) for a in entity.aliases],
+        }
 
     def point(self, org_id: str, entity_type: str, entity_id: str) -> dict[str, Any] | None:
         return self.points.get((org_id, entity_type, entity_id))
@@ -213,6 +252,7 @@ class FakeEntityVectorStore:
     async def upsert_entities_batch(self, entities, batch_size=64, *, merge_membership=True) -> None:
         self.upserts.append(list(entities))
         for entity in entities:
+            self._back_with_graph_node(entity)
             key = (entity.org_id, entity.entity_type.value, entity.entity_id)
             existing = self.points.get(key)
             connector_ids = list(entity.connector_ids)
@@ -350,8 +390,8 @@ def fake_graph() -> FakeGraph:
 
 
 @pytest.fixture
-def fake_store() -> FakeEntityVectorStore:
-    return FakeEntityVectorStore()
+def fake_store(fake_graph) -> FakeEntityVectorStore:
+    return FakeEntityVectorStore(fake_graph)
 
 
 @pytest.fixture
@@ -450,6 +490,7 @@ def make_transformer(fake_graph) -> Callable[[], GraphDBTransformer]:
                 return False
 
         transformer.graph_data_store = MagicMock()
+        transformer.graph_data_store.graph_provider = fake_graph
         transformer.graph_data_store.transaction = MagicMock(side_effect=lambda: _Txn())
         return transformer
 

@@ -20,6 +20,7 @@ from app.agent_loop_lib.hooks.middleware.context import ToolResultContext
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.base import ToolOutput
 from app.agent_loop_lib.tools.registry import ToolRegistry
+from app.agents.actions.knowledge_graph.ops.entity_filters import ENTITY_INDEX_CACHE_KEY
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.hooks.progressive_tools import (
     PROGRESSIVE_FIND_RECORDS_TOOL_NAME,
@@ -51,8 +52,12 @@ def _tool_scope(spec: AgentSpec, registry: ToolRegistry) -> ToolScope:
     return ToolScope(turn=turn_scope, call=None, tool_path=_SEARCH_ENTITIES_PATH, messages=[])
 
 
-def _agent_context() -> AgentContext:
-    return AgentContext(org_id="org-1", user_id="user-1", user_email="u@example.com", logger=MagicMock())
+def _agent_context(*, entities_found: bool = True) -> AgentContext:
+    context = AgentContext(org_id="org-1", user_id="user-1", user_email="u@example.com", logger=MagicMock())
+    if entities_found:
+        # What a successful search_entities leaves behind for its ids.
+        context.tool_state[ENTITY_INDEX_CACHE_KEY] = {"t1": {"type": "topic", "name": "Roadmap"}}
+    return context
 
 
 def _result_ctx(scope: ToolScope, *, tool_path: str) -> ToolResultContext:
@@ -71,6 +76,16 @@ class TestProgressiveEntityTools:
         await progressive_entity_tools(_agent_context())(ctx, _noop_next)
 
         assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME in spec.tool_names
+
+    async def test_a_search_that_found_nothing_grants_nothing(self) -> None:
+        """A failed or empty search leaves no entityId to pass the tool, and
+        binding it anyway changes the tool list mid-run."""
+        spec = _spec("caller", tool_names=[SEARCH_ENTITIES_TOOL_NAME])
+        ctx = _result_ctx(_tool_scope(spec, ToolRegistry()), tool_path=_SEARCH_ENTITIES_PATH)
+
+        await progressive_entity_tools(_agent_context(entities_found=False))(ctx, _noop_next)
+
+        assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME not in spec.tool_names
 
     @pytest.mark.parametrize("tool_path", [
         "/tools/knowledgegraph/search",

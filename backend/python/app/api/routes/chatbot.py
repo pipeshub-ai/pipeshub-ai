@@ -1182,16 +1182,22 @@ async def delete_chat_attachment(
     """
     user = request.state.user or {}
     org_id = user.get("orgId")
+    user_id = user.get("userId")
     if not org_id:
         raise HTTPException(status_code=400, detail="Missing org context")
 
-    # Verify the record belongs to this org before deleting.
     record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
     if not record:
         # Already gone — treat as success so the client stays consistent.
         return
     if record.get("orgId") != org_id:
         raise HTTPException(status_code=403, detail="Attachment does not belong to this organisation")
+    # record_id comes from the client, so without these checks any member could
+    # delete any record in the org (KB and connector records included).
+    if record.get("connectorName") != Connectors.ATTACHMENTS.value:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    if not user_id or record_id not in await _records_owned_by(graph_provider, user_id, [record_id]):
+        raise HTTPException(status_code=404, detail="Attachment not found")
 
     # Remove the RECORDS node and all its incident edges
     # (IS_OF_TYPE to FILES, PERMISSION edges to the record).
@@ -1221,23 +1227,27 @@ async def _load_org_doc(graph_provider: IGraphDBProvider, org_id: str | None) ->
     return await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
 
 
-async def _load_entity_vector_store(container: Any, logger_: Any) -> Any | None:  # noqa: ANN401
+async def load_entity_vector_store(container: Any, logger_: Any) -> Any | None:  # noqa: ANN401
     """The entity store backing the knowledge-graph entity tools, or None.
 
-    Never raises: without a store the tools are simply not granted, and
-    chat must not fail because an optional dependency is missing, not yet
-    initialised, or (in tests) not awaitable at all.
+    None hides the tools and their prompt paragraph: when the provider is
+    missing or fails, and when the entities collection does not exist yet, so
+    a deployment with nothing indexed does not pay for tools that can only
+    come back empty. Never raises; chat must not fail over an optional
+    dependency.
     """
     provider = getattr(container, "entity_vector_store", None)
     if provider is None:
         return None
     try:
-        result = provider()
-        if not inspect.isawaitable(result):
+        store = provider()
+        if inspect.isawaitable(store):
+            store = await store
+        if store is None or not await store.collection_exists():
             return None
-        return await result
+        return store
     except Exception as exc:
-        logger_.warning("entity_vector_store unavailable for chat: %s", exc)
+        logger_.warning("entity_vector_store unavailable: %s", exc)
         return None
 
 
@@ -1310,7 +1320,7 @@ async def _generate_chat_stream_via_agent_loop(
     # find_records_by_entity tools. When unavailable those tools are simply
     # not granted, rather than blocking chat.
     entity_vector_store_task = asyncio.ensure_future(
-        _load_entity_vector_store(container, logger_)
+        load_entity_vector_store(container, logger_)
     )
     background_tasks = [
         prompts_task, user_doc_task, org_doc_task,

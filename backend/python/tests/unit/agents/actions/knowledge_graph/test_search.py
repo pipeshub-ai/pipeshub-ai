@@ -8,12 +8,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.agents.actions.knowledge_graph.ops.entity_records import EntitySearchScope
 from app.agents.actions.knowledge_graph.ops.search import (
+    ENTITY_SCOPE_INCOMPLETE_MESSAGE,
     NARROWED_SEARCH_EMPTY_MESSAGE,
     execute_search,
     normalize_source_ids,
     resolve_entity_filter_groups,
     resolve_record_scoped_entities,
+    unresolved_entity_ids,
 )
 from app.modules.retrieval.entity_permissions import EntityAccessError
 
@@ -722,6 +725,69 @@ class TestResolveEntityFilterGroups:
         assert resolve_entity_filter_groups(state, None) == {}
 
 
+class TestStrictScope:
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_strict_scope_reaches_retrieval_as_a_control_flag(self, mock_parse) -> None:
+        """Without it an agent whose sources were all removed searched
+        everything the user can reach, while the entity tools searched nothing."""
+        retrieval = _empty_retrieval()
+        state = _entity_search_state(retrieval)
+        state["filters"] = {"apps": [], "kb": [], "strictScope": True}
+
+        await execute_search(state, "roadmap")
+
+        _, kwargs = retrieval.search_with_filters.call_args
+        assert kwargs["filter_groups"]["strictScope"] is True
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_no_strict_scope_adds_no_flag(self, mock_parse) -> None:
+        retrieval = _empty_retrieval()
+        await execute_search(_entity_search_state(retrieval), "roadmap")
+        _, kwargs = retrieval.search_with_filters.call_args
+        assert "strictScope" not in kwargs["filter_groups"]
+
+
+class TestUnknownEntityIds:
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_all_unknown_ids_fail_without_searching(self, mock_parse) -> None:
+        """Ids from an earlier turn are not in this turn's cache; an unscoped
+        search would be presented as the entity's results."""
+        retrieval = _empty_retrieval()
+        state = _entity_search_state(retrieval)
+
+        result = await execute_search(state, "nda renewal", entity_ids=["dept-123", "dept-123"])
+
+        parsed = json.loads(result)
+        assert parsed["status"] == "error"
+        assert "dept-123" in parsed["message"]
+        retrieval.search_with_filters.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_partly_unknown_ids_search_and_name_the_dropped_ones(self, mock_parse) -> None:
+        retrieval = _empty_retrieval()
+        state = _entity_search_state(
+            retrieval, _kg_entity_id_filter_key={"t1": ("topics", "Roadmap")},
+        )
+
+        result = await execute_search(state, "roadmap", entity_ids=["t1", "stale-9"])
+
+        first_kwargs = retrieval.search_with_filters.call_args_list[0].kwargs
+        assert first_kwargs["filter_groups"]["topics"] == ["Roadmap"]
+        assert "stale-9" in json.loads(result)["message"]
+
+    def test_record_ids_are_unresolved(self) -> None:
+        state = {
+            "_kg_entity_id_filter_key": {"t1": ("topics", "Roadmap")},
+            "_kg_record_scoped_entities": {"rg1": "record_group"},
+            "_kg_entity_index": {"rec-1": {"type": "record", "name": "Doc"}},
+        }
+        assert unresolved_entity_ids(state, ["t1", "rg1", "rec-1", "", "x"]) == ["rec-1", "x"]
+
+
 class TestExecuteSearchEntityFilters:
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
@@ -796,6 +862,7 @@ class TestExecuteSearchEntityFilters:
         assert "topics" not in second_kwargs["filter_groups"]
         assert "Fallback content" in result
         assert "NOT limited to it" in result
+        assert "record group/subcategory scope still applies" not in result
 
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
@@ -838,7 +905,8 @@ class TestExecuteSearchRecordScopedEntities:
         )
         with patch(
             "app.agents.actions.knowledge_graph.ops.search.resolve_entity_virtual_ids",
-            new_callable=AsyncMock, return_value=["vr-rg-1"],
+            new_callable=AsyncMock,
+            return_value=EntitySearchScope(virtual_ids=["vr-rg-1"], truncated=False),
         ) as resolver:
             await execute_search(state, "roadmap", entity_ids=["rg1"])
         resolver.assert_awaited_once_with(state, [("rg1", "record_group")])
@@ -854,13 +922,67 @@ class TestExecuteSearchRecordScopedEntities:
         )
         with patch(
             "app.agents.actions.knowledge_graph.ops.search.resolve_entity_virtual_ids",
-            new_callable=AsyncMock, return_value=[],
+            new_callable=AsyncMock,
+            return_value=EntitySearchScope(virtual_ids=[], truncated=False),
         ):
             result = await execute_search(state, "roadmap", entity_ids=["rg1"])
         parsed = json.loads(result)
         assert parsed["status"] == "success"
         assert parsed["result_count"] == 0
+        assert parsed["message"] == "No accessible records found for the requested entities."
         retrieval.search_with_filters.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_empty_truncated_scope_is_reported_as_inconclusive(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        state = _entity_search_state(
+            retrieval, _kg_record_scoped_entities={"rg1": "record_group"},
+        )
+        with patch(
+            "app.agents.actions.knowledge_graph.ops.search.resolve_entity_virtual_ids",
+            new_callable=AsyncMock,
+            return_value=EntitySearchScope(virtual_ids=[], truncated=True),
+        ):
+            result = await execute_search(state, "roadmap", entity_ids=["rg1"])
+        parsed = json.loads(result)
+        assert parsed["message"] == ENTITY_SCOPE_INCOMPLETE_MESSAGE
+        retrieval.search_with_filters.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_truncated_scope_with_no_hits_says_so(self, mock_parse) -> None:
+        retrieval = _empty_retrieval()
+        state = _entity_search_state(
+            retrieval, _kg_record_scoped_entities={"rg1": "record_group"},
+        )
+        with patch(
+            "app.agents.actions.knowledge_graph.ops.search.resolve_entity_virtual_ids",
+            new_callable=AsyncMock,
+            return_value=EntitySearchScope(virtual_ids=["vr-1"], truncated=True),
+        ):
+            result = await execute_search(state, "roadmap", entity_ids=["rg1"])
+        assert "only its newest accessible records were searched" in json.loads(result)["message"]
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_retrieval_error_in_a_scoped_search_is_an_error(self, mock_parse) -> None:
+        """A failed retrieval must not read as "the folder has nothing on this"."""
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "searchResults": [], "status": "error", "status_code": 500,
+            "message": "Unexpected server error during search.",
+        }
+        state = _entity_search_state(
+            retrieval, _kg_record_scoped_entities={"rg1": "record_group"},
+        )
+        with patch(
+            "app.agents.actions.knowledge_graph.ops.search.resolve_entity_virtual_ids",
+            new_callable=AsyncMock,
+            return_value=EntitySearchScope(virtual_ids=["vr-1"], truncated=False),
+        ):
+            result = await execute_search(state, "roadmap", entity_ids=["rg1"])
+        assert json.loads(result)["status"] == "error"
 
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))

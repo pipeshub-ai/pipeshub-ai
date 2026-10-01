@@ -218,19 +218,43 @@ class TestR5ModelDisplayForm:
         scripted_model({"release checklist": ("new", "")})
         await run(ctx_factory("r2", "acme", metadata_factory(categories=["Quality Assurance"], topics=["Release checklist"])))
 
-        scripted_model({"release-checklist v2 (draft)": ("new", "Release Checklist v2")})
-        meta = metadata_factory(categories=["Quality Assurance"], topics=["release-checklist v2 (draft)"])
+        scripted_model({"release-checklist v2": ("new", "Release Checklist v2")})
+        meta = metadata_factory(categories=["Quality Assurance"], topics=["release-checklist v2"])
         await run(ctx_factory("r5", "acme", meta))
         key = k("acme", TOPICS, "release checklist v2")
         node = fake_graph.node(TOPICS, key)
         assert node["name"] == "Release Checklist v2"
-        assert node["aliases"] == ["release-checklist v2 (draft)"]
+        assert node["aliases"] == ["release-checklist v2"]
         assert meta.topics == ["Release Checklist v2"]
 
         scripted_model()
         resolution = await run(ctx_factory("r6", "acme", metadata_factory(categories=["Quality Assurance"], topics=["release checklist v2"])))
         assert resolution.entries[(TOPICS, "release checklist v2")].key == key
         assert resolution.stats.tier0_hits == 2
+
+
+class TestR5bQuotedNames:
+    async def test_quoted_name_with_trailing_punctuation_lands_on_its_per_org_node(
+        self, pipeline, fake_graph, metadata_factory, ctx_factory, scripted_model
+    ) -> None:
+        """The resolver keys on the raw name and the graph transformer looks up
+        the rewritten display form. When they keyed differently the name fell
+        to the unscoped legacy lookup and a node shared across orgs."""
+        scripted_model()
+        run = pipeline("apply")
+        meta = metadata_factory(categories=["Projects"], topics=['Project "Phoenix".'])
+
+        await run(ctx_factory("r1", "acme", meta))
+
+        key = k("acme", TOPICS, 'project "phoenix"')
+        assert fake_graph.node(TOPICS, key)["orgId"] == "acme"
+        assert meta.topics == ['Project "Phoenix"']
+        assert not any(
+            name in ("get_nodes_by_filters", "batch_upsert_nodes") and args[0] == TOPICS
+            for name, args in fake_graph.calls
+        )
+        (edge,) = fake_graph.edges_from("r1", CollectionNames.BELONGS_TO_TOPIC.value)
+        assert edge["to_id"] == key
 
 
 class TestR6LevelsNeverCross:

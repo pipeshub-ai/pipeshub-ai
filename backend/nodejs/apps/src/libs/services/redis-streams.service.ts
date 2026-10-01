@@ -466,7 +466,7 @@ export abstract class BaseRedisStreamsConsumerConnection
             topic,
             this.groupId,
             this.consumerId,
-            30000, // min-idle-time: claim all pending
+            this.config.claimMinIdleMs ?? 30000,
             startId,
             'COUNT',
             '10',

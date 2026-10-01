@@ -12,8 +12,10 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from app.agents.actions.knowledge_graph.ops.entity_filters import remember_entities
-from app.agents.actions.knowledge_graph.ops.scope import derive_scope
+from app.agents.actions.knowledge_graph.ops.entity_filters import (
+    load_entity_access_context,
+    remember_entities,
+)
 from app.agents.actions.knowledge_graph.views import _compact_date, _short, _trunc
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.retrieval.entity_permissions import (
@@ -22,7 +24,6 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityAccessError,
     EntityHit,
-    get_entity_access_context,
     search_entities_for_user,
 )
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
@@ -70,15 +71,8 @@ async def execute_search_entities(
     bounded_top_k = max(
         1, min(top_k if top_k is not None else _DEFAULT_TOP_K, _MAX_TOP_K)
     )
-    scope = derive_scope(state)
     try:
-        context = await get_entity_access_context(
-            state,
-            graph_provider,
-            org_id=state.get("org_id", ""),
-            user_id=state.get("user_id", ""),
-            source_ids=[*scope.app_ids, *scope.kb_ids],
-        )
+        context = await load_entity_access_context(state)
         hits = await search_entities_for_user(
             entity_vector_store,
             graph_provider,

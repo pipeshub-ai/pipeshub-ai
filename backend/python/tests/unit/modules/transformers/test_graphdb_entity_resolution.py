@@ -7,6 +7,7 @@ import pytest
 from app.config.constants.arangodb import CollectionNames
 from app.models.blocks import SemanticMetadata
 from app.models.entities import EntityType
+from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.models import (
     CATEGORY,
     SUBCATEGORY_1,
@@ -37,12 +38,14 @@ def _tx_store() -> AsyncMock:
     return store
 
 
-def _transformer(store) -> GraphDBTransformer:
+def _transformer(store, provider=None) -> GraphDBTransformer:
+    """``provider`` receives the non-transactional canonical-node writes."""
     transformer = GraphDBTransformer(graph_provider=MagicMock(), logger=MagicMock())
     ctx_mgr = AsyncMock()
     ctx_mgr.__aenter__ = AsyncMock(return_value=store)
     ctx_mgr.__aexit__ = AsyncMock(return_value=False)
     transformer.graph_data_store = MagicMock()
+    transformer.graph_data_store.graph_provider = provider or AsyncMock()
     transformer.graph_data_store.transaction = MagicMock(return_value=ctx_mgr)
     return transformer
 
@@ -72,13 +75,16 @@ def _created_edges(store, collection) -> list:
 class TestWithResolution:
     async def test_new_entity_is_created_idempotently_with_canonical_fields(self) -> None:
         store = _tx_store()
+        provider = AsyncMock()
         entity = ResolvedEntity(kind=TOPIC, key="k-bug", name="Bug bash testing", normalized="bug bash testing",
                                 is_new=True, decision="new", extracted_names=["  bug bash testing "])
-        touched = await _transformer(store).save_metadata_to_db(
+        touched = await _transformer(store, provider).save_metadata_to_db(
             "rec-1", _metadata(topics=["Bug bash testing"]), "vr-1", resolution=_resolution(entity),
         )
-        store.create_taxonomy_node_if_absent.assert_awaited_once()
-        collection, node = store.create_taxonomy_node_if_absent.await_args.args
+        # Written before the record's transaction, not inside it.
+        store.create_taxonomy_node_if_absent.assert_not_awaited()
+        provider.create_taxonomy_node_if_absent.assert_awaited_once()
+        collection, node = provider.create_taxonomy_node_if_absent.await_args.args
         assert collection == TOPICS
         assert node["id"] == "k-bug" and node["name"] == "Bug bash testing"
         assert node["normalizedName"] == "bug bash testing" and node["orgId"] == "org-1"
@@ -95,11 +101,13 @@ class TestWithResolution:
         entity = ResolvedEntity(kind=TOPIC, key="k-bug", name="Bug bash testing", normalized="bug bash testing",
                                 is_new=False, decision="merge", aliases=["old", "Bug bash testing session"],
                                 new_aliases=["Bug bash testing session"], extracted_names=["Bug bash testing session"])
-        touched = await _transformer(store).save_metadata_to_db(
+        provider = AsyncMock()
+        touched = await _transformer(store, provider).save_metadata_to_db(
             "rec-1", _metadata(topics=["Bug bash testing"]), "vr-1", resolution=_resolution(entity),
         )
-        store.create_taxonomy_node_if_absent.assert_not_awaited()
-        store.add_taxonomy_aliases.assert_awaited_once_with(
+        provider.create_taxonomy_node_if_absent.assert_not_awaited()
+        store.add_taxonomy_aliases.assert_not_awaited()
+        provider.add_taxonomy_aliases.assert_awaited_once_with(
             TOPICS, "k-bug", ["Bug bash testing session"], ["bug bash testing session"]
         )
         (record,) = [t for t in touched if t.entity_type is EntityType.TOPIC]
@@ -107,13 +115,14 @@ class TestWithResolution:
 
     async def test_existing_entity_without_new_alias_touches_nothing(self) -> None:
         store = _tx_store()
+        provider = AsyncMock()
         entity = ResolvedEntity(kind=TOPIC, key="k-bug", name="Bug bash testing", normalized="bug bash testing",
                                 is_new=False, decision="exact", extracted_names=["BUG BASH TESTING"])
-        await _transformer(store).save_metadata_to_db(
+        await _transformer(store, provider).save_metadata_to_db(
             "rec-1", _metadata(topics=["Bug bash testing"]), "vr-1", resolution=_resolution(entity),
         )
-        store.create_taxonomy_node_if_absent.assert_not_awaited()
-        store.add_taxonomy_aliases.assert_not_awaited()
+        provider.create_taxonomy_node_if_absent.assert_not_awaited()
+        provider.add_taxonomy_aliases.assert_not_awaited()
 
     async def test_subcategory_entity_carries_level_and_hierarchy_edge(self) -> None:
         store = _tx_store()
@@ -128,15 +137,41 @@ class TestWithResolution:
         (hierarchy,) = _created_edges(store, CollectionNames.INTER_CATEGORY_RELATIONS.value)
         assert hierarchy["from_id"] == "k-sub" and hierarchy["to_id"] == "k-cat"
 
-    async def test_name_missing_from_resolution_falls_back_to_legacy_lookup(self) -> None:
+    async def test_name_missing_from_resolution_links_its_per_org_node(self) -> None:
+        """The legacy lookup is by name alone across orgs; with a resolution a
+        miss must still land on this org's node."""
         store = _tx_store()
         entity = ResolvedEntity(kind=TOPIC, key="k-bug", name="Bug bash testing", normalized="bug bash testing",
                                 is_new=False, decision="exact", extracted_names=["Bug bash testing"])
-        await _transformer(store).save_metadata_to_db(
-            "rec-1", _metadata(topics=["Bug bash testing", "Unseen topic"]), "vr-1", resolution=_resolution(entity),
+        provider = AsyncMock()
+        transformer = _transformer(store, provider)
+        await transformer.save_metadata_to_db(
+            "rec-1", _metadata(topics=["Bug bash testing", "Unseen topic."]), "vr-1", resolution=_resolution(entity),
         )
-        store.get_nodes_by_filters.assert_awaited_once_with(TOPICS, {"name": "Unseen topic"})
-        store.batch_upsert_nodes.assert_awaited_once()
+        expected_key = taxonomy_node_key("org-1", TOPICS, "unseen topic")
+        # Outside the transaction, for the same reason as every canonical node.
+        store.create_taxonomy_node_if_absent.assert_not_awaited()
+        provider.create_taxonomy_node_if_absent.assert_awaited_once()
+        collection, node = provider.create_taxonomy_node_if_absent.await_args.args
+        assert collection == TOPICS
+        assert node["id"] == expected_key
+        assert node["orgId"] == "org-1"
+        assert node["name"] == "Unseen topic"
+        assert node["normalizedName"] == "unseen topic"
+        assert all(call.args[0] != TOPICS for call in store.get_nodes_by_filters.await_args_list)
+        store.batch_upsert_nodes.assert_not_awaited()
+        assert {e["to_id"] for e in _created_edges(store, CollectionNames.BELONGS_TO_TOPIC.value)} == {
+            "k-bug", expected_key,
+        }
+        transformer.logger.warning.assert_called()
+
+    async def test_without_a_resolution_the_legacy_lookup_still_runs(self) -> None:
+        store = _tx_store()
+        await _transformer(store).save_metadata_to_db(
+            "rec-1", _metadata(topics=["Unseen topic"]), "vr-1", resolution=None,
+        )
+        store.get_nodes_by_filters.assert_any_await(TOPICS, {"name": "Unseen topic"})
+        store.create_taxonomy_node_if_absent.assert_not_awaited()
 
     async def test_existing_edge_keeps_its_original_extracted_name(self) -> None:
         store = _tx_store()
@@ -211,3 +246,59 @@ async def test_reconcile_edges_without_extracted_names_writes_plain_edges(extrac
     )
     (edge,) = _created_edges(store, CollectionNames.BELONGS_TO_TOPIC.value)
     assert "extractedName" not in edge
+
+
+class TestCanonicalNodesBeforeTheTransaction:
+    async def test_a_failed_node_write_fails_before_any_edge(self) -> None:
+        """An edge to a node that was never created would be dangling."""
+        store = _tx_store()
+        provider = AsyncMock()
+        provider.create_taxonomy_node_if_absent.side_effect = RuntimeError("graph down")
+        transformer = _transformer(store, provider)
+        entity = ResolvedEntity(kind=TOPIC, key="k-new", name="Fresh", normalized="fresh",
+                                is_new=True, decision="new", extracted_names=["Fresh"])
+
+        with pytest.raises(RuntimeError):
+            await transformer.save_metadata_to_db(
+                "rec-1", _metadata(topics=["Fresh"]), "vr-1", resolution=_resolution(entity),
+            )
+
+        transformer.graph_data_store.transaction.assert_not_called()
+        store.batch_create_edges.assert_not_awaited()
+
+    async def test_a_failed_alias_write_does_not_fail_the_enrichment(self) -> None:
+        """An alias only saves a later model call; the record's taxonomy
+        edges are what matter."""
+        store = _tx_store()
+        provider = AsyncMock()
+        provider.add_taxonomy_aliases.side_effect = RuntimeError("write-write conflict")
+        transformer = _transformer(store, provider)
+        entity = ResolvedEntity(kind=TOPIC, key="k-bug", name="Bug bash testing", normalized="bug bash testing",
+                                is_new=False, decision="merge", aliases=["Bug bash session"],
+                                new_aliases=["Bug bash session"], extracted_names=["Bug bash session"])
+
+        await transformer.save_metadata_to_db(
+            "rec-1", _metadata(topics=["Bug bash testing"]), "vr-1", resolution=_resolution(entity),
+        )
+
+        (edge,) = _created_edges(store, CollectionNames.BELONGS_TO_TOPIC.value)
+        assert edge["to_id"] == "k-bug"
+        transformer.logger.warning.assert_called()
+
+    async def test_nodes_are_written_before_the_transaction_opens(self) -> None:
+        order: list[str] = []
+        store = _tx_store()
+        provider = AsyncMock()
+        provider.create_taxonomy_node_if_absent.side_effect = lambda *a, **k: order.append("node")
+        transformer = _transformer(store, provider)
+        transformer.graph_data_store.transaction.side_effect = (
+            lambda: (order.append("txn"), transformer.graph_data_store.transaction.return_value)[1]
+        )
+        entity = ResolvedEntity(kind=TOPIC, key="k-new", name="Fresh", normalized="fresh",
+                                is_new=True, decision="new", extracted_names=["Fresh"])
+
+        await transformer.save_metadata_to_db(
+            "rec-1", _metadata(topics=["Fresh"]), "vr-1", resolution=_resolution(entity),
+        )
+
+        assert order == ["node", "txn"]

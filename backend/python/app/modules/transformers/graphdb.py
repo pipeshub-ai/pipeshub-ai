@@ -8,6 +8,7 @@ from app.config.constants.arangodb import (
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.blocks import SemanticMetadata
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
+from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.models import (
     CATEGORY,
     LANGUAGE,
@@ -18,7 +19,7 @@ from app.modules.entity_resolution.models import (
     EntityResolution,
     TaxonomyKind,
 )
-from app.modules.entity_resolution.normalizer import normalize_name
+from app.modules.entity_resolution.normalizer import display_form, normalize_name
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -146,33 +147,38 @@ class GraphDBTransformer(Transformer):
         """The node ``name`` links to in ``kind``'s collection.
 
         With a resolution from ``EntityResolver`` (apply mode) the canonical
-        node is used: created idempotently when the resolver decided it is
-        new, and given this record's new aliases. Without one, or for a name
-        the resolver did not see, the legacy exact-name lookup runs.
+        node is used; ``_write_canonical_nodes`` already created it and added
+        this record's aliases. Only without a resolution does the legacy
+        exact-name lookup run; it is not org-scoped.
         """
-        entry = resolution.get(kind.collection, name) if resolution is not None else None
-        if entry is None:
+        if resolution is None:
             key = await self._find_or_create_node(tx_store, kind.collection, "name", name)
             return _TaxonomyNode(key=key, name=name, level=kind.level)
 
-        if entry.is_new:
-            await tx_store.create_taxonomy_node_if_absent(
+        entry = resolution.get(kind.collection, name)
+        if entry is None:
+            # Every metadata name was rewritten by the resolver, so a miss is
+            # a keying bug; the per-org node is still the right target.
+            self.logger.warning(
+                "entity_resolution: %r missing from the resolution for %s; "
+                "linking its per-org node", name, kind.collection,
+            )
+            normalized = normalize_name(name)
+            key = taxonomy_node_key(resolution.org_id, kind.collection, normalized)
+            # Through the provider, not the transaction, for the same reason as
+            # _write_canonical_nodes.
+            await self.graph_data_store.graph_provider.create_taxonomy_node_if_absent(
                 kind.collection,
                 {
-                    "id": entry.key,
-                    "name": entry.name,
-                    "normalizedName": entry.normalized,
+                    "id": key,
+                    "name": display_form(name),
+                    "normalizedName": normalized,
                     "orgId": resolution.org_id,
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                 },
             )
-        if entry.new_aliases:
-            await tx_store.add_taxonomy_aliases(
-                kind.collection,
-                entry.key,
-                list(entry.new_aliases),
-                [normalize_name(alias) for alias in entry.new_aliases],
-            )
+            return _TaxonomyNode(key=key, name=display_form(name), extracted_name=name, level=kind.level)
+
         return _TaxonomyNode(
             key=entry.key,
             name=entry.name,
@@ -180,6 +186,45 @@ class GraphDBTransformer(Transformer):
             level=kind.level,
             aliases=list(entry.aliases),
         )
+
+    async def _write_canonical_nodes(self, resolution: EntityResolution) -> None:
+        """Create this record's new canonical nodes and add its new aliases,
+        before the record's transaction opens.
+
+        Both writes are idempotent and shared by every record that resolves
+        the same name. Inside two open ArangoDB stream transactions, two
+        records inserting the same deterministic key conflict (errorNum 1200)
+        and one enrichment fails; outside, the second insert is a no-op.
+        """
+        provider = self.graph_data_store.graph_provider
+        for entity in resolution.entries.values():
+            collection = entity.kind.collection
+            if entity.is_new:
+                await provider.create_taxonomy_node_if_absent(
+                    collection,
+                    {
+                        "id": entity.key,
+                        "name": entity.name,
+                        "normalizedName": entity.normalized,
+                        "orgId": resolution.org_id,
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    },
+                )
+            if entity.new_aliases:
+                try:
+                    await provider.add_taxonomy_aliases(
+                        collection,
+                        entity.key,
+                        list(entity.new_aliases),
+                        [normalize_name(alias) for alias in entity.new_aliases],
+                    )
+                except Exception as exc:
+                    # An alias only saves a later model call; losing the
+                    # record's taxonomy over it would cost far more.
+                    self.logger.warning(
+                        "entity_resolution: aliases not recorded for %s/%s: %s",
+                        collection, entity.key, exc,
+                    )
 
     @staticmethod
     def _taxonomy_entity_record(
@@ -318,6 +363,8 @@ class GraphDBTransformer(Transformer):
         org_id_placeholder = ""
 
         self.logger.debug("🚀 Saving metadata to graph database")
+        if resolution is not None:
+            await self._write_canonical_nodes(resolution)
         async with self.graph_data_store.transaction() as tx_store:
             try:
                 # Retrieve the document content from graph database

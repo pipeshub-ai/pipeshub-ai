@@ -756,7 +756,12 @@ class KnowledgeBaseService:
             if self.entity_vector_store is not None:
                 try:
                     await self.entity_vector_store.delete_entities_by_connector(
-                        org_id=org_id, connector_id=kb_id,
+                        org_id=org_id,
+                        connector_id=kb_id,
+                        record_group_ids=result.get("record_group_ids"),
+                        membership_lookup=lambda refs: self.graph_provider.get_taxonomy_entity_membership(
+                            refs, org_id,
+                        ),
                     )
                 except Exception as e:
                     self.logger.error(f"❌ Failed to clean up entity vectors for KB {kb_id}: {str(e)}")

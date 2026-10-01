@@ -169,16 +169,55 @@ class TestNewEntities:
         p1, p2 = _patched(_answer(MergeDecision(i=0, same=False, canonical_name="Release Checklist v2")))
         with p1, p2:
             resolution = await make_resolver().resolve(
-                ctx_factory("r1", "acme", metadata_factory(topics=["release-checklist v2 (draft)"]))
+                ctx_factory("r1", "acme", metadata_factory(topics=["release-checklist V2"]))
             )
         entity = resolution.entries[(TOPICS, "release checklist v2")]
         assert entity.name == "Release Checklist v2"
         assert entity.key == taxonomy_node_key("acme", TOPICS, "release checklist v2")
-        assert entity.aliases == ["release-checklist v2 (draft)"]
+        assert entity.aliases == ["release-checklist V2"]
+        assert resolution.stats.rejected_decisions == 0
+
+    async def test_display_form_that_changes_words_is_ignored(
+        self, make_resolver, seeded_store, metadata_factory, ctx_factory
+    ) -> None:
+        """The prompt allows casing and punctuation fixes only; dropping
+        "(draft)" makes it a different name the model was never asked about."""
+        await seeded_store(_topic("k-rc", "Release checklist"))
+        p1, p2 = _patched(_answer(MergeDecision(i=0, same=False, canonical_name="Release Checklist v2")))
+        with p1, p2:
+            resolution = await make_resolver().resolve(
+                ctx_factory("r1", "acme", metadata_factory(topics=["release-checklist v2 (draft)"]))
+            )
+        entity = resolution.entries[(TOPICS, "release-checklist v2 (draft)")]
+        assert entity.name == "release-checklist v2 (draft)"
+        assert entity.is_new is True
+        assert resolution.stats.rejected_decisions == 1
+
+    async def test_display_form_naming_an_unoffered_node_does_not_merge_into_it(
+        self, make_resolver, fake_graph, seeded_store, metadata_factory, ctx_factory
+    ) -> None:
+        """A "cleaned" form that drops words must not become an unvalidated
+        merge into whatever node carries that name."""
+        existing_key = taxonomy_node_key("acme", TOPICS, "revenue")
+        fake_graph.nodes[(TOPICS, existing_key)] = {
+            "name": "Revenue", "normalizedName": "revenue", "orgId": "acme",
+        }
+        await seeded_store(_topic("k-other", "Something else"))
+        p1, p2 = _patched(_answer(MergeDecision(i=0, same=False, canonical_name="Revenue")))
+        with p1, p2:
+            resolution = await make_resolver().resolve(
+                ctx_factory("r1", "acme", metadata_factory(topics=["Q3 revenue forecast"]))
+            )
+        entity = resolution.entries[(TOPICS, "q3 revenue forecast")]
+        assert entity.key != existing_key
+        assert entity.is_new is True
+        assert fake_graph.nodes[(TOPICS, existing_key)].get("aliases") in (None, [])
 
     async def test_display_form_matching_existing_node_merges_into_it(
         self, make_resolver, fake_graph, seeded_store, metadata_factory, ctx_factory
     ) -> None:
+        """Only punctuation differs, so it is the same name spelled differently,
+        and the node that already carries it is the right target."""
         from app.modules.entity_resolution.normalizer import normalize_name
 
         existing_key = taxonomy_node_key("acme", TOPICS, "release checklist")
@@ -189,13 +228,13 @@ class TestNewEntities:
         p1, p2 = _patched(_answer(MergeDecision(i=0, same=False, canonical_name="Release Checklist")))
         with p1, p2:
             resolution = await make_resolver().resolve(
-                ctx_factory("r1", "acme", metadata_factory(topics=["The release-checklist"]))
+                ctx_factory("r1", "acme", metadata_factory(topics=["release-checklist"]))
             )
         entity = resolution.entries[(TOPICS, normalize_name("Release checklist"))]
         assert entity.key == existing_key
         assert entity.is_new is False
         assert entity.decision == "canonical_exact"
-        assert entity.aliases == ["The release-checklist"]
+        assert entity.aliases == ["release-checklist"]
 
     async def test_empty_or_overlong_display_form_falls_back_to_extracted(
         self, make_resolver, metadata_factory, ctx_factory

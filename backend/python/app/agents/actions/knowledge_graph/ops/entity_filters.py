@@ -16,13 +16,21 @@ cache entry and are dropped (search) or require an explicit type (find).
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from app.agents.actions.knowledge_graph.ops.scope import derive_scope
+from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.retrieval.entity_permissions import (
     RECORD_GROUP_ENTITY_TYPE,
     SEARCHABLE_ENTITY_TYPES,
     TAXONOMY_ENTITY_TYPES,
+    EntityAccessContext,
+    get_entity_access_context,
 )
+from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
+
+if TYPE_CHECKING:
+    from app.modules.agents.qna.chat_state import ChatState
 
 # EntityType value -> get_accessible_virtual_record_ids() filter key. Graph
 # filters match entity *names*, never ids.
@@ -41,6 +49,22 @@ RECORD_SCOPED_ENTITY_TYPES: frozenset[str] = frozenset({RECORD_GROUP_ENTITY_TYPE
 ENTITY_ID_FILTER_KEY_CACHE_KEY = "_kg_entity_id_filter_key"
 RECORD_SCOPED_ENTITY_CACHE_KEY = "_kg_record_scoped_entities"
 ENTITY_INDEX_CACHE_KEY = "_kg_entity_index"
+
+
+async def load_entity_access_context(state: "ChatState") -> EntityAccessContext:
+    """The entity access context for this run's scope, honouring
+    ``strictScope`` and switched-off demo apps as content search does."""
+    scope = derive_scope(state)
+    filters = state.get("filters") or {}
+    return await get_entity_access_context(
+        state,
+        state.get("graph_provider"),
+        org_id=state.get("org_id", ""),
+        user_id=state.get("user_id", ""),
+        source_ids=[*scope.app_ids, *scope.kb_ids],
+        strict=bool(filters.get(STRICT_SCOPE_FILTER_KEY)),
+        exclude_app_ids=excluded_app_ids(state),
+    )
 
 
 def is_filterable_entity(entity_type: str | None, entity_name: str | None) -> bool:
@@ -101,6 +125,7 @@ __all__ = [
     "SEARCHABLE_ENTITY_TYPES",
     "TAXONOMY_ENTITY_TYPES",
     "is_filterable_entity",
+    "load_entity_access_context",
     "merge_filter_groups",
     "remember_entities",
 ]

@@ -26,6 +26,9 @@ from app.services.messaging.config import (
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
+from app.services.messaging.kafka.handlers import record as record_module
+from app.services.messaging.kafka.handlers.record import (
+    DUPLICATE_RECONCILE_PENDING_FIELD,
 )
 from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
 from app.utils import user_errors
@@ -3064,9 +3067,135 @@ class TestReconcilePromotedDuplicates:
         )
 
         # Must not raise -- record completion must not fail on this.
-        await handler._reconcile_promoted_duplicates("r1", "vr1")
+        assert await handler._reconcile_promoted_duplicates("r1", "vr1") is False
 
         handler.logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_a_copy_reported_as_failed_is_a_failed_reconcile(self):
+        """copy_document_relationships returns False instead of raising; a
+        sibling left without taxonomy must not count as reconciled."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=["r1", "sib-1", "sib-2"])
+        gp.copy_document_relationships = AsyncMock(side_effect=[False, True])
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll: {"_key": key, "orgId": "org-1"})
+        handler.event_processor.sync_vector_membership = AsyncMock()
+        sink = AsyncMock()
+        handler.event_processor.sink_orchestrator = sink
+
+        assert await handler._reconcile_promoted_duplicates("r1", "vr1") is False
+        # The other sibling is still reconciled.
+        sink.sync_entities_for_duplicate.assert_awaited_once_with({"_key": "sib-2", "orgId": "org-1"})
+
+
+class TestReconcilePendingFlag:
+    """The promotion write sets ``duplicateReconcilePending`` on the primary;
+    the handler only clears it, and only once every sibling has its taxonomy.
+    A crash or graph error in between leaves the flag for the next event."""
+
+    @staticmethod
+    def _flag_writes(gp) -> list:
+        return [
+            c.args[2][DUPLICATE_RECONCILE_PENDING_FIELD]
+            for c in gp.update_node.await_args_list
+            if DUPLICATE_RECONCILE_PENDING_FIELD in c.args[2]
+        ]
+
+    @pytest.mark.asyncio
+    async def test_flag_is_cleared_after_success(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.update_node = AsyncMock()
+        handler._reconcile_promoted_duplicates = AsyncMock(return_value=True)
+
+        await handler._reconcile_pending_duplicates("r1", "vr1")
+
+        assert self._flag_writes(gp) == [False]
+
+    @pytest.mark.asyncio
+    async def test_flag_stays_when_reconcile_keeps_failing(self, monkeypatch):
+        monkeypatch.setattr(record_module, "RECONCILE_RETRY_DELAY_SECONDS", 0)
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.update_node = AsyncMock()
+        handler._reconcile_promoted_duplicates = AsyncMock(return_value=False)
+
+        await handler._reconcile_pending_duplicates("r1", "vr1")
+
+        assert self._flag_writes(gp) == []
+        assert handler._reconcile_promoted_duplicates.await_count == record_module.RECONCILE_ATTEMPTS
+
+    @pytest.mark.asyncio
+    async def test_a_transient_failure_is_retried(self, monkeypatch):
+        monkeypatch.setattr(record_module, "RECONCILE_RETRY_DELAY_SECONDS", 0)
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.update_node = AsyncMock()
+        handler._reconcile_promoted_duplicates = AsyncMock(side_effect=[False, True])
+
+        await handler._reconcile_pending_duplicates("r1", "vr1")
+
+        assert self._flag_writes(gp) == [False]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_clear_does_not_raise_and_the_reconcile_still_ran(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.update_node = AsyncMock(side_effect=RuntimeError("graph down"))
+        handler._reconcile_promoted_duplicates = AsyncMock(return_value=True)
+
+        await handler._reconcile_pending_duplicates("r1", "vr1")
+
+        handler._reconcile_promoted_duplicates.assert_awaited_once()
+        handler.logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "promoted,pending,expected_calls",
+        [
+            # Redelivery: nothing left QUEUED, but the flag says the copy never finished.
+            (0, True, 1),
+            (-1, True, 1),
+            # The gate from before still holds without the flag.
+            (0, False, 0),
+            (-1, False, 0),
+            (3, False, 1),
+        ],
+    )
+    async def test_completion_reconciles_on_promotion_or_a_pending_flag(
+        self, promoted, pending, expected_calls
+    ):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record_initial = {
+            "_key": "r1", "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value, "mimeType": "application/pdf",
+        }
+        record_final = {
+            "_key": "r1", "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.COMPLETED.value, "mimeType": "application/pdf",
+        }
+        if pending:
+            record_final[DUPLICATE_RECONCILE_PENDING_FIELD] = True
+        gp.get_document = AsyncMock(side_effect=[record_initial, record_final])
+        gp.update_queued_duplicates_status = AsyncMock(return_value=promoted)
+        handler._reconcile_pending_duplicates = AsyncMock()
+        handler.event_processor.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+        payload = {
+            "recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1",
+            "mimeType": "application/pdf", "extension": "pdf",
+            "signedUrl": "https://example.com/file.pdf",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"content"
+            await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert handler._reconcile_pending_duplicates.await_count == expected_calls
 
 
 # ===================================================================

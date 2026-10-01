@@ -32,12 +32,19 @@ pick the nodes.
    from then on, with no vector query and no model call.
 2. **Winner lookup.** Every miss gets its single nearest existing entity of the
    same org, entity type and subcategory level, from a hybrid dense + BM25
-   search on the `entities` collection. There is no score threshold.
+   search on the `entities` collection. There is no score threshold. Winners
+   are then checked against the graph in one batched call per kind: a point
+   whose node was deleted, belongs to another org, or is a legacy global node
+   (no `normalizedName`) is not offered (`stale_winner`).
 3. **Merge decision.** One structured model call per record (role `indexing`,
    low reasoning effort) answers, pair by pair, whether a name is the same
    concept as its winner, the same concept as another name in the record, or
    new. Every answer is validated: a target must be the offered winner, an
-   in-record pointer must be of the same kind, anything else becomes new.
+   in-record pointer must be of the same kind, anything else becomes new. A
+   cleaned display form for a new name (`canonical_name`) is kept only when it
+   differs from the extracted name in case, punctuation or whitespace alone;
+   one that adds or drops words is ignored (`rejected_canonical`), since it
+   would otherwise merge into an existing node the model was never offered.
 
 Languages go through a static ISO table and skip tiers 2 and 3. Departments
 keep their exact match against the org's department list. Record and
@@ -49,9 +56,14 @@ record-group entities are identities and are never merged.
   `normalizedName`, `orgId`, `aliases` with their `normalizedAliases`
   (capped at 20) and a deterministic
   `_key` derived from `(orgId, collection, normalizedName)`, so two records
-  that create the same name concurrently converge on one node.
-- Every `belongsTo*` edge carries `extractedName`, the raw string the model
-  produced for that record. A wrong merge can be undone per record from it.
+  that create the same name concurrently converge on one node. New nodes and
+  new aliases are written before the record's graph transaction opens: both
+  writes are idempotent, and inside two open ArangoDB stream transactions two
+  inserts of the same key conflict and fail one record's enrichment.
+- Every `belongsTo*` edge the resolver writes carries `extractedName`, the raw
+  string the model produced for that record. A wrong merge can be undone per
+  record from it. Edges copied onto a deduplicated record by
+  `copy_document_relationships` carry only `createdAtTimestamp`.
 - The entity vector point for a node keeps its id and is embedded from the
   canonical name only, so the vector never drifts as merges accumulate.
   Aliases are payload only: shown to the merge model and in
@@ -77,6 +89,7 @@ Shadow decisions are logged as `entity_resolution shadow ... decisions=[...]`.
 | Vector store unavailable | Names become new nodes; `vector_error` fallback counter |
 | Model unavailable or malformed | Every name in that call becomes new; `model_error` counter |
 | Model returns an id it was not offered | That name becomes new; `rejected_target` counter |
+| Winner check against the graph fails | No winner offered for that kind; `winner_check_error` counter |
 | Graph lookup fails | Apply mode: enrichment fails as today, no point is written. Shadow mode: logged |
 
 Metrics live in `app/telemetry/modules/entity_resolution_metrics.py`:
@@ -86,12 +99,14 @@ line.
 
 ## Operational notes
 
-- The `entities` vector collection gains a `metadata.level` payload index.
-  It is created with the collection, so on a dev box that already has the
-  collection, delete it once and let it be recreated, or level-filtered winner
-  lookups will silently return nothing on Redis.
+- The `entities` vector collection has a `metadata.level` payload index. The
+  store ensures its payload indexes on every start (index creation is
+  idempotent on every backend), so an existing collection picks it up too.
 - The graph indexes on `(orgId, normalizedName)` and, on Arango,
   `(orgId, normalizedAliases[*])` are created by the providers' index setup
   on startup for `categories`, `subcategories1..3`, `topics` and
-  `languages`. Neo4j alias matches scan the org's nodes of a label through
-  a single `orgId` index.
+  `languages`. On Neo4j each stored alias is also a
+  `(:TaxonomyAlias {orgId, collection, normalized})-[:ALIAS_OF]->(node)`
+  node under a composite uniqueness constraint, since a list property cannot
+  be index-seeked; alias matches seek those instead of scanning the org's
+  nodes of a label.

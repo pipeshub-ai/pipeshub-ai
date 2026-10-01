@@ -102,7 +102,7 @@ export const fetchConnectorInstanceSummary = async (
   headers: Record<string, string>,
 ): Promise<ConnectorInstanceSummary> => {
   const response = await executeConnectorCommand(
-    `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
+    `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
     HttpMethod.GET,
     headers,
   );

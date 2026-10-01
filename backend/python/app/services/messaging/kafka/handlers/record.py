@@ -34,6 +34,9 @@ from app.models.entities import EntityType
 from app.modules.code_graph import edge_build_trigger
 from app.modules.transformers.transformer import TransformContext
 from app.services.cache.invalidation_hooks import notify_record_indexed
+from app.services.graph_db.interface.graph_db_provider import (
+    DUPLICATE_RECONCILE_PENDING_FIELD,
+)
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -74,6 +77,8 @@ from app.utils.user_errors import (
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis
+RECONCILE_ATTEMPTS = 2
+RECONCILE_RETRY_DELAY_SECONDS = 1.0
 
 
 class RecordEventHandler(BaseEventService):
@@ -330,11 +335,43 @@ class RecordEventHandler(BaseEventService):
                 e,
             )
 
-    async def _reconcile_promoted_duplicates(
+    async def _reconcile_pending_duplicates(
         self,
         record_id: str,
         virtual_record_id: str | None,
     ) -> None:
+        """Reconcile the primary's promoted duplicates and clear its
+        ``duplicateReconcilePending`` flag once every sibling has its taxonomy.
+
+        The flag is set by the promotion write itself (both providers), so no
+        crash between promotion and copy can lose it; an attempt that fails
+        leaves it for the primary's next event.
+        """
+        for attempt in range(RECONCILE_ATTEMPTS):
+            if attempt:
+                await asyncio.sleep(RECONCILE_RETRY_DELAY_SECONDS)
+            if await self._reconcile_promoted_duplicates(record_id, virtual_record_id):
+                try:
+                    await self.event_processor.graph_provider.update_node(
+                        record_id, CollectionNames.RECORDS.value,
+                        {DUPLICATE_RECONCILE_PENDING_FIELD: False},
+                    )
+                except Exception as e:
+                    # Only costs one redundant reconcile on the next event.
+                    self.logger.warning(
+                        "Could not clear the reconcile flag on record %s: %s", record_id, e,
+                    )
+                return
+        self.logger.warning(
+            "Duplicates of record %s still need reconciling; left pending for its next event",
+            record_id,
+        )
+
+    async def _reconcile_promoted_duplicates(
+        self,
+        record_id: str,
+        virtual_record_id: str | None,
+    ) -> bool:
         """Copy taxonomy edges and entities-collection state to duplicates
         that were parked QUEUED while this record indexed, now that
         ``update_queued_duplicates_status`` has promoted them.
@@ -347,13 +384,13 @@ class RecordEventHandler(BaseEventService):
         finished — this fills in the taxonomy-edge copy and entities-vector
         sync that path was missing.
 
-        Best-effort: edge copy is UPSERT/MERGE-based and membership sync
-        recomputes from the graph, so re-running this for an
-        already-reconciled sibling is harmless — failures are logged and
-        swallowed rather than retried.
+        Idempotent: edge copy is UPSERT/MERGE-based and membership sync
+        recomputes from the graph, so re-running it for an already-reconciled
+        sibling is harmless. Returns whether every sibling was reconciled;
+        failures are logged, and the caller keeps the pending flag.
         """
         if not virtual_record_id:
-            return
+            return True
         try:
             sibling_keys = await self.event_processor.graph_provider.get_records_by_virtual_record_id(
                 virtual_record_id
@@ -362,7 +399,7 @@ class RecordEventHandler(BaseEventService):
                 key for key in (sibling_keys or []) if key and key != record_id
             ]
             if not sibling_keys:
-                return
+                return True
 
             graph_provider = self.event_processor.graph_provider
             source_doc = await graph_provider.get_document(
@@ -370,9 +407,10 @@ class RecordEventHandler(BaseEventService):
             )
             org_id = (source_doc or {}).get("orgId")
             if not org_id:
-                return
+                return True
 
             sink = getattr(self.event_processor, "sink_orchestrator", None)
+            complete = True
             for sibling_key in sibling_keys:
                 sibling_doc = await graph_provider.get_document(
                     sibling_key, CollectionNames.RECORDS.value
@@ -389,11 +427,18 @@ class RecordEventHandler(BaseEventService):
                             virtual_record_id,
                         )
                     continue
-                await graph_provider.copy_document_relationships(record_id, sibling_key)
+                # The copy reports failure as False rather than raising.
+                if not await graph_provider.copy_document_relationships(record_id, sibling_key):
+                    self.logger.warning(
+                        "Taxonomy copy to duplicate %s of record %s failed", sibling_key, record_id,
+                    )
+                    complete = False
+                    continue
                 if sink is not None:
                     await sink.sync_entities_for_duplicate(sibling_doc)
 
             await self.event_processor.sync_vector_membership(virtual_record_id)
+            return complete
         except Exception as e:
             self.logger.warning(
                 "Failed to reconcile promoted duplicates for record %s (vrid=%s): %s",
@@ -401,6 +446,7 @@ class RecordEventHandler(BaseEventService):
                 virtual_record_id,
                 e,
             )
+            return False
 
     async def _publish_reindex_event(self, record_id: str, payload: dict) -> None:
         if not self.producer:
@@ -1585,13 +1631,17 @@ class RecordEventHandler(BaseEventService):
                     indexing_status = record.get("indexingStatus")
                     virtual_record_id = record.get("virtualRecordId")
                     if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
+                        # Read before the promotion, which sets it afresh.
+                        had_pending = bool(record.get(DUPLICATE_RECONCILE_PENDING_FIELD))
                         promoted = await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
                         # Reconciliation walks every sibling of the vrid, so
                         # running it when nothing was promoted costs the whole
                         # duplicate group on each completion. -1 is the
                         # providers' query-failure return, not a promotion.
-                        if promoted > 0:
-                            await self._reconcile_promoted_duplicates(record_id, virtual_record_id)
+                        # The flag covers a promotion whose reconcile failed or
+                        # was cut short: a redelivery finds nothing QUEUED.
+                        if promoted > 0 or had_pending:
+                            await self._reconcile_pending_duplicates(record_id, virtual_record_id)
                         if indexing_status == ProgressStatus.COMPLETED.value:
                             # Duplicates just became searchable too. They can live in
                             # a different KB than this record, which only the TTL

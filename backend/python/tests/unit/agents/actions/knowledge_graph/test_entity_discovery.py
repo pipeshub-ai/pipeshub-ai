@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.agents.actions.knowledge_graph.ops import entity_discovery
+from app.agents.actions.knowledge_graph.ops import entity_discovery, entity_filters
 from app.agents.actions.knowledge_graph.ops.entity_discovery import (
     execute_search_entities,
 )
@@ -60,7 +60,7 @@ def _row(key: str, connector_id: str = "conf-1") -> dict:
 def patched(monkeypatch: pytest.MonkeyPatch) -> tuple[AsyncMock, AsyncMock]:
     access = AsyncMock(return_value=CONTEXT)
     search = AsyncMock(return_value=[])
-    monkeypatch.setattr(entity_discovery, "get_entity_access_context", access)
+    monkeypatch.setattr(entity_filters, "get_entity_access_context", access)
     monkeypatch.setattr(entity_discovery, "search_entities_for_user", search)
     return access, search
 
@@ -159,3 +159,33 @@ class TestSearch:
         assert results[0]["entityId"] == "R1"
         assert results[1]["entityId"] == "t1"
         assert results[1]["records"][0]["recordId"] == "R2"
+
+
+class TestStrictAndExcludedScope:
+    @pytest.mark.asyncio
+    async def test_excluded_demo_apps_reach_the_access_context(self, patched) -> None:
+        await execute_search_entities(_state(excluded_app_ids=frozenset({"demo-1"})), "legal")
+
+        _, kwargs = patched[0].call_args
+        assert kwargs["exclude_app_ids"] == frozenset({"demo-1"})
+        assert kwargs["strict"] is False
+
+    @pytest.mark.asyncio
+    async def test_strict_empty_scope_finds_nothing_without_a_vector_query(self) -> None:
+        """An agent whose only sources were removed searches nothing in content
+        search; entity search must not widen to the whole org instead."""
+        graph = MagicMock()
+        graph.get_entity_access_context = AsyncMock()
+        store = MagicMock()
+        store.search_entities = AsyncMock()
+        state = _state(
+            apps=[], kb=[], graph_provider=graph, entity_vector_store=store,
+            filters={"strictScope": True},
+        )
+
+        ok, text = await execute_search_entities(state, "legal")
+
+        assert ok is True
+        assert json.loads(text)["results"] == []
+        graph.get_entity_access_context.assert_not_called()
+        store.search_entities.assert_not_called()

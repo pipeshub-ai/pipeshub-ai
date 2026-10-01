@@ -70,6 +70,7 @@ export function createUserAccountRouter(container: Container) {
       }
     },
   );
+
   const authenticateBody = z.object({
     method: z.string().min(1, 'Authentication method is required'),
     credentials: z.union([

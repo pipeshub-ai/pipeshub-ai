@@ -91,6 +91,54 @@ class TestArango:
             "key": "k1", "aliases": ["A", "B"], "normalized": ["a", "b"], "max_aliases": 5,
         }
 
+    async def test_add_aliases_skips_the_update_when_nothing_changes(self) -> None:
+        """An UPDATE locks a popular node for the rest of the record's
+        transaction even when it writes the same lists back."""
+        p = _arango()
+        await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"])
+        query = p.execute_query.await_args.args[0]
+        guard = query.index("FILTER LENGTH(fresh) > 0")
+        assert guard < query.index("UPDATE doc")
+        assert "paired != LENGTH(stored_displays)" in query
+        assert "paired != LENGTH(stored_normals)" in query
+
+    async def test_add_aliases_retries_a_write_conflict_outside_a_transaction(self, monkeypatch) -> None:
+        """Records resolving to one popular node add aliases to it at once;
+        ArangoDB rejects all but one concurrent UPDATE with errorNum 1200."""
+        from app.services.graph_db.arango import arango_http_provider as module
+
+        monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
+        p = _arango()
+        conflict = RuntimeError('Query failed (status=409): {"errorMessage":"write-write conflict","errorNum":1200}')
+        p.execute_query = AsyncMock(side_effect=[conflict, conflict, None])
+
+        await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"])
+
+        assert p.execute_query.await_count == 3
+
+    async def test_add_aliases_gives_up_after_bounded_retries(self, monkeypatch) -> None:
+        from app.services.graph_db.arango import arango_http_provider as module
+
+        monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
+        p = _arango()
+        p.execute_query = AsyncMock(side_effect=RuntimeError('{"errorNum":1200}'))
+
+        with pytest.raises(RuntimeError):
+            await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"])
+        assert p.execute_query.await_count == module._WRITE_CONFLICT_ATTEMPTS
+
+    async def test_add_aliases_does_not_retry_inside_a_transaction_or_other_errors(self) -> None:
+        p = _arango()
+        p.execute_query = AsyncMock(side_effect=RuntimeError('{"errorNum":1200}'))
+        with pytest.raises(RuntimeError):
+            await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], transaction="t1")
+        assert p.execute_query.await_count == 1
+
+        p.execute_query = AsyncMock(side_effect=RuntimeError('{"errorNum":1203}'))
+        with pytest.raises(RuntimeError):
+            await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"])
+        assert p.execute_query.await_count == 1
+
     async def test_add_aliases_noop_and_validation(self) -> None:
         p = _arango()
         await p.add_taxonomy_aliases(TOPICS, "k1", [], [])
@@ -119,8 +167,16 @@ class TestNeo4j:
         query, = p.client.execute_query.await_args.args
         assert "MATCH (n:Topics)" in query
         assert "n.orgId = $org_id AND n.normalizedName IN $names" in query
-        assert "UNION" in query and "any(alias IN coalesce(n.normalizedAliases, [])" in query
-        assert p.client.execute_query.await_args.kwargs["parameters"] == {"org_id": "org-1", "names": ["bug"]}
+        assert "UNION" in query
+        # Alias matches seek TaxonomyAlias nodes; scanning a list property on
+        # every org node of the label grew with the org's taxonomy.
+        assert "any(alias IN" not in query
+        assert "MATCH (a:TaxonomyAlias)" in query
+        assert "a.orgId = $org_id AND a.collection = $collection AND a.normalized IN $names" in query
+        assert "MATCH (a)-[:ALIAS_OF]->(n:Topics)" in query
+        assert p.client.execute_query.await_args.kwargs["parameters"] == {
+            "org_id": "org-1", "collection": TOPICS, "names": ["bug"],
+        }
         assert p.client.execute_query.await_args.kwargs["txn_id"] == "t1"
         assert rows == [{"id": "k1", "name": "Bug", "normalizedName": "bug", "aliases": ["b"]}]
 
@@ -142,8 +198,31 @@ class TestNeo4j:
         assert "(displays + [i IN fresh | $aliases[i]])[0..$max_aliases]" in query
         assert "(normals + [i IN fresh | $normalized[i]])[0..$max_aliases]" in query
         assert p.client.execute_query.await_args.kwargs["parameters"] == {
-            "key": "k1", "aliases": ["A", "B"], "normalized": ["a", "b"], "max_aliases": 7,
+            "key": "k1", "collection": TOPICS, "aliases": ["A", "B"], "normalized": ["a", "b"],
+            "max_aliases": 7,
         }
+
+    async def test_add_aliases_locks_the_node_before_reading_it(self) -> None:
+        """Reading the lists in WITH takes no lock, so two writers read the
+        same lists and the later SET drops the other's alias."""
+        p = _neo4j()
+        await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"])
+        query, = p.client.execute_query.await_args.args
+        lock = query.index("SET n._aliasLock = true")
+        assert lock < query.index("coalesce(n.aliases, [])")
+        assert "REMOVE n._aliasLock" in query
+
+    async def test_add_aliases_writes_indexed_alias_nodes_for_org_nodes(self) -> None:
+        p = _neo4j()
+        await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"])
+        query, = p.client.execute_query.await_args.args
+        assert "WHERE n.orgId IS NOT NULL" in query
+        assert "UNWIND n.normalizedAliases AS normalized" in query
+        assert (
+            "MERGE (a:TaxonomyAlias {orgId: n.orgId, collection: $collection, normalized: normalized})"
+            in query
+        )
+        assert "MERGE (a)-[:ALIAS_OF]->(n)" in query
 
     async def test_missing_client_raises_and_bad_collection_rejected(self) -> None:
         p = _neo4j()
@@ -159,6 +238,14 @@ class TestNeo4j:
         assert any("FOR (n:Topics) ON (n.orgId, n.normalizedName)" in s for s in statements)
         assert any("FOR (n:Subcategories3) ON (n.orgId, n.normalizedName)" in s for s in statements)
         assert any("FOR (n:Topics) ON (n.orgId)" in s for s in statements)
+
+    def test_alias_nodes_have_a_composite_uniqueness_constraint(self) -> None:
+        p = _neo4j()
+        statements = p._generate_unique_id_constraints()
+        assert any(
+            "FOR (a:TaxonomyAlias) REQUIRE (a.orgId, a.collection, a.normalized) IS UNIQUE" in s
+            for s in statements
+        )
 
 
 class TestParityAndPassthrough:

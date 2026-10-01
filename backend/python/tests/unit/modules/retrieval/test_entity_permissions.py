@@ -128,8 +128,66 @@ class TestGetEntityAccessContext:
         assert context.record_group_ids == {"space-a"}
         assert again is context
         graph.get_entity_access_context.assert_awaited_once_with(
-            USER, ORG, ["conf-1", "drive-1", "kb-1", "s3-1"],
+            USER, ORG, ["conf-1", "drive-1", "kb-1", "s3-1"], exclude_app_ids=frozenset(),
         )
+
+    @pytest.mark.asyncio
+    async def test_strict_empty_scope_reaches_nothing_without_a_query(self) -> None:
+        graph = MagicMock()
+        graph.get_entity_access_context = AsyncMock()
+
+        context = await get_entity_access_context(
+            {}, graph, org_id=ORG, user_id=USER, source_ids=[], strict=True,
+        )
+
+        assert context.app_ids == frozenset()
+        assert context.record_group_ids == frozenset()
+        graph.get_entity_access_context.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_strict_with_sources_queries_normally(self) -> None:
+        graph = MagicMock()
+        graph.get_entity_access_context = AsyncMock(return_value={
+            "user_key": "ukey", "apps": [{"id": "conf-1"}], "record_group_ids": [],
+        })
+
+        context = await get_entity_access_context(
+            {}, graph, org_id=ORG, user_id=USER, source_ids=["conf-1"], strict=True,
+        )
+
+        assert context.app_ids == {"conf-1"}
+        graph.get_entity_access_context.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_exclusions_are_forwarded_and_part_of_the_cache_key(self) -> None:
+        graph = MagicMock()
+        graph.get_entity_access_context = AsyncMock(return_value={
+            "user_key": "ukey", "apps": [], "record_group_ids": [],
+        })
+        state: dict = {}
+
+        await get_entity_access_context(state, graph, org_id=ORG, user_id=USER)
+        await get_entity_access_context(
+            state, graph, org_id=ORG, user_id=USER, exclude_app_ids={"demo-1", ""},
+        )
+
+        assert graph.get_entity_access_context.await_count == 2
+        assert graph.get_entity_access_context.call_args.kwargs == {
+            "exclude_app_ids": frozenset({"demo-1"}),
+        }
+
+    @pytest.mark.asyncio
+    async def test_empty_context_searches_no_vectors(self) -> None:
+        store = MagicMock()
+        store.search_entities = AsyncMock()
+        context = await get_entity_access_context(
+            {}, MagicMock(), org_id=ORG, user_id=USER, strict=True,
+        )
+
+        hits = await search_entities_for_user(store, MagicMock(), context, "legal")
+
+        assert hits == []
+        store.search_entities.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

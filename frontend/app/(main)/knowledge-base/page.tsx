@@ -16,8 +16,6 @@ import {
   Header,
   FilterBar,
   SearchBar,
-  // Selection action bar
-  SelectionActionBar,
   BulkDeleteConfirmationDialog,
   DeleteConfirmationDialog,
   FolderDetailsSidebar,
@@ -26,6 +24,7 @@ import {
 } from './components';
 import { CollectionStatsPanel } from './components/collection-stats-panel';
 import type { UploadFileItem } from './components';
+import { SelectionActionBar } from '@/config';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
 import { notifyUploadFailures } from '@/lib/utils/upload-failure-feedback';
 import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
@@ -2165,6 +2164,7 @@ function KnowledgeBasePageContent() {
     item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
     newName: string
   ) => {
+    if (!canEditCollection) return;
 
     try {
       const isHub = 'nodeType' in item && 'origin' in item;
@@ -2211,7 +2211,7 @@ function KnowledgeBasePageContent() {
       });
       throw error;
     }
-  }, [selectedKbId, refreshData]);
+  }, [selectedKbId, refreshData, canEditCollection]);
 
   // Handle rename from header breadcrumb
   const handleBreadcrumbRename = useCallback(async (
@@ -2455,9 +2455,10 @@ function KnowledgeBasePageContent() {
 
   // Handle move - opens the move folder sidebar
   const handleMoveClick = useCallback((item: KnowledgeBaseItem) => {
+    if (!canEditCollection) return;
     setItemToMove(item);
     setIsMoveDialogOpen(true);
-  }, []);
+  }, [canEditCollection]);
 
   // Handle move dialog open/close with state reset
   const handleMoveDialogOpenChange = useCallback((isOpen: boolean) => {
@@ -2530,9 +2531,10 @@ function KnowledgeBasePageContent() {
 
   // Handle replace - opens the replace file dialog
   const handleReplaceClick = useCallback((item: KnowledgeHubNode) => {
+    if (!canEditCollection) return;
     setItemToReplace(item);
     setIsReplaceDialogOpen(true);
-  }, []);
+  }, [canEditCollection]);
 
   // Handle replace confirmation
   const handleReplaceConfirm = useCallback(
@@ -2594,6 +2596,7 @@ function KnowledgeBasePageContent() {
   // Handle delete — reuses the same confirmation dialog/dispatcher as the
   // sidebar delete flow (handleSidebarDeleteConfirm) instead of a separate path.
   const handleDelete = useCallback((item: KnowledgeBaseItem) => {
+    if (!canDeleteCollection) return;
     const isHubNode = 'nodeType' in item && 'origin' in item;
     // 'app'/'kb' nodes have no nodeType here — deleteNode's fallback path
     // (nodeType neither 'folder' nor 'record') routes them to
@@ -2613,7 +2616,7 @@ function KnowledgeBasePageContent() {
       rootKbId: selectedKbId || undefined,
     });
     setIsDeleteDialogOpen(true);
-  }, [selectedKbId]);
+  }, [selectedKbId, canDeleteCollection]);
 
   // ========================================
   // Sidebar Action Handlers
@@ -2707,8 +2710,9 @@ function KnowledgeBasePageContent() {
 
   // Handle bulk delete click (opens dialog)
   const handleBulkDeleteClick = useCallback(() => {
+    if (!canDeleteCollection) return;
     setIsBulkDeleteDialogOpen(true);
-  }, []);
+  }, [canDeleteCollection]);
 
   // Handle bulk delete confirm
   const handleBulkDeleteConfirm = useCallback(async () => {
@@ -2819,6 +2823,8 @@ function KnowledgeBasePageContent() {
               onUpload={isAllRecordsMode ? undefined : handleUpload}
               onShare={shareAdapter && isSelectedKbOwner ? handleShare : undefined}
               createPermissionDenied={!isAllRecordsMode && !canCreateCollection && !canEditCollection}
+              folderPermissionDenied={!isAllRecordsMode && !canCreateCollection}
+              uploadPermissionDenied={!isAllRecordsMode && !canEditCollection}
               sharePermissionDenied={Boolean(shareAdapter && isSelectedKbOwner && !canShareCollection)}
               sharedMembers={sharedMembers}
               onRename={
@@ -2878,15 +2884,15 @@ function KnowledgeBasePageContent() {
           }}
           onItemClick={handleItemClick}
           onPreview={handlePreviewFile}
-          onRename={!isAllRecordsMode && canEditCollection ? handleRename : undefined}
+          onRename={!isAllRecordsMode ? handleRename : undefined}
           onReindex={handleReindexClick}
           onReplace={
-            !isAllRecordsMode && canEditCollection
+            !isAllRecordsMode
               ? (item) => handleReplaceClick(item as KnowledgeHubNode)
               : undefined
           }
-          onMove={!isAllRecordsMode && canEditCollection ? handleMoveClick : undefined}
-          onDelete={!isAllRecordsMode && canDeleteCollection ? handleDelete : undefined}
+          onMove={!isAllRecordsMode ? handleMoveClick : undefined}
+          onDelete={!isAllRecordsMode ? handleDelete : undefined}
           onDownload={handleDownload}
           onCreateFolder={!isAllRecordsMode && canCreateCollection ? handleCreateFolder : undefined}
           onUpload={!isAllRecordsMode && canEditCollection ? handleUpload : undefined}

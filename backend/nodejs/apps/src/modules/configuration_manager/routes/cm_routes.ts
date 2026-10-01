@@ -27,6 +27,7 @@ import {
   deleteGoogleWorkspaceCredentials,
   getGoogleWorkspaceBusinessCredentials,
   getFrontendUrl,
+  getDesktopFrontendUrl,
   setFrontendUrl,
   getConnectorPublicUrl,
   setConnectorPublicUrl,
@@ -1074,6 +1075,14 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     getFrontendUrl(keyValueStoreService),
+  );
+
+  // The only unauthenticated route in this router: the desktop app calls it
+  // from the sign-in screen before any session exists. Do not put router-wide
+  // auth in front of it.
+  router.get(
+    '/public/desktopFrontendUrl',
+    getDesktopFrontendUrl(keyValueStoreService),
   );
 
   router.post(

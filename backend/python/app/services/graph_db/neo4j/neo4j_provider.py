@@ -89,6 +89,7 @@ from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_f
 from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
+    ENTITY_CANDIDATE_SCAN_CAP,
     MAX_DIRECT_GRANT_RECORDS,
     ROOT_SCOPED_CONNECTOR_TYPES,
     build_connector_stats_response,
@@ -96,6 +97,7 @@ from app.services.graph_db.common.utils import (
 )
 from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
+    DUPLICATE_RECONCILE_PENDING_FIELD,
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
     CodeFileInfo,
@@ -111,6 +113,7 @@ from app.services.graph_db.neo4j.neo4j_client import (
 )
 from app.services.graph_db.taxonomy import (
     TAXONOMY_COLLECTIONS,
+    TAXONOMY_ENTITY_TYPES,
     alias_pairs as _alias_pairs,
     is_taxonomy_collection,
     subcategory_level,
@@ -133,6 +136,11 @@ BLOCK_DELETE_BATCH_SIZE = 500
 # Block properties that hold a dict or a list of dicts, which Neo4j cannot
 # store natively; written as JSON strings and decoded again on read.
 JSON_ENCODED_BLOCK_FIELDS = ("pendingEdges", "typeTable")
+
+# One node per stored taxonomy alias, so alias matches seek an index instead
+# of scanning a list property on every node of the org (see find_taxonomy_nodes).
+TAXONOMY_ALIAS_LABEL = "TaxonomyAlias"
+TAXONOMY_ALIAS_REL = "ALIAS_OF"
 
 # Search metadata filters: (filter key, relationship, target label, name property, query parameter).
 # The labels must be the ones the indexing writer stores (see COLLECTION_TO_LABEL).
@@ -412,6 +420,12 @@ class Neo4jProvider(IGraphDBProvider):
 
             constraints.append(constraint_query)
 
+        # Also backs the (orgId, collection, normalized) seek, and makes the
+        # MERGE in add_taxonomy_aliases converge under concurrent writers.
+        constraints.append(
+            f"CREATE CONSTRAINT taxonomyalias_key_unique IF NOT EXISTS "
+            f"FOR (a:{TAXONOMY_ALIAS_LABEL}) REQUIRE (a.orgId, a.collection, a.normalized) IS UNIQUE"
+        )
         return constraints
 
     def _generate_performance_indexes(self) -> list[str]:
@@ -440,8 +454,6 @@ class Neo4jProvider(IGraphDBProvider):
                 f"CREATE INDEX {taxonomy_label.lower()}_org_normalized_name IF NOT EXISTS "
                 f"FOR (n:{taxonomy_label}) ON (n.orgId, n.normalizedName)"
             )
-            # Alias matches cannot seek a list property; they scan the org's
-            # nodes of this label through the orgId index instead.
             indexes.append(
                 f"CREATE INDEX {taxonomy_label.lower()}_org_id IF NOT EXISTS "
                 f"FOR (n:{taxonomy_label}) ON (n.orgId)"
@@ -753,7 +765,11 @@ class Neo4jProvider(IGraphDBProvider):
                 try:
                     await self.client.execute_query(constraint_query)
                 except Exception as e:
-                    self.logger.debug(f"Unique constraint creation (may already exist): {str(e)}")
+                    # IF NOT EXISTS makes "already exists" impossible here, so
+                    # a failure is real: duplicates already present, or an
+                    # unsupported constraint. Writes that rely on it (MERGE
+                    # convergence, index seeks) degrade silently otherwise.
+                    self.logger.warning(f"Unique constraint creation failed: {constraint_query} -> {str(e)}")
 
             self.logger.info(f"✅ Created {len(unique_constraints)} unique id constraints")
 
@@ -4983,6 +4999,11 @@ class Neo4jProvider(IGraphDBProvider):
                 # once per such record and drowns real problems.
                 self.logger.debug(f"Record {record_id} missing md5Checksum")
                 return None
+            if not org_id:
+                # As in update_queued_duplicates_status: without an org there is
+                # no scope, and another org's queued record must never be picked.
+                self.logger.warning(f"Record {record_id} has no orgId; not looking for queued duplicates")
+                return None
 
             # Find the first queued duplicate record
             query = """
@@ -5006,11 +5027,10 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Scoped to the reference record's own org: a queued duplicate in
             # another org must never be silently indexed from this org's event.
-            if org_id:
-                query += """
-                AND record.orgId = $org_id
-                """
-                params["org_id"] = org_id
+            query += """
+            AND record.orgId = $org_id
+            """
+            params["org_id"] = org_id
 
             query += """
             RETURN record
@@ -5183,6 +5203,11 @@ class Neo4jProvider(IGraphDBProvider):
 
             if not updated_records:
                 return 0
+
+            # Same batch as the promotion: a crash after it would otherwise
+            # leave the duplicates COMPLETED with no taxonomy and nothing to
+            # trigger the copy, since a redelivery finds nothing QUEUED.
+            updated_records.append({"id": record_id, DUPLICATE_RECONCILE_PENDING_FIELD: True})
 
             success = await self.batch_update_nodes(
                 updated_records, CollectionNames.RECORDS.value, transaction
@@ -5750,6 +5775,7 @@ class Neo4jProvider(IGraphDBProvider):
         org_id: str,
         source_ids: list[str] | None = None,
         transaction: str | None = None,
+        exclude_app_ids: frozenset[str] = frozenset(),
     ) -> dict[str, Any] | None:
         """See :meth:`IGraphDBProvider.get_entity_access_context`.
 
@@ -5766,8 +5792,15 @@ class Neo4jProvider(IGraphDBProvider):
         MATCH (u:User {userId: $user_id})
         WITH u LIMIT 1
 
+        // The user everywhere, plus each source account they authenticated a
+        // connector as, counted for that connector only (get_accessible_containers).
+        OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(source_account:User)
+        WITH u, [{user: u, connectorId: null}] +
+                [p IN collect({user: source_account, connectorId: linked.connectorId})
+                   WHERE p.user IS NOT NULL] AS principals
+
         CALL {
-            WITH u
+            WITH u, principals
             CALL {
                 WITH u
                 MATCH (u)-[:USER_APP_RELATION]->(app:App)
@@ -5786,40 +5819,53 @@ class Neo4jProvider(IGraphDBProvider):
                 MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)-[:PERMISSION {type: 'TEAM'}]->(app:App {type: $kb_type})
                 WHERE app.orgId = $org_id
                 RETURN app
+                UNION
+                WITH principals
+                UNWIND principals AS principal
+                MATCH (app:App {id: principal.connectorId})
+                RETURN app
             }
             WITH app
             // A hidden KB (a project's linked collection) is reachable only
             // when the caller names it, as in get_accessible_containers.
-            WHERE (size($source_ids) = 0 AND coalesce(app.isHidden, false) = false)
-               OR app.id IN $source_ids
+            WHERE ((size($source_ids) = 0 AND coalesce(app.isHidden, false) = false)
+                   OR app.id IN $source_ids)
+              AND NOT app.id IN $exclude_app_ids
             RETURN collect(app {.id, .name, .type, .permissionModel}) AS apps
         }
 
-        WITH u, apps,
+        WITH u, principals, apps,
              [a IN apps
               WHERE coalesce(a.type, '') <> $kb_type
                 AND coalesce(a.permissionModel, '') <> $app_level
               | a.id] AS record_level_app_ids
 
         CALL {
-            WITH u, record_level_app_ids
+            WITH u, principals, record_level_app_ids
             CALL {
-                WITH u, record_level_app_ids
-                MATCH (u)-[:PERMISSION {type: 'USER'}]->(rg:RecordGroup)
-                WHERE rg.orgId = $org_id
+                WITH principals, record_level_app_ids
+                UNWIND principals AS principal
+                WITH principal.user AS pu, principal.connectorId AS linked_connector, record_level_app_ids
+                MATCH (pu)-[:PERMISSION {type: 'USER'}]->(rg:RecordGroup)
+                WHERE (linked_connector IS NULL OR rg.connectorId = linked_connector)
+                  AND rg.orgId = $org_id
                   AND coalesce(rg.isDeleted, false) = false
                   AND rg.connectorId IN record_level_app_ids
                 RETURN rg
                 UNION
-                WITH u, record_level_app_ids
-                MATCH (u)-[:PERMISSION {type: 'USER'}]->(grp)
+                WITH principals, record_level_app_ids
+                UNWIND principals AS principal
+                WITH principal.user AS pu, principal.connectorId AS linked_connector, record_level_app_ids
+                MATCH (pu)-[:PERMISSION {type: 'USER'}]->(grp)
                 WHERE grp:Group OR grp:Role
                 MATCH (grp)-[:PERMISSION]->(rg:RecordGroup)
-                WHERE rg.orgId = $org_id
+                WHERE (linked_connector IS NULL OR rg.connectorId = linked_connector)
+                  AND rg.orgId = $org_id
                   AND coalesce(rg.isDeleted, false) = false
                   AND rg.connectorId IN record_level_app_ids
                 RETURN rg
                 UNION
+                // An ORG grant reaches every member, so a linked account adds nothing.
                 WITH u, record_level_app_ids
                 MATCH (u)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
                 MATCH (org)-[:PERMISSION {type: 'ORG'}]->(rg:RecordGroup)
@@ -5828,10 +5874,13 @@ class Neo4jProvider(IGraphDBProvider):
                   AND rg.connectorId IN record_level_app_ids
                 RETURN rg
                 UNION
-                WITH u, record_level_app_ids
-                MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)
+                WITH principals, record_level_app_ids
+                UNWIND principals AS principal
+                WITH principal.user AS pu, principal.connectorId AS linked_connector, record_level_app_ids
+                MATCH (pu)-[:PERMISSION {type: 'USER'}]->(team:Teams)
                 MATCH (team)-[:PERMISSION {type: 'TEAM'}]->(rg:RecordGroup)
-                WHERE rg.orgId = $org_id
+                WHERE (linked_connector IS NULL OR rg.connectorId = linked_connector)
+                  AND rg.orgId = $org_id
                   AND coalesce(rg.isDeleted, false) = false
                   AND rg.connectorId IN record_level_app_ids
                 RETURN rg
@@ -5839,12 +5888,23 @@ class Neo4jProvider(IGraphDBProvider):
             RETURN collect(rg) AS seed_rgs
         }
 
+        // Records also inherit into record groups, so the walk is kept to
+        // record-group nodes; otherwise it continues through every record
+        // (and their attachments) under a seed. Checked on Neo4j 5.26 with
+        // PROFILE: the predicate must cover the whole path (a slice such as
+        // nodes(p)[1..] is not pushed into the expand), and `child` must stay
+        // unlabelled with its filters after the WITH, or the planner seeks
+        // child record groups by index and checks paths back to the seed
+        // (VarLengthExpand(Into)), three times the cost. The whole-path
+        // predicate still requires child to be a RecordGroup.
         CALL {
             WITH seed_rgs, record_level_app_ids
             UNWIND seed_rgs AS seed
             WITH seed, record_level_app_ids
             WHERE coalesce(seed.hideChildren, false) = false
-            MATCH (seed)<-[:INHERIT_PERMISSIONS*1..5]-(child:RecordGroup)
+            MATCH p = (seed)<-[:INHERIT_PERMISSIONS*1..__INHERIT_DEPTH__]-(child)
+            WHERE all(n IN nodes(p) WHERE n:RecordGroup)
+            WITH child, record_level_app_ids
             WHERE child.orgId = $org_id
               AND coalesce(child.isDeleted, false) = false
               AND child.connectorId IN record_level_app_ids
@@ -5858,13 +5918,14 @@ class Neo4jProvider(IGraphDBProvider):
         }
 
         RETURN u.id AS user_key, apps, record_group_ids
-        """
+        """.replace("__INHERIT_DEPTH__", str(CONTAINER_INHERIT_MAX_DEPTH))
         rows = await self.client.execute_query(
             query,
             parameters={
                 "user_id": user_id,
                 "org_id": org_id,
                 "source_ids": source_ids or [],
+                "exclude_app_ids": sorted(exclude_app_ids),
                 "kb_type": Connectors.KNOWLEDGE_BASE.value,
                 "app_level": PermissionModel.APP_LEVEL.value,
             },
@@ -16180,7 +16241,7 @@ class Neo4jProvider(IGraphDBProvider):
         ``departmentName`` rather than ``name``.
         """
         if not self.client:
-            return []
+            raise RuntimeError("Neo4j client is not connected")
         record_label = collection_to_label(CollectionNames.RECORDS.value)
         rel_type = edge_collection_to_relationship(edge_collection)
         node_labels = [collection_to_label(c) for c in node_label_types]
@@ -16195,18 +16256,13 @@ class Neo4jProvider(IGraphDBProvider):
                    coalesce(v.name, v.departmentName, v.id) AS name,
                    coalesce(v.aliases, []) AS aliases, labels(v) AS nodeLabels
         """
-        try:
-            rows = await self.client.execute_query(
-                query,
-                parameters={"record_key": record_key, "node_labels": node_labels},
-                txn_id=transaction,
-            )
-        except Exception as exc:
-            self.logger.warning(
-                "get_taxonomy_entities_for_record (via %s) failed for %s: %s",
-                edge_collection, record_key, exc,
-            )
-            return []
+        # Any failure propagates: a partial result would read as the record
+        # having fewer entities.
+        rows = await self.client.execute_query(
+            query,
+            parameters={"record_key": record_key, "node_labels": node_labels},
+            txn_id=transaction,
+        )
         results: list[dict[str, Any]] = []
         for row in rows or []:
             if not row.get("entityId"):
@@ -16263,6 +16319,23 @@ class Neo4jProvider(IGraphDBProvider):
         ".webUrl, .sourceLastModifiedTimestamp, .updatedAtTimestamp}"
     )
 
+    def _entity_node_match(self, entity_type: str) -> tuple[str, str]:
+        """The record relationship for ``entity_type`` and a clause binding
+        ``e`` to the node whose id is ``ref.id``."""
+        relationship, labels = self._ENTITY_CANDIDATE_TARGETS[entity_type]
+        if len(labels) == 1:
+            return relationship, f"MATCH (e:{labels[0]} {{id: ref.id}})"
+        # One index seek per label instead of an unlabeled scan.
+        branches = "\n                UNION\n                ".join(
+            f"""WITH ref
+                MATCH (e:{label} {{id: ref.id}})
+                RETURN e"""
+            for label in labels
+        )
+        return relationship, f"""CALL {{
+                {branches}
+              }}"""
+
     def _entity_candidate_records_cypher(self, entity_type: str) -> str:
         projection = self._ENTITY_CANDIDATE_RECORD_PROJECTION
         if entity_type == KnowledgeGraphEntityType.RECORD.value:
@@ -16271,26 +16344,14 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (rec:Record {{id: ref.id}})
             WHERE rec.orgId = $org_id
               AND coalesce(rec.isDeleted, false) = false
+              AND rec.indexingStatus = $completed
               AND rec.connectorId IN ref.connectorIds
               AND ($record_types IS NULL OR rec.recordType IN $record_types)
             RETURN ref.id AS id,
                    CASE WHEN rec IS NULL OR $offset > 0 THEN [] ELSE [{projection}] END AS rows
             """
 
-        relationship, labels = self._ENTITY_CANDIDATE_TARGETS[entity_type]
-        if len(labels) == 1:
-            entity_match = f"MATCH (e:{labels[0]} {{id: ref.id}})"
-        else:
-            # One index seek per label instead of an unlabeled scan.
-            branches = "\n                UNION\n                ".join(
-                f"""WITH ref
-                MATCH (e:{label} {{id: ref.id}})
-                RETURN e"""
-                for label in labels
-            )
-            entity_match = f"""CALL {{
-                {branches}
-              }}"""
+        relationship, entity_match = self._entity_node_match(entity_type)
         if entity_type == KnowledgeGraphEntityType.RECORD_GROUP.value:
             entity_match += "\n              WHERE e.orgId = $org_id"
 
@@ -16303,9 +16364,12 @@ class Neo4jProvider(IGraphDBProvider):
               MATCH (rec:Record)-[:{relationship}]->(e)
               WHERE rec.orgId = $org_id
                 AND coalesce(rec.isDeleted, false) = false
+                AND rec.indexingStatus = $completed
                 AND rec.connectorId IN ref.connectorIds
                 AND ($record_types IS NULL OR rec.recordType IN $record_types)
               WITH DISTINCT rec
+              LIMIT $scan_cap
+              WITH rec
               ORDER BY coalesce(rec.sourceLastModifiedTimestamp, rec.updatedAtTimestamp, 0) DESC, rec.id ASC
               SKIP $offset LIMIT $limit
               RETURN collect({projection}) AS rows
@@ -16357,6 +16421,10 @@ class Neo4jProvider(IGraphDBProvider):
                     "record_types": list(record_types) if record_types else None,
                     "offset": max(0, offset),
                     "limit": max(1, limit_per_entity),
+                    "scan_cap": ENTITY_CANDIDATE_SCAN_CAP,
+                    # Search only returns indexed records; listing others offers
+                    # records whose content cannot be read.
+                    "completed": ProgressStatus.COMPLETED.value,
                 },
                 txn_id=transaction,
             )
@@ -16373,6 +16441,58 @@ class Neo4jProvider(IGraphDBProvider):
     # Taxonomy entity resolution (per-org canonical nodes)
     # ------------------------------------------------------------------
 
+
+    async def get_taxonomy_entity_membership(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        transaction: str | None = None,
+    ) -> dict[tuple[str, str], dict[str, list[str]]]:
+        """See :meth:`IGraphDBProvider.get_taxonomy_entity_membership`."""
+        if not refs or not org_id:
+            return {}
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        ids_by_type: dict[str, list[str]] = {}
+        for ref in refs:
+            ref_id, ref_type = str(ref.get("id") or ""), ref.get("type")
+            if ref_id and ref_type in TAXONOMY_ENTITY_TYPES:
+                bucket = ids_by_type.setdefault(ref_type, [])
+                if ref_id not in bucket:
+                    bucket.append(ref_id)
+
+        results: dict[tuple[str, str], dict[str, list[str]]] = {}
+        for ref_type, ref_ids in ids_by_type.items():
+            relationship, entity_match = self._entity_node_match(ref_type)
+            # The aggregating CALL yields one row per ref even when nothing links.
+            query = f"""
+            UNWIND $refs AS ref
+            CALL {{
+              WITH ref
+              {entity_match}
+              OPTIONAL MATCH (rec:Record)-[:{relationship}]->(e)
+              WHERE rec.orgId = $org_id AND coalesce(rec.isDeleted, false) = false
+              RETURN [c IN collect(DISTINCT rec.connectorId) WHERE c IS NOT NULL] AS connector_ids,
+                     [g IN collect(DISTINCT rec.recordGroupId) WHERE g IS NOT NULL] AS group_ids
+            }}
+            RETURN ref.id AS id, connector_ids, group_ids
+            """
+            rows = await self.client.execute_query(
+                query,
+                parameters={"refs": [{"id": ref_id} for ref_id in ref_ids], "org_id": org_id},
+                txn_id=transaction,
+            )
+            for ref_id in ref_ids:
+                results[(ref_type, ref_id)] = {"connectorIds": [], "recordGroupIds": []}
+            for row in rows or []:
+                key = (ref_type, str(row.get("id") or ""))
+                if key in results:
+                    results[key] = {
+                        "connectorIds": [str(c) for c in row.get("connector_ids") or []],
+                        "recordGroupIds": [str(g) for g in row.get("group_ids") or []],
+                    }
+        return results
+
     async def find_taxonomy_nodes(
         self,
         collection: str,
@@ -16386,8 +16506,9 @@ class Neo4jProvider(IGraphDBProvider):
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
         label = collection_to_label(collection)
-        # Name matches seek the (orgId, normalizedName) index; alias matches
-        # scan the org's nodes of this label, which stays small per org.
+        # Both branches seek an index: (orgId, normalizedName) on the node, and
+        # (orgId, collection, normalized) on the TaxonomyAlias nodes written by
+        # add_taxonomy_aliases. A list property cannot be index-seeked.
         projection = (
             "RETURN n.id AS id, n.name AS name, n.normalizedName AS normalizedName, "
             "coalesce(n.aliases, []) AS aliases, "
@@ -16398,14 +16519,19 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE n.orgId = $org_id AND n.normalizedName IN $names
             {projection}
             UNION
-            MATCH (n:{label})
+            MATCH (a:{TAXONOMY_ALIAS_LABEL})
+            WHERE a.orgId = $org_id AND a.collection = $collection AND a.normalized IN $names
+            MATCH (a)-[:{TAXONOMY_ALIAS_REL}]->(n:{label})
             WHERE n.orgId = $org_id
-              AND any(alias IN coalesce(n.normalizedAliases, []) WHERE alias IN $names)
             {projection}
         """
         rows = await self.client.execute_query(
             query,
-            parameters={"org_id": org_id, "names": list(dict.fromkeys(normalized_names))},
+            parameters={
+                "org_id": org_id,
+                "collection": collection,
+                "names": list(dict.fromkeys(normalized_names)),
+            },
             txn_id=transaction,
         )
         return [dict(row) for row in rows or []]
@@ -16455,10 +16581,15 @@ class Neo4jProvider(IGraphDBProvider):
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
         label = collection_to_label(collection)
-        # Merged as pairs so both lists stay aligned; the stored lists are cut
-        # to their common length first so an already-skewed node heals.
+        # The first SET takes the node's write lock before the lists are read;
+        # without it two writers read the same lists and the later SET drops
+        # the other's alias. Merged as pairs so both lists stay aligned; the
+        # stored lists are cut to their common length first so a skewed node
+        # heals. Every stored alias also gets an indexed TaxonomyAlias node,
+        # which is what find_taxonomy_nodes seeks.
         query = f"""
             MATCH (n:{label} {{id: $key}})
+            SET n._aliasLock = true
             WITH n, coalesce(n.aliases, []) AS displays, coalesce(n.normalizedAliases, []) AS normals
             WITH n, displays, normals,
                 CASE WHEN size(displays) < size(normals) THEN size(displays) ELSE size(normals) END AS paired
@@ -16467,12 +16598,19 @@ class Neo4jProvider(IGraphDBProvider):
                 [i IN range(0, size($normalized) - 1) WHERE NOT $normalized[i] IN normals] AS fresh
             SET n.aliases = (displays + [i IN fresh | $aliases[i]])[0..$max_aliases],
                 n.normalizedAliases = (normals + [i IN fresh | $normalized[i]])[0..$max_aliases]
-            RETURN n.id AS id
+            REMOVE n._aliasLock
+            WITH n
+            WHERE n.orgId IS NOT NULL
+            UNWIND n.normalizedAliases AS normalized
+            MERGE (a:{TAXONOMY_ALIAS_LABEL} {{orgId: n.orgId, collection: $collection, normalized: normalized}})
+            MERGE (a)-[:{TAXONOMY_ALIAS_REL}]->(n)
+            RETURN count(a) AS aliases
         """
         await self.client.execute_query(
             query,
             parameters={
                 "key": key,
+                "collection": collection,
                 "aliases": [display for display, _ in pairs],
                 "normalized": [normalized for _, normalized in pairs],
                 "max_aliases": max(1, max_aliases),

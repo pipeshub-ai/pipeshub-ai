@@ -92,6 +92,7 @@ from app.agent_loop_lib.hooks.middleware.builtin.tool_result_clearing import (
 )
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
+from app.agent_loop_lib.sandbox.coding.settings import SandboxUnavailableError
 from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import (
     RetrieveArtifactContentTool,
 )
@@ -505,9 +506,26 @@ class PipesHubAgentFactory:
         sandbox_manager = None
         if code_exec_enabled:
             _mark("f:pre_sandbox")
-            sandbox_manager = await build_coding_sandbox_manager(
-                allow_network=network_enabled, ctx=context,
+            try:
+                sandbox_manager = await build_coding_sandbox_manager(
+                    allow_network=network_enabled, ctx=context,
+                )
+            except SandboxUnavailableError as exc:
+                # Fail closed but keep the chat: no SANDBOX_MODE (or a typo)
+                # means no code execution this turn, not an in-process
+                # fallback and not a 500.
+                code_exec_enabled = False
+                logger.warning(
+                    "PipesHubAgentFactory.create: coding-sandbox tools NOT registered "
+                    "(org_id=%s conversation_id=%s): %s",
+                    context.org_id, context.conversation_id, exc,
+                )
+        else:
+            logger.info(
+                "PipesHubAgentFactory.create: code execution disabled — coding-sandbox tools "
+                "(run_code/install_packages/read_sandbox_file) will NOT be available this turn"
             )
+        if sandbox_manager is not None:
             register_coding_sandbox_tools(tool_registry, sandbox_manager, allow_network=network_enabled)
             # Stashed on the context (not returned from create()) so
             # stream_bridge.py's finally block can tear it down without
@@ -517,11 +535,6 @@ class PipesHubAgentFactory:
                 "PipesHubAgentFactory.create: registered coding-sandbox tools: %s (network=%s)",
                 [n for n in tool_registry.names() if n in ("run_code", "install_packages", "read_sandbox_file")],
                 network_enabled,
-            )
-        else:
-            logger.info(
-                "PipesHubAgentFactory.create: code execution disabled — coding-sandbox tools "
-                "(run_code/install_packages/read_sandbox_file) will NOT be available this turn"
             )
 
         # Skills subsystem, gated by two layers that must BOTH be true:

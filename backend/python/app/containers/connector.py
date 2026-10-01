@@ -108,7 +108,8 @@ class ConnectorAppContainer(BaseAppContainer):
         config_service=config_service,
     )
 
-    # EntityVectorStore — connector service uses this to sync People and RecordGroups
+    # EntityVectorStore — the connector service only deletes through it, on
+    # connector and Collection deletion; it never loads an embedding model.
     entity_vector_store = providers.Resource(
         container_utils.create_entity_vector_store,
         logger=logger,

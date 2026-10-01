@@ -248,7 +248,9 @@ class SinkOrchestrator(Transformer):
 
             from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 
-            await self.entity_vector_store.upsert_entity(
+            # Always this connector and the group itself, so there is nothing
+            # to merge and the membership read is skipped.
+            await self.entity_vector_store.upsert_entities_batch([
                 EntityRecord(
                     entity_id=record.record_group_id,
                     entity_type=EntityType.RECORD_GROUP,
@@ -262,7 +264,7 @@ class SinkOrchestrator(Transformer):
                     record_group_ids=[record.record_group_id],
                     type_category=EntityTypeCategory.PREDEFINED,
                 )
-            )
+            ], merge_membership=False)
         except Exception as exc:
             self.logger.warning(
                 "Record group entity sync failed for record %s (non-fatal): %s",
@@ -287,7 +289,10 @@ class SinkOrchestrator(Transformer):
         try:
             from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 
-            await self.entity_vector_store.upsert_entity(
+            # A record has one connector and one group; a union kept the old
+            # group after the record moved, so its old group's users kept
+            # matching it.
+            await self.entity_vector_store.upsert_entities_batch([
                 EntityRecord(
                     entity_id=record.id,
                     entity_type=EntityType.RECORD,
@@ -297,7 +302,7 @@ class SinkOrchestrator(Transformer):
                     record_group_ids=[record.record_group_id] if record.record_group_id else [],
                     type_category=EntityTypeCategory.PREDEFINED,
                 )
-            )
+            ], merge_membership=False)
         except Exception as exc:
             self.logger.warning(
                 "Record name entity sync failed for record %s (non-fatal): %s",

@@ -19,8 +19,11 @@ import {
   createMessageProducer,
   createMessageConsumer,
   createMessageProducerFromConfig,
+  createMailMessageConsumer,
   REQUIRED_TOPICS,
 } from '../../../src/libs/services/message-broker.factory';
+import { Kafka } from 'kafkajs';
+import { MAIL_MESSAGE_BUDGET_MS } from '../../../src/modules/mail/types/mail-event.types';
 
 import {
   BaseKafkaProducerConnection,
@@ -68,6 +71,35 @@ describe('MessageBrokerFactory', () => {
     sinon.restore();
     delete process.env.MESSAGE_BROKER;
     delete process.env.REDIS_STREAMS_MAXLEN;
+  });
+
+  describe('createMailMessageConsumer', () => {
+    const appConfig = {
+      kafka: { brokers: ['localhost:9092'] },
+      redis: { host: 'localhost', port: 6379 },
+    } as any;
+
+    it('gives the kafka mail group a session long enough for one message budget', () => {
+      process.env.MESSAGE_BROKER = 'kafka';
+      const consumerSpy = sinon.spy(Kafka.prototype, 'consumer');
+
+      createMailMessageConsumer(appConfig, mockLogger as any);
+
+      const opts = consumerSpy.firstCall.args[0];
+      expect(opts.groupId).to.equal('mail-consumer-group');
+      expect(opts.sessionTimeout).to.be.greaterThan(MAIL_MESSAGE_BUDGET_MS);
+      expect(opts.rebalanceTimeout).to.be.greaterThan(MAIL_MESSAGE_BUDGET_MS);
+    });
+
+    it('keeps a redis mail job from being reclaimed while it is still running', () => {
+      process.env.MESSAGE_BROKER = 'redis';
+
+      const consumer = createMailMessageConsumer(appConfig, mockLogger as any);
+
+      expect((consumer as any).config.claimMinIdleMs).to.be.greaterThan(
+        MAIL_MESSAGE_BUDGET_MS,
+      );
+    });
   });
 
   // ================================================================

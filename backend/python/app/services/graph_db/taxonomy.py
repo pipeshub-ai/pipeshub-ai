@@ -25,11 +25,10 @@ TAXONOMY_COLLECTIONS: frozenset[str] = frozenset(
     }
 )
 
-# Nodes written by the resolver carry these fields; ``aliases`` is only ever
-# unioned through ``add_taxonomy_aliases`` so concurrent writers cannot
-# overwrite each other's list.
-TAXONOMY_NODE_FIELDS: tuple[str, ...] = ("name", "normalizedName", "orgId", "createdAtTimestamp")
-
+# Entity types records reach over a belongsTo* edge (departments included).
+TAXONOMY_ENTITY_TYPES: frozenset[str] = frozenset(
+    {"department", "category", "subcategory", "topic", "language"}
+)
 
 def subcategory_level(collection: str | None) -> str | None:
     """The subcategory level of ``collection``, or ``None`` for other taxonomy."""
@@ -60,7 +59,7 @@ def alias_pairs(aliases: list[str], normalized_aliases: list[str]) -> list[tuple
 __all__ = [
     "SUBCATEGORY_LEVELS",
     "TAXONOMY_COLLECTIONS",
-    "TAXONOMY_NODE_FIELDS",
+    "TAXONOMY_ENTITY_TYPES",
     "alias_pairs",
     "is_taxonomy_collection",
     "subcategory_level",

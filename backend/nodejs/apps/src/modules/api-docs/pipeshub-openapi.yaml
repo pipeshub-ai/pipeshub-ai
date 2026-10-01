@@ -18343,6 +18343,29 @@ paths:
             for maintaining authentication state across the SAML flow.
           schema:
             type: string
+        - name: client
+          in: query
+          required: false
+          description: |
+            `desktop` for a sign-in started by the PipesHub desktop app. Needs `state`
+            and `code_challenge`; without both it is ignored. The callback then sends
+            no cookies and redirects to `/auth/sign-in/samlSso/success` with `state`
+            and a single-use `code` (or `saml_error`), redeemed at `/saml/desktop/exchange`.
+          schema:
+            type: string
+            enum: [desktop]
+        - name: state
+          in: query
+          required: false
+          description: Desktop flow identifier, echoed back on the success page. Starts with `phd.`.
+          schema:
+            type: string
+        - name: code_challenge
+          in: query
+          required: false
+          description: PKCE S256 challenge (43 base64url characters) for the desktop handoff code.
+          schema:
+            type: string
       responses:
         '302':
           description: Redirect to SAML Identity Provider login page
@@ -18467,6 +18490,53 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthError'
+
+  /saml/desktop/exchange:
+    post:
+      tags:
+        - SAML
+      summary: Redeem a desktop SAML handoff code
+      description: |
+        Exchanges the single-use code from a desktop SAML sign-in (see `client=desktop`
+        on `/saml/signIn`) for PipesHub tokens. The code expires after 2 minutes and is
+        consumed by the first attempt, whether or not the verifier matches.
+      operationId: exchangeSamlDesktopCode
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                code:
+                  type: string
+                  description: Handoff code from the success page redirect
+                codeVerifier:
+                  type: string
+                  description: PKCE verifier matching the `code_challenge` sent to `/saml/signIn`
+              required:
+                - code
+                - codeVerifier
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                  refreshToken:
+                    type: string
+        '401':
+          description: Unknown, expired, already used, or verifier mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /saml/updateAppConfig:
     post:
@@ -19509,8 +19579,12 @@ paths:
         If all provided emails already have active accounts, returns `200` with
         `{ "errorMessage": "All provided emails already have active accounts" }`.
 
-        If mail sending fails for any email, the loop continues and the final response reflects
-        the mail service's HTTP status code.
+        Invitation emails are always queued on the message broker and delivered in the
+        background, so a `200` means "accepted for delivery", not "sent". Emails that
+        ultimately cannot be delivered raise an admin notification. Set-password links are
+        minted when the email is sent, so no reset token is stored in the broker. If queueing
+        fails for any email, the loop continues and the final response reflects that status
+        code.
 
         Optional `role` (`admin` | `member`, default `member`) is applied to new invites and
         to restored/pending users when promoting to admin. Inviting as `admin` is rejected
@@ -19561,7 +19635,11 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: "Invite sent successfully"
+                    example: "Invites queued. Emails are being sent in the background and may take a few minutes."
+                  queued:
+                    type: boolean
+                    description: True when invitation emails were accepted for background delivery
+                    example: true
                   errorMessage:
                     type: string
                     description: Present when all emails were already active
@@ -39682,6 +39760,55 @@ paths:
                 $ref: '#/components/schemas/URLConfig'
         '401':
           description: Unauthorized
+
+  /configurationManager/public/desktopFrontendUrl:
+    get:
+      tags:
+        - Public URLs
+      summary: Get the configured frontend URL (desktop app only)
+      description: |
+        Returns the server's configured public frontend URL. Unauthenticated.
+
+        The PipesHub desktop app builds its OAuth redirect URI from this value. It cannot
+        derive it: the app knows only the API base URL the operator typed into it, and the
+        two are different origins whenever the UI is served separately from the API. The
+        app calls this as the sign-in screen loads, before any provider button renders.
+
+        Requires the `client-name: desktop` request header. That is a filter, not an
+        access control: the header is client-supplied and the desktop app is a public
+        client, so nothing it ships could prove its identity. It exists so browsers, which
+        have `window.location` and never need this, do not receive the value.
+      operationId: getDesktopFrontendUrl
+      security: []
+      parameters:
+        - in: header
+          name: client-name
+          required: true
+          description: Must be `desktop`. Any other value is rejected with 403.
+          schema:
+            type: string
+            enum: [desktop]
+      responses:
+        '200':
+          description: The configured frontend URL
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  frontendUrl:
+                    type: string
+                    format: uri
+                    example: "https://pipeshub.example.com"
+                required:
+                  - frontendUrl
+        '403':
+          description: Called without the desktop client header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/connectorPublicUrl:
     post:

@@ -20,6 +20,7 @@ import {
   RedisStreamsAdminService,
 } from './redis-streams.service';
 import { AppConfig } from '../../modules/tokens_manager/config/config';
+import { MAIL_CONSUMER_LIVENESS_MS } from '../../modules/mail/types/mail-event.types';
 import { loadMessagingEnv } from '../config/messaging.env';
 import { MESSAGING_ERRORS } from '../constants/messaging.constants';
 
@@ -223,6 +224,45 @@ function rejectNamespacedRedisStreams(): void {
         'MESSAGE_BROKER=redis, or switch to MESSAGE_BROKER=kafka.',
     );
   }
+}
+
+const MAIL_CONSUMER_GROUP = 'mail-consumer-group';
+const MAIL_CLIENT_ID = 'mail-consumer';
+
+/** Dedicated consumer group/stream group for the mail topic (Kafka + Redis). */
+export function createMailMessageConsumer(
+  appConfig: AppConfig,
+  logger: Logger,
+): IMessageConsumer {
+  const resolved = resolveMessageBrokerConfig(appConfig);
+  if (resolved.type === MessageBrokerType.KAFKA) {
+    const kafka: KafkaConfig = {
+      ...resolved.kafka,
+      clientId: MAIL_CLIENT_ID,
+      groupId: MAIL_CONSUMER_GROUP,
+      sessionTimeout: MAIL_CONSUMER_LIVENESS_MS,
+      rebalanceTimeout: MAIL_CONSUMER_LIVENESS_MS,
+    };
+    return createMessageConsumerByParts(
+      MessageBrokerType.KAFKA,
+      kafka,
+      undefined,
+      logger,
+    );
+  }
+  const redis: RedisBrokerConfig = {
+    ...buildRedisBrokerConfig(appConfig.redis, {
+      clientId: MAIL_CLIENT_ID,
+      groupId: MAIL_CONSUMER_GROUP,
+    }),
+    claimMinIdleMs: MAIL_CONSUMER_LIVENESS_MS,
+  };
+  return createMessageConsumerByParts(
+    MessageBrokerType.REDIS,
+    undefined,
+    redis,
+    logger,
+  );
 }
 
 export function buildRedisBrokerConfig(

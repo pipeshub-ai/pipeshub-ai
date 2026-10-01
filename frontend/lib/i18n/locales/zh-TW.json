@@ -1239,6 +1239,8 @@
         "send": "傳送邀請",
         "successTitle": "邀請已傳送！",
         "successDescription": "已邀請 {{email}}",
+        "queuedTitle": "邀請已加入佇列",
+        "queuedDescription": "正在背景傳送電子郵件給 {{email}}。若有郵件無法送達，您將會收到通知。",
         "invalidEmail": "電子郵件地址無效",
         "errorGeneric": "傳送邀請失敗",
         "importNoEmails": "檔案中找不到任何電子郵件地址",
@@ -4083,7 +4085,10 @@
       "orgEmailVerifiedTitle": "組織已驗證",
       "orgEmailVerifiedDescription": "您的組織現已啟用。請登入以繼續。",
       "orgEmailVerifyFailedTitle": "驗證失敗",
-      "orgEmailVerifyFailedDescription": "連結可能無效或已過期。請重新註冊。"
+      "orgEmailVerifyFailedDescription": "連結可能無效或已過期。請重新註冊。",
+      "loadFailedTitle": "無法載入登入",
+      "loadFailedDescription": "PipesHub 無法連線至伺服器以載入登入選項。請檢查網路連線或伺服器位址，然後再試一次。",
+      "retry": "重試"
     },
     "common": {
       "signIn": "登入",
@@ -4117,6 +4122,11 @@
       "hidePassword": "隱藏密碼",
       "accountDisabled": "您的帳戶已停用。",
       "tooManyIncorrectCredentials": "您輸入錯誤憑證的次數過多"
+    },
+    "desktopHandoff": {
+      "title": "登入已傳送至 PipesHub",
+      "description": "您可以關閉此分頁並返回 PipesHub 應用程式。",
+      "openApp": "開啟 PipesHub"
     }
   },
   "healthGate": {
