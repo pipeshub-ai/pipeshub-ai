@@ -283,6 +283,8 @@ class TestAbstractMethodInventory:
         "is_record_folder",
         "get_record_parent_info",
         "is_record_descendant_of",
+        "get_folder_depth",
+        "get_folder_subtree_height",
         "delete_parent_child_edge_to_record",
         "get_kb_permissions",
         "update_kb_permission",

@@ -14836,7 +14836,7 @@ class Neo4jProvider(IGraphDBProvider):
         """Check if record is descendant of ancestor."""
         try:
             query = """
-            MATCH path = (ancestor:Record {id: $ancestor_id})-[:RECORD_RELATION*1..20 {relationshipType: "PARENT_CHILD"}]->(r:Record {id: $record_id})
+            MATCH path = (ancestor:Record {id: $ancestor_id})-[:RECORD_RELATION*1.. {relationshipType: "PARENT_CHILD"}]->(r:Record {id: $record_id})
             RETURN count(path) > 0 as is_descendant
             """
             results = await self.client.execute_query(
@@ -14848,6 +14848,40 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Is record descendant check failed: {str(e)}")
             return False
+
+    async def get_folder_depth(
+        self,
+        folder_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        query = """
+        MATCH (folder:Record {id: $folder_id})
+        OPTIONAL MATCH path = (:Record)-[:RECORD_RELATION*1.. {relationshipType: "PARENT_CHILD"}]->(folder)
+        RETURN coalesce(max(length(path)), 0) + 1 AS depth
+        """
+        results = await self.client.execute_query(
+            query, parameters={"folder_id": folder_id}, txn_id=transaction
+        )
+        return results[0]["depth"] if results else 1
+
+    async def get_folder_subtree_height(
+        self,
+        folder_id: str,
+        folder_mime_types: list[str],
+        transaction: str | None = None,
+    ) -> int:
+        query = """
+        MATCH (folder:Record {id: $folder_id})
+        OPTIONAL MATCH path = (folder)-[:RECORD_RELATION*1.. {relationshipType: "PARENT_CHILD"}]->(sub:Record)
+        WHERE sub.mimeType IN $folder_mime_types
+        RETURN coalesce(max(length(path)), 0) AS height
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={"folder_id": folder_id, "folder_mime_types": folder_mime_types},
+            txn_id=transaction,
+        )
+        return results[0]["height"] if results else 0
 
     async def is_record_folder(
         self,
@@ -15363,10 +15397,9 @@ class Neo4jProvider(IGraphDBProvider):
         breadcrumbs = []
         current_id = node_id
         visited = set()
-        max_depth = 20
 
         try:
-            while current_id and len(visited) < max_depth:
+            while current_id:
                 if current_id in visited:
                     break
                 visited.add(current_id)

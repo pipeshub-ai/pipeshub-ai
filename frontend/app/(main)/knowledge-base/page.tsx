@@ -29,6 +29,7 @@ import { notifyUploadFailures } from '@/lib/utils/upload-failure-feedback';
 import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
 import { FileRejectionReason, parseFileRejectionReason } from '@/lib/constants/file-rejection-reason';
 import { KnowledgeBaseApi, KnowledgeHubApi, type FileMetadata } from './api';
+import { folderDepthOf, uploadPathOf } from './utils/folder-depth';
 // import KnowledgeBaseSidebar from './sidebar';
 import { useKnowledgeBaseStore, DEFAULT_PAGE_SIZE } from './store';
 import type {
@@ -265,6 +266,15 @@ function KnowledgeBasePageContent() {
     }
     return crumbs?.[1]?.id || kbId;
   }, [isAllRecordsMode, allRecordsTableData, tableData, kbId, categorizedNodes]);
+
+  // Folder levels that can still be added under the open node. The limit comes
+  // from the server; Infinity where it does not apply or is not known yet.
+  const maxFolderDepth = isAllRecordsMode ? undefined : tableData?.maxFolderDepth;
+  const remainingFolderLevels =
+    maxFolderDepth == null
+      ? Infinity
+      : Math.max(maxFolderDepth - folderDepthOf(tableData?.breadcrumbs), 0);
+  const canAddFolderHere = remainingFolderLevels > 0;
 
   // Get table items directly from API response (no client-side filtering)
   const tableItems = useMemo(() => {
@@ -1516,9 +1526,7 @@ function KnowledgeBasePageContent() {
             fileEntries.push({
               storeId: generateUploadId(),
               file: fwp.file,
-              filePath: fwp.relativePath
-                ? `${item.name}/${fwp.relativePath}`
-                : `${item.name}/${fwp.file.name}`,
+              filePath: uploadPathOf(item.name, fwp.relativePath, fwp.file.name),
             });
           }
         }
@@ -2800,7 +2808,7 @@ function KnowledgeBasePageContent() {
               onIndexingStatusClick={handleCollectionIndexingStatusClick}
               isSearchActive={isSearchOpen && !!(isAllRecordsMode ? allRecordsSearchQuery : searchQuery)?.trim()}
               // Collections mode only props
-              onCreateFolder={isAllRecordsMode ? undefined : handleCreateFolder}
+              onCreateFolder={isAllRecordsMode || !canAddFolderHere ? undefined : handleCreateFolder}
               onUpload={isAllRecordsMode ? undefined : handleUpload}
               onShare={shareAdapter && isSelectedKbOwner ? handleShare : undefined}
               createPermissionDenied={!isAllRecordsMode && !canCreateCollection && !canEditCollection}
@@ -2875,7 +2883,7 @@ function KnowledgeBasePageContent() {
           onMove={!isAllRecordsMode ? handleMoveClick : undefined}
           onDelete={!isAllRecordsMode ? handleDelete : undefined}
           onDownload={handleDownload}
-          onCreateFolder={!isAllRecordsMode && canCreateCollection ? handleCreateFolder : undefined}
+          onCreateFolder={!isAllRecordsMode && canCreateCollection && canAddFolderHere ? handleCreateFolder : undefined}
           onUpload={!isAllRecordsMode && canEditCollection ? handleUpload : undefined}
           onGoToCollection={handleGoToCollection}
           refreshData={refreshDataAfterDelete}
@@ -3000,6 +3008,8 @@ function KnowledgeBasePageContent() {
             onOpenChange={setIsUploadSidebarOpen}
             onSave={handleUploadSave}
             isSaving={isUploading}
+            remainingFolderLevels={remainingFolderLevels}
+            maxFolderDepth={maxFolderDepth}
           />
 
           {/* Replace File Dialog */}

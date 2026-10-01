@@ -28,9 +28,18 @@ import pytest
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.utils.user_messages import action_failed
 from app.config.constants.service import DefaultEndpoints
+<<<<<<< Updated upstream
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.exceptions.graph_db_exceptions import GraphQueryError
+=======
+from app.connectors.sources.localKB.handlers.kb_service import (
+    FOLDER_DEPTH_LIMIT_REASON,
+    KnowledgeBaseService,
+    folder_levels_in_path,
+)
+>>>>>>> Stashed changes
 from app.models.entities import FileRecord
+from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH
 
 
 # Fixtures live in conftest.py (service, mock_graph_provider, mock_processor, …)
@@ -2783,3 +2792,71 @@ class TestUploadRecordsPipeline:
         result = await service._upload_records("kb1", "user1", "org1", [], parent_folder_id=None)
         assert result["success"] is False
         assert result["code"] == 500
+
+
+# ===========================================================================
+# Folder nesting limit (KB_MAX_FOLDER_DEPTH)
+# ===========================================================================
+
+
+def _nested_path(levels: int) -> str:
+    return "/".join([f"L{i}" for i in range(levels)] + ["f.txt"])
+
+
+class TestFolderDepthLimit:
+    @pytest.mark.parametrize("path, levels", [
+        ("a.txt", 0), ("top/a.txt", 1), ("top/sub/a.txt", 2), ("/top//a.txt", 1), ("", 0),
+    ])
+    def test_folder_levels_in_path(self, path, levels):
+        assert folder_levels_in_path(path) == levels
+
+    @pytest.mark.asyncio
+    async def test_create_nested_folder_at_the_limit_succeeds(self, service):
+        service.graph_provider._validate_folder_creation = AsyncMock(return_value={"valid": True})
+        service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
+        service.graph_provider.get_folder_depth = AsyncMock(return_value=KB_MAX_FOLDER_DEPTH - 1)
+
+        result = await service.create_nested_folder("kb1", "parent1", "Sub", "user1", "org1")
+
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_create_nested_folder_past_the_limit_is_rejected(self, service):
+        service.graph_provider._validate_folder_creation = AsyncMock(return_value={"valid": True})
+        service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_folder_depth = AsyncMock(return_value=KB_MAX_FOLDER_DEPTH)
+
+        result = await service.create_nested_folder("kb1", "parent1", "Sub", "user1", "org1")
+
+        assert result["code"] == 400
+        assert result["reason"] == FOLDER_DEPTH_LIMIT_REASON
+        service.processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_upload_past_the_limit_creates_nothing(self, service):
+        service.graph_provider._validate_upload_context = AsyncMock(return_value={"valid": True})
+        service.graph_provider.get_folder_depth = AsyncMock(return_value=KB_MAX_FOLDER_DEPTH - 2)
+
+        result = await service._upload_records(
+            "kb1", "user1", "org1", [{"filePath": _nested_path(3)}], parent_folder_id="deep"
+        )
+
+        assert result["code"] == 400
+        service.processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_move_folder_whose_subtree_would_pass_the_limit_is_rejected(self, service):
+        _setup_writer(service)
+        service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
+        service.graph_provider.get_record_parent_info = AsyncMock(return_value={"id": "old-parent"})
+        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.is_record_folder = AsyncMock(return_value=True)
+        service.graph_provider.is_record_descendant_of = AsyncMock(return_value=False)
+        service.graph_provider.get_folder_depth = AsyncMock(return_value=KB_MAX_FOLDER_DEPTH - 5)
+        service.graph_provider.get_folder_subtree_height = AsyncMock(return_value=5)
+
+        result = await service.move_record("kb1", "folder1", "new-parent", "user1")
+
+        assert result["code"] == 400
+        assert result["reason"] == FOLDER_DEPTH_LIMIT_REASON

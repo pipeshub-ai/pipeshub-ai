@@ -144,7 +144,11 @@ from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
+<<<<<<< Updated upstream
     ENTITY_CANDIDATE_SCAN_CAP,
+=======
+    KB_MAX_FOLDER_DEPTH,
+>>>>>>> Stashed changes
     MAX_DIRECT_GRANT_RECORDS,
     PATH_MAX_CANDIDATES,
     ROOT_SCOPED_CONNECTOR_TYPES,
@@ -16149,9 +16153,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         breadcrumbs = []
         current_id = node_id
         visited = set()
-        max_depth = 20
 
-        while current_id and len(visited) < max_depth:
+        while current_id:
             if current_id in visited:
                 break
             visited.add(current_id)
@@ -20445,6 +20448,60 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"Failed to check descendant relationship: {e}")
             return False
+
+    async def get_folder_depth(
+        self,
+        folder_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        # PRUNE keeps the walk on PARENT_CHILD edges. It also runs on the start
+        # vertex, where e is null, hence the guard.
+        query = """
+        LET depths = (
+            FOR v, e, p IN 1..@max_depth INBOUND CONCAT("records/", @folder_id) @@record_relations
+                PRUNE e != null AND e.relationshipType != "PARENT_CHILD"
+                FILTER e.relationshipType == "PARENT_CHILD"
+                RETURN LENGTH(p.edges)
+        )
+        RETURN (LENGTH(depths) > 0 ? MAX(depths) : 0) + 1
+        """
+        result = await self.http_client.execute_aql(
+            query,
+            bind_vars={
+                "folder_id": folder_id,
+                "max_depth": KB_MAX_FOLDER_DEPTH,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+            },
+            txn_id=transaction,
+        )
+        return result[0] if result else 1
+
+    async def get_folder_subtree_height(
+        self,
+        folder_id: str,
+        folder_mime_types: list[str],
+        transaction: str | None = None,
+    ) -> int:
+        query = """
+        LET heights = (
+            FOR v, e, p IN 1..@max_depth OUTBOUND CONCAT("records/", @folder_id) @@record_relations
+                PRUNE e != null AND e.relationshipType != "PARENT_CHILD"
+                FILTER e.relationshipType == "PARENT_CHILD" AND v.mimeType IN @folder_mime_types
+                RETURN LENGTH(p.edges)
+        )
+        RETURN LENGTH(heights) > 0 ? MAX(heights) : 0
+        """
+        result = await self.http_client.execute_aql(
+            query,
+            bind_vars={
+                "folder_id": folder_id,
+                "folder_mime_types": folder_mime_types,
+                "max_depth": KB_MAX_FOLDER_DEPTH,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+            },
+            txn_id=transaction,
+        )
+        return result[0] if result else 0
 
     async def get_record_parent_info(
         self,

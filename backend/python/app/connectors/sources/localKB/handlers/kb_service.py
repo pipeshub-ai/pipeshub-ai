@@ -19,6 +19,7 @@ from app.connectors.services.vector_cleanup_events import (
 )
 from app.models.entities import FileRecord, RecordType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
+from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import PEOPLE_GONE, action_failed
@@ -46,6 +47,17 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 # KB folders use this mime type in the RECORDS doc (matches the legacy create_folder
 # path). Note this differs from MimeTypes.FOLDER ("text/directory").
 KB_FOLDER_MIME_TYPE = "application/vnd.folder"
+FOLDER_DEPTH_LIMIT_REASON = (
+    f"Folders can be nested at most {KB_MAX_FOLDER_DEPTH} levels deep. "
+    "Move this content higher up, or flatten some of the folders."
+)
+
+
+def folder_levels_in_path(file_path: str) -> int:
+    """Folder levels a relative upload path adds: 'a/b/c.txt' -> 2."""
+    parts = [part for part in (file_path or "").split("/") if part]
+    return max(len(parts) - 1, 0)
+
 
 def _mutation_succeeded(result: object) -> bool:
     """Did a graph-provider permission mutation actually succeed?
@@ -134,6 +146,14 @@ class KnowledgeBaseService:
             return {"success": False, "code": code, "reason": result["reason"]}
         self.logger.error("❌ Graph provider could not %s: %s", action, result)
         return {"success": False, "code": 500, "reason": action_failed(action)}
+
+    async def _exceeds_folder_depth(self, parent_folder_id: Optional[str], added_levels: int) -> bool:
+        """Would adding *added_levels* folder levels under *parent_folder_id*
+        (None = collection root) go past KB_MAX_FOLDER_DEPTH?"""
+        if added_levels <= 0:
+            return False
+        base = await self.graph_provider.get_folder_depth(parent_folder_id) if parent_folder_id else 0
+        return base + added_levels > KB_MAX_FOLDER_DEPTH
 
     def _validation_failure(self, result: object, action: str) -> dict:
         """Same rule as ``_mutation_failure``, for the checks routers read as ``valid``."""
@@ -972,6 +992,9 @@ class KnowledgeBaseService:
                     "code": 404,
                     "reason": f"Parent folder {parent_folder_id} not found in KB {kb_id}"
                 }
+
+            if await self._exceeds_folder_depth(parent_folder_id, 1):
+                return {"success": False, "code": 400, "reason": FOLDER_DEPTH_LIMIT_REASON}
 
             # Check for name conflicts in parent location
             existing_folder = await self.graph_provider.find_folder_by_name_in_parent(
@@ -2520,6 +2543,10 @@ class KnowledgeBaseService:
             if not validation.get("valid"):
                 return self._validation_failure(validation, "upload these files")
 
+            added_levels = max((folder_levels_in_path(f.get("filePath", "")) for f in files), default=0)
+            if await self._exceeds_folder_depth(parent_folder_id, added_levels):
+                return {"success": False, "code": 400, "reason": FOLDER_DEPTH_LIMIT_REASON}
+
             analysis = gp._analyze_upload_structure(files, validation)
 
             folder_map, new_folder_records = await self._resolve_upload_folders(kb_id, org_id, analysis)
@@ -2660,6 +2687,11 @@ class KnowledgeBaseService:
                             "code": 400,
                             "reason": "Cannot move a folder into one of its own sub-folders (circular reference)",
                         }
+                    subtree_height = await self.graph_provider.get_folder_subtree_height(
+                        record_id, folder_mime_types=[KB_FOLDER_MIME_TYPE]
+                    )
+                    if await self._exceeds_folder_depth(new_parent_id, 1 + subtree_height):
+                        return {"success": False, "code": 400, "reason": FOLDER_DEPTH_LIMIT_REASON}
 
             # ── 6.5. Check for destination sibling name conflicts ────────────
             # Load the record's name and determine if it's a folder or file

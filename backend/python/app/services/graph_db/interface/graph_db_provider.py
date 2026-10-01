@@ -2402,6 +2402,25 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_folder_depth(
+        self,
+        folder_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Nesting depth of a folder through PARENT_CHILD edges (1 = no parent folder)."""
+        pass
+
+    @abstractmethod
+    async def get_folder_subtree_height(
+        self,
+        folder_id: str,
+        folder_mime_types: list[str],
+        transaction: str | None = None,
+    ) -> int:
+        """Levels of sub-folders below a folder through PARENT_CHILD edges (0 = none)."""
+        pass
+
+    @abstractmethod
     async def delete_parent_child_edge_to_record(
         self,
         record_id: str,
