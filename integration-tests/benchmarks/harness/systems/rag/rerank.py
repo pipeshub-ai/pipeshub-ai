@@ -10,7 +10,8 @@ import requests
 
 from benchmarks.harness.systems.rag.retrieval import Chunk
 
-# The cross-encoder PipesHub itself ships (`modules/reranker/reranker.py`).
+# A small, widely used cross-encoder. PipesHub's own optional reranker
+# defaults to BAAI/bge-reranker-v2-m3; pass it as `reranker` to compare.
 # Pinned to CPU: torch's MPS backend hangs when inference runs off the main
 # thread, and this model reranks a question's candidates in seconds there.
 DEFAULT_RERANKER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
