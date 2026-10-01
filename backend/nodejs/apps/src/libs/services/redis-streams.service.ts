@@ -476,7 +476,13 @@ export abstract class BaseRedisStreamsConsumerConnection
           const nextId = result[0] as string;
           const claimed = result[1] as RedisStreamEntry[];
 
-          if (!claimed || claimed.length === 0) break;
+          // XAUTOCLAIM scans at most COUNT*10 pending entries per call, so an
+          // empty page with a live cursor can still have stale entries past it.
+          if (!claimed || claimed.length === 0) {
+            if (nextId === '0-0') break;
+            startId = nextId;
+            continue;
+          }
 
           for (const entry of claimed) {
             const entryId = entry[0];

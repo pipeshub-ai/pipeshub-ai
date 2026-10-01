@@ -679,6 +679,32 @@ describe('Redis Streams Service', () => {
         await consumer.subscribe(['test-stream']);
       });
 
+      it('keeps scanning past an empty page whose cursor is not exhausted', async () => {
+        // Redis returns this when the scanned window held only fresh entries.
+        mockRedis.xautoclaim
+          .onFirstCall()
+          .resolves(['11-0', [], []])
+          .onSecondCall()
+          .resolves([
+            '0-0',
+            [['11-0', ['key', 'stale', 'value', JSON.stringify({ n: 11 })]]],
+            [],
+          ]);
+        mockRedis.xreadgroup.callsFake(async () => {
+          consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+
+        const startIds = mockRedis.xautoclaim.getCalls().map((c) => c.args[4]);
+        expect(startIds).to.deep.equal(['0-0', '11-0']);
+        expect(handler.calledOnce).to.be.true;
+        expect(handler.firstCall.args[0].key).to.equal('stale');
+      });
+
       it('should recover pending messages via XAUTOCLAIM', async () => {
         // First call returns a pending entry, second returns empty
         mockRedis.xautoclaim
