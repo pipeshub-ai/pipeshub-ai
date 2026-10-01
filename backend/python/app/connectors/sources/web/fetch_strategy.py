@@ -413,13 +413,15 @@ def _curl_hop(
             response = getattr(e, "response", None)
             if not too_large or response is None:
                 raise
-    _require_pinned_peer(response.primary_ip, pin)
-    hop_headers = dict(response.headers)
-    if response.status_code in _HEAD_REDIRECT_CODES:
-        return _Hop(response.status_code, hop_headers)
+        peer_ip = response.primary_ip
+        hop_headers = dict(response.headers)
+        status_code = response.status_code
+    _require_pinned_peer(peer_ip, pin)
+    if status_code in _HEAD_REDIRECT_CODES:
+        return _Hop(status_code, hop_headers)
     if too_large or _declared_too_large(hop_headers, max_bytes):
-        return _Hop(response.status_code, hop_headers, too_large=True)
-    return _Hop(response.status_code, hop_headers, bytes(body))
+        return _Hop(status_code, hop_headers, too_large=True)
+    return _Hop(status_code, hop_headers, bytes(body))
 
 
 def _close_when_idle(session: _RequestsLike, busy: threading.Lock) -> None:
@@ -466,11 +468,9 @@ async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) 
         except Exception:
             continue  # TLS error, connection reset -> next profile, from the start of the chain
         finally:
-            if busy.locked():
-                # A cancelled crawl left a request running on this session; close it once that ends.
-                loop.run_in_executor(None, _close_when_idle, session, busy)
-            else:
-                _close_when_idle(session, busy)
+            # Off the event loop: a cancelled crawl can leave a request about to start on this
+            # session, and the close waits for it to end.
+            loop.run_in_executor(None, _close_when_idle, session, busy)
     logger.warning(f"⚠️ [curl_cffi(h2=True)] All profiles exhausted for {walk.url}")
     return None
 
