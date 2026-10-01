@@ -328,7 +328,7 @@ class TestPartlyLandedAttemptIsRerun:
     already landed re-runs the whole write, which must not duplicate them."""
 
     async def test_the_rerun_leaves_one_edge_per_target(self, monkeypatch) -> None:
-        from tests.unit.modules.entity_resolution.conftest import FakeGraph
+        from tests.support.fake_entity_graph import FakeGraph
 
         monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
         graph = FakeGraph()
