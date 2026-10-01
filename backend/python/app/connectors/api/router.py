@@ -2376,11 +2376,13 @@ async def _schedule_upload_removal(
     retries while the record is still there. Raises a 503 when the removal
     cannot be scheduled; nothing has been deleted then.
     """
-    record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
-    connector_id = (record or {}).get("connectorId")
-    if not connector_id or (record or {}).get("origin") != OriginTypes.UPLOAD.value:
-        return
     try:
+        record = await graph_provider.get_document(
+            record_id, CollectionNames.RECORDS.value, raise_on_error=True
+        )
+        connector_id = (record or {}).get("connectorId")
+        if not connector_id or (record or {}).get("origin") != OriginTypes.UPLOAD.value:
+            return
         files = await graph_provider.get_uploaded_document_ids(
             connector_id, under_record_ids=[record_id]
         )

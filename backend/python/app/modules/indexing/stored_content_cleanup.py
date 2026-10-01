@@ -75,7 +75,7 @@ class StoredContentCleanup:
             owner = org_id
             if not owner:
                 row = await self.graph_provider.get_document(
-                    vrid, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+                    vrid, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, raise_on_error=True
                 )
                 if row is None:
                     # No mapping row: nothing was filed that this id can reach.

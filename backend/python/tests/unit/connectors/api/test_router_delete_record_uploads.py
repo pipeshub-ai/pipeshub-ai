@@ -67,3 +67,18 @@ async def test_a_connector_record_schedules_no_storage_removal():
 
     provider.get_uploaded_document_ids.assert_not_awaited()
     kafka.publish_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_record_that_cannot_be_read_deletes_nothing() -> None:
+    provider, kafka = _provider(), AsyncMock()
+    provider.get_document = AsyncMock(side_effect=RuntimeError("graph 503"))
+
+    with pytest.raises(HTTPException) as caught:
+        await delete_record("r1", _request(), provider, kafka)
+
+    assert caught.value.status_code == 503
+    provider.get_document.assert_awaited_once()
+    assert provider.get_document.await_args.kwargs == {"raise_on_error": True}
+    provider.delete_record.assert_not_awaited()
+    kafka.publish_event.assert_not_awaited()

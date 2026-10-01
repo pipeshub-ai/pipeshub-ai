@@ -38,7 +38,7 @@ def _cleanup(*, records_by_vrid=None, mapping_org="org-1", purge=None):
         side_effect=lambda virtual_record_id, raise_on_error: records_by_vrid.get(virtual_record_id, [])
     )
     graph.get_document = AsyncMock(
-        side_effect=lambda key, collection: {"orgId": mapping_org} if mapping_org else None
+        side_effect=lambda key, collection, raise_on_error: {"orgId": mapping_org} if mapping_org else None
     )
     blob = AsyncMock()
     blob.purge_virtual_record_documents = purge or AsyncMock(return_value=1)
@@ -95,7 +95,7 @@ class TestReleaseVirtualRecords:
 
         await cleanup.release_virtual_records(["vr-1"])
 
-        graph.get_document.assert_awaited_once_with("vr-1", MAPPING)
+        graph.get_document.assert_awaited_once_with("vr-1", MAPPING, raise_on_error=True)
         blob.purge_virtual_record_documents.assert_awaited_once_with("org-from-row", "vr-1")
 
     @pytest.mark.asyncio
@@ -106,6 +106,17 @@ class TestReleaseVirtualRecords:
 
         assert failed == []
         blob.purge_virtual_record_documents.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_mapping_row_is_kept_for_a_retry(self) -> None:
+        cleanup, graph, blob = _cleanup()
+        graph.get_document = AsyncMock(side_effect=RuntimeError("graph 503"))
+
+        failed = await cleanup.release_virtual_records(["vr-1"])
+
+        assert failed == ["vr-1"]
+        blob.purge_virtual_record_documents.assert_not_awaited()
+        graph.delete_nodes.assert_not_awaited()
 
 
 class TestAMappingRowWithoutAnOwner:
