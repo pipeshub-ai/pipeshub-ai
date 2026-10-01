@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Her kaynak **Blocks**'a (bloklara) dönüşür: tabloları, yazışma dizilerini ve kodu bozmadan tutan, her bloğun geldiği sayfayı, hücreyi veya satırı tam olarak hatırlayan tek bir temsil. Blocks iki şekilde düzenlenir: her kaynak sistemin **klasör yapısına** göre ve kişilerden, projelerden ve müşterilerden oluşan bir **bilgi grafında**. Ajanlar ikisini de **ayrıntıyı adım adım gösteren araçlarla** keşfeder: bir arama önce her kaydın adını, özetini ve eşleşen bölümlerini gösterir; ajan yalnızca gerektiğinde daha derine iner (grep, klasörlerde gezinme, varlıkları izleme, kaydın tamamını okuma). **Her araç çağrısı, ajanın adına çalıştığı kişi için kaynak sistemin izinlerine göre denetlenir.**
+Her kaynak **Blocks**'a (bloklara) dönüşür: tabloları, yazışma dizilerini ve kodu bozmadan tutan, her bloğun geldiği sayfayı, hücreyi veya satırı tam olarak hatırlayan tek bir temsil. Her belge düz metin olarak saklanır; bu yüzden ajanlar bir PDF, Word dosyası veya sunum üzerinde de bir metin dosyasındaki gibi `grep` çalıştırabilir. Blocks iki şekilde düzenlenir: her kaynak sistemin **klasör yapısına** göre ve kişilerden, projelerden ve müşterilerden oluşan bir **bilgi grafında**. Ajanlar ikisini de **ayrıntıyı adım adım gösteren araçlarla** keşfeder: bir arama önce her kaydın adını, özetini ve eşleşen bölümlerini gösterir; ajan yalnızca gerektiğinde daha derine iner (grep, klasörlerde gezinme, varlıkları izleme, kaydın tamamını okuma). **Her araç çağrısı, ajanın adına çalıştığı kişi için kaynak sistemin izinlerine göre denetlenir.**
 
 **[Bağlam katmanının nasıl çalıştığını okuyun →](../../context-layer.md)** Block biçimini, hiyerarşiyi ve grafı, her ajan aracını ve bulunduğu kodu, izin denetimini, ajan döngüsünü ve mevcut sınırlamaları anlatır.
 
@@ -160,7 +160,7 @@ Aynı getirmeyi kendi kodunuzda ya da ekibiniz için bir arama kutusunun arkası
 
 **Ajanlar için bağlam**
 
-- 🗂️ **Yalnızca aranabilir değil, keşfedilebilir:** hibrit arama, kayıtlar üzerinde `grep`, klasör gezintisi ve bilgi grafı sorguları; hepsi ajan aracı olarak.
+- 🗂️ **Yalnızca aranabilir değil, keşfedilebilir:** hibrit arama, her belge üzerinde `grep` (PDF ve Office dosyaları dahil), klasör gezintisi ve bilgi grafı sorguları; hepsi ajan aracı olarak.
 - 🔒 **Her adımda izinlere duyarlı:** her araç çağrısı, ajanın adına çalıştığı kişi için kaynak sistemin izinlerine göre denetlenir.
 - 📝 **Blok düzeyinde kaynak gösterme:** yanıtlar geldikleri sayfayı, tablo hücresini, satırı, slaytı veya kod satırını gösterir.
 - 🧱 **Yapılandırılmış, yarı yapılandırılmış ve yapılandırılmamış veri tek katmanda:** belgeler, elektronik tablolar, talepler, sohbet dizileri, kod ve SQL tabloları Blocks'a dönüşür.

@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Jede Quelle wird zu **Blocks** (Blöcken), einer einheitlichen Darstellung, die Tabellen, Threads und Code intakt hält und sich die genaue Seite, Zelle oder Zeile merkt, aus der jeder Block stammt. Die Blocks sind auf zwei Arten geordnet: nach der **Ordnerstruktur** jedes Quellsystems und in einem **Knowledge Graph** aus Personen, Projekten und Kunden. Agenten erkunden beides mit **Tools, die Details Schritt für Schritt zeigen**: Eine Suche zeigt zuerst Name, Zusammenfassung und passende Stellen jedes Datensatzes, und der Agent geht nur tiefer (grep, Ordner durchsuchen, Entitäten folgen, den ganzen Datensatz lesen), wenn er es braucht. **Jeder Tool-Aufruf wird gegen die Berechtigungen des Quellsystems geprüft**, und zwar für die Person, in deren Namen der Agent handelt.
+Jede Quelle wird zu **Blocks** (Blöcken), einer einheitlichen Darstellung, die Tabellen, Threads und Code intakt hält und sich die genaue Seite, Zelle oder Zeile merkt, aus der jeder Block stammt. Jedes Dokument wird als reiner Text gespeichert, daher können Agenten ein PDF, eine Word-Datei oder eine Präsentation mit `grep` durchsuchen wie eine Textdatei. Die Blocks sind auf zwei Arten geordnet: nach der **Ordnerstruktur** jedes Quellsystems und in einem **Knowledge Graph** aus Personen, Projekten und Kunden. Agenten erkunden beides mit **Tools, die Details Schritt für Schritt zeigen**: Eine Suche zeigt zuerst Name, Zusammenfassung und passende Stellen jedes Datensatzes, und der Agent geht nur tiefer (grep, Ordner durchsuchen, Entitäten folgen, den ganzen Datensatz lesen), wenn er es braucht. **Jeder Tool-Aufruf wird gegen die Berechtigungen des Quellsystems geprüft**, und zwar für die Person, in deren Namen der Agent handelt.
 
 **[Lesen Sie, wie die Kontextschicht funktioniert →](../../context-layer.md)** Dort finden Sie das Block-Format, die Hierarchie und den Graphen, jedes Agent-Tool und den Code dazu, die Durchsetzung von Berechtigungen, die Agent-Schleife und aktuelle Einschränkungen.
 
@@ -160,7 +160,7 @@ Sie möchten dasselbe Retrieval in Ihrem eigenen Code oder hinter einem Suchfeld
 
 **Kontext für Agenten**
 
-- 🗂️ **Erkundbar, nicht nur durchsuchbar:** Hybride Suche, `grep` über Datensätze, Ordnernavigation und Knowledge-Graph-Abfragen, alles als Agent-Tools.
+- 🗂️ **Erkundbar, nicht nur durchsuchbar:** Hybride Suche, `grep` über jedes Dokument (auch PDFs und Office-Dateien), Ordnernavigation und Knowledge-Graph-Abfragen, alles als Agent-Tools.
 - 🔒 **Berechtigungsbewusst bei jedem Schritt:** Jeder Tool-Aufruf wird gegen die Berechtigungen des Quellsystems geprüft, für die Person, in deren Namen der Agent handelt.
 - 📝 **Zitate auf Block-Ebene:** Antworten zitieren die Seite, Tabellenzelle, Zeile, Folie oder Codezeile, aus der sie stammen.
 - 🧱 **Strukturiert, semistrukturiert und unstrukturiert in einer Schicht:** Dokumente, Tabellenkalkulationen, Tickets, Chat-Threads, Code und SQL-Tabellen werden alle zu Blocks.

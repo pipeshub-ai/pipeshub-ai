@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Ogni fonte diventa **Blocks** (blocchi): un'unica rappresentazione che mantiene intatti tabelle, thread e codice e ricorda la pagina, la cella o la riga esatta da cui viene ogni blocco. I Blocks sono organizzati in due modi: secondo la **struttura delle cartelle** di ogni sistema di origine e in un **knowledge graph** di persone, progetti e clienti. Gli agenti esplorano entrambi con **tool che mostrano i dettagli passo dopo passo**: una ricerca mostra prima il nome, il riepilogo e i passaggi corrispondenti di ogni record, e l'agente va più a fondo (grep, navigazione tra le cartelle, entità collegate, lettura del record completo) solo quando serve. **Ogni chiamata di tool viene verificata sui permessi del sistema di origine** per la persona per cui l'agente agisce.
+Ogni fonte diventa **Blocks** (blocchi): un'unica rappresentazione che mantiene intatti tabelle, thread e codice e ricorda la pagina, la cella o la riga esatta da cui viene ogni blocco. Ogni documento è salvato come testo semplice, quindi gli agenti possono fare `grep` su un PDF, un file Word o una presentazione come su un file di testo. I Blocks sono organizzati in due modi: secondo la **struttura delle cartelle** di ogni sistema di origine e in un **knowledge graph** di persone, progetti e clienti. Gli agenti esplorano entrambi con **tool che mostrano i dettagli passo dopo passo**: una ricerca mostra prima il nome, il riepilogo e i passaggi corrispondenti di ogni record, e l'agente va più a fondo (grep, navigazione tra le cartelle, entità collegate, lettura del record completo) solo quando serve. **Ogni chiamata di tool viene verificata sui permessi del sistema di origine** per la persona per cui l'agente agisce.
 
 **[Scopri come funziona il livello di contesto →](../../context-layer.md)** Copre il formato Block, la gerarchia e il grafo, ogni tool dell'agente e il codice in cui vive, l'applicazione dei permessi, il ciclo dell'agente e i limiti attuali.
 
@@ -160,7 +160,7 @@ Volete lo stesso recupero dentro il vostro codice, o dietro una casella di ricer
 
 **Contesto per gli agenti**
 
-- 🗂️ **Esplorabile, non solo ricercabile:** ricerca ibrida, `grep` sui record, navigazione tra cartelle e lookup nel knowledge graph, tutti come tool dell'agente.
+- 🗂️ **Esplorabile, non solo ricercabile:** ricerca ibrida, `grep` su ogni documento (PDF e file Office inclusi), navigazione tra cartelle e lookup nel knowledge graph, tutti come tool dell'agente.
 - 🔒 **Rispetta i permessi a ogni passo:** ogni chiamata di tool viene verificata sui permessi del sistema di origine per la persona per cui l'agente agisce.
 - 📝 **Citazioni a livello di blocco:** le risposte citano la pagina, la cella di tabella, la riga, la slide o la riga di codice da cui provengono.
 - 🧱 **Dati strutturati, semi-strutturati e non strutturati in un solo livello:** documenti, fogli di calcolo, ticket, thread di chat, codice e tabelle SQL diventano tutti Blocks.

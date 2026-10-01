@@ -33,6 +33,8 @@ PipesHub has 40+ connectors across 30+ systems, with real-time and scheduled ind
 
 PDF (including scans), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, plain text, and images. Audio and video can be stored but are not indexed yet. Storage accepts a wider set of MIME types — see [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
 
+Whatever the format, PipesHub stores the text, so agents can search and `grep` a PDF or a slide deck just like a text file.
+
 ## How do I deploy PipesHub?
 
 ```bash

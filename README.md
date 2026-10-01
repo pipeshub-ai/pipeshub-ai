@@ -99,7 +99,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Every source becomes **Blocks**, one representation that keeps tables, threads and code intact and remembers the exact page, cell or line each block came from. The Blocks are organized two ways: by the **folder structure** of each source system, and in a **knowledge graph** of people, projects and customers. Agents explore both with **tools that reveal detail step by step**: a search first shows each record's name, summary and matching passages, and the agent digs deeper (grep, browse folders, follow entities, read the full record) only when it needs to. **Every tool call is checked against the source system's permissions** for the person the agent acts for.
+Every source becomes **Blocks**, one representation that keeps tables, threads and code intact and remembers the exact page, cell or line each block came from. Every document is stored as plain text, so agents can `grep` a PDF, Word file or slide deck just like a text file. The Blocks are organized two ways: by the **folder structure** of each source system, and in a **knowledge graph** of people, projects and customers. Agents explore both with **tools that reveal detail step by step**: a search first shows each record's name, summary and matching passages, and the agent digs deeper (grep, browse folders, follow entities, read the full record) only when it needs to. **Every tool call is checked against the source system's permissions** for the person the agent acts for.
 
 **[Read how the context layer works →](docs/context-layer.md)** It covers the Block format, the hierarchy and graph, every agent tool and the code it lives in, permission enforcement, the agent loop, and current limitations.
 
@@ -156,7 +156,7 @@ Want the same retrieval inside your own code, or behind a search box for your te
 
 **Context for agents**
 
-- 🗂️ **Explorable, not just searchable:** Hybrid search, `grep` over records, folder navigation and knowledge-graph lookups, all as agent tools.
+- 🗂️ **Explorable, not just searchable:** Hybrid search, `grep` over every document (PDFs and Office files included), folder navigation and knowledge-graph lookups, all as agent tools.
 - 🔒 **Permission-aware at every step:** Every tool call is checked against the source system's permissions for the person the agent acts for.
 - 📝 **Block-level citations:** Answers cite the page, table cell, row, slide or line they came from.
 - 🧱 **Structured, semi-structured and unstructured in one layer:** Documents, spreadsheets, tickets, chat threads, code and SQL tables all become Blocks.
