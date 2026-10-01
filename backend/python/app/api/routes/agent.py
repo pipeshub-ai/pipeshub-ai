@@ -43,7 +43,11 @@ from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
-from app.modules.agents.qna.chat_state import _extract_kb_app_ids
+from app.modules.agents.knowledge_scope import (
+    NO_KB_SELECTED_FILTER,
+    admit_caller_project_collections,
+    resolve_agent_filters,
+)
 from app.modules.agents.qna.router import (
     RouteDecision,  # noqa: F401 - re-exported for backward-compat imports (see below)
 )
@@ -103,7 +107,6 @@ if _opik_api_key and _opik_workspace:
         pass
 # Constants
 SPLIT_PATH_EXPECTED_PARTS = 2  # Expected parts when splitting path with "/" separator
-NO_KB_SELECTED_FILTER = "NO_KB_SELECTED"
 
 
 def _parse_agent_capabilities(raw: dict[str, Any] | None) -> AgentCapabilities:
@@ -795,6 +798,49 @@ def _parse_knowledge_sources(raw_knowledge: list[Any]) -> dict[str, dict[str, An
         }
 
     return knowledge_sources
+
+
+async def _resolve_turn_filters(
+    *,
+    agent_id: str,
+    agent_knowledge: list[dict[str, Any]],
+    requested_filters: dict[str, Any] | None,
+    graph_provider: IGraphDBProvider,
+    caller_user_id: str,
+    org_id: str,
+    logger: Logger,
+) -> dict[str, Any]:
+    """This turn's source filters, never wider than the agent's knowledge.
+
+    Ids outside it are dropped, except the caller's own project collection
+    (see ``admit_caller_project_collections``).
+    """
+    scope = resolve_agent_filters(
+        agent_knowledge,
+        requested_filters,
+        is_universal_agent=agent_id == "agentIdPlaceholder",
+    )
+    filters = scope.filters
+    dropped_kbs = list(scope.dropped_kb_ids)
+    if dropped_kbs:
+        admitted = await admit_caller_project_collections(
+            graph_provider,
+            kb_ids=dropped_kbs,
+            caller_user_id=caller_user_id,
+            org_id=org_id,
+            logger=logger,
+        )
+        filters["kb"] = [*filters["kb"], *admitted]
+        dropped_kbs = [k for k in dropped_kbs if k not in admitted]
+    # Info, not warning: a project chat on a saved agent routinely sends the
+    # project's other sources, so a drop is normal traffic, not an attack signal.
+    if scope.dropped_app_ids or dropped_kbs:
+        logger.info(
+            "Dropped sources outside the agent's knowledge: agent=%s org=%s caller=%s "
+            "apps=%s kb=%s",
+            agent_id, org_id, caller_user_id, list(scope.dropped_app_ids), dropped_kbs,
+        )
+    return filters
 
 
 def _filter_knowledge_by_enabled_sources(
@@ -3751,42 +3797,16 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
                 timer.mark("mcp_cfg")
 
-                # Build filters and knowledge from agent's knowledge sources
                 agent_knowledge = agent.get("knowledge", [])
-                filters = chat_query.filters.copy() if chat_query.filters else {}
-
-                if not chat_query.filters:
-                    # No explicit filters supplied — derive everything from the agent's knowledge config.
-                    # Exclude KB-typed entries from apps: they go into filters["kb"] exclusively.
-                    knowledge_connector_ids = [
-                        k.get("connectorId") for k in agent_knowledge
-                        if isinstance(k, dict)
-                        and k.get("connectorId")
-                        and (k.get("type") or "").strip().upper() != "KB"
-                    ]
-                    kb_ids = _extract_kb_app_ids(agent_knowledge)
-
-                    filters = {
-                        "apps": knowledge_connector_ids,
-                        "kb": kb_ids,
-                    }
-                    logger.info(f"Filters: {filters}")
-                else:
-                    # Explicit filters supplied — override individual keys where provided,
-                    # but fall back to agent's knowledge for keys that are absent.
-                    if "apps" not in chat_query.filters or chat_query.filters["apps"] is None:
-                        # Exclude KB-typed entries from apps — they belong in filters["kb"] only.
-                        knowledge_connector_ids = [
-                            k.get("connectorId") for k in agent_knowledge
-                            if isinstance(k, dict)
-                            and k.get("connectorId")
-                            and (k.get("type") or "").strip().upper() != "KB"
-                        ]
-                        filters["apps"] = knowledge_connector_ids
-
-                    if "kb" not in chat_query.filters or chat_query.filters["kb"] is None:
-                        filters["kb"] = _extract_kb_app_ids(agent_knowledge)
-                    logger.info(f"Filters: {filters}")
+                filters = await _resolve_turn_filters(
+                    agent_id=agent_id,
+                    agent_knowledge=agent_knowledge,
+                    requested_filters=chat_query.filters,
+                    graph_provider=graph_provider,
+                    caller_user_id=user_context.get("userId", ""),
+                    org_id=org_key,
+                    logger=logger,
+                )
 
                 # Apply NO_KB sentinel BEFORE filtering agent_knowledge. When kb is
                 # explicitly [] (user deselected all KB sources at runtime), the sentinel
