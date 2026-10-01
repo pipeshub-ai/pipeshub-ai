@@ -180,6 +180,21 @@ class TestToolCallPreambleClearing:
 
         assert len(sink.events) == 2
 
+    async def test_text_answer_sent_back_for_another_turn_is_cleared_by_its_tool_call(self) -> None:
+        """A POST_MODEL hook can veto a text-only finish; the vetoed text was
+        already streamed and must not stay on screen while the next turn,
+        which streams no text of its own, runs a tool."""
+        streamer, sink = _make_streamer()
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "The record does not say."}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TOOL_CALL_START, {"tool": "search"}))
+
+        assert sink.events[-1]["data"]["accumulated"] == ""
+        await streamer.on_event(_event(EventType.TOOL_CALL_START, {"tool": "fetch"}))
+        assert len(sink.events) == 2
+
     async def test_tool_call_start_with_no_preceding_text_is_a_no_op(self) -> None:
         streamer, sink = _make_streamer()
 

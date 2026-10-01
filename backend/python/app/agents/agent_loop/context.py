@@ -263,6 +263,9 @@ class AgentContext(BaseModel):
     # Bounds `completion_gate`'s empty-response nudges so a genuinely
     # stuck run terminates rather than looping until `max_turns`.
     completion_gate_nudges: int = 0
+    # Set once `completion_gate` has asked the model to look up what its
+    # evidence named before answering "not found" — at most once per request.
+    completion_gate_abstention_nudged: bool = False
 
     # The top-level `AgentSpec` for this request (same object `factory.py`
     # builds `Agent` from), stashed here so `hooks/citations.py` can grant
