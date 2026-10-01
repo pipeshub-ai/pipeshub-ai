@@ -311,7 +311,9 @@ def _graph_providers() -> list[type]:
         cls = pending.pop()
         found.append(cls)
         pending.extend(cls.__subclasses__())
-    return [cls for cls in found if not inspect.isabstract(cls)]
+    # Only backends from the application: test doubles other test modules build
+    # linger in __subclasses__() until they are garbage-collected.
+    return [cls for cls in found if not inspect.isabstract(cls) and cls.__module__.startswith("app.")]
 
 
 @pytest.mark.parametrize("method", ["get_record_path_segments", "get_record_group_path"])
