@@ -46,7 +46,7 @@
 
 </div>
 
-<h2 id="about-pipeshub">Geben Sie Ihren Agenten einen Arbeitsbereich, keinen Haufen Chunks</h2>
+<h2 id="about-pipeshub">Geben Sie Ihren KI-Agenten ein echtes Verständnis Ihres Unternehmens</h2>
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong> macht alles, was Ihr Unternehmen weiß, zu einem berechtigungsbewussten Arbeitsbereich. KI-Agenten erkunden ihn so, wie Coding-Agenten ein Repository erkunden. Sie durchsuchen ihn, wenden `grep` darauf an, gehen seine Ordner und seinen Knowledge Graph durch, lesen nur das Nötige und zitieren genau den Block, aus dem jede Antwort stammt.
 
@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Jede Quelle wird zu **Blocks** (Blöcken), einer einheitlichen Darstellung, die Tabellen, Threads und Code intakt hält und sich die genaue Seite, Zelle oder Zeile merkt, aus der jeder Block stammt. Über den Blocks liegen zwei Karten: die **Hierarchie** des Quellsystems und ein **Knowledge Graph** der Entitäten. Agenten erkunden beide mit **Tools, die Informationen schrittweise preisgeben**: Suchergebnisse zeigen zuerst Metadaten und Zusammenfassung jedes Datensatzes. Der Agent nutzt `grep`, navigiert, folgt Entitäten oder liest einen ganzen Datensatz nur, wenn er es braucht. **Jeder Tool-Aufruf wird gegen die Berechtigungen des Quellsystems geprüft**, und zwar für die Person, in deren Namen der Agent handelt.
+Jede Quelle wird zu **Blocks** (Blöcken), einer einheitlichen Darstellung, die Tabellen, Threads und Code intakt hält und sich die genaue Seite, Zelle oder Zeile merkt, aus der jeder Block stammt. Die Blocks sind auf zwei Arten geordnet: nach der **Ordnerstruktur** jedes Quellsystems und in einem **Knowledge Graph** aus Personen, Projekten und Kunden. Agenten erkunden beides mit **Tools, die Details Schritt für Schritt zeigen**: Eine Suche zeigt zuerst Name, Zusammenfassung und passende Stellen jedes Datensatzes, und der Agent geht nur tiefer (grep, Ordner durchsuchen, Entitäten folgen, den ganzen Datensatz lesen), wenn er es braucht. **Jeder Tool-Aufruf wird gegen die Berechtigungen des Quellsystems geprüft**, und zwar für die Person, in deren Namen der Agent handelt.
 
 **[Lesen Sie, wie die Kontextschicht funktioniert →](../../context-layer.md)** Dort finden Sie das Block-Format, die Hierarchie und den Graphen, jedes Agent-Tool und den Code dazu, die Durchsetzung von Berechtigungen, die Agent-Schleife und aktuelle Einschränkungen.
 
@@ -124,6 +124,7 @@ Eine Kontextschicht, viele Produkte darauf. Nutzen Sie die integrierten Apps so,
 | **Berichte, Diagramme und Dashboards** | Agenten schreiben und führen Code in einer Sandbox aus und liefern das Ergebnis als teilbares Artefakt | Integriert |
 | **Suche im Engineering-Wissen** | Code, Pull Requests und Commits aus GitHub und GitLab, verknüpft mit den zugehörigen Tickets und Dokumenten | Integriert |
 | **Eigene Apps auf Unternehmenswissen** | SDKs für Python, TypeScript und Go, „Sign in with PipesHub“, damit jeder Nutzer als er selbst sucht, und eine Upload-API für Dokumente, die kein Konnektor abdeckt | [Beispiele](https://github.com/pipeshub-ai/examples) |
+| **Rechts- und Vertrags-Apps (CLM)** | Stellen Sie Fragen zu Verträgen in Drive, SharePoint, Box oder hochgeladenen Dateien. Antworten zitieren die genaue Klausel oder Seite, und jede Person sieht nur die Verträge, die sie sehen darf. | [Headless bauen](#kann-ich-pipeshub-headless-nutzen-ohne-die-oberfläche) |
 | **Private KI, on-prem** | Alles oben Genannte, selbst gehostet, mit jedem LLM-Anbieter oder lokalen Modellen über Ollama, wobei die Daten in Ihrer Infrastruktur bleiben | [Bereitstellen](#-bereitstellungsanleitung) |
 
 ## Nutzung aus Claude Code, Cursor oder Codex
@@ -311,6 +312,21 @@ Sie möchten Teil unserer Entwickler-Community werden? In unserem [Leitfaden fü
 PipesHub ist die Open-Source-Kontextschicht für KI-Agenten. Es macht das Wissen aus den Geschäftssystemen Ihres Unternehmens zu einem berechtigungsbewussten Arbeitsbereich, den Agenten durchsuchen, mit `grep` durchforsten, navigieren und zitieren können.
 
 Es verbindet Systeme wie Slack, Google Drive, GitHub, Microsoft 365 und Notion und stellt deren Inhalte auf zwei Wegen bereit: als berechtigungsbewusste Suche mit Zitaten für Ihr Team und als vertrauenswürdigen Kontext für Ihre KI-Agenten über APIs, SDKs und MCP. Agenten erhalten dieselbe kontrollierte Sicht auf das Unternehmenswissen wie ein Mensch, mit denselben Zugriffskontrollen. So antworten sie auf Basis echter Unternehmensdaten, statt über verschiedene Tools hinweg zu raten. Sie können die integrierte Suche nutzen oder darauf Ihre eigenen Agenten, Workflows und Anwendungen bauen.
+
+### Kann ich PipesHub headless nutzen, ohne die Oberfläche?
+
+Ja. Die PipesHub-Web-App nutzt dieselbe API, die Sie auch selbst aufrufen können. Alles, was Sie in der Oberfläche tun, können Sie also auch im Code tun: Quellen verbinden, Dateien hochladen, Nutzer und Berechtigungen verwalten, suchen, chatten sowie Agenten bauen und ausführen.
+
+- **REST API:** eine [OpenAPI-Spezifikation](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) mit rund 300 Endpunkten. Sie finden sie unter `/api/v1/docs` auf Ihrer Instanz.
+- **SDKs:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) und [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
+- **MCP:** für Claude Code, Cursor, Codex und andere MCP-Clients.
+
+Wählen Sie, wie sich Ihr Code anmeldet:
+- **Personal Access Token oder OAuth:** handelt als eine Person und sieht nur, was diese Person sehen darf.
+- **Service-Account:** für Hintergrundjobs, mit eigenen Berechtigungen.
+- **OAuth-App:** lässt jeden Nutzer Ihrer App sich als er selbst anmelden („Sign in with PipesHub“).
+
+Teams nutzen das, um eigene Produkte auf PipesHub zu bauen, etwa Tools für Recht und Vertragsmanagement (CLM), Support-Konsolen und interne Agenten, ohne die PipesHub-Oberfläche zu zeigen.
 
 ### Wie unterscheidet sich PipesHub von anderen KI-Tools für den Arbeitsplatz?
 

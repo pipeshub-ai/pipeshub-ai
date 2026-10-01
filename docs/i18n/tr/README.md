@@ -46,7 +46,7 @@
 
 </div>
 
-<h2 id="about-pipeshub">Ajanlarınıza bir yığın parça değil, bir çalışma alanı verin</h2>
+<h2 id="about-pipeshub">Yapay zekâ ajanlarınıza şirketinizi gerçekten anlama yeteneği verin</h2>
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong>, şirketinizin bildiği her şeyi izinlere duyarlı bir çalışma alanına dönüştürür. Yapay zekâ ajanları bu alanı, kodlama ajanlarının bir depoyu keşfettiği gibi keşfeder. Ajanlar arama yapar, `grep` çalıştırır, klasörlerde ve bilgi grafında gezinir, yalnızca ihtiyaç duyduklarını okur ve her yanıtın geldiği bloğu tam olarak kaynak gösterir.
 
@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Her kaynak **Blocks**'a (bloklara) dönüşür: tabloları, yazışma dizilerini ve kodu bozmadan tutan, her bloğun geldiği sayfayı, hücreyi veya satırı tam olarak hatırlayan tek bir temsil. Blocks'un üzerinde iki harita bulunur: kaynak sistemin **hiyerarşisi** ve varlıklardan oluşan bir **bilgi grafı**. Ajanlar ikisini de **aşamalı olarak açılan araçlarla** keşfeder: arama sonuçları önce her kaydın meta verisini ve özetini gösterir; ajan yalnızca gerektiğinde grep çalıştırır, gezinir, varlıkları izler veya bir kaydın tamamını okur. **Her araç çağrısı, ajanın adına çalıştığı kişi için kaynak sistemin izinlerine göre denetlenir.**
+Her kaynak **Blocks**'a (bloklara) dönüşür: tabloları, yazışma dizilerini ve kodu bozmadan tutan, her bloğun geldiği sayfayı, hücreyi veya satırı tam olarak hatırlayan tek bir temsil. Blocks iki şekilde düzenlenir: her kaynak sistemin **klasör yapısına** göre ve kişilerden, projelerden ve müşterilerden oluşan bir **bilgi grafında**. Ajanlar ikisini de **ayrıntıyı adım adım gösteren araçlarla** keşfeder: bir arama önce her kaydın adını, özetini ve eşleşen bölümlerini gösterir; ajan yalnızca gerektiğinde daha derine iner (grep, klasörlerde gezinme, varlıkları izleme, kaydın tamamını okuma). **Her araç çağrısı, ajanın adına çalıştığı kişi için kaynak sistemin izinlerine göre denetlenir.**
 
 **[Bağlam katmanının nasıl çalıştığını okuyun →](../../context-layer.md)** Block biçimini, hiyerarşiyi ve grafı, her ajan aracını ve bulunduğu kodu, izin denetimini, ajan döngüsünü ve mevcut sınırlamaları anlatır.
 
@@ -124,6 +124,7 @@ Tek bağlam katmanı, üzerinde birçok ürün. Yerleşik uygulamaları olduğu 
 | **Raporlar, grafikler ve panolar** | Ajanlar korumalı alanda kod yazıp çalıştırır ve sonucu paylaşılabilir bir yapıt olarak döndürür | Yerleşik |
 | **Mühendislik bilgisi araması** | GitHub ve GitLab'den kod, pull request'ler ve commit'ler; çevrelerindeki taleplere ve belgelere bağlı olarak | Yerleşik |
 | **Şirket bilgisi üzerinde kendi uygulamalarınız** | Python, TypeScript ve Go SDK'ları, her kullanıcının kendi kimliğiyle arama yapması için "Sign in with PipesHub" ve hiçbir bağlayıcının kapsamadığı belgeler için bir yükleme API'si | [örnekler](https://github.com/pipeshub-ai/examples) |
+| **Hukuk ve sözleşme (CLM) uygulamaları** | Drive, SharePoint, Box'taki ya da yüklenen dosyalardaki sözleşmeler hakkında soru sorun. Yanıtlar tam maddeyi veya sayfayı kaynak gösterir ve herkes yalnızca görmesine izin verilen sözleşmeleri görür. | [Headless geliştirin](#pipeshubı-arayüzü-olmadan-headless-olarak-kullanabilir-miyim) |
 | **Özel, şirket içi yapay zekâ** | Yukarıdakilerin tümü; kendi sunucunuzda, herhangi bir LLM sağlayıcısıyla ya da Ollama üzerinden yerel modellerle, veriler altyapınızda kalarak | [Kurulum](#-kurulum-kılavuzu) |
 
 ## Claude Code, Cursor veya Codex'ten kullanın
@@ -311,6 +312,21 @@ Geliştirici topluluğumuza katılmak ister misiniz? Geliştirme ortamının kur
 PipesHub, yapay zekâ ajanları için açık kaynaklı bağlam katmanıdır. Şirketinizin iş sistemlerinde saklanan bilgiyi, ajanların arayabileceği, `grep` çalıştırabileceği, gezinebileceği ve kaynak gösterebileceği izinlere duyarlı bir çalışma alanına dönüştürür.
 
 Slack, Google Drive, GitHub, Microsoft 365 ve Notion gibi sistemleri bağlar ve içerdiklerini iki yolla kullanıma sunar: ekibiniz için izinlere duyarlı, kaynak gösteren arama ve API'ler, SDK'lar ve MCP aracılığıyla yapay zekâ ajanlarınız için güvenilir bağlam. Ajanlar, şirket bilgisinin bir kişinin göreceği aynı yönetilen görünümünü, aynı erişim denetimleriyle alır. Böylece araçlar arasında tahmin yürütmek yerine gerçek şirket verilerinden yanıt verebilirler. Yerleşik arama deneyimini kullanabilir ya da onun üzerine kendi ajanlarınızı, iş akışlarınızı ve uygulamalarınızı geliştirebilirsiniz.
+
+### PipesHub'ı arayüzü olmadan, headless olarak kullanabilir miyim?
+
+Evet. PipesHub web uygulaması, sizin de çağırabileceğiniz aynı API'yi kullanır. Bu yüzden arayüzde yaptığınız her şeyi kodla da yapabilirsiniz: kaynak bağlamak, dosya yüklemek, kullanıcıları ve izinleri yönetmek, arama yapmak, sohbet etmek, ajan oluşturmak ve çalıştırmak.
+
+- **REST API:** yaklaşık 300 uç noktalı bir [OpenAPI belirtimi](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml). Kendi örneğinizde `/api/v1/docs` adresinden inceleyebilirsiniz.
+- **SDK'lar:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) ve [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
+- **MCP:** Claude Code, Cursor, Codex ve diğer MCP istemcileri için.
+
+Kodunuzun nasıl oturum açacağını seçin:
+- **Personal Access Token veya OAuth:** tek bir kişi olarak çalışır ve yalnızca o kişinin görebildiğini görür.
+- **Hizmet hesabı:** arka plan işleri için, kendi izinleriyle.
+- **OAuth uygulaması:** uygulamanızın her kullanıcısının kendi kimliğiyle oturum açmasını sağlar ("Sign in with PipesHub").
+
+Ekipler bunu PipesHub üzerinde kendi ürünlerini geliştirmek için kullanır; örneğin hukuk ve sözleşme yönetimi (CLM) araçları, destek konsolları ve şirket içi ajanlar. Kullanıcılar PipesHub arayüzünü hiç görmez.
 
 ### PipesHub diğer iş yeri yapay zekâ araçlarından nasıl ayrılır?
 

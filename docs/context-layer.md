@@ -25,7 +25,7 @@ Indexing parses every file, page, message, ticket, spreadsheet and database tabl
 
 Structured (SQL, CRM), semi-structured (spreadsheets, tickets, chat) and unstructured (documents, pages) sources all end up in this one shape. Agents reason over one format instead of one per source.
 
-## 2. Two maps over the Blocks: hierarchy and knowledge graph
+## 2. How the Blocks are organized: folders and a knowledge graph
 
 **Hierarchy.** Records keep the structure of the system they came from: app → space or drive → folder → record → block. Parent/child and other typed relations (`PARENT_CHILD`, `LINKED_TO`, `BLOCKS`, `DEPENDS_ON`, `FOREIGN_KEY`, …) are graph edges.
 
@@ -37,9 +37,9 @@ Structured (SQL, CRM), semi-structured (spreadsheets, tickets, chat) and unstruc
 
 The graph is stored behind `IGraphDBProvider`, so it runs on Neo4j (default) or ArangoDB.
 
-## 3. Agent tools that disclose in stages
+## 3. Agent tools that reveal detail step by step
 
-Instead of stuffing the context window up front, PipesHub gives the agent tools and reveals detail as the agent asks for it.
+Instead of filling the agent's context with everything up front, PipesHub gives it tools and shows more detail only when the agent asks.
 
 | Tool | What it does | Code |
 | --- | --- | --- |
@@ -50,7 +50,7 @@ Instead of stuffing the context window up front, PipesHub gives the agent tools 
 | `search_entities`, `find_records_by_entity` | Finds a person, project or customer, then every record that mentions them. | `agents/actions/knowledge_graph/` |
 | `fetch_full_record` | Reads a whole record in pages (`start_block`, `max_blocks`). | `agents/actions/knowledge_graph/ops/fetch.py` |
 
-The disclosure order works like this:
+The order works like this:
 
 1. **Search results lead with metadata.** Each hit shows the record's ID, name, source, type, dates, location breadcrumb, link, summary and topics, then the matching blocks in document order.
 2. **The full-record tool appears only once it is useful.** A post-tool hook (`agents/agent_loop/hooks/citations.py`) registers `fetch_full_record` once the agent holds record IDs.

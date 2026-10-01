@@ -46,7 +46,7 @@
 
 </div>
 
-<h2 id="about-pipeshub">Dale a tus agentes un espacio de trabajo, no un montón de fragmentos</h2>
+<h2 id="about-pipeshub">Dale a tus agentes de IA una comprensión real de tu empresa</h2>
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong> convierte todo lo que sabe tu empresa en un espacio de trabajo que respeta los permisos. Los agentes de IA lo exploran igual que los agentes de código exploran un repositorio. Lo buscan, le aplican `grep`, recorren sus carpetas y su grafo de conocimiento, leen solo lo que necesitan y citan el bloque exacto del que sale cada respuesta.
 
@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Cada fuente se convierte en **Blocks** (bloques), una representación única que mantiene intactos las tablas, los hilos y el código, y recuerda la página, la celda o la línea exacta de la que sale cada bloque. Sobre los Blocks hay dos mapas: la **jerarquía** del sistema de origen y un **grafo de conocimiento** de entidades. Los agentes exploran ambos con **herramientas que revelan la información por etapas**: los resultados de búsqueda muestran primero los metadatos y el resumen de cada registro. El agente solo usa `grep`, navega, sigue entidades o lee un registro completo cuando lo necesita. **Cada llamada a una herramienta se comprueba contra los permisos del sistema de origen** para la persona en cuyo nombre actúa el agente.
+Cada fuente se convierte en **Blocks** (bloques), una representación única que mantiene intactos las tablas, los hilos y el código, y recuerda la página, la celda o la línea exacta de la que sale cada bloque. Los Blocks se organizan de dos formas: según la **estructura de carpetas** de cada sistema de origen y en un **grafo de conocimiento** de personas, proyectos y clientes. Los agentes exploran ambos con **herramientas que muestran el detalle paso a paso**: una búsqueda muestra primero el nombre, el resumen y los fragmentos coincidentes de cada registro, y el agente solo profundiza (grep, recorrer carpetas, seguir entidades, leer el registro completo) cuando lo necesita. **Cada llamada a una herramienta se comprueba contra los permisos del sistema de origen** para la persona en cuyo nombre actúa el agente.
 
 **[Lee cómo funciona la capa de contexto →](../../context-layer.md)** Cubre el formato de Blocks, la jerarquía y el grafo, cada herramienta del agente y el código donde vive, la aplicación de permisos, el bucle del agente y las limitaciones actuales.
 
@@ -124,6 +124,7 @@ Una capa de contexto, muchos productos encima. Usa las aplicaciones integradas t
 | **Informes, gráficos y paneles** | Los agentes escriben y ejecutan código en un sandbox y devuelven el resultado como un artefacto que se puede compartir | Integrado |
 | **Búsqueda en el conocimiento de ingeniería** | Código, pull requests y commits de GitHub y GitLab, enlazados con los tickets y documentos que los rodean | Integrado |
 | **Tus propias apps sobre el conocimiento de la empresa** | SDK de Python, TypeScript y Go, «Sign in with PipesHub» para que cada usuario busque con su propia identidad, y una API de subida para documentos que ningún conector cubre | [ejemplos](https://github.com/pipeshub-ai/examples) |
+| **Apps legales y de contratos (CLM)** | Haz preguntas sobre contratos en Drive, SharePoint, Box o archivos subidos. Las respuestas citan la cláusula o la página exacta, y cada persona solo ve los contratos a los que tiene acceso. | [Construir en headless](#puedo-usar-pipeshub-en-modo-headless-sin-su-interfaz) |
 | **IA privada, on-premise** | Todo lo anterior, autoalojado, con cualquier proveedor de LLM o modelos locales mediante Ollama, y con los datos dentro de tu infraestructura | [Desplegar](#-guía-de-despliegue) |
 
 ## Úsalo desde Claude Code, Cursor o Codex
@@ -311,6 +312,21 @@ PipesHub ofrece SDK para desarrolladores en Python, TypeScript y Go para que int
 PipesHub es la capa de contexto de código abierto para agentes de IA. Convierte el conocimiento repartido por los sistemas de negocio de tu empresa en un espacio de trabajo que respeta los permisos y que los agentes pueden buscar, recorrer con `grep`, navegar y citar.
 
 Conecta sistemas como Slack, Google Drive, GitHub, Microsoft 365 y Notion, y pone su contenido a tu disposición de dos formas: una búsqueda con citas que respeta los permisos para tu equipo, y un contexto fiable para tus agentes de IA mediante API, SDK y MCP. Los agentes obtienen la misma vista controlada del conocimiento de la empresa que tendría una persona, con los mismos controles de acceso. Así responden con datos reales de la empresa en lugar de adivinar entre herramientas. Puedes usar la búsqueda integrada o construir encima tus propios agentes, flujos de trabajo y aplicaciones.
+
+### ¿Puedo usar PipesHub en modo headless, sin su interfaz?
+
+Sí. La aplicación web de PipesHub usa la misma API que puedes llamar tú mismo, así que todo lo que haces en la interfaz también puedes hacerlo desde código: conectar fuentes, subir archivos, gestionar usuarios y permisos, buscar, chatear, y crear y ejecutar agentes.
+
+- **API REST:** una [especificación OpenAPI](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) con unos 300 endpoints. Consúltala en `/api/v1/docs` de tu instancia.
+- **SDK:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) y [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
+- **MCP:** para Claude Code, Cursor, Codex y otros clientes MCP.
+
+Elige cómo inicia sesión tu código:
+- **Personal Access Token u OAuth:** actúa como una persona y solo ve lo que esa persona puede ver.
+- **Cuenta de servicio:** para tareas en segundo plano, con sus propios permisos.
+- **App OAuth:** permite que cada usuario de tu app inicie sesión con su propia identidad («Sign in with PipesHub»).
+
+Los equipos lo usan para construir sus propios productos sobre PipesHub, como herramientas legales y de gestión de contratos (CLM), consolas de soporte y agentes internos, sin mostrar la interfaz de PipesHub.
 
 ### ¿En qué se diferencia PipesHub de otras herramientas de IA para el trabajo?
 

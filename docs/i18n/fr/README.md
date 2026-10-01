@@ -46,7 +46,7 @@
 
 </div>
 
-<h2 id="about-pipeshub">Donnez à vos agents un espace de travail, pas un tas de fragments</h2>
+<h2 id="about-pipeshub">Donnez à vos agents IA une vraie compréhension de votre entreprise</h2>
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong> transforme tout ce que sait votre entreprise en un espace de travail qui respecte les permissions. Les agents IA l'explorent comme les agents de code explorent un dépôt. Ils y cherchent, y lancent `grep`, parcourent ses dossiers et son graphe de connaissances, ne lisent que ce dont ils ont besoin et citent le bloc exact d'où vient chaque réponse.
 
@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Chaque source devient des **Blocks** (des blocs), une représentation unique qui garde intacts les tableaux, les fils de discussion et le code, et qui retient la page, la cellule ou la ligne exacte d'où vient chaque bloc. Deux cartes se superposent aux Blocks : la **hiérarchie** du système source et un **graphe de connaissances** des entités. Les agents explorent les deux avec des **outils qui révèlent l'information par étapes** : les résultats de recherche affichent d'abord les métadonnées et le résumé de chaque enregistrement. L'agent ne lance `grep`, ne navigue, ne suit des entités ou ne lit un enregistrement complet que s'il en a besoin. **Chaque appel d'outil est vérifié par rapport aux permissions du système source** pour la personne au nom de laquelle l'agent agit.
+Chaque source devient des **Blocks** (des blocs), une représentation unique qui garde intacts les tableaux, les fils de discussion et le code, et qui retient la page, la cellule ou la ligne exacte d'où vient chaque bloc. Les Blocks sont organisés de deux façons : selon la **structure de dossiers** de chaque système source, et dans un **graphe de connaissances** des personnes, des projets et des clients. Les agents explorent les deux avec des **outils qui révèlent le détail étape par étape** : une recherche affiche d'abord le nom, le résumé et les passages correspondants de chaque enregistrement, et l'agent ne creuse davantage (grep, parcours des dossiers, suivi des entités, lecture de l'enregistrement complet) que s'il en a besoin. **Chaque appel d'outil est vérifié par rapport aux permissions du système source** pour la personne au nom de laquelle l'agent agit.
 
 **[Découvrez comment fonctionne la couche de contexte →](../../context-layer.md)** Ce document couvre le format des Blocks, la hiérarchie et le graphe, chaque outil d'agent et le code qui l'implémente, l'application des permissions, la boucle d'agent et les limites actuelles.
 
@@ -124,6 +124,7 @@ Une seule couche de contexte, de nombreux produits par-dessus. Utilisez les appl
 | **Rapports, graphiques et tableaux de bord** | Les agents écrivent et exécutent du code dans un bac à sable et renvoient le résultat sous forme d'artefact partageable | Intégré |
 | **Recherche dans les connaissances d'ingénierie** | Code, pull requests et commits de GitHub et GitLab, reliés aux tickets et documents qui les entourent | Intégré |
 | **Vos propres applications sur les connaissances de l'entreprise** | Des SDK Python, TypeScript et Go, « Sign in with PipesHub » pour que chaque utilisateur cherche avec sa propre identité, et une API d'upload pour les documents qu'aucun connecteur ne couvre | [exemples](https://github.com/pipeshub-ai/examples) |
+| **Applications juridiques et de contrats (CLM)** | Posez des questions sur vos contrats dans Drive, SharePoint, Box ou des fichiers importés. Les réponses citent la clause ou la page exacte, et chacun ne voit que les contrats auxquels il a accès. | [Construire en headless](#puis-je-utiliser-pipeshub-en-mode-headless-sans-son-interface-) |
 | **IA privée, sur site** | Tout ce qui précède, auto-hébergé, avec n'importe quel fournisseur de LLM ou des modèles locaux via Ollama, et des données qui restent dans votre infrastructure | [Déployer](#-guide-de-déploiement) |
 
 ## Utilisez-le depuis Claude Code, Cursor ou Codex
@@ -311,6 +312,21 @@ Vous voulez rejoindre notre communauté de développeurs ? Consultez notre [guid
 PipesHub est la couche de contexte open source pour les agents IA. Il transforme les connaissances réparties dans les systèmes métier de votre entreprise en un espace de travail qui respecte les permissions, que les agents peuvent interroger, parcourir avec `grep`, explorer et citer.
 
 Il connecte des systèmes comme Slack, Google Drive, GitHub, Microsoft 365 et Notion, puis rend leur contenu disponible de deux façons : une recherche avec citations qui respecte les permissions pour votre équipe, et un contexte fiable pour vos agents IA via des API, des SDK et MCP. Les agents ont la même vue encadrée des connaissances de l'entreprise qu'une personne, avec les mêmes contrôles d'accès. Ils répondent donc à partir de vraies données d'entreprise au lieu de deviner d'un outil à l'autre. Vous pouvez utiliser l'expérience de recherche intégrée, ou construire vos propres agents, workflows et applications par-dessus.
+
+### Puis-je utiliser PipesHub en mode headless, sans son interface ?
+
+Oui. L'application web de PipesHub utilise la même API que vous pouvez appeler vous-même. Tout ce que vous faites dans l'interface, vous pouvez donc aussi le faire dans votre code : connecter des sources, importer des fichiers, gérer les utilisateurs et les permissions, rechercher, discuter, et construire et exécuter des agents.
+
+- **API REST :** une [spécification OpenAPI](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) d'environ 300 endpoints. Consultez-la à l'adresse `/api/v1/docs` sur votre instance.
+- **SDK :** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) et [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
+- **MCP :** pour Claude Code, Cursor, Codex et les autres clients MCP.
+
+Choisissez comment votre code se connecte :
+- **Personal Access Token ou OAuth :** agit au nom d'une personne et ne voit que ce qu'elle a le droit de voir.
+- **Compte de service :** pour les tâches en arrière-plan, avec ses propres permissions.
+- **Application OAuth :** permet à chaque utilisateur de votre application de se connecter avec sa propre identité (« Sign in with PipesHub »).
+
+Des équipes s'en servent pour construire leurs propres produits sur PipesHub, comme des outils juridiques et de gestion des contrats (CLM), des consoles de support et des agents internes, sans afficher l'interface de PipesHub.
 
 ### En quoi PipesHub diffère-t-il des autres outils d'IA pour le travail ?
 

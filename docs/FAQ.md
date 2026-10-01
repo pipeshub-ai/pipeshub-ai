@@ -6,6 +6,21 @@ PipesHub is the open-source context layer for AI agents. It turns the knowledge 
 
 It connects systems such as Slack, Google Drive, GitHub, Microsoft 365 and Notion, then makes what they hold available in two ways: permission-aware search with citations for your team, and trusted context for your AI agents through APIs, SDKs and MCP. Agents get the same governed view of your company's knowledge that a person would, with the same access controls applied, so they can answer from real company data instead of guessing across tools. You can use the built-in search experience, or build your own agents, workflows and applications on top of it.
 
+## Can I use PipesHub headless, without its UI?
+
+Yes. The PipesHub web app uses the same API you can call yourself, so anything you do in the UI you can also do in code: connect sources, upload files, manage users and permissions, search, chat, and build and run agents.
+
+- **REST API:** an [OpenAPI spec](../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) with about 300 endpoints. Browse it at `/api/v1/docs` on your instance.
+- **SDKs:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) and [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
+- **MCP:** for Claude Code, Cursor, Codex and other MCP clients.
+
+Choose how your code signs in:
+- **Personal access token or OAuth:** acts as one person and sees only what that person can see.
+- **Service account:** for background jobs, with its own permissions.
+- **OAuth app:** lets each user of your app sign in as themselves ("Sign in with PipesHub").
+
+Teams use this to build their own products on PipesHub, such as legal and contract-management (CLM) tools, support consoles and internal agents, without showing the PipesHub UI.
+
 ## How is PipesHub different from other workplace AI tools?
 
 Most tools hand an AI model a few retrieved text chunks. PipesHub gives agents tools to explore your company's knowledge the way a coding agent explores a repository: hybrid search, `grep` over records, folder navigation and knowledge-graph lookups, each checked against the requesting user's permissions in the source system. Every source becomes Blocks, so answers cite the exact page, table cell, row or slide. It is fully open source (Apache 2.0) and self-hostable, so your data never leaves your infrastructure. See [Why a context layer?](../README.md#why-a-context-layer)
