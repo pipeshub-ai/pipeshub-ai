@@ -43,6 +43,12 @@ NEIGHBOUR_SPAN = 1
 # relevant block.
 DEFAULT_HIT_LIMIT = 60
 
+# A record read from its start keeps its opening blocks whatever the ranking
+# says: the lead paragraph and leading key-value rows are short, dense, and the
+# first place a reader checks. Bounded so relevance still gets most of the room.
+OPENING_SHARE = 0.15
+OPENING_MAX_CHARS = 8_000
+
 # Rough cost of a block whose text cannot be measured (an image, a group whose
 # content is assembled at render time). Deliberately not zero: assuming free
 # is how a selection overruns its budget.
@@ -218,12 +224,14 @@ async def select_relevant_blocks(
         if isinstance(b, dict)
     }
 
+    room = budget.chars_remaining
+    selected, spent = _opening_blocks(
+        available, by_index, room=min(int(room * OPENING_SHARE), OPENING_MAX_CHARS),
+    )
+
     # Admit whole neighbourhoods, best first, until the next one would not fit.
     # A region not touching what is already selected also costs the gap marker
     # the render puts in front of it.
-    selected: set[int] = set()
-    spent = 0
-    room = budget.chars_remaining
     for group in _widen(hits, available, neighbour_span):
         fresh = [i for i in group if i not in selected]
         if not fresh:
@@ -236,7 +244,7 @@ async def select_relevant_blocks(
         selected.update(fresh)
         spent += cost
 
-    if not selected:
+    if not selected.intersection(hits):
         # Even the best neighbourhood does not fit; let the positional path
         # render what it can rather than returning an empty record.
         return None
@@ -252,6 +260,25 @@ async def select_relevant_blocks(
     # slice elsewhere.
     spent = _grow_selection(selected, available, by_index, room=room, spent=spent)
     return selected
+
+
+def _opening_blocks(
+    available: list[int], by_index: dict[int, dict[str, Any]], *, room: int,
+) -> tuple[set[int], int]:
+    """The record's leading blocks, in order, up to `room` characters.
+
+    Stops at the first block that does not fit rather than skipping it, so the
+    opening stays contiguous.
+    """
+    selected: set[int] = set()
+    spent = 0
+    for index in available:
+        cost = _render_cost(by_index.get(index, {}))
+        if spent + cost > room:
+            break
+        selected.add(index)
+        spent += cost
+    return selected, spent
 
 
 def _grow_selection(
@@ -334,6 +361,8 @@ __all__ = [
     "DEFAULT_HIT_LIMIT",
     "GAP_MARKER_CHARS",
     "NEIGHBOUR_SPAN",
+    "OPENING_MAX_CHARS",
+    "OPENING_SHARE",
     "build_selection_query",
     "describe_gaps",
     "estimate_block_chars",

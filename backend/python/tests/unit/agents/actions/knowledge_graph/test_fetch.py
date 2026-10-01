@@ -728,6 +728,30 @@ class TestSeveralRecordsInOneCall:
         assert not {key.virtual_record_id for key in manifest.blocks} & unread
 
 
+class TestOpeningOfACutRecord:
+    """Two records read from block 0 split the room, and relevance selection
+    kept only the late blocks it ranked, dropping each record's opening."""
+
+    @pytest.mark.asyncio
+    async def test_each_cut_record_still_shows_its_first_blocks(self) -> None:
+        records = [_text_record(f"big{i}", blocks=536) for i in range(2)]
+        retrieval = MagicMock()
+        retrieval.search_with_filters = AsyncMock(side_effect=lambda **kw: {"searchResults": [
+            {"metadata": {"virtualRecordId": vrid, "blockIndex": 400}}
+            for vrid in kw["virtual_record_ids_from_tool"]
+        ]})
+
+        text, context = await _fetch_records(records, retrieval=retrieval)
+
+        for record in records:
+            ledger = context.tool_state["fetch_render_outcomes"][record["id"]][-1]
+            assert f"{record['id']} block 0 " in text
+            assert f"{record['id']} block 400 " in text
+            assert {0, 1, 400} <= set(ledger["shownBlocks"])
+            assert ledger["complete"] is False
+            assert record["id"] not in context.full_records_fetched
+
+
 class TestContinuingARecord:
     """`start_block` is a continuation pointer the model was handed. Ranking
     the whole record again returned the same leading blocks, so the tail of
