@@ -9859,9 +9859,10 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (user)-[:PERMISSION]->(group2)
             WHERE group2:Group OR group2:Role
             OPTIONAL MATCH (group2)-[g_to_rg:PERMISSION]->(rg:RecordGroup)
-            OPTIONAL MATCH (record)-[:INHERIT_PERMISSIONS]->(rg)
+            OPTIONAL MATCH inherits = (record)-[:INHERIT_PERMISSIONS]->(rg)
+            // A missed OPTIONAL MATCH keeps the edge bound; only a group this record inherits from counts.
             WITH user, record, direct_permission, group_permission,
-                 head(collect(g_to_rg.role)) AS record_group_permission
+                 head(collect(CASE WHEN inherits IS NOT NULL THEN g_to_rg.role END)) AS record_group_permission
 
             // 2.6 Check nested record group permissions (0-5 levels)
             OPTIONAL MATCH (user)-[:PERMISSION]->(group3)
@@ -9869,14 +9870,14 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (group3)-[nested_perm:PERMISSION]->(rgNested:RecordGroup)
             OPTIONAL MATCH path = (record)-[:INHERIT_PERMISSIONS*0..5]->(rgNested)
             WITH user, record, direct_permission, group_permission, record_group_permission,
-                 head(collect(nested_perm.role)) AS nested_record_group_permission
+                 head(collect(CASE WHEN path IS NOT NULL THEN nested_perm.role END)) AS nested_record_group_permission
 
             // 2.7 Check direct user -> record_group permissions (with nesting)
             OPTIONAL MATCH (user)-[user_to_rg:PERMISSION]->(rgDirect:RecordGroup)
             OPTIONAL MATCH path2 = (record)-[:INHERIT_PERMISSIONS*0..5]->(rgDirect)
             WITH user, record, direct_permission, group_permission, record_group_permission,
                  nested_record_group_permission,
-                 head(collect(user_to_rg.role)) AS direct_user_record_group_permission
+                 head(collect(CASE WHEN path2 IS NOT NULL THEN user_to_rg.role END)) AS direct_user_record_group_permission
 
             // 2.8 Check inherited recordGroup permissions (record -> recordGroup hierarchy backwards)
             OPTIONAL MATCH path3 = (record)-[:INHERIT_PERMISSIONS*0..5]->(inheritedRg:RecordGroup)
@@ -9914,7 +9915,7 @@ class Neo4jProvider(IGraphDBProvider):
                  nested_record_group_permission, direct_user_record_group_permission,
                  inherited_record_group_permission, group_inherited_record_group_permission,
                  org_permission, record,
-                 head(collect(org_to_rg.role)) AS org_record_group_permission,
+                 head(collect(CASE WHEN path5 IS NOT NULL THEN org_to_rg.role END)) AS org_record_group_permission,
                  $check_drive_inheritance AS check_drive_inheritance,
                  $user_key AS user_key
 

@@ -106,6 +106,7 @@ async def _remove_test_data(env: _Env) -> None:
         CollectionNames.PERMISSION.value,
         CollectionNames.BELONGS_TO.value,
         CollectionNames.USER_APP_RELATION.value,
+        CollectionNames.INHERIT_PERMISSIONS.value,
     ):
         await graph.http_client.execute_aql(
             f"FOR e IN {edges} FILTER CONTAINS(e._from, @s) OR CONTAINS(e._to, @s) REMOVE e IN {edges}",
@@ -323,3 +324,52 @@ async def test_the_container_filter_follows_org_shares_only(env: _Env) -> None:
     direct = set(containers.direct_records) | set(containers.direct_records.values())
     assert env.records["org"][0] in direct, "a record shared with the whole org must be searchable"
     assert env.records["domain"][0] not in direct, "a domain-typed org edge must not open a record"
+
+
+async def _inherit_from(env: _Env, record_id: str, group_id: str) -> None:
+    await env.graph.batch_create_edges(
+        [_edge(record_id, CollectionNames.RECORDS.value, group_id, CollectionNames.RECORD_GROUPS.value)],
+        collection=CollectionNames.INHERIT_PERMISSIONS.value,
+    )
+
+
+async def test_a_shared_record_group_grants_only_the_records_inside_it(env: _Env) -> None:
+    """A role on a record group reaches the records that inherit from it, and no others."""
+    org_group = await _add_record_group(env, "org")
+    inside = await _add_record(env, "inside-org-group")
+    outside = await _add_record(env, "outside")
+    await _inherit_from(env, inside, org_group)
+
+    granted = await env.graph._check_record_permissions(inside, env.user_key)
+    refused = await env.graph._check_record_permissions(outside, env.user_key)
+
+    assert granted.get("permission") == "READER", f"a record in an org-shared group must open, got {granted}"
+    assert refused.get("permission") is None, f"an org-shared group must not open a record outside it, got {refused}"
+
+
+async def test_a_users_record_group_role_grants_only_the_records_inside_it(env: _Env) -> None:
+    now = get_epoch_timestamp_in_ms()
+    group_id = f"rg-user-{env.suffix}"
+    await env.graph.batch_upsert_nodes(
+        [{
+            "id": group_id, "groupName": "user group", "externalGroupId": f"ext-{group_id}",
+            "groupType": "PROJECT", "connectorName": "WEB", "connectorId": env.connector_id,
+            "orgId": env.org_id, "createdAtTimestamp": now, "updatedAtTimestamp": now,
+        }],
+        collection=CollectionNames.RECORD_GROUPS.value,
+    )
+    env.record_group_ids.append(group_id)
+    await env.graph.batch_create_edges(
+        [_edge(env.user_key, CollectionNames.USERS.value, group_id, CollectionNames.RECORD_GROUPS.value,
+               type="USER", role="WRITER")],
+        collection=CollectionNames.PERMISSION.value,
+    )
+    inside = await _add_record(env, "inside-user-group")
+    outside = await _add_record(env, "outside-user-group")
+    await _inherit_from(env, inside, group_id)
+
+    granted = await env.graph._check_record_permissions(inside, env.user_key)
+    refused = await env.graph._check_record_permissions(outside, env.user_key)
+
+    assert granted.get("permission") == "WRITER", f"a record in the user's group must open, got {granted}"
+    assert refused.get("permission") is None, f"the user's group must not open a record outside it, got {refused}"
