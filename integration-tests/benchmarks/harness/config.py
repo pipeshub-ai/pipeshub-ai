@@ -132,6 +132,10 @@ class PipesHubConfig(_Frozen):
     min_indexed_ratio: float = Field(default=0.99, ge=0, le=1)
     upload_batch_size: int = Field(default=50, ge=1, le=1000)
     search_limit: int = Field(default=100, ge=1, le=100)
+    # The workspace "Custom Instructions" for search mode, appended to
+    # PipesHub's prompt. Setup writes exactly this (None clears it), so a value
+    # left in the UI never reaches a run that doesn't record it.
+    custom_instructions: str | None = None
 
 
 class SystemConfig(_Frozen):

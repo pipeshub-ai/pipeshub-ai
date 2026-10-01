@@ -32,6 +32,7 @@ BENCHMARK_FEATURE_FLAGS: Mapping[str, bool] = {"ENABLE_USER_CONTEXT": False}
 _HEALTH_PATHS = ("/api/v1/health", "/api/v1/health/services")
 _SETTINGS_PATH = "/api/v1/configurationManager/platform/settings"
 _EMBEDDING_PATH = "/api/v1/configurationManager/ai-models/embedding"
+_PROMPTS_PATH = "/api/v1/configurationManager/prompts/system"
 
 
 def wait_until_healthy(
@@ -115,7 +116,22 @@ def ensure_embedding(session: UserSession, selector: EmbeddingSelector, credenti
     logger.info("registered embedding %s:%s as %s", seeded.provider, seeded.model_name, seeded.model_key)
 
 
-def setup_pipeshub(base_url: str, selector: EmbeddingSelector, credentials: Credentials) -> None:
+def apply_custom_instructions(session: UserSession, text: str | None) -> None:
+    """Search mode's custom instructions are exactly `text`; the other modes'
+    are left as they are."""
+    response = session.request("GET", _PROMPTS_PATH)
+    if response.status_code >= 400:
+        raise ConfigError(f"reading custom instructions failed: HTTP {response.status_code}")
+    prompts = {**(response.json() or {}), "customSystemPrompt": text or ""}
+    response = session.request("PUT", _PROMPTS_PATH, json=prompts)
+    if response.status_code >= 400:
+        raise ConfigError(f"setting custom instructions failed: HTTP {response.status_code}")
+    logger.info("search-mode custom instructions: %s", repr(text) if text else "none")
+
+
+def setup_pipeshub(
+    base_url: str, selector: EmbeddingSelector, credentials: Credentials, *, custom_instructions: str | None = None,
+) -> None:
     if not credentials.user_email or not credentials.user_password:
         raise ConfigError("PIPESHUB_TEST_USER_EMAIL and PIPESHUB_TEST_USER_PASSWORD must be set")
     wait_until_healthy(base_url)
@@ -125,4 +141,5 @@ def setup_pipeshub(base_url: str, selector: EmbeddingSelector, credentials: Cred
     if response.status_code >= 400:
         raise ConfigError(f"marking onboarding done failed: HTTP {response.status_code}")
     apply_feature_flags(session, BENCHMARK_FEATURE_FLAGS)
+    apply_custom_instructions(session, custom_instructions)
     ensure_embedding(session, selector, credentials)

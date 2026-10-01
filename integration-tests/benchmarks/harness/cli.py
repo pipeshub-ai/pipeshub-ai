@@ -177,7 +177,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Before Services: its session logs in, and the org may not exist yet.
             from benchmarks.harness.systems.pipeshub.setup import setup_pipeshub
 
-            setup_pipeshub(config.pipeshub.base_url, config.embedding, Credentials.from_env())
+            setup_pipeshub(
+                config.pipeshub.base_url, config.embedding, Credentials.from_env(),
+                custom_instructions=config.pipeshub.custom_instructions,
+            )
         services = Services(config, Credentials.from_env(), dataset_path=args.dataset_path)
         if args.command in ("seed-models", "setup-pipeshub"):
             return _seed_models(config, services)

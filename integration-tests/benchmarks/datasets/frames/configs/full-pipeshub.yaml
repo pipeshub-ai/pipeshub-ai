@@ -23,6 +23,10 @@ pipeshub:
   # Every gold article, and all but ~12 of ~12.5k articles, must reach Qdrant.
   min_gold_indexed_ratio: 1.0
   min_indexed_ratio: 0.999
+  # The workspace "Custom Instructions" setting, which any admin can set for
+  # search mode. Added after hand review found 13 answers that filled one
+  # linking fact from the model's memory; setup-pipeshub writes it.
+  custom_instructions: "DO NOT ANSWER QUESTIONS FROM YOUR TRAINING MEMORY"
 answerer:
   model: gpt-5.6-luna
   provider: azureOpenAI

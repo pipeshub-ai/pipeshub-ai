@@ -93,6 +93,28 @@ class TestFeatureFlags:
         assert setup.BENCHMARK_FEATURE_FLAGS == {"ENABLE_USER_CONTEXT": False}
 
 
+class TestCustomInstructions:
+    _SAVED = {"customSystemPrompt": "left in the UI", "customSystemPromptWebSearch": "", "customSystemPromptAgent": "agent text"}
+
+    def _apply(self, text: str | None) -> dict[str, Any]:
+        def handler(method: str, _path: str, _kwargs: dict[str, Any]) -> _Response:
+            return _Response(200, dict(self._SAVED) if method == "GET" else {})
+
+        session = FakeSession(handler)
+        setup.apply_custom_instructions(session, text)
+        (method, path, kwargs) = session.calls[-1]
+        assert (method, path) == ("PUT", "/api/v1/configurationManager/prompts/system")
+        return kwargs["json"]
+
+    def test_search_mode_gets_exactly_the_configured_text_and_other_modes_are_kept(self) -> None:
+        sent = self._apply("Answer only from the knowledge base.")
+
+        assert sent == {**self._SAVED, "customSystemPrompt": "Answer only from the knowledge base."}
+
+    def test_a_run_that_names_none_clears_what_was_left_in_the_ui(self) -> None:
+        assert self._apply(None)["customSystemPrompt"] == ""
+
+
 class TestEnsureEmbedding:
     def test_registers_the_configured_model_when_none_exists(self, monkeypatch: pytest.MonkeyPatch) -> None:
         registered: list[dict[str, Any]] = []
