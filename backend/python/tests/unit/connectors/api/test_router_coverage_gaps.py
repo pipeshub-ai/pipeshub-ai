@@ -833,7 +833,7 @@ class TestGetConnectorInstanceConfigGaps:
         registry = AsyncMock()
         registry.get_connector_instance = AsyncMock(return_value={
             "type": "GOOGLE_DRIVE", "name": "My Drive", "scope": "personal",
-            "createdBy": "u1", "authType": "OAUTH",
+            "createdBy": "user-1", "authType": "OAUTH",
         })
         config_service = MagicMock()
         config_service.get_config = AsyncMock(side_effect=RuntimeError("not found"))
@@ -855,7 +855,7 @@ class TestGetConnectorInstanceConfigGaps:
         registry = AsyncMock()
         registry.get_connector_instance = AsyncMock(return_value={
             "type": "GOOGLE_DRIVE", "name": "My Drive", "scope": "personal",
-            "createdBy": "u1", "authType": "OAUTH",
+            "createdBy": "user-1", "authType": "OAUTH",
         })
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value={

@@ -4410,6 +4410,15 @@ async def get_connector_instance_config(
                 detail=not_found("This connector")
             )
 
+        # The config carries the owner's credentials, so being able to see a personal
+        # connector (as a share recipient can, in the enterprise edition) is not enough to read it.
+        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.warning(f"Config read refused for personal connector {connector_id}: caller is not its creator")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the person who created this connector can view its configuration",
+            )
+
         connector_type = instance.get("type", "")
         await check_beta_connector_access(connector_type, request)
 
