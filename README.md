@@ -42,7 +42,7 @@
 
 </div>
 
-<h2 id="about-pipeshub">Give your agents a workspace, not a pile of chunks</h2>
+<h2 id="about-pipeshub">Give your AI agents a real understanding of your company</h2>
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong> turns everything your company knows into a permission-aware workspace that AI agents explore the way coding agents explore a repository. Agents search it, `grep` it, walk its folders and knowledge graph, read only what they need, and cite the exact block each answer came from.
 
@@ -99,7 +99,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Every source becomes **Blocks**, one representation that keeps tables, threads and code intact and remembers the exact page, cell or line each block came from. Two maps sit over the Blocks: the **hierarchy** of the source system and a **knowledge graph** of entities. Agents explore both with **tools that disclose in stages**: search results lead with each record's metadata and summary, and the agent greps, navigates, follows entities or reads a full record only when it needs to. **Every tool call is checked against the source system's permissions** for the person the agent acts for.
+Every source becomes **Blocks**, one representation that keeps tables, threads and code intact and remembers the exact page, cell or line each block came from. The Blocks are organized two ways: by the **folder structure** of each source system, and in a **knowledge graph** of people, projects and customers. Agents explore both with **tools that reveal detail step by step**: a search first shows each record's name, summary and matching passages, and the agent digs deeper (grep, browse folders, follow entities, read the full record) only when it needs to. **Every tool call is checked against the source system's permissions** for the person the agent acts for.
 
 **[Read how the context layer works →](docs/context-layer.md)** It covers the Block format, the hierarchy and graph, every agent tool and the code it lives in, permission enforcement, the agent loop, and current limitations.
 
@@ -120,6 +120,7 @@ One context layer, many products on top of it. Use the built-in apps as they are
 | **Reports, charts and dashboards** | Agents write and run code in a sandbox and return the result as a shareable artifact | Built in |
 | **Engineering knowledge search** | Code, pull requests and commits from GitHub and GitLab, linked to the tickets and docs around them | Built in |
 | **Your own apps on company knowledge** | Python, TypeScript and Go SDKs, "Sign in with PipesHub" so each user searches as themselves, and an upload API for documents no connector covers | [examples](https://github.com/pipeshub-ai/examples) |
+| **Legal and contract (CLM) apps** | Ask questions across contracts in Drive, SharePoint, Box or uploaded files. Answers cite the exact clause or page, and each person sees only the contracts they're allowed to. | [Build headless](#can-i-use-pipeshub-headless-without-its-ui) |
 | **Private, on-prem AI** | Everything above, self-hosted, on any LLM provider or local models via Ollama, with data kept in your infrastructure | [Deploy](#-deployment-guide) |
 
 ## Use it from Claude Code, Cursor or Codex
@@ -307,6 +308,21 @@ Want to join our community of developers? Please check out our [Contributing Gui
 PipesHub is the open-source context layer for AI agents. It turns the knowledge stored across your company's business systems into a permission-aware workspace that agents can search, `grep`, navigate and cite.
 
 It connects systems such as Slack, Google Drive, GitHub, Microsoft 365 and Notion, then makes what they hold available in two ways: permission-aware search with citations for your team, and trusted context for your AI agents through APIs, SDKs and MCP. Agents get the same governed view of your company's knowledge that a person would, with the same access controls applied, so they can answer from real company data instead of guessing across tools. You can use the built-in search experience, or build your own agents, workflows and applications on top of it.
+
+### Can I use PipesHub headless, without its UI?
+
+Yes. The PipesHub web app uses the same API you can call yourself, so anything you do in the UI you can also do in code: connect sources, upload files, manage users and permissions, search, chat, and build and run agents.
+
+- **REST API:** an [OpenAPI spec](backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) with about 300 endpoints. Browse it at `/api/v1/docs` on your instance.
+- **SDKs:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) and [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
+- **MCP:** for Claude Code, Cursor, Codex and other MCP clients.
+
+Choose how your code signs in:
+- **Personal access token or OAuth:** acts as one person and sees only what that person can see.
+- **Service account:** for background jobs, with its own permissions.
+- **OAuth app:** lets each user of your app sign in as themselves ("Sign in with PipesHub").
+
+Teams use this to build their own products on PipesHub, such as legal and contract-management (CLM) tools, support consoles and internal agents, without showing the PipesHub UI.
 
 ### How is PipesHub different from other workplace AI tools?
 

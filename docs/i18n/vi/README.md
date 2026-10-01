@@ -46,7 +46,7 @@
 
 </div>
 
-<h2 id="about-pipeshub">Trao cho tác nhân một không gian làm việc, không phải một đống đoạn văn rời rạc</h2>
+<h2 id="about-pipeshub">Giúp tác nhân AI của bạn thực sự hiểu công ty của bạn</h2>
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong> biến mọi tri thức của công ty bạn thành một không gian làm việc tôn trọng quyền truy cập. Các tác nhân AI khám phá nó giống như tác nhân lập trình khám phá một kho mã. Tác nhân tìm kiếm trong đó, chạy `grep`, duyệt thư mục và đồ thị tri thức, chỉ đọc những gì cần, và trích dẫn chính xác block mà mỗi câu trả lời lấy từ đó.
 
@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Mọi nguồn đều trở thành **Blocks** (các khối dữ liệu), một dạng biểu diễn duy nhất giữ nguyên bảng, luồng hội thoại và mã, đồng thời ghi nhớ chính xác trang, ô hoặc dòng mà mỗi block đến từ đó. Phía trên Blocks có hai bản đồ: **cấu trúc phân cấp** của hệ thống nguồn và **đồ thị tri thức** về các thực thể. Tác nhân khám phá cả hai bằng **các công cụ tiết lộ thông tin theo từng bước**. Kết quả tìm kiếm hiển thị trước siêu dữ liệu và tóm tắt của từng bản ghi. Tác nhân chỉ chạy grep, điều hướng, đi theo thực thể hoặc đọc toàn bộ bản ghi khi thật sự cần. **Mọi lần gọi công cụ đều được kiểm tra theo quyền của hệ thống nguồn** cho người mà tác nhân đang hành động thay mặt.
+Mọi nguồn đều trở thành **Blocks** (các khối dữ liệu), một dạng biểu diễn duy nhất giữ nguyên bảng, luồng hội thoại và mã, đồng thời ghi nhớ chính xác trang, ô hoặc dòng mà mỗi block đến từ đó. Blocks được sắp xếp theo hai cách: theo **cấu trúc thư mục** của từng hệ thống nguồn, và trong một **đồ thị tri thức** về con người, dự án và khách hàng. Tác nhân khám phá cả hai bằng **các công cụ hé lộ chi tiết từng bước**: một lần tìm kiếm trước tiên hiển thị tên, tóm tắt và các đoạn khớp của từng bản ghi, và tác nhân chỉ đào sâu hơn (grep, duyệt thư mục, đi theo thực thể, đọc toàn bộ bản ghi) khi cần. **Mọi lần gọi công cụ đều được kiểm tra theo quyền của hệ thống nguồn** cho người mà tác nhân đang hành động thay mặt.
 
 **[Đọc cách lớp ngữ cảnh hoạt động →](../../context-layer.md)** Tài liệu này bao gồm định dạng Block, cấu trúc phân cấp và đồ thị, từng công cụ của tác nhân và mã nguồn của nó, cơ chế thực thi quyền truy cập, vòng lặp tác nhân và các giới hạn hiện tại.
 
@@ -124,6 +124,7 @@ Một lớp ngữ cảnh, nhiều sản phẩm bên trên. Dùng các ứng dụ
 | **Báo cáo, biểu đồ và dashboard** | Tác nhân viết và chạy mã trong sandbox rồi trả kết quả dưới dạng artifact có thể chia sẻ | Có sẵn |
 | **Tìm kiếm tri thức kỹ thuật** | Mã, pull request và commit từ GitHub và GitLab, liên kết với ticket và tài liệu liên quan | Có sẵn |
 | **Ứng dụng của riêng bạn trên tri thức công ty** | SDK cho Python, TypeScript và Go, "Sign in with PipesHub" để mỗi người dùng tìm kiếm với tư cách chính mình, và API tải lên cho các tài liệu mà không trình kết nối nào hỗ trợ | [ví dụ](https://github.com/pipeshub-ai/examples) |
+| **Ứng dụng pháp lý và hợp đồng (CLM)** | Đặt câu hỏi trên các hợp đồng trong Drive, SharePoint, Box hoặc tệp tải lên. Câu trả lời trích dẫn đúng điều khoản hoặc trang, và mỗi người chỉ thấy những hợp đồng họ được phép xem. | [Xây dựng headless](#tôi-có-thể-dùng-pipeshub-ở-chế-độ-headless-không-cần-giao-diện-của-nó-không) |
 | **AI riêng tư, on-prem** | Tất cả những điều trên, tự lưu trữ, với bất kỳ nhà cung cấp LLM nào hoặc mô hình cục bộ qua Ollama, dữ liệu nằm trong hạ tầng của bạn | [Triển khai](#-hướng-dẫn-triển-khai) |
 
 ## Dùng từ Claude Code, Cursor hoặc Codex
@@ -311,6 +312,21 @@ Muốn tham gia cộng đồng nhà phát triển của chúng tôi? Hãy xem [H
 PipesHub là lớp ngữ cảnh mã nguồn mở cho tác nhân AI. Nó biến tri thức nằm rải rác trong các hệ thống nghiệp vụ của công ty bạn thành một không gian làm việc tôn trọng quyền truy cập, nơi tác nhân có thể tìm kiếm, chạy `grep`, điều hướng và trích dẫn.
 
 Nó kết nối các hệ thống như Slack, Google Drive, GitHub, Microsoft 365 và Notion, rồi cung cấp nội dung của chúng theo hai cách: tìm kiếm có trích dẫn và tôn trọng quyền truy cập cho nhóm của bạn, và ngữ cảnh đáng tin cậy cho tác nhân AI qua API, SDK và MCP. Tác nhân có cùng góc nhìn được quản lý về tri thức công ty như một người dùng, với cùng các kiểm soát truy cập. Nhờ vậy chúng trả lời dựa trên dữ liệu thật của công ty thay vì đoán mò giữa các công cụ. Bạn có thể dùng trải nghiệm tìm kiếm có sẵn, hoặc xây dựng tác nhân, quy trình và ứng dụng của riêng bạn trên nền tảng đó.
+
+### Tôi có thể dùng PipesHub ở chế độ headless, không cần giao diện của nó không?
+
+Có. Ứng dụng web của PipesHub dùng chính API mà bạn có thể tự gọi, nên mọi việc bạn làm trên giao diện cũng làm được bằng mã: kết nối nguồn, tải tệp lên, quản lý người dùng và quyền, tìm kiếm, trò chuyện, xây dựng và chạy tác nhân.
+
+- **REST API:** một [đặc tả OpenAPI](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) với khoảng 300 endpoint. Xem tại `/api/v1/docs` trên instance của bạn.
+- **SDK:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) và [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
+- **MCP:** cho Claude Code, Cursor, Codex và các MCP client khác.
+
+Chọn cách mã của bạn đăng nhập:
+- **Personal Access Token hoặc OAuth:** hoạt động với tư cách một người và chỉ thấy những gì người đó được xem.
+- **Tài khoản dịch vụ:** cho các tác vụ chạy nền, với quyền riêng.
+- **Ứng dụng OAuth:** cho phép mỗi người dùng ứng dụng của bạn đăng nhập với tư cách chính mình ("Sign in with PipesHub").
+
+Các nhóm dùng cách này để xây dựng sản phẩm của riêng họ trên PipesHub, như công cụ pháp lý và quản lý hợp đồng (CLM), bảng điều khiển hỗ trợ và tác nhân nội bộ, mà không hiển thị giao diện PipesHub.
 
 ### PipesHub khác gì so với các công cụ AI cho nơi làm việc khác?
 
