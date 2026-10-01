@@ -8,7 +8,7 @@
 
 <a href="https://www.pipeshub.com"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg" alt="PipesHub" width="280"/></a>
 
-<h3>La plataforma de IA para el trabajo, de código abierto</h3>
+<h3>La capa de contexto de código abierto para agentes de IA</h3>
 
 <p>
   <a href="https://www.pipeshub.com/">Sitio web</a> ·
@@ -32,9 +32,6 @@
   <a href="https://github.com/pipeshub-ai/pipeshub-ai/pulls">
     <img src="https://img.shields.io/github/issues-pr/pipeshub-ai/pipeshub-ai" alt="GitHub pull requests">
   </a>
-  <a href="https://github.com/pipeshub-ai/pipeshub-ai/stargazers">
-    <img src="https://img.shields.io/github/stars/pipeshub-ai/pipeshub-ai" alt="GitHub Repo stars">
-  </a>
   <br/>
   <a href="https://x.com/PipesHub"><img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter"></a>
   <a href="https://www.linkedin.com/company/pipeshub"><img src="https://img.shields.io/badge/LinkedIn-PipesHub-blue?logo=linkedin&amp;logoColor=white" alt="LinkedIn"></a>
@@ -49,37 +46,136 @@
 
 </div>
 
-<h2 id="about-pipeshub">PipesHub: explicable y extensible</h2>
+<h2 id="about-pipeshub">Dale a tus agentes un espacio de trabajo, no un montón de fragmentos</h2>
 
-<strong>[PipesHub](https://www.pipeshub.com/)</strong> es una capa de ejecución nativa de IA, de código abierto y autoalojable, que conecta el conocimiento empresarial, ofrece búsqueda explicable con citas y automatiza flujos de trabajo en todos tus sistemas.
+<strong>[PipesHub](https://www.pipeshub.com/)</strong> convierte todo lo que sabe tu empresa en un espacio de trabajo que respeta los permisos. Los agentes de IA lo exploran igual que los agentes de código exploran un repositorio. Lo buscan, le aplican `grep`, recorren sus carpetas y su grafo de conocimiento, leen solo lo que necesitan y citan el bloque exacto del que sale cada respuesta.
 
+Conecta Slack, Google Drive, GitHub, Microsoft 365, Jira, Notion, Postgres y más de 25 sistemas. Usa el chat integrado, la investigación profunda y los agentes, o da el mismo contexto a Claude Code, Cursor, Codex y tus propios agentes mediante MCP y los SDK. Autoalojado, Apache 2.0 y con el modelo que elijas.
 
-## Funcionalidades
+> [!TIP]
+> Despliega con un solo comando:
+> ```bash
+> curl -fsSL https://get.pipeshub.com/install | bash
+> ```
 
-- 📝 **Respuestas explicables:** PipesHub ofrece respuestas fundamentadas con citas precisas de bloques a los documentos originales.
-- 🔒 **Búsqueda con reconocimiento de permisos:** Aplica controles de acceso a nivel de fuente para que los usuarios solo vean aquello a lo que están autorizados.
-- 🕸️ **Recuperación con grafo de conocimiento:** Recuperación basada en grafos que captura las relaciones entre los datos empresariales.
-- 🔌 **Conectores empresariales:** Más de 50 conectores con indexación en tiempo real y programada, listos para usar.
-- 🔍 **Búsqueda unificada, investigación profunda y agentes:** Búsqueda, preguntas y respuestas, investigación profunda, búsqueda web y agentes de IA sobre una única capa de contexto.
-- 📊 **Artefactos y ejecución de código:** Genera informes, gráficos y paneles en un entorno de ejecución aislado y seguro.
-- 🎙️ **Soporte multimodal:** Comprensión de imágenes, diagramas y archivos escaneados, además de interacción por voz.
-- 🤖 **Agentes y acciones sin código:** Crea agentes de forma visual y ejecuta acciones en las herramientas empresariales.
-- 🧠 **Usa tu propio modelo, totalmente autoalojable:** Cualquier proveedor de LLM, desplegado en tu VPC: los datos nunca salen de tu infraestructura.
-- 🛠️ **Pensado para desarrolladores y extensible:** API, SDK, herramientas MCP, conectores personalizados y servicios escalables de forma independiente.
+## ¿Por qué una capa de contexto?
+
+Con el conocimiento de empresa, los agentes suelen fallar por su contexto, no por su modelo. La recuperación top-k de fragmentos le da al agente un puñado de trozos sueltos. Se pierde dónde vive cada uno, a qué enlaza, quién puede verlo y de dónde viene.
+
+Los agentes de código mejoraron en cuanto pudieron usar `ls` y `grep` y leer un repositorio, en lugar de recibir fragmentos pegados. PipesHub da a los agentes lo mismo sobre los datos de tu empresa.
+
+| | RAG top-k por fragmentos | PipesHub |
+| --- | --- | --- |
+| **Lo que el agente ve primero** | Unos pocos fragmentos de texto | El nombre, la ubicación, los metadatos y el resumen de cada registro, además de los bloques que coinciden |
+| **Cómo profundiza** | No puede: una recuperación por pregunta | Búsqueda híbrida, `grep`/`find` sobre registros, navegación por carpetas y consultas al grafo de conocimiento, en bucle |
+| **Estructura** | Se pierde al fragmentar | Cada fuente se convierte en Blocks: secciones, tablas con filas y celdas, hilos, código, tablas SQL con su esquema |
+| **Permisos** | A menudo aproximados al indexar | Comprobados contra los permisos del sistema de origen para el usuario que hace la consulta, en cada llamada a una herramienta |
+| **Citas** | Por fragmento, si las hay | Por bloque: la página, la celda, la fila, la diapositiva o la línea, sin citas inventadas |
+
+## Cómo funciona
+
+```mermaid
+flowchart LR
+  subgraph Sources["40+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: search, grep, navigate, entities, fetch record"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
+Cada fuente se convierte en **Blocks** (bloques), una representación única que mantiene intactos las tablas, los hilos y el código, y recuerda la página, la celda o la línea exacta de la que sale cada bloque. Sobre los Blocks hay dos mapas: la **jerarquía** del sistema de origen y un **grafo de conocimiento** de entidades. Los agentes exploran ambos con **herramientas que revelan la información por etapas**: los resultados de búsqueda muestran primero los metadatos y el resumen de cada registro. El agente solo usa `grep`, navega, sigue entidades o lee un registro completo cuando lo necesita. **Cada llamada a una herramienta se comprueba contra los permisos del sistema de origen** para la persona en cuyo nombre actúa el agente.
+
+**[Lee cómo funciona la capa de contexto →](../../context-layer.md)** Cubre el formato de Blocks, la jerarquía y el grafo, cada herramienta del agente y el código donde vive, la aplicación de permisos, el bucle del agente y las limitaciones actuales.
+
+## Lo que puedes construir con PipesHub
+
+Una capa de contexto, muchos productos encima. Usa las aplicaciones integradas tal cual o construye las tuyas mediante MCP y los SDK.
+
+| Qué construir | Lo que te da PipesHub | Empieza aquí |
+| --- | --- | --- |
+| **Pipelines de RAG agéntico** | Herramientas de recuperación que un agente llama en bucle (búsqueda híbrida, `grep`, navegación, consultas de entidades, lectura de registros completos), con las comprobaciones de permisos y las citas por bloque ya resueltas | [Starter de SDK](https://github.com/pipeshub-ai/examples/tree/main/sdk-starter) · [MCP](#úsalo-desde-claude-code-cursor-o-codex) |
+| **Búsqueda empresarial** | Un solo buscador sobre más de 40 conectores que muestra a cada persona solo lo que puede ver, con respuestas citadas | Integrado · [ejemplo](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search) |
+| **Asistente de IA para el trabajo** | Chat e investigación profunda sobre el conocimiento de la empresa, además de búsqueda web y entrada por voz | Integrado |
+| **Contexto para agentes de código** | Claude Code, Cursor y Codex responden a partir de documentos de diseño, tickets, incidentes e hilos de chat, no solo del código | [ejemplo](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp) |
+| **Agentes y automatizaciones sin código** | Un creador de agentes con acciones en Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk y 20 herramientas más | Integrado |
+| **Copilotos de atención al cliente** | Respuestas sacadas de tickets anteriores, runbooks y documentación (ServiceNow, Zammad, Jira, Confluence), con acciones de vuelta en la herramienta de tickets | Integrado · SDK |
+| **Inteligencia comercial y de cuentas** | Cuentas, contactos y oportunidades de Salesforce en el grafo de conocimiento, consultables junto a los correos, documentos y chats sobre los mismos clientes | Integrado |
+| **Preguntas sobre tus bases de datos** | Tablas de Postgres, MariaDB y Snowflake indexadas con sus esquemas y claves foráneas, además de sandboxes que ejecutan SQL y Python para el análisis | Integrado |
+| **Informes, gráficos y paneles** | Los agentes escriben y ejecutan código en un sandbox y devuelven el resultado como un artefacto que se puede compartir | Integrado |
+| **Búsqueda en el conocimiento de ingeniería** | Código, pull requests y commits de GitHub y GitLab, enlazados con los tickets y documentos que los rodean | Integrado |
+| **Tus propias apps sobre el conocimiento de la empresa** | SDK de Python, TypeScript y Go, «Sign in with PipesHub» para que cada usuario busque con su propia identidad, y una API de subida para documentos que ningún conector cubre | [ejemplos](https://github.com/pipeshub-ai/examples) |
+| **IA privada, on-premise** | Todo lo anterior, autoalojado, con cualquier proveedor de LLM o modelos locales mediante Ollama, y con los datos dentro de tu infraestructura | [Desplegar](#-guía-de-despliegue) |
+
+## Úsalo desde Claude Code, Cursor o Codex
+
+**[Da a tu asistente de código acceso seguro al conocimiento de tu empresa →](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp)**
+
+Unos diez minutos con PipesHub en marcha y los datos indexados. Crea un Personal Access Token (no hace falta ser administrador), conecta tu asistente (un comando para Claude Code, un archivo de configuración para Cursor o Codex) y pregunta *«¿por qué se cambió la lógica de reintentos del billing worker?»*. Responde a partir del postmortem del incidente, la pull request, el hilo de chat y el documento de diseño, cada uno citado, y solo si tienes permiso para verlos.
+
+Mediante MCP, los asistentes ya tienen hoy las herramientas de búsqueda, chat y registros de PipesHub. El resto de herramientas del agente (`grep`, `navigate`, consultas de entidades) llegará pronto a MCP.
+
+¿Quieres la misma recuperación dentro de tu propio código, o detrás de un buscador para tu equipo? El [starter de SDK y el ejemplo de búsqueda](https://github.com/pipeshub-ai/examples) cubren ambos casos. ¿Has construido algo? [Enséñanoslo](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml).
 
 ## PipesHub en acción
+
+### Citas
+<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Citation%20through%20chat.gif" alt="Citations" width="100%"/>
 
 ### Conectores
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Connector%20Setup%20and%20Query%20with%20Connectors.gif" alt="Connectors" width="100%"/>
 
-### Citas
-<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Citation%20through%20chat.gif" alt="Citations" width="100%"/>
+<details>
+<summary><b>Más demos: todos los registros, búsqueda de conocimiento</b></summary>
 
 ### Todos los registros
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/All%20Records%20Demo.gif" alt="All Records" width="100%"/>
 
 ### Búsqueda de conocimiento
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Knowledge%20Search%20Demo.gif" alt="Knowledge Search" width="100%"/>
+
+</details>
+
+## Funcionalidades
+
+**Contexto para agentes**
+
+- 🗂️ **Explorable, no solo consultable:** búsqueda híbrida, `grep` sobre registros, navegación por carpetas y consultas al grafo de conocimiento, todo como herramientas del agente.
+- 🔒 **Respeta los permisos en cada paso:** cada llamada a una herramienta se comprueba contra los permisos del sistema de origen para la persona en cuyo nombre actúa el agente.
+- 📝 **Citas a nivel de bloque:** las respuestas citan la página, la celda, la fila, la diapositiva o la línea de la que provienen.
+- 🧱 **Estructurado, semiestructurado y no estructurado en una sola capa:** documentos, hojas de cálculo, tickets, hilos de chat, código y tablas SQL se convierten en Blocks.
+
+**Conectado a tus sistemas**
+
+- 🔌 **Más de 40 conectores:** Google Workspace, Microsoft 365, Slack, Jira, Confluence, Notion, GitHub, GitLab, Salesforce, ServiceNow, Postgres, Snowflake y más, con sincronización en tiempo real y programada.
+- 🕸️ **Grafo de conocimiento:** entidades y relaciones extraídas al indexar y usadas al responder.
+- 🎙️ **Multimodal:** imágenes, diagramas y archivos escaneados, además de entrada por voz.
+- 🧠 **Tu propio modelo, totalmente autoalojado:** cualquier proveedor de LLM o un modelo local, desplegado en tu propia infraestructura.
+
+## PipesHub Cloud
+
+¿Prefieres un PipesHub totalmente gestionado sin mantener tu propia infraestructura? PipesHub Cloud llega pronto.
+
+👉 **[Únete a la lista de espera de Cloud](https://pipeshub.com/cloud-waitlist)** para obtener acceso anticipado.
 
 ## Conectores
 
@@ -89,66 +185,85 @@
 
 ## 🚀 Guía de despliegue
 
-PipesHub (la plataforma de IA para el trabajo) puede ejecutarse localmente o desplegarse en la nube mediante Docker Compose.
-**Nota**: Si despliegas PipesHub en un servidor en la nube, asegúrate de usar un endpoint HTTPS. PipesHub aplica comprobaciones de seguridad más estrictas y los navegadores bloquearán ciertas solicitudes cuando la aplicación se sirve por HTTP.
-Puedes usar un proxy inverso como Cloudflare, Nginx o Traefik para terminar el SSL/TLS y proporcionar un certificado HTTPS válido.
-Si ves una pantalla en blanco tras desplegar PipesHub al acceder por HTTP, lo más probable es que esta sea la causa. El frontend se negará a cargar debido a las comprobaciones de seguridad más estrictas.
+PipesHub puede ejecutarse en local o desplegarse en cualquier servidor con Docker Compose. El instalador interactivo se encarga de toda la configuración (secretos, base de datos de grafos, broker y elección de la etiqueta de imagen) y genera un `.env` por ti.
+
+> **HTTPS en servidores en la nube:** si despliegas PipesHub en un servidor en la nube, usa un endpoint HTTPS. Los navegadores bloquean ciertas peticiones por HTTP simple. Usa Cloudflare, Nginx o Traefik para terminar TLS. Una pantalla en blanco tras un despliegue solo con HTTP suele deberse a esta restricción.
 
 ---
 
-### 📦 Despliegue en producción
+### ⚡ Inicio rápido (recomendado)
+
+Requiere [Docker](https://docs.docker.com/get-docker/) con Compose v2. Un solo comando:
 
 ```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-
-# 📁 Navigate to the deployment folder
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Environment Variables
-> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services
-> _(Required for webhook notifications and real-time updates)_
-> Refer to env.template
-
-# 🚀 Start the production deployment
-docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
-
-# 🛑 To stop the services
-docker compose -f docker-compose.prod.yml -p pipeshub-ai down
+curl -fsSL https://get.pipeshub.com/install | bash
 ```
 
-### 📦 Compilación de despliegue para desarrolladores
+Esto descarga los archivos de despliegue de la última versión en `./pipeshub` y
+lanza el instalador interactivo. Abre **http://localhost:3000** cuando
+termine.
+
+> **¿Prefieres leer antes de ejecutar?** Descarga e inspecciona primero el script:
+>
+> ```bash
+> curl -fsSL https://get.pipeshub.com/install -o pipeshub-install.sh
+> less pipeshub-install.sh        # review it
+> bash pipeshub-install.sh
+> ```
+
+El instalador:
+- Comprueba los requisitos de Docker, RAM y disco
+- Pregunta si quieres un despliegue **slim** o **full**
+- Te permite personalizar, si quieres, la base de datos de grafos, el broker de mensajes y el almacén KV
+- Genera secretos aleatorios y escribe un archivo `.env`
+- Descarga las imágenes y arranca el stack
+- Espera a que PipesHub esté sano, comprueba que es accesible e imprime la URL
+
+### 🛠️ Desde un repositorio clonado (desarrolladores)
+
+Para compilar desde el código fuente, contribuir o fijar el instalador a tu copia local:
 
 ```bash
-# Clone the repository
 git clone https://github.com/pipeshub-ai/pipeshub-ai.git
+cd pipeshub-ai
 
-# 📁 Navigate to the deployment folder
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Optional Environment Variables
-> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services
-> _(Required for webhook notifications and real-time updates)_
-> Refer to env.template
-
-# 🚀 Start the local build deployment
-docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai up --build -d
-
-# 🛑 To stop the services
-docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down
+# Same installer, run from the repo root
+./install.sh
 ```
 
-El `Dockerfile` principal obtiene capas precompiladas desde `pipeshubai/pipeshub-ai-base:python-deps` y `pipeshubai/pipeshub-ai-base:runtime` (consulta [`Dockerfile.base`](../../../Dockerfile.base) en la raíz del repositorio para ver los comandos de compilación/publicación). Para usar etiquetas locales en su lugar, define `PYTHON_DEPS_IMAGE` y `RUNTIME_BASE_IMAGE` en el entorno o en los argumentos de compilación de compose.
+Compilar imágenes locales desde el código fuente requiere esta vía del repositorio clonado (`./install.sh --build`);
+el instalador de un solo comando de arriba siempre usa imágenes precompiladas.
 
-## Servidor MCP
+> **Opciones avanzadas:** los flags del instalador (`--yes`, `--version`, `--reconfigure`, `--print-env-only`), las variables de entorno de CI, los tipos de despliegue slim y full, el uso manual de perfiles de Compose y las compilaciones locales desde el código fuente se explican en [Opciones avanzadas de despliegue](../../../deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
 
-Usa PipesHub con cualquier cliente compatible con MCP para llevar el contexto de tu empresa a tus flujos de trabajo de IA. Consulta el README para la configuración y el uso.
+## Construye sobre PipesHub: MCP y SDK
+
+La búsqueda integrada es una forma de usar PipesHub. El mismo contexto conectado
+y filtrado por permisos está disponible para tus propios agentes y aplicaciones:
+mediante MCP para cualquier cliente compatible, o mediante los SDK cuando lo llamas
+desde tu propio código.
+
+Un agente se conecta como una persona concreta, no como la aplicación, así que
+recupera exactamente lo que esa persona puede ver. El acceso se resuelve cuando
+se ejecuta la consulta, según los permisos del propio sistema de origen, en lugar de
+aproximarse al construir el índice.
+
+Los tutoriales paso a paso para los casos más comunes (un MCP para tu asistente
+de código, búsqueda empresarial privada y starters de SDK) están en
+[**pipeshub-ai/examples**](https://github.com/pipeshub-ai/examples). El
+material de referencia de cada pieza está a continuación.
+
+### Servidor MCP
+
+Usa PipesHub con cualquier cliente compatible con MCP para llevar el contexto de tu empresa a tus flujos de trabajo de IA. Consulta el README para la instalación y el uso.
 
 **Repositorio:** [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/)
 
-## SDK
+¿Usas [Omnigent](https://omnigent.ai)? Consulta [`integrations/omnigent/`](../../../integrations/omnigent/) para ver tres formas de conectarte, desde adjuntarlo en la interfaz web hasta un kit de conexión por script.
 
-PipesHub ofrece SDK para desarrolladores en Python, TypeScript y Go para ayudarte a integrar rápidamente. Consulta el README del repositorio del SDK correspondiente para ver los detalles de configuración y uso.
+### SDK
+
+PipesHub ofrece SDK para desarrolladores en Python, TypeScript y Go para que integres rápido. Consulta el README del repositorio de cada SDK para la instalación y el uso.
 
 | Nombre | Descripción | Enlace |
 |------|-------------|------|
@@ -160,115 +275,56 @@ PipesHub ofrece SDK para desarrolladores en Python, TypeScript y Go para ayudart
 
 ## Hoja de ruta
 
-<p>Desarrollamos en abierto. Esto es lo que ya está hecho y lo que viene a continuación:</p>
+<p>Desarrollamos en abierto. Esto es lo que ya está hecho y lo que viene:</p>
 
 <ul>
-<li>✅ 🤖 <strong>Agentes de IA para el trabajo</strong>: constructor de agentes sin código de primer nivel</li>
-<li>✅ 🔗 Soporte de <strong>MCP (Model Context Protocol)</strong>, tanto servidor como cliente</li>
+<li>✅ 🤖 <strong>Agentes de IA para el trabajo</strong>: un creador de agentes sin código de primer nivel</li>
+<li>✅ 🔗 Soporte de <strong>MCP (Model Context Protocol)</strong>, como servidor y como cliente</li>
 <li>✅ 🧰 <strong>SDK para desarrolladores</strong></li>
-<li>✅ 🔍 <strong>Búsqueda de código</strong> en GitHub, GitLab y Bitbucket</li>
-<li>⬜ 👤 <strong>Búsqueda personalizada</strong> según el equipo, el rol y el historial</li>
-<li>✅ ☸️ Despliegue en <strong>Kubernetes para producción</strong> con valores de alta disponibilidad por defecto</li>
-<li>⬜ 📈 <strong>Relevancia mejorada con PageRank</strong> en todo el grafo de conocimiento</li>
+<li>✅ 🔍 <strong>Búsqueda de código</strong> en GitHub y GitLab</li>
+<li>⬜ 👤 <strong>Búsqueda personalizada</strong> según equipo, rol e historial</li>
+<li>✅ ☸️ Despliegue de <strong>Kubernetes para producción</strong> con alta disponibilidad por defecto</li>
+<li>⬜ 📈 <strong>Relevancia reforzada con PageRank</strong> sobre el grafo de conocimiento</li>
 </ul>
-<p>👉 <strong><a href="https://plum-myrtle-9f7.notion.site/Pipeshub-s-Product-Roadmap-33841c164f54803a9989fd0fdbfdb1ee">Consulta la hoja de ruta completa del producto en Notion</a></strong></p>
+<p>👉 <strong><a href="https://plum-myrtle-9f7.notion.site/Pipeshub-s-Product-Roadmap-33841c164f54803a9989fd0fdbfdb1ee">Ver la hoja de ruta completa del producto en Notion</a></strong></p>
 
 <hr>
 
 ## 👥 Contribuir
 
-¿Quieres unirte a nuestra comunidad de desarrolladores? Consulta nuestra [Guía de contribución](CONTRIBUTING.md) para conocer más detalles sobre cómo configurar el entorno de desarrollo, nuestros estándares de código y el flujo de trabajo de contribución.
+¿Quieres unirte a nuestra comunidad de desarrolladores? Consulta nuestra [guía de contribución](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md) para saber cómo configurar el entorno de desarrollo, nuestros estándares de código y el flujo de contribución.
 <h3>Dónde acudir para cada cosa</h3>
 
 <table>
 
 <tr><td>Hacer una pregunta u obtener ayuda</td><td><a href="https://discord.com/invite/K5RskzJBm2">Discord</a></td></tr>
-<tr><td>Reportar un error o solicitar una función</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">GitHub Issues</a></td></tr>
-<tr><td>Reportar un problema de seguridad</td><td><a href="SECURITY.md">Reportar problema de seguridad</a></td></tr>
-<tr><td>Leer la documentación</td><td><a href="https://docs.pipeshub.com/">Documentación de Pipeshub</a></td></tr>
-</tbody>
+<tr><td>Informar de un error o pedir una funcionalidad</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">GitHub Issues</a></td></tr>
+<tr><td>Informar de un problema de seguridad</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/SECURITY.md">Informar de un problema de seguridad</a></td></tr>
+<tr><td>Leer la documentación</td><td><a href="https://docs.pipeshub.com/">Pipeshub Docs</a></td></tr>
+<tr><td>Ver qué cambió en cada versión</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CHANGELOG.md">Changelog</a></td></tr>
 </table>
 
 ## Preguntas frecuentes
 
 ### ¿Qué es PipesHub?
 
-PipesHub es una capa de ejecución nativa de IA, de código abierto y autoalojable, que conecta el conocimiento empresarial, ofrece búsqueda explicable con citas y automatiza flujos de trabajo en todos tus sistemas. Proporciona una capa de contexto unificada para búsqueda, preguntas y respuestas, investigación profunda, búsqueda web y agentes de IA.
+PipesHub es la capa de contexto de código abierto para agentes de IA. Convierte el conocimiento repartido por los sistemas de negocio de tu empresa en un espacio de trabajo que respeta los permisos y que los agentes pueden buscar, recorrer con `grep`, navegar y citar.
+
+Conecta sistemas como Slack, Google Drive, GitHub, Microsoft 365 y Notion, y pone su contenido a tu disposición de dos formas: una búsqueda con citas que respeta los permisos para tu equipo, y un contexto fiable para tus agentes de IA mediante API, SDK y MCP. Los agentes obtienen la misma vista controlada del conocimiento de la empresa que tendría una persona, con los mismos controles de acceso. Así responden con datos reales de la empresa en lugar de adivinar entre herramientas. Puedes usar la búsqueda integrada o construir encima tus propios agentes, flujos de trabajo y aplicaciones.
 
 ### ¿En qué se diferencia PipesHub de otras herramientas de IA para el trabajo?
 
-PipesHub es totalmente de código abierto (Apache 2.0) y autoalojable: tus datos nunca salen de tu infraestructura. Incorpora una búsqueda con reconocimiento de permisos que aplica controles de acceso a nivel de fuente, y ofrece respuestas explicables con citas precisas de bloques a los documentos originales.
+La mayoría de las herramientas dan a un modelo de IA unos pocos fragmentos de texto recuperados. PipesHub da a los agentes herramientas para explorar el conocimiento de tu empresa como un agente de código explora un repositorio: búsqueda híbrida, `grep` sobre registros, navegación por carpetas y consultas al grafo de conocimiento. Cada una se comprueba contra los permisos del usuario en el sistema de origen. Cada fuente se convierte en Blocks, así que las respuestas citan la página, la celda, la fila o la diapositiva exacta. Es totalmente de código abierto (Apache 2.0) y autoalojable, así que tus datos nunca salen de tu infraestructura. Consulta [¿Por qué una capa de contexto?](#por-qué-una-capa-de-contexto)
 
 ### ¿Qué conectores admite PipesHub?
 
-PipesHub cuenta con más de 50 conectores empresariales con indexación en tiempo real y programada. Consulta la [visión general de conectores](https://docs.pipeshub.com/connectors/overview).
-
-### ¿Qué formatos de archivo puede indexar PipesHub?
-
-PDF (incluidos los escaneados), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, texto plano e imágenes. El audio y el vídeo se pueden almacenar, pero aún no se indexan. El servicio de almacenamiento acepta un conjunto más amplio de tipos MIME — consulta [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
-
-### ¿Cómo despliego PipesHub?
-
-```bash
-curl -fsSL https://get.pipeshub.com/install | bash
-```
-
-Esto escribe los archivos de Compose en `./pipeshub` e inicia el instalador interactivo. Abre **http://localhost:3000** cuando termine. Usa HTTPS para los despliegues en la nube; HTTP puede provocar bloqueos de seguridad en el frontend.
-
-Los desarrolladores que compilen desde el código fuente deben clonar el repositorio y ejecutar `./install.sh` (o `./install.sh --build`) desde la raíz del repositorio. Consulta la [Guía de despliegue](#-guía-de-despliegue).
+PipesHub tiene más de 40 conectores para más de 30 sistemas, con indexación en tiempo real y programada. Consulta el [resumen de conectores](https://docs.pipeshub.com/connectors/overview).
 
 ### ¿Qué proveedores de LLM admite PipesHub?
 
-PipesHub funciona con el modelo "Usa tu propio modelo": puedes usar cualquier proveedor de LLM. Despliega en tu VPC con los modelos que prefieras.
+PipesHub sigue el modelo «Bring Your Own Model»: puedes usar cualquier proveedor de LLM. Despliégalo en tu VPC con los modelos que prefieras.
 
-### ¿Cuál es el stack tecnológico?
-
-PipesHub tiene tres partes:
-
-- **Aplicación web** (Next.js) — búsqueda, chat y administración en el navegador.
-- **API** (Node.js) — cuentas, permisos, bases de conocimiento y archivos.
-- **Servicios Python** — los conectores sincronizan tus fuentes; la indexación analiza documentos; la consulta responde con citas.
-
-Esos servicios llaman a **modelos de IA que tú aportas**. Un **modelo de embeddings** convierte el texto en vectores para buscar. Un **LLM** escribe la respuesta citada. Usa cualquier proveedor o un modelo local (Ollama); un servidor local de embeddings es el valor por defecto.
-
-Los datos están en un grafo de conocimiento (Neo4j por defecto, o ArangoDB), un almacén de vectores (Qdrant) y MongoDB. Redis es la caché. Los archivos viven en disco o en almacenamiento de objetos. Los servicios se pasan trabajo por Redis en una máquina local, o por Kafka en un despliegue más grande. Consulta la [visión general del sistema](https://docs.pipeshub.com/system-overview).
-
-### ¿Qué es la función de recuperación con grafo de conocimiento?
-
-PipesHub usa una recuperación basada en grafos que captura las relaciones entre los datos empresariales. Utiliza Neo4j o ArangoDB como bases de datos de grafos, combinadas con Qdrant para la búsqueda por similitud vectorial.
-
-### ¿Tiene PipesHub un servidor MCP?
-
-Sí. PipesHub ofrece un servidor MCP para integrarse con cualquier cliente compatible con MCP. Repositorio: [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/).
-
-### ¿Qué SDK están disponibles?
-
-PipesHub ofrece SDK para:
-- **Python**: [pipeshub-ai/pipeshub-sdk-python](https://github.com/pipeshub-ai/pipeshub-sdk-python)
-- **TypeScript**: [pipeshub-ai/pipeshub-sdk-typescript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript)
-- **Go**: [pipeshub-ai/pipeshub-sdk-go](https://github.com/pipeshub-ai/pipeshub-sdk-go)
-
-### ¿Puedo crear agentes de IA sin programar?
-
-Sí. PipesHub tiene un constructor de agentes sin código. Puedes crear agentes de forma visual y ejecutar acciones en las herramientas empresariales sin escribir código.
-
-### ¿Qué es el soporte multimodal?
-
-PipesHub admite la comprensión de imágenes, diagramas y archivos escaneados, además de la interacción por voz. Utiliza Docling y PyMuPDF para el análisis de documentos, y Azure Document Intelligence o un LLM multimodal (VLM) para el OCR de PDF escaneados.
-
-### ¿Cómo soluciono problemas de despliegue?
-
-1. Asegúrate de que HTTPS está configurado para los despliegues en la nube
-2. Revisa los registros de Docker compose: `docker compose logs`
-3. Verifica las variables de entorno en env.template
-4. Consulta [docs.pipeshub.com](https://docs.pipeshub.com/) para guías detalladas
-
-### ¿Dónde puedo obtener ayuda?
-
-- [Discord](https://discord.com/invite/K5RskzJBm2): haz preguntas y obtén ayuda
-- [GitHub Issues](https://github.com/pipeshub-ai/pipeshub-ai/issues): reporta errores o solicita funciones
-- [Documentación de PipesHub](https://docs.pipeshub.com/): lee la documentación
-
+**Más preguntas:** los formatos de archivo, el stack tecnológico, el grafo de conocimiento, el soporte multimodal y la resolución de problemas se tratan en las [preguntas frecuentes completas](../../FAQ.md).
 
 <hr>
 <div align="center">
@@ -283,11 +339,16 @@ PipesHub admite la comprensión de imágenes, diagramas y archivos escaneados, a
 </p>
 
 <p>
-<a href="https://star-history.com/#pipeshub-ai/pipeshub-ai&amp;Date">
-<img src="https://api.star-history.com/svg?repos=pipeshub-ai/pipeshub-ai&amp;type=Date" alt="Star History" width="600"/>
+<a href="https://www.star-history.com/?repos=pipeshub-ai%2Fpipeshub-ai">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pipeshub-ai/pipeshub-ai&amp;type=date&amp;theme=dark&amp;legend=top-left&amp;sealed_token=msbcJ843ZmXCld8-zgduwH9hV6yn69hyfrnwfkcWiRqe7htnO6pSbQJrkxdoarzriLW6aGAETT-iQ3m7yWN3BacAyPyHfNIiPGabl6r6CbXFjcvJ7n1NZw" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pipeshub-ai/pipeshub-ai&amp;type=date&amp;legend=top-left&amp;sealed_token=msbcJ843ZmXCld8-zgduwH9hV6yn69hyfrnwfkcWiRqe7htnO6pSbQJrkxdoarzriLW6aGAETT-iQ3m7yWN3BacAyPyHfNIiPGabl6r6CbXFjcvJ7n1NZw" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pipeshub-ai/pipeshub-ai&amp;type=date&amp;legend=top-left&amp;sealed_token=msbcJ843ZmXCld8-zgduwH9hV6yn69hyfrnwfkcWiRqe7htnO6pSbQJrkxdoarzriLW6aGAETT-iQ3m7yWN3BacAyPyHfNIiPGabl6r6CbXFjcvJ7n1NZw" width="600" />
+ </picture>
 </a>
 </p>
 
-<p><sub>Creado con ❤️ por el <a href="https://www.pipeshub.com/">equipo de PipesHub</a> y colaboradores de todo el mundo.</sub></p>
+<p><sub>Hecho con ❤️ por el <a href="https://www.pipeshub.com/">equipo de PipesHub</a> y colaboradores de todo el mundo.</sub></p>
 
 </div>
+
