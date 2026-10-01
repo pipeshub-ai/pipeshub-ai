@@ -271,7 +271,9 @@ class TestFetchPaginatedList:
 
         await zendesk_connector._fetch_paginated_list(api, "comments")
 
-        assert zendesk_connector._user_id_to_data["9"]["name"] == "Sarah"
+        assert zendesk_connector._user_data(9)["name"] == "Sarah"
+        # Not staff: never promoted into the map the all-tickets group is built from.
+        assert zendesk_connector._user_id_to_data == {}
 
     async def test_retries_a_rate_limited_page(self, zendesk_connector):
         """Zendesk's incremental export allows 10 req/min, so 429s are routine. The
@@ -1275,33 +1277,32 @@ class TestIncrementalCursor:
     async def test_fetch_users_stops_on_repeated_cursor(self, zendesk_connector):
         """Regression: a non-advancing cursor used to loop forever."""
         datasource = _ready(zendesk_connector)
-        datasource.incremental_users = AsyncMock(return_value=_make_response(data={
-            "users": [{"id": 1, "email": "a@acme.com", "name": "A"}],
-            "after_cursor": "stuck",
-            "end_of_stream": False,
+        datasource.list_users = AsyncMock(return_value=_make_response(data={
+            "users": [{"id": 1, "email": "a@acme.com", "name": "A", "role": "agent"}],
+            "meta": {"has_more": True, "after_cursor": "stuck"},
         }))
         users, _, complete = await zendesk_connector._fetch_users()
-        # First page consumed, second call detects the repeated cursor and stops.
-        assert datasource.incremental_users.await_count == 2
+        # Second page repeats the first cursor, so the walk stops there.
+        assert datasource.list_users.await_count == 2
         assert len(users) == 2
-        # end_of_stream was never reached, so membership must not be rebuilt from it.
+        # The last page was never reached, so group membership must not be rebuilt.
         assert complete is False
 
     async def test_fetch_users_missing_cursor_before_end_is_incomplete(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
-        datasource.incremental_users = AsyncMock(return_value=_make_response(data={
-            "users": [{"id": 1, "email": "a@acme.com", "name": "A"}],
-            "end_of_stream": False,
+        datasource.list_users = AsyncMock(return_value=_make_response(data={
+            "users": [{"id": 1, "email": "a@acme.com", "name": "A", "role": "agent"}],
+            "meta": {"has_more": True},
         }))
         users, _, complete = await zendesk_connector._fetch_users()
-        assert datasource.incremental_users.await_count == 1
+        assert datasource.list_users.await_count == 1
         assert len(users) == 1
         assert complete is False
 
     async def test_fetch_users_reports_incomplete_on_failed_page(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
-        datasource.incremental_users = AsyncMock(
-            return_value=_make_response(success=False, error="429 Too Many Requests")
+        datasource.list_users = AsyncMock(
+            return_value=_make_response(success=False, error="500 Server Error")
         )
 
         users, _, complete = await zendesk_connector._fetch_users()
@@ -1309,32 +1310,84 @@ class TestIncrementalCursor:
         assert users == []
         assert complete is False
 
-    async def test_fetch_users_starts_from_epoch(self, zendesk_connector):
+    async def test_fetch_users_lists_only_agents_and_admins(self, zendesk_connector):
+        """A B2C desk has millions of end users; exporting them is hours of the
+        10 req/min export limit and a millions-entry dict per sync."""
         datasource = _ready(zendesk_connector)
-        datasource.incremental_users = AsyncMock(return_value=_make_response(data={
-            "users": [], "end_of_stream": True,
+        datasource.list_users = AsyncMock(return_value=_make_response(data={
+            "users": [], "meta": {"has_more": False},
         }))
-        await zendesk_connector._fetch_users()
-        assert datasource.incremental_users.await_args.kwargs["start_time"] == (
-            DEFAULT_INCREMENTAL_START_TIME
-        )
+        datasource.incremental_users = AsyncMock()
 
-    async def test_incremental_users_retries_a_rate_limited_page(self, zendesk_connector):
-        """Incremental exports allow 10 req/min, so a 429 here is routine — and it used
-        to end the export outright, truncating the user list."""
+        await zendesk_connector._fetch_users()
+
+        assert datasource.list_users.await_args.kwargs["roles_"] == ["agent", "admin"]
+        assert datasource.list_users.await_args.kwargs["page_size"] == PAGE_SIZE
+        datasource.incremental_users.assert_not_awaited()
+
+    async def test_fetch_users_follows_the_cursor_to_the_last_page(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
-        datasource.incremental_users = AsyncMock(side_effect=[
-            _make_response(success=False, error="Too Many Requests", status_code=429),
+        datasource.list_users = AsyncMock(side_effect=[
             _make_response(data={
-                "users": [{"id": 1, "email": "a@acme.com", "name": "A"}],
-                "end_of_stream": True,
+                "users": [{"id": 1, "email": "a@acme.com", "role": "agent"}],
+                "meta": {"has_more": True, "after_cursor": "c2"},
+            }),
+            _make_response(data={
+                "users": [{"id": 2, "email": "b@acme.com", "role": "admin"}],
+                "meta": {"has_more": False},
             }),
         ])
-        datasource.incremental_users.__name__ = "incremental_users"
+
+        users, user_map, complete = await zendesk_connector._fetch_users()
+
+        assert complete is True
+        assert [u.email for u in users] == ["a@acme.com", "b@acme.com"]
+        assert datasource.list_users.await_args_list[1].kwargs["page_after"] == "c2"
+        assert user_map["1"].email == "a@acme.com"
+        assert user_map["b@acme.com"].source_user_id == "2"
+
+    async def test_fetch_users_skips_a_user_without_an_email(self, zendesk_connector):
+        datasource = _ready(zendesk_connector)
+        datasource.list_users = AsyncMock(return_value=_make_response(data={
+            "users": [{"id": 1, "name": "No Email", "role": "agent"}],
+            "meta": {"has_more": False},
+        }))
+
+        users, user_map, _ = await zendesk_connector._fetch_users()
+
+        assert users == []
+        assert user_map == {}
+
+    async def test_fetch_users_drops_staff_who_left(self, zendesk_connector):
+        """/users stops listing someone who was deleted or demoted. Merging into last
+        sync's map would keep their all-tickets access until the process restarts."""
+        datasource = _ready(zendesk_connector)
+        datasource.list_users = AsyncMock(return_value=_make_response(data={
+            "users": [{"id": 1, "email": "stay@acme.com", "role": "agent"}],
+            "meta": {"has_more": False},
+        }))
+        zendesk_connector._user_id_to_data = {"2": {"id": 2, "role": "admin"}}
+        zendesk_connector._user_id_to_app_user = {"2": _app_user()}
+
+        await zendesk_connector._fetch_users()
+
+        assert list(zendesk_connector._user_id_to_data) == ["1"]
+        assert list(zendesk_connector._user_id_to_app_user) == ["1"]
+
+    async def test_fetch_users_retries_a_rate_limited_page(self, zendesk_connector):
+        datasource = _ready(zendesk_connector)
+        datasource.list_users = AsyncMock(side_effect=[
+            _make_response(success=False, error="Too Many Requests", status_code=429),
+            _make_response(data={
+                "users": [{"id": 1, "email": "a@acme.com", "name": "A", "role": "agent"}],
+                "meta": {"has_more": False},
+            }),
+        ])
+        datasource.list_users.__name__ = "list_users"
 
         users, _, complete = await zendesk_connector._fetch_users()
 
-        assert datasource.incremental_users.await_count == 2
+        assert datasource.list_users.await_count == 2
         assert complete is True
         assert len(users) == 1
 
@@ -1528,7 +1581,7 @@ class TestRunSync:
             lambda *a: order.append("users")
         )
         mock_data_entities_processor.on_new_user_groups.side_effect = (
-            lambda *a: order.append("user_groups")
+            lambda *a, **k: order.append("user_groups")
         )
         mock_data_entities_processor.on_new_record_groups.side_effect = (
             lambda *a: order.append("record_groups")
@@ -1553,7 +1606,13 @@ class TestRunSync:
 
         await zendesk_connector.run_sync()
 
-        mock_data_entities_processor.on_new_user_groups.assert_not_awaited()
+        # Only the additive org write may run: both rebuilds (group membership and the
+        # all-tickets group) are destructive and need the whole staff list.
+        written = [
+            call for call in mock_data_entities_processor.on_new_user_groups.await_args_list
+        ]
+        assert all(call.kwargs.get("replace_members") is False for call in written)
+        assert [call.args[0] for call in written] == [[("o_ug", [])]]
         # Record groups are unaffected — only membership rebuilds are destructive.
         mock_data_entities_processor.on_new_record_groups.assert_awaited()
 
@@ -1819,11 +1878,11 @@ class TestFetchOrganizations:
 
         assert complete is True
 
-    async def test_truncated_org_export_skips_membership_sync(
-        self, zendesk_connector, mock_data_entities_processor
+    async def test_truncated_org_export_still_writes_what_it_has(
+        self, zendesk_connector, mock_data_entities_processor, caplog
     ):
-        """on_new_user_groups rebuilds each org from scratch, so partial membership
-        revokes access for whoever fell off the failed page."""
+        """Org groups are only added to, never rebuilt, so a short list cannot revoke
+        anyone; skipping it would leave the organizations it did read without a group."""
         _ready(zendesk_connector)
         zendesk_connector._fetch_users = AsyncMock(return_value=([], {}, True))
         zendesk_connector._fetch_groups = AsyncMock(return_value=([], [], True))
@@ -1837,13 +1896,14 @@ class TestFetchOrganizations:
         )
 
         with patch("app.connectors.sources.zendesk.connector.load_connector_filters",
-                   new_callable=AsyncMock, return_value=({}, {})):
+                   new_callable=AsyncMock, return_value=({}, {})), \
+                caplog.at_level(logging.ERROR):
             await zendesk_connector.run_sync()
 
-        assert all(
-            call.args[0] != [("o_ug", [])]
-            for call in mock_data_entities_processor.on_new_user_groups.await_args_list
+        mock_data_entities_processor.on_new_user_groups.assert_any_await(
+            [("o_ug", [])], replace_members=False
         )
+        assert "organization export was truncated" in caplog.text
 
     async def test_logs_and_stops_on_failure(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
@@ -3477,16 +3537,18 @@ class TestOAuthTokenRotation:
         """Incremental exports run at 10 req/min, so a large one outlives the ~30 minute
         token. Resolving once per stage left the rest of the export 401ing."""
         datasource = _ready(zendesk_connector)
-        datasource.incremental_users = AsyncMock(side_effect=[
-            _make_response(data={"users": [], "after_cursor": "p2", "end_of_stream": False}),
-            _make_response(data={"users": [], "end_of_stream": True}),
+        datasource.incremental_organizations = AsyncMock(side_effect=[
+            _make_response(data={
+                "organizations": [], "end_time": 1767312000, "end_of_stream": False,
+            }),
+            _make_response(data={"organizations": [], "end_of_stream": True}),
         ])
 
         with patch.object(
             zendesk_connector, "_get_fresh_datasource",
             new=AsyncMock(return_value=datasource),
         ) as resolve:
-            await zendesk_connector._fetch_users()
+            await zendesk_connector._fetch_organizations()
 
         assert resolve.await_count == 2
 
@@ -3635,3 +3697,174 @@ class TestFreshDatasource:
 
         assert await zendesk_connector._get_fresh_datasource() is datasource
         zendesk_connector.init.assert_not_awaited()
+
+
+# ===========================================================================
+# End users come from the ticket pages
+# ===========================================================================
+
+
+class TestEndUsersComeFromTheTicketPages:
+    """End users are never exported: a B2C desk has millions. What the grants need of
+    them — the requester's email and org membership — rides on the ticket pages."""
+
+    @staticmethod
+    def _page(connector, tickets, users=()):
+        datasource = _ready(connector)
+        datasource.incremental_tickets = AsyncMock(return_value=_make_response(data={
+            "tickets": tickets, "users": list(users), "end_of_stream": True,
+        }))
+        connector.records_sync_point.update_sync_point = AsyncMock()
+        connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
+        return datasource
+
+    @staticmethod
+    def _ticket(**overrides):
+        return {
+            "id": 5, "subject": "Help", "group_id": 7, "requester_id": 900,
+            "updated_at": "2026-01-01T00:00:00Z", **overrides,
+        }
+
+    async def test_requester_grant_comes_from_the_sideload(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        self._page(
+            zendesk_connector,
+            [self._ticket()],
+            users=[{"id": 900, "email": "end@customer.com", "name": "End",
+                    "role": "end-user"}],
+        )
+
+        await zendesk_connector._sync_tickets()
+
+        record, permissions = mock_data_entities_processor.on_new_records.await_args_list[
+            0
+        ].args[0][0]
+        assert record.reporter_email == "end@customer.com"
+        assert "end@customer.com" in {p.email for p in permissions}
+        # Not written as a user, and not held where the all-tickets group is built from.
+        mock_data_entities_processor.on_new_app_users.assert_not_awaited()
+        assert zendesk_connector._user_id_to_data == {}
+
+    async def test_ticket_page_feeds_shared_org_membership(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        zendesk_connector._org_id_to_data = {
+            "21": {"id": 21, "name": "Acme", "shared_tickets": True}
+        }
+        self._page(
+            zendesk_connector,
+            [self._ticket(organization_id=21)],
+            users=[{"id": 900, "email": "end@acme.com", "organization_id": 21}],
+        )
+
+        await zendesk_connector._sync_tickets()
+
+        groups = mock_data_entities_processor.on_new_user_groups.await_args.args[0]
+        assert groups[0][0].source_user_group_id == "org_21"
+        assert [m.email for m in groups[0][1]] == ["end@acme.com"]
+        assert (
+            mock_data_entities_processor.on_new_user_groups.await_args.kwargs
+            == {"replace_members": False}
+        )
+
+    async def test_unshared_org_gets_no_members(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        """No other org's group is ever granted on a ticket, so filling it is waste."""
+        zendesk_connector._org_id_to_data = {
+            "21": {"id": 21, "name": "Acme", "shared_tickets": False}
+        }
+
+        await zendesk_connector._add_sideloaded_org_members({
+            "users": [{"id": 900, "email": "end@acme.com", "organization_id": 21}],
+        })
+
+        mock_data_entities_processor.on_new_user_groups.assert_not_awaited()
+
+    async def test_org_that_was_never_exported_gets_no_members(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        await zendesk_connector._add_sideloaded_org_members({
+            "users": [{"id": 900, "email": "end@acme.com", "organization_id": 99}],
+        })
+
+        mock_data_entities_processor.on_new_user_groups.assert_not_awaited()
+
+    async def test_users_without_org_or_email_are_skipped(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        zendesk_connector._org_id_to_data = {
+            "21": {"id": 21, "name": "Acme", "shared_tickets": True}
+        }
+
+        await zendesk_connector._add_sideloaded_org_members({"users": [
+            {"id": 1, "email": "no-org@acme.com"},
+            {"id": 2, "organization_id": 21},
+        ]})
+
+        mock_data_entities_processor.on_new_user_groups.assert_not_awaited()
+
+    async def test_each_org_is_written_once_per_page(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        zendesk_connector._org_id_to_data = {
+            "21": {"id": 21, "name": "Acme", "shared_tickets": True},
+            "22": {"id": 22, "name": "Beta", "shared_tickets": True},
+        }
+
+        await zendesk_connector._add_sideloaded_org_members({"users": [
+            {"id": 1, "email": "a@acme.com", "organization_id": 21},
+            {"id": 2, "email": "b@acme.com", "organization_id": 21},
+            {"id": 3, "email": "c@beta.com", "organization_id": 22},
+        ]})
+
+        mock_data_entities_processor.on_new_user_groups.assert_awaited_once()
+        written = {
+            group.source_user_group_id: [m.email for m in members]
+            for group, members in
+            mock_data_entities_processor.on_new_user_groups.await_args.args[0]
+        }
+        assert written == {
+            "org_21": ["a@acme.com", "b@acme.com"], "org_22": ["c@beta.com"],
+        }
+
+    async def test_streamed_attachment_finds_an_uncached_requester(self, zendesk_connector):
+        """The streaming path runs between syncs, when the end user is not held. The
+        ticket's own sideload has to supply the requester or the attachment is born
+        without their grant."""
+        datasource = _ready(zendesk_connector)
+        datasource.show_ticket = AsyncMock(return_value=_make_response(data={
+            "ticket": {"id": 23, "group_id": 7, "requester_id": 900},
+            "users": [{"id": 900, "email": "end@customer.com", "role": "end-user"}],
+        }))
+        assert zendesk_connector._user_data(900) == {}
+
+        permissions = await zendesk_connector._fetch_ticket_permissions("23")
+
+        assert datasource.show_ticket.await_args.kwargs["include"] == "users"
+        assert "end@customer.com" in {p.email for p in permissions}
+
+    def test_sideload_cache_is_bounded(self, zendesk_connector):
+        with patch("app.connectors.sources.zendesk.connector.SIDELOADED_USER_CACHE_SIZE", 3):
+            for user_id in range(1, 6):
+                zendesk_connector._cache_sideloads({"users": [{"id": user_id}]})
+
+        assert list(zendesk_connector._sideloaded_users) == ["3", "4", "5"]
+
+    def test_a_user_seen_again_is_kept_over_an_older_one(self, zendesk_connector):
+        with patch("app.connectors.sources.zendesk.connector.SIDELOADED_USER_CACHE_SIZE", 3):
+            for user_id in (1, 2, 3, 1, 4):
+                zendesk_connector._cache_sideloads({"users": [{"id": user_id}]})
+
+        assert list(zendesk_connector._sideloaded_users) == ["3", "1", "4"]
+
+    def test_staff_record_wins_over_a_sideload(self, zendesk_connector):
+        zendesk_connector._user_id_to_data = {"1": {"id": 1, "role": "admin"}}
+        zendesk_connector._cache_sideloads({"users": [{"id": 1, "role": "end-user"}]})
+
+        assert zendesk_connector._user_data(1)["role"] == "admin"
+
+    def test_unknown_user_is_an_empty_record(self, zendesk_connector):
+        assert zendesk_connector._user_data(None) == {}
+        assert zendesk_connector._user_data(404) == {}

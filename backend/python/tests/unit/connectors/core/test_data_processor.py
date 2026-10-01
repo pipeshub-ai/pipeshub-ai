@@ -1863,6 +1863,45 @@ class TestOnNewUserGroups:
         assert group.id == "existing-ug-id"
         tx_store.delete_edges_to.assert_awaited()
 
+    @pytest.mark.asyncio
+    async def test_keeps_existing_members_when_not_replacing(self):
+        """A caller that sees only part of a group's members must not wipe the rest."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+
+        existing = MagicMock()
+        existing.id = "existing-ug-id"
+        tx_store.get_user_group_by_external_id.return_value = existing
+        user = MagicMock()
+        user.id = "user-1"
+        tx_store.get_user_by_email.return_value = user
+
+        from app.models.entities import AppUser, AppUserGroup, Connectors
+        group = AppUserGroup(
+            app_name=Connectors.GOOGLE_MAIL,
+            connector_id="conn-1",
+            source_user_group_id="sg-1",
+            name="Test Group",
+        )
+        member = AppUser(
+            app_name=Connectors.GOOGLE_MAIL,
+            connector_id="conn-1",
+            source_user_id="u-1",
+            org_id="org-1",
+            email="m@acme.com",
+            full_name="M",
+        )
+        await proc.on_new_user_groups([(group, [member])], replace_members=False)
+
+        assert group.id == "existing-ug-id"
+        tx_store.delete_edges_to.assert_not_awaited()
+        tx_store.batch_upsert_user_groups.assert_awaited()
+        tx_store.batch_create_edges.assert_awaited()
+
 
 # ===========================================================================
 # on_new_app_roles

@@ -94,3 +94,35 @@ class TestIncrementalExportsUseCursorEndpoints:
         )
 
         assert _query(datasource)["include"] == "users,groups"
+
+
+class TestListUsersQuery:
+    """Staff are listed with role[]=agent&role[]=admin on the cursor-paginated /users.
+    A dict cannot repeat a key, and comma-joining reads as one literal role."""
+
+    async def test_repeats_role_for_each_role(self, datasource):
+        await datasource.list_users(roles_=["agent", "admin"])
+
+        assert _url(datasource) == f"{BASE_URL}/users.json"
+        assert _query(datasource) == [("role[]", "agent"), ("role[]", "admin")]
+
+    async def test_sends_cursor_params(self, datasource):
+        await datasource.list_users(
+            roles_=["agent", "admin"], page_size=100, page_after="abc"
+        )
+
+        query = _query(datasource)
+        assert ("page[size]", "100") in query
+        assert ("page[after]", "abc") in query
+        assert query.count(("role[]", "agent")) == 1
+
+    async def test_no_roles_sends_no_role_param(self, datasource):
+        await datasource.list_users(page_size=100)
+
+        assert not any(key.startswith("role") for key, _ in _query(datasource))
+
+    async def test_single_role_filter_still_works(self, datasource):
+        await datasource.list_users(role="agent", include="organizations")
+
+        assert ("role", "agent") in _query(datasource)
+        assert ("include", "organizations") in _query(datasource)

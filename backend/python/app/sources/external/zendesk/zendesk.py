@@ -1021,8 +1021,14 @@ class ZendeskDataSource:
         permission_set: Optional[int] = None,
         external_id: Optional[str] = None,
         include: Optional[str] = None,
+        page: Optional[int] = None,
+        per_page: Optional[int] = None,
+        page_size: Optional[int] = None,
+        page_after: Optional[str] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
+        # Hand-edited generated file; regenerating zendesk.py will drop pagination
+        # and the repeated role[] encoding.
         """List all users
 
         Args:
@@ -1031,6 +1037,10 @@ class ZendeskDataSource:
             permission_set (Optional[int], optional): Filter by permission set ID
             external_id (Optional[str], optional): Filter by external ID
             include (Optional[str], optional): Sideload related data (organizations,roles,abilities,identities,groups)
+            page (Optional[int], optional): Page number for offset pagination
+            per_page (Optional[int], optional): Number of results per page (max 100)
+            page_size (Optional[int], optional): Page size for cursor pagination
+            page_after (Optional[str], optional): Cursor to resume cursor pagination from
 
         Returns:
             ZendeskResponse: Standardized response object
@@ -1043,20 +1053,30 @@ class ZendeskDataSource:
 
             if role is not None:
                 _params["role"] = role
-            if roles_ is not None:
-                _params["roles[]"] = roles_
             if permission_set is not None:
                 _params["permission_set"] = permission_set
             if external_id is not None:
                 _params["external_id"] = external_id
             if include is not None:
                 _params["include"] = include
+            if page is not None:
+                _params["page"] = page
+            if per_page is not None:
+                _params["per_page"] = per_page
+            if page_size is not None:
+                _params["page[size]"] = page_size
+            if page_after is not None:
+                _params["page[after]"] = page_after
+
+            # Zendesk wants role[]=agent&role[]=admin; a dict cannot repeat a key and
+            # comma-joining would be read as one literal role.
+            _query = [*_to_query(_params).items(), *(("role[]", r) for r in roles_ or [])]
 
             request = HTTPRequest(
                 method="GET",
                 url=url,
                 headers=_headers,
-                query=_to_query(_params)
+                query=_query
             )
             response = await self.http.execute(
                 request=request

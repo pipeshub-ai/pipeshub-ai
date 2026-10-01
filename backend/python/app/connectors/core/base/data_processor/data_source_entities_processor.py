@@ -2242,10 +2242,18 @@ class DataSourceEntitiesProcessor:
             await notify_connector_sync_completed(connector_id, self.org_id)
 
     @retry_on_deadlock()
-    async def on_new_user_groups(self, user_groups: list[tuple[AppUserGroup, list[AppUser]]]) -> None:
+    async def on_new_user_groups(
+        self,
+        user_groups: list[tuple[AppUserGroup, list[AppUser]]],
+        *,
+        replace_members: bool = True,
+    ) -> None:
         """
         Processes new user groups, upserts them, and creates permission edges.
         This follows the logic of 'on_new_record_groups'.
+
+        ``replace_members=False`` only adds the given members and keeps the existing ones,
+        for callers that can see just part of a group's membership at a time.
         """
         try:
             if not user_groups:
@@ -2281,11 +2289,12 @@ class DataSourceEntitiesProcessor:
                         user_group.updated_at = get_epoch_timestamp_in_ms()
 
                         # To Delete the previously existing edges to user group and create new permissions
-                        await tx_store.delete_edges_to(
-                            to_id=user_group.id,
-                            to_collection=CollectionNames.GROUPS.value,
-                            collection=CollectionNames.PERMISSION.value
-                        )
+                        if replace_members:
+                            await tx_store.delete_edges_to(
+                                to_id=user_group.id,
+                                to_collection=CollectionNames.GROUPS.value,
+                                collection=CollectionNames.PERMISSION.value
+                            )
 
                     # 1. Upsert the user group document
                     # (This uses batch_upsert_user_groups and the to_arango... method)
