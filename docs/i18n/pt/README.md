@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Toda fonte vira **Blocks** (blocos): uma única representação que mantém tabelas, threads e código intactos e lembra a página, célula ou linha exata de onde veio cada bloco. Os Blocks são organizados de duas formas: pela **estrutura de pastas** de cada sistema de origem e em um **grafo de conhecimento** de pessoas, projetos e clientes. Os agentes exploram os dois com **ferramentas que revelam os detalhes passo a passo**: uma busca mostra primeiro o nome, o resumo e os trechos correspondentes de cada registro, e o agente só se aprofunda (grep, navegar pelas pastas, seguir entidades, ler o registro completo) quando precisa. **Cada chamada de ferramenta é verificada contra as permissões do sistema de origem** para a pessoa em nome de quem o agente atua.
+Toda fonte vira **Blocks** (blocos): uma única representação que mantém tabelas, threads e código intactos e lembra a página, célula ou linha exata de onde veio cada bloco. Cada documento é armazenado como texto puro, então os agentes podem usar `grep` em um PDF, arquivo do Word ou apresentação como em um arquivo de texto. Os Blocks são organizados de duas formas: pela **estrutura de pastas** de cada sistema de origem e em um **grafo de conhecimento** de pessoas, projetos e clientes. Os agentes exploram os dois com **ferramentas que revelam os detalhes passo a passo**: uma busca mostra primeiro o nome, o resumo e os trechos correspondentes de cada registro, e o agente só se aprofunda (grep, navegar pelas pastas, seguir entidades, ler o registro completo) quando precisa. **Cada chamada de ferramenta é verificada contra as permissões do sistema de origem** para a pessoa em nome de quem o agente atua.
 
 **[Leia como funciona a camada de contexto →](../../context-layer.md)** O texto cobre o formato Block, a hierarquia e o grafo, cada ferramenta do agente e o código onde ela vive, a aplicação de permissões, o loop do agente e as limitações atuais.
 
@@ -160,7 +160,7 @@ Quer a mesma recuperação dentro do seu próprio código, ou atrás de uma caix
 
 **Contexto para agentes**
 
-- 🗂️ **Explorável, não só pesquisável:** busca híbrida, `grep` sobre registros, navegação por pastas e consultas ao grafo de conhecimento, todos como ferramentas do agente.
+- 🗂️ **Explorável, não só pesquisável:** busca híbrida, `grep` sobre cada documento (incluindo PDFs e arquivos do Office), navegação por pastas e consultas ao grafo de conhecimento, todos como ferramentas do agente.
 - 🔒 **Respeita permissões em cada etapa:** cada chamada de ferramenta é verificada contra as permissões do sistema de origem para a pessoa em nome de quem o agente atua.
 - 📝 **Citações por bloco:** as respostas citam a página, célula de tabela, linha, slide ou linha de código de onde vieram.
 - 🧱 **Estruturado, semiestruturado e não estruturado em uma só camada:** documentos, planilhas, tickets, threads de chat, código e tabelas SQL viram Blocks.

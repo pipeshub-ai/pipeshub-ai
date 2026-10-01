@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Cada fuente se convierte en **Blocks** (bloques), una representación única que mantiene intactos las tablas, los hilos y el código, y recuerda la página, la celda o la línea exacta de la que sale cada bloque. Los Blocks se organizan de dos formas: según la **estructura de carpetas** de cada sistema de origen y en un **grafo de conocimiento** de personas, proyectos y clientes. Los agentes exploran ambos con **herramientas que muestran el detalle paso a paso**: una búsqueda muestra primero el nombre, el resumen y los fragmentos coincidentes de cada registro, y el agente solo profundiza (grep, recorrer carpetas, seguir entidades, leer el registro completo) cuando lo necesita. **Cada llamada a una herramienta se comprueba contra los permisos del sistema de origen** para la persona en cuyo nombre actúa el agente.
+Cada fuente se convierte en **Blocks** (bloques), una representación única que mantiene intactos las tablas, los hilos y el código, y recuerda la página, la celda o la línea exacta de la que sale cada bloque. Cada documento se guarda como texto plano, así que los agentes pueden hacer `grep` sobre un PDF, un archivo de Word o una presentación igual que sobre un archivo de texto. Los Blocks se organizan de dos formas: según la **estructura de carpetas** de cada sistema de origen y en un **grafo de conocimiento** de personas, proyectos y clientes. Los agentes exploran ambos con **herramientas que muestran el detalle paso a paso**: una búsqueda muestra primero el nombre, el resumen y los fragmentos coincidentes de cada registro, y el agente solo profundiza (grep, recorrer carpetas, seguir entidades, leer el registro completo) cuando lo necesita. **Cada llamada a una herramienta se comprueba contra los permisos del sistema de origen** para la persona en cuyo nombre actúa el agente.
 
 **[Lee cómo funciona la capa de contexto →](../../context-layer.md)** Cubre el formato de Blocks, la jerarquía y el grafo, cada herramienta del agente y el código donde vive, la aplicación de permisos, el bucle del agente y las limitaciones actuales.
 
@@ -160,7 +160,7 @@ Mediante MCP, los asistentes ya tienen hoy las herramientas de búsqueda, chat y
 
 **Contexto para agentes**
 
-- 🗂️ **Explorable, no solo consultable:** búsqueda híbrida, `grep` sobre registros, navegación por carpetas y consultas al grafo de conocimiento, todo como herramientas del agente.
+- 🗂️ **Explorable, no solo consultable:** búsqueda híbrida, `grep` sobre cada documento (incluidos PDF y archivos de Office), navegación por carpetas y consultas al grafo de conocimiento, todo como herramientas del agente.
 - 🔒 **Respeta los permisos en cada paso:** cada llamada a una herramienta se comprueba contra los permisos del sistema de origen para la persona en cuyo nombre actúa el agente.
 - 📝 **Citas a nivel de bloque:** las respuestas citan la página, la celda, la fila, la diapositiva o la línea de la que provienen.
 - 🧱 **Estructurado, semiestructurado y no estructurado en una sola capa:** documentos, hojas de cálculo, tickets, hilos de chat, código y tablas SQL se convierten en Blocks.

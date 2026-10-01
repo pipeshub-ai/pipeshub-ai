@@ -103,7 +103,7 @@ flowchart LR
   P --> Consumers
 ```
 
-Chaque source devient des **Blocks** (des blocs), une représentation unique qui garde intacts les tableaux, les fils de discussion et le code, et qui retient la page, la cellule ou la ligne exacte d'où vient chaque bloc. Les Blocks sont organisés de deux façons : selon la **structure de dossiers** de chaque système source, et dans un **graphe de connaissances** des personnes, des projets et des clients. Les agents explorent les deux avec des **outils qui révèlent le détail étape par étape** : une recherche affiche d'abord le nom, le résumé et les passages correspondants de chaque enregistrement, et l'agent ne creuse davantage (grep, parcours des dossiers, suivi des entités, lecture de l'enregistrement complet) que s'il en a besoin. **Chaque appel d'outil est vérifié par rapport aux permissions du système source** pour la personne au nom de laquelle l'agent agit.
+Chaque source devient des **Blocks** (des blocs), une représentation unique qui garde intacts les tableaux, les fils de discussion et le code, et qui retient la page, la cellule ou la ligne exacte d'où vient chaque bloc. Chaque document est stocké en texte brut, donc les agents peuvent faire un `grep` sur un PDF, un fichier Word ou une présentation comme sur un fichier texte. Les Blocks sont organisés de deux façons : selon la **structure de dossiers** de chaque système source, et dans un **graphe de connaissances** des personnes, des projets et des clients. Les agents explorent les deux avec des **outils qui révèlent le détail étape par étape** : une recherche affiche d'abord le nom, le résumé et les passages correspondants de chaque enregistrement, et l'agent ne creuse davantage (grep, parcours des dossiers, suivi des entités, lecture de l'enregistrement complet) que s'il en a besoin. **Chaque appel d'outil est vérifié par rapport aux permissions du système source** pour la personne au nom de laquelle l'agent agit.
 
 **[Découvrez comment fonctionne la couche de contexte →](../../context-layer.md)** Ce document couvre le format des Blocks, la hiérarchie et le graphe, chaque outil d'agent et le code qui l'implémente, l'application des permissions, la boucle d'agent et les limites actuelles.
 
@@ -160,7 +160,7 @@ Vous voulez la même récupération dans votre propre code, ou derrière une bar
 
 **Du contexte pour les agents**
 
-- 🗂️ **Explorable, pas seulement interrogeable :** recherche hybride, `grep` sur les enregistrements, navigation dans les dossiers et requêtes dans le graphe de connaissances, le tout sous forme d'outils d'agent.
+- 🗂️ **Explorable, pas seulement interrogeable :** recherche hybride, `grep` sur chaque document (PDF et fichiers Office compris), navigation dans les dossiers et requêtes dans le graphe de connaissances, le tout sous forme d'outils d'agent.
 - 🔒 **Respect des permissions à chaque étape :** chaque appel d'outil est vérifié par rapport aux permissions du système source pour la personne au nom de laquelle l'agent agit.
 - 📝 **Citations au niveau du bloc :** les réponses citent la page, la cellule de tableau, la ligne, la diapositive ou la ligne de code dont elles proviennent.
 - 🧱 **Structuré, semi-structuré et non structuré dans une seule couche :** documents, tableurs, tickets, fils de discussion, code et tables SQL deviennent tous des Blocks.

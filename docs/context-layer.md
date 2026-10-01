@@ -25,6 +25,10 @@ Indexing parses every file, page, message, ticket, spreadsheet and database tabl
 
 Structured (SQL, CRM), semi-structured (spreadsheets, tickets, chat) and unstructured (documents, pages) sources all end up in this one shape. Agents reason over one format instead of one per source.
 
+### Every document becomes greppable text
+
+PipesHub saves the text of every record as a file, in folders that match the source system. So `grep` works on PDFs (scanned ones too), Word files, slide decks, spreadsheets, emails and chat threads, not just plain text files. When `grep` finds a match, the agent can open that record and cite the exact block.
+
 ## 2. How the Blocks are organized: folders and a knowledge graph
 
 **Hierarchy.** Records keep the structure of the system they came from: app → space or drive → folder → record → block. Parent/child and other typed relations (`PARENT_CHILD`, `LINKED_TO`, `BLOCKS`, `DEPENDS_ON`, `FOREIGN_KEY`, …) are graph edges.
@@ -44,7 +48,7 @@ Instead of filling the agent's context with everything up front, PipesHub gives 
 | Tool | What it does | Code |
 | --- | --- | --- |
 | `search` | Hybrid dense + BM25 search fused with reciprocal rank fusion (Qdrant or OpenSearch), with LLM-written `grep` patterns run alongside. Hits come back with graph context: parent and related records. | `agents/actions/knowledge_graph/`, `utils/pattern_match.py`, `utils/chat_helpers.py` |
-| `run_command`, `find_records` | Runs `grep`, `rg`, `find`, `ls`, `head`, `tail`, `wc`, `sort`, `uniq` and similar over records stored as files that mirror the source layout (`records/<connector>/<space>/<folder>/…`). There is no shell, dangerous flags are blocked, and `find_records` turns matching paths into record IDs. | `agents/actions/storage_search/storage_search.py` |
+| `run_command`, `find_records` | Runs `grep`, `rg`, `find`, `ls`, `head`, `tail`, `wc`, `sort`, `uniq` and similar over the text of every record, PDFs and Office files included, stored in folders that match the source (`records/<connector>/<space>/<folder>/…`). There is no shell, dangerous flags are blocked, and `find_records` turns matching paths into record IDs. | `agents/actions/storage_search/storage_search.py` |
 | `navigate`, `list_files` | Walks app → space → folder → record up to three levels at once, with breadcrumbs, paging and date filters. Accepts a URL or issue key as the starting node. | `agents/actions/knowledge_graph/` |
 | `lookup_record` | Turns a URL, Jira key or external ID into a PipesHub record. | `agents/actions/knowledge_graph/` |
 | `search_entities`, `find_records_by_entity` | Finds a person, project or customer, then every record that mentions them. | `agents/actions/knowledge_graph/` |
@@ -87,3 +91,5 @@ Answers cite blocks as `[source](refN)`. Each reference maps to a real block, an
 - `grep` and `find` over records work when blob storage is local. On S3 or Azure Blob, search still runs, but the pattern-match tools are skipped.
 - MCP exposes search, chat and record tools. `grep`, `navigate` and the entity tools are available to PipesHub's own agents and are coming to MCP next.
 - A `wc -l` style count can include records the user cannot open. The lines themselves are filtered.
+- `grep` skips very large records (over 20 MB of text). Search still finds them.
+- `grep` can't yet match accented or non-Latin characters (é, ü, Cyrillic, Chinese). Search still finds that text.
