@@ -363,7 +363,8 @@ class TestHandleDelete:
             })
 
         assert result is True
-        service.app_container.messaging_producer.send_message.assert_awaited_once()
+        # The record cleanup, then the entity cleanup.
+        assert service.app_container.messaging_producer.send_message.await_count == 2
 
     async def _delete_with_helper(self, service, helper):
         with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm, \
