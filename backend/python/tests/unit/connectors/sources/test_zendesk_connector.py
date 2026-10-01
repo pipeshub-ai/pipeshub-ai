@@ -51,6 +51,7 @@ def mock_data_entities_processor(mock_tx_store):
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.on_new_user_groups = AsyncMock()
+    proc.on_updated_record_permissions = AsyncMock()
     proc.reindex_existing_records = AsyncMock()
 
     async def _get_record_by_external_id(connector_id, external_record_id):
@@ -373,7 +374,7 @@ class TestTicketToRecord:
         })
 
         group_ids = {p.external_id for p in permissions if p.entity_type == EntityType.GROUP}
-        assert group_ids == {"group_7", "org_21"}
+        assert group_ids == {"group_7", "org_21", "role_all_tickets"}
 
     async def test_org_grant_withheld_when_tickets_are_not_shared(self, zendesk_connector):
         """Regression: granted unconditionally, every end user saw the whole org."""
@@ -384,7 +385,7 @@ class TestTicketToRecord:
         })
 
         group_ids = {p.external_id for p in permissions if p.entity_type == EntityType.GROUP}
-        assert group_ids == {"group_7"}
+        assert group_ids == {"group_7", "role_all_tickets"}
 
     async def test_org_grant_withheld_when_org_is_absent_from_the_export(self, zendesk_connector):
         """An org we never fetched is one we cannot justify sharing — fail closed."""
@@ -394,7 +395,7 @@ class TestTicketToRecord:
             "id": 555, "subject": "Printer", "group_id": 7, "organization_id": 21,
         })
 
-        assert {p.external_id for p in permissions if p.entity_type == EntityType.GROUP} == {"group_7"}
+        assert {p.external_id for p in permissions if p.entity_type == EntityType.GROUP} == {"group_7", "role_all_tickets"}
 
     async def test_org_grant_withheld_when_flag_missing(self, zendesk_connector):
         """Zendesk omits shared_tickets on some payloads; absent must read as false."""
@@ -404,7 +405,7 @@ class TestTicketToRecord:
             "id": 555, "subject": "Printer", "group_id": 7, "organization_id": 21,
         })
 
-        assert {p.external_id for p in permissions if p.entity_type == EntityType.GROUP} == {"group_7"}
+        assert {p.external_id for p in permissions if p.entity_type == EntityType.GROUP} == {"group_7", "role_all_tickets"}
 
     async def test_skips_unchanged_ticket(self, zendesk_connector, mock_tx_store):
         existing = MagicMock()
@@ -967,18 +968,207 @@ class TestRecordPermissions:
     def test_group_and_requester(self, zendesk_connector):
         perms = zendesk_connector._record_permissions(7, {"email": "req@acme.com"})
         assert {p.entity_type for p in perms} == {EntityType.GROUP, EntityType.USER}
-        group_perm = next(p for p in perms if p.entity_type == EntityType.GROUP)
-        assert group_perm.external_id == "group_7"
+        group_perm = next(p for p in perms if p.external_id == "group_7")
         assert group_perm.type == PermissionType.READ
 
+    def test_all_tickets_group_is_always_granted(self, zendesk_connector):
+        perms = zendesk_connector._record_permissions(7, {"email": "req@acme.com"})
+        assert any(
+            p.external_id == "role_all_tickets" and p.entity_type == EntityType.GROUP
+            for p in perms
+        )
+
     def test_never_falls_back_to_org_when_nothing_known(self, zendesk_connector):
-        # Fail closed: an unresolvable record stays invisible rather than org-wide.
-        assert zendesk_connector._record_permissions(None, {}) == []
+        # Fail closed: nobody but all-tickets users sees a record with no group or requester.
+        perms = zendesk_connector._record_permissions(None, {})
+        assert [p.external_id for p in perms] == ["role_all_tickets"]
 
 
 # ===========================================================================
 # reindex_records — must not widen ACLs
 # ===========================================================================
+
+
+class TestAllTicketsAccess:
+    """Zendesk admins and all-access agents read every ticket regardless of group."""
+
+    ROLES = {"10": "all", "11": "within-groups", "12": "assigned-only"}
+
+    @pytest.mark.parametrize("user, expected", [
+        ({"id": 1, "role": "admin"}, True),
+        ({"id": 2, "role": "agent", "custom_role_id": None}, True),
+        ({"id": 3, "role": "agent", "custom_role_id": 10}, True),
+        ({"id": 4, "role": "agent", "custom_role_id": 11}, False),
+        ({"id": 5, "role": "agent", "custom_role_id": 12}, False),
+        ({"id": 6, "role": "agent", "custom_role_id": 99}, False),
+        ({"id": 7, "role": "end-user"}, False),
+        ({"id": 8, "role": "admin", "active": False}, False),
+        ({"id": 9, "role": "agent", "suspended": True}, False),
+    ])
+    def test_role_resolution(self, zendesk_connector, user, expected):
+        assert zendesk_connector._has_all_tickets_access(user, self.ROLES) is expected
+
+    async def test_group_contains_only_all_access_users(self, zendesk_connector):
+        _ready(zendesk_connector)
+        zendesk_connector.data_source.list_custom_roles = AsyncMock(
+            return_value=_make_response(data={"custom_roles": [
+                {"id": 10, "configuration": {"ticket_access": "all"}},
+                {"id": 11, "configuration": {"ticket_access": "within-groups"}},
+            ]})
+        )
+        users = {
+            "1": {"id": 1, "role": "admin"},
+            "2": {"id": 2, "role": "agent", "custom_role_id": 11},
+            "3": {"id": 3, "role": "agent", "custom_role_id": 10},
+            "4": {"id": 4, "role": "end-user"},
+        }
+        zendesk_connector._user_id_to_data = users
+        zendesk_connector._user_id_to_app_user = {
+            uid: _app_user(uid, f"u{uid}@acme.com") for uid in users
+        }
+
+        (group, members), complete = await zendesk_connector._build_all_tickets_group()
+
+        assert complete is True
+        assert group.source_user_group_id == "role_all_tickets"
+        assert sorted(m.source_user_id for m in members) == ["1", "3"]
+
+    async def test_plan_without_custom_roles_is_complete(self, zendesk_connector):
+        _ready(zendesk_connector)  # list_custom_roles answers 403
+
+        access, complete = await zendesk_connector._fetch_custom_role_ticket_access()
+
+        assert (access, complete) == ({}, True)
+
+    async def test_failed_role_export_is_incomplete(self, zendesk_connector):
+        _ready(zendesk_connector)
+        zendesk_connector.data_source.list_custom_roles = AsyncMock(
+            return_value=_make_response(success=False, status_code=400, error="bad")
+        )
+
+        _, complete = await zendesk_connector._fetch_custom_role_ticket_access()
+
+        assert complete is False
+
+    @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
+           new_callable=AsyncMock, return_value=({}, {}))
+    async def test_failed_role_export_skips_group_write_and_tickets(
+        self, _f, zendesk_connector, mock_data_entities_processor
+    ):
+        """The group is rebuilt from scratch, and tickets synced without its grant
+        would never be repaired once the checkpoint moved on."""
+        _ready(zendesk_connector)
+        zendesk_connector.data_source.list_custom_roles = AsyncMock(
+            return_value=_make_response(success=False, status_code=400, error="bad")
+        )
+        user = _app_user()
+        zendesk_connector._fetch_users = AsyncMock(return_value=([user], {"1": user}, True))
+        zendesk_connector._fetch_groups = AsyncMock(return_value=([], [], True))
+        zendesk_connector._fetch_organizations = AsyncMock(return_value=([], True))
+        zendesk_connector._sync_tickets = AsyncMock(return_value=3)
+        zendesk_connector._sync_help_center_articles = AsyncMock(return_value=0)
+
+        await zendesk_connector.run_sync()
+
+        mock_data_entities_processor.on_new_user_groups.assert_not_awaited()
+        zendesk_connector._sync_tickets.assert_not_awaited()
+
+    async def test_record_groups_grant_all_tickets_group(self, zendesk_connector):
+        datasource = _ready(zendesk_connector)
+        datasource.list_groups = AsyncMock(return_value=_make_response(
+            data={"groups": [{"id": 7, "name": "Support"}], "meta": {"has_more": False}}
+        ))
+        datasource.list_group_memberships = AsyncMock(return_value=_make_response(
+            data={"group_memberships": [], "meta": {"has_more": False}}
+        ))
+
+        record_groups, _, _ = await zendesk_connector._fetch_groups({})
+
+        granted = {p.external_id for p in record_groups[0][1]}
+        assert granted == {"group_7", "role_all_tickets"}
+
+
+class TestStaleGrantReplacement:
+    """on_new_records only adds permission edges, so a moved ticket kept its old grants."""
+
+    @staticmethod
+    def _record(version):
+        rec = TestAttachmentChildRecords._parent()
+        rec.version = version
+        return rec
+
+    async def test_existing_ticket_gets_its_grants_replaced(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        zendesk_connector._rebuild_ticket_edges = False
+        perms = [object()]
+
+        await zendesk_connector._replace_changed_record_permissions(
+            [(self._record(version=3), perms)]
+        )
+
+        mock_data_entities_processor.on_updated_record_permissions.assert_awaited_once()
+        assert mock_data_entities_processor.on_updated_record_permissions.await_args.args[1] is perms
+
+    async def test_new_ticket_is_left_alone(self, zendesk_connector, mock_data_entities_processor):
+        zendesk_connector._rebuild_ticket_edges = False
+
+        await zendesk_connector._replace_changed_record_permissions(
+            [(self._record(version=0), [])]
+        )
+
+        mock_data_entities_processor.on_updated_record_permissions.assert_not_awaited()
+
+    async def test_skipped_after_full_sync_wipe(self, zendesk_connector, mock_data_entities_processor):
+        """Edges are already gone, so adding is correct and replacing is wasted work."""
+        zendesk_connector._rebuild_ticket_edges = True
+
+        await zendesk_connector._replace_changed_record_permissions(
+            [(self._record(version=3), [])]
+        )
+
+        mock_data_entities_processor.on_updated_record_permissions.assert_not_awaited()
+
+    async def test_existing_attachment_follows_its_moved_ticket(
+        self, zendesk_connector, mock_data_entities_processor, mock_tx_store
+    ):
+        stored = MagicMock()
+        stored.id = "file-1"
+        stored.version = 0
+        stored.external_record_group_id = "group_OLD"
+        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=stored)
+        zendesk_connector._rebuild_ticket_edges = False
+        comment = {"id": 5, "attachments": [{
+            "id": 88, "file_name": "a.txt",
+            "content_url": "https://acme.zendesk.com/attachments/88",
+        }]}
+
+        await zendesk_connector._build_attachment_child_records(
+            comment, TestAttachmentChildRecords._parent()
+        )
+
+        published, _ = mock_data_entities_processor.on_new_records.await_args.args[0][0]
+        assert published.external_record_group_id == "group_7"
+
+    async def test_unmoved_attachment_is_not_resent(
+        self, zendesk_connector, mock_data_entities_processor, mock_tx_store
+    ):
+        stored = MagicMock()
+        stored.id = "file-1"
+        stored.version = 0
+        stored.external_record_group_id = "group_7"
+        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=stored)
+        zendesk_connector._rebuild_ticket_edges = False
+        comment = {"id": 5, "attachments": [{
+            "id": 88, "file_name": "a.txt",
+            "content_url": "https://acme.zendesk.com/attachments/88",
+        }]}
+
+        await zendesk_connector._build_attachment_child_records(
+            comment, TestAttachmentChildRecords._parent()
+        )
+
+        mock_data_entities_processor.on_new_records.assert_not_awaited()
 
 
 class TestReindexRecords:
@@ -1272,6 +1462,10 @@ def _ready(connector):
     connector.data_source.list_categories = AsyncMock(
         return_value=_make_response(data={"categories": []})
     )
+    # A plan without custom roles: only the built-in admin and agent roles apply.
+    connector.data_source.list_custom_roles = AsyncMock(
+        return_value=_make_response(success=False, status_code=403, error="Forbidden")
+    )
     connector.data_source.show_section = AsyncMock(
         return_value=_make_response(success=False, error="not stubbed")
     )
@@ -1379,7 +1573,13 @@ class TestRunSync:
         await zendesk_connector.run_sync()
 
         mock_data_entities_processor.on_new_app_users.assert_not_awaited()
-        mock_data_entities_processor.on_new_user_groups.assert_not_awaited()
+        # Only the all-tickets group: always written so ticket grants never dangle.
+        written = [
+            ug.source_user_group_id
+            for call in mock_data_entities_processor.on_new_user_groups.await_args_list
+            for ug, _ in call.args[0]
+        ]
+        assert written == ["role_all_tickets"]
         mock_data_entities_processor.on_new_record_groups.assert_not_awaited()
 
     async def test_incremental_sync_delegates_to_full_sync(self, zendesk_connector):
@@ -1616,7 +1816,10 @@ class TestFetchOrganizations:
                    new_callable=AsyncMock, return_value=({}, {})):
             await zendesk_connector.run_sync()
 
-        mock_data_entities_processor.on_new_user_groups.assert_not_awaited()
+        assert all(
+            call.args[0] != [("o_ug", [])]
+            for call in mock_data_entities_processor.on_new_user_groups.await_args_list
+        )
 
     async def test_logs_and_stops_on_failure(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
@@ -1975,6 +2178,7 @@ class TestAttachmentChildRecords:
         existing = MagicMock()
         existing.id = "rec-att"
         existing.version = 4
+        existing.external_record_group_id = "group_7"
         mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
         return existing
 
@@ -2680,6 +2884,7 @@ class TestArticleSyncPoint:
     ):
         """Tickets disabled by filter never write their key. Deriving one flag from it
         would re-emit every article on every run, forever."""
+        _ready(zendesk_connector)
         TestRunSync._stub_stages(zendesk_connector, _app_user())
         zendesk_connector.records_sync_point.read_sync_point = AsyncMock(
             side_effect=lambda key: (
