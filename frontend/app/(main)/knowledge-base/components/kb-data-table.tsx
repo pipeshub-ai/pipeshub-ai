@@ -7,8 +7,7 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useKnowledgeBaseStore } from '../store';
 import { useTranslation } from 'react-i18next';
 import { DeleteConfirmationDialog } from './dialogs'; 
-import { KbListView } from './kb-list-view';
-import { KbGridView } from './kb-grid-view';
+import { KbGridView, KbListView } from '@/config';
 import type {
   KnowledgeBaseItem,
   KnowledgeHubNode,

@@ -998,3 +998,44 @@ class TestHandleDelete:
                 "orgId": "org1", "connectorId": "c1"
             })
             assert result is True
+
+    @pytest.mark.asyncio
+    async def test_graph_record_groups_reach_entity_cleanup(self, service):
+        """The groups are gone from the graph after deletion; the entity store
+        needs them to strip shared taxonomy entities."""
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [], "record_group_ids": ["rg-1"],
+        })
+        store = AsyncMock()
+        service.app_container.entity_vector_store = AsyncMock(return_value=store)
+        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            service.app_container.config_service.return_value = AsyncMock()
+            await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        kwargs = store.delete_entities_by_connector.await_args.kwargs
+        assert kwargs["org_id"] == "org1" and kwargs["connector_id"] == "c1"
+        assert kwargs["record_group_ids"] == ["rg-1"]
+        service.graph_provider.get_taxonomy_entity_membership = AsyncMock(return_value={})
+        await kwargs["membership_lookup"]([{"id": "t1", "type": "topic"}])
+        service.graph_provider.get_taxonomy_entity_membership.assert_awaited_once_with(
+            [{"id": "t1", "type": "topic"}], "org1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_entity_cleanup_failure_is_logged_as_a_failure(self, service):
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [],
+        })
+        store = AsyncMock()
+        store.delete_entities_by_connector = AsyncMock(side_effect=RuntimeError("vector db down"))
+        service.app_container.entity_vector_store = AsyncMock(return_value=store)
+        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            service.app_container.config_service.return_value = AsyncMock()
+            result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        assert result is True
+        logged = " ".join(str(c.args[0]) for c in service.logger.info.call_args_list)
+        assert "Entity vector store entries removed" not in logged
+        assert any("entity vector store" in str(c.args[0]) for c in service.logger.error.call_args_list)

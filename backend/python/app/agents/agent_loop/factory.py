@@ -92,6 +92,7 @@ from app.agent_loop_lib.hooks.middleware.builtin.tool_result_clearing import (
 )
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
+from app.agent_loop_lib.sandbox.coding.settings import SandboxUnavailableError
 from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import (
     RetrieveArtifactContentTool,
 )
@@ -117,6 +118,7 @@ from app.agents.agent_loop.hooks import (
     citation_tracking,
     completion_gate,
     conversation_enrichment,
+    progressive_entity_tools,
     resolve_attachments_for_goal,
     resolve_history_attachments,
     result_accumulation,
@@ -125,6 +127,11 @@ from app.agents.agent_loop.hooks import (
     shape_image_injection,
     shape_retrieved_image_injection,
     stash_tool_call_metadata,
+)
+from app.agents.agent_loop.hooks.progressive_tools import (
+    ENTITY_TOOL_NAMES,
+    PROGRESSIVE_TOOL_NAMES,
+    entity_tools_used_in_history,
 )
 from app.agents.agent_loop.image_guard import with_image_cap
 from app.agents.agent_loop.langchain_transport import (
@@ -255,6 +262,18 @@ def _composed_agents_enabled() -> bool:
     customer-facing setting, exists so a deployment can fall back to the
     flat all-tools agent without a code change."""
     return os.getenv("PIPESHUB_USE_COMPOSED_AGENTS", "true").strip().lower() == "true"
+
+
+def _initial_entity_tool_grant(tool_names: list[str], context: "AgentContext") -> list[str]:
+    """Entity tools are hidden when no entity store is wired (they could only
+    fail). ``find_records_by_entity`` needs an entityId, so it starts hidden
+    until ``search_entities`` runs (``hooks/progressive_tools.py``) — unless an
+    earlier turn already used an entity tool and its ids are in the history."""
+    if not context.tool_state.get("entity_vector_store"):
+        return [n for n in tool_names if n not in ENTITY_TOOL_NAMES]
+    if entity_tools_used_in_history(context.previous_conversations):
+        return tool_names
+    return [n for n in tool_names if n not in PROGRESSIVE_TOOL_NAMES]
 
 
 class PipesHubAgentFactory:
@@ -453,9 +472,26 @@ class PipesHubAgentFactory:
         sandbox_manager = None
         if code_exec_enabled:
             _mark("f:pre_sandbox")
-            sandbox_manager = await build_coding_sandbox_manager(
-                allow_network=network_enabled, ctx=context,
+            try:
+                sandbox_manager = await build_coding_sandbox_manager(
+                    allow_network=network_enabled, ctx=context,
+                )
+            except SandboxUnavailableError as exc:
+                # Fail closed but keep the chat: no SANDBOX_MODE (or a typo)
+                # means no code execution this turn, not an in-process
+                # fallback and not a 500.
+                code_exec_enabled = False
+                logger.warning(
+                    "PipesHubAgentFactory.create: coding-sandbox tools NOT registered "
+                    "(org_id=%s conversation_id=%s): %s",
+                    context.org_id, context.conversation_id, exc,
+                )
+        else:
+            logger.info(
+                "PipesHubAgentFactory.create: code execution disabled — coding-sandbox tools "
+                "(run_code/install_packages/read_sandbox_file) will NOT be available this turn"
             )
+        if sandbox_manager is not None:
             register_coding_sandbox_tools(tool_registry, sandbox_manager, allow_network=network_enabled)
             # Stashed on the context (not returned from create()) so
             # stream_bridge.py's finally block can tear it down without
@@ -465,11 +501,6 @@ class PipesHubAgentFactory:
                 "PipesHubAgentFactory.create: registered coding-sandbox tools: %s (network=%s)",
                 [n for n in tool_registry.names() if n in ("run_code", "install_packages", "read_sandbox_file")],
                 network_enabled,
-            )
-        else:
-            logger.info(
-                "PipesHubAgentFactory.create: code execution disabled — coding-sandbox tools "
-                "(run_code/install_packages/read_sandbox_file) will NOT be available this turn"
             )
 
         # Skills subsystem, gated by two layers that must BOTH be true:
@@ -729,7 +760,8 @@ class PipesHubAgentFactory:
             if mode.loop_kind == "orchestrator":
                 runtime.spec_factory = domain_spec_factory(
                     provider=_transport_provider(), model_name=model_name,
-                    default_tool_names=composed_names, context=context,
+                    default_tool_names=_initial_entity_tool_grant(composed_names, context),
+                    context=context,
                 )
             elif mode.loop_kind == "plan_execute":
                 # `composition_plan` was snapshotted by `plan_domain_agents()`
@@ -748,9 +780,10 @@ class PipesHubAgentFactory:
             # this feature's pre-existing behavior.
             runtime.spec_factory = domain_spec_factory(
                 provider=_transport_provider(), model_name=model_name,
-                default_tool_names=[
-                    n for n in tool_registry.names() if n not in COORDINATION_TOOL_NAMES
-                ],
+                default_tool_names=_initial_entity_tool_grant(
+                    [n for n in tool_registry.names() if n not in COORDINATION_TOOL_NAMES],
+                    context,
+                ),
                 context=context,
             )
 
@@ -838,6 +871,8 @@ class PipesHubAgentFactory:
                 "(org_id=%s conversation_id=%s)",
                 len(tool_names), context.org_id, context.conversation_id,
             )
+
+        tool_names = _initial_entity_tool_grant(tool_names, context)
 
         spec = AgentSpec(
             name="pipeshub-agent",
@@ -1016,6 +1051,7 @@ class PipesHubAgentFactory:
 
         collector = CitationCollector(context)
         hooks.on(HookEvent.POST_TOOL_USE).use(citation_tracking(context, collector))
+        hooks.on(HookEvent.POST_TOOL_USE).use(progressive_entity_tools(context))
 
         hooks.on(HookEvent.PRE_TOOL_USE).use(stash_tool_call_metadata)
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))

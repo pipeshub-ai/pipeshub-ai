@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { Response, NextFunction } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
@@ -10,6 +10,7 @@ import { configPaths } from '../paths/paths';
 import {
   BadRequestError,
   ConflictError,
+  ForbiddenError,
   InternalServerError,
   NotFoundError,
   ServiceUnavailableError,
@@ -34,7 +35,10 @@ import { TelemetryService } from '../../../libs/services/telemetry/telemetry.ser
 import { loadConfigurationManagerConfig } from '../config/config';
 import { findActiveOrgById } from '../../user_management/utils/org.utils';
 
-import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
+import {
+  DefaultStorageConfig,
+  resolveFrontendPublicUrl,
+} from '../../tokens_manager/services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { generateFetchConfigAuthToken } from '../../auth/utils/generateAuthToken';
 import { SamlController } from '../../auth/controller/saml.controller';
@@ -2291,6 +2295,46 @@ export const getFrontendUrl =
     }
   };
 
+/**
+ * The configured public frontend URL, for the desktop app only.
+ *
+ * The desktop app's OAuth redirect URI has to point at the frontend origin,
+ * but the app knows only the API base URL the user typed, and those are
+ * different origins whenever the UI is served separately from the API. It
+ * calls this once as the sign-in screen loads, before any session exists.
+ *
+ * The `client-name: desktop` check is not a security boundary: the header is
+ * client-supplied, and the desktop app is a public client, so nothing it
+ * ships could prove its identity. It only keeps the value off responses to
+ * browsers, which have `window.location` and never need it.
+ *
+ * Resolved the same way as `AppConfig.frontendUrl`, which GitHub's
+ * authorization code is redeemed against, so the two cannot drift apart. Read
+ * per request because this module's `AppConfig` is not reloaded when an admin
+ * changes the URL.
+ */
+export const getDesktopFrontendUrl =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (req.headers['client-name'] !== 'desktop') {
+        throw new ForbiddenError(
+          'This endpoint is only available to the PipesHub desktop app.',
+        );
+      }
+      const urls =
+        (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
+      const parsedUrls = JSON.parse(urls);
+      res.status(200).json({
+        frontendUrl: resolveFrontendPublicUrl(
+          parsedUrls?.frontend?.publicEndpoint,
+        ),
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
 export const setFrontendUrl =
   (
     keyValueStoreService: KeyValueStoreService,
@@ -3255,7 +3299,7 @@ export const addAIModelProvider =
       }
 
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/health-check/${modelType}`,
+        uri: `${appConfig.aiBackend}/api/v1/health-check/${encodeURIComponent(String(modelType))}`,
         method: HttpMethod.POST,
         headers: req.headers as Record<string, string>,
         body: healthCheckPayload,
@@ -4022,7 +4066,7 @@ export const updateDefaultAIModel =
           );
         } else {
           const aiServiceCommand = new AIServiceCommand({
-            uri: `${appConfig.aiBackend}/api/v1/health-check/${targetModelType}`,
+            uri: `${appConfig.aiBackend}/api/v1/health-check/${encodeURIComponent(targetModelType)}`,
             method: HttpMethod.POST,
             headers: req.headers as Record<string, string>,
             body: {

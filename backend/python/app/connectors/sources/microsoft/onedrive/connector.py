@@ -58,6 +58,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     RecordUpdate,
     map_msgraph_role_to_permission_type,
 )
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -390,7 +391,15 @@ class OneDriveConnector(BaseConnector):
             )
             existing_file_record = None
             if existing_record:
-                existing_file_record = await self.data_entities_processor.get_file_record_by_id(existing_record.id)
+                try:
+                    existing_file_record = await self.data_entities_processor.get_file_record_by_id(existing_record.id)
+                except GraphQueryError as read_error:
+                    # Without the stored hashes a content change can't be seen, so read the page again.
+                    if hold_page_on_incomplete_walk:
+                        raise DrivePageIncompleteError(
+                            f"stored file record of item {item.id} could not be read"
+                        ) from read_error
+                    raise
 
 
             # Detect changes

@@ -35,6 +35,7 @@ import {
   getGoogleWorkspaceOauthConfig,
   setGoogleWorkspaceOauthConfig,
   getFrontendUrl,
+  getDesktopFrontendUrl,
   setFrontendUrl,
   getConnectorPublicUrl,
   setConnectorPublicUrl,
@@ -1051,6 +1052,61 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0]).to.deep.equal({ url: 'https://app.example.com' })
+    })
+  })
+
+  describe('getDesktopFrontendUrl', () => {
+    let savedFrontendPublicUrl: string | undefined
+
+    beforeEach(() => {
+      savedFrontendPublicUrl = process.env.FRONTEND_PUBLIC_URL
+      delete process.env.FRONTEND_PUBLIC_URL
+    })
+
+    afterEach(() => {
+      if (savedFrontendPublicUrl === undefined) delete process.env.FRONTEND_PUBLIC_URL
+      else process.env.FRONTEND_PUBLIC_URL = savedFrontendPublicUrl
+    })
+
+    it('rejects callers that are not the desktop app, without reading config', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = getDesktopFrontendUrl(kvs)
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(createMockRequest({ user: undefined }), res, next)
+
+      expect(next.firstCall.args[0]).to.have.property('statusCode', 403)
+      expect(res.json.called).to.be.false
+      expect(kvs.get.called).to.be.false
+    })
+
+    it('returns the stored frontend url to the desktop app, without a session', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(JSON.stringify({ frontend: { publicEndpoint: 'https://app.example.com/' } })),
+      })
+      const handler = getDesktopFrontendUrl(kvs)
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(createMockRequest({ user: undefined, headers: { 'client-name': 'desktop' } }), res, next)
+
+      expect(next.called).to.be.false
+      expect(res.json.firstCall.args[0]).to.deep.equal({ frontendUrl: 'https://app.example.com' })
+      expect(kvs.set.called).to.be.false
+    })
+
+    it('prefers FRONTEND_PUBLIC_URL over the stored value, as AppConfig.frontendUrl does', async () => {
+      process.env.FRONTEND_PUBLIC_URL = 'https://env.example.com'
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(JSON.stringify({ frontend: { publicEndpoint: 'https://app.example.com' } })),
+      })
+      const handler = getDesktopFrontendUrl(kvs)
+      const res = createMockResponse()
+
+      await handler(createMockRequest({ headers: { 'client-name': 'desktop' } }), res, createMockNext())
+
+      expect(res.json.firstCall.args[0]).to.deep.equal({ frontendUrl: 'https://env.example.com' })
     })
   })
 

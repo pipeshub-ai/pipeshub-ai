@@ -3008,7 +3008,8 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "other-rec"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
+        payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
         gp = AsyncMock()
@@ -3024,7 +3025,7 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
         payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
@@ -3044,7 +3045,7 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
         payload.additional_claims = {"org_id": "org-b"}
         handler.validate_token = MagicMock(return_value=payload)
 
@@ -3064,7 +3065,8 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
+        payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
         gp = AsyncMock()
@@ -3082,7 +3084,8 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
+        payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
         gp = AsyncMock()
@@ -3101,7 +3104,8 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
+        payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
         record = _mock_record(connector_name=Connectors.GOOGLE_DRIVE)
@@ -3124,7 +3128,8 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
+        payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
         record = _mock_record(connector_name=Connectors.GOOGLE_DRIVE)
@@ -3151,7 +3156,8 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
+        payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
         record = _mock_record(connector_name=Connectors.SLACK)
@@ -3181,7 +3187,7 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
         payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
@@ -3199,38 +3205,89 @@ class TestDownloadFile:
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
         gp.get_document.assert_not_called()
 
-    async def test_legacy_token_without_org_id_claim_still_downloads(self):
-        """Tokens minted before org_id was added to additional_claims still
-        download until expiry; ACL is not re-checked on this path."""
-        from app.connectors.api.router import download_file
-
+    def _redeemable(self, *, token_user="user-1", token_claims=None):
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
-        payload.additional_claims = {}
+        payload.user_id = token_user
+        payload.additional_claims = {"org_id": "org-1"} if token_claims is None else token_claims
         handler.validate_token = MagicMock(return_value=payload)
 
-        record = _mock_record(connector_name=Connectors.SLACK)
-        connector_instance = {"_key": "conn-1", "type": "slack", "name": "My Slack", "isActive": True}
         gp = AsyncMock()
-        gp.get_document = AsyncMock(side_effect=[
-            {"_key": "org-1"},
-            connector_instance,
-            connector_instance,
-        ])
-        gp.get_record_by_id = AsyncMock(return_value=record)
+        gp.get_document = AsyncMock(return_value={"_key": "org-1"})
+        gp.get_record_by_id = AsyncMock(return_value=_mock_record(connector_name=Connectors.SLACK))
+        return handler, gp
+
+    async def test_token_without_org_id_claim_is_404(self):
+        from app.connectors.api.router import download_file
+
+        handler, gp = self._redeemable(token_claims={})
+        with pytest.raises(HTTPException) as exc_info:
+            await download_file(_mock_request(), "org-1", "rec-1", "drive", "tok", handler, gp)
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        gp.get_document.assert_awaited_once()
+
+    async def test_same_org_user_other_than_minter_is_404(self):
+        """GHSA-cf48: a leaked URL must not work under a colleague's session."""
+        from app.connectors.api.router import download_file
+
+        handler, gp = self._redeemable(token_user="minter")
+        with pytest.raises(HTTPException) as exc_info:
+            await download_file(_mock_request(), "org-1", "rec-1", "drive", "tok", handler, gp)
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        gp.get_record_by_id.assert_not_called()
+
+    async def test_minter_who_lost_record_access_is_404(self):
+        from app.connectors.api.router import download_file
+
+        handler, gp = self._redeemable()
+        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        with pytest.raises(HTTPException) as exc_info:
+            await download_file(_mock_request(), "org-1", "rec-1", "drive", "tok", handler, gp)
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        gp.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
+
+    async def test_purpose_claim_is_required(self):
+        from app.connectors.api.router import download_file
+        from app.core.signed_url import SIGNED_URL_PURPOSE
+
+        handler, gp = self._redeemable()
+        handler.validate_token.side_effect = HTTPException(status_code=401)
+        with pytest.raises(HTTPException):
+            await download_file(_mock_request(), "org-1", "rec-1", "drive", "tok", handler, gp)
+        handler.validate_token.assert_called_once_with(
+            "tok", required_claims={"purpose": SIGNED_URL_PURPOSE}
+        )
+
+    async def test_unauthenticated_caller_is_401(self):
+        from app.connectors.api.router import download_file
+
+        handler, gp = self._redeemable()
+        request = _mock_request()
+        request.state.user = None
+        with pytest.raises(HTTPException) as exc_info:
+            await download_file(request, "org-1", "rec-1", "drive", "tok", handler, gp)
+        assert exc_info.value.status_code == HttpStatusCode.UNAUTHORIZED.value
+
+    async def test_indexing_service_token_skips_user_binding_and_acl(self):
+        from app.connectors.api.router import download_file
+
+        handler, gp = self._redeemable(token_user="minter")
+        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        connector_instance = {"_key": "conn-1", "type": "slack", "name": "My Slack", "isActive": True}
+        gp.get_document = AsyncMock(side_effect=[{"_key": "org-1"}, connector_instance, connector_instance])
 
         mock_connector = MagicMock()
         mock_connector.get_app_name = MagicMock(return_value=Connectors.SLACK)
         mock_connector.stream_record = AsyncMock(return_value=Response(content=b"data"))
-
         container = MagicMock()
         container.connectors_map = {"conn-1": mock_connector}
-        request = _mock_request(container=container)
+        request = _mock_request(user={"orgId": "org-1"}, container=container)
 
-        result = await download_file(request, "org-1", "rec-1", "drive", "tok", handler, gp)
+        with patch("app.connectors.api.router.has_service_scope", return_value=True):
+            result = await download_file(request, "org-1", "rec-1", "drive", "tok", handler, gp)
         assert isinstance(result, Response)
+        gp.check_record_access_with_details.assert_not_called()
 
 
 # ============================================================================
