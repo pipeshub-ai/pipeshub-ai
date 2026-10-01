@@ -1995,9 +1995,11 @@ class TestGetFileRecordById:
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider.http_client.get_document.side_effect = Exception("fail")
-        result = await connected_provider.get_file_record_by_id("f1")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_file_record_by_id("f1")
 
 
 # ---------------------------------------------------------------------------
@@ -4261,9 +4263,29 @@ class TestUpdateQueuedDuplicatesStatus:
         assert result == 0
 
     @pytest.mark.asyncio
+    async def test_no_org_id_promotes_nothing(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [
+            {"_key": "r1", "md5Checksum": "abc123", "sizeInBytes": 100}
+        ]
+        result = await connected_provider.update_queued_duplicates_status("r1", "COMPLETED")
+        assert result == 0
+        assert connected_provider.http_client.execute_aql.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_duplicate_lookup_is_scoped_to_reference_org(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = [
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123", "sizeInBytes": 100}],
+            [],
+        ]
+        await connected_provider.update_queued_duplicates_status("r1", "COMPLETED")
+        call = connected_provider.http_client.execute_aql.await_args_list[1]
+        assert "record.orgId == @org_id" in call.args[0]
+        assert call.kwargs["bind_vars"]["org_id"] == "org-1"
+
+    @pytest.mark.asyncio
     async def test_no_queued_duplicates(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "md5Checksum": "abc123", "sizeInBytes": 100}],  # reference
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123", "sizeInBytes": 100}],  # reference
             [],  # no queued duplicates
         ]
         result = await connected_provider.update_queued_duplicates_status("r1", "COMPLETED")
@@ -4272,7 +4294,7 @@ class TestUpdateQueuedDuplicatesStatus:
     @pytest.mark.asyncio
     async def test_queued_duplicates_found_and_updated(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "md5Checksum": "abc123", "sizeInBytes": 100}],  # reference
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123", "sizeInBytes": 100}],  # reference
             [{"_key": "r2", "md5Checksum": "abc123"}],  # queued duplicate
         ]
         with patch.object(
@@ -4287,7 +4309,7 @@ class TestUpdateQueuedDuplicatesStatus:
     @pytest.mark.asyncio
     async def test_empty_status_mapping(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "md5Checksum": "abc123"}],
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123"}],
             [{"_key": "r2", "md5Checksum": "abc123"}],
         ]
         with patch.object(
@@ -4298,11 +4320,13 @@ class TestUpdateQueuedDuplicatesStatus:
             # Verify extraction status is EMPTY
             call_args = mock_update.call_args[0][0]
             assert call_args[0]["extractionStatus"] == "EMPTY"
+            # The primary's reconcile flag rides in the same write as the promotion.
+            assert call_args[-1] == {"id": "r1", "duplicateReconcilePending": True}
 
     @pytest.mark.asyncio
     async def test_failed_status_includes_reason(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "md5Checksum": "abc123"}],
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123"}],
             [{"_key": "r2", "md5Checksum": "abc123"}],
         ]
         with patch.object(
@@ -5667,7 +5691,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 21
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 36
 
 
 # ---------------------------------------------------------------------------
@@ -6764,10 +6788,12 @@ class TestGetFileRecordById:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self, connected_provider):
+    async def test_exception_raises(self, connected_provider):
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider.http_client.get_document.side_effect = Exception("fail")
-        result = await connected_provider.get_file_record_by_id("f1")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_file_record_by_id("f1")
 
 
 # ===========================================================================
@@ -8246,7 +8272,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 21
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 36
 
 
 # ---------------------------------------------------------------------------
@@ -9836,9 +9862,11 @@ class TestGetFileRecordByIdProvider:
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider.http_client.get_document = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_file_record_by_id("r1")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_file_record_by_id("r1")
 
 
 class TestGetUserByEmailProvider:
@@ -14210,13 +14238,23 @@ class TestFindNextQueuedDuplicate:
     async def test_found(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(
             side_effect=[
-                [{"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 1024}],
+                [{"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 1024, "orgId": "org-1"}],
                 [{"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}],
             ]
         )
         result = await connected_provider.find_next_queued_duplicate("r1")
         assert result is not None
         assert result["_key"] == "r2"
+
+    @pytest.mark.asyncio
+    async def test_record_without_org_looks_for_nothing(self, connected_provider):
+        """Without an org there is no scope; another org's queued record must
+        never be picked, as in update_queued_duplicates_status."""
+        connected_provider.http_client.execute_aql = AsyncMock(
+            return_value=[{"_key": "r1", "md5Checksum": "abc"}]
+        )
+        assert await connected_provider.find_next_queued_duplicate("r1") is None
+        assert connected_provider.http_client.execute_aql.await_count == 1
 
     @pytest.mark.asyncio
     async def test_no_queued(self, connected_provider):
@@ -14292,6 +14330,107 @@ class TestCopyDocumentRelationships:
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
         result = await connected_provider.copy_document_relationships("r1", "r2")
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_uses_batch_upsert_not_per_edge_create_document(self, connected_provider):
+        """The old per-edge create_document loop had no dedup guard and
+        accumulated duplicate taxonomy edges on retry -- batch_create_edges
+        UPSERTs on {_from, _to} instead, so a redelivered dedup event is a
+        no-op on the graph.
+        """
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[
+                [{"from": "records/r1", "to": "departments/d1", "timestamp": 1000}],
+                [{"_from": "records/r2", "_to": "departments/d1"}],  # batch upsert result
+                [],  # categories: no edges
+                [],  # languages: no edges
+                [],  # topics: no edges
+            ]
+        )
+        connected_provider.http_client.create_document = AsyncMock()
+
+        result = await connected_provider.copy_document_relationships("r1", "r2")
+
+        assert result is True
+        connected_provider.http_client.create_document.assert_not_awaited()
+        upsert_call = connected_provider.http_client.execute_aql.await_args_list[1]
+        upsert_query = upsert_call.args[0] if upsert_call.args else upsert_call.kwargs.get("query")
+        assert "UPSERT" in upsert_query
+        bind_vars = upsert_call.args[1] if len(upsert_call.args) > 1 else upsert_call.kwargs.get("bind_vars")
+        assert bind_vars["edges"][0]["_from"] == "records/r2"
+        assert bind_vars["edges"][0]["_to"] == "departments/d1"
+
+
+# ---------------------------------------------------------------------------
+# get_taxonomy_entities_for_record
+# ---------------------------------------------------------------------------
+
+
+class TestGetTaxonomyEntitiesForRecord:
+    @pytest.mark.asyncio
+    async def test_empty_record_key_returns_empty(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock()
+        result = await connected_provider.get_taxonomy_entities_for_record("")
+        assert result == []
+        connected_provider.http_client.execute_aql.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_aggregates_across_all_taxonomy_groups(self, connected_provider):
+        """One query per edge group (category, department, topic, language),
+        and a subcategory-level result under BELONGS_TO_CATEGORY resolves to
+        entityType=subcategory, not category."""
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[
+                [
+                    {"entityId": "cat-1", "name": "Finance", "_collection": "categories"},
+                    {"entityId": "sub-1", "name": "Budgets", "_collection": "subcategories1"},
+                ],
+                [{"entityId": "dept-1", "name": "Engineering", "_collection": "departments"}],
+                [{"entityId": "topic-1", "name": "OKRs", "_collection": "topics"}],
+                [{"entityId": "lang-1", "name": "English", "_collection": "languages"}],
+            ]
+        )
+
+        result = await connected_provider.get_taxonomy_entities_for_record("rec-1")
+
+        assert connected_provider.http_client.execute_aql.await_count == 4
+        by_id = {row["entityId"]: row for row in result}
+        assert by_id["cat-1"]["entityType"] == "category"
+        assert by_id["sub-1"]["entityType"] == "subcategory"
+        assert by_id["dept-1"]["entityType"] == "department"
+        assert by_id["topic-1"]["entityType"] == "topic"
+        assert by_id["lang-1"]["entityType"] == "language"
+        # _collection is an internal routing field, must not leak into the
+        # EntityRecord-shaped output.
+        assert all("_collection" not in row for row in result)
+
+    @pytest.mark.asyncio
+    async def test_seeds_from_the_single_record_not_org(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+
+        await connected_provider.get_taxonomy_entities_for_record("rec-42", transaction="txn-1")
+
+        first_call = connected_provider.http_client.execute_aql.await_args_list[0]
+        bind_vars = first_call.args[1] if len(first_call.args) > 1 else first_call.kwargs.get("bind_vars")
+        assert bind_vars["record_doc"] == "records/rec-42"
+        assert "org_id" not in bind_vars
+        assert first_call.kwargs.get("txn_id") == "txn-1"
+
+    @pytest.mark.asyncio
+    async def test_one_group_failure_raises(self, connected_provider):
+        """A partial result would read as the record having fewer entities, so
+        its duplicate never joined the rest of them."""
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[
+                RuntimeError("category query failed"),
+                [{"entityId": "dept-1", "name": "Engineering", "_collection": "departments"}],
+                [],
+                [],
+            ]
+        )
+
+        with pytest.raises(RuntimeError, match="category query failed"):
+            await connected_provider.get_taxonomy_entities_for_record("rec-1")
 
 
 # ---------------------------------------------------------------------------

@@ -2214,7 +2214,8 @@ describe('UserController', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true;
-        expect(res.json.calledWith({ message: 'Invite sent successfully' })).to.be.true;
+        expect(res.json.calledWith({ message: 'Invite sent successfully' })).to.be
+          .true;
         expect(mockMailService.sendMail.calledOnce).to.be.true;
 
         // Verify the link uses #token= hash fragment, not ?token= query param
@@ -2927,13 +2928,9 @@ describe('UserController', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true;
-        // Verify all invite emails use #token= hash fragment, not ?token= query param
         for (const call of mockMailService.sendMail.getCalls()) {
-          const link: string = call.args[0].templateData.link;
-          if (link.includes('reset-password')) {
-            expect(link).to.match(/\/reset-password#token=.+/);
-            expect(link).to.not.include('?token=');
-          }
+          expect(call.args[0].deliverAsync).to.equal(true);
+          expect(JSON.stringify(call.args[0].templateData)).to.not.include('token=');
         }
       }
     });
@@ -3044,7 +3041,7 @@ describe('UserController', () => {
       expect(mockMailService.sendMail.calledOnce).to.be.true;
       expect(mockMailService.sendMail.firstCall.args[0].usersMails).to.deep.equal(['pending@test.com']);
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith({ message: 'Invite sent successfully' })).to.be.true;
+      expect(res.json.firstCall.args[0].queued).to.equal(true);
     });
 
     it('should not resend invite for pending blocked users', async () => {
@@ -3499,13 +3496,17 @@ describe('UserController', () => {
       expect(res.json.calledOnce).to.be.true;
       expect(mockEventService.publishEvent.called).to.be.true;
 
-      // Verify all invite emails use #token= hash fragment, not ?token= query param
-      for (const call of mockMailService.sendMail.getCalls()) {
-        const link: string = call.args[0].templateData.link;
-        if (link.includes('reset-password')) {
-          expect(link).to.match(/\/reset-password#token=.+/);
-          expect(link).to.not.include('?token=');
-        }
+      // The set-password token is minted by the mail consumer, never queued.
+      const calls = mockMailService.sendMail.getCalls();
+      expect(calls).to.have.length(2);
+      for (const call of calls) {
+        const params = call.args[0];
+        expect(params.deliverAsync).to.equal(true);
+        expect(params.templateData).to.not.have.property('link');
+        expect(params.passwordResetLinkFor).to.include({
+          orgId: '507f1f77bcf86cd799439012',
+          email: params.usersMails[0],
+        });
       }
     });
 

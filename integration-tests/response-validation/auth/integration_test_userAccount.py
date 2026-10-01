@@ -23,6 +23,8 @@ Skipped (require special tokens, SMTP, or external setup):
   POST /api/v1/userAccount/login/otp/generate   — requires SMTP to send OTP
   POST /api/v1/userAccount/password/forgot       — requires SMTP
   POST /api/v1/userAccount/password/reset/token  — requires PASSWORD_RESET scoped token
+  (The three above are exercised end to end through Mailpit, not schema-checked,
+  in integration_test_emailed_sign_in.py.)
   GET  /api/v1/userAccount/internal/password/check — requires FETCH_CONFIG scoped token
   POST /api/v1/userAccount/oauth/exchange        — requires external OAuth provider setup
   PUT  /api/v1/userAccount/validateEmailChange   — requires VALIDATE_EMAIL scoped token

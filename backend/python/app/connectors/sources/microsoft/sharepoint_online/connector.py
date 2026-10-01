@@ -91,6 +91,7 @@ from app.connectors.sources.microsoft.sharepoint_online.utils import (
     get_sharepoint_auth_notification,
     sanitize_azure_error,
 )
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -1384,8 +1385,12 @@ class SharePointConnector(BaseConnector):
                 if hasattr(item, 'file') and item.file and hasattr(item.file, 'hashes') and item.file.hashes:
                     current_hash = getattr(item.file.hashes, 'quick_xor_hash', None)
                     # The lookup above returns a base Record, which has no file hashes. If the file
-                    # node can't be read, the content can't be shown to be unchanged, so re-index.
-                    existing_file_record = await self.data_entities_processor.get_file_record_by_id(existing_record.id)
+                    # node is missing or can't be read, the content can't be shown to be unchanged, so re-index.
+                    try:
+                        existing_file_record = await self.data_entities_processor.get_file_record_by_id(existing_record.id)
+                    except GraphQueryError as read_error:
+                        self.logger.warning(f"Re-indexing {item_id}: its stored file record could not be read: {read_error}")
+                        existing_file_record = None
                     if existing_file_record is None or existing_file_record.quick_xor_hash != current_hash:
                         content_changed = True
                         is_updated = True

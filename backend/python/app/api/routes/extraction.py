@@ -32,6 +32,8 @@ class ClassifyRequest(BaseModel):
     block_container: BlocksContainer
     org_id: str
     departments: list[str] = []
+    record_name: str = ""
+    record_type: str = ""
 
 
 class ClassifyResponse(BaseModel):
@@ -51,7 +53,7 @@ class ClassifyResponse(BaseModel):
     summary="LLM document classification",
 )
 async def classify(request: Request, body: ClassifyRequest) -> JSONResponse:
-    """Classify a document (departments, topics, summary, sentiment).
+    """Classify a document (departments, categories, topics, summary).
 
     ``departments`` should be pre-fetched by the caller (e.g. from the graph
     DB) to avoid introducing a graph connection dependency here.
@@ -63,6 +65,8 @@ async def classify(request: Request, body: ClassifyRequest) -> JSONResponse:
             blocks=body.block_container.blocks,
             org_id=body.org_id,
             departments=body.departments or None,
+            record_name=body.record_name,
+            record_type=body.record_type,
         )
         if classification is None:
             metadata = None

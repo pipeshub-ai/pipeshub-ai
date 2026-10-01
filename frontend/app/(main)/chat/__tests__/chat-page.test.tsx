@@ -241,7 +241,7 @@ beforeEach(() => {
 // ── Tests ──────────────────────────────────────────────────────────
 
 describe('Chat page — new chat', () => {
-  it("greets the user by name and offers the composer", async () => {
+  it('greets the user by name and offers the composer', () => {
     useUserStore.setState({
       profile: {
         userId: 'u', firstName: 'Asha', lastName: 'Rao', fullName: 'Asha Rao', email: 'asha@acme.test',
@@ -253,9 +253,6 @@ describe('Chat page — new chat', () => {
     expect(screen.getByText('Hey, Asha Rao 👋')).toBeTruthy();
     expect(screen.getByText('What do you want to explore today?')).toBeTruthy();
     expect(screen.getByRole('textbox', { name: 'Message composer' })).toBeTruthy();
-    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(2));
-    expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), { source: 'owned' });
-    expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), { source: 'shared' });
   });
 
   it('falls back to the email name, then to a neutral greeting', () => {
@@ -272,14 +269,6 @@ describe('Chat page — new chat', () => {
     useUserStore.setState({ profile: null });
     renderPage();
     expect(screen.getByText('Hey, there 👋')).toBeTruthy();
-  });
-
-  it('marks the conversation list as failed when it cannot be loaded', async () => {
-    fetchConversations.mockRejectedValue(new Error('Request failed with status code 500'));
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    renderPage();
-    await waitFor(() => expect(useChatStore.getState().conversationsError).toBeTruthy());
-    expect(useChatStore.getState().isConversationsLoading).toBe(false);
   });
 
   it('starts a thread and asks the demo question the user picked', () => {

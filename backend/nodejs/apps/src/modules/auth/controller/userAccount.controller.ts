@@ -541,7 +541,6 @@ export class UserAccountController {
         message: 'Authentication initialized',
         authProviders,
         jitEnabled: jitEnabledMethods.length > 0,
-
       });
 
     } catch (error) {
