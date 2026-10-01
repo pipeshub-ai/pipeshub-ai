@@ -11523,7 +11523,13 @@ class TestCheckRecordAccessWithDetails:
             connected_provider, "get_document",
             new_callable=AsyncMock,
             side_effect=lambda key, collection, txn=None: (
-                {"id": "r1", "recordType": record_type, "orgId": "org1", "webUrl": template}
+                {
+                    "id": "r1",
+                    "recordType": record_type,
+                    "orgId": "org1",
+                    "webUrl": template,
+                    "connectorName": "GMAIL",
+                }
                 if collection == "records"
                 else {"_key": "r1", "webUrl": template}
             ),

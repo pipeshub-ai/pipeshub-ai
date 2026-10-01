@@ -49,12 +49,22 @@ def resolve_weburl(weburl: str | None, frontend_url: str | None) -> str | None:
     return f"{frontend_url.rstrip('/')}/{weburl.lstrip('/')}"
 
 
-# Shared mailbox records are synced once but opened by many users, so the
-# weburl stores this placeholder and each read path fills in the viewer's email.
+# Shared Gmail mailboxes are synced once but opened by many users, so those
+# connectors store this placeholder and each read path fills in the viewer's email.
 USER_EMAIL_PLACEHOLDER = "{user.email}"
+_GMAIL_CONNECTORS = frozenset({
+    Connectors.GOOGLE_MAIL.value,
+    Connectors.GOOGLE_MAIL_WORKSPACE.value,
+})
 
 
-def substitute_user_email(weburl: str | None, user_email: str | None) -> str | None:
+def substitute_user_email(
+    weburl: str | None,
+    user_email: str | None,
+    connector_name: str | None,
+) -> str | None:
+    if connector_name not in _GMAIL_CONNECTORS:
+        return weburl
     if not weburl or not user_email or USER_EMAIL_PLACEHOLDER not in weburl:
         return weburl
     return weburl.replace(USER_EMAIL_PLACEHOLDER, quote(user_email, safe="@"))

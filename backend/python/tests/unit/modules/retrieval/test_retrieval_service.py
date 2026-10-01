@@ -1080,6 +1080,7 @@ class TestSearchWithFilters:
                 "_key": "rec1",
                 "virtualRecordId": "vr1",
                 "origin": "gmail",
+                "connectorName": "GMAIL",
                 "recordName": "Email Subject",
                 "webUrl": "https://mail.google.com/mail?authuser={user.email}",
                 "mimeType": "text/html",
@@ -1312,6 +1313,7 @@ class TestSearchWithFilters:
                 "_key": "rec1",
                 "virtualRecordId": "vr1",
                 "origin": "gmail",
+                "connectorName": "GMAIL",
                 "recordName": "Email Subject",
                 "webUrl": "https://example.com/mail",
                 "recordType": "MAIL",
@@ -1394,6 +1396,7 @@ class TestSearchWithFilters:
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "gmail",
+                "connectorName": "GMAIL WORKSPACE",
                 "recordName": "resume.pdf", "recordType": "FILE",
                 "mimeType": "application/pdf", "webUrl": template,
             }
@@ -1424,6 +1427,7 @@ class TestSearchWithFilters:
                 "_key": "rec1",
                 "virtualRecordId": "vr1",
                 "origin": "gmail",
+                "connectorName": "GMAIL",
                 "recordName": "resume.pdf",
                 "recordType": "FILE",
                 # webUrl and mimeType intentionally absent -- forces the files fetch
@@ -1510,6 +1514,7 @@ class TestSearchWithFilters:
                 "_key": "rec2",
                 "virtualRecordId": "vr2",
                 "origin": "gmail",
+                "connectorName": "GMAIL",
                 "recordName": "Mail Subject",
                 "webUrl": "https://mail.google.com/x",
                 "recordType": "MAIL",
@@ -1990,6 +1995,7 @@ class TestSearchWithFiltersBranches:
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "gmail",
+                "connectorName": "GMAIL",
                 "recordName": "Email", "mimeType": "text/html",
                 "webUrl": "https://mail.google.com/mail?authuser={user.email}#inbox/1",
             }
@@ -2100,6 +2106,7 @@ class TestSearchWithFiltersBranches:
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "gmail",
+                "connectorName": "GMAIL WORKSPACE",
                 "recordName": "Mail Subject", "recordType": "MAIL",
                 "webUrl": "https://example.com",
                 # no mimeType to trigger fetch

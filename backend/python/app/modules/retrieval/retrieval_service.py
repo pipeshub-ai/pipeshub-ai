@@ -597,7 +597,9 @@ class RetrievalService:
             user_email = user.get("email") if user else None
             for r in fetched_records:
                 if r and r.get("webUrl"):
-                    r["webUrl"] = substitute_user_email(r["webUrl"], user_email)
+                    r["webUrl"] = substitute_user_email(
+                        r["webUrl"], user_email, r.get("connectorName")
+                    )
 
             record_id_to_record_map = {}
             for r in fetched_records:
@@ -818,7 +820,9 @@ class RetrievalService:
                     fallback_mimetype = "text/html"
 
                 if weburl:
-                    resolved_weburl = substitute_user_email(weburl, user_email)
+                    resolved_weburl = substitute_user_email(
+                        weburl, user_email, record.get("connectorName")
+                    )
                     result["metadata"]["webUrl"] = resolved_weburl
                     # `record` is the same object virtual_to_record_map holds (see
                     # record_id_to_record_map / _create_virtual_to_record_mapping),

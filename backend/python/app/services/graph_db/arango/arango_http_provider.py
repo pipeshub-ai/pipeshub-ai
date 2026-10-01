@@ -17634,9 +17634,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     record_id, CollectionNames.TICKETS.value, transaction
                 )
 
+            connector_name = record.get("connectorName")
             if additional_data and additional_data.get("webUrl"):
                 additional_data["webUrl"] = substitute_user_email(
-                    additional_data["webUrl"], user.get("email")
+                    additional_data["webUrl"], user.get("email"), connector_name
                 )
 
             # Get metadata
@@ -17765,7 +17766,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }]
 
             if record.get("webUrl"):
-                record["webUrl"] = substitute_user_email(record["webUrl"], user.get("email"))
+                record["webUrl"] = substitute_user_email(
+                    record["webUrl"], user.get("email"), connector_name
+                )
             return {
                 "record": {
                     **record,
