@@ -16665,7 +16665,7 @@ class Neo4jProvider(IGraphDBProvider):
 
     _ENTITY_CANDIDATE_RECORD_PROJECTION = (
         "rec {_key: rec.id, .recordName, .recordType, .connectorId, .virtualRecordId, "
-        ".webUrl, .sourceLastModifiedTimestamp, .updatedAtTimestamp}"
+        ".webUrl, .hideWeburl, .sourceLastModifiedTimestamp, .updatedAtTimestamp}"
     )
 
     def _entity_node_match(self, entity_type: str) -> tuple[str, str]:
