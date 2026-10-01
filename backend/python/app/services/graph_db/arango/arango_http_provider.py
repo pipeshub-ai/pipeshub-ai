@@ -17359,7 +17359,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     }
     _ENTITY_CANDIDATE_RECORD_FIELDS: tuple[str, ...] = (
         "_key", "recordName", "recordType", "connectorId", "virtualRecordId",
-        "webUrl", "sourceLastModifiedTimestamp", "updatedAtTimestamp",
+        "webUrl", "hideWeburl", "sourceLastModifiedTimestamp", "updatedAtTimestamp",
     )
 
     async def _get_taxonomy_entities_for_record_via_edge(

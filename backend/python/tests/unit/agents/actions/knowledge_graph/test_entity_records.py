@@ -19,6 +19,8 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessError,
     EntityRecordPage,
 )
+from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 CONTEXT = EntityAccessContext(
     org_id="org-1",
@@ -123,6 +125,41 @@ class TestFindRecordsByEntity:
         _, kwargs = patched[1].call_args
         assert kwargs["record_types"] == ["FILE"]
         assert kwargs["limit"] == 50
+
+    @pytest.mark.asyncio
+    async def test_hidden_urls_are_not_shown(self, patched) -> None:
+        patched[1].return_value = EntityRecordPage(
+            records=[_row("r1", webUrl="https://x/secret", hideWeburl=True)], next_cursor=None,
+        )
+        ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+        assert ok is True
+        assert "secret" not in text and "url=" not in text
+
+    @pytest.mark.asyncio
+    async def test_relative_urls_resolve_against_the_frontend(self, patched, monkeypatch) -> None:
+        monkeypatch.setattr(
+            entity_records, "resolve_frontend_url", AsyncMock(return_value="https://app.example/"),
+        )
+        patched[1].return_value = EntityRecordPage(
+            records=[_row("r1", webUrl="/record/r1"), _row("r2", webUrl="https://x/2")], next_cursor=None,
+        )
+        ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+        assert ok is True
+        assert "url=https://app.example/record/r1" in text
+        assert "url=https://x/2" in text
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_relative_urls_are_dropped(self, patched, monkeypatch) -> None:
+        monkeypatch.setattr(entity_records, "resolve_frontend_url", AsyncMock(return_value=None))
+        patched[1].return_value = EntityRecordPage(records=[_row("r1", webUrl="/record/r1")], next_cursor=None)
+        ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+        assert ok is True
+        assert "url=" not in text
+
+
+def test_candidate_rows_carry_the_hide_url_flag() -> None:
+    assert "hideWeburl" in Neo4jProvider._ENTITY_CANDIDATE_RECORD_PROJECTION
+    assert "hideWeburl" in ArangoHTTPProvider._ENTITY_CANDIDATE_RECORD_FIELDS
 
     @pytest.mark.asyncio
     async def test_shortened_record_id_is_resolved(self, patched) -> None:
