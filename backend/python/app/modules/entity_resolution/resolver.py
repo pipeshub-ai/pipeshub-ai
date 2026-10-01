@@ -343,7 +343,10 @@ class EntityResolver:
                 normalized = row.get("normalizedName")
                 alias_forms = [str(a) for a in (row.get("normalizedAliases") or []) if a]
                 nodes.append((node, str(normalized) if normalized else None, alias_forms))
-            # A node reached by its own name wins over one reached by an alias.
+            # A node reached by its own name wins over one reached by an alias;
+            # among nodes sharing an alias the lowest key wins, whatever order
+            # the provider returned them in.
+            nodes.sort(key=lambda entry: entry[0]["id"])
             for node, normalized, _alias_forms in nodes:
                 if normalized in wanted:
                     found[(collection, normalized)] = node
@@ -495,12 +498,19 @@ class EntityResolver:
             metrics.record_model_call("failed")
             metrics.record_fallback("model_error", len(unresolved))
             return {}
-        metrics.record_model_call("ok")
         valid_indexes = {n.index for n in unresolved}
         decisions: dict[int, MergeDecision] = {}
         for decision in response.decisions:
             if decision.i in valid_indexes and decision.i not in decisions:
                 decisions[decision.i] = decision
+        if not decisions:
+            # Parsed, but answered nothing it was asked: every name falls back
+            # to new, exactly as when the call fails.
+            stats.model_failures += 1
+            metrics.record_model_call("empty")
+            metrics.record_fallback("model_empty", len(unresolved))
+            return {}
+        metrics.record_model_call("ok")
         return decisions
 
     async def _get_llm(self) -> BaseChatModel:
@@ -546,7 +556,16 @@ class EntityResolver:
             if decision is None:
                 proposed_new[name.index] = ""
                 continue
-            if decision.same and decision.same_as_item >= 0:
+            if not decision.same:
+                proposed_new[name.index] = decision.canonical_name or ""
+                continue
+            # The offered node is the stronger answer: an item pointer only
+            # groups names that still need a node.
+            winner = winners.get(name.index)
+            if winner is not None and decision.target == winner.entity_id:
+                merged_to_winner[name.index] = winner
+                continue
+            if decision.same_as_item >= 0:
                 other = by_index.get(decision.same_as_item)
                 if other is None or other.index == name.index or other.kind != name.kind:
                     stats.rejected_decisions += 1
@@ -555,16 +574,9 @@ class EntityResolver:
                     continue
                 union(name.index, other.index)
                 continue
-            if decision.same:
-                winner = winners.get(name.index)
-                if winner is not None and decision.target == winner.entity_id:
-                    merged_to_winner[name.index] = winner
-                    continue
-                stats.rejected_decisions += 1
-                metrics.record_fallback("rejected_target")
-                proposed_new[name.index] = ""
-                continue
-            proposed_new[name.index] = decision.canonical_name or ""
+            stats.rejected_decisions += 1
+            metrics.record_fallback("rejected_target")
+            proposed_new[name.index] = ""
 
         # Group members follow their component leader.
         components: dict[int, list[ExtractedName]] = {}
@@ -594,10 +606,9 @@ class EntityResolver:
             head = members[0]
             winner_members = [m for m in members if m.index in merged_to_winner]
             if winner_members:
+                # Each name holds one pointer and a winner member holds none,
+                # so a component reaches at most one winner member.
                 winner = merged_to_winner[winner_members[0].index]
-                if len({merged_to_winner[m.index].entity_id for m in winner_members}) > 1:
-                    stats.rejected_decisions += 1
-                    metrics.record_fallback("conflicting_targets")
                 entity = self._existing_entity(
                     resolution, head.kind,
                     {"id": winner.entity_id, "name": winner.name, "aliases": list(winner.aliases)},

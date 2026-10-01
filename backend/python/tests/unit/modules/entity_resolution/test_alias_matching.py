@@ -135,3 +135,21 @@ class TestQuerySideAliases:
         plain = EntityHit(entity_id="k2", entity_type="topic", name="Plain", score=0.4, records=[], more_records=False)
         results, _ = _render_hits([plain], context, None)
         assert "aliases" not in results[0]
+
+
+class TestTier0AliasTies:
+    async def test_an_alias_shared_by_two_nodes_resolves_to_the_same_one_every_time(
+        self, make_resolver, fake_graph, metadata_factory, ctx_factory, scripted_model
+    ) -> None:
+        """KG-39: the winner no longer depends on the provider's row order."""
+        scripted_model()
+        first = _seed(fake_graph, "acme", "launch plan", aliases=["go live"])
+        second = _seed(fake_graph, "acme", "cutover", aliases=["go live"])
+        expected = min(first, second)
+        for order in (list(fake_graph.nodes.items()), list(reversed(fake_graph.nodes.items()))):
+            fake_graph.nodes = dict(order)
+            resolution = await make_resolver().resolve(
+                ctx_factory("r1", "acme", metadata_factory(topics=["Go live"]))
+            )
+            (entity,) = resolution.entries.values()
+            assert entity.key == expected
