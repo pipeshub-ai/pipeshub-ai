@@ -626,7 +626,7 @@ class Agent:
 
     # ---- the step primitive ----
 
-    async def step(self, goal: Goal, turn_index: int) -> StepOutcome:
+    async def step(self, goal: Goal, turn_index: int, *, final_answer_only: bool = False) -> StepOutcome:
         """One turn: PRE_TURN guards -> context shaping -> guarded model
         call -> tool dispatch -> POST_TURN. The one fixed unit every
         `LoopStrategy` calls, any number of times, in any order. Hooks
@@ -634,6 +634,12 @@ class Agent:
         this is what keeps deterministic control (budget, cancellation,
         guardrails, truncation recovery) middleware-owned regardless of
         loop shape.
+
+        `final_answer_only=True` is the wrap-up turn after `max_turns` (see
+        `loops.py::_finish_after_max_turns`): the turn only stops the run
+        with a non-empty text answer. Tool calls are never executed, and a
+        failed model call or an empty reply returns `continue` instead of
+        failing the run, so the caller can fall back to what it already has.
         """
         spec, runtime, context = self._spec, self._runtime, self._context
 
@@ -826,6 +832,12 @@ class Agent:
                 summary=f"Input guardrail blocked turn {turn_index}: {e}",
             ))
         except Exception as e:
+            if final_answer_only:
+                await obs.append_timeline(
+                    self, "final_answer_turn_failed", f"Final-answer LLM call failed: {e}",
+                    "calling_llm", {"turn_index": turn_index, "error": str(e)},
+                )
+                return StepOutcome("continue")
             return StepOutcome("stop", result=await self.fail(
                 goal, f"LLM call failed: {e}", event="llm_call_failed", summary=f"LLM call failed: {e}",
             ))
@@ -900,6 +912,8 @@ class Agent:
             # Joined as-is: the model resumes exactly where it was cut off,
             # often mid-word, so any separator would corrupt the text.
             output = "".join(cut_off_parts) + self.extract_text(response_msg)
+            if final_answer_only and not output.strip():
+                return StepOutcome("continue")
             try:
                 await hooks.dispatch_guardrail_output(self._hooks, output or "", scope=turn_scope)
             except HookBlocked as e:
@@ -921,6 +935,18 @@ class Agent:
             )
             await obs.write_turn_memory(self, terminal_turn, turn_index)
             return StepOutcome("stop", result=result)
+
+        if final_answer_only:
+            # The tool list is still sent on this turn (providers reject tool
+            # history without tool definitions), so a model can ignore the
+            # instruction; its calls are dropped, never run.
+            await obs.append_timeline(
+                self, "final_answer_turn_tool_calls_ignored",
+                f"Final-answer turn requested {len(tool_calls)} tool call(s); not executed",
+                "calling_llm",
+                {"turn_index": turn_index, "tools": [c.name for c in tool_calls]},
+            )
+            return StepOutcome("continue")
 
         # --- Process tool calls ---
         turn = AgentTurn(messages=[response_msg], tool_calls=tool_calls)

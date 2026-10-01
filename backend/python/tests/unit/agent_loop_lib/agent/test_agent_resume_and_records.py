@@ -155,14 +155,18 @@ class TestResumeAfterAQuestion:
         paused = await _pause_on_a_question(hil, checkpoint_store=checkpoints)
         pause = await checkpoints.latest(paused.run_ctx.run_id)
 
-        transport = ScriptedTransport().add_tool_call(ToolCall(id="c", name="count", arguments={"table": "t"}))
+        transport = (
+            ScriptedTransport()
+            .add_tool_call(ToolCall(id="c", name="count", arguments={"table": "t"}))
+            .add_text("The table has 42 rows.")
+        )
         resumed = _agent(_runtime(transport, checkpoint_store=checkpoints), max_turns=2)
         result = await resumed.resume(pause.checkpoint_id)
 
         assert resumed.start_turn_index == pause.turn_index + 1
-        assert len(transport.calls) == 1
-        assert result.success is False
-        assert result.error == "Exceeded max_turns=2"
+        # One loop turn is left after the pause, then the answer-only turn after max_turns.
+        assert len(transport.calls) == 2
+        assert result.output == "The table has 42 rows."
 
     async def test_asking_without_a_question_store_is_a_tool_error(self) -> None:
         transport = ScriptedTransport().add_tool_call(
