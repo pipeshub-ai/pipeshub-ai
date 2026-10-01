@@ -44,6 +44,7 @@ from app.modules.entity_resolution.normalizer import (
     spelling_key,
 )
 from app.modules.entity_resolution.prompt import build_prompt
+from app.services.graph_db.taxonomy import MAX_MERGE_REDIRECT_HOPS, MERGED_INTO_FIELD
 from app.telemetry.modules import entity_resolution_metrics as metrics
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
@@ -177,9 +178,78 @@ class EntityResolver:
         winners = await self._tier1(org_id, unresolved, stats)
         decisions = await self._tier2(metadata, unresolved, winners, stats)
         await self._apply_decisions(org_id, resolution, unresolved, winners, decisions)
+        await self._follow_merge_redirects(org_id, resolution, names)
 
         self._record_outcomes(resolution)
         return resolution
+
+    async def _follow_merge_redirects(
+        self, org_id: str, resolution: EntityResolution, names: list[ExtractedName],
+    ) -> None:
+        """Send a new name whose deterministic key is a merged-away node to
+        the node it was merged into.
+
+        Tier 0 skips merged nodes, so their names come back as new, with the
+        merged node's own key; creating "it" would be a no-op and the record
+        would link to the hidden node. One lookup per collection with new
+        names. A failed lookup keeps the names new, as before merges existed.
+        """
+        new_by_collection: dict[str, list[ResolvedEntity]] = {}
+        for entity in resolution.entries.values():
+            if entity.is_new:
+                new_by_collection.setdefault(entity.kind.collection, []).append(entity)
+        by_index = {name.index: name for name in names}
+        for collection, entities in new_by_collection.items():
+            try:
+                targets = await self._redirect_targets(org_id, collection, [e.key for e in entities])
+            except Exception:
+                self.logger.warning(
+                    "entity_resolution: merge redirect lookup failed for org %s collection %s",
+                    org_id, collection, exc_info=True,
+                )
+                continue
+            for entity in entities:
+                winner = targets.get(entity.key)
+                if winner is None:
+                    continue
+                resolution.entries.pop((collection, entity.normalized), None)
+                resolution.stats.new_nodes -= 1
+                resolution.stats.merge_redirects += 1
+                target = self._existing_entity(resolution, entity.kind, winner, decision="redirect")
+                for index, assigned in list(resolution.assignments.items()):
+                    if assigned is entity and index in by_index:
+                        self._attach(resolution, by_index[index], target)
+
+    async def _redirect_targets(
+        self, org_id: str, collection: str, keys: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """``{key: winner node}`` for the ``keys`` that are merged nodes of
+        ``org_id`` whose redirect chain ends at a live node of the org."""
+        fields = ["id", "name", "aliases", "orgId", MERGED_INTO_FIELD]
+        rows = await self.graph_provider.get_nodes_by_field_in(
+            collection, "id", sorted(set(keys)), return_fields=fields, raise_on_error=True,
+        )
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows or []:
+            key = str(row.get("id") or row.get("_key") or "")
+            hop = row.get(MERGED_INTO_FIELD)
+            if not key or not hop or row.get("orgId") != org_id:
+                continue
+            seen = {key}
+            while hop and hop not in seen and len(seen) <= MAX_MERGE_REDIRECT_HOPS:
+                seen.add(hop)
+                (node,) = (
+                    await self.graph_provider.get_nodes_by_field_in(
+                        collection, "id", [hop], return_fields=fields, raise_on_error=True,
+                    )
+                ) or [None]
+                if node is None or node.get("orgId") != org_id:
+                    break
+                if not node.get(MERGED_INTO_FIELD):
+                    out[key] = {**node, "id": hop}
+                    break
+                hop = node.get(MERGED_INTO_FIELD)
+        return out
 
     # ---- collection --------------------------------------------------
 
@@ -343,7 +413,8 @@ class EntityResolver:
         """
         try:
             rows = await self.graph_provider.get_nodes_by_field_in(
-                collection, "id", sorted(ids), return_fields=["id", "orgId", "normalizedName"],
+                collection, "id", sorted(ids),
+                return_fields=["id", "orgId", "normalizedName", "mergedInto"],
                 raise_on_error=True,
             )
         except Exception:
@@ -359,6 +430,7 @@ class EntityResolver:
             if (row.get("id") or row.get("_key"))
             and row.get("orgId") == org_id
             and row.get("normalizedName")
+            and not row.get("mergedInto")
         }
         if ids - live:
             metrics.record_fallback("stale_winner", len(ids - live))

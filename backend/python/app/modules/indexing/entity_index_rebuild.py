@@ -29,8 +29,9 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
-from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
+from app.models.entities import EntityRecord, EntityType
 from app.modules.entity_resolution.models import KINDS_BY_COLLECTION
+from app.modules.indexing.entity_projection import project_taxonomy_nodes
 from app.modules.indexing.vector_membership_backfill import (
     LeaderLock,
     VectorMembershipBackfillLeaderLock,
@@ -403,70 +404,16 @@ class EntityIndexRebuilder:
         return await self.store.upsert_entities_batch(entities, merge_membership=False)
 
     async def _project_taxonomy_rows(self, run: _Pass, phase: str, rows: list[dict]) -> int:
-        kind = KINDS_BY_COLLECTION.get(phase)
-        entity_type = kind.entity_type if kind else EntityType.DEPARTMENT
-        level = kind.level if kind else None
-        nodes = {
-            key: row for row in rows
-            if (key := _key_of(row)) and _name(row.get("name"))
-        }
-        if not nodes:
-            return 0
-        try:
-            membership = await self.graph.get_taxonomy_entity_membership(
-                [{"id": key, "type": entity_type.value} for key in nodes], run.key,
-            )
-        except Exception:
-            self.logger.warning(
-                "entity_index_rebuild: membership lookup failed | org=%s phase=%s nodes=%d",
-                run.key, phase, len(nodes), exc_info=True,
-            )
-            return len(nodes)
-        # A hub node's membership read can take minutes; writing after the
-        # lease lapsed would race the next leader on the same page.
-        if not await self.lock.refresh():
-            raise _LostLeadership
+        async def _still_leader() -> None:
+            # A hub node's membership read can take minutes; writing after the
+            # lease lapsed would race the next leader on the same page.
+            if not await self.lock.refresh():
+                raise _LostLeadership
 
-        entities, unreached = [], []
-        for key, row in nodes.items():
-            reach = membership.get((entity_type.value, key)) or {}
-            connector_ids = [c for c in reach.get("connectorIds") or [] if c]
-            if not connector_ids:
-                unreached.append(key)
-                continue
-            entities.append(EntityRecord(
-                entity_id=key, entity_type=entity_type, name=row["name"], org_id=run.key,
-                aliases=[str(a) for a in row.get("aliases") or [] if a], level=level,
-                connector_ids=connector_ids,
-                record_group_ids=[g for g in reach.get("recordGroupIds") or [] if g],
-                type_category=EntityTypeCategory.GENERIC_SCHEMA_FREE,
-            ))
-        failed = 0
-        if entities:
-            # The graph is the source of membership, so it replaces what the
-            # point holds (repairing lost updates). A record indexed between
-            # the read and this write can lose its connector here until it is
-            # next indexed; search only narrows, and every hit is re-checked.
-            failed += await self.store.upsert_entities_batch(entities, merge_membership=False)
-        if unreached:
-            try:
-                # Re-read: a record linked to the node since the first read
-                # has had its point written by indexing, which must survive.
-                again = await self.graph.get_taxonomy_entity_membership(
-                    [{"id": key, "type": entity_type.value} for key in unreached], run.key,
-                )
-                unreached = [
-                    key for key in unreached
-                    if not (again.get((entity_type.value, key)) or {}).get("connectorIds")
-                ]
-                await self.store.delete_entities(run.key, entity_type.value, unreached)
-            except Exception:
-                self.logger.warning(
-                    "entity_index_rebuild: delete of unreached nodes failed | org=%s phase=%s n=%d",
-                    run.key, phase, len(unreached), exc_info=True,
-                )
-                failed += len(unreached)
-        return failed
+        return await project_taxonomy_nodes(
+            graph=self.graph, store=self.store, org_id=run.key, collection=phase,
+            rows=rows, logger=self.logger, before_write=_still_leader,
+        )
 
     # ------------------------------------------------------------------
     # Sweep
@@ -545,7 +492,8 @@ class EntityIndexRebuilder:
         return refs, offset
 
     async def _stale(self, org_id: str, refs: list[EntityPointRef]) -> dict[str, list[str]]:
-        """Points whose node is gone or belongs to another org, by type.
+        """Points whose node is gone, merged into another, or belongs to
+        another org, by type.
 
         A node without an org is kept: departments are global, and legacy
         taxonomy nodes still carry records until they are migrated."""
@@ -564,9 +512,11 @@ class EntityIndexRebuilder:
                 batch = group[start:start + _SWEEP_LOOKUP_BATCH]
                 rows = await self.graph.get_nodes_by_field_in(
                     collection, "id", sorted({r.entity_id for r in batch}),
-                    return_fields=["id", "orgId"], raise_on_error=True,
+                    return_fields=["id", "orgId", "mergedInto"], raise_on_error=True,
                 )
-                owner = {_key_of(row): row.get("orgId") for row in rows or []}
+                owner = {
+                    _key_of(row): row.get("orgId") for row in rows or [] if not row.get("mergedInto")
+                }
                 for ref in batch:
                     if ref.entity_id not in owner or owner[ref.entity_id] not in (None, org_id):
                         stale.setdefault(ref.entity_type, []).append(ref.entity_id)
