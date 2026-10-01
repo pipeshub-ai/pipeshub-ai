@@ -147,6 +147,7 @@ from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
+    EntityCandidateRows,
     KB_MAX_FOLDER_DEPTH,
     KB_ROLE_PRIORITY,
     MAX_DIRECT_GRANT_RECORDS,
@@ -3087,7 +3088,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         field: str,
         values: list[Any],
         return_fields: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get nodes where field value is in list - FULLY ASYNC.
@@ -3098,6 +3101,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             values: List of values
             return_fields: Optional list of fields to return
             transaction: Optional transaction ID
+            raise_on_error: Raise a failed query instead of returning ``[]``
 
         Returns:
             List[Dict]: Matching nodes
@@ -3135,6 +3139,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return results or []
         except Exception as e:
             self.logger.error(f"❌ Get nodes by field in failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def remove_nodes_by_field(
@@ -17234,7 +17240,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_type_filter = (
             "FILTER rec.recordType IN @record_types" if filter_record_types else ""
         )
-        rows_subquery = f"""(
+        scan_subquery = f"""(
                     FOR edge IN {edge_collection}
                         FILTER edge._to IN targets
                         FILTER STARTS_WITH(edge._from, "{records}/")
@@ -17244,26 +17250,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER rec.connectorId IN ref.connectorIds
                         {record_type_filter}
                         LIMIT @scan_cap
-                        COLLECT key = rec._key INTO grouped KEEP rec
-                        LET r = grouped[0].rec
-                        SORT NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) DESC, key ASC
-                        LIMIT @offset, @limit
-                        RETURN {self._entity_candidate_record_projection("r")}
+                        RETURN rec
                 )"""
         if entity_type == EntityType.RECORD_GROUP.value:
             scope = (
                 f'LET rg = DOCUMENT(CONCAT("{CollectionNames.RECORD_GROUPS.value}/", ref.id))'
             )
-            rows_expr = f"(rg != null AND rg.orgId == @org_id) ? {rows_subquery} : []"
+            scan_expr = f"(rg != null AND rg.orgId == @org_id) ? {scan_subquery} : []"
         else:
             scope = ""
-            rows_expr = rows_subquery
+            scan_expr = scan_subquery
         return f"""
             FOR ref IN @refs
                 {scope}
                 LET targets = [{targets}]
-                LET rows = {rows_expr}
-                RETURN {{id: ref.id, rows: rows}}
+                LET scanned = {scan_expr}
+                LET rows = (
+                    FOR rec IN scanned
+                        COLLECT key = rec._key INTO grouped KEEP rec
+                        LET r = grouped[0].rec
+                        SORT NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) DESC, key ASC
+                        LIMIT @offset, @limit
+                        RETURN {self._entity_candidate_record_projection("r")}
+                )
+                RETURN {{id: ref.id, rows: rows, capped: LENGTH(scanned) >= @scan_cap}}
             """
 
     async def get_entity_candidate_records(
@@ -17275,7 +17285,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit_per_entity: int = 20,
         offset: int = 0,
         transaction: str | None = None,
-    ) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    ) -> dict[tuple[str, str], EntityCandidateRows]:
         """See :meth:`IGraphDBProvider.get_entity_candidate_records`."""
         if not refs or not org_id:
             return {}
@@ -17296,10 +17306,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 str(c) for c in ref.get("connectorIds") or [] if c
             ))
 
-        results: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        results: dict[tuple[str, str], EntityCandidateRows] = {}
         for ref_type, connectors_by_id in connectors_by_type.items():
             for ref_id in connectors_by_id:
-                results.setdefault((ref_type, ref_id), [])
+                results.setdefault((ref_type, ref_id), EntityCandidateRows())
             # A ref without connectors can never match a row, so it is not sent.
             query_refs = [
                 {"id": ref_id, "connectorIds": connector_ids}
@@ -17336,7 +17346,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     continue
                 key = (ref_type, str(row.get("id") or ""))
                 if key in results:
-                    results[key] = row.get("rows") or []
+                    results[key] = EntityCandidateRows(
+                        row.get("rows") or [], capped=bool(row.get("capped")),
+                    )
         return results
 
     async def get_taxonomy_entity_membership(

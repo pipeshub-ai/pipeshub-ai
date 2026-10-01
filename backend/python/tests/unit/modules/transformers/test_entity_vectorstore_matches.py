@@ -222,14 +222,18 @@ class TestSkipUnchanged:
         store._dense_embeddings.embed_documents.assert_called_once_with(["New name"])
         service.update_payload_by_ids.assert_awaited_once()
 
-    async def test_replace_mode_always_writes(self) -> None:
+    async def test_replace_mode_skips_an_unchanged_point(self) -> None:
+        """Record and record-group points are written on every indexed record;
+        rewriting an unchanged one re-embedded it each time."""
         service = MagicMock()
         stored = self._entity(connector_ids=["c1"])
         service.retrieve_points = AsyncMock(return_value=[_existing(stored, ["c1"], [])])
         service.upsert_points = AsyncMock()
+        service.update_payload_by_ids = AsyncMock()
         store = _make_store(service)
         await store.upsert_entities_batch([stored], merge_membership=False)
-        service.upsert_points.assert_awaited_once()
+        service.upsert_points.assert_not_awaited()
+        service.update_payload_by_ids.assert_not_awaited()
 
     async def test_read_failure_skips_the_write(self) -> None:
         """Writing blind would replace the stored membership with only this

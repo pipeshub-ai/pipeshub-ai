@@ -326,12 +326,16 @@ class EntityVectorStore:
         same shared entity (e.g. two records both tagged "Engineering")
         cannot each merge against a stale read and drop the other's update.
 
+        Either way, a point whose stored text, metadata and membership already
+        match is not written, and one whose only change is membership has its
+        arrays rewritten by id without re-embedding.
+
         ``merge_membership=False`` writes ``entity.connector_ids``/
         ``record_group_ids`` as-is instead of unioning with what is already
-        stored — used by callers that already read-modify-wrote the full
-        membership themselves (e.g. removing one connector from a shared
-        entity in ``_shrink_connector_membership``), where merging again
-        would silently re-add the membership being removed.
+        stored — for record and record-group points, whose membership is
+        exactly their own connector and group (a union would keep a moved
+        record matching its old group's users). A failed state read then
+        rewrites the batch in full rather than skipping it.
         """
         await self._ensure_initialized()
         if not entities:
@@ -367,38 +371,47 @@ class EntityVectorStore:
                         named.append(entity)
 
                     existing_states: dict[str, dict[str, Any]] = {}
-                    if merge_membership and named:
+                    if named:
                         try:
                             existing_states = await self._fetch_existing_states(named)
                         except _MembershipReadError as exc:
+                            if merge_membership:
+                                # Merging against an assumed-empty state would
+                                # drop every other writer's membership.
+                                self.logger.warning(
+                                    "Skipping entity upsert batch, membership unknown: %s", exc
+                                )
+                                continue
+                            # Replacing never reads membership into the write;
+                            # the read only lets an unchanged point be skipped.
                             self.logger.warning(
-                                "Skipping entity upsert batch, membership unknown: %s", exc
+                                "Entity state read failed; rewriting %d points in full: %s",
+                                len(named), exc,
                             )
-                            continue
 
                     pending: list[tuple[EntityRecord, list[str], list[str]]] = []
                     membership_only: list[tuple[EntityRecord, list[str], list[str]]] = []
                     for entity in named:
+                        existing = existing_states.get(self._point_id(
+                            entity.org_id, entity.entity_type.value, entity.entity_id
+                        ))
                         if merge_membership:
-                            existing = existing_states[self._point_id(
-                                entity.org_id, entity.entity_type.value, entity.entity_id
-                            )]
                             connector_ids = self._union_ids(
                                 existing["connectorIds"], entity.connector_ids
                             )
                             record_group_ids = self._union_ids(
                                 existing["recordGroupIds"], entity.record_group_ids
                             )
-                            if self._same_content(existing, entity):
-                                if (
-                                    list(existing["connectorIds"]) != connector_ids
-                                    or list(existing["recordGroupIds"]) != record_group_ids
-                                ):
-                                    membership_only.append((entity, connector_ids, record_group_ids))
-                                continue
                         else:
-                            connector_ids = list(entity.connector_ids)
-                            record_group_ids = list(entity.record_group_ids)
+                            connector_ids = self._union_ids([], entity.connector_ids)
+                            record_group_ids = self._union_ids([], entity.record_group_ids)
+                        if existing is not None and self._same_content(existing, entity):
+                            if (
+                                list(existing["connectorIds"]) != connector_ids
+                                or list(existing["recordGroupIds"]) != record_group_ids
+                            ):
+                                membership_only.append((entity, connector_ids, record_group_ids))
+                            continue
                         pending.append((entity, connector_ids, record_group_ids))
 
                     # The stored vector is still right; only the arrays move.
@@ -670,11 +683,10 @@ class EntityVectorStore:
            with ``set_payload`` (no re-embedding), an exclusive one is deleted.
            Either way it leaves the filter, so paging never goes deep (Redis
            caps search offsets at 10k) and an interrupted run resumes.
-        3. Delete everything still naming the connector in one filtered call:
-           its RECORD and RECORD_GROUP points, and any point without an id.
-
-        Step 3 would also delete shared taxonomy points, so it runs only once
-        step 2 has drained them. A page that stays unchanged (OpenSearch's
+        3. Delete what is left of the connector in one filtered call: its
+           RECORD and RECORD_GROUP points, and any point without a type.
+           Taxonomy points are never swept; one that a concurrently indexed
+           record re-tagged with the connector is left and logged. A page that stays unchanged (OpenSearch's
         ``update_by_query`` skips a point rewritten underneath it) is retried,
         then raises, as does a full page of points without an id.
         """
@@ -729,10 +741,36 @@ class EntityVectorStore:
                 f"id or type (org={org_id} connector={connector_id})"
             )
 
+        # Never taxonomy types: a record indexed while this ran can re-tag a
+        # shared entity with the connector, and deleting it here would drop
+        # every other connector's membership with it.
+        shared_types = [
+            t.value for t in EntityType if t.value not in scoped_types
+        ]
         remaining = await self.vector_db_service.filter_collection(
             must={"metadata.orgId": org_id, CONNECTOR_IDS_FIELD: connector_id},
+            must_not={"metadata.entityType": shared_types},
         )
         await self.vector_db_service.delete_points(self.collection_name, remaining)
+        shared_filter = await self.vector_db_service.filter_collection(
+            must={
+                "metadata.orgId": org_id,
+                CONNECTOR_IDS_FIELD: connector_id,
+                "metadata.entityType": shared_types,
+            },
+        )
+        leftover = await self.vector_db_service.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=shared_filter,
+            limit=1,
+            with_payload=["metadata.entityId"],
+        )
+        if leftover.points:
+            self.logger.warning(
+                "Shared entities still name deleted connector %s in org %s after cleanup "
+                "(re-tagged by a record indexed meanwhile); left in place",
+                connector_id, org_id,
+            )
 
     async def _connector_group_ids(
         self, org_id: str, connector_id: str, entity_types: list[str], page_size: int,

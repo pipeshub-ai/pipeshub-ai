@@ -370,3 +370,75 @@ class TestDeletesWithoutEmbeddings:
 
         assert await _point(store, org, "record", "r1") is None
         fresh._init_embeddings.assert_not_called()
+
+
+class TestReplaceMode:
+    """Record and record-group points are written with ``merge_membership=False``
+    on every indexed record."""
+
+    async def test_unchanged_record_point_is_not_rewritten(self, store: EntityVectorStore) -> None:
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        record = _entity("rec-1", EntityType.RECORD, org=org, name="Q3 plan", connectors=["c1"], groups=["g1"])
+        await store.upsert_entities_batch([record], merge_membership=False)
+        store.vector_db_service.upsert_points = AsyncMock(wraps=store.vector_db_service.upsert_points)
+        store.vector_db_service.update_payload_by_ids = AsyncMock(
+            wraps=store.vector_db_service.update_payload_by_ids,
+        )
+
+        await store.upsert_entities_batch([record], merge_membership=False)
+
+        store.vector_db_service.upsert_points.assert_not_awaited()
+        store.vector_db_service.update_payload_by_ids.assert_not_awaited()
+
+    async def test_moved_record_has_its_group_replaced_without_rewriting(self, store: EntityVectorStore) -> None:
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch(
+            [_entity("rec-1", EntityType.RECORD, org=org, name="Q3 plan", connectors=["c1"], groups=["g-old"])],
+            merge_membership=False,
+        )
+        store.vector_db_service.upsert_points = AsyncMock(wraps=store.vector_db_service.upsert_points)
+
+        await store.upsert_entities_batch(
+            [_entity("rec-1", EntityType.RECORD, org=org, name="Q3 plan", connectors=["c1"], groups=["g-new"])],
+            merge_membership=False,
+        )
+
+        store.vector_db_service.upsert_points.assert_not_awaited()
+        payload = await _point(store, org, "record", "rec-1")
+        assert payload["recordGroupIds"] == ["g-new"]
+        assert payload["page_content"] == "Q3 plan"
+
+
+class TestFinalSweep:
+    async def test_sweep_spares_taxonomy_and_removes_untyped_points(self, store: EntityVectorStore) -> None:
+        """The page loop is skipped so only the sweep acts: a shared topic
+        still naming the connector (as after a concurrent re-tag) survives,
+        and record-group and untyped points of the connector are removed."""
+        from app.services.vector_db.models import VectorPoint
+
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([
+            _entity("shared", org=org, connectors=["A", "B"], groups=["gb"]),
+            _entity("rg-a", EntityType.RECORD_GROUP, org=org, connectors=["A"], groups=["ga"]),
+        ], merge_membership=False)
+        untyped_id = store._point_id(org, "none", "junk")
+        await store.vector_db_service.upsert_points(store.collection_name, [VectorPoint(
+            id=untyped_id,
+            dense_vector=_StubEmbeddings().embed_query("junk"),
+            payload={
+                "page_content": "junk",
+                "metadata": {"orgId": org, "name": "junk"},
+                "connectorIds": ["A"],
+                "recordGroupIds": [],
+            },
+        )])
+        await _publish_writes(store)
+        store._strip_or_delete = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+        await store.delete_entities_by_connector(org, "A", record_group_ids=["ga"])
+
+        await _publish_writes(store)
+        assert await _point(store, org, "topic", "shared") is not None
+        assert await _point(store, org, "record_group", "rg-a") is None
+        remaining = await store.vector_db_service.retrieve_points(store.collection_name, [untyped_id])
+        assert remaining == []

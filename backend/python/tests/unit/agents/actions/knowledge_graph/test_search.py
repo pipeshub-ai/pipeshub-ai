@@ -1010,7 +1010,9 @@ class TestExecuteSearchRecordScopedEntities:
             return_value=EntitySearchScope(virtual_ids=["vr-1"], truncated=True),
         ):
             result = await execute_search(state, "roadmap", entity_ids=["rg1"])
-        assert "only its newest accessible records were searched" in json.loads(result)["message"]
+        message = json.loads(result)["message"]
+        assert "only part of its accessible records were searched" in message
+        assert "newest" not in message
 
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))

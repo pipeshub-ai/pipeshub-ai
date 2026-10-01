@@ -42,9 +42,13 @@ pick the nodes.
    new. Every answer is validated: a target must be the offered winner, an
    in-record pointer must be of the same kind, anything else becomes new. A
    cleaned display form for a new name (`canonical_name`) is kept only when it
-   differs from the extracted name in case, punctuation or whitespace alone;
-   one that adds or drops words is ignored (`rejected_canonical`), since it
-   would otherwise merge into an existing node the model was never offered.
+   differs from the extracted name in case, whitespace or punctuation alone
+   (`normalizer.spelling_key`); one that adds or drops words is ignored
+   (`rejected_canonical`), since it would otherwise merge into an existing node
+   the model was never offered. Combining marks, digits and symbols count as
+   spelling ("दिन" is not "दीन", "C++" is not "C#"), and so does punctuation
+   inside a number or at the start of a name ("3.11" is not "311", ".NET" is
+   not "NET").
 
 Languages go through a static ISO table and skip tiers 2 and 3. Departments
 keep their exact match against the org's department list. Record and
@@ -87,7 +91,8 @@ Shadow decisions are logged as `entity_resolution shadow ... decisions=[...]`.
 | Failure | Behaviour |
 | --- | --- |
 | Vector store unavailable | Names become new nodes; `vector_error` fallback counter |
-| Model unavailable or malformed | Every name in that call becomes new; `model_error` counter |
+| Model unavailable or malformed | Every name in that call becomes new; `model_error` counter; the cached model is rebuilt from config for the next record |
+| Model call slower than 60 s | Same as unavailable. The bound applies to each provider call (and each reflection retry), not to the wait for the shared indexing model slot, which is backpressure |
 | Model returns an id it was not offered | That name becomes new; `rejected_target` counter |
 | Winner check against the graph fails | No winner offered for that kind; `winner_check_error` counter |
 | Graph lookup fails | Apply mode: enrichment fails as today, no point is written. Shadow mode: logged |

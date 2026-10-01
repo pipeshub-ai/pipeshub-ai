@@ -16,9 +16,14 @@ MAX_NAME_LENGTH = 100
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _ZERO_WIDTH_RE = re.compile("[​-‍⁠﻿]")
-_NON_WORD_RE = re.compile(r"[\W_]+")
 _SURROUNDING_QUOTES = "\"'`“”‘’«»"
 _TRAILING_PUNCTUATION = ".,;:!?"
+# Unicode punctuation that still tells two names apart ("C#" is not "C").
+_SIGNIFICANT_PUNCTUATION = frozenset("#%@*")
+# Separators that are part of a number ("3.11", "1/2", "2024-25") when they
+# sit between digits, and of a name or sign (".NET", "-5") at a word's start.
+_NUMBER_SEPARATORS = frozenset(".,/-:")
+_LEADING_MARKS = frozenset(".-")
 
 
 def _strip_once(text: str) -> str:
@@ -49,10 +54,29 @@ def normalize_name(raw: str) -> str:
     return _strip_noise(raw).casefold()
 
 
+def _is_spelling(char: str) -> bool:
+    # Letters, combining marks, digits and symbols: dropping a mark changes the
+    # word in many scripts ("दिन" is "day", "दीन" is "poor"), and "C++" is not "C".
+    return unicodedata.category(char)[0] in "LMNS" or char in _SIGNIFICANT_PUNCTUATION
+
+
+def _keeps(text: str, i: int) -> bool:
+    char = text[i]
+    if _is_spelling(char):
+        return True
+    before = text[i - 1] if i > 0 else " "
+    after = text[i + 1] if i + 1 < len(text) else " "
+    if char in _NUMBER_SEPARATORS and before.isdigit() and after.isdigit():
+        return True
+    return char in _LEADING_MARKS and before.isspace() and after.isalnum()
+
+
 def spelling_key(name: str) -> str:
-    """``name`` with case, punctuation and whitespace removed. Two names with
-    the same spelling key differ only in presentation, not in words."""
-    return _NON_WORD_RE.sub("", normalize_name(name))
+    """``name`` with case, whitespace and punctuation removed. Two names with
+    the same spelling key differ only in presentation, not in words: a
+    separator inside a number or a leading mark (".NET", "-5") is kept."""
+    text = normalize_name(name)
+    return "".join(c for i, c in enumerate(text) if _keeps(text, i))
 
 
 def is_acceptable_name(normalized: str) -> bool:

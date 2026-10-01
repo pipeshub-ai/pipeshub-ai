@@ -281,8 +281,12 @@ class TestTier2:
             EntityRecord(entity_id="k-bug", entity_type=EntityType.TOPIC, name="Bug bash testing", org_id="acme"),
             EntityRecord(entity_id="k-legal", entity_type=EntityType.CATEGORY, name="Legal", org_id="acme"),
         ])
+        from app.modules.entity_resolution.models import MergeDecisions
+
         get_llm = AsyncMock(return_value=(MagicMock(name="llm"), {}))
-        invoke = AsyncMock(return_value=None)
+        # A successful (empty) answer: after a failed call the client is
+        # rebuilt on purpose (test_resolver_model_call_and_winner_check), so reuse is about success.
+        invoke = AsyncMock(return_value=MergeDecisions())
         with patch("app.modules.entity_resolution.resolver.get_llm_for_role", new=get_llm), patch(
             "app.modules.entity_resolution.resolver.invoke_with_structured_output_and_reflection",
             new=invoke,
@@ -335,19 +339,22 @@ class TestTier2:
     async def test_a_hung_model_call_times_out_and_falls_back(
         self, make_resolver, fake_store, metadata_factory, ctx_factory, monkeypatch
     ) -> None:
-        """A hung call would hold the record's indexing slot indefinitely."""
+        """A hung call would hold the record's indexing slot indefinitely. The
+        bound is applied by the real helper around the provider call."""
         import asyncio
 
         from app.models.entities import EntityRecord, EntityType
         from app.modules.entity_resolution import resolver as resolver_module
+        from app.utils import streaming
 
-        async def _hang(*_args, **_kwargs):
-            await asyncio.sleep(10)
+        class _HungLlm:
+            async def ainvoke(self, _messages: list) -> None:
+                await asyncio.sleep(10)
 
         monkeypatch.setattr(resolver_module, "MERGE_CALL_TIMEOUT_SECONDS", 0.01)
-        monkeypatch.setattr(resolver_module, "invoke_with_structured_output_and_reflection", _hang)
+        monkeypatch.setattr(streaming, "_apply_structured_output", lambda llm, schema: llm)
         monkeypatch.setattr(
-            resolver_module, "get_llm_for_role", AsyncMock(return_value=(MagicMock(), {})),
+            resolver_module, "get_llm_for_role", AsyncMock(return_value=(_HungLlm(), {})),
         )
         await fake_store.upsert_entities_batch([
             EntityRecord(entity_id="k-bug", entity_type=EntityType.TOPIC, name="Bug bash testing", org_id="acme"),

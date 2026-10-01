@@ -248,8 +248,8 @@ class SinkOrchestrator(Transformer):
 
             from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 
-            # Always this connector and the group itself, so there is nothing
-            # to merge and the membership read is skipped.
+            # Always this connector and the group itself, so membership is
+            # replaced rather than merged; an unchanged point is not rewritten.
             await self.entity_vector_store.upsert_entities_batch([
                 EntityRecord(
                     entity_id=record.record_group_id,
@@ -373,9 +373,12 @@ class SinkOrchestrator(Transformer):
                     )
                 )
 
+            # A record and its group are written like on the index path:
+            # their membership is replaced, never unioned.
+            identities: list[EntityRecord] = []
             record_name = record_doc.get("recordName")
             if record_name and record_name.strip():
-                entities.append(
+                identities.append(
                     EntityRecord(
                         entity_id=str(record_key),
                         entity_type=EntityType.RECORD,
@@ -397,7 +400,7 @@ class SinkOrchestrator(Transformer):
                     else None
                 )
                 if group_name and group_name.strip():
-                    entities.append(
+                    identities.append(
                         EntityRecord(
                             entity_id=record_group_id,
                             entity_type=EntityType.RECORD_GROUP,
@@ -411,6 +414,10 @@ class SinkOrchestrator(Transformer):
 
             if entities:
                 await self.entity_vector_store.upsert_entities_batch(entities)
+            if identities:
+                await self.entity_vector_store.upsert_entities_batch(
+                    identities, merge_membership=False,
+                )
         except Exception as exc:
             self.logger.warning(
                 "Entity vector sync failed for deduplicated record %s (non-fatal): %s",
