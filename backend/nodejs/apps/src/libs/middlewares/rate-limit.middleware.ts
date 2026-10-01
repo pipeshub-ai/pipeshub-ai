@@ -1,6 +1,6 @@
 import { createSecretKey, KeyObject } from 'node:crypto';
 import { Request, Response, RequestHandler } from 'express';
-import rateLimit, { Options } from 'express-rate-limit';
+import rateLimit, { Options, ipKeyGenerator } from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { Logger } from '../services/logger.service';
@@ -8,29 +8,18 @@ import { TooManyRequestsError } from '../errors/http.errors';
 import { AuthenticatedUserRequest, AuthenticatedServiceRequest } from './types';
 
 /**
- * Get client IP address from request
+ * Never read X-Forwarded-For / X-Real-IP directly: the client controls them.
+ * req.ip honours the app's `trust proxy` setting (TRUST_PROXY).
  */
 function getClientIp(req: Request): string {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (forwarded) {
-    const forwardedValue =
-      typeof forwarded === 'string' ? forwarded : forwarded[0];
-    if (forwardedValue) {
-      const ips = forwardedValue.split(',');
-      const firstIp = ips[0];
-      if (firstIp) {
-        return firstIp.trim();
-      }
-    }
-  }
-  const realIp = req.headers['x-real-ip'];
-  if (realIp) {
-    const realIpValue = typeof realIp === 'string' ? realIp : realIp[0];
-    if (realIpValue) {
-      return realIpValue;
-    }
-  }
-  return req.ip || req.socket.remoteAddress || 'unknown';
+  return req.ip ?? req.socket.remoteAddress ?? 'unknown';
+}
+
+function getClientIpKey(req: Request): string {
+  // Anonymous requests are counted by IP. An IPv4 address is one per client
+  // and is used as-is. An IPv6 client gets a whole block of addresses, so
+  // those are folded into one key; switching address would reset the limit.
+  return ipKeyGenerator(getClientIp(req));
 }
 
 export const CALLER_ROLE_LOOKUP_PATH = '/api/v1/users/me/role';
@@ -95,8 +84,7 @@ export function createGlobalRateLimiter(
       if (authenticatedServiceReq.tokenPayload?.orgId) {
         return `org:${authenticatedServiceReq.tokenPayload.orgId}`;
       }
-      const ip = getClientIp(req);
-      return `ip:${ip}`;
+      return `ip:${getClientIpKey(req)}`;
     },
 
     skip: (req: Request): boolean => {
@@ -157,7 +145,7 @@ export function createGlobalRateLimiter(
     if (authenticatedServiceReq.tokenPayload?.orgId) {
       return `org:${authenticatedServiceReq.tokenPayload.orgId}`;
     }
-    return `ip:${getClientIp(req)}`;
+    return `ip:${getClientIpKey(req)}`;
   }
 
   return rateLimit(config);
@@ -186,7 +174,7 @@ export function createKeyedRateLimiter(
     if (authenticatedUserReq.user?.userId) {
       return `${prefix}:user:${authenticatedUserReq.user.userId}`;
     }
-    return `${prefix}:ip:${getClientIp(req)}`;
+    return `${prefix}:ip:${getClientIpKey(req)}`;
   };
 
   const config: Partial<Options> = {
@@ -247,5 +235,22 @@ export function createSkillsImportRateLimiter(
     prefix: 'skills-import',
     maxRequestsPerMinute,
     message: 'Too many skill import requests. Please try again later.',
+  });
+}
+
+/**
+ * Login/OTP/password endpoints. The global limiter is sized for general API
+ * traffic and is too loose to stop password spraying or OTP/email bombing.
+ * The limit is per replica (in-process store), so N pods admit up to
+ * N × maxRequestsPerMinute per client until a shared store is wired.
+ */
+export function createAuthRateLimiter(
+  logger: Logger,
+  maxRequestsPerMinute = 10,
+): RequestHandler {
+  return createKeyedRateLimiter(logger, {
+    prefix: 'auth',
+    maxRequestsPerMinute,
+    message: 'Too many authentication requests. Please try again later.',
   });
 }

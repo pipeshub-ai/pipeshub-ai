@@ -314,6 +314,7 @@ class EventService:
             self.logger.info(f"✅ Successfully initialized {connector_name} connector")
 
             await self._store_connector(connector_id, connector)
+
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
@@ -847,6 +848,34 @@ class EventService:
                     f"❌ Failed to delete etcd config for connector {connector_id}: {config_err}. "
                     f"Orphaned configuration may remain."
                 )
+
+            # Shared taxonomy entities lose this connector and its record
+            # groups; everything only it referenced is deleted. The record
+            # group ids come from the graph deletion, since the groups are gone
+            # from the graph now and some never had an entity point.
+            if hasattr(self.app_container, "entity_vector_store"):
+                try:
+                    entity_vector_store = await self.app_container.entity_vector_store()
+                    if entity_vector_store is not None:
+                        await entity_vector_store.delete_entities_by_connector(
+                            org_id=org_id,
+                            connector_id=connector_id,
+                            # [] means the graph knew of none; only a missing key
+                            # makes the store scan its own points for them.
+                            record_group_ids=result.get("record_group_ids"),
+                            membership_lookup=lambda refs: self.graph_provider.get_taxonomy_entity_membership(
+                                refs, org_id,
+                            ),
+                        )
+                        self.logger.info(
+                            f"✅ Entity vector store entries removed for connector {connector_id}"
+                        )
+                except Exception as evt_err:
+                    self.logger.error(
+                        f"❌ Failed to remove entity vector store entries for "
+                        f"connector {connector_id}: {evt_err}. "
+                        f"Orphaned entity vectors may remain until the affected records are reindexed."
+                    )
 
             self.logger.info(f"✅ Async deletion complete for connector {connector_id}")
             return True
