@@ -545,6 +545,14 @@ class Neo4jProvider(IGraphDBProvider):
                 f"FOR (n:{label}) ON (n.{spec.scope_field}, n.id)"
             )
 
+        # "Anyone" shares are looked up per record by (file_key, organization),
+        # once per walked row in get_permitted_entity_records; without this
+        # each lookup scans every org's shares.
+        indexes.append(
+            "CREATE INDEX anyone_file_key_org IF NOT EXISTS "
+            "FOR (n:Anyone) ON (n.file_key, n.organization)"
+        )
+
         # ==================== RECORD INDEXES (Highest Priority) ====================
         # Records are the most queried entity, especially in permission checks
 

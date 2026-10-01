@@ -58,9 +58,10 @@ LISTING_DEADLINE_SECONDS = 8.0
 # window keeps the common case cheap, later ones reach users whose readable
 # records are older (KG-11). Bounded together by PROBE_ROUND_BUDGET.
 PROBE_WINDOWS = (20, 180, 800)
-# Candidates one probe round may walk across all its entities; a permission
-# check runs per walked record-level row.
-PROBE_ROUND_BUDGET = 4000
+# Candidates one probe round may walk across all its entities. A permission
+# check runs per walked record-level row: measured at ~0.3 ms on Neo4j and
+# ~2 ms on ArangoDB, so a full round stays inside SEARCH_DEADLINE_SECONDS.
+PROBE_ROUND_BUDGET = 1500
 LISTING_WINDOW_MIN = 100
 LISTING_WINDOW_MAX = 500
 MAX_SCAN_PER_CALL = 1000
@@ -523,7 +524,7 @@ async def list_accessible_entity_records(
         # Sparse access widens the next window, so finding a few readable
         # records among many takes a few queries, not dozens.
         planned_window = min(planned_window * 2, LISTING_WINDOW_MAX)
-        by_entity = await _fetch_permitted(
+        fetch = _fetch_permitted(
             graph_provider,
             context,
             [{"id": entity_id, "type": entity_type, "connectorIds": connector_ids}],
@@ -533,6 +534,19 @@ async def list_accessible_entity_records(
             window=window,
             deadline=deadline,
         )
+        if not scanned:
+            by_entity = await fetch
+        else:
+            # A later window cut by the deadline ends the page where it is,
+            # instead of failing the call and losing what was found.
+            try:
+                by_entity = await _within(deadline, fetch)
+            except TimeoutError:
+                logger.info(
+                    "entity listing window cut at its deadline org=%s entity=%s/%s offset=%d found=%d",
+                    context.org_id, entity_type, entity_id, offset, len(records),
+                )
+                return EntityRecordPage(records=records, next_cursor=str(offset), capped=capped)
         rows = _rows_for(by_entity, entity_type, entity_id)
         capped = capped or rows.capped
         records.extend(rows)

@@ -677,3 +677,36 @@ class TestPermissionInTheQuery:
         assert page.next_cursor == "701"
         # Windows widen while access is sparse; the last is cut to the scan limit.
         assert [c.kwargs["window"] for c in graph.get_permitted_entity_records.call_args_list] == [100, 200, 400, 300]
+
+
+class TestListingWindowPastTheDeadline:
+    @pytest.mark.asyncio
+    async def test_a_slow_later_window_returns_what_was_found_with_a_cursor(self, monkeypatch) -> None:
+        """The server limit must not turn a late window into a failed call
+        that throws away the records already found."""
+        import asyncio
+
+        monkeypatch.setattr(ep, "LISTING_DEADLINE_SECONDS", 0.3)
+        rows = [_row(f"d{i}", "conf-1") for i in range(1000)]
+        build = permitted_records(
+            lambda refs, org, **k: {"t1": rows[k["offset"]:k["offset"] + k["limit_per_entity"]]},
+            permitted={"d5"},
+        )
+        calls = 0
+
+        async def _permitted(*args: object, **kwargs: object) -> dict:
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                await asyncio.sleep(5)
+            return await build(*args, **kwargs)
+
+        graph = MagicMock()
+        graph.get_permitted_entity_records = AsyncMock(side_effect=_permitted)
+
+        page = await list_accessible_entity_records(
+            graph, _context(), entity_id="t1", entity_type="topic", limit=5,
+        )
+
+        assert [r["_key"] for r in page.records] == ["d5"]
+        assert page.next_cursor == str(ep.LISTING_WINDOW_MIN)
