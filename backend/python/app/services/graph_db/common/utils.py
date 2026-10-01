@@ -134,6 +134,51 @@ class EntityCandidateRows(list):
         self.capped = capped
 
 
+class PermittedEntityRows(EntityCandidateRows):
+    """The permitted rows found in one window of an entity's candidates.
+
+    ``window_size`` is how many candidates the window held (fewer than asked
+    means the candidates ran out). ``examined`` is how many of them were
+    walked: all of them, or up to the last row returned when the limit was
+    reached. The next window starts at ``offset + examined``.
+    """
+
+    def __init__(
+        self,
+        rows: Iterable[dict[str, Any]] = (),
+        *,
+        capped: bool = False,
+        window_size: int = 0,
+        examined: int = 0,
+    ) -> None:
+        super().__init__(rows, capped=capped)
+        self.window_size = window_size
+        self.examined = examined
+
+    @classmethod
+    def from_window(
+        cls,
+        hits: Iterable[dict[str, Any]],
+        *,
+        limit: int,
+        window_size: int,
+        capped: bool,
+    ) -> "PermittedEntityRows":
+        """Build from query hits shaped ``{"pos": int, "row": dict}``, where
+        ``pos`` is the hit's index in the window."""
+        ordered = sorted(
+            (h for h in hits if h and isinstance(h.get("row"), dict)),
+            key=lambda h: int(h.get("pos") or 0),
+        )[:limit]
+        examined = int(ordered[-1]["pos"]) + 1 if len(ordered) >= limit else window_size
+        return cls(
+            (h["row"] for h in ordered),
+            capped=capped,
+            window_size=window_size,
+            examined=min(examined, window_size),
+        )
+
+
 def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:
     """
     Collapse a list of ``{agentId, agentName}`` rows into a list of agent names,

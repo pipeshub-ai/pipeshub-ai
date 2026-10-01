@@ -367,3 +367,39 @@ class TestExplicitTransactions:
         session = driver.sessions[-1]
         session.transactions[0].close.assert_awaited_once()
         session.close.assert_awaited_once()
+
+
+class TestServerTimeout:
+    @pytest.mark.asyncio
+    async def test_a_timeout_wraps_the_query_and_survives_a_retry(self, ensure_db) -> None:
+        from neo4j import Query
+
+        built: list = []
+
+        def factory(*a, **kw) -> MagicMock:
+            built.append(_driver([ServiceUnavailable("connection reset")]))
+            return built[-1]
+
+        with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", side_effect=factory):
+            client = _client()
+            await client.connect()
+            await client.execute_query("RETURN 1", timeout=2.5)
+
+        ran = [q for session in built[0].sessions for q in session.ran]
+        assert len(ran) == 2
+        assert all(isinstance(q, Query) and q.timeout == 2.5 and q.text == "RETURN 1" for q in ran)
+
+    @pytest.mark.asyncio
+    async def test_no_timeout_runs_the_plain_text(self, ensure_db) -> None:
+        built: list = []
+
+        def factory(*a, **kw) -> MagicMock:
+            built.append(_driver([]))
+            return built[-1]
+
+        with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", side_effect=factory):
+            client = _client()
+            await client.connect()
+            await client.execute_query("RETURN 1")
+
+        assert built[0].sessions[0].ran == ["RETURN 1"]

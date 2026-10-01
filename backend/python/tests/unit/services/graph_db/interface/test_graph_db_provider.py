@@ -230,7 +230,6 @@ class TestAbstractMethodInventory:
         "move_taxonomy_edges",
         "find_legacy_taxonomy_nodes",
         "update_node_fields_if_match",
-        "filter_records_shared_with_anyone",
         "get_entity_index_candidate",
         "page_entity_index_source",
         "page_records_for_vector_membership_backfill",
@@ -260,6 +259,7 @@ class TestAbstractMethodInventory:
         # Knowledge-graph taxonomy entities
         "get_taxonomy_entities_for_record",
         "get_entity_candidate_records",
+        "get_permitted_entity_records",
         "get_taxonomy_entity_membership",
         "find_taxonomy_nodes",
         "create_taxonomy_node_if_absent",

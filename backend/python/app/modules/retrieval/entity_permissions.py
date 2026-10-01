@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from app.config.constants.arangodb import Connectors, PermissionModel
 from app.modules.transformers.entity_vectorstore import EntitySearchPass
+from app.services.graph_db.common.utils import PermittedEntityRows
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Iterable, Mapping
@@ -53,11 +54,19 @@ SEARCH_DEADLINE_SECONDS = 4.0
 # A listing scans in batches; past this it returns what it found with a
 # cursor to continue from, instead of running batch after batch.
 LISTING_DEADLINE_SECONDS = 8.0
-PROBE_BATCH = 20
-PROBE_MAX_ROUNDS = 3
-CANDIDATE_BATCH_MIN = 40
-CANDIDATE_BATCH_MAX = 200
+# Candidates each probe round walks per entity, newest first: a small first
+# window keeps the common case cheap, later ones reach users whose readable
+# records are older (KG-11). Bounded together by PROBE_ROUND_BUDGET.
+PROBE_WINDOWS = (20, 180, 800)
+# Candidates one probe round may walk across all its entities; a permission
+# check runs per walked record-level row.
+PROBE_ROUND_BUDGET = 4000
+LISTING_WINDOW_MIN = 100
+LISTING_WINDOW_MAX = 500
 MAX_SCAN_PER_CALL = 1000
+# Server-side limit past the caller's deadline, so the client gives up first
+# and the server stops shortly after instead of finishing abandoned work.
+SERVER_TIMEOUT_GRACE_SECONDS = 0.5
 PREVIEW_RECORD_COUNT = 3
 SEARCH_SCOPE_MAX_ENTITIES = 5
 SEARCH_SCOPE_MAX_RECORDS = 500
@@ -126,6 +135,7 @@ class _Probe:
     permitted: list[dict[str, Any]] = field(default_factory=list)
     exhausted: bool = False
     capped: bool = False
+    walked: int = 0
 
 
 async def get_entity_access_context(
@@ -220,43 +230,7 @@ async def _load_access_context(
     )
 
 
-async def _filter_permitted_rows(
-    graph_provider: "IGraphDBProvider",
-    context: EntityAccessContext,
-    rows: list[dict[str, Any]],
-) -> set[str]:
-    """Keys of ``rows`` the user may see: app-level connector rows pass on
-    app access alone, record-level rows go through one batched graph check."""
-    permitted: set[str] = set()
-    needs_check: list[str] = []
-    for row in rows:
-        key = row.get("_key")
-        connector_id = row.get("connectorId")
-        if not key or connector_id not in context.app_ids:
-            continue
-        if connector_id in context.app_level_app_ids:
-            permitted.add(key)
-        else:
-            needs_check.append(key)
-    if needs_check:
-        try:
-            permitted |= await graph_provider.filter_nodes_with_permission_role(
-                [{"id": key, "type": "record"} for key in dict.fromkeys(needs_check)],
-                context.user_key,
-                context.org_id,
-                raise_on_error=True,
-            )
-            # Shared with anyone in the org: content search returns these, and
-            # they are already limited to connectors the user can reach.
-            refused = [key for key in dict.fromkeys(needs_check) if key not in permitted]
-            if refused:
-                permitted |= await graph_provider.filter_records_shared_with_anyone(refused, context.org_id)
-        except Exception as exc:
-            raise EntityAccessError("Record permission check failed") from exc
-    return permitted
-
-
-async def _fetch_candidates(
+async def _fetch_permitted(
     graph_provider: "IGraphDBProvider",
     context: EntityAccessContext,
     refs: list[dict[str, Any]],
@@ -264,14 +238,24 @@ async def _fetch_candidates(
     record_types: list[str] | None,
     limit_per_entity: int,
     offset: int,
-) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    window: int,
+    deadline: float,
+) -> dict[tuple[str, str], PermittedEntityRows]:
+    """Permitted rows of one candidate window per ref, checked in the query.
+    App-level rows pass on app access; the rest on a permission role or an
+    "anyone" share."""
+    timeout = max(0.0, deadline - time.monotonic()) + SERVER_TIMEOUT_GRACE_SECONDS
     try:
-        return await graph_provider.get_entity_candidate_records(
+        return await graph_provider.get_permitted_entity_records(
             refs,
             context.org_id,
+            context.user_key,
+            app_level_connector_ids=sorted(context.app_level_app_ids),
             record_types=record_types,
             limit_per_entity=limit_per_entity,
             offset=offset,
+            window=window,
+            timeout_seconds=timeout,
         )
     except Exception as exc:
         raise EntityAccessError("Entity record lookup failed") from exc
@@ -283,13 +267,14 @@ async def _run_probes(
     probes: list[_Probe],
     deadline: float,
 ) -> tuple[int, bool]:
-    """Fetch candidates for every probe in rounds (one candidate query plus
-    one permission check per round) until each is decided or exhausted, or
-    the deadline passes. Returns the rounds run and whether the deadline cut
-    them short; an undecided probe is then left out, never guessed."""
+    """Find permitted records for every probe in rounds, one query per round,
+    each walking a wider window of the newest candidates, until each probe is
+    decided or exhausted, or the deadline passes. Returns the rounds run and
+    whether the deadline cut them short; an undecided probe is then left out,
+    never guessed."""
     rounds = 0
     timed_out = False
-    for round_index in range(PROBE_MAX_ROUNDS):
+    for round_index, planned_window in enumerate(PROBE_WINDOWS):
         pending = [
             p for p in probes
             if p.connector_ids and not p.exhausted
@@ -301,29 +286,30 @@ async def _run_probes(
             timed_out = True
             break
         rounds += 1
+        window = max(1, min(planned_window, PROBE_ROUND_BUDGET // len(pending)))
+        # Undecided probes have walked the same windows so far, so one offset
+        # serves them all.
+        offset = pending[0].walked
         try:
-            by_entity = await _within(deadline, _fetch_candidates(
+            by_entity = await _within(deadline, _fetch_permitted(
                 graph_provider,
                 context,
                 [{"id": p.entity_id, "type": p.entity_type, "connectorIds": p.connector_ids} for p in pending],
                 record_types=None,
-                limit_per_entity=PROBE_BATCH,
-                offset=round_index * PROBE_BATCH,
-            ))
-            rows_by_probe = {
-                id(p): _rows_for(by_entity, p.entity_type, p.entity_id) for p in pending
-            }
-            permitted = await _within(deadline, _filter_permitted_rows(
-                graph_provider, context, [row for rows in rows_by_probe.values() for row in rows],
+                limit_per_entity=PREVIEW_RECORD_COUNT + 1,
+                offset=offset,
+                window=window,
+                deadline=deadline,
             ))
         except TimeoutError:
             timed_out = True
             break
         for probe in pending:
-            rows = rows_by_probe[id(probe)]
-            probe.permitted.extend(row for row in rows if row.get("_key") in permitted)
-            probe.exhausted = len(rows) < PROBE_BATCH
-            probe.capped = probe.capped or _is_capped(rows)
+            rows = _rows_for(by_entity, probe.entity_type, probe.entity_id)
+            probe.permitted.extend(rows)
+            probe.walked += rows.examined
+            probe.exhausted = rows.window_size < window and rows.examined >= rows.window_size
+            probe.capped = probe.capped or rows.capped
     for probe in probes:
         if not probe.connector_ids:
             probe.exhausted = True
@@ -336,16 +322,12 @@ async def _within(deadline: float, awaitable: Awaitable[_T]) -> _T:
 
 
 def _rows_for(
-    by_entity: dict[tuple[str, str], list[dict[str, Any]]], entity_type: str, entity_id: str,
-) -> list[dict[str, Any]]:
-    # Not ``.get(...) or []``: an empty capped window is falsy, and swapping it
-    # for a plain list would lose ``capped`` exactly when paging reaches the cap.
+    by_entity: dict[tuple[str, str], PermittedEntityRows], entity_type: str, entity_id: str,
+) -> PermittedEntityRows:
+    # Not ``.get(...) or ...``: an empty window is falsy, and swapping it for a
+    # fresh one would lose its size and ``capped``.
     rows = by_entity.get((entity_type, entity_id))
-    return rows if rows is not None else []
-
-
-def _is_capped(rows: list[dict[str, Any]]) -> bool:
-    return bool(getattr(rows, "capped", False))
+    return rows if rows is not None else PermittedEntityRows()
 
 
 def _is_kept(context: EntityAccessContext, probe: _Probe) -> bool:
@@ -386,8 +368,9 @@ async def search_entities_for_user(
 
     Every pass goes to the vector DB in one request. The hits are
     de-duplicated in pass order and the union is probed together, so a call
-    costs one vector request and at most ``PROBE_MAX_ROUNDS`` rounds of two
-    graph queries, all within ``SEARCH_DEADLINE_SECONDS``.
+    costs one vector request and at most ``len(PROBE_WINDOWS)`` graph
+    queries, each checking permissions in the query, all within
+    ``SEARCH_DEADLINE_SECONDS``.
     """
     started = time.monotonic()
     deadline = started + SEARCH_DEADLINE_SECONDS
@@ -513,9 +496,9 @@ async def list_accessible_entity_records(
 ) -> EntityRecordPage:
     """Records connected to one entity that the user can access, newest
     first. ``next_cursor`` is an offset into the org- and connector-scoped
-    candidate list; every row is re-checked, so a forged cursor exposes
-    nothing. No totals are returned. ``capped`` is set when the provider's
-    scan of the entity hit its cap (see ``EntityRecordPage``)."""
+    candidate list; every row is checked in the query, so a forged cursor
+    exposes nothing. No totals are returned. ``capped`` is set when the
+    provider's scan of the entity hit its cap (see ``EntityRecordPage``)."""
     if entity_type not in SEARCHABLE_ENTITY_TYPES:
         raise ValueError(f"Unsupported entity type {entity_type!r}")
     offset = _parse_cursor(cursor)
@@ -528,6 +511,7 @@ async def list_accessible_entity_records(
     scanned = 0
     capped = False
     deadline = time.monotonic() + LISTING_DEADLINE_SECONDS
+    planned_window = min(max(limit * 4, LISTING_WINDOW_MIN), LISTING_WINDOW_MAX)
     while scanned < max_scan:
         if scanned and time.monotonic() >= deadline:
             logger.info(
@@ -535,32 +519,33 @@ async def list_accessible_entity_records(
                 context.org_id, entity_type, entity_id, offset, len(records),
             )
             return EntityRecordPage(records=records, next_cursor=str(offset), capped=capped)
-        size = min(max(limit * 2, CANDIDATE_BATCH_MIN), CANDIDATE_BATCH_MAX, max_scan - scanned)
-        by_entity = await _fetch_candidates(
+        window = min(planned_window, max_scan - scanned)
+        # Sparse access widens the next window, so finding a few readable
+        # records among many takes a few queries, not dozens.
+        planned_window = min(planned_window * 2, LISTING_WINDOW_MAX)
+        by_entity = await _fetch_permitted(
             graph_provider,
             context,
             [{"id": entity_id, "type": entity_type, "connectorIds": connector_ids}],
             record_types=record_types,
-            limit_per_entity=size,
+            limit_per_entity=limit - len(records),
             offset=offset,
+            window=window,
+            deadline=deadline,
         )
-        batch = _rows_for(by_entity, entity_type, entity_id)
-        capped = capped or _is_capped(batch)
-        permitted = await _filter_permitted_rows(graph_provider, context, batch)
-        for index, row in enumerate(batch):
-            if row.get("_key") not in permitted:
-                continue
-            records.append(row)
-            if len(records) == limit:
-                more = index + 1 < len(batch) or len(batch) == size
-                return EntityRecordPage(
-                    records=records,
-                    next_cursor=str(offset + index + 1) if more else None,
-                    capped=capped,
-                )
-        offset += len(batch)
-        scanned += len(batch)
-        if len(batch) < size:
+        rows = _rows_for(by_entity, entity_type, entity_id)
+        capped = capped or rows.capped
+        records.extend(rows)
+        offset += rows.examined
+        scanned += rows.examined
+        if len(records) >= limit:
+            more = rows.examined < rows.window_size or rows.window_size == window
+            return EntityRecordPage(
+                records=records[:limit],
+                next_cursor=str(offset) if more else None,
+                capped=capped,
+            )
+        if rows.window_size < window:
             if capped:
                 logger.info(
                     "entity listing reached the scan cap org=%s entity=%s/%s offset=%d",

@@ -151,6 +151,7 @@ from app.services.graph_db.common.utils import (
     KB_MAX_FOLDER_DEPTH,
     KB_ROLE_PRIORITY,
     MAX_DIRECT_GRANT_RECORDS,
+    PermittedEntityRows,
     PATH_MAX_CANDIDATES,
     ROOT_SCOPED_CONNECTOR_TYPES,
     build_connector_stats_response,
@@ -3069,7 +3070,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         query: str,
         bind_vars: dict | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> list[dict] | None:
         """
         Execute AQL query - FULLY ASYNC.
@@ -3078,13 +3080,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
             query: AQL query string
             bind_vars: Query bind variables
             transaction: Optional transaction ID
+            timeout_seconds: Server-side limit (cursor ``maxRuntime``)
 
         Returns:
             Optional[List[Dict]]: Query results
         """
         try:
             return await self.http_client.execute_aql(
-                query, bind_vars, txn_id=transaction
+                query, bind_vars, txn_id=transaction,
+                **({"max_runtime": timeout_seconds} if timeout_seconds is not None else {}),
             )
         except Exception as e:
             self.logger.error(f"❌ Query execution failed: {str(e)}")
@@ -4136,28 +4140,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         self.logger.debug(f"✅ Successfully retrieved {len(typed_records)} typed records for connector {connector_id}")
         return typed_records
-
-    async def filter_records_shared_with_anyone(
-        self,
-        record_ids: list[str],
-        org_id: str,
-        transaction: str | None = None,
-    ) -> set[str]:
-        """See :meth:`IGraphDBProvider.filter_records_shared_with_anyone`."""
-        ids = list(dict.fromkeys(r for r in record_ids if r))
-        if not ids or not org_id:
-            return set()
-        rows = await self.http_client.execute_aql(
-            """
-            FOR a IN @@anyone
-                FILTER a.file_key IN @record_ids AND a.organization == @org_id
-                FILTER a.active == true
-                RETURN DISTINCT a.file_key
-            """,
-            bind_vars={"@anyone": CollectionNames.ANYONE.value, "record_ids": ids, "org_id": org_id},
-            txn_id=transaction,
-        )
-        return {str(r) for r in rows or [] if r}
 
     async def get_entity_index_candidate(
         self,
@@ -17444,6 +17426,43 @@ class ArangoHTTPProvider(IGraphDBProvider):
         fields = ", ".join(f'"{f}": {var}.{f}' for f in cls._ENTITY_CANDIDATE_RECORD_FIELDS)
         return f"{{{fields}}}"
 
+    def _entity_candidate_scan_aql(
+        self, entity_type: str, *, filter_record_types: bool
+    ) -> tuple[str, str]:
+        """``(scope, scan_expr)`` for a non-record entity type: ``scope``
+        binds per-ref variables, ``scan_expr`` evaluates to at most
+        ``@scan_cap`` candidate record documents of ``ref``."""
+        records = CollectionNames.RECORDS.value
+        edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[entity_type]
+        targets = ", ".join(f'CONCAT("{c}/", ref.id)' for c in target_collections)
+        record_type_filter = (
+            "FILTER rec.recordType IN @record_types" if filter_record_types else ""
+        )
+        scan_subquery = f"""(
+                    FOR edge IN {edge_collection}
+                        FILTER edge._to IN targets
+                        FILTER STARTS_WITH(edge._from, "{records}/")
+                        LET rec = DOCUMENT(edge._from)
+                        FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
+                        FILTER rec.indexingStatus == @completed
+                        FILTER rec.connectorId IN ref.connectorIds
+                        {record_type_filter}
+                        LIMIT @scan_cap
+                        RETURN rec
+                )"""
+        scope = f"LET targets = [{targets}]"
+        if entity_type == EntityType.RECORD_GROUP.value:
+            scope = (
+                f'LET rg = DOCUMENT(CONCAT("{CollectionNames.RECORD_GROUPS.value}/", ref.id))\n                '
+                + scope
+            )
+            return scope, f"(rg != null AND rg.orgId == @org_id) ? {scan_subquery} : []"
+        return scope, scan_subquery
+
+    _ENTITY_CANDIDATE_SORT = (
+        "SORT NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) DESC, key ASC"
+    )
+
     def _entity_candidate_records_aql(
         self, entity_type: str, *, filter_record_types: bool
     ) -> str:
@@ -17463,46 +17482,174 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN {{id: ref.id, rows: (ok AND @offset == 0) ? [{projection}] : []}}
             """
 
-        edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[entity_type]
-        targets = ", ".join(f'CONCAT("{c}/", ref.id)' for c in target_collections)
-        record_type_filter = (
-            "FILTER rec.recordType IN @record_types" if filter_record_types else ""
+        scope, scan_expr = self._entity_candidate_scan_aql(
+            entity_type, filter_record_types=filter_record_types
         )
-        scan_subquery = f"""(
-                    FOR edge IN {edge_collection}
-                        FILTER edge._to IN targets
-                        FILTER STARTS_WITH(edge._from, "{records}/")
-                        LET rec = DOCUMENT(edge._from)
-                        FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
-                        FILTER rec.indexingStatus == @completed
-                        FILTER rec.connectorId IN ref.connectorIds
-                        {record_type_filter}
-                        LIMIT @scan_cap
-                        RETURN rec
-                )"""
-        if entity_type == EntityType.RECORD_GROUP.value:
-            scope = (
-                f'LET rg = DOCUMENT(CONCAT("{CollectionNames.RECORD_GROUPS.value}/", ref.id))'
-            )
-            scan_expr = f"(rg != null AND rg.orgId == @org_id) ? {scan_subquery} : []"
-        else:
-            scope = ""
-            scan_expr = scan_subquery
         return f"""
             FOR ref IN @refs
                 {scope}
-                LET targets = [{targets}]
                 LET scanned = {scan_expr}
                 LET rows = (
                     FOR rec IN scanned
                         COLLECT key = rec._key INTO grouped KEEP rec
                         LET r = grouped[0].rec
-                        SORT NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) DESC, key ASC
+                        {self._ENTITY_CANDIDATE_SORT}
                         LIMIT @offset, @limit
                         RETURN {self._entity_candidate_record_projection("r")}
                 )
                 RETURN {{id: ref.id, rows: rows, capped: LENGTH(scanned) >= @scan_cap}}
             """
+
+    def _permitted_entity_records_aql(
+        self, entity_type: str, *, filter_record_types: bool
+    ) -> str:
+        """Walk each ref's candidate window in order, keeping up to ``@limit``
+        rows the user ``u`` may read, each with its position in the window.
+        The role subquery runs only for rows app access does not grant: AQL
+        hoists subqueries out of expressions, so a ternary would not skip it,
+        but a loop over an empty array does."""
+        records = CollectionNames.RECORDS.value
+        record_role = self._get_permission_role_aql("record", "rec", "u")
+        projection = self._entity_candidate_record_projection("rec")
+        if entity_type == EntityType.RECORD.value:
+            record_type_check = (
+                "AND one.recordType IN @record_types" if filter_record_types else ""
+            )
+            window = f"""
+                LET one = DOCUMENT(CONCAT("{records}/", ref.id))
+                LET win = (one != null AND @offset == 0 AND one.orgId == @org_id
+                    AND one.isDeleted != true AND one.indexingStatus == @completed
+                    AND one.connectorId IN ref.connectorIds {record_type_check}) ? [one] : []
+                LET capped = false"""
+        else:
+            scope, scan_expr = self._entity_candidate_scan_aql(
+                entity_type, filter_record_types=filter_record_types
+            )
+            window = f"""
+                {scope}
+                LET scanned = {scan_expr}
+                LET win = (
+                    FOR rec IN scanned
+                        COLLECT key = rec._key INTO grouped KEEP rec
+                        LET r = grouped[0].rec
+                        {self._ENTITY_CANDIDATE_SORT}
+                        LIMIT @offset, @window
+                        RETURN r
+                )
+                LET capped = LENGTH(scanned) >= @scan_cap"""
+        return f"""
+            LET u = DOCUMENT(@users_col, @user_key)
+            FILTER u != null
+            FOR ref IN @refs
+                {window}
+                LET hits = (
+                    FOR pos IN (LENGTH(win) > 0 ? 0..(LENGTH(win) - 1) : [])
+                        LET rec = win[pos]
+                        LET app_granted = rec.connectorId IN @app_level_connector_ids
+                        LET checked = (
+                            FOR needed IN (app_granted ? [] : [1])
+                                LET shared = LENGTH(
+                                    FOR a IN {CollectionNames.ANYONE.value}
+                                        FILTER a.file_key == rec._key AND a.organization == @org_id
+                                        FILTER a.active == true
+                                        LIMIT 1
+                                        RETURN 1
+                                ) > 0
+                                {record_role}
+                                LET role = IS_ARRAY(permission_role)
+                                    ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                                    : permission_role
+                                RETURN shared OR (role != null AND role != "")
+                        )
+                        FILTER app_granted OR checked[0] == true
+                        LIMIT @limit
+                        RETURN {{pos: pos, row: {projection}}}
+                )
+                RETURN {{id: ref.id, hits: hits, window_size: LENGTH(win), capped: capped}}
+            """
+
+    async def get_permitted_entity_records(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        user_key: str,
+        *,
+        app_level_connector_ids: list[str],
+        record_types: list[str] | None = None,
+        limit_per_entity: int = 20,
+        offset: int = 0,
+        window: int = 200,
+        timeout_seconds: float | None = None,
+    ) -> dict[tuple[str, str], PermittedEntityRows]:
+        """See :meth:`IGraphDBProvider.get_permitted_entity_records`."""
+        if not refs or not org_id or not user_key:
+            return {}
+
+        limit = max(1, limit_per_entity)
+        results: dict[tuple[str, str], PermittedEntityRows] = {}
+        for ref_type, connectors_by_id in self._entity_refs_by_type(refs).items():
+            for ref_id in connectors_by_id:
+                results.setdefault((ref_type, ref_id), PermittedEntityRows())
+            query_refs = [
+                {"id": ref_id, "connectorIds": connector_ids}
+                for ref_id, connector_ids in connectors_by_id.items()
+                if connector_ids
+            ]
+            if not query_refs:
+                continue
+            bind_vars: dict[str, Any] = {
+                "refs": query_refs,
+                "org_id": org_id,
+                "offset": max(0, offset),
+                "limit": limit,
+                "completed": ProgressStatus.COMPLETED.value,
+                "users_col": CollectionNames.USERS.value,
+                "user_key": user_key,
+                "app_level_connector_ids": list(app_level_connector_ids),
+            }
+            # Arango rejects bind vars the query does not reference.
+            if ref_type != EntityType.RECORD.value:
+                bind_vars["window"] = max(1, window)
+                bind_vars["scan_cap"] = ENTITY_CANDIDATE_SCAN_CAP
+            if record_types:
+                bind_vars["record_types"] = list(record_types)
+
+            rows = await self.execute_query(
+                self._permitted_entity_records_aql(ref_type, filter_record_types=bool(record_types)),
+                bind_vars=bind_vars,
+                **({"timeout_seconds": timeout_seconds} if timeout_seconds is not None else {}),
+            )
+            for row in rows or []:
+                if not row:
+                    continue
+                key = (ref_type, str(row.get("id") or ""))
+                if key in results:
+                    results[key] = PermittedEntityRows.from_window(
+                        row.get("hits") or [],
+                        limit=limit,
+                        window_size=int(row.get("window_size") or 0),
+                        capped=bool(row.get("capped")),
+                    )
+        return results
+
+    def _entity_refs_by_type(self, refs: list[dict[str, Any]]) -> dict[str, dict[str, list[str]]]:
+        """``{type: {id: connector_ids}}`` for supported refs, first occurrence
+        of each kept (a union would widen a ref's scope)."""
+        connectors_by_type: dict[str, dict[str, list[str]]] = defaultdict(dict)
+        for ref in refs:
+            ref_id = str(ref.get("id") or "")
+            ref_type = ref.get("type")
+            if not ref_id or not (
+                ref_type == EntityType.RECORD.value
+                or ref_type in self._ENTITY_CANDIDATE_EDGE_TARGETS
+            ):
+                continue
+            if ref_id in connectors_by_type[ref_type]:
+                continue
+            connectors_by_type[ref_type][ref_id] = list(dict.fromkeys(
+                str(c) for c in ref.get("connectorIds") or [] if c
+            ))
+        return connectors_by_type
 
     async def get_entity_candidate_records(
         self,
@@ -17518,24 +17665,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if not refs or not org_id:
             return {}
 
-        connectors_by_type: dict[str, dict[str, list[str]]] = defaultdict(dict)
-        for ref in refs:
-            ref_id = str(ref.get("id") or "")
-            ref_type = ref.get("type")
-            if not ref_id or not (
-                ref_type == EntityType.RECORD.value
-                or ref_type in self._ENTITY_CANDIDATE_EDGE_TARGETS
-            ):
-                continue
-            if ref_id in connectors_by_type[ref_type]:
-                # First ref wins, as on Neo4j: a union would widen a ref's scope.
-                continue
-            connectors_by_type[ref_type][ref_id] = list(dict.fromkeys(
-                str(c) for c in ref.get("connectorIds") or [] if c
-            ))
-
         results: dict[tuple[str, str], EntityCandidateRows] = {}
-        for ref_type, connectors_by_id in connectors_by_type.items():
+        for ref_type, connectors_by_id in self._entity_refs_by_type(refs).items():
             for ref_id in connectors_by_id:
                 results.setdefault((ref_type, ref_id), EntityCandidateRows())
             # A ref without connectors can never match a row, so it is not sent.
