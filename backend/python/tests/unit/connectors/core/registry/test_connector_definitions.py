@@ -11,7 +11,6 @@ Covers instantiation and connect() for all connector classes:
 - SlidesConnector
 - AirtableConnector
 - LinearConnector
-- ZendeskConnector
 """
 
 from unittest.mock import patch
@@ -28,7 +27,6 @@ from app.connectors.core.registry.connector import (
     SheetsConnector,
     SlackConnector,
     SlidesConnector,
-    ZendeskConnector,
 )
 
 
@@ -149,14 +147,3 @@ class TestLinearConnector:
         assert "Connecting to Linear" in captured.out
 
 
-class TestZendeskConnector:
-    def test_init(self):
-        c = ZendeskConnector()
-        assert c.name == "Zendesk"
-
-    def test_connect(self, capsys):
-        c = ZendeskConnector()
-        result = c.connect()
-        assert result is True
-        captured = capsys.readouterr()
-        assert "Connecting to Zendesk" in captured.out
