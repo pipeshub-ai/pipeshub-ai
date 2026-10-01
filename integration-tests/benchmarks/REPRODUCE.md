@@ -155,7 +155,7 @@ same model: copy the run's config, change only `answerer.provider` (here
 `azureOpenAI` to `openAI`; provider routing is not part of the config hash,
 so the copy resumes the run), register the model in PipesHub without making
 it the default, and resume with `--retry-errors`. OpenAI's endpoint refused
-none of the 34 answers Azure's filter had refused.
+none of the 38 answers Azure's filter had refused.
 
 If the second judge's provider fails (a daily quota, an outage), grading
 carries on with the primary judge and leaves the second judge's verdicts for
