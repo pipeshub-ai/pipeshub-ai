@@ -153,3 +153,17 @@ class TestTier0AliasTies:
             )
             (entity,) = resolution.entries.values()
             assert entity.key == expected
+
+    async def test_two_live_nodes_with_one_name_resolve_to_the_lowest_key(
+        self, make_resolver, fake_graph, metadata_factory, ctx_factory, scripted_model
+    ) -> None:
+        """Older graphs can hold two nodes with one normalized name; the name
+        match follows the same lowest-key rule as an alias tie."""
+        scripted_model()
+        for key in ("k-b", "k-a"):
+            fake_graph.nodes[(TOPICS, key)] = {"name": "Go live", "normalizedName": "go live", "orgId": "acme"}
+        resolution = await make_resolver().resolve(
+            ctx_factory("r1", "acme", metadata_factory(topics=["Go live"]))
+        )
+        (entity,) = resolution.entries.values()
+        assert entity.key == "k-a"

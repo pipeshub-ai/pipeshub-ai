@@ -321,3 +321,45 @@ class TestCanonicalNodesBeforeTheTransaction:
         )
 
         assert order == ["node", "txn"]
+
+
+class TestPartlyLandedAttemptIsRerun:
+    """KG-32 under Neo4j auto-commit: a write conflict after some edges
+    already landed re-runs the whole write, which must not duplicate them."""
+
+    async def test_the_rerun_leaves_one_edge_per_target(self, monkeypatch) -> None:
+        from tests.unit.modules.entity_resolution.conftest import FakeGraph
+
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+        graph = FakeGraph()
+        graph.records["rec-1"] = {"_key": "rec-1", "orgId": "org-1"}
+        graph.departments["Engineering"] = "d-eng"
+        transformer = GraphDBTransformer(graph_provider=MagicMock(), logger=MagicMock())
+
+        class _Txn:
+            async def __aenter__(self) -> FakeGraph:
+                return graph
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        transformer.graph_data_store = MagicMock()
+        transformer.graph_data_store.graph_provider = graph
+        transformer.graph_data_store.transaction = MagicMock(side_effect=lambda: _Txn())
+        transformer.graph_data_store.execute_idempotent_in_transaction = partial(
+            GraphDataStore.execute_idempotent_in_transaction, transformer.graph_data_store,
+        )
+        status_writes = AsyncMock(side_effect=[RuntimeError("write conflict"), True])
+        graph.batch_update_nodes = status_writes
+        topic = ResolvedEntity(kind=TOPIC, key="k-t", name="Budget", normalized="budget", is_new=True,
+                               decision="new", extracted_names=["Budget"])
+
+        touched = await transformer.save_metadata_to_db(
+            "rec-1", _metadata(topics=["Budget"], departments=["Engineering"]), "vr-1",
+            resolution=_resolution(topic),
+        )
+
+        assert status_writes.await_count == 2
+        assert len(graph.edges_from("rec-1", CollectionNames.BELONGS_TO_DEPARTMENT.value)) == 1
+        assert len(graph.edges_from("rec-1", CollectionNames.BELONGS_TO_TOPIC.value)) == 1
+        assert sorted(e.entity_id for e in touched) == ["d-eng", "k-t"]

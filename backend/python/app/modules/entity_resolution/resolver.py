@@ -349,7 +349,7 @@ class EntityResolver:
             nodes.sort(key=lambda entry: entry[0]["id"])
             for node, normalized, _alias_forms in nodes:
                 if normalized in wanted:
-                    found[(collection, normalized)] = node
+                    found.setdefault((collection, normalized), node)
             for node, _normalized, alias_forms in nodes:
                 for alias in alias_forms:
                     if alias in wanted:

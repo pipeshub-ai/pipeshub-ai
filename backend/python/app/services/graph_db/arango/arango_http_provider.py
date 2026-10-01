@@ -980,7 +980,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Initialize departments collection with predefined department types if missing."""
         try:
             existing = await self.execute_query(
-                f"FOR d IN {CollectionNames.DEPARTMENTS.value} RETURN d.departmentName",
+                # Only global ones: an org's own department of the same name
+                # must not stop the global one being seeded.
+                f"FOR d IN {CollectionNames.DEPARTMENTS.value} FILTER d.orgId == null RETURN d.departmentName",
                 {},
             )
             existing_names = set() if not existing else {r for r in existing if r is not None}

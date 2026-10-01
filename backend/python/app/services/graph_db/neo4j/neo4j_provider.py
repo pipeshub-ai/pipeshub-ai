@@ -196,6 +196,11 @@ _METADATA_FILTERS: tuple[tuple[str, str, str, str, str], ...] = (
 _EDGE_MOVE_BATCH = 5000
 # Idempotent shared writes retried on a deadlock or lock timeout.
 _TRANSIENT_WRITE_ATTEMPTS = 6
+_WRITE_CONFLICT_CODES = frozenset({
+    "Neo.TransientError.Transaction.DeadlockDetected",
+    "Neo.TransientError.Transaction.LockAcquisitionTimeout",
+    "Neo.TransientError.Transaction.LockClientStopped",
+})
 
 
 _EDGE_PROVENANCE_FIELDS = frozenset({"mergedFrom", "migratedFrom"})
@@ -426,9 +431,10 @@ class Neo4jProvider(IGraphDBProvider):
         return isinstance(error, TransientError)
 
     def is_write_conflict(self, error: BaseException) -> bool:
-        """Deadlocks and lock timeouts are TransientErrors in either
-        transaction mode."""
-        return isinstance(error, TransientError)
+        """A deadlock or lock timeout, in either transaction mode. Other
+        transient errors (memory limits, a terminated transaction, an
+        unavailable database) are not collisions and are not retried here."""
+        return isinstance(error, TransientError) and getattr(error, "code", None) in _WRITE_CONFLICT_CODES
 
     async def rollback_transaction(self, transaction: str) -> None:
         """
@@ -17156,8 +17162,8 @@ class Neo4jProvider(IGraphDBProvider):
             try:
                 await self.client.execute_query(query, parameters=parameters)
                 return
-            except TransientError:
-                if attempt == _TRANSIENT_WRITE_ATTEMPTS - 1:
+            except TransientError as exc:
+                if attempt == _TRANSIENT_WRITE_ATTEMPTS - 1 or not self.is_write_conflict(exc):
                     raise
                 await asyncio.sleep(random.uniform(0.02, 0.1) * (attempt + 1))
 

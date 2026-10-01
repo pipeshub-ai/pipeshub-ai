@@ -342,12 +342,14 @@ class TestWriteConflicts:
         assert p.http_client.batch_insert_documents.await_count == 1
 
     def test_conflict_predicates(self) -> None:
-        from neo4j.exceptions import TransientError
-
         assert _arango().is_write_conflict(Exception('{"errorNum": 1200}')) is True
         assert _arango().is_write_conflict(Exception("unique constraint violated")) is False
         neo = _neo4j()
-        assert neo.is_write_conflict(TransientError("DeadlockDetected")) is True
+        assert neo.is_write_conflict(_neo4j_error("Neo.TransientError.Transaction.DeadlockDetected")) is True
+        assert neo.is_write_conflict(_neo4j_error("Neo.TransientError.Transaction.LockAcquisitionTimeout")) is True
+        # Transient, but not a collision with another writer: retrying a heavy
+        # write into a memory limit five times would not help.
+        assert neo.is_write_conflict(_neo4j_error("Neo.TransientError.General.MemoryPoolOutOfMemoryError")) is False
         assert neo.is_write_conflict(RuntimeError("syntax")) is False
 
 
@@ -393,14 +395,31 @@ class TestHierarchyEdge:
         assert hierarchy_edge_key("a", "b") != hierarchy_edge_key("b", "a")
 
 
-async def test_neo4j_hierarchy_edge_retries_a_deadlock(monkeypatch) -> None:
-    from neo4j.exceptions import TransientError
+def _neo4j_error(code: str) -> Exception:
+    """A driver error as the server would send it (the code picks the class)."""
+    from neo4j.exceptions import Neo4jError
 
+    return Neo4jError._hydrate_neo4j(code=code, message="from test")
+
+
+async def test_neo4j_hierarchy_edge_retries_a_deadlock(monkeypatch) -> None:
     monkeypatch.setattr("app.services.graph_db.neo4j.neo4j_provider.asyncio.sleep", AsyncMock())
     p = _neo4j()
-    p.client.execute_query = AsyncMock(side_effect=[TransientError("DeadlockDetected"), []])
+    p.client.execute_query = AsyncMock(
+        side_effect=[_neo4j_error("Neo.TransientError.Transaction.DeadlockDetected"), []],
+    )
     await p.ensure_taxonomy_hierarchy_edge(CollectionNames.SUBCATEGORIES1.value, "s1", "c1")
     assert p.client.execute_query.await_count == 2
+
+
+async def test_neo4j_hierarchy_edge_does_not_retry_other_transient_errors() -> None:
+    p = _neo4j()
+    p.client.execute_query = AsyncMock(
+        side_effect=_neo4j_error("Neo.TransientError.General.MemoryPoolOutOfMemoryError"),
+    )
+    with pytest.raises(Exception, match="from test"):
+        await p.ensure_taxonomy_hierarchy_edge(CollectionNames.SUBCATEGORIES1.value, "s1", "c1")
+    assert p.client.execute_query.await_count == 1
 
 
 class TestDepartmentSeedKeys:
@@ -461,3 +480,11 @@ class TestNeo4jAliasHeal:
             await p.heal_taxonomy_alias_nodes()
         queries = [c.args[0] for c in p.client.execute_query.await_args_list]
         assert not any("MERGE (m:SchemaMigration" in q for q in queries)
+
+
+async def test_arango_seed_ignores_an_orgs_own_department_of_the_same_name() -> None:
+    p = _arango([])
+    p.execute_query = AsyncMock(return_value=[])
+    p.batch_upsert_nodes = AsyncMock()
+    await p._ensure_departments_seed()
+    assert "FILTER d.orgId == null" in p.execute_query.await_args.args[0]
