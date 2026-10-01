@@ -219,81 +219,52 @@ class SinkOrchestrator(Transformer):
             await self._update_indexing_status(ctx)
             # await self.graphdb.apply(ctx)
             await self._save_reconciliation_metadata(ctx)
-            await self._sync_record_name_entity(ctx)
-            await self._sync_record_group_entity(ctx)
+            await self._sync_record_identity_entities(ctx)
 
-    async def _sync_record_group_entity(self, ctx: TransformContext) -> None:
-        """Sync the record's RecordGroup (e.g. Jira project, Drive folder) into
-        the entities vector collection as a Layer-0 deterministic entity.
+    async def _sync_record_identity_entities(self, ctx: TransformContext) -> None:
+        """Write the record's own entity points, its title and its record group
+        (a Jira project, a Drive folder), in one batch.
 
-        Runs for every record regardless of connector, rather than being
-        wired per-connector, since ``record_group_id`` is a generic field on
-        every ``Record`` once ``_handle_record_group``/connector sync has
-        resolved it. Best-effort.
+        Runs after the record is searchable, for every connector, since
+        ``record_group_id`` is generic. Membership is replaced, not merged:
+        a record has exactly one connector and one group (a union kept a
+        moved record matching its old group's users), and a group point lists
+        itself so users with group-level access reach it. Best-effort: the
+        record is already searchable through the records collection.
         """
         if not self.entity_vector_store:
             return
+        from app.models.entities import EntityRecord
+
         record = ctx.record
-        if not record.record_group_id:
-            return
-        try:
-            group_doc = await self.graph_provider.get_record_group_by_id(
-                record.record_group_id
-            )
-            if not group_doc:
-                return
-            group_name = group_doc.get("groupName") or group_doc.get("name")
-            if not group_name or not group_name.strip():
-                return
-
-            from app.models.entities import EntityRecord
-
-            # Always this connector and the group itself, so membership is
-            # replaced rather than merged; an unchanged point is not rewritten.
-            await self.entity_vector_store.upsert_entities_batch([
-                EntityRecord.for_record_group(
+        entities: list[EntityRecord] = []
+        if isinstance(record.record_name, str) and record.record_name.strip():
+            entities.append(EntityRecord.for_record(
+                record.id, record.record_name, record.org_id, record.connector_id, record.record_group_id,
+            ))
+        if record.record_group_id:
+            try:
+                group_doc = await self.graph_provider.get_record_group_by_id(record.record_group_id)
+            except Exception as exc:
+                group_doc = None
+                self.logger.warning(
+                    "Record group lookup failed for record %s (non-fatal): %s", record.id, exc,
+                )
+            group_name = (group_doc or {}).get("groupName") or (group_doc or {}).get("name")
+            if isinstance(group_name, str) and group_name.strip():
+                entities.append(EntityRecord.for_record_group(
                     record.record_group_id, group_name, record.org_id, record.connector_id,
-                )
-            ], merge_membership=False)
-        except Exception as exc:
-            self.logger.warning(
-                "Record group entity sync failed for record %s (non-fatal): %s",
-                record.id,
-                exc,
-            )
-
-    async def _sync_record_name_entity(self, ctx: TransformContext) -> None:
-        """Sync the record's name into the entities vector collection.
-
-        Runs after successful vector-store indexing so the record's name is
-        resolvable as a filter facet (entityType=record) alongside categories,
-        topics, etc. Best-effort: failures here must not fail the record
-        pipeline since the record is already searchable via the records
-        collection.
-        """
-        if not self.entity_vector_store:
-            return
-        record = ctx.record
-        if not record.record_name or not record.record_name.strip():
+                ))
+        if not entities:
             return
         try:
-            from app.models.entities import EntityRecord
-
-            # A record has one connector and one group; a union kept the old
-            # group after the record moved, so its old group's users kept
-            # matching it.
-            await self.entity_vector_store.upsert_entities_batch([
-                EntityRecord.for_record(
-                    record.id, record.record_name, record.org_id, record.connector_id,
-                    record.record_group_id,
+            outcome = await self.entity_vector_store.upsert_entities_batch(entities, merge_membership=False)
+            if outcome.failed:
+                self.logger.warning(
+                    "Entity points for record %s not written (%d of %d)", record.id, outcome.failed, len(entities),
                 )
-            ], merge_membership=False)
         except Exception as exc:
-            self.logger.warning(
-                "Record name entity sync failed for record %s (non-fatal): %s",
-                record.id,
-                exc,
-            )
+            self.logger.warning("Record entity sync failed for record %s (non-fatal): %s", record.id, exc)
 
     async def sync_entities_for_duplicate(self, record_doc: dict) -> bool:
         """Re-project a deduplicated record's taxonomy into the entities
@@ -308,7 +279,7 @@ class SinkOrchestrator(Transformer):
         only the *other* record's connectorId/recordGroupId, and this record
         has no ``record``/``record_group`` point at all, since the dedup
         path skips ``index()``/``enrich()`` (and therefore
-        ``_sync_record_name_entity``/``_sync_record_group_entity``) entirely.
+        ``_sync_record_identity_entities``) entirely.
 
         ``upsert_entities_batch`` merges membership rather than replacing it,
         so this appends this record's connectorId/recordGroupId to whatever
@@ -400,11 +371,11 @@ class SinkOrchestrator(Transformer):
 
             failed = 0
             if entities:
-                failed += await self.entity_vector_store.upsert_entities_batch(entities) or 0
+                failed += (await self.entity_vector_store.upsert_entities_batch(entities)).failed
             if identities:
-                failed += await self.entity_vector_store.upsert_entities_batch(
+                failed += (await self.entity_vector_store.upsert_entities_batch(
                     identities, merge_membership=False,
-                ) or 0
+                )).failed
             if failed:
                 self.logger.warning(
                     "Entity vector sync for deduplicated record %s left %d entities unwritten",

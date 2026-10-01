@@ -401,7 +401,7 @@ class EntityIndexRebuilder:
             return 0
         # Replace mode: a record's and a group's membership is exactly their
         # own connector and group, as on the index path.
-        return await self.store.upsert_entities_batch(entities, merge_membership=False)
+        return (await self.store.upsert_entities_batch(entities, merge_membership=False)).failed
 
     async def _project_taxonomy_rows(self, run: _Pass, phase: str, rows: list[dict]) -> int:
         async def _still_leader() -> None:

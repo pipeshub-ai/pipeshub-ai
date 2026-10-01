@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 
+from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.models.entities import EntityRecord, EntityType
 
@@ -234,10 +235,10 @@ class TestEnrichEntitySync:
 
 
 # =========================================================================
-# _sync_record_group_entity (Phase 2 — Layer-0 RecordGroup sync)
+# _sync_record_identity_entities (record title and record group points)
 # =========================================================================
 class TestSyncRecordGroupEntity:
-    """Tests for SinkOrchestrator._sync_record_group_entity."""
+    """Tests for SinkOrchestrator._sync_record_identity_entities."""
 
     def _make_ctx_with_group(self, record_group_id="rg-1", org_id="org-1", connector_id="conn-1"):
         record = MagicMock()
@@ -245,6 +246,7 @@ class TestSyncRecordGroupEntity:
         record.record_group_id = record_group_id
         record.org_id = org_id
         record.connector_id = connector_id
+        record.record_name = ""
         ctx = MagicMock()
         ctx.record = record
         return ctx
@@ -253,6 +255,7 @@ class TestSyncRecordGroupEntity:
         graph_provider = AsyncMock()
         graph_provider.get_record_group_by_id = AsyncMock(return_value=group_doc)
         entity_vector_store = AsyncMock()
+        entity_vector_store.upsert_entities_batch = AsyncMock(return_value=EntityWriteOutcome())
         orch = SinkOrchestrator(
             graphdb=AsyncMock(),
             blob_storage=AsyncMock(),
@@ -265,6 +268,30 @@ class TestSyncRecordGroupEntity:
         return orch
 
     @pytest.mark.asyncio
+    async def test_title_and_group_are_written_in_one_batch(self) -> None:
+        orch = self._make_orchestrator_with_evs(group_doc={"groupName": "Engineering"})
+        ctx = self._make_ctx_with_group(record_group_id="rg-1")
+        ctx.record.record_name = "Q3 plan.pdf"
+
+        await orch._sync_record_identity_entities(ctx)
+
+        orch.entity_vector_store.upsert_entities_batch.assert_awaited_once()
+        entities = orch.entity_vector_store.upsert_entities_batch.call_args[0][0]
+        assert [e.entity_type for e in entities] == [EntityType.RECORD, EntityType.RECORD_GROUP]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_group_lookup_still_writes_the_title(self) -> None:
+        orch = self._make_orchestrator_with_evs()
+        orch.graph_provider.get_record_group_by_id = AsyncMock(side_effect=RuntimeError("boom"))
+        ctx = self._make_ctx_with_group()
+        ctx.record.record_name = "Q3 plan.pdf"
+
+        await orch._sync_record_identity_entities(ctx)
+
+        (entity,) = orch.entity_vector_store.upsert_entities_batch.call_args[0][0]
+        assert entity.entity_type == EntityType.RECORD
+
+    @pytest.mark.asyncio
     async def test_no_entity_vector_store_is_noop(self):
         orch = SinkOrchestrator(
             graphdb=AsyncMock(),
@@ -274,7 +301,7 @@ class TestSyncRecordGroupEntity:
             logger=MagicMock(),
             config_service=MagicMock(),
         )
-        await orch._sync_record_group_entity(self._make_ctx_with_group())
+        await orch._sync_record_identity_entities(self._make_ctx_with_group())
         # No exception, and no graph provider lookup attempted.
         orch.graph_provider.get_record_group_by_id.assert_not_called()
 
@@ -283,7 +310,7 @@ class TestSyncRecordGroupEntity:
         orch = self._make_orchestrator_with_evs()
         ctx = self._make_ctx_with_group(record_group_id=None)
 
-        await orch._sync_record_group_entity(ctx)
+        await orch._sync_record_identity_entities(ctx)
 
         orch.graph_provider.get_record_group_by_id.assert_not_awaited()
         orch.entity_vector_store.upsert_entities_batch.assert_not_awaited()
@@ -293,7 +320,7 @@ class TestSyncRecordGroupEntity:
         orch = self._make_orchestrator_with_evs(group_doc=None)
         ctx = self._make_ctx_with_group()
 
-        await orch._sync_record_group_entity(ctx)
+        await orch._sync_record_identity_entities(ctx)
 
         orch.entity_vector_store.upsert_entities_batch.assert_not_awaited()
 
@@ -304,7 +331,7 @@ class TestSyncRecordGroupEntity:
         )
         ctx = self._make_ctx_with_group(record_group_id="rg-42", org_id="org-9")
 
-        await orch._sync_record_group_entity(ctx)
+        await orch._sync_record_identity_entities(ctx)
 
         orch.graph_provider.get_record_group_by_id.assert_awaited_once_with("rg-42")
         orch.entity_vector_store.upsert_entities_batch.assert_awaited_once()
@@ -329,10 +356,10 @@ class TestSyncRecordGroupEntity:
         ctx = self._make_ctx_with_group(record_group_id="rg-new")
         ctx.record.record_name = "Q3 plan.pdf"
 
-        await orch._sync_record_name_entity(ctx)
+        await orch._sync_record_identity_entities(ctx)
 
         call = orch.entity_vector_store.upsert_entities_batch.call_args
-        (entity,) = call[0][0]
+        (entity,) = [e for e in call[0][0] if e.entity_type == EntityType.RECORD]
         assert entity.entity_type == EntityType.RECORD
         assert entity.record_group_ids == ["rg-new"]
         assert call.kwargs == {"merge_membership": False}
@@ -342,7 +369,7 @@ class TestSyncRecordGroupEntity:
         orch = self._make_orchestrator_with_evs(group_doc={"groupName": "   "})
         ctx = self._make_ctx_with_group()
 
-        await orch._sync_record_group_entity(ctx)
+        await orch._sync_record_identity_entities(ctx)
 
         orch.entity_vector_store.upsert_entities_batch.assert_not_awaited()
 
@@ -355,7 +382,7 @@ class TestSyncRecordGroupEntity:
         ctx = self._make_ctx_with_group()
 
         # Must not raise — this is best-effort.
-        await orch._sync_record_group_entity(ctx)
+        await orch._sync_record_identity_entities(ctx)
 
         orch.entity_vector_store.upsert_entities_batch.assert_not_awaited()
 

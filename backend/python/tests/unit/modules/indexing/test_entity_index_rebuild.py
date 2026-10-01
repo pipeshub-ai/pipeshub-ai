@@ -29,7 +29,10 @@ from app.modules.indexing.entity_index_rebuild import (
     entity_index_marker,
     fingerprint_of,
 )
-from app.modules.transformers.entity_vectorstore import EntityPointRef
+from app.modules.transformers.entity_vectorstore import (
+    EntityPointRef,
+    EntityWriteOutcome,
+)
 
 APPS = CollectionNames.APPS.value
 ORGS = CollectionNames.ORGS.value
@@ -126,9 +129,10 @@ class FakeStore:
 
     async def upsert_entities_batch(
         self, entities: list, batch_size: int = 64, *, merge_membership: bool = True,
-    ) -> int:
+    ) -> EntityWriteOutcome:
         self.upserts.append({"entities": list(entities), "merge": merge_membership})
-        return sum(1 for e in entities if e.entity_id in self.fail_ids)
+        failed = sum(1 for e in entities if e.entity_id in self.fail_ids)
+        return EntityWriteOutcome(written=len(entities) - failed, failed=failed)
 
     async def delete_entities(self, org_id: str, entity_type: str, entity_ids: list[str]) -> None:
         self.deletes.append((org_id, entity_type, sorted(entity_ids)))

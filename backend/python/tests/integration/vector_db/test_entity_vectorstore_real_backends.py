@@ -548,7 +548,7 @@ class TestRebuildSupport:
         store.vector_db_service.upsert_points.assert_not_awaited()
 
         store._model_id = "other:model"
-        assert await store.upsert_entities_batch([entity], merge_membership=False) == 0
+        assert (await store.upsert_entities_batch([entity], merge_membership=False)).written == 1
         store.vector_db_service.upsert_points.assert_awaited_once()
         payload = await _point(store, org, "topic", "t1")
         assert payload["metadata"]["embeddingModel"] == f"other:model:{DIM}"
@@ -594,3 +594,27 @@ class TestRebuildSupport:
         with pytest.raises(Exception):
             await store.search_entities("pricing", org, set(), {"c1"})
         assert store._initialized is False
+
+class TestWriteOutcomeAndLocks:
+    """Embedding outside the locks, and the reported outcome, per backend."""
+
+    async def test_outcome_on_a_real_backend(self, store: EntityVectorStore) -> None:
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([_entity("same", org=org, connectors=["c1"]),
+                                           _entity("moved", org=org, connectors=["c1"])], merge_membership=False)
+        outcome = await store.upsert_entities_batch(
+            [_entity("same", org=org, connectors=["c1"]), _entity("moved", org=org, connectors=["c2"]),
+             _entity("new", org=org, connectors=["c1"])],
+            merge_membership=False,
+        )
+        assert (outcome.written, outcome.membership_only, outcome.unchanged, outcome.failed) == (1, 1, 1, 0)
+        assert (await _point(store, org, "topic", "moved"))["connectorIds"] == ["c2"]
+
+    async def test_concurrent_writers_on_one_entity_keep_both_memberships(self, store: EntityVectorStore) -> None:
+        import asyncio
+
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        writers = [_entity("eng", EntityType.DEPARTMENT, org=org, connectors=[f"c{i}"]) for i in range(6)]
+        await asyncio.gather(*(store.upsert_entities_batch([w]) for w in writers))
+        payload = await _point(store, org, "department", "eng")
+        assert sorted(payload["connectorIds"]) == [f"c{i}" for i in range(6)]

@@ -74,6 +74,7 @@ from app.services.vector_db.sparse_embeddings import (
     SparseEmbedder,
     get_default_sparse_embedder,
 )
+from app.telemetry.modules import entity_index_metrics
 from app.utils.aimodels import get_default_embedding_model, get_embedding_model
 
 if TYPE_CHECKING:
@@ -99,6 +100,21 @@ class _MembershipReadError(Exception):
 
 
 _ENTITIES_COLLECTION = QdrantCollectionNames.ENTITIES.value
+
+
+# Ids of unwritten entities named in one warning; the count is always given.
+_LOGGED_FAILED_IDS = 20
+
+
+@dataclass
+class EntityWriteOutcome:
+    """What one ``upsert_entities_batch`` call did, one count per entity."""
+
+    written: int = 0
+    membership_only: int = 0
+    unchanged: int = 0
+    skipped: int = 0
+    failed: int = 0
 
 
 @dataclass(frozen=True)
@@ -391,173 +407,177 @@ class EntityVectorStore:
         batch_size: int = 64,
         *,
         merge_membership: bool = True,
-    ) -> int:
+    ) -> EntityWriteOutcome:
         """Batch-embed and upsert a list of EntityRecord objects.
 
-        Returns how many entities were not written (a failed batch, or a
-        merge skipped because stored membership could not be read).
-
-        Failures within a batch are logged and skipped rather than aborting
-        the entire batch (partial-failure tolerance).
+        Returns what happened to each entity (``EntityWriteOutcome``), counts
+        it in ``pipeshub_entity_index_writes_total``, and logs the ids of the
+        entities that were not written. A failed batch never raises.
 
         ``connectorIds``/``recordGroupIds`` are merged with whatever is
-        already stored for that entity, not replaced — see
-        ``_merge_membership``. Every entity in the batch has its lock (see
-        ``_entity_lock``) held from the pre-write read through this batch's
-        single ``upsert_points`` call, so two concurrent batches touching the
-        same shared entity (e.g. two records both tagged "Engineering")
-        cannot each merge against a stale read and drop the other's update.
+        already stored for that entity, not replaced. A point whose stored
+        text, metadata, membership and embedding model already match is not
+        written; one whose only change is membership has its arrays rewritten
+        by id without re-embedding; a point embedded by another model is
+        re-embedded.
 
-        Either way, a point whose stored text, metadata, membership and
-        embedding model already match is not written, and one whose only
-        change is membership has its arrays rewritten by id without
-        re-embedding. A point embedded by another model, or written before the
-        model was recorded, is re-embedded.
+        Embedding happens before the entities' locks are taken (see
+        ``_entity_lock``), so records sharing a popular entity do not wait on
+        each other's embedding call. Under the locks the state is read again
+        and membership is merged against that read, so two concurrent
+        batches cannot drop each other's update; a point whose content
+        changed between the two reads is embedded there.
 
         ``merge_membership=False`` writes ``entity.connector_ids``/
         ``record_group_ids`` as-is instead of unioning with what is already
-        stored — for record and record-group points, whose membership is
-        exactly their own connector and group (a union would keep a moved
-        record matching its old group's users). A failed state read then
+        stored, for record and record-group points, whose membership is
+        exactly their own connector and group. A failed state read then
         rewrites the batch in full rather than skipping it.
         """
         await self._ensure_initialized()
+        outcome = EntityWriteOutcome()
         if not entities:
-            return 0
-        entities = self._coalesce_by_key(entities)
-        failed = 0
-
-        for start in range(0, len(entities), batch_size):
-            batch = entities[start : start + batch_size]
+            return outcome
+        failed_keys: list[str] = []
+        coalesced = self._coalesce_by_key(entities)
+        for start in range(0, len(coalesced), batch_size):
+            batch = coalesced[start : start + batch_size]
+            named = [e for e in batch if e.name.strip()]
+            outcome.skipped += len(batch) - len(named)
+            for entity in batch:
+                if not entity.name.strip():
+                    self.logger.warning(
+                        "Skipping entity with empty name: %s / %s", entity.entity_type, entity.entity_id,
+                    )
+            if not named:
+                continue
             try:
-                async with contextlib.AsyncExitStack() as locks:
-                    # Sorted, deduped acquisition order: a global lock
-                    # ordering rules out circular waits between overlapping
-                    # concurrent batches, so no separate deadlock-avoidance
-                    # logic is needed.
-                    lock_keys = sorted({
-                        self._entity_key(
-                            e.org_id, e.entity_type.value, e.entity_id
-                        )
-                        for e in batch
-                    })
-                    for key in lock_keys:
-                        await locks.enter_async_context(self._entity_lock(key))
+                await self._upsert_batch(named, outcome, merge_membership=merge_membership)
+            except _MembershipReadError as exc:
+                outcome.failed += len(named)
+                failed_keys.extend(f"{e.entity_type.value}/{e.entity_id}" for e in named)
+                self.logger.warning("Skipping entity upsert batch, membership unknown: %s", exc)
+            except Exception as exc:
+                outcome.failed += len(named)
+                failed_keys.extend(f"{e.entity_type.value}/{e.entity_id}" for e in named)
+                self.logger.error("Failed to upsert entity batch starting at %d: %s", start, exc)
+        self._report(outcome, failed_keys)
+        return outcome
 
-                    named: list[EntityRecord] = []
-                    for entity in batch:
-                        if not entity.name.strip():
-                            self.logger.warning(
-                                "Skipping entity with empty name: %s / %s",
-                                entity.entity_type,
-                                entity.entity_id,
-                            )
-                            continue
-                        named.append(entity)
+    async def _upsert_batch(
+        self, named: list[EntityRecord], outcome: EntityWriteOutcome, *, merge_membership: bool,
+    ) -> None:
+        # Read and embed without the locks. A failed read in merge mode skips
+        # the batch: merging against an assumed-empty state would drop every
+        # other writer's membership.
+        try:
+            early = await self._fetch_existing_states(named)
+        except _MembershipReadError as exc:
+            if merge_membership:
+                raise
+            self.logger.warning("Entity state read failed; rewriting %d points in full: %s", len(named), exc)
+            early = {}
+        vectors = await self._embed_changed(named, early)
 
-                    existing_states: dict[str, dict[str, Any]] = {}
-                    if named:
-                        try:
-                            existing_states = await self._fetch_existing_states(named)
-                        except _MembershipReadError as exc:
-                            if merge_membership:
-                                # Merging against an assumed-empty state would
-                                # drop every other writer's membership.
-                                self.logger.warning(
-                                    "Skipping entity upsert batch, membership unknown: %s", exc
-                                )
-                                failed += len(named)
-                                continue
-                            # Replacing never reads membership into the write;
-                            # the read only lets an unchanged point be skipped.
-                            self.logger.warning(
-                                "Entity state read failed; rewriting %d points in full: %s",
-                                len(named), exc,
-                            )
+        async with contextlib.AsyncExitStack() as locks:
+            # Sorted, deduped acquisition order rules out circular waits
+            # between overlapping concurrent batches.
+            for key in sorted({self._entity_key(e.org_id, e.entity_type.value, e.entity_id) for e in named}):
+                await locks.enter_async_context(self._entity_lock(key))
+            try:
+                states = await self._fetch_existing_states(named)
+            except _MembershipReadError as exc:
+                if merge_membership:
+                    raise
+                self.logger.warning("Entity state re-read failed; rewriting %d points in full: %s", len(named), exc)
+                states = {}
 
-                    pending: list[tuple[EntityRecord, list[str], list[str]]] = []
-                    membership_only: list[tuple[EntityRecord, list[str], list[str]]] = []
-                    for entity in named:
-                        existing = existing_states.get(self._point_id(
-                            entity.org_id, entity.entity_type.value, entity.entity_id
-                        ))
-                        if merge_membership:
-                            connector_ids = self._union_ids(
-                                existing["connectorIds"], entity.connector_ids
-                            )
-                            record_group_ids = self._union_ids(
-                                existing["recordGroupIds"], entity.record_group_ids
-                            )
-                        else:
-                            connector_ids = self._union_ids([], entity.connector_ids)
-                            record_group_ids = self._union_ids([], entity.record_group_ids)
-                        if existing is not None and self._same_content(existing, entity, self._fingerprint()):
-                            if (
-                                list(existing["connectorIds"]) != connector_ids
-                                or list(existing["recordGroupIds"]) != record_group_ids
-                            ):
-                                membership_only.append((entity, connector_ids, record_group_ids))
-                            continue
-                        pending.append((entity, connector_ids, record_group_ids))
-
-                    # The stored vector is still right; only the arrays move.
-                    # Written by id: a search-based update (OpenSearch
-                    # update_by_query) cannot see a point the index has not
-                    # refreshed yet, and would silently update nothing.
-                    for entity, connector_ids, record_group_ids in membership_only:
+            pending: list[tuple[EntityRecord, list[str], list[str]]] = []
+            for entity in named:
+                point_id = self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)
+                existing = states.get(point_id)
+                if merge_membership and existing is not None:
+                    connector_ids = self._union_ids(existing["connectorIds"], entity.connector_ids)
+                    record_group_ids = self._union_ids(existing["recordGroupIds"], entity.record_group_ids)
+                else:
+                    connector_ids = self._union_ids([], entity.connector_ids)
+                    record_group_ids = self._union_ids([], entity.record_group_ids)
+                if existing is not None and self._same_content(existing, entity, self._fingerprint()):
+                    if (
+                        list(existing["connectorIds"]) != connector_ids
+                        or list(existing["recordGroupIds"]) != record_group_ids
+                    ):
+                        # The stored vector is still right; only the arrays
+                        # move. Written by id: a search-based update cannot
+                        # see a point the index has not refreshed yet.
                         await self.vector_db_service.update_payload_by_ids(
-                            self.collection_name,
-                            [self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)],
+                            self.collection_name, [point_id],
                             {CONNECTOR_IDS_FIELD: connector_ids, RECORD_GROUP_IDS_FIELD: record_group_ids},
                         )
+                        outcome.membership_only += 1
+                    else:
+                        outcome.unchanged += 1
+                    continue
+                pending.append((entity, connector_ids, record_group_ids))
 
-                    if not pending:
-                        continue
+            if not pending:
+                return
+            # Content changed between the reads: embed it here, under the lock.
+            late = [entity for entity, _, _ in pending
+                    if self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id) not in vectors]
+            if late:
+                vectors |= await self._embed_entities(late)
 
-                    # Embedding happens under the locks so the read above and
-                    # the write below stay one atomic read-merge-write per
-                    # entity; only entities that actually change are embedded.
-                    texts = [entity.embedding_text for entity, _, _ in pending]
-                    dense_vecs = await self._embed(texts)
-                    sparse_vecs = await self._embed_sparse(texts)
+            points = []
+            for entity, connector_ids, record_group_ids in pending:
+                point_id = self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)
+                dense, sparse = vectors[point_id]
+                points.append(VectorPoint(
+                    id=point_id,
+                    dense_vector=dense,
+                    sparse_vector=sparse,
+                    payload={
+                        "page_content": entity.embedding_text,
+                        "metadata": {**entity.to_vector_payload(), EMBEDDING_MODEL_FIELD: self._fingerprint()},
+                        CONNECTOR_IDS_FIELD: connector_ids,
+                        RECORD_GROUP_IDS_FIELD: record_group_ids,
+                    },
+                ))
+            await self.vector_db_service.upsert_points(collection_name=self.collection_name, points=points)
+            outcome.written += len(points)
 
-                    points: list[VectorPoint] = []
-                    for (entity, connector_ids, record_group_ids), dense, sparse in zip(
-                        pending, dense_vecs, sparse_vecs
-                    ):
-                        payload = {
-                            "page_content": entity.embedding_text,
-                            "metadata": {
-                                **entity.to_vector_payload(),
-                                EMBEDDING_MODEL_FIELD: self._fingerprint(),
-                            },
-                            CONNECTOR_IDS_FIELD: connector_ids,
-                            RECORD_GROUP_IDS_FIELD: record_group_ids,
-                        }
-                        points.append(
-                            VectorPoint(
-                                id=self._point_id(
-                                    entity.org_id, entity.entity_type.value, entity.entity_id
-                                ),
-                                dense_vector=dense,
-                                sparse_vector=sparse,
-                                payload=payload,
-                            )
-                        )
+    async def _embed_changed(
+        self, entities: list[EntityRecord], states: dict[str, dict[str, Any]],
+    ) -> dict[str, tuple[list[float], Any]]:
+        """Vectors, by point id, for the entities whose stored content does
+        not already match (per ``states``)."""
+        changed = [
+            e for e in entities
+            if not self._same_content(
+                states.get(self._point_id(e.org_id, e.entity_type.value, e.entity_id)) or {}, e, self._fingerprint(),
+            )
+        ]
+        return await self._embed_entities(changed) if changed else {}
 
-                    await self.vector_db_service.upsert_points(
-                        collection_name=self.collection_name, points=points
-                    )
-                    self.logger.debug(
-                        "Upserted %d entity points (batch start=%d, skipped %d unchanged)",
-                        len(points), start, len(batch) - len(points),
-                    )
-            except Exception as exc:
-                failed += len(batch)
-                self.logger.error(
-                    "Failed to upsert entity batch starting at %d: %s", start, exc
-                )
-        return failed
+    async def _embed_entities(self, entities: list[EntityRecord]) -> dict[str, tuple[list[float], Any]]:
+        texts = [e.embedding_text for e in entities]
+        dense = await self._embed(texts)
+        sparse = await self._embed_sparse(texts)
+        return {
+            self._point_id(e.org_id, e.entity_type.value, e.entity_id): (d, sp)
+            for e, d, sp in zip(entities, dense, sparse)
+        }
+
+    def _report(self, outcome: EntityWriteOutcome, failed_keys: list[str]) -> None:
+        for name in ("written", "membership_only", "unchanged", "skipped", "failed"):
+            entity_index_metrics.record_writes("upsert", name, getattr(outcome, name))
+        if failed_keys:
+            shown = ", ".join(failed_keys[:_LOGGED_FAILED_IDS])
+            more = len(failed_keys) - _LOGGED_FAILED_IDS
+            self.logger.warning(
+                "Entity points not written (%d): %s%s",
+                len(failed_keys), shown, f" and {more} more" if more > 0 else "",
+            )
 
     @staticmethod
     def _coalesce_by_key(entities: list["EntityRecord"]) -> list["EntityRecord"]:
