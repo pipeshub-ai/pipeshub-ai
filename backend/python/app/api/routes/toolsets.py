@@ -223,6 +223,33 @@ def _validate_dict(value: object, field_name: str, *, allow_empty: bool = True) 
     return value
 
 
+def _instance_for_response(instance: dict[str, Any], *, is_admin: bool) -> dict[str, Any]:
+    """Copy of *instance* that is safe to return.
+
+    Its inline ``auth`` holds credentials: non-admins never get it, admins get it
+    masked the way the edition masks OAuth secrets.
+    """
+    if "auth" not in instance:
+        return instance
+    safe = {k: v for k, v in instance.items() if k != "auth"}
+    auth = instance["auth"]
+    if is_admin and isinstance(auth, dict) and auth:
+        safe["auth"] = mask_oauth_secrets(auth)
+    return safe
+
+
+def _keep_stored_secrets(incoming: dict[str, Any], stored: dict[str, Any] | None) -> dict[str, Any]:
+    """A client echoing back a masked value must not overwrite the stored secret."""
+    stored = stored or {}
+    merged: dict[str, Any] = {}
+    for key, value in incoming.items():
+        if not is_redacted_placeholder(value):
+            merged[key] = value
+        elif key in stored:
+            merged[key] = stored[key]
+    return merged
+
+
 def _has_oauth_credentials(auth_config: dict[str, Any]) -> bool:
     """
     Check if auth_config contains actual OAuth credentials (not just infrastructure fields).
@@ -1227,7 +1254,7 @@ async def create_toolset_instance(
 
     return {
         "status": "success",
-        "instance": new_instance,
+        "instance": _instance_for_response(new_instance, is_admin=True),
         "message": "Toolset instance created successfully."
     }
 
@@ -1259,6 +1286,11 @@ async def get_toolset_instances(
             or search_lower in i.get("toolsetType", "").lower()
         ]
 
+    # Only instances with inline credentials need to know who is asking.
+    is_admin = any("auth" in i for i in instances) and await _check_user_is_admin(
+        user_context["user_id"], request, config_service
+    )
+
     # Add registry metadata
     registry = _get_registry(request)
     enriched = []
@@ -1266,7 +1298,7 @@ async def get_toolset_instances(
         toolset_type = inst.get("toolsetType", "")
         meta = registry.get_toolset_metadata(toolset_type)
         enriched.append({
-            **inst,
+            **_instance_for_response(inst, is_admin=is_admin),
             "displayName": meta.get("display_name", toolset_type) if meta else toolset_type,
             "description": meta.get("description", "") if meta else "",
             "iconPath": meta.get("icon_path", "") if meta else "",
@@ -1319,7 +1351,7 @@ async def get_toolset_instance(
     meta = registry.get_toolset_metadata(toolset_type)
 
     result: dict[str, Any] = {
-        **instance,
+        **_instance_for_response(instance, is_admin=is_admin),
         "displayName": meta.get("display_name", toolset_type) if meta else toolset_type,
         "description": meta.get("description", "") if meta else "",
         "iconPath": meta.get("icon_path", "") if meta else "",
@@ -1548,7 +1580,7 @@ async def update_toolset_instance(
         auth_config = _validate_dict(
             value=body.get("authConfig"), field_name="authConfig", allow_empty=True
         )
-        instance["auth"] = auth_config
+        instance["auth"] = _keep_stored_secrets(auth_config, instance.get("auth"))
 
     # Recalculate inheritedFromOrgId server-side when oauth config linkage changed.
     if oauth_credentials_changed and instance.get("oauthConfigId"):
@@ -1587,7 +1619,7 @@ async def update_toolset_instance(
 
     return {
         "status": "success",
-        "instance": instance,
+        "instance": _instance_for_response(instance, is_admin=True),
         "message": msg,
         "deauthenticatedUserCount": deauthed_count,
     }

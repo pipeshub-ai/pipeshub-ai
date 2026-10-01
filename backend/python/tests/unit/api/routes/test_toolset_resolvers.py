@@ -269,43 +269,48 @@ class TestResolveInheritedFromOrgId:
 
 
 # ---------------------------------------------------------------------------
-# mask_oauth_secrets (OSS passthrough)
+# mask_oauth_secrets / is_redacted_placeholder
 # ---------------------------------------------------------------------------
 
 
 class TestMaskOauthSecrets:
-    def test_returns_copy(self) -> None:
-        from app.api.routes.toolset_resolvers import mask_oauth_secrets
+    def test_client_secret_is_redacted_and_the_rest_kept(self) -> None:
+        from app.api.routes.toolset_resolvers import REDACTED_PLACEHOLDER, mask_oauth_secrets
 
-        cfg = {"clientId": "id", "clientSecret": "secret"}
+        cfg = {"clientId": "id", "clientSecret": "secret", "client_secret": "s2", "tenantId": "t"}
         result = mask_oauth_secrets(cfg, is_inherited=False)
-        assert result == cfg
-        assert result is not cfg
 
-    def test_returns_copy_inherited(self) -> None:
+        assert result == {"clientId": "id", "clientSecret": REDACTED_PLACEHOLDER,
+                          "client_secret": REDACTED_PLACEHOLDER, "tenantId": "t"}
+        assert {"secret", "s2"}.isdisjoint(result.values())
+
+    def test_does_not_mutate_the_stored_config(self) -> None:
         from app.api.routes.toolset_resolvers import mask_oauth_secrets
 
         cfg = {"clientId": "id", "clientSecret": "secret"}
-        result = mask_oauth_secrets(cfg, is_inherited=True)
-        assert result == cfg
-        assert result is not cfg
+        mask_oauth_secrets(cfg)
 
+        assert cfg["clientSecret"] == "secret"
 
-# ---------------------------------------------------------------------------
-# is_redacted_placeholder (OSS stub)
-# ---------------------------------------------------------------------------
+    def test_inherited_flag_changes_nothing_without_org_inheritance(self) -> None:
+        from app.api.routes.toolset_resolvers import mask_oauth_secrets
+
+        cfg = {"clientId": "id", "clientSecret": "secret"}
+
+        assert mask_oauth_secrets(cfg, is_inherited=True) == mask_oauth_secrets(cfg, is_inherited=False)
 
 
 class TestIsRedactedPlaceholder:
-    def test_returns_false(self) -> None:
+    def test_recognises_the_placeholder(self) -> None:
+        from app.api.routes.toolset_resolvers import REDACTED_PLACEHOLDER, is_redacted_placeholder
+
+        assert is_redacted_placeholder(REDACTED_PLACEHOLDER) is True
+
+    @pytest.mark.parametrize("value", ["anything", "", None])
+    def test_real_values_are_not_placeholders(self, value: object) -> None:
         from app.api.routes.toolset_resolvers import is_redacted_placeholder
 
-        assert is_redacted_placeholder("anything") is False
-
-    def test_returns_false_for_empty(self) -> None:
-        from app.api.routes.toolset_resolvers import is_redacted_placeholder
-
-        assert is_redacted_placeholder("") is False
+        assert is_redacted_placeholder(value) is False
 
 
 # ---------------------------------------------------------------------------

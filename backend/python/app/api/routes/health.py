@@ -32,7 +32,19 @@ from app.utils.aimodels import (
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-router = APIRouter(dependencies=[Depends(deny_service_tokens)])
+
+async def require_admin_caller(request: Request) -> None:
+    """These routes call whatever provider URL the body names, so only admins may reach them."""
+    # Imported here: app.edition_config pulls in route modules that import this one.
+    from app.edition_config import check_user_is_admin
+
+    user = getattr(request.state, "user", None) or {}
+    config_service = request.app.container.config_service()
+    if not await check_user_is_admin(user.get("userId", ""), user.get("orgId"), request, config_service):
+        raise HTTPException(status_code=403, detail="Only administrators can run model health checks")
+
+
+router = APIRouter(dependencies=[Depends(deny_service_tokens), Depends(require_admin_caller)])
 
 # Cloud LLM health checks call external APIs; local runtimes do not need egress.
 _LOCAL_LLM_PROVIDERS = frozenset({"ollama", "lmStudio"})
