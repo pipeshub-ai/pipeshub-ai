@@ -67,6 +67,18 @@ def _decode_json(raw: "bytes | str") -> Any:  # noqa: ANN401 - stored records ar
 _COMPRESSION_THRESHOLD_ENV = "PIPESHUB_RECORD_COMPRESSION_THRESHOLD_BYTES"
 
 
+def _json_utf8_bytes(obj: Any) -> bytes:  # noqa: ANN401 - stored records are free-form
+    """Stored records keep non-ASCII text as written, so `grep Borgartún` matches.
+
+    A lone surrogate (from broken text extraction) cannot be encoded as UTF-8;
+    such a record falls back to ASCII escapes rather than failing to store.
+    """
+    try:
+        return json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        return json.dumps(obj).encode("utf-8")
+
+
 def compression_threshold_bytes() -> int:
     """Records whose JSON form exceeds this are stored compressed; 0 compresses everything."""
     raw = os.getenv(_COMPRESSION_THRESHOLD_ENV)
@@ -943,7 +955,7 @@ class BlobStorage(Transformer):
                 "record": compressed_record if use_compression else record_dict,
                 "virtualRecordId": virtual_record_id,
             }
-            json_bytes = json.dumps(upload_data).encode("utf-8")
+            json_bytes = _json_utf8_bytes(upload_data)
             file_size_bytes = len(json_bytes)
 
             buffer_url = f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
@@ -1399,7 +1411,7 @@ class BlobStorage(Transformer):
                     "record": compressed_record if use_compression else record,
                     "virtualRecordId": virtual_record_id
                 }
-                json_data = json.dumps(upload_data).encode('utf-8')
+                json_data = _json_utf8_bytes(upload_data)
                 file_size_bytes = len(json_data)
                 upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
                 create_headers = _with_idempotency_key(headers)
@@ -2074,7 +2086,7 @@ class BlobStorage(Transformer):
                 "record": compressed_record if use_compression else record,
                 "virtualRecordId": virtual_record_id
             }
-            json_data = json.dumps(upload_data).encode('utf-8')
+            json_data = _json_utf8_bytes(upload_data)
             file_size_bytes = len(json_data)
 
             if storage_type == "local":
@@ -2250,7 +2262,7 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
 
-            json_bytes = json.dumps(metadata_dict).encode("utf-8")
+            json_bytes = _json_utf8_bytes(metadata_dict)
             file_size_bytes = len(json_bytes)
 
             buffer_url = f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
@@ -2299,7 +2311,7 @@ class BlobStorage(Transformer):
                 "record": compressed_metadata if use_compression else metadata_dict,
                 "virtualRecordId": virtual_record_id,
             }
-            json_data = json.dumps(upload_data).encode('utf-8')
+            json_data = _json_utf8_bytes(upload_data)
 
             if storage_type == "local":
                 upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
