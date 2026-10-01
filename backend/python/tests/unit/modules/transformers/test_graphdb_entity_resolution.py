@@ -363,3 +363,21 @@ class TestPartlyLandedAttemptIsRerun:
         assert len(graph.edges_from("rec-1", CollectionNames.BELONGS_TO_DEPARTMENT.value)) == 1
         assert len(graph.edges_from("rec-1", CollectionNames.BELONGS_TO_TOPIC.value)) == 1
         assert sorted(e.entity_id for e in touched) == ["d-eng", "k-t"]
+
+
+async def test_a_name_missing_from_the_resolution_is_not_logged() -> None:
+    """KG-19: the warning for a resolution miss names the collection, not the
+    extracted text."""
+    store = _tx_store()
+    other = ResolvedEntity(kind=TOPIC, key="k-x", name="Other", normalized="other", is_new=False,
+                           decision="exact", extracted_names=["Other"])
+    transformer = _transformer(store)
+    await transformer.save_metadata_to_db(
+        "rec-1", _metadata(topics=["Secret codename"]), "vr-1", resolution=_resolution(other),
+    )
+    logger = transformer.logger
+    logged = " ".join(
+        str(a) for m in (logger.warning, logger.debug, logger.error, logger.info)
+        for c in m.call_args_list for a in c.args
+    )
+    assert "codename" not in logged.casefold()
