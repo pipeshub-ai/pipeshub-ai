@@ -22,6 +22,7 @@ import pytest
 import pytest_asyncio
 
 from helper.clients.kb_client import KBClient
+from helper.indexing_progress import wait_until_enriched
 
 logger = logging.getLogger("cleanup-fixtures")
 
@@ -82,6 +83,7 @@ async def _indexed_record(
 
         virtual_record_id = await _wait_for_virtual_id(kb_client, record_id)
         await _wait_for_embeddings(vector_store, virtual_record_id, record_id)
+        await wait_until_enriched(kb_client, record_id, timeout=INDEXING_TIMEOUT)
 
         prefix = f"{test_org_id}/PipesHub/records/{virtual_record_id}"
         # Read the vendor rather than assume it: on a stack configured for S3
@@ -199,6 +201,7 @@ async def record_in_a_folder(
 
         virtual_record_id = await _wait_for_virtual_id(kb_client, record_id)
         await _wait_for_embeddings(vector_store, virtual_record_id, record_id)
+        await wait_until_enriched(kb_client, record_id, timeout=INDEXING_TIMEOUT)
 
         prefix = f"{test_org_id}/PipesHub/records/{virtual_record_id}"
         vendor = await mongo_store.storage_vendor_under_path(prefix) or "local"
