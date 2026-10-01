@@ -13,7 +13,7 @@ import {
   sseResponse,
   type StreamPlan,
 } from '@/lib/api/__tests__/sse-response';
-import type { StreamChatRequest, ConversationMessage } from '../types';
+import type { StreamChatRequest, ConversationMessage, MessagePart } from '../types';
 
 installMemoryStorage();
 
@@ -29,6 +29,7 @@ const { fakeApi } = await import('@/lib/api/__tests__/fake-api');
 const { CHAT_STREAM_ERROR_MESSAGES, busyStreamMessage } = await import('@/lib/api/stream-errors');
 const { getThreadMessagePlainText } = await import('../runtime');
 const { apiClient } = await import('@/lib/api');
+const { useToastStore } = await import('@/lib/store/toast-store');
 
 const fetchMock = vi.fn<typeof fetch>();
 const initialState = useChatStore.getState();
@@ -105,6 +106,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock);
   useAuthStore.setState({ accessToken: jwtExpiringIn(3600), refreshToken: 'r' });
   useChatStore.setState({ ...initialState, slots: {}, activeSlotId: null, pendingConversations: {}, conversations: [] });
+  useToastStore.getState().clearAll();
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
@@ -201,6 +203,43 @@ describe('an existing conversation', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/conversations/conv-old/messages/stream');
     expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['conv-old', 'conv-other']);
     expect(slot(slotId).isStreaming).toBe(false);
+  });
+
+  it("leaves an earlier turn's activity timeline alone when a later turn finishes", async () => {
+    const slotId = newSlot('conv-real');
+    const conversation = {
+      ...finishedConversation('Second answer.'),
+      messages: [
+        storedMessage({ _id: 'q1', messageType: 'user_query', content: 'First question' }),
+        storedMessage({
+          _id: 'a1',
+          messageType: 'bot_response',
+          content: 'First answer.',
+          parts: [{
+            type: 'tool_call',
+            toolCallId: 'old-call',
+            toolName: 'confluence_search',
+            status: 'completed',
+          }],
+        }),
+        storedMessage({ _id: 'q2', messageType: 'user_query', content: Q }),
+        storedMessage({ _id: 'a2', messageType: 'bot_response', content: 'Second answer.' }),
+      ],
+    };
+    respondWith([
+      frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'call-1', toolCallName: 'jira_search' }),
+      frame('TOOL_CALL_RESULT', { runId: 'root', toolCallId: 'call-1', content: '3 issues', status: 'completed' }),
+      frame('TEXT_MESSAGE_START', { runId: 'root' }),
+      frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'Second answer.' }),
+      frame('TEXT_MESSAGE_END', { runId: 'root' }),
+      frame('RUN_FINISHED', { result: { conversation } }),
+    ]);
+
+    await streamMessageForSlot(slotId, Q, request({ conversationId: 'conv-real' }));
+
+    const earlier = slot(slotId).messages.find((m) => m.id === 'a1');
+    const earlierCustom = earlier?.metadata?.custom as { persistedParts?: MessagePart[] } | undefined;
+    expect((earlierCustom?.persistedParts ?? []).map((p) => p.toolName)).toEqual(['confluence_search']);
   });
 });
 
@@ -447,6 +486,416 @@ describe('asking the user a question mid-run', () => {
 
     slot(slotId).abortController?.abort();
     await run;
+  });
+
+  it('keeps the question card and says so when the resume stream fails', async () => {
+    const payload = {
+      name: 'ask_user_question',
+      questions: [{ question: 'Which region?', options: ['EU', 'US'] }],
+    };
+    const slotId = newSlot();
+    respondWith([
+      frame('CUSTOM', {
+        name: 'ask_user_question',
+        value: { toolData: payload },
+      }),
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation(''),
+            messages: [
+              storedMessage({ _id: 'q1', messageType: 'user_query', content: Q }),
+              storedMessage({
+                _id: 't1',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: payload }],
+              }),
+              storedMessage({ _id: 'a1', messageType: 'bot_response', content: '' }),
+            ],
+          },
+        },
+      }),
+    ]);
+    await streamMessageForSlot(slotId, Q, request());
+    expect(slot(slotId).pendingAskUserQuestion?.status).toBe('pending');
+
+    const answers = {
+      q1: { questionUuid: 'q1', selectedOptionIds: ['eu'], userInputs: {} },
+    };
+    useChatStore.getState().updateSlot(slotId, {
+      pendingAskUserQuestion: {
+        ...slot(slotId).pendingAskUserQuestion!,
+        answers,
+        status: 'submitted',
+      },
+    });
+
+    respondWith([frame('RUN_ERROR', { message: 'offline' })]);
+    await streamMessageForSlot(
+      slotId,
+      'User selections:\n1. "Which region?" → EU',
+      request({ query: 'User selections:\n1. "Which region?" → EU' }),
+      { resumeAskUserQuestion: true },
+    );
+
+    expect(slot(slotId).pendingAskUserQuestion).toMatchObject({
+      status: 'pending',
+      answers,
+    });
+    // The card row's text is hidden while the card is pending, so the toast is
+    // the only place the user learns the answers never reached the model.
+    expect(
+      useToastStore.getState().toasts.map((t) => ({ variant: t.variant, description: t.description })),
+    ).toEqual([{ variant: 'error', description: 'offline' }]);
+  });
+
+  it('keeps the first ask pending and does not mark it submitted', async () => {
+    const payload = {
+      name: 'ask_user_question',
+      questions: [{ uuid: 'q-region', question: 'Which region?', options: [{ id: 'eu', label: 'EU' }] }],
+    };
+    const slotId = newSlot();
+    respondWith([
+      frame('CUSTOM', {
+        name: 'ask_user_question',
+        value: { toolData: payload },
+      }),
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation(''),
+            messages: [
+              storedMessage({ _id: 'q1', messageType: 'user_query', content: Q }),
+              storedMessage({
+                _id: 't1',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: payload }],
+              }),
+              storedMessage({ _id: 'a1', messageType: 'bot_response', content: '' }),
+            ],
+          },
+        },
+      }),
+    ]);
+    await streamMessageForSlot(slotId, Q, request());
+
+    expect(slot(slotId).pendingAskUserQuestion?.status).toBe('pending');
+    expect(texts(slotId)).toEqual([
+      ['user', Q],
+      ['assistant', ''],
+    ]);
+  });
+
+  it('happy-path resume keeps the follow-up on the same card', async () => {
+    const payload = {
+      name: 'ask_user_question',
+      questions: [{
+        uuid: 'q-region',
+        question: 'Which region?',
+        multiSelect: false,
+        options: [
+          { id: 'eu', label: 'EU', isUserInput: false },
+          { id: 'us', label: 'US', isUserInput: false },
+        ],
+      }],
+    };
+    const slotId = newSlot();
+    respondWith([
+      frame('CUSTOM', {
+        name: 'ask_user_question',
+        value: { toolData: payload },
+      }),
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation(''),
+            messages: [
+              storedMessage({ _id: 'q1', messageType: 'user_query', content: Q }),
+              storedMessage({
+                _id: 't1',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: payload }],
+              }),
+              storedMessage({ _id: 'a1', messageType: 'bot_response', content: '' }),
+            ],
+          },
+        },
+      }),
+    ]);
+    await streamMessageForSlot(slotId, Q, request());
+    useChatStore.getState().updateSlot(slotId, {
+      pendingAskUserQuestion: {
+        ...slot(slotId).pendingAskUserQuestion!,
+        answers: { 'q-region': { questionUuid: 'q-region', selectedOptionIds: ['eu'], userInputs: {} } },
+        status: 'submitted',
+      },
+    });
+
+    respondWith([
+      frame('TEXT_MESSAGE_START'),
+      frame('TEXT_MESSAGE_CONTENT', { delta: 'EU it is.' }),
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation('EU it is.'),
+            messages: [
+              storedMessage({ _id: 'q1', messageType: 'user_query', content: Q }),
+              storedMessage({
+                _id: 't1',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: payload }],
+              }),
+              storedMessage({ _id: 'a1', messageType: 'bot_response', content: '' }),
+              storedMessage({
+                _id: 'sel',
+                messageType: 'user_query',
+                content: 'User selections:\n1. "Which region?" → EU',
+              }),
+              storedMessage({ _id: 'a2', messageType: 'bot_response', content: 'EU it is.' }),
+            ],
+          },
+        },
+      }),
+    ]);
+    await streamMessageForSlot(
+      slotId,
+      'User selections:\n1. "Which region?" → EU',
+      request({ query: 'User selections:\n1. "Which region?" → EU' }),
+      { resumeAskUserQuestion: true },
+    );
+
+    expect(slot(slotId).pendingAskUserQuestion?.status).toBe('submitted');
+    expect(texts(slotId)).toEqual([
+      ['user', Q],
+      ['assistant', 'EU it is.'],
+    ]);
+  });
+
+  it('resume keeps live follow-up text when saved history is empty', async () => {
+    const payload = {
+      name: 'ask_user_question',
+      questions: [{ uuid: 'q-region', question: 'Which region?', options: [{ id: 'eu', label: 'EU' }] }],
+    };
+    const slotId = newSlot();
+    respondWith([
+      frame('CUSTOM', {
+        name: 'ask_user_question',
+        value: { toolData: payload },
+      }),
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation(''),
+            messages: [
+              storedMessage({ _id: 'q1', messageType: 'user_query', content: Q }),
+              storedMessage({
+                _id: 't1',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: payload }],
+              }),
+              storedMessage({ _id: 'a1', messageType: 'bot_response', content: '' }),
+            ],
+          },
+        },
+      }),
+    ]);
+    await streamMessageForSlot(slotId, Q, request());
+    useChatStore.getState().updateSlot(slotId, {
+      pendingAskUserQuestion: {
+        ...slot(slotId).pendingAskUserQuestion!,
+        answers: { 'q-region': { questionUuid: 'q-region', selectedOptionIds: ['eu'], userInputs: {} } },
+        status: 'submitted',
+      },
+    });
+
+    respondWith([
+      frame('TEXT_MESSAGE_START'),
+      frame('TEXT_MESSAGE_CONTENT', { delta: 'Live follow-up stays.' }),
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation(''),
+            messages: [
+              storedMessage({ _id: 'q1', messageType: 'user_query', content: Q }),
+              storedMessage({
+                _id: 't1',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: payload }],
+              }),
+              storedMessage({ _id: 'a1', messageType: 'bot_response', content: '' }),
+              storedMessage({
+                _id: 'sel',
+                messageType: 'user_query',
+                content: 'User selections:\n1. "Which region?" → EU',
+              }),
+              storedMessage({ _id: 'a2', messageType: 'bot_response', content: '' }),
+            ],
+          },
+        },
+      }),
+    ]);
+    await streamMessageForSlot(
+      slotId,
+      'User selections:\n1. "Which region?" → EU',
+      request({ query: 'User selections:\n1. "Which region?" → EU' }),
+      { resumeAskUserQuestion: true },
+    );
+
+    expect(slot(slotId).pendingAskUserQuestion?.status).toBe('submitted');
+    expect(texts(slotId)).toEqual([
+      ['user', Q],
+      ['assistant', 'Live follow-up stays.'],
+    ]);
+  });
+
+  it('reopens the card when the resume ends on another question', async () => {
+    const first = {
+      name: 'ask_user_question',
+      questions: [{
+        uuid: 'q-proceed',
+        question: 'How would you like to proceed?',
+        multiSelect: false,
+        options: [{ id: 'kb', label: 'Search the knowledge base instead', isUserInput: false }],
+      }],
+    };
+    const second = {
+      name: 'ask_user_question',
+      questions: [{
+        uuid: 'q-topic',
+        question: 'What topic should I search for?',
+        multiSelect: false,
+        options: [{ id: 'keywords', label: 'Enter a topic or keywords', isUserInput: false }],
+      }],
+    };
+    const slotId = newSlot();
+    respondWith([
+      frame('CUSTOM', { name: 'ask_user_question', value: { toolData: first } }),
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation(''),
+            messages: [
+              storedMessage({ _id: 'q1', messageType: 'user_query', content: Q }),
+              storedMessage({
+                _id: 't1',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: first }],
+              }),
+              storedMessage({ _id: 'a1', messageType: 'bot_response', content: '' }),
+            ],
+          },
+        },
+      }),
+    ]);
+    await streamMessageForSlot(slotId, Q, request());
+    useChatStore.getState().updateSlot(slotId, {
+      pendingAskUserQuestion: {
+        ...slot(slotId).pendingAskUserQuestion!,
+        answers: { 'q-proceed': { questionUuid: 'q-proceed', selectedOptionIds: ['kb'], userInputs: {} } },
+        status: 'submitted',
+      },
+    });
+
+    const resumeQuery = 'User selections:\n1. "How would you like to proceed?" → Search the knowledge base instead';
+    respondWith([
+      frame('TEXT_MESSAGE_START'),
+      frame('TEXT_MESSAGE_CONTENT', { delta: "I'll use the knowledge base." }),
+      frame('CUSTOM', { name: 'ask_user_question', value: { toolData: second } }),
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation("I'll use the knowledge base."),
+            messages: [
+              storedMessage({ _id: 'q1', messageType: 'user_query', content: Q }),
+              storedMessage({
+                _id: 't1',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: first }],
+              }),
+              storedMessage({ _id: 'a1', messageType: 'bot_response', content: '' }),
+              storedMessage({ _id: 'sel', messageType: 'user_query', content: resumeQuery }),
+              storedMessage({
+                _id: 'a2',
+                messageType: 'bot_response',
+                content: "I'll use the knowledge base.",
+              }),
+              storedMessage({
+                _id: 't2',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: second }],
+              }),
+            ],
+          },
+        },
+      }),
+    ]);
+    await streamMessageForSlot(
+      slotId,
+      resumeQuery,
+      request({ query: resumeQuery }),
+      { resumeAskUserQuestion: true },
+    );
+
+    const pending = slot(slotId).pendingAskUserQuestion;
+    expect(pending?.status).toBe('pending');
+    expect(pending?.payload.questions.map((q) => q.uuid)).toEqual(['q-proceed', 'q-topic']);
+    expect(pending?.answers).toEqual({
+      'q-proceed': { questionUuid: 'q-proceed', selectedOptionIds: ['kb'], userInputs: {} },
+    });
+
+    // Answer the question that resume asked, and have that second resume come
+    // back with nothing. The text the first resume left on the card must not
+    // pass for this one's answer, or the card locks with no way to retry.
+    useChatStore.getState().updateSlot(slotId, {
+      pendingAskUserQuestion: {
+        ...slot(slotId).pendingAskUserQuestion!,
+        answers: {
+          'q-proceed': { questionUuid: 'q-proceed', selectedOptionIds: ['kb'], userInputs: {} },
+          'q-topic': { questionUuid: 'q-topic', selectedOptionIds: ['keywords'], userInputs: {} },
+        },
+        status: 'submitted',
+      },
+    });
+    const secondResumeQuery = 'User selections:\n1. "What topic should I search for?" → Enter a topic or keywords';
+    respondWith([
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation(''),
+            messages: [
+              storedMessage({ _id: 'q1', messageType: 'user_query', content: Q }),
+              storedMessage({
+                _id: 't1',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: first }],
+              }),
+              storedMessage({ _id: 'a1', messageType: 'bot_response', content: '' }),
+              storedMessage({ _id: 'sel', messageType: 'user_query', content: resumeQuery }),
+              storedMessage({
+                _id: 'a2',
+                messageType: 'bot_response',
+                content: "I'll use the knowledge base.",
+              }),
+              storedMessage({
+                _id: 't2',
+                messageType: 'tool_call',
+                tools: [{ toolName: 'ask_user_question', toolResult: second }],
+              }),
+              storedMessage({ _id: 'sel2', messageType: 'user_query', content: secondResumeQuery }),
+              storedMessage({ _id: 'a3', messageType: 'bot_response', content: '' }),
+            ],
+          },
+        },
+      }),
+    ]);
+    await streamMessageForSlot(
+      slotId,
+      secondResumeQuery,
+      request({ query: secondResumeQuery }),
+      { resumeAskUserQuestion: true },
+    );
+
+    expect(slot(slotId).pendingAskUserQuestion?.status).toBe('pending');
   });
 });
 

@@ -50,12 +50,12 @@ from app.modules.demo_data.chat import (
 )
 
 if TYPE_CHECKING:
-    from app.utils.stage_timer import StageTimer
     from collections.abc import AsyncGenerator
 
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry
+    from app.utils.stage_timer import StageTimer
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +267,7 @@ async def run_agent_loop_stream(
     stage_timer: "StageTimer | None" = None,
     cancellation_registry: "RunCancellationRegistry | None" = None,
     cancellation_owner: "RunOwner | None" = None,
+    entity_vector_store: Any = None,
 ) -> "AsyncGenerator[str, None]":
     """agent-loop counterpart to `app.api.routes.agent.stream_response()` —
     same signature/SSE wire format, so `chat_stream`'s feature-flag branch
@@ -325,6 +326,7 @@ async def run_agent_loop_stream(
             reranker_service, config_service, model_name, model_key, org_info,
             "react", has_sql_connector=has_sql_connector, is_multimodal_llm=is_multimodal_llm,
             has_slack_connector=has_slack_connector, client_name=client_name,
+            entity_vector_store=entity_vector_store,
         )
         exclude_from_state(chat_state, demo_excluded)
         await note_org_real_data(chat_state, graph_provider, user_info.get("orgId", ""), log)
@@ -385,7 +387,10 @@ async def run_agent_loop_stream(
             else:
                 collector = CitationCollector(context)
                 streamer = TerminalAnswerStreamer(context, collector, context.event_sink)
-                async for event in agent.stream(goal):
+                async for event in agent.stream(
+                    goal,
+                    _skip_start=bool(context.tool_state.get("ask_user_question_resume")),
+                ):
                     await streamer.on_event(event)
                 result = agent.last_stream_result
 
@@ -414,6 +419,7 @@ async def run_agent_loop_stream(
                     # a genuinely successful — or independently failed —
                     # result, which would otherwise mislabel it "stopped".
                     agent_cancelled=result.cancelled,
+                    agent_needs_input=result.needs_input,
                 )
         except Exception as exc:
             log.error("agent-loop stream: run failed: %s", exc, exc_info=True)

@@ -132,6 +132,8 @@ services:
       # Rate limit config
       - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-2000}
       - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
+      - MAX_AUTH_REQUESTS_PER_MINUTE=${MAX_AUTH_REQUESTS_PER_MINUTE:-10}
+      - TRUST_PROXY=${TRUST_PROXY:-}
 
       # Set to true to replace secrets in config API responses with **** markers
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-true}

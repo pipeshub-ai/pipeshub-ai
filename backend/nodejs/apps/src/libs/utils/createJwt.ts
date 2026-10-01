@@ -153,6 +153,22 @@ export const jwtGeneratorForNewAccountPassword = (
   return { passwordResetToken, mailAuthToken };
 };
 
+export const newAccountPasswordLink = (
+  frontendUrl: string,
+  userEmail: string,
+  userId: string,
+  orgId: string,
+  scopedJwtSecret: string,
+): string => {
+  const { passwordResetToken } = jwtGeneratorForNewAccountPassword(
+    userEmail,
+    userId,
+    orgId,
+    scopedJwtSecret,
+  );
+  return `${frontendUrl}/reset-password#token=${passwordResetToken}`;
+};
+
 export const refreshTokenJwtGenerator = (
   userId: string,
   orgId: string,

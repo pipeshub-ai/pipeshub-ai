@@ -1077,6 +1077,7 @@ export function MessageList() {
                   latestArtifactVersions={latestArtifactVersions}
                   persistedParts={pair.persistedParts}
                   persistedAskUserQuestion={pair.persistedAskUserQuestion}
+                  persistedAskUserQuestionAnswers={pair.persistedAskUserQuestionAnswers}
                   feedbackInfo={pair.feedbackInfo}
                   status={pair.status}
                   unanswered={pair.unanswered}

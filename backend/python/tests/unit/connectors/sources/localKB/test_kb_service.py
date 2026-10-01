@@ -29,6 +29,7 @@ from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.utils.user_messages import action_failed
 from app.config.constants.service import DefaultEndpoints
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import FileRecord
 
 
@@ -476,6 +477,96 @@ class TestDeleteKnowledgeBase:
         assert result["success"] is True
         service.logger.error.assert_called()
 
+    @pytest.mark.asyncio
+    async def test_cleans_up_entity_vector_store_scoped_to_kb(self, service):
+        """KB records/groups carry connectorIds=[kb_id], so connector-scoped
+        entity cleanup applies unchanged to a KB delete."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [], "record_group_ids": ["rg-1", "rg-2"],
+        })
+        service.entity_vector_store = AsyncMock()
+
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert result["success"] is True
+        # The graph's record groups are gone after deletion; the entity store
+        # needs them to strip shared entities.
+        kwargs = service.entity_vector_store.delete_entities_by_connector.await_args.kwargs
+        assert kwargs["org_id"] == "org1" and kwargs["connector_id"] == "kb1"
+        assert kwargs["record_group_ids"] == ["rg-1", "rg-2"]
+        # Exclusive-looking entities are checked against the graph, in this org.
+        service.graph_provider.get_taxonomy_entity_membership = AsyncMock(return_value={})
+        await kwargs["membership_lookup"]([{"id": "t1", "type": "topic"}])
+        service.graph_provider.get_taxonomy_entity_membership.assert_awaited_once_with(
+            [{"id": "t1", "type": "topic"}], "org1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_empty_graph_list_is_passed_as_is(self, service):
+        """[] means the graph knew of no groups; None would make the store scan
+        every record point for them, which Redis cannot do past 10k."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [], "record_group_ids": [],
+        })
+        service.entity_vector_store = AsyncMock()
+
+        await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert service.entity_vector_store.delete_entities_by_connector.await_args.kwargs[
+            "record_group_ids"
+        ] == []
+
+    @pytest.mark.asyncio
+    async def test_no_record_groups_from_the_graph_lets_the_store_recover_them(self, service):
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [],
+        })
+        service.entity_vector_store = AsyncMock()
+
+        await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert service.entity_vector_store.delete_entities_by_connector.await_args.kwargs[
+            "record_group_ids"
+        ] is None
+
+    @pytest.mark.asyncio
+    async def test_missing_entity_vector_store_still_succeeds(self, service):
+        """entity_vector_store is optional (defaults to None) — KB delete
+        must not depend on it being wired up."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [],
+        })
+        assert service.entity_vector_store is None
+
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_entity_vector_store_cleanup_failure_still_succeeds(self, service):
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [],
+        })
+        service.entity_vector_store = AsyncMock()
+        service.entity_vector_store.delete_entities_by_connector = AsyncMock(
+            side_effect=RuntimeError("vector db down")
+        )
+
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert result["success"] is True
+        service.logger.error.assert_called()
+
 
 class TestCreateFolderInKb:
     @pytest.mark.asyncio
@@ -700,6 +791,18 @@ class TestUpdateFolder:
         result = await service.updateFolder("f1", "kb1", "user1", "New")
         assert result["success"] is False
         assert result["code"] == 404
+
+    @pytest.mark.asyncio
+    async def test_folder_record_unreadable_is_not_reported_as_missing(self, service) -> None:
+        _setup_writer(service)
+        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Old"})
+        service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
+        service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
+        service.graph_provider.get_file_record_by_id = AsyncMock(side_effect=GraphQueryError("unavailable"))
+
+        result = await service.updateFolder("f1", "kb1", "user1", "New")
+        assert result == {"success": False, "code": 500, "reason": action_failed("rename this folder")}
 
 
 # ===========================================================================
@@ -929,6 +1032,16 @@ class TestUpdateRecord:
         result = await service.update_record("user1", "rec1", {})
         assert result["success"] is False
         assert result["code"] == 404
+
+    @pytest.mark.asyncio
+    async def test_file_record_unreadable_is_not_reported_as_missing(self, service) -> None:
+        _setup_writer(service)
+        service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
+        service.graph_provider.get_file_record_by_id = AsyncMock(side_effect=GraphQueryError("unavailable"))
+
+        result = await service.update_record("user1", "rec1", {})
+        assert result == {"success": False, "code": 500, "reason": action_failed("update this file")}
+        service.processor.on_record_metadata_update.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_ignores_unmapped_update_keys(self, service):
