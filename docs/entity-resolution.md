@@ -228,6 +228,22 @@ line.
 
 ## Operational notes
 
+- Entity index writes are counted in
+  `pipeshub_entity_index_writes_total{operation,outcome}` (written,
+  membership_only, unchanged, skipped, failed). The ids of entities not
+  written are logged at warning, capped at 20 plus a count. A rising
+  `failed` count means the vector store is refusing entity writes; the
+  rebuild repairs the points once it recovers.
+- Deleting a connector or a KB publishes `deleteConnectorEntities`, and the
+  indexing service removes the connector's entity points:
+  - shared taxonomy points lose the connector and its record groups, and the
+    rest are deleted;
+  - a failure is retried, then dead-lettered;
+  - each page is re-read by id and written by id, so a record indexed during
+    the cleanup keeps its connector.
+- Embedding runs before the per-entity locks are taken. The locks only cover
+  the read, merge and write, so records sharing a popular entity do not wait
+  on each other's embedding call.
 - The `entities` vector collection has a `metadata.level` payload index. The
   store ensures its payload indexes on every start (index creation is
   idempotent on every backend), so an existing collection picks it up too.
