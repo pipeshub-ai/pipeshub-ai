@@ -5,14 +5,10 @@ import { ICacheService } from '../../../libs/services/cache/cacheService.interfa
 import { TokenEventProducer } from '../services/token-event.producer';
 import { Logger }  from '../../../libs/services/logger.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
-import axios, { AxiosResponse } from 'axios';
+import axios from 'axios';
 import { AppConfig } from '../config/config';
 import { ConfigService } from '../services/cm.service';
-import {
-  BuildInfo,
-  getBuildInfo,
-  parseBuildInfo,
-} from '../../../libs/utils/build-info.utils';
+import { BuildInfo, getBuildInfo } from '../../../libs/utils/build-info.utils';
 
 const logger = Logger.getInstance({
   service: 'HealthStatus'
@@ -24,8 +20,6 @@ const TYPES = {
   TokenEventProducer: 'KafkaService',
   KeyValueStoreService: 'KeyValueStoreService',
 };
-
-type HealthBody = { build?: unknown } | undefined;
 
 export interface HealthStatus {
   status: 'healthy' | 'unhealthy';
@@ -281,39 +275,16 @@ export function createHealthRouter(
         docling: doclingOk ? 'healthy' : 'unhealthy',
         embedding: embeddingOk ? 'healthy' : 'unhealthy',
       };
-      // A service that answers with an error status still reports its build.
-      const buildOf = (
-        res: PromiseSettledResult<AxiosResponse<HealthBody>>,
-      ): BuildInfo | null => {
-        if (res.status === 'fulfilled') {
-          return parseBuildInfo(res.value.data?.build);
-        }
-        const reason: unknown = res.reason;
-        return axios.isAxiosError<HealthBody>(reason)
-          ? parseBuildInfo(reason.response?.data?.build)
-          : null;
-      };
-      const builds: Record<string, BuildInfo | null> = {
-        nodejs: build,
-        query: buildOf(aiResp),
-        connector: buildOf(connectorResp),
-        indexing: buildOf(indexingResp),
-        docling: buildOf(doclingResp),
-        embedding: buildOf(embeddingResp),
-      };
       if (parsingSettled) {
         const [parsingResp, extractionResp] = await parsingSettled;
         services.parsing = isServiceHealthy(parsingResp) ? 'healthy' : 'unhealthy';
         services.extraction = isServiceHealthy(extractionResp) ? 'healthy' : 'unhealthy';
-        builds.parsing = buildOf(parsingResp);
-        builds.extraction = buildOf(extractionResp);
       }
 
       res.status(200).json({
         status: overallHealthy ? 'healthy' : 'unhealthy',
         timestamp: new Date().toISOString(),
         services,
-        builds,
       });
     } catch (error: any) {
       logger.error('Combined services health check failed', error?.message ?? error);
@@ -332,7 +303,6 @@ export function createHealthRouter(
         status: 'unhealthy',
         timestamp: new Date().toISOString(),
         services,
-        builds: { nodejs: build },
       });
     }
   });

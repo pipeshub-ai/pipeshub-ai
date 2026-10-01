@@ -22,7 +22,6 @@ from app.edition_config import (
     ensure_org_context,
     search_router,
 )
-from app.utils.build_info import get_build_info
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
@@ -476,7 +475,6 @@ async def health_check() -> JSONResponse:
             content={
                 "status": "healthy",
                 "timestamp": get_epoch_timestamp_in_ms(),
-                "build": get_build_info(),
             },
         )
     except Exception:
@@ -486,7 +484,6 @@ async def health_check() -> JSONResponse:
             content={
                 "status": "unhealthy",
                 "timestamp": get_epoch_timestamp_in_ms(),
-                "build": get_build_info(),
             },
         )
 

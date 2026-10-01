@@ -62,7 +62,6 @@ from app.services.parsing.providers.pdfplumber_parser import PdfPlumberParser
 from app.services.parsing.providers.smart_pdf_parser import SmartPDFParser
 from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import ResourceGovernor
-from app.utils.build_info import get_build_info
 from app.utils.llm import is_local_cpu_embedding_configured
 
 logger = logging.getLogger("parsing_main")
@@ -329,7 +328,6 @@ async def health_check() -> JSONResponse:
         "status": "healthy",
         "service": "parsing",
         "formats": list(registry.list_all_formats().keys()),
-        "build": get_build_info(),
     }
     governor: ResourceGovernor | None = getattr(app.state, "governor", None)
     if governor is not None:

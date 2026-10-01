@@ -31,7 +31,6 @@ from app.config.constants.ai_models import (
 )
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.telemetry.setup import setup_telemetry
-from app.utils.build_info import get_build_info
 from app.utils.logger import create_logger
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -603,7 +602,6 @@ async def health_check() -> JSONResponse:
                 "loaded_models": loaded,
                 "default_model": DEFAULT_EMBEDDING_MODEL,
                 "timestamp": get_epoch_timestamp_in_ms(),
-                "build": get_build_info(),
             },
         )
     except Exception as e:
@@ -613,7 +611,6 @@ async def health_check() -> JSONResponse:
                 "status": "unhealthy",
                 "error": str(e),
                 "timestamp": get_epoch_timestamp_in_ms(),
-                "build": get_build_info(),
             },
         )
 

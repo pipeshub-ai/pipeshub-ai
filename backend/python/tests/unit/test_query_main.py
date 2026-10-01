@@ -691,22 +691,6 @@ class TestHealthCheck:
 
         assert result.status_code == 500
 
-    async def test_health_check_reports_the_build_on_both_paths(self):
-        """The build is in the healthy response and in the 500 response."""
-        import json
-        from app.query_main import health_check
-
-        build = {"version": "0.9.1", "commitId": "a" * 40, "buildTime": None}
-        with patch("app.query_main.get_build_info", return_value=build):
-            healthy = await health_check()
-            mock_ts = MagicMock(side_effect=[RuntimeError("timestamp error"), 1])
-            with patch("app.query_main.get_epoch_timestamp_in_ms", mock_ts):
-                failed = await health_check()
-
-        assert json.loads(healthy.body)["build"] == build
-        assert failed.status_code == 500
-        assert json.loads(failed.body)["build"] == build
-
 
 # ===========================================================================
 # validation_exception_handler

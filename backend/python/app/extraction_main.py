@@ -23,7 +23,6 @@ from fastapi.responses import JSONResponse
 from app.containers.extraction import ExtractionAppContainer, initialize_container
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.api.routes.extraction import router as extraction_router
-from app.utils.build_info import get_build_info
 
 logger = logging.getLogger("extraction_main")
 
@@ -101,13 +100,7 @@ app.include_router(extraction_router)
 
 @app.get("/health")
 async def health_check() -> JSONResponse:
-    return JSONResponse(
-        content={
-            "status": "healthy",
-            "service": "extraction",
-            "build": get_build_info(),
-        }
-    )
+    return JSONResponse(content={"status": "healthy", "service": "extraction"})
 
 
 if __name__ == "__main__":

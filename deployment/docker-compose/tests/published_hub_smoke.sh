@@ -26,7 +26,7 @@
 #   HEALTH_WAIT_SECS       installer health deadline (default: 600 slim/eval, 720 full)
 #   PIPESHUB_SMOKE_KEEP=1  leave the stack running (skip uninstall)
 #   PIPESHUB_EXPECT_VERSION, PIPESHUB_EXPECT_COMMIT
-#                          when set, every core service must report this build
+#                          when set, /api/v1/health must report this build
 #   PUBLISHED_HUB_SMOKE_DIAG  directory to copy logs/health.json on failure
 # ==============================================================================
 set -euo pipefail
@@ -264,28 +264,27 @@ then
 fi
 
 if [[ -n "${PIPESHUB_EXPECT_VERSION:-}" || -n "${PIPESHUB_EXPECT_COMMIT:-}" ]]; then
-  if ! python3 - "$WORK/health.json" "${PIPESHUB_EXPECT_VERSION:-}" "${PIPESHUB_EXPECT_COMMIT:-}" <<'PY'
+  BUILD_URL="http://localhost:${PORT}/api/v1/health"
+  if ! curl --connect-timeout 10 --max-time 30 -sf "$BUILD_URL" -o "$WORK/build.json"; then
+    die "host cannot reach ${BUILD_URL}"
+  fi
+  if ! python3 - "$WORK/build.json" "${PIPESHUB_EXPECT_VERSION:-}" "${PIPESHUB_EXPECT_COMMIT:-}" <<'PY'
 import json, sys
 path, version, commit = sys.argv[1:4]
 with open(path, encoding="utf-8") as fh:
-    builds = json.load(fh).get("builds") or {}
-wrong = []
-for name in ("nodejs", "query", "connector", "indexing", "docling"):
-    build = builds.get(name) or {}
-    if (version and build.get("version") != version) or (
-        commit and build.get("commitId") != commit
-    ):
-        wrong.append(f"{name}={build.get('version')!r}@{build.get('commitId')!r}")
-if wrong:
+    build = json.load(fh).get("build") or {}
+if (version and build.get("version") != version) or (
+    commit and build.get("commitId") != commit
+):
     print(
-        f"published_hub_smoke: expected build {version!r}@{commit!r}, got: "
-        + ", ".join(wrong),
+        f"published_hub_smoke: expected build {version!r}@{commit!r}, "
+        f"got {build.get('version')!r}@{build.get('commitId')!r}",
         file=sys.stderr,
     )
     sys.exit(1)
 PY
   then
-    die "the image does not report the build it was made from at ${HEALTH_URL}"
+    die "the image does not report the build it was made from at ${BUILD_URL}"
   fi
 fi
 

@@ -375,7 +375,7 @@ tags:
       - `custom`: Use cron expression for complex schedules
       - `once`: Run once at a specific future time
   - name: Health
-    description: Health of the deployment, and the build that each service runs
+    description: Health of the deployment, and the build that it runs
 components:
   parameters:
     InternalDocumentId:
@@ -515,7 +515,7 @@ components:
   schemas:
     BuildInfo:
       type: object
-      description: The build that a service runs. A value that is not known is null.
+      description: The build that the deployment runs. A value that is not known is null.
       required:
         - version
         - commitId
@@ -15620,7 +15620,8 @@ paths:
       summary: Health of the Node.js API and its data stores
       description: |
         Returns the status of each data store this deployment uses, and the build
-        that the Node.js API runs. Always answers `200`; read `status` for the result.
+        that it runs. Every service comes from the same image, so one build
+        describes the whole deployment. Always answers `200`; read `status` for the result.
         No authentication required.
       operationId: getHealth
       security: []
@@ -15672,54 +15673,6 @@ paths:
                         type: string
                   build:
                     $ref: '#/components/schemas/BuildInfo'
-
-  /health/services:
-    get:
-      tags:
-        - Health
-      summary: Health and build of each backend service
-      description: |
-        Returns the status of each backend service and the build that each one runs.
-        A deployment can be only partly upgraded, so compare the entries in `builds`.
-        Always answers `200`; read `status` for the result. No authentication required.
-      operationId: getServicesHealth
-      security: []
-      responses:
-        '200':
-          description: Health report
-          content:
-            application/json:
-              schema:
-                type: object
-                required:
-                  - status
-                  - timestamp
-                  - services
-                  - builds
-                properties:
-                  status:
-                    type: string
-                    enum:
-                      - healthy
-                      - unhealthy
-                  timestamp:
-                    type: string
-                    format: date-time
-                  services:
-                    type: object
-                    description: Status of each service - `healthy`, `unhealthy` or `unknown`.
-                    additionalProperties:
-                      type: string
-                  builds:
-                    type: object
-                    description: |
-                      Build of each service, by service name (`nodejs`, `query`, `connector`,
-                      `indexing`, `docling`, `embedding`, and `parsing` and `extraction` when
-                      they are enabled). An entry is null when the service did not answer.
-                    additionalProperties:
-                      allOf:
-                        - $ref: '#/components/schemas/BuildInfo'
-                      nullable: true
 
   # ==================== IN-APP NOTIFICATIONS ====================
   /notifications:
