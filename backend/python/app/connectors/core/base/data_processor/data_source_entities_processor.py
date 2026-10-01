@@ -3340,10 +3340,18 @@ class DataSourceEntitiesProcessor:
             raise e
 
     @retry_on_deadlock()
-    async def on_new_user_groups(self, user_groups: list[tuple[AppUserGroup, list[AppUser]]]) -> None:
+    async def on_new_user_groups(
+        self,
+        user_groups: list[tuple[AppUserGroup, list[AppUser]]],
+        *,
+        replace_members: bool = True,
+    ) -> None:
         """
         Processes new user groups, upserts them, and creates permission edges.
         This follows the logic of 'on_new_record_groups'.
+
+        ``replace_members=False`` only adds the given members and keeps the existing ones,
+        for callers that can see just part of a group's membership at a time.
         """
         try:
             if not user_groups:
@@ -3414,7 +3422,7 @@ class DataSourceEntitiesProcessor:
                         self.logger.debug(f"Creating/updating {len(user_group_permissions)} PERMISSION edges for UserGroup {user_group.id}")
                     await self._write_permission_edges(
                         tx_store, to_id, to_collection, user_group_permissions,
-                        replace=existing_user_group is not None,
+                        replace=replace_members and existing_user_group is not None,
                     )
 
         except Exception as e:
