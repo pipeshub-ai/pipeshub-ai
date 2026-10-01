@@ -27,7 +27,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     SortField,
     SortOrder,
 )
-from app.models.entities import RecordType
+from app.models.entities import RecordType, substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.user_messages import action_failed, not_found
@@ -263,6 +263,11 @@ class KnowledgeHubService:
                 # In browse mode, fetch available filters only if requested
                 if include and 'availableFilters' in include:
                     available_filters = await self._get_available_filters(user_key, org_id, excluded)
+
+            user_email = user.get('email')
+            for item in items:
+                if item.webUrl:
+                    item.webUrl = substitute_user_email(item.webUrl, user_email, item.connector)
 
             # Permissions are now included directly from queries (userRole field)
             # No need for separate batch permission fetch
