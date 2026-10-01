@@ -1515,6 +1515,22 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def filter_records_shared_with_anyone(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """The ``record_ids`` shared with anyone in ``org_id`` (an active
+        ``anyone`` grant), as content search treats them. Callers must still
+        limit the records to connectors the user can reach.
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
     async def get_entity_index_candidate(
         self,
         collection: str,

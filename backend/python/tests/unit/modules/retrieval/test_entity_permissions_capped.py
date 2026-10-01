@@ -49,6 +49,7 @@ def _graph(rows: list[dict], *, capped: bool, permitted: set[str] | None = None)
 
     graph.get_entity_candidate_records = AsyncMock(side_effect=_candidates)
     graph.filter_nodes_with_permission_role = AsyncMock(return_value=set(permitted or ()))
+    graph.filter_records_shared_with_anyone = AsyncMock(return_value=set())
     return graph
 
 

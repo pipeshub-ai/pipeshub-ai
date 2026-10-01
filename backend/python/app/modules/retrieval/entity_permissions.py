@@ -246,6 +246,11 @@ async def _filter_permitted_rows(
                 context.org_id,
                 raise_on_error=True,
             )
+            # Shared with anyone in the org: content search returns these, and
+            # they are already limited to connectors the user can reach.
+            refused = [key for key in dict.fromkeys(needs_check) if key not in permitted]
+            if refused:
+                permitted |= await graph_provider.filter_records_shared_with_anyone(refused, context.org_id)
         except Exception as exc:
             raise EntityAccessError("Record permission check failed") from exc
     return permitted

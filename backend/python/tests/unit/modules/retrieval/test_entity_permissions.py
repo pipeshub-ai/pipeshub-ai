@@ -70,6 +70,7 @@ def _graph(candidates=None, permitted=None) -> MagicMock:
 
     graph.get_entity_candidate_records = AsyncMock(side_effect=_candidates)
     graph.filter_nodes_with_permission_role = AsyncMock(return_value=set(permitted or ()))
+    graph.filter_records_shared_with_anyone = AsyncMock(return_value=set())
     return graph
 
 
@@ -619,3 +620,47 @@ class TestListingDeadline:
         assert [r["_key"] for r in page.records] == ["d0"]
         assert page.next_cursor == str(ep.CANDIDATE_BATCH_MIN)
         assert graph.get_entity_candidate_records.await_count == 1
+
+
+class TestAnyoneGrant:
+    """KG-37: a record shared with anyone in the org is visible to the entity
+    tools as it is to content search, within the user's connectors only."""
+
+    @pytest.mark.asyncio
+    async def test_a_record_shared_with_anyone_keeps_its_entity(self) -> None:
+        store = _store([_hit("t1", "topic", 0.9)])
+        graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("pub", "conf-1")]}, permitted=set())
+        graph.filter_records_shared_with_anyone = AsyncMock(return_value={"pub"})
+
+        hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+        assert [h.entity_id for h in hits] == ["t1"]
+        graph.filter_records_shared_with_anyone.assert_awaited_once_with(["pub"], ORG)
+
+    @pytest.mark.asyncio
+    async def test_only_records_the_role_check_refused_are_asked_about(self) -> None:
+        store = _store([_hit("t1", "topic", 0.9)])
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": [_row("mine", "conf-1"), _row("other", "conf-1")]},
+            permitted={"mine"},
+        )
+        graph.filter_records_shared_with_anyone = AsyncMock(return_value=set())
+
+        await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+        graph.filter_records_shared_with_anyone.assert_awaited_once_with(["other"], ORG)
+
+    @pytest.mark.asyncio
+    async def test_a_connector_outside_the_users_apps_is_never_asked_about(self) -> None:
+        page = await list_accessible_entity_records(
+            _graph(candidates=lambda refs, org, **k: {"t1": [_row("pub", "s3-1")]}),
+            _context(), entity_id="t1", entity_type="topic",
+        )
+        assert page.records == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_anyone_lookup_fails_closed_with_an_error(self) -> None:
+        graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("pub", "conf-1")]}, permitted=set())
+        graph.filter_records_shared_with_anyone = AsyncMock(side_effect=RuntimeError("down"))
+        with pytest.raises(EntityAccessError):
+            await list_accessible_entity_records(graph, _context(), entity_id="t1", entity_type="topic")
