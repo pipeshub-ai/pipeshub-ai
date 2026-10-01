@@ -1471,6 +1471,19 @@ class TestRemovalFromSource:
         assert "10" in db.record_groups
         assert {"p1", "p2", "p3"} <= set(db.records), "a space Confluence listed is not treated as gone"
 
+    async def test_a_listed_space_without_an_id_keeps_the_stored_spaces(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        eng_without_id = {k: v for k, v in space("ENG", 10).items() if k != "id"}
+        atlassian_api.on("GET", f"{API}/space", {"results": [eng_without_id, space("HR", 20)], "_links": {"base": BASE}})
+        store.sync_points.clear()
+
+        await connector.run_sync()
+
+        assert "10" in db.record_groups
+        assert {"p1", "p2", "p3"} <= set(db.records), "a space listed without its id is not treated as gone"
+
     @pytest.mark.parametrize("answer", [
         pytest.param(json_response({"message": "busy"}, status=503), id="failed"),
         pytest.param({"results": [], "_links": {"base": BASE}}, id="empty"),

@@ -844,7 +844,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                         space_key = space_data.get("key")
 
                         if not space_id or not space_name or not space_key:
-                            skipped_a_space = skipped_a_space or bool(space_id)
+                            skipped_a_space = True
                             continue
 
                         self.logger.debug(f"Processing space: {space_name} ({space_id})")
