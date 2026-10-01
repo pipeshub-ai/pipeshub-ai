@@ -42,7 +42,10 @@ from app.agents.agent_loop.clarification import emit_pre_run_clarification
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.factory import PipesHubAgentFactory
-from app.agents.agent_loop.hooks import CitationCollector, ensure_fetch_full_record_available
+from app.agents.agent_loop.hooks import (
+    CitationCollector,
+    ensure_fetch_full_record_available,
+)
 from app.agents.agent_loop.respond import AnswerFinalizer
 from app.agents.agent_loop.stream_bridge import (
     QueueEventSink,
@@ -66,6 +69,7 @@ from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
     exclude_from_query,
     exclude_from_state,
+    note_org_real_data,
 )
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
@@ -201,15 +205,21 @@ async def _fetch_available_connectors(
 
 def _apply_policy_to_chat_state(
     chat_state: dict[str, Any], policy: ChatModePolicy, web_search_config: dict[str, Any] | None,
+    sql_connector_ids: frozenset[str] = frozenset(),
 ) -> None:
     """Forces the tool-availability flags `PipesHubToolLoader`/`AgentContext.
     from_chat_state` read, per `policy.py`'s module docstring. Chat modes
     have no per-agent "knowledge scope" the way agents do, so SQL/Slack
     tool availability mirrors connector PRESENCE (`has_sql_connector`/
     `has_slack_connector`, already resolved by the caller), not a
-    knowledge-attachment concept that doesn't exist here."""
+    knowledge-attachment concept that doesn't exist here. For the same
+    reason the SQL tool's connector allowlist is the user's own SQL
+    connector instances (`sql_connector_ids`)."""
     chat_state["has_knowledge"] = policy.has_knowledge
     chat_state["has_sql_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_sql_connector"))
+    chat_state["allowed_sql_connector_ids"] = (
+        sql_connector_ids if chat_state["has_sql_knowledge"] else frozenset()
+    )
     chat_state["has_slack_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_slack_connector"))
     chat_state["web_search_config"] = web_search_config if policy.include_web_search else None
     chat_state["chat_mode"] = policy.name
@@ -328,13 +338,19 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     client_name: str | None = None,
     cancellation_registry: "RunCancellationRegistry | None" = None,
     cancellation_owner: "RunOwner | None" = None,
+    entity_vector_store: Any = None,
 ) -> "AsyncGenerator[str, None]":
     """Entry point `chatbot.py::askAIStream()` calls for every `/chat/stream`
-    request, regardless of mode. See module docstring."""
+    request, regardless of mode. See module docstring.
+
+    ``entity_vector_store`` (optional) backs the knowledge-graph
+    ``search_entities``/``find_records_by_entity`` tools; with ``None`` they
+    are not granted (see ``factory._initial_entity_tool_grant``).
+    """
     from app.modules.agents.qna.chat_state import build_initial_state
-    from app.utils.execute_query import connector_instances_have_sql
-    from app.utils.fetch_slack_thread import connector_instances_have_slack
     from app.modules.transformers.blob_storage import BlobStorage
+    from app.utils.execute_query import connector_instances_have_sql, sql_connector_instance_ids
+    from app.utils.fetch_slack_thread import connector_instances_have_slack
 
     policy = policy or resolve_chat_mode_policy(query_info.get("chatMode"))
     system_prompts_config = system_prompts_config or {}
@@ -387,6 +403,9 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 resolve_attachments(
                     query_info.get("attachments"), blob_store=blob_store,
                     org_id=user_info.get("orgId", ""), ref_mapper=ref_mapper, logger=log,
+                    user_id=user_info.get("userId") or "",
+                    graph_provider=graph_provider,
+                    is_service_account=bool(user_info.get("isServiceAccount")),
                 ),
                 # Pre-fetch user-visible connectors so the catalog
                 # (ConnectorCatalog.build) and capability_summary can use them
@@ -418,8 +437,12 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             reranker_service, config_service, model_name or "", model_key or "", org_info,
             "react", has_sql_connector=has_sql_connector, is_multimodal_llm=is_multimodal_llm,
             has_slack_connector=has_slack_connector, client_name=client_name,
+            entity_vector_store=entity_vector_store,
         )
-        _apply_policy_to_chat_state(chat_state, policy, web_search_config)
+        _apply_policy_to_chat_state(
+            chat_state, policy, web_search_config,
+            sql_connector_ids=sql_connector_instance_ids(connector_instances, user_info["orgId"]),
+        )
         chat_state["instructions"] = _with_mode_instructions(chat_state.get("instructions"), policy)
         chat_state["custom_instructions"] = _resolve_custom_instructions(system_prompts_config, policy)
         chat_state["citation_ref_mapper"] = ref_mapper
@@ -428,6 +451,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         if available_connectors is not None:
             chat_state["available_connectors"] = available_connectors
         exclude_from_state(chat_state, demo_excluded)
+        await note_org_real_data(chat_state, graph_provider, user_info.get("orgId", ""), log)
     except Exception as exc:
         log.error("run_chat_stream: failed to build initial state: %s", exc, exc_info=True)
         error_code, user_message = classify_exception(exc)

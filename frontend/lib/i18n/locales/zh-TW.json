@@ -64,6 +64,7 @@
     "thinkingFallback": "思考中…",
     "refiningResponse": "正在潤飾回應…",
     "errorFallback": "發生錯誤。請再試一次。",
+    "askQuestionResumeFailed": "無法送出你的回答。請再次提交以重試。",
     "copyCode": "複製",
     "copiedCode": "已複製"
   },
@@ -233,6 +234,7 @@
   "nav": {
     "collections": "集合",
     "allRecords": "所有記錄",
+    "allArtifacts": "所有產物",
     "workspace": "工作區",
     "shared": "與我共用",
     "private": "我的集合",
@@ -246,6 +248,31 @@
     "searchChats": "搜尋對話",
     "inbox": "收件匣",
     "notifications": "通知"
+  },
+  "artifacts": {
+    "title": "所有產物",
+    "empty": "尚無產物",
+    "emptyHint": "代理程式在對話中建立的檔案會顯示在這裡。",
+    "loadFailed": "無法載入產物",
+    "previewFailed": "無法預覽此檔案",
+    "downloadFailed": "無法下載此檔案",
+    "openInChat": "在對話中開啟",
+    "searchPlaceholder": "搜尋產物",
+    "conversation": "對話",
+    "untitledChat": "—",
+    "name": "名稱",
+    "size": "大小",
+    "showing": "顯示第 {{start}}-{{end}} 項，共 {{total}} 項",
+    "types": {
+      "IMAGE": "圖片",
+      "CHART": "圖表",
+      "DOCUMENT": "文件",
+      "SPREADSHEET": "試算表",
+      "PRESENTATION": "簡報",
+      "DATA_FILE": "資料檔",
+      "CODE": "程式碼",
+      "CODE_OUTPUT": "程式碼輸出"
+    }
   },
   "notifications": {
     "title": "通知",
@@ -564,6 +591,7 @@
     "goToCollections": "前往集合",
     "namedEmpty": "{{name}} 是空的",
     "noRecords": "找不到記錄",
+    "collectionsLoadFailed": "無法載入您的集合。請檢查網路連線，然後選取「{{action}}」。",
     "searchEmptyHint": "找不到您要尋找的內容。請嘗試搜尋其他項目。",
     "adjustFiltersHint": "請選擇其他來源或調整篩選條件",
     "addFromCollectionsHint": "您可以從集合中新增公司的檔案或資料夾",
@@ -1071,7 +1099,8 @@
     },
     "attachments": {
       "uploadFailed": "上傳失敗",
-      "uploadFailedNamed": "上傳 {{name}} 失敗：{{error}}",
+      "uploadFailedNamed": "無法附加 {{name}}。{{error}}",
+      "uploadFailedNamedRetry": "無法附加 {{name}}。請重試。",
       "unsupportedType": "不支援的檔案類型：{{names}}。支援的類型：{{types}}。",
       "fileTooLarge": "檔案過大：{{names}}。每個檔案上限為 {{maxMb}} MB。",
       "tooManyFiles": "每則訊息最多 {{max}} 個附件。",
@@ -1254,6 +1283,8 @@
         "send": "傳送邀請",
         "successTitle": "邀請已傳送！",
         "successDescription": "已邀請 {{email}}",
+        "queuedTitle": "邀請已加入佇列",
+        "queuedDescription": "正在背景傳送電子郵件給 {{email}}。若有郵件無法送達，您將會收到通知。",
         "invalidEmail": "電子郵件地址無效",
         "errorGeneric": "傳送邀請失敗",
         "importNoEmails": "檔案中找不到任何電子郵件地址",
@@ -2569,6 +2600,8 @@
       },
       "filters": {
         "selectField": "選取{{field}}",
+        "selectFieldPlaceholder": "選取{{field}}",
+        "searchOptions": "搜尋…",
         "addFieldValue": "新增{{field}}…",
         "authenticateForOptions": "請完成驗證並儲存連接器，以載入此篩選條件的選項。",
         "manualIndexingInfo": "關於手動索引",
@@ -3632,11 +3665,14 @@
         "loading": "正在載入 Token…",
         "copy": "複製 Token",
         "revokeTitle": "撤銷此 Token？",
-        "revokeDescription": "「{{name}}」會立即停止運作且無法復原。仍在使用它的一切都會開始失敗。若您正在輪替，請先建立替代的 Token 並將整合切換過去。"
+        "revokeDescription": "「{{name}}」會立即停止運作且無法復原。仍在使用它的一切都會開始失敗。若您正在輪替，請先建立替代的 Token 並將整合切換過去。",
+        "selectAllScopes": "全選",
+        "clearAllScopes": "全部清除"
       },
       "disableTitle": "停用此服務帳戶？",
       "disableDescription": "{{name}} 會立即停止運作——包括它已持有的所有 Token，而不只是等到下次登入。在您重新啟用之前，使用這些 Token 的一切都會持續失敗。",
-      "disableConfirm": "停用"
+      "disableConfirm": "停用",
+      "memberBadge": "服務帳戶"
     }
   },
   "filePreview": {
@@ -4203,7 +4239,10 @@
       "orgEmailVerifiedTitle": "組織已驗證",
       "orgEmailVerifiedDescription": "您的組織現已啟用。請登入以繼續。",
       "orgEmailVerifyFailedTitle": "驗證失敗",
-      "orgEmailVerifyFailedDescription": "連結可能無效或已過期。請重新註冊。"
+      "orgEmailVerifyFailedDescription": "連結可能無效或已過期。請重新註冊。",
+      "loadFailedTitle": "無法載入登入",
+      "loadFailedDescription": "PipesHub 無法連線至伺服器以載入登入選項。請檢查網路連線或伺服器位址，然後再試一次。",
+      "retry": "重試"
     },
     "common": {
       "signIn": "登入",
@@ -4237,6 +4276,11 @@
       "hidePassword": "隱藏密碼",
       "accountDisabled": "您的帳戶已停用。",
       "tooManyIncorrectCredentials": "您輸入錯誤憑證的次數過多"
+    },
+    "desktopHandoff": {
+      "title": "登入已傳送至 PipesHub",
+      "description": "您可以關閉此分頁並返回 PipesHub 應用程式。",
+      "openApp": "開啟 PipesHub"
     }
   },
   "healthGate": {

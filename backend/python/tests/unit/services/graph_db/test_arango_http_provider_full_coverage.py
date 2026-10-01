@@ -656,9 +656,11 @@ class TestGetRecordByPath:
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("err"))
-        result = await connected_provider.get_record_by_path("c1", ["some","file"],"record_group_id")
-        assert result is None
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_record_by_path("c1", ["some","file"],"record_group_id")
 
 
 class TestEnsureSchema:

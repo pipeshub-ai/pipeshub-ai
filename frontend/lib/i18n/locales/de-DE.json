@@ -51,6 +51,7 @@
     "thinkingFallback": "Denkt nach…",
     "refiningResponse": "Antwort wird verfeinert…",
     "errorFallback": "Ein Fehler ist aufgetreten. Bitte erneut versuchen.",
+    "askQuestionResumeFailed": "Antworten konnten nicht gesendet werden. Zum Wiederholen erneut senden.",
     "copyCode": "Kopieren",
     "copiedCode": "Kopiert"
   },
@@ -220,6 +221,7 @@
   "nav": {
     "collections": "Sammlungen",
     "allRecords": "Alle Datensätze",
+    "allArtifacts": "Alle Artefakte",
     "workspace": "Arbeitsbereich",
     "shared": "Mit mir geteilt",
     "private": "Meine Sammlungen",
@@ -233,6 +235,31 @@
     "searchChats": "Chats suchen",
     "inbox": "Posteingang",
     "notifications": "Benachrichtigungen"
+  },
+  "artifacts": {
+    "title": "Alle Artefakte",
+    "empty": "Noch keine Artefakte",
+    "emptyHint": "Dateien, die Ihre Agenten im Chat erstellen, erscheinen hier.",
+    "loadFailed": "Artefakte konnten nicht geladen werden",
+    "previewFailed": "Diese Datei konnte nicht in der Vorschau angezeigt werden",
+    "downloadFailed": "Diese Datei konnte nicht heruntergeladen werden",
+    "openInChat": "Im Chat öffnen",
+    "searchPlaceholder": "Artefakte suchen",
+    "conversation": "Chat",
+    "untitledChat": "—",
+    "name": "Name",
+    "size": "Größe",
+    "showing": "{{start}}–{{end}} von {{total}}",
+    "types": {
+      "IMAGE": "Bild",
+      "CHART": "Diagramm",
+      "DOCUMENT": "Dokument",
+      "SPREADSHEET": "Tabelle",
+      "PRESENTATION": "Präsentation",
+      "DATA_FILE": "Datendatei",
+      "CODE": "Code",
+      "CODE_OUTPUT": "Codeausgabe"
+    }
   },
   "notifications": {
     "title": "Benachrichtigungen",
@@ -547,6 +574,7 @@
     "goToCollections": "Zu den Sammlungen",
     "namedEmpty": "{{name}} ist leer",
     "noRecords": "Keine Datensätze gefunden",
+    "collectionsLoadFailed": "Ihre Sammlungen konnten nicht geladen werden. Prüfen Sie Ihre Verbindung und wählen Sie dann „{{action}}“.",
     "searchEmptyHint": "Keine passenden Ergebnisse gefunden. Versuchen Sie einen anderen Suchbegriff.",
     "adjustFiltersHint": "Wählen Sie eine andere Quelle oder passen Sie Ihre Filter an",
     "addFromCollectionsHint": "Sie können Unternehmensdateien oder -ordner über die Sammlungen hinzufügen",
@@ -1011,7 +1039,8 @@
     },
     "attachments": {
       "uploadFailed": "Upload fehlgeschlagen",
-      "uploadFailedNamed": "{{name}} konnte nicht hochgeladen werden: {{error}}",
+      "uploadFailedNamed": "{{name}} konnte nicht angehängt werden. {{error}}",
+      "uploadFailedNamedRetry": "{{name}} konnte nicht angehängt werden. Bitte versuchen Sie es erneut.",
       "unsupportedType": "Nicht unterstützter Dateityp: {{names}}. Unterstützte Typen: {{types}}.",
       "fileTooLarge": "Datei zu groß: {{names}}. Die maximale Größe beträgt {{maxMb}} MB pro Datei.",
       "tooManyFiles": "Höchstens {{max}} Anhänge pro Nachricht.",
@@ -1239,6 +1268,8 @@
         "send": "Einladung senden",
         "successTitle": "Einladungen gesendet",
         "successDescription": "{{email}} wurde eingeladen",
+        "queuedTitle": "Einladungen in der Warteschlange",
+        "queuedDescription": "E-Mails an {{email}} werden im Hintergrund gesendet. Sie werden benachrichtigt, falls eine nicht zugestellt werden kann.",
         "invalidEmail": "Ungültige E-Mail-Adresse",
         "errorGeneric": "Einladungen konnten nicht gesendet werden. Bitte versuchen Sie es erneut.",
         "importNoEmails": "Keine E-Mail-Adressen in der Datei gefunden",
@@ -2502,6 +2533,8 @@
       },
       "filters": {
         "selectField": "{{field}} auswählen",
+        "selectFieldPlaceholder": "{{field}} auswählen",
+        "searchOptions": "Suchen…",
         "addFieldValue": "{{field}} hinzufügen…",
         "authenticateForOptions": "Schließen Sie die Authentifizierung ab und speichern Sie den Konnektor, um die Optionen für diesen Filter zu laden.",
         "manualIndexingInfo": "Informationen zur manuellen Indexierung",
@@ -3628,11 +3661,14 @@
         "loading": "Tokens werden geladen…",
         "copy": "Token kopieren",
         "revokeTitle": "Dieses Token widerrufen?",
-        "revokeDescription": "„{{name}}“ funktioniert sofort nicht mehr und kann nicht wiederhergestellt werden. Alles, was es noch verwendet, schlägt anschließend fehl. Wenn Sie rotieren, erstellen Sie zuerst den Ersatz und stellen Sie die Integration darauf um."
+        "revokeDescription": "„{{name}}“ funktioniert sofort nicht mehr und kann nicht wiederhergestellt werden. Alles, was es noch verwendet, schlägt anschließend fehl. Wenn Sie rotieren, erstellen Sie zuerst den Ersatz und stellen Sie die Integration darauf um.",
+        "selectAllScopes": "Alle auswählen",
+        "clearAllScopes": "Auswahl aufheben"
       },
       "disableTitle": "Dieses Dienstkonto deaktivieren?",
       "disableDescription": "{{name}} funktioniert sofort nicht mehr – einschließlich aller bereits vorhandenen Tokens, nicht erst bei der nächsten Anmeldung. Alles, was eines dieser Tokens verwendet, schlägt fehl, bis Sie das Konto wieder aktivieren.",
-      "disableConfirm": "Deaktivieren"
+      "disableConfirm": "Deaktivieren",
+      "memberBadge": "Dienstkonto"
     }
   },
   "filePreview": {
@@ -4201,7 +4237,10 @@
       "orgEmailVerifiedTitle": "Organisation verifiziert",
       "orgEmailVerifiedDescription": "Ihre Organisation ist jetzt aktiv. Melden Sie sich an, um fortzufahren.",
       "orgEmailVerifyFailedTitle": "Verifizierung fehlgeschlagen",
-      "orgEmailVerifyFailedDescription": "Der Link ist möglicherweise ungültig oder abgelaufen. Bitte registrieren Sie sich erneut."
+      "orgEmailVerifyFailedDescription": "Der Link ist möglicherweise ungültig oder abgelaufen. Bitte registrieren Sie sich erneut.",
+      "loadFailedTitle": "Anmeldung konnte nicht geladen werden",
+      "loadFailedDescription": "PipesHub konnte den Server nicht erreichen, um die Anmeldeoptionen zu laden. Prüfen Sie Ihre Verbindung oder die Serveradresse und versuchen Sie es erneut.",
+      "retry": "Erneut versuchen"
     },
     "common": {
       "signIn": "Anmelden",
@@ -4235,6 +4274,11 @@
       "hidePassword": "Passwort verbergen",
       "accountDisabled": "Ihr Konto wurde deaktiviert.",
       "tooManyIncorrectCredentials": "Sie haben zu oft falsche Anmeldedaten eingegeben"
+    },
+    "desktopHandoff": {
+      "title": "Anmeldung an PipesHub gesendet",
+      "description": "Sie können diesen Tab schließen und zur PipesHub-App zurückkehren.",
+      "openApp": "PipesHub öffnen"
     }
   },
   "healthGate": {

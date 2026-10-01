@@ -77,6 +77,7 @@ from app.connectors.sources.atlassian.confluence_cloud.block_parser import (
 )
 from app.connectors.sources.atlassian.core.apps import ConfluenceApp
 from app.connectors.sources.atlassian.core.confluence_access import (
+    _is_folder,
     apply_page_access_to_dependents,
     unresolved_principal_permission,
     v1_next_start,
@@ -779,9 +780,9 @@ class ConfluenceConnector(BaseConnector):
         async def fetch_one(stub: Record) -> tuple[Record, list[Permission]] | None:
             async with semaphore:
                 try:
-                    # A FILE-type stub with is_file=False is a folder (attachments can't be
-                    # parents in Confluence); fetch it via the folder API, not as an attachment.
-                    if isinstance(stub, FileRecord) and not stub.is_file:
+                    # Attachments can't be parents in Confluence, so a folder stub goes to the
+                    # folder API. Stubs past the first level are base Records with no is_file.
+                    if _is_folder(stub):
                         return await self._fetch_folder_for_sweep(stub)
                     return await self._check_and_fetch_updated_record(org_id, stub)
                 except Exception as e:

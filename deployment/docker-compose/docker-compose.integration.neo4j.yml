@@ -54,11 +54,16 @@ services:
       - NODE_ENV=${NODE_ENV:-development}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      # The Web and RSS connectors crawl the web-fixtures service, which is on the private Docker network.
+      - WEB_CONNECTOR_ALLOWED_HOSTS=web-fixtures
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       # Security settings - allow override with custom secret
       - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
+      # Signs service tokens. Fixed so the storage suite can mint tokens this
+      # stack accepts; the app only reads it on the first boot of a fresh volume.
+      - SCOPED_JWT_SECRET=${SCOPED_JWT_SECRET:-pipeshub-integration-scoped-jwt-secret-test-only}
 
       # Public endpoints
       - CONNECTOR_PUBLIC_BACKEND=${CONNECTOR_PUBLIC_BACKEND:-}
@@ -124,6 +129,7 @@ services:
       # Rate limit config
       - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-5000}
       - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
+      - MAX_AUTH_REQUESTS_PER_MINUTE=${MAX_AUTH_REQUESTS_PER_MINUTE:-1000}
 
       # Set to true to replace secrets in config API responses with **** markers
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}

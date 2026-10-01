@@ -86,6 +86,9 @@ tags:
       **Who can see which apps**
       - **Everyone (including org admins)** sees and manages only OAuth apps **they created** (`createdBy`). Other members' apps are hidden (not listed; individual operations return not found).
 
+      **Session only**
+      - Every `/oauth-clients/*` route requires the user's interactive session JWT. OAuth access tokens and personal access tokens (`phpat_...`) are rejected with `403`, so a token issued to a client can never register, reconfigure, or revoke clients on its own.
+
       **Who authorizes vs. client credentials**
       - **Authorization code:** Any authenticated user in the workspace may complete consent for a valid `client_id`; issued tokens represent **that user**.
       - **Client credentials:** Access tokens represent the **OAuth app creator** (who registered the client), not the caller.
@@ -112,6 +115,13 @@ tags:
       **Who can create one**
       - **Any authenticated org member** — unlike OAuth apps, this is
         deliberately not admin-gated.
+
+      **Session only**
+      - Every `/personal-access-tokens/*` route requires the user's interactive
+        session JWT. OAuth access tokens and personal access tokens (`phpat_...`)
+        are rejected with `403`. `scopes` is capped at the instance's `MCP_SCOPES`,
+        not at the caller's own token, so a narrowly scoped token could otherwise
+        mint itself a full-scope, non-expiring PAT.
 
       **How it's issued**
       - Minted through the same OAuth access-token machinery as `/oauth2/token`,
@@ -203,6 +213,8 @@ tags:
       callable by API clients or the browser. Storage checks only the org, not
       record permissions; read and write files through the Knowledge Base
       routes (for example `GET /knowledgeBase/stream/record/{recordId}`).
+  - name: Artifacts
+    description: User-facing gallery of generated artifacts (preview, download, versions)
   - name: Knowledge Base
     description: Knowledge base management operations
   - name: Knowledge Hub
@@ -501,6 +513,133 @@ components:
   schemas:
     # ==================== COMMON SCHEMAS ====================
 
+    ArtifactGalleryItem:
+      type: object
+      additionalProperties: false
+      properties:
+        artifactId:
+          type: string
+        name:
+          type: string
+        logicalName:
+          type: string
+          nullable: true
+        artifactType:
+          type: string
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          nullable: true
+        version:
+          type: integer
+        contentHash:
+          type: string
+          nullable: true
+        conversationId:
+          type: string
+          nullable: true
+        conversationTitle:
+          type: string
+          description: Display-only chat title when the caller can see that conversation
+        createdAt:
+          type: integer
+          nullable: true
+        updatedAt:
+          type: integer
+          nullable: true
+      required:
+        - artifactId
+        - name
+        - artifactType
+        - version
+
+    ArtifactGalleryVersion:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+        sizeBytes:
+          type: integer
+        contentHash:
+          type: string
+        createdAt:
+          type: integer
+      required:
+        - version
+
+    ArtifactGalleryDetail:
+      type: object
+      additionalProperties: false
+      properties:
+        artifactId:
+          type: string
+        name:
+          type: string
+        logicalName:
+          type: string
+          nullable: true
+        artifactType:
+          type: string
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          nullable: true
+        version:
+          type: integer
+        contentHash:
+          type: string
+          nullable: true
+        conversationId:
+          type: string
+          nullable: true
+        conversationTitle:
+          type: string
+          description: Display-only chat title when the caller can see that conversation
+        createdAt:
+          type: integer
+          nullable: true
+        updatedAt:
+          type: integer
+          nullable: true
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactGalleryVersion'
+        description:
+          type: string
+        sourceTool:
+          type: string
+          nullable: true
+      required:
+        - artifactId
+        - name
+        - artifactType
+        - version
+
+    ArtifactGalleryListResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactGalleryItem'
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalCount:
+              type: integer
+            totalPages:
+              type: integer
 
     # ==================== AUTH SCHEMAS ====================
     AuthMethod:
@@ -1273,11 +1412,15 @@ components:
           description: User's consent decision
         code_challenge:
           type: string
-          description: PKCE code challenge (if used in authorization request)
+          description: |
+            PKCE code challenge (base64url, 43-128 chars). Required for public
+            (non-confidential) clients; without it the consent is answered
+            with a redirect carrying `error=invalid_request` and no code is
+            issued. Optional for confidential clients.
         code_challenge_method:
           type: string
-          enum: [S256, plain]
-          description: PKCE challenge method
+          enum: [S256]
+          description: PKCE challenge method. Only `S256` is accepted; `plain` is rejected with `400`. Defaults to `S256` when omitted.
       required:
         - client_id
         - redirect_uri
@@ -1599,8 +1742,8 @@ components:
           type: array
           items:
             type: string
-          description: Supported PKCE code challenge methods
-          example: ["S256", "plain"]
+          description: Supported PKCE code challenge methods (only `S256`)
+          example: ["S256"]
 
     OAuthProtectedResourceMetadata:
       type: object
@@ -15916,9 +16059,9 @@ paths:
         5. User is redirected back to client with authorization code
 
         **PKCE Support (RFC 7636):**
-        - Required for public clients (SPA, mobile apps)
+        - Required for public clients (SPA, mobile apps), enforced on both this GET and the consent POST
         - Recommended for confidential clients
-        - Use S256 method (SHA256 hash of code_verifier)
+        - Only the S256 method (SHA256 hash of code_verifier) is accepted; `plain` is rejected
 
         **Security:**
         - Always use HTTPS in production
@@ -15971,8 +16114,8 @@ paths:
           required: false
           schema:
             type: string
-            enum: [S256, plain]
-          description: PKCE method (S256 recommended)
+            enum: [S256]
+          description: PKCE method. Only S256 is accepted; defaults to S256 when omitted.
         - name: nonce
           in: query
           required: false
@@ -16008,6 +16151,11 @@ paths:
         Called after user reviews the consent page and makes a decision.
         This endpoint generates an authorization code if consent is granted.
 
+        **Session only.** The bearer token must be the user's interactive
+        session JWT. OAuth access tokens and personal access tokens
+        (`phpat_...`) are rejected with `403`, so a client can never consent
+        on the user's behalf with a token it already holds.
+
         **Responses:**
         - Consent granted: Redirects to client with authorization code
         - Consent denied: Redirects to client with `access_denied` error
@@ -16042,7 +16190,10 @@ paths:
         '401':
           description: User not authenticated
         '403':
-          description: Client not authorized or invalid redirect URI
+          description: |
+            Bearer token is an OAuth access token or personal access token
+            rather than a user session, or the client is not authorized /
+            the redirect URI is invalid.
 
   /oauth2/token:
     post:
@@ -16057,7 +16208,7 @@ paths:
         **Grant Types:**
         - `authorization_code`: Exchange auth code for tokens (user-based)
         - `client_credentials`: Get tokens for machine-to-machine auth
-        - `refresh_token`: Get new access token using refresh token
+        - `refresh_token`: Get new access token using refresh token. The refresh token must have been issued to the presenting `client_id`; one issued to another client is rejected with `400 invalid_grant` and is left untouched (not rotated, not revoked).
 
         For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) — see **OAuth Provider** tag.
 
@@ -16313,7 +16464,7 @@ paths:
                 response_types_supported: ["code"]
                 grant_types_supported: ["authorization_code", "client_credentials", "refresh_token"]
                 token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"]
-                code_challenge_methods_supported: ["S256", "plain"]
+                code_challenge_methods_supported: ["S256"]
 
   /.well-known/oauth-authorization-server:
     get:
@@ -16352,7 +16503,7 @@ paths:
                 response_types_supported: ["code"]
                 grant_types_supported: ["authorization_code", "client_credentials", "refresh_token"]
                 token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"]
-                code_challenge_methods_supported: ["S256", "plain"]
+                code_challenge_methods_supported: ["S256"]
 
   /.well-known/jwks.json:
     get:
@@ -16489,7 +16640,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — insufficient workspace permission to list OAuth apps
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
           content:
             application/json:
               schema:
@@ -16544,7 +16695,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — insufficient workspace permission to create OAuth apps
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
           content:
             application/json:
               schema:
@@ -16602,6 +16753,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded for OAuth client management routes
           content:
@@ -16649,7 +16806,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16718,7 +16875,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16774,7 +16931,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16829,7 +16986,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16890,7 +17047,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16951,7 +17108,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -17006,7 +17163,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -17068,7 +17225,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -17142,6 +17299,11 @@ paths:
         env var, not the full role-aware OAuth-app scope catalog — a
         non-admin can request any scope in that set.
 
+        **Session only.** The bearer token must be the user's interactive
+        session JWT. OAuth access tokens and personal access tokens
+        (`phpat_...`) are rejected with `403`, so a token that is already
+        issued cannot mint another with wider scopes or a longer life.
+
         The response's `accessToken` is shown **once**; only its SHA-256
         hash is stored. It's prefixed `phpat_` (see the `bearerAuth`
         security scheme).
@@ -17171,6 +17333,12 @@ paths:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: Bearer token is an OAuth access token or personal access token rather than a user session
           content:
             application/json:
               schema:
@@ -17462,6 +17630,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -17549,6 +17723,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -17615,6 +17795,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: The account lookup failed on the server (the same for every email)
           content:
@@ -17664,6 +17850,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -18017,6 +18209,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -18312,6 +18510,29 @@ paths:
             for maintaining authentication state across the SAML flow.
           schema:
             type: string
+        - name: client
+          in: query
+          required: false
+          description: |
+            `desktop` for a sign-in started by the PipesHub desktop app. Needs `state`
+            and `code_challenge`; without both it is ignored. The callback then sends
+            no cookies and redirects to `/auth/sign-in/samlSso/success` with `state`
+            and a single-use `code` (or `saml_error`), redeemed at `/saml/desktop/exchange`.
+          schema:
+            type: string
+            enum: [desktop]
+        - name: state
+          in: query
+          required: false
+          description: Desktop flow identifier, echoed back on the success page. Starts with `phd.`.
+          schema:
+            type: string
+        - name: code_challenge
+          in: query
+          required: false
+          description: PKCE S256 challenge (43 base64url characters) for the desktop handoff code.
+          schema:
+            type: string
       responses:
         '302':
           description: Redirect to SAML Identity Provider login page
@@ -18436,6 +18657,53 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthError'
+
+  /saml/desktop/exchange:
+    post:
+      tags:
+        - SAML
+      summary: Redeem a desktop SAML handoff code
+      description: |
+        Exchanges the single-use code from a desktop SAML sign-in (see `client=desktop`
+        on `/saml/signIn`) for PipesHub tokens. The code expires after 2 minutes and is
+        consumed by the first attempt, whether or not the verifier matches.
+      operationId: exchangeSamlDesktopCode
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                code:
+                  type: string
+                  description: Handoff code from the success page redirect
+                codeVerifier:
+                  type: string
+                  description: PKCE verifier matching the `code_challenge` sent to `/saml/signIn`
+              required:
+                - code
+                - codeVerifier
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                  refreshToken:
+                    type: string
+        '401':
+          description: Unknown, expired, already used, or verifier mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /saml/updateAppConfig:
     post:
@@ -18568,6 +18836,26 @@ paths:
           description: Comma-separated group IDs to filter users by group membership.
           schema:
             type: string
+        - name: includeServiceAccounts
+          in: query
+          required: false
+          description: |
+            `true` also returns service accounts, which are otherwise left out
+            of this list. They are machine identities, and this is the list of
+            people: one can never sign in, so it would sit in the pending-invite
+            set for good and be swept into bulk invites meant for colleagues.
+
+            Honoured only for an organisation administrator. The route is
+            authenticated but not admin-only, and scope checks do nothing for a
+            session token, so for anyone else the flag is ignored rather than
+            refused — listing service accounts is an administrator's action on
+            `GET /service-accounts`, and this must not be a way around that.
+
+            Returned records carry `kind`, which is what lets a caller tell a
+            machine identity from a colleague.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
           description: Users retrieved successfully
@@ -18610,6 +18898,15 @@ paths:
                         email:
                           type: string
                           format: email
+                        kind:
+                          type: string
+                          enum: [human, service]
+                          description: |
+                            What sort of principal this is. Absent on records
+                            written before the field existed, which are people.
+                            Service accounts appear only when
+                            `includeServiceAccounts=true` and the caller
+                            administers the organisation.
                         isActive:
                           type: boolean
                           description: "`true` only when not blocked AND `hasLoggedIn: true`"
@@ -19449,8 +19746,12 @@ paths:
         If all provided emails already have active accounts, returns `200` with
         `{ "errorMessage": "All provided emails already have active accounts" }`.
 
-        If mail sending fails for any email, the loop continues and the final response reflects
-        the mail service's HTTP status code.
+        Invitation emails are always queued on the message broker and delivered in the
+        background, so a `200` means "accepted for delivery", not "sent". Emails that
+        ultimately cannot be delivered raise an admin notification. Set-password links are
+        minted when the email is sent, so no reset token is stored in the broker. If queueing
+        fails for any email, the loop continues and the final response reflects that status
+        code.
 
         Optional `role` (`admin` | `member`, default `member`) is applied to new invites and
         to restored/pending users when promoting to admin. Inviting as `admin` is rejected
@@ -19501,7 +19802,11 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: "Invite sent successfully"
+                    example: "Invites queued. Emails are being sent in the background and may take a few minutes."
+                  queued:
+                    type: boolean
+                    description: True when invitation emails were accepted for background delivery
+                    example: true
                   errorMessage:
                     type: string
                     description: Present when all emails were already active
@@ -20510,7 +20815,7 @@ paths:
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
         '404':
           description: No such application, or no such service account in this organisation
 
@@ -20785,22 +21090,30 @@ paths:
         `semantic:write` remains, despite its name. It is what running a search
         requires, so removing scopes by the word in their name would take
         reading away and leave writing alone.
+
+        Each scope is returned with the description and category held in the
+        shared scope catalogue, the same shape
+        `GET /personal-access-tokens/scopes` returns. The picker can then say
+        what a permission allows instead of showing a bare identifier, and the
+        wording for a scope stays the same on every screen that offers it.
       operationId: listServiceTokenScopes
       security:
         - bearerAuth: []
         - oauth2: [user:read]
       responses:
         '200':
-          description: Available scopes
+          description: Available scopes, each with its description and category
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - scopes
                 properties:
                   scopes:
                     type: array
                     items:
-                      type: string
+                      $ref: '#/components/schemas/OAuthScopeInfo'
         '400':
           description: Admin access required
         '401':
@@ -22158,7 +22471,7 @@ paths:
             - Missing or empty `name` or `type`
             - `type` is not one of: standard, everyone, custom
             - Group name or type `admin` is not allowed
-            - A group with the same name already exists
+            - A group with the same name already exists in the same organization
             - Requester does not have admin privileges
           content:
             application/json:
@@ -22421,6 +22734,8 @@ paths:
 
             - Missing or empty `name`
             - Invalid `groupId` format (must be a 24-character hex ObjectId)
+            - New name `admin`, `everyone` or `standard` is not allowed
+            - Another group with the same name already exists in the same organization
             - Requester does not have admin privileges
           content:
             application/json:
@@ -23295,6 +23610,172 @@ paths:
           description: The storage scoped token was missing or invalid.
         '404':
           description: No such document.
+  /artifacts:
+    get:
+      tags:
+        - Artifacts
+      summary: List accessible artifacts
+      description: |
+        Paginated gallery of VISIBLE, non-temporary artifacts the caller can
+        access via record ACL. TOOL_RESULT artifacts are never returned.
+        Conversation titles are a display join and are omitted when the chat
+        is gone or the caller cannot see it.
+      operationId: listArtifacts
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: search
+          in: query
+          schema:
+            type: string
+            maxLength: 200
+        - name: artifactTypes
+          in: query
+          description: Comma-separated gallery artifact types (not TOOL_RESULT)
+          schema:
+            type: string
+        - name: conversationId
+          in: query
+          schema:
+            type: string
+        - name: dateFrom
+          in: query
+          schema:
+            type: integer
+        - name: dateTo
+          in: query
+          schema:
+            type: integer
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum: [name, createdAtTimestamp, updatedAtTimestamp, artifactType]
+            default: createdAtTimestamp
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Paginated artifact gallery
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactGalleryListResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Insufficient OAuth scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /artifacts/{artifactId}:
+    get:
+      tags:
+        - Artifacts
+      summary: Get artifact metadata
+      description: Metadata and versions for one artifact. Returns 404 if the artifact is missing, inaccessible, or not user-visible.
+      operationId: getArtifact
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+            pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'
+      responses:
+        '200':
+          description: Artifact detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactGalleryDetail'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /artifacts/{artifactId}/versions:
+    get:
+      tags:
+        - Artifacts
+      summary: List artifact versions
+      description: Immutable registry versions for one artifact.
+      operationId: listArtifactVersions
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+            pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'
+      responses:
+        '200':
+          description: Version list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ArtifactGalleryVersion'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /knowledgeBase:
     post:
       tags:
@@ -24106,6 +24587,14 @@ paths:
           description: Target format for conversion
           schema:
             type: string
+        - name: version
+          in: query
+          description: |
+            Registry version to pin ARTIFACT record content to. Omit to stream
+            the latest version. Ignored for non-artifact records.
+          schema:
+            type: integer
+            minimum: 0
       responses:
         '200':
           description: File content stream
@@ -39650,6 +40139,55 @@ paths:
                 $ref: '#/components/schemas/URLConfig'
         '401':
           description: Unauthorized
+
+  /configurationManager/public/desktopFrontendUrl:
+    get:
+      tags:
+        - Public URLs
+      summary: Get the configured frontend URL (desktop app only)
+      description: |
+        Returns the server's configured public frontend URL. Unauthenticated.
+
+        The PipesHub desktop app builds its OAuth redirect URI from this value. It cannot
+        derive it: the app knows only the API base URL the operator typed into it, and the
+        two are different origins whenever the UI is served separately from the API. The
+        app calls this as the sign-in screen loads, before any provider button renders.
+
+        Requires the `client-name: desktop` request header. That is a filter, not an
+        access control: the header is client-supplied and the desktop app is a public
+        client, so nothing it ships could prove its identity. It exists so browsers, which
+        have `window.location` and never need this, do not receive the value.
+      operationId: getDesktopFrontendUrl
+      security: []
+      parameters:
+        - in: header
+          name: client-name
+          required: true
+          description: Must be `desktop`. Any other value is rejected with 403.
+          schema:
+            type: string
+            enum: [desktop]
+      responses:
+        '200':
+          description: The configured frontend URL
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  frontendUrl:
+                    type: string
+                    format: uri
+                    example: "https://pipeshub.example.com"
+                required:
+                  - frontendUrl
+        '403':
+          description: Called without the desktop client header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/connectorPublicUrl:
     post:

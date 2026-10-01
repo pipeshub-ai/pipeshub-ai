@@ -228,7 +228,7 @@ export class UploadDocumentService {
     await placeholderDoc.save();
 
     res.setHeader('Location', storageURL);
-    res.setHeader('x-document-id', documentId as string);
+    res.setHeader('x-document-id', String(documentId));
     res.setHeader('x-document-name', documentName as string);
     res.status(HTTP_STATUS.PERMANENT_REDIRECT).json(placeholderDocument);
   }

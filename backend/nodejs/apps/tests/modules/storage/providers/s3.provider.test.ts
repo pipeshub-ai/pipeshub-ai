@@ -125,6 +125,14 @@ describe('AmazonS3Adapter', () => {
       expect(adapter).to.be.instanceOf(AmazonS3Adapter)
     })
 
+    it('should presign us-east-1 downloads with signature version 4', async () => {
+      const adapter = createAdapter()
+      const result = await adapter.getSignedUrl({
+        s3: { url: 'https://my-bucket.s3.us-east-1.amazonaws.com/folder/file.txt' },
+      } as Document)
+      expect(new URL(result.data!).searchParams.get('X-Amz-Algorithm')).to.equal('AWS4-HMAC-SHA256')
+    })
+
     it('should create adapter when both credential fields are empty strings (IAM role mode)', () => {
       const adapter = new AmazonS3Adapter({
         accessKeyId: '', secretAccessKey: '',
@@ -289,6 +297,34 @@ describe('AmazonS3Adapter', () => {
         'https://my-bucket.s3.us-east-1.amazonaws.com/a/b/c/d/file.pdf',
       )
       expect(key).to.equal('a/b/c/d/file.pdf')
+    })
+
+    it('should match a dotted bucket name literally, not as a pattern', () => {
+      const adapter = new AmazonS3Adapter({
+        accessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+        secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+        region: 'us-east-1',
+        bucket: 'my.bucket',
+      })
+      expect(
+        (adapter as unknown as { extractKeyFromUrl(url: string): string }).extractKeyFromUrl(
+          'https://my.bucket.s3.us-east-1.amazonaws.com/file.pdf',
+        ),
+      ).to.equal('file.pdf')
+      expect(() =>
+        (adapter as unknown as { extractKeyFromUrl(url: string): string }).extractKeyFromUrl(
+          'https://myxbucket.s3.us-east-1.amazonaws.com/file.pdf',
+        ),
+      ).to.throw(StorageValidationError)
+    })
+
+    it('should reject a URL that only contains the bucket URL after another host', () => {
+      const adapter = createAdapter()
+      expect(() =>
+        (adapter as unknown as { extractKeyFromUrl(url: string): string }).extractKeyFromUrl(
+          'https://elsewhere.example/?https://my-bucket.s3.us-east-1.amazonaws.com/file.pdf',
+        ),
+      ).to.throw(StorageValidationError)
     })
   })
 

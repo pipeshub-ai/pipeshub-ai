@@ -38,8 +38,8 @@
     "electron:build:win": "node scripts/electron/build.mjs win",
     "electron:build:linux": "node scripts/electron/build.mjs linux",
     "electron:build:all": "node scripts/electron/build.mjs all",
-    "_comment:test:electron:local-sync": "--test-concurrency=1 is required, not a preference: these tests drive real fs watchers against real temp directories, and node --test runs files in parallel by default, which makes them interfere and hang.",
-    "test:electron:local-sync": "npm run build:electron:typescript && node --test --test-concurrency=1 electron/compile/local-sync/__tests__/*.test.js"
+    "_comment:test:electron": "Two things here are load-bearing. --test-concurrency=1: the local-sync tests drive real fs watchers against real temp directories, and node --test runs files in parallel by default, which makes them interfere and hang. Unquoted, single-star patterns: the shell has to expand them, because CI runs Node 20, whose test runner does not glob and would treat a quoted pattern or a ** as a literal path.",
+    "test:electron": "npm run build:electron:typescript && node --test --test-concurrency=1 electron/compile/__tests__/*.test.js electron/compile/local-sync/__tests__/*.test.js"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.3",
@@ -57,11 +57,11 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "@vis.gl/react-google-maps": "^1.6.1",
     "@xyflow/react": "^12.10.2",
-    "axios": "^1.18.0",
+    "axios": "^1.20.0",
     "chokidar": "^3.6.0",
     "dayjs": "^1.11.20",
     "docx-preview": "^0.3.7",
-    "dompurify": "^3.4.13",
+    "dompurify": "^3.4.16",
     "i18next": "^25.8.0",
     "i18next-browser-languagedetector": "^8.2.0",
     "immer": "^11.1.3",
@@ -86,7 +86,7 @@
     "socket.io-client": "^4.8.3",
     "swr": "^2.3.6",
     "tiptap-markdown": "^0.8.10",
-    "xlsx": "^0.18.5",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zustand": "^5.0.9"
   },
   "devDependencies": {
@@ -98,7 +98,7 @@
     "@types/react-dom": "^19.1.7",
     "@vitest/coverage-v8": "^4.1.11",
     "dotenv": "^17.4.2",
-    "electron": "^39.8.10",
+    "electron": "^41.10.6",
     "electron-builder": "^26.15.3",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.2",
@@ -107,5 +107,8 @@
     "sharp": "^0.35.4",
     "typescript": "^5.9.2",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "postcss": "^8.5.23"
   }
 }

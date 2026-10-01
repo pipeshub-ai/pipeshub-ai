@@ -7,12 +7,14 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 import tempfile
 import time
 from collections.abc import AsyncGenerator, Mapping
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import parse_qs, urlencode, urlparse
+from uuid import uuid4
 
 from dependency_injector.wiring import Provide, inject
 from fastapi import (
@@ -121,8 +123,8 @@ from app.connectors.services.vector_store_rebuild import (
     start_vector_store_reindex,
 )
 from app.edition_containers import ConnectorAppContainer
-from app.core.signed_url import SignedUrlHandler
-from app.models.entities import Record, RecordType
+from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
+from app.models.entities import ArtifactRecord, Record, RecordType
 from app.modules.demo_data.access import is_hidden_demo_record
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
@@ -138,6 +140,7 @@ from app.utils.user_messages import (
     not_found,
     provider_failure,
 )
+from app.utils.filename_utils import upload_extension
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import extract_oauth_error_message, fetch_oauth_config_by_id, get_oauth_config
@@ -603,10 +606,11 @@ async def get_record_content_internal(
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        # Org mismatch: reject rather than widen (unlike the admin path).
-        if record.org_id and record.org_id != org_id:
+        # Org mismatch: reject rather than widen. A record with no org cannot be
+        # confined to one, so it is refused as well.
+        if not record.org_id or record.org_id != org_id:
             logger.warning(
-                "get_record_content_internal: org mismatch record=%s record_org=%s token_org=%s",
+                "get_record_content_internal: org mismatch record=%s record_org=%r token_org=%s",
                 record_id, record.org_id, org_id,
             )
             raise HTTPException(
@@ -1116,7 +1120,7 @@ async def get_signed_url(
 
         additional_claims = {
             "connector": connector,
-            "purpose": "file_processing",
+            "purpose": SIGNED_URL_PURPOSE,
             "org_id": caller_org,
         }
 
@@ -1308,21 +1312,24 @@ async def download_file(
         logger.info(f"Downloading file {record_id} with connector {connector}")
         # Verify signed URL using the handler
 
-        payload = signed_url_handler.validate_token(token)
+        payload = signed_url_handler.validate_token(
+            token, required_claims={"purpose": SIGNED_URL_PURPOSE}
+        )
         user_id = payload.user_id
 
-        # Auth middleware already populated request.state.user. Compare JWT
-        # org to the path when present. Tokens minted before org_id was added
-        # to additional_claims still work until expiry (~60m); ACL is not
-        # re-checked here — the signed URL remains valid until it expires.
-        caller = getattr(getattr(request, "state", None), "user", None)
-        if caller is not None:
-            raw_org = caller.get("orgId") if hasattr(caller, "get") else None
-            jwt_org = raw_org.strip() if isinstance(raw_org, str) else ""
-            if jwt_org and jwt_org != str(org_id or "").strip():
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
-                )
+        # The signed URL is not a credential on its own: a session caller must
+        # be the user it was minted for and still pass the record ACL below.
+        # Indexing service tokens carry no user and keep the org checks only.
+        caller_org, caller_user, is_scoped = _caller_org_and_user(request)
+        path_org = str(org_id or "").strip()
+        if caller_org != path_org:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
+        if not is_scoped and caller_user != str(user_id or "").strip():
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
 
         # Verify file_id matches the token
         if payload.record_id != record_id:
@@ -1351,10 +1358,17 @@ async def download_file(
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
             )
-        claims = getattr(payload, "additional_claims", None) or {}
-        if isinstance(claims, dict):
-            token_org = str(claims.get("org_id") or "").strip()
-            if token_org and token_org != record_org:
+        token_org = str(payload.additional_claims.get("org_id") or "").strip()
+        if token_org != record_org:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
+
+        if not is_scoped:
+            access = await graph_provider.check_record_access_with_details(
+                user_id, record_org, record_id
+            )
+            if not access:
                 raise HTTPException(
                     status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
                 )
@@ -1424,14 +1438,14 @@ async def stream_record(
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        # Validate that the org_id matches the record's org_id
-        if record and record.org_id and record.org_id != org_id:
-            logger.warning(f"OrgId mismatch: JWT has {org_id}, but record has {record.org_id}. Using record's org_id.")
-            org_id = record.org_id
-            org = await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
-            if not org:
-                raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
-
+        # Same response as a missing record, so a caller cannot probe another org's record IDs.
+        # A record with no org cannot be confined to one, so it is refused as well.
+        if not record.org_id or record.org_id != org_id:
+            logger.warning(
+                "stream_record: org mismatch record=%s record_org=%r token_org=%s",
+                record_id, record.org_id, org_id,
+            )
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
         # Permission check: Verify user has access to this record
         # This handles both KB-level and direct record permissions
@@ -1444,6 +1458,13 @@ async def stream_record(
                 detail="You do not have permission to access this record"
             )
         await _refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
+        if isinstance(record, ArtifactRecord):
+            from app.services.artifact_registry.gallery import ArtifactDisplayPolicy
+            if not ArtifactDisplayPolicy.is_user_visible_record(record):
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value,
+                    detail="Record not found",
+                )
         is_admin = is_request_admin(request)
         return await _resolve_record_content_response(
             record=record,
@@ -1464,6 +1485,35 @@ async def stream_record(
         raise to_stream_error(e) from e
 
 
+CONVERTIBLE_UPLOAD_EXTENSIONS = frozenset(
+    {
+        # Writer (word processing)
+        "doc", "docx", "docm", "dot", "dotx", "odt", "ott", "fodt",
+        "rtf", "txt", "wps", "wpd", "sxw",
+        # Calc (spreadsheets)
+        "xls", "xlsx", "xlsm", "xlt", "xltx", "ods", "ots", "fods",
+        "csv", "tsv", "dif", "dbf", "sxc",
+        # Impress (presentations)
+        "ppt", "pptx", "pptm", "pps", "ppsx", "pot", "potx",
+        "odp", "otp", "fodp", "sxi",
+        # Draw (vector / diagrams)
+        "odg", "otg", "fodg", "svg", "vsd", "vsdx", "pub", "cdr", "wmf", "emf",
+    }
+)
+
+# Upload and converted PDF are moved through the filesystem in chunks of this size
+# so neither is ever held in memory in full. 16 MiB keeps the per-chunk footprint
+# small while avoiding a thread hop per megabyte on large files.
+_CONVERT_CHUNK_BYTES = 16 * 1024 * 1024
+
+# Seconds to allow a single LibreOffice conversion before giving up. Env-configurable
+# because large or complex documents can legitimately take longer than the default.
+try:
+    CONVERT_PDF_TIMEOUT_SECONDS = float(os.getenv("CONVERT_PDF_TIMEOUT_SECONDS", "60"))
+except ValueError:
+    CONVERT_PDF_TIMEOUT_SECONDS = 60.0
+
+
 @router.post("/api/v1/record/buffer/convert", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_record_stream(request: Request, file: UploadFile = File(...)) -> StreamingResponse:
     request.query_params.get("from")
@@ -1471,85 +1521,112 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
 
     if to_format == MimeTypes.PDF.value:
         try:
-            with tempfile.TemporaryDirectory() as tmpdir:
+            extension = upload_extension(file.filename, CONVERTIBLE_UPLOAD_EXTENSIONS)
+            if extension is None:
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail="Invalid filename or unsupported file type; expected one of: "
+                    + ", ".join(sorted(CONVERTIBLE_UPLOAD_EXTENSIONS)),
+                )
+            # mkdtemp, not TemporaryDirectory: the PDF is streamed after this handler
+            # returns, so the directory must outlive the function. It is removed by
+            # file_iterator's finally on success, or by the except blocks on failure.
+            tmpdir = tempfile.mkdtemp()
+            try:
+                # The client name never touches the filesystem; only its validated
+                # extension survives so LibreOffice picks the right import filter.
+                stem = uuid4().hex
+                ppt_path = os.path.join(tmpdir, f"{stem}.{extension}")
+                pdf_path = os.path.join(tmpdir, f"{stem}.pdf")
+                if os.path.dirname(os.path.realpath(ppt_path)) != os.path.realpath(tmpdir):
+                    raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid filename")
+                # Stream the upload to disk in bounded chunks so a large upload is
+                # never held in memory in full.
+                with open(ppt_path, "wb") as f:
+                    while chunk := await file.read(_CONVERT_CHUNK_BYTES):
+                        await asyncio.to_thread(f.write, chunk)
+
+                # A per-request profile stops concurrent conversions from colliding on
+                # the shared default profile (the second process would hand off or exit
+                # with no output). It lives in tmpdir, so it is removed with it.
+                libreoffice_profile_uri = Path(
+                    os.path.join(tmpdir, ".libreoffice-profile")
+                ).as_uri()
+                conversion_cmd = [
+                    "libreoffice",
+                    f"-env:UserInstallation={libreoffice_profile_uri}",
+                    "--headless",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    tmpdir,
+                    ppt_path,
+                ]
+                process = await asyncio.create_subprocess_exec(
+                    *conversion_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+
                 try:
-                    ppt_path = os.path.join(tmpdir, file.filename)
-                    with open(ppt_path, "wb") as f:
-                        f.write(await file.read())
-
-                    conversion_cmd = [
-                        "libreoffice",
-                        "--headless",
-                        "--convert-to",
-                        "pdf",
-                        "--outdir",
-                        tmpdir,
-                        ppt_path,
-                    ]
-                    process = await asyncio.create_subprocess_exec(
-                        *conversion_cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
+                    conversion_output, conversion_error = await asyncio.wait_for(
+                        process.communicate(), timeout=CONVERT_PDF_TIMEOUT_SECONDS
                     )
-
+                except asyncio.TimeoutError as te:
+                    process.terminate()
                     try:
-                        conversion_output, conversion_error = await asyncio.wait_for(
-                            process.communicate(), timeout=30.0
-                        )
-                    except asyncio.TimeoutError as te:
-                        process.terminate()
-                        try:
-                            await asyncio.wait_for(process.wait(), timeout=5.0)
-                        except asyncio.TimeoutError:
-                            process.kill()
-                        logger.error(
-                            "LibreOffice conversion timed out after 30 seconds"
-                        )
-                        raise HTTPException(
-                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion timed out"
-                        ) from te
+                        await asyncio.wait_for(process.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        process.kill()
+                    logger.error(
+                        f"LibreOffice conversion timed out after {CONVERT_PDF_TIMEOUT_SECONDS} seconds"
+                    )
+                    raise HTTPException(
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion timed out"
+                    ) from te
 
-                    pdf_filename = file.filename.rsplit(".", 1)[0] + ".pdf"
-                    pdf_path = os.path.join(tmpdir, pdf_filename)
+                pdf_filename = f"{file.filename.rpartition('.')[0]}.pdf"
 
-                    if process.returncode != 0:
-                        error_msg = f"LibreOffice conversion failed: {conversion_error.decode('utf-8', errors='replace')}"
-                        logger.error(error_msg)
-                        raise HTTPException(
-                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to convert file to PDF"
-                        )
-
-                    if not os.path.exists(pdf_path):
-                        raise FileNotFoundError(
-                            "PDF conversion failed - output file not found"
-                        )
-
-                    async def file_iterator() -> AsyncGenerator[bytes, None]:
-                        try:
-                            with open(pdf_path, "rb") as pdf_file:
-                                yield await asyncio.to_thread(pdf_file.read)
-                        except Exception as e:
-                            logger.error(f"Error reading PDF file: {str(e)}")
-                            raise HTTPException(
-                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                detail="Error reading converted PDF file",
-                            ) from e
-
-                    return create_stream_record_response(
-                        file_iterator(),
-                        filename=pdf_filename,
-                        mime_type="application/pdf",
-                        fallback_filename="converted_file.pdf"
+                if process.returncode != 0:
+                    error_msg = f"LibreOffice conversion failed: {conversion_error.decode('utf-8', errors='replace')}"
+                    logger.error(error_msg)
+                    raise HTTPException(
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to convert file to PDF"
                     )
 
-                except FileNotFoundError as e:
-                    logger.error(str(e))
-                    raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=action_failed("open this file")) from e
-                except Exception as e:
-                    logger.error(f"Conversion error: {str(e)}")
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=action_failed("open this file")
-                    ) from e
+                if not os.path.exists(pdf_path):
+                    raise FileNotFoundError(
+                        "PDF conversion failed - output file not found"
+                    )
+
+                # Stream the converted PDF from disk in bounded chunks so the whole
+                # file is never held in memory, and drop tmpdir once the last chunk
+                # is sent. Ownership of tmpdir passes to the iterator here.
+                async def file_iterator() -> AsyncGenerator[bytes, None]:
+                    try:
+                        with open(pdf_path, "rb") as pdf_file:
+                            while chunk := await asyncio.to_thread(pdf_file.read, _CONVERT_CHUNK_BYTES):
+                                yield chunk
+                    finally:
+                        shutil.rmtree(tmpdir, ignore_errors=True)
+
+                return create_stream_record_response(
+                    file_iterator(),
+                    filename=pdf_filename,
+                    mime_type="application/pdf",
+                    fallback_filename="converted_file.pdf"
+                )
+
+            except FileNotFoundError as e:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+                logger.error(str(e))
+                raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=action_failed("open this file")) from e
+            except Exception as e:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+                logger.error(f"Conversion error: {str(e)}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=action_failed("open this file")
+                ) from e
         finally:
             await file.close()
 
@@ -1594,7 +1671,7 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
 
         try:
             conversion_output, conversion_error = await asyncio.wait_for(
-                process.communicate(), timeout=30.0
+                process.communicate(), timeout=CONVERT_PDF_TIMEOUT_SECONDS
             )
         except asyncio.TimeoutError as te:
             process.terminate()
@@ -2189,11 +2266,29 @@ async def delete_record(
         container = request.app.container
         logger = container.logger()
         user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        if not user_id or not org_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="User not authenticated",
+            )
         logger.info(f"🗑️ Attempting to delete record {record_id}")
+
+        has_access = await graph_provider.check_record_access_with_details(
+            user_id=user_id,
+            org_id=org_id,
+            record_id=record_id,
+        )
+        if not has_access:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail="You do not have access to this record",
+            )
 
         result = await graph_provider.delete_record(
             record_id=record_id,
-            user_id=user_id
+            user_id=user_id,
+            org_id=org_id,
         )
 
         if result["success"]:

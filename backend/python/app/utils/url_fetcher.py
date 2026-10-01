@@ -295,12 +295,15 @@ def _require_pinned_peer(peer_ip: str, pin: PublicTarget) -> None:
         raise FetchError(f"Connected to {peer_ip!r}, not the validated address for {pin.host!r}")
 
 
-def _pinned_requests_adapter(pin: PublicTarget) -> "HTTPAdapter":
+def _pinned_requests_adapter(
+    pin: PublicTarget, base: "type[HTTPAdapter] | None" = None, **adapter_kwargs: object
+) -> "HTTPAdapter":
     """A requests adapter that connects to ``pin``'s address, keeping the URL's host for the
-    Host header, SNI and certificate verification."""
+    Host header, SNI and certificate verification. ``base`` is the adapter class to extend
+    (e.g. cloudscraper's TLS adapter), built with ``adapter_kwargs``."""
     from requests.adapters import HTTPAdapter
 
-    class PinnedAddressAdapter(HTTPAdapter):
+    class PinnedAddressAdapter(base or HTTPAdapter):  # type: ignore[misc,valid-type]
         @override
         def build_connection_pool_key_attributes(
             self,
@@ -318,7 +321,7 @@ def _pinned_requests_adapter(pin: PublicTarget) -> "HTTPAdapter":
         def add_headers(self, request: "PreparedRequest", **kwargs: object) -> None:
             request.headers["Host"] = urlsplit(request.url or "").netloc.rpartition("@")[2]
 
-    return PinnedAddressAdapter()
+    return PinnedAddressAdapter(**adapter_kwargs)
 
 
 # ---------------------------------------------------------------------------

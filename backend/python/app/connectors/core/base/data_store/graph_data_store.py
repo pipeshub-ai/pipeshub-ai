@@ -136,7 +136,7 @@ class GraphTransactionStore(TransactionStore):
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         return await self.graph_provider.batch_update_nodes(nodes, collection, transaction=self.txn)
 
-    async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> Optional[Record]:
+    async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> dict | None:
         return await self.graph_provider.get_record_by_path(connector_id, path, external_record_group_id, transaction=self.txn)
 
     async def get_record_by_key(self, key: str) -> Optional[Record]:
@@ -827,6 +827,32 @@ class GraphTransactionStore(TransactionStore):
             filters=filters,
             return_fields=return_fields,
             transaction=self.txn
+        )
+
+    async def find_taxonomy_nodes(
+        self, collection: str, org_id: str, normalized_names: list[str]
+    ) -> list[dict]:
+        return await self.graph_provider.find_taxonomy_nodes(
+            collection, org_id, normalized_names, transaction=self.txn
+        )
+
+    async def create_taxonomy_node_if_absent(self, collection: str, node: dict) -> None:
+        await self.graph_provider.create_taxonomy_node_if_absent(
+            collection, node, transaction=self.txn
+        )
+
+    async def add_taxonomy_aliases(
+        self,
+        collection: str,
+        key: str,
+        aliases: list[str],
+        normalized_aliases: list[str],
+        *,
+        max_aliases: int = 20,
+    ) -> None:
+        await self.graph_provider.add_taxonomy_aliases(
+            collection, key, aliases, normalized_aliases,
+            max_aliases=max_aliases, transaction=self.txn,
         )
 
 

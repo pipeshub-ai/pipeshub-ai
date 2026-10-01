@@ -9,6 +9,7 @@ reply extraction are all real; every HTTP request is answered by ``GmailWorld`` 
 import contextlib
 import logging
 from collections.abc import AsyncIterator
+from datetime import datetime, timedelta
 from typing import Any, Optional
 from unittest.mock import MagicMock
 
@@ -379,6 +380,26 @@ async def test_a_rejected_access_token_is_refreshed_with_the_shared_oauth_app(ma
     assert mail.mail_ids() == {"m1"}
     refresh = [t for t in mail.http.token_requests if t.get("grant_type") == "refresh_token"]
     assert refresh and refresh[0]["refresh_token"] == "refresh-1" and refresh[0]["client_id"] == "client-1"
+
+
+async def test_an_expired_saved_token_is_refreshed_once_and_saved_back(mail: Harness) -> None:
+    for n in range(5):
+        mail.gmail.deliver(ME, f"m{n}", sender=FRIEND, date_ms=1_700_000_000_000 + n)
+    mail.config["credentials"].update(
+        access_token="expired-token",
+        created_at=(datetime.now() - timedelta(hours=2)).isoformat(),  # noqa: DTZ005 - OAuthToken saves local time
+        expires_in=3600,
+    )
+
+    await mail.sync()
+
+    assert mail.mail_ids() == {f"m{n}" for n in range(5)}
+    refreshes = [t for t in mail.http.token_requests if t.get("grant_type") == "refresh_token"]
+    assert len(refreshes) == 1, f"{len(refreshes)} refreshes over {len(mail.http.requests)} requests"
+    assert [r.path for r in mail.http.requests if r.identity is None] == []
+    issued = mail.http.requests[-1].headers["authorization"].removeprefix("Bearer ")
+    assert mail.config["credentials"]["access_token"] == issued
+    assert mail.config["credentials"]["refresh_token"] == "refresh-1"
 
 
 async def test_a_revoked_refresh_token_fails_the_run_without_a_checkpoint(mail: Harness) -> None:

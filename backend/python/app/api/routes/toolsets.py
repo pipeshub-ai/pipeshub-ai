@@ -22,7 +22,6 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from dependency_injector.wiring import Provide, inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
 
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import require_scopes
@@ -2278,7 +2277,7 @@ async def handle_toolset_oauth_callback(
     base_url: str | None = Query(None),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
     notification_service: Any = Depends(Provide[ConnectorAppContainer.connector_notification_service]),
-) -> dict[str, Any] | RedirectResponse:
+) -> dict[str, Any]:
     """Handle OAuth callback for toolset instance authentication."""
     base_url = base_url or "http://localhost:3001"
 
@@ -2312,8 +2311,31 @@ async def handle_toolset_oauth_callback(
             try:
                 await _require_agent_edit_access(agent_key_from_state, request)
             except HTTPException as auth_exc:
-                err_param = "agent_permission_denied" if auth_exc.status_code in (403, 401) else "agent_auth_error"
-                return RedirectResponse(url=f"{base_url}/tools?oauth_error={err_param}")
+                # A JSON answer, not a redirect: the Node API calls this with
+                # fetch, which would follow a redirect to the caller's base_url.
+                # 404 is what the check answers for "no access" as well as a
+                # missing agent, so it gets the permission message too.
+                if auth_exc.status_code in (403, 404):
+                    err_param = "agent_permission_denied"
+                    err_message = (
+                        "You don't have permission to connect tools for this agent. "
+                        "Ask the agent's owner to give you edit access, then try again."
+                    )
+                elif auth_exc.status_code == 401:
+                    err_param = "agent_auth_error"
+                    err_message = "We couldn't verify your account. Sign out and back in, then try again."
+                elif auth_exc.status_code == 400:
+                    err_param = "agent_auth_error"
+                    err_message = str(auth_exc.detail)
+                else:
+                    err_param = "agent_auth_error"
+                    err_message = "We couldn't check your access to this agent. Please try again."
+                return {
+                    "success": False,
+                    "error": err_param,
+                    "error_message": err_message,
+                    "redirect_url": f"{base_url}/tools?oauth_error={err_param}",
+                }
 
         # Load instance
         instances = await _load_toolset_instances(org_id, config_service)

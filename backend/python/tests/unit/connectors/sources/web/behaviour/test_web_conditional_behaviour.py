@@ -7,7 +7,9 @@ read links from. Everything else falls back to comparing content hashes, as befo
 import pytest
 from web_behaviour_fakes import START_URL, FakeRecordsDb, FakeWeb, MakeConnector, Page
 
+from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.sources.web.connector import WebConnector
+from app.models.entities import FileRecord, RecordType
 
 PDF = "http://site.test/manual.pdf"
 LAST_MODIFIED = "Wed, 01 Jul 2026 10:00:00 GMT"
@@ -37,6 +39,29 @@ async def test_an_unchanged_document_is_not_downloaded_again(
     assert db.content_updates == []
 
 
+async def test_a_document_whose_stored_validators_cannot_be_read_keeps_its_stored_copy(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    site.html(START_URL, "Home", "/manual.pdf")
+    site.add(PDF, Page(body=b"%PDF-1.4 v1", content_type="application/pdf", etag='"v1"'))
+    connector = await make_connector()
+    await connector.run_sync()
+    first = db.pages()[PDF]
+    db.unreadable_file_records.add(first.id)
+    site.add(PDF, Page(body=b"%PDF-1.4 v2", content_type="application/pdf"))
+
+    await connector.run_sync()
+
+    again = db.pages()[PDF]
+    assert (again.id, again.etag, again.external_revision_id) == (first.id, '"v1"', first.external_revision_id)
+    assert db.deleted == []
+
+    db.unreadable_file_records.clear()
+    await connector.run_sync()
+
+    assert [r.weburl for r in db.content_updates] == [PDF]
+
+
 async def test_a_changed_document_is_downloaded_and_re_indexed(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
@@ -51,6 +76,48 @@ async def test_a_changed_document_is_downloaded_and_re_indexed(
     assert site.not_modified == []
     assert [r.weburl for r in db.content_updates] == [PDF]
     assert db.pages()[PDF].etag == '"v2"'
+
+
+async def test_a_changed_document_whose_answer_drops_its_etag_does_not_keep_the_old_one(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    site.html(START_URL, "Home", "/manual.pdf")
+    site.add(PDF, Page(body=b"%PDF-1.4 v1", content_type="application/pdf", etag='"v1"'))
+    connector = await make_connector()
+    await connector.run_sync()
+
+    site.add(PDF, Page(body=b"%PDF-1.4 v2", content_type="application/pdf"))
+    await connector.run_sync()
+    assert db.pages()[PDF].etag is None
+
+    # A later answer tagged "v1" again must not be taken as vouching for the stored v2 copy.
+    site.add(PDF, Page(body=b"%PDF-1.4 v3", content_type="application/pdf", etag='"v1"'))
+    await connector.run_sync()
+
+    assert site.not_modified == []
+    assert site.storage_docs[db.pages()[PDF].storage_document_id] == b"%PDF-1.4 v3"
+
+
+async def test_a_record_migrated_from_an_older_address_does_not_keep_validators_for_changed_content(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    # Stored by an older version without the trailing slash; this sync migrates it to "/guide/".
+    guide = "http://site.test/guide"
+    db.records[guide] = FileRecord(
+        id="legacy-1", org_id="org-1", record_name="Guide", record_type=RecordType.FILE,
+        external_record_id=guide, version=1, origin=OriginTypes.CONNECTOR, connector_name=Connectors.WEB,
+        connector_id="web-1", weburl=guide, is_file=True, mime_type=MimeTypes.HTML.value,
+        external_revision_id="hash-of-the-old-copy", storage_document_id="old-copy",
+        etag='"v1"', ctag=LAST_MODIFIED,
+    )
+    site.html(START_URL, "Home", "/guide")
+    site.html(guide, "Guide", text="Rewritten since the old copy")
+
+    await (await make_connector()).run_sync()
+
+    migrated = next(r for r in db.records.values() if r.id == "legacy-1")
+    assert migrated.external_record_id == guide + "/"
+    assert (migrated.etag, migrated.ctag) == (None, None)
 
 
 async def test_a_page_whose_links_are_needed_is_always_fetched_in_full(
@@ -109,7 +176,7 @@ async def test_new_validators_on_an_unchanged_file_are_saved_for_the_next_sync(
     assert site.not_modified == [PDF]
 
 
-async def test_a_validator_the_site_stops_sending_is_kept(
+async def test_a_validator_the_site_stops_sending_is_kept_while_the_file_is_unchanged(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
     site.html(START_URL, "Home", "/manual.pdf")
@@ -117,7 +184,7 @@ async def test_a_validator_the_site_stops_sending_is_kept(
     connector = await make_connector()
     await connector.run_sync()
 
-    site.add(PDF, Page(body=b"%PDF-1.4 v2", content_type="application/pdf"))
+    site.add(PDF, Page(body=b"%PDF-1.4 v1", content_type="application/pdf"))
     await connector.run_sync()
 
     assert db.pages()[PDF].etag == '"v1"'

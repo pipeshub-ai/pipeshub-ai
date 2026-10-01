@@ -31,17 +31,22 @@ from urllib.parse import urljoin, urlparse
 
 from aiohttp import web
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from app.connectors.sources.web.connector import WebConnector
-    from app.models.entities import Record
+    from app.models.entities import FileRecord, Record
 
 STORAGE_HOST = "storage.test"
 HEAD_HANGS_UP = -1  # a ``head_status`` meaning the site drops HEAD requests without answering
 CONNECTOR_ID = "web-1"
 START_URL = "http://site.test/"
+# Every fake host resolves here, except INTRANET_HOST; the fake clients report it as the address they reached.
+SITE_ADDRESS = "93.184.215.14"
+INTRANET_HOST = "intranet.test"
+INTRANET_ADDRESS = "10.0.0.7"
 _real_sleep = asyncio.sleep
 
 
@@ -360,6 +365,7 @@ class FakeRecordsDb:
         self.deleted: list[str] = []
         self.record_groups: list[Any] = []
         self.fail_writes = False
+        self.unreadable_file_records: set[str] = set()
 
     def _store(self, record: Record) -> None:
         existing = self.records.get(record.external_record_id)
@@ -370,8 +376,23 @@ class FakeRecordsDb:
         self.records[record.external_record_id] = record.model_copy(deep=True)
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
+        """Like the graph stores: the plain record, without the file fields (ETag, Last-Modified)."""
+        from app.models.entities import Record
+
         stored = self.records.get(external_record_id)
-        return stored.model_copy(deep=True) if stored is not None else None
+        if stored is None:
+            return None
+        return Record.model_validate(stored.model_dump(include=set(Record.model_fields)))
+
+    async def get_file_record_by_id(self, record_id: str) -> FileRecord | None:
+        """None only when no file record is stored; a read that fails raises ``GraphQueryError``, as both providers do."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+        from app.models.entities import FileRecord
+
+        if record_id in self.unreadable_file_records:
+            raise GraphQueryError(f"records database unavailable for {record_id}")
+        stored = next((record for record in self.records.values() if record.id == record_id), None)
+        return stored.model_copy(deep=True) if isinstance(stored, FileRecord) else None
 
     async def on_new_records(self, pairs: list[tuple[Record, list[Any]]]) -> None:
         if self.fail_writes:
@@ -484,6 +505,7 @@ class FakeResponse:
         self.headers = headers
         self.content = body
         self.url = url
+        self.primary_ip = SITE_ADDRESS
 
     def iter_content(self, chunk_size: int = 65536) -> Iterator[bytes]:
         for start in range(0, len(self.content), chunk_size):
@@ -501,6 +523,7 @@ class FakeRequestsClient:
         self.site = site
         self.label = label
         self.cookies: dict[str, str] = {}
+        self.adapters: dict[str, HTTPAdapter] = {"https://": HTTPAdapter()}
 
     def __enter__(self) -> "FakeRequestsClient":
         return self
@@ -510,6 +533,9 @@ class FakeRequestsClient:
 
     def close(self) -> None:
         pass
+
+    def mount(self, prefix: str, adapter: HTTPAdapter) -> None:
+        self.adapters[prefix] = adapter
 
     def _send(self, url: str, headers: dict | None) -> tuple[int, dict, bytes]:
         sent = dict(headers or {})

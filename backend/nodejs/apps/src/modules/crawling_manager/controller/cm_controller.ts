@@ -36,7 +36,7 @@ const validateConnectorAccess = async (req: AuthenticatedUserRequest, connectorI
   const isAdmin = await isUserAdmin(req);
   const headers = buildProxyHeaders(req);
   const connectorResponse = await executeConnectorCommand(
-    `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
+    `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
     HttpMethod.GET,
     headers,
   );
@@ -49,14 +49,14 @@ const validateConnectorAccess = async (req: AuthenticatedUserRequest, connectorI
   if (connector.scope === 'personal' && connector.createdBy !== userId) {
     throw new ForbiddenError('You are not authorized to schedule this connector');
   }
-  return true;
+  return connector;
 };
 
 export const scheduleCrawlingJob =
   (crawlingService: CrawlingSchedulerService, appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     const { scheduleConfig, priority, maxRetries } = req.body;
-    const { connector, connectorId } = req.params as { connector: string; connectorId: string };
+    const { connectorId } = req.params as { connectorId: string };
     const { userId, orgId } = req.user as { userId: string; orgId: string };
 
     try {
@@ -64,10 +64,16 @@ export const scheduleCrawlingJob =
         throw new BadRequestError('Connector ID is required');
       }
 
-      await validateConnectorAccess(req, connectorId, appConfig);
+      const instance = await validateConnectorAccess(req, connectorId, appConfig);
+      // The connector service reads the sync action out of the event type built
+      // from this name, so it must be the instance's own type, never the path segment.
+      const connectorType: string | undefined = instance.type;
+      if (!connectorType) {
+        throw new BadRequestError('Connector type is missing for this connector');
+      }
 
       logger.info('Scheduling crawling job', {
-        connector,
+        connector: connectorType,
         connectorId,
         orgId,
         userId,
@@ -76,7 +82,7 @@ export const scheduleCrawlingJob =
       });
 
       const job: Job<CrawlingJobData> = await crawlingService.scheduleJob(
-        connector,
+        connectorType,
         connectorId,
         scheduleConfig,
         orgId,
@@ -89,7 +95,7 @@ export const scheduleCrawlingJob =
 
       logger.info('Crawling job scheduled successfully', {
         jobId: job.id,
-        connector,
+        connector: connectorType,
         connectorId,
         orgId,
         userId,
@@ -100,7 +106,7 @@ export const scheduleCrawlingJob =
         message: 'Crawling job scheduled successfully',
         data: {
           jobId: job.id,
-          connector,
+          connector: connectorType,
           scheduleConfig,
           scheduledAt: new Date(),
           connectorId,

@@ -3,6 +3,7 @@ import { Container } from 'inversify'
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware'
 import { AuthMiddleware } from '../../../config'
 import { createOAuthClientRateLimiter } from '../../../libs/middlewares/rate-limit.middleware'
+import { requireSessionAuth } from '../../../libs/middlewares/require-session-auth.middleware'
 import { Logger } from '../../../libs/services/logger.service'
 import { OAuthAppController } from '../controller/oauth.app.controller'
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck'
@@ -28,8 +29,10 @@ export function createOAuthClientsRouter(container: Container): Router {
   // Rate limiter for OAuth client management
   const oauthClientRateLimiter = createOAuthClientRateLimiter(logger, appConfig.maxOAuthClientRequestsPerMinute)
 
-  // All routes require authentication
+  // All routes require an interactive user session: a bearer token issued to
+  // a client must not be able to register or reconfigure clients.
   router.use(authMiddleware.authenticate.bind(authMiddleware))
+  router.use(requireSessionAuth)
   // All routes are rate limited
   router.use(oauthClientRateLimiter)
   // And none of them are for service accounts. Registering an app is another

@@ -13,6 +13,7 @@ import { IOAuthApp } from '../schema/oauth.app.schema'
 import {
   InvalidTokenError,
   ExpiredTokenError,
+  InvalidGrantError,
 } from '../../../libs/errors/oauth.errors'
 import {
   OAuthTokenPayload,
@@ -276,6 +277,17 @@ export class OAuthTokenService {
 
     if (!storedToken) {
       throw new InvalidTokenError('Refresh token not found')
+    }
+
+    if (storedToken.clientId !== app.clientId) {
+      this.logger.warn('Refresh token presented by a different client', {
+        issuedTo: storedToken.clientId,
+        presentedBy: app.clientId,
+        userId: storedToken.userId.toString(),
+      });
+      throw new InvalidGrantError(
+        'Refresh token was not issued to this client',
+      )
     }
 
     // Determine scopes - can only be reduced, not expanded

@@ -77,15 +77,27 @@ vi.mock('../api', () => ({
 }));
 
 const permissions = vi.hoisted(() => ({ denied: new Set<string>() }));
-vi.mock('@/config', () => ({
-  useUserPermission: (key: string) => !permissions.denied.has(key),
-  PermissionLockIcon: () => <span>Locked</span>,
-  usePermissionDeniedDialog: () => ({
-    openDenied: () => {},
-    guard: <A extends unknown[], R>(_allowed: boolean, fn: (...args: A) => R) => fn,
-    dialog: null,
-  }),
-}));
+vi.mock('@/config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/config')>();
+  return {
+    ...actual,
+    // Keep the real collection views, but do not wire the real auth client.
+    // A live client calls /api/v1/connectors with no token, toasts that failure,
+    // and the reindex "Try again" test then clicks the wrong error toast.
+    useAuthStore: undefined,
+    logoutAndRedirect: undefined,
+    logoutFromWorkspaceMenu: undefined,
+    apiClient: undefined,
+    apiClientDefault: undefined,
+    useUserPermission: (key: string) => !permissions.denied.has(key),
+    PermissionLockIcon: () => <span>Locked</span>,
+    usePermissionDeniedDialog: () => ({
+      openDenied: () => {},
+      guard: <A extends unknown[], R>(_allowed: boolean, fn: (...args: A) => R) => fn,
+      dialog: null,
+    }),
+  };
+});
 
 vi.mock('@/app/components/ui/lottie-loader', () => ({
   LottieLoader: ({ label }: { label?: string }) => <div role="status">{label ?? 'Loading'}</div>,
@@ -483,7 +495,7 @@ describe('Knowledge base page — inside a collection', () => {
 });
 
 describe('Knowledge base page — failures the user must be able to recover from', () => {
-  it('shows a readable message with a Retry when the collections list fails, and Retry loads it', async () => {
+  it('shows a readable message and a Try again button when the collections list fails, and the button loads it', async () => {
     let tableCallFails = true;
     api.hub.getNavigationNodes.mockImplementation(async (params: { nodeTypes?: string }) => {
       if (params?.nodeTypes === 'app' && tableCallFails) {
@@ -495,7 +507,7 @@ describe('Knowledge base page — failures the user must be able to recover from
 
     const retry = await screen.findByRole('button', { name: /Try again/ });
     expect(screen.queryByText(/KeyError/)).toBeNull();
-    expect(screen.getByText("We couldn't load your collections. Check your connection, then select Retry.")).toBeTruthy();
+    expect(screen.getByText("We couldn't load your collections. Check your connection, then select Try again.")).toBeTruthy();
 
     tableCallFails = false;
     fireEvent.click(retry);
@@ -1248,7 +1260,7 @@ describe('Knowledge base page — All Records', () => {
     expect(screen.getByText('All Records')).toBeTruthy();
   });
 
-  it('shows an error with a Retry that reloads the records', async () => {
+  it('shows an error with a Try again button that reloads the records', async () => {
     withCollections();
     api.hub.getAllRootItems.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(hubResponse([CONNECTOR_FILE]));
     openAt('/knowledge-base?view=all-records');

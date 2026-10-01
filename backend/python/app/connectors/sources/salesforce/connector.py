@@ -63,6 +63,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.salesforce.common.apps import SalesforceApp
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -5511,6 +5512,10 @@ class SalesforceConnector(BaseConnector):
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
         """
         Handle different types of record updates (content changed, metadata changed).
+
+        A failed write is re-raised: the files checkpoint is saved after this
+        returns, so swallowing it would move the checkpoint past a change that
+        was never stored.
         """
         try:
             if record_update.is_deleted and record_update.external_record_id:
@@ -5529,6 +5534,7 @@ class SalesforceConnector(BaseConnector):
                     await self.data_entities_processor.on_record_metadata_update(record_update.record)
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
+            raise
 
     async def _sync_files(
         self,
@@ -5808,10 +5814,18 @@ class SalesforceConnector(BaseConnector):
                         or getattr(existing, "external_revision_id", None) != rec.external_revision_id
                         or getattr(existing, "source_updated_at", None) != rec.source_updated_at
                         or getattr(existing, "size_in_bytes", None) != rec.size_in_bytes
-                        or getattr(existing, "extension", None) != rec.extension
                         or getattr(existing, "mime_type", None) != rec.mime_type
                         or getattr(existing, "weburl", None) != rec.weburl
                     )
+                    if not metadata_changed:
+                        # The lookup above returns a base Record, which has no extension. If the file
+                        # record is missing or can't be read, the file can't be shown unchanged, so update it.
+                        try:
+                            existing_file = await self.data_entities_processor.get_file_record_by_id(existing.id)
+                        except GraphQueryError as read_error:
+                            self.logger.warning(f"Updating {ext_id}: its stored file record could not be read: {read_error}")
+                            existing_file = None
+                        metadata_changed = existing_file is None or existing_file.extension != rec.extension
                     if content_changed or metadata_changed:
                         rec.id = existing.id
                         rec.version = getattr(existing, "version", 0) + 1

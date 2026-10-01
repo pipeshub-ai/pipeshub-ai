@@ -393,6 +393,7 @@ class FakeRecordsDb:
         self.deleted: list[str] = []
         self.content_updates: list[Any] = []
         self.fail_lookup_for: set[str] = set()
+        self.fail_file_record_for: set[str] = set()
         self.fail_write_for: set[str] = set()
         self.fail_delete_for: set[str] = set()
         self.unreadable_paths: set[str] = set()
@@ -427,11 +428,34 @@ class FakeRecordsDb:
 
     # ---- DataSourceEntitiesProcessor surface used by the connector ----
 
-    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[FileRecord]:
+    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
+        """A base Record, as both graph stores rebuild it: no ``is_file``, ``path`` or ``etag``."""
+        from app.models.entities import Record
+
         if external_record_id in self.fail_lookup_for:
             raise RuntimeError(f"database unavailable for {external_record_id}")
         found = self.records.get(external_record_id)
-        return found.model_copy(deep=True) if found is not None else None
+        if found is None:
+            return None
+        return Record.model_validate(found.model_dump(include=set(Record.model_fields)))
+
+    def stored_document_at(self, names: list[str], external_record_group_id: str) -> dict[str, Any] | None:
+        """Walks names down parent edges from a top-level folder, as the graph stores' path query does."""
+        from app.config.constants.arangodb import MimeTypes
+        from app.models.entities import Record
+
+        if not names:
+            return None
+        current = next((r for r in self.records.values()
+                        if r.record_name == names[0] and r.parent_external_record_id is None
+                        and r.mime_type == MimeTypes.FOLDER.value
+                        and r.external_record_group_id == external_record_group_id), None)
+        for name in names[1:]:
+            if current is None:
+                return None
+            current = next((r for r in self.records.values()
+                            if self.edges.get(r.id) == current.id and r.record_name == name), None)
+        return None if current is None else Record.to_arango_base_record(current)
 
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
         for record, _ in records_with_permissions:
@@ -501,7 +525,19 @@ class FakeRecordsDb:
         return self.record_groups.get(external_id)
 
     async def get_file_record_by_id(self, record_id: str) -> Optional[FileRecord]:
-        return self._by_id(record_id)
+        """A copy rebuilt as a ``FileRecord``, so changing it does not change what is stored.
+
+        None only when nothing is stored; a read that fails raises ``GraphQueryError``, as both providers do.
+        """
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+        from app.models.entities import FileRecord
+
+        if record_id in self.fail_file_record_for:
+            raise GraphQueryError(f"database unavailable for file record {record_id}")
+        stored = self._by_id(record_id)
+        if not isinstance(stored, FileRecord):
+            return None
+        return FileRecord.from_arango_record(stored.to_arango_record(), stored.to_arango_base_record())
 
     def _path(self, record_id: str) -> Optional[str]:
         record = self._by_id(record_id)
@@ -540,9 +576,11 @@ def _neo4j_property(value: object) -> bool:
 class FakeStore:
     """In-memory sync-point collection behind ``DataStoreProvider.transaction()``."""
 
-    def __init__(self) -> None:
+    def __init__(self, records: FakeRecordsDb | None = None) -> None:
         self.sync_points: dict[str, dict[str, Any]] = {}
         self.fail_reads = 0
+        self.records = records
+        self.fail_path_lookups = False
 
     async def get_sync_point(self, key: str, raise_on_error: bool = False) -> Optional[dict[str, Any]]:
         if self.fail_reads:
@@ -568,9 +606,12 @@ class FakeStore:
                 return value
         return {}
 
-    async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> Optional[Record]:
-        """Same signature as ``GraphDataStore.get_record_by_path``; Nextcloud records store no path."""
-        return None
+    async def get_record_by_path(self, connector_id: str, path: list[str],
+                                 external_record_group_id: str) -> dict[str, Any] | None:
+        """Same signature as ``GraphDataStore.get_record_by_path``, and like it returns the stored document."""
+        if self.fail_path_lookups:
+            raise RuntimeError("database unavailable")
+        return self.records.stored_document_at(path, external_record_group_id) if self.records else None
 
     def cursor(self) -> Optional[str]:
         for key, value in self.sync_points.items():

@@ -55,7 +55,7 @@ _refresh_locks: "weakref.WeakValueDictionary[tuple[int, str], asyncio.Lock]" = (
 )
 
 
-def _connector_refresh_lock(connector_id: str) -> asyncio.Lock:
+def connector_refresh_lock(connector_id: str) -> asyncio.Lock:
     key = (id(asyncio.get_running_loop()), connector_id)
     lock = _refresh_locks.get(key)
     if lock is None:
@@ -745,7 +745,7 @@ class TokenRefreshService:
             ValueError: If config or credentials are missing
             Exception: If refresh fails
         """
-        async with _connector_refresh_lock(connector_id):
+        async with connector_refresh_lock(connector_id):
             return await self._perform_token_refresh_locked(
                 connector_id, connector_type, refresh_token
             )

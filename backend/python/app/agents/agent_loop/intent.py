@@ -308,6 +308,8 @@ async def parse_intent_and_route(
     graph_provider: Any = None,
     is_multimodal_llm: bool = False,
     org_id: str = "",
+    user_id: str = "",
+    is_service_account: bool = False,
     model_name: str = "",
     transport_registry: TransportRegistry | None = None,
     opik_active: bool | None = None,
@@ -362,6 +364,8 @@ async def parse_intent_and_route(
             attachment_blocks = await resolve_attachments(
                 attachments=attachments, blob_store=blob_store, org_id=org_id,
                 is_multimodal_llm=is_multimodal_llm, logger=logger,
+                user_id=user_id, graph_provider=graph_provider,
+                is_service_account=is_service_account,
             )
             if attachment_blocks:
                 human_content = [

@@ -528,7 +528,6 @@ export class UserAccountController {
         message: 'Authentication initialized',
         authProviders,
         jitEnabled: jitEnabledMethods.length > 0,
-
       });
 
     } catch (error) {
@@ -2051,7 +2050,7 @@ export class UserAccountController {
       timestamp: Date.now(),
       payload: {
         orgId: user.orgId.toString(),
-        userId: user._id,
+        userId: user._id.toString(),
         fullName: user.fullName,
         ...(user.firstName && { firstName: user.firstName }),
         ...(user.lastName && { lastName: user.lastName }),

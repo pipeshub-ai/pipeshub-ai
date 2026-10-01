@@ -180,6 +180,7 @@ export class UserController {
       hasLoggedIn,
       isBlocked,
       groupIds,
+      includeServiceAccounts,
     } = req.query;
 
     const orgId = req.user?.orgId;
@@ -196,14 +197,41 @@ export class UserController {
     const filter: Record<string, any> = {
       orgId: orgIdObj,
       isDeleted: { $ne: true },
-      // This is the list of people. Service accounts are users in every way
-      // the permission graph cares about, but they are managed in their own
-      // admin screen, and listing them here has consequences beyond the
-      // cosmetic: they can never log in, so they would sit in the
-      // pending-invite set forever and be swept into bulk invite actions
-      // aimed at colleagues who have not signed in yet.
-      kind: { $ne: 'service' },
     };
+
+    // This is the list of people. Service accounts are users in every way the
+    // permission graph cares about, but they are managed in their own admin
+    // screen, and listing them here by default has consequences beyond the
+    // cosmetic: they can never log in, so they would sit in the pending-invite
+    // set forever and be swept into bulk invite actions aimed at colleagues
+    // who have not signed in yet.
+    //
+    // The screens that choose who belongs to a group or a team are the
+    // exception, because membership is how a service account is given anything
+    // to read, and the create panel tells an administrator to grant access
+    // that way. They ask for them explicitly, so no other caller changes
+    // behaviour. Each returned record carries its `kind`, which is what lets
+    // those screens mark a machine identity rather than let it pass for a
+    // colleague.
+    //
+    // Asking is not enough on its own. This route is authenticated but not
+    // admin-only, and `requireScopes` does nothing for a session token, so
+    // without the check below any signed-in colleague could list every service
+    // account in the organisation and the groups it belongs to. The screen
+    // that lists them already requires an administrator, and so does putting
+    // one in a group, so honouring the flag for anyone else would hand out
+    // through this route what the other one refuses.
+    // Compared rather than stringified: a query value can arrive as an array
+    // or an object, and only the exact string opts in.
+    const wantsServiceAccounts = includeServiceAccounts === 'true';
+    const maySeeServiceAccounts =
+      wantsServiceAccounts &&
+      req.user?.userId !== undefined &&
+      (await isUserOrgAdmin(String(req.user.userId), String(orgId)));
+
+    if (!maySeeServiceAccounts) {
+      filter.kind = { $ne: 'service' };
+    }
 
     if (search) {
       const searchRegex = { $regex: String(search), $options: 'i' };
@@ -358,6 +386,10 @@ export class UserController {
         orgId: u.orgId?.toString(),
         name: u.fullName,
         email: u.email,
+        // Carried through so a caller that asked for service accounts can tell
+        // them apart. Without it the picker offers a machine identity with
+        // nothing to mark it, which is worse than not offering it at all.
+        kind: u.kind,
         isActive: !blockedUserIds.has(uid) && (u.hasLoggedIn ?? false),
         hasLoggedIn: u.hasLoggedIn ?? false,
         isBlocked: blockedUserIds.has(uid),
@@ -785,7 +817,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: newUser.orgId.toString(),
-          userId: newUser._id,
+          userId: newUser._id.toString(),
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
@@ -856,7 +888,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: orgId.toString(),
-          userId: newUser._id,
+          userId: newUser._id.toString(),
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
@@ -927,7 +959,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: orgId.toString(),
-          userId: newUser._id,
+          userId: newUser._id.toString(),
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
@@ -1230,7 +1262,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: user.orgId.toString(),
-          userId: user._id,
+          userId: user._id.toString(),
           fullName: user.fullName,
           ...(user.firstName && { firstName: user.firstName }),
           ...(user.lastName && { lastName: user.lastName }),
@@ -1282,7 +1314,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: user.orgId.toString(),
-          userId: user._id,
+          userId: user._id.toString(),
           fullName: user.fullName,
           ...(user.firstName && { firstName: user.firstName }),
           ...(user.lastName && { lastName: user.lastName }),
@@ -1329,7 +1361,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: user.orgId.toString(),
-          userId: user._id,
+          userId: user._id.toString(),
           fullName: user.fullName,
           ...(user.firstName && { firstName: user.firstName }),
           ...(user.lastName && { lastName: user.lastName }),
@@ -1376,7 +1408,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: user.orgId.toString(),
-          userId: user._id,
+          userId: user._id.toString(),
           fullName: user.fullName,
           ...(user.firstName && { firstName: user.firstName }),
           ...(user.lastName && { lastName: user.lastName }),
@@ -1423,7 +1455,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: user.orgId.toString(),
-          userId: user._id,
+          userId: user._id.toString(),
           fullName: user.fullName,
           ...(user.firstName && { firstName: user.firstName }),
           ...(user.lastName && { lastName: user.lastName }),
@@ -1639,7 +1671,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: user.orgId.toString(),
-          userId: user._id,
+          userId: user._id.toString(),
           email: user.email,
         } as UserDeletedEvent,
       };
@@ -1963,7 +1995,11 @@ export class UserController {
         return;
       }
 
-      res.status(200).json({ message: 'Invite sent successfully' });
+      res.status(200).json({
+        message:
+          'Invites queued. Emails are being sent in the background and may take a few minutes.',
+        queued: true,
+      });
     } catch (error) {
       next(error);
     }
@@ -2222,7 +2258,6 @@ export class UserController {
         await UserGroups.updateMany(
           { _id: { $in: groupIds }, orgId },
           { $addToSet: { users: userId } },
-          { new: true },
         );
       }
       await UserGroups.updateOne(
@@ -2312,7 +2347,6 @@ export class UserController {
           await UserGroups.updateMany(
             { _id: { $in: groupIds }, orgId },
             { $addToSet: { users: userId } },
-            { new: true },
           );
         }
         await UserGroups.updateOne(
@@ -2324,7 +2358,7 @@ export class UserController {
           timestamp: Date.now(),
           payload: {
             orgId: orgId.toString(),
-            userId,
+            userId: userId.toString(),
             email,
             syncAction: SyncAction.Immediate,
           } as UserAddedEvent,
@@ -2366,7 +2400,7 @@ export class UserController {
         timestamp: Date.now(),
         payload: {
           orgId: orgId.toString(),
-          userId,
+          userId: userId.toString(),
           email,
           syncAction: SyncAction.Immediate,
         } as UserAddedEvent,
@@ -2415,42 +2449,24 @@ export class UserController {
     // A transport failure for one recipient must not abort the rest of the
     // batch: return a non-200 so the caller records it in mailFailed instead.
     try {
-      let result;
-      if (isPasswordAuthEnabled) {
-        const { passwordResetToken, mailAuthToken } =
-          jwtGeneratorForNewAccountPassword(
-            email,
-            userId,
-            orgId,
-            this.config.scopedJwtSecret,
-          );
-        result = await this.mailService.sendMail({
-          emailTemplateType: 'appuserInvite',
-          initiator: { jwtAuthToken: mailAuthToken, orgId: orgId?.toString() },
-          usersMails: [email],
-          subject,
-          templateData: {
-            invitee,
-            orgName,
-            link: `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`,
-          },
-        });
-      } else {
-        result = await this.mailService.sendMail({
-          emailTemplateType: 'appuserInvite',
-          initiator: {
-            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
-            orgId: orgId?.toString(),
-          },
-          usersMails: [email],
-          subject,
-          templateData: {
-            invitee,
-            orgName,
-            link: `${this.config.frontendUrl}/sign-in`,
-          },
-        });
-      }
+      // Always queued: even a handful of sequential inline sends can hold the
+      // request for minutes when SMTP is slow.
+      const result = await this.mailService.sendMail({
+        emailTemplateType: 'appuserInvite',
+        initiator: {
+          jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+          orgId: orgId?.toString(),
+        },
+        usersMails: [email],
+        subject,
+        templateData: isPasswordAuthEnabled
+          ? { invitee, orgName }
+          : { invitee, orgName, link: `${this.config.frontendUrl}/sign-in` },
+        ...(isPasswordAuthEnabled && {
+          passwordResetLinkFor: { userId, orgId: orgId.toString(), email },
+        }),
+        deliverAsync: true,
+      });
       return result.statusCode;
     } catch (error) {
       this.logger.error(`Failed to send invite mail to ${email}`, error);

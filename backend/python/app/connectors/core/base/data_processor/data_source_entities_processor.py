@@ -2,6 +2,7 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 from app.config.configuration_service import ConfigurationService
@@ -1594,6 +1595,21 @@ class DataSourceEntitiesProcessor:
         await self._mark_queued_after_publish([record.id])
         await self._track_record_queued(processed_record)
 
+    @staticmethod
+    def _file_type_changed(new_record: Record, old_record: Record) -> bool:
+        """A rename to another file type (.txt to .md) needs a new parse of the same bytes."""
+        if (
+            new_record.mime_type != MimeTypes.UNKNOWN.value
+            and new_record.mime_type != old_record.mime_type
+        ):
+            return True
+        if not (isinstance(new_record, FileRecord) and new_record.is_file):
+            return False
+        return (
+            PurePosixPath(new_record.record_name).suffix.lower()
+            != PurePosixPath(old_record.record_name).suffix.lower()
+        )
+
     def _preserve_indexing_state(self, record: Record, existing_record: Record) -> None:
         """Carry the stored indexing lifecycle onto a metadata-only write.
 
@@ -1760,6 +1776,9 @@ class DataSourceEntitiesProcessor:
                     content_changed = (
                         new_record.external_revision_id != old_record.external_revision_id
                     )
+                    needs_reindex = content_changed or self._file_type_changed(
+                        new_record, old_record
+                    )
 
                     # Drop the stale parent-child edge so _handle_parent_record can
                     # create the correct one pointing at the new parent folder.
@@ -1789,18 +1808,19 @@ class DataSourceEntitiesProcessor:
                                 1 if content_changed else 0
                             )
 
-                    if old_record.indexing_status == ProgressStatus.COMPLETED.value:
-                        if not content_changed:
-                            # If the old record is completed and content hasn't changed,
-                            # preserve the completed status for the new record
-                            new_record.indexing_status = ProgressStatus.COMPLETED.value
+                    new_record.created_at = old_record.created_at
+                    if not needs_reindex:
+                        # The move rewrites the whole vertex, and nothing is
+                        # re-parsed, so the checksum and parse/extraction state
+                        # must come from the stored record.
+                        self._preserve_indexing_state(new_record, old_record)
                     record_group_id = (
                         None
                         if new_record.origin == OriginTypes.UPLOAD
                         else await self._handle_record_group(new_record, tx_store)
                     )
 
-                    if content_changed:
+                    if needs_reindex:
                         if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
                             new_record.indexing_status = ProgressStatus.QUEUED.value
                         self._stamp_queued_at(new_record)

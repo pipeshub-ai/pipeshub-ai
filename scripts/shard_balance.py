@@ -36,6 +36,10 @@ MAX_OVER_MEAN = 1.35
 # core job must exclude them, or the nightly tries to construct a missing type.
 HELD_OUT_CONNECTORS = frozenset({"cifs"})
 
+# Suites with a job of their own, named after their marker, that must start on a
+# stack no other suite has touched. Core must leave them out, or they run twice.
+SOLO_SHARDS = ("demo",)
+
 _SHARD_LINE = re.compile(r'^\s*CONN_SHARD_(\d+):\s*"([^"]*)"\s*$', re.MULTILINE)
 _CORE_MARKER_LINE = re.compile(
     r'^[ \t]*core\)[ \t]+MARKERS="([^"]*)"',
@@ -44,6 +48,11 @@ _CORE_MARKER_LINE = re.compile(
 _MARKER_LINE = re.compile(r"^\s{4}(\w+):\s*(.+)$")
 _MATRIX_LINE = re.compile(r"^\s*shard:\s.*$", re.MULTILINE)
 _MATRIX_SHARD = re.compile(r'"(connectors-\d+)"')
+_MATRIX_ANY_SHARD = re.compile(r'"([\w-]+)"')
+# The matrix line's single-quoted JSON lists; the last is the default (full-run) one.
+_MATRIX_LIST = re.compile(r"'(\[[^']*\])'")
+# One per test step (Neo4j, ArangoDB): the shell `case` that picks the markers.
+_SHARD_CASE_BLOCK = re.compile(r'case "\$SHARD" in\n(.*?)\n[ \t]*esac', re.DOTALL)
 _IDENT = re.compile(r"[A-Za-z_$][\w$]*")
 _Marker = tuple
 
@@ -167,6 +176,51 @@ def matrix_shards(workflow_text: str) -> set[str]:
     return set(_MATRIX_SHARD.findall(line.group(0))) if line else set()
 
 
+def matrix_solo_shards(workflow_text: str) -> set[str]:
+    """The solo shard jobs (see SOLO_SHARDS) a full run's matrix runs.
+
+    Only the default list counts: a name in the one-marker dispatch list alone
+    would not run on the nightly.
+    """
+    line = _MATRIX_LINE.search(workflow_text)
+    lists = _MATRIX_LIST.findall(line.group(0)) if line else []
+    if not lists:
+        return set()
+    return set(_MATRIX_ANY_SHARD.findall(lists[-1])) & set(SOLO_SHARDS)
+
+
+def _solo_shard_problems(workflow_text: str, core_expressions: list[str]) -> list[str]:
+    problems: list[str] = []
+    jobs = matrix_solo_shards(workflow_text)
+    for name in SOLO_SHARDS:
+        excluded = bool(core_expressions) and all(
+            _always_excludes(expression, name) for expression in core_expressions
+        )
+        if name in jobs:
+            if not excluded:
+                problems.append(
+                    f"The matrix runs a '{name}' job, but a core job still selects the "
+                    f"'{name}' marker, so those tests run twice, once on core's shared stack."
+                )
+            steps = [block for block in _SHARD_CASE_BLOCK.findall(workflow_text) if _CORE_MARKER_LINE.search(block)]
+            # Through `;;`: `MARKERS="demo"extra` is the marker "demoextra" to the shell.
+            case_line = re.compile(rf'^[ \t]*{name}\)[ \t]+MARKERS="{name}"[ \t]*;;', re.MULTILINE)
+            if not steps or any(len(case_line.findall(block)) != 1 for block in steps):
+                problems.append(
+                    f"The matrix runs a '{name}' job, but not every test step's `case \"$SHARD\"` "
+                    f'has exactly one `{name}) MARKERS="{name}"` line, so a step fails as an '
+                    f"unknown shard (or the lines disagree)."
+                )
+        elif core_expressions and any(
+            _always_excludes(expression, name) for expression in core_expressions
+        ):
+            problems.append(
+                f"Core leaves out the '{name}' marker, but the matrix has no '{name}' job, "
+                f"so those tests stop running."
+            )
+    return problems
+
+
 def shard_markers(workflow_text: str) -> dict[str, list[str]]:
     """Marker names per CONN_SHARD_*, in the order the workflow lists them."""
     shards: dict[str, list[str]] = {}
@@ -278,6 +332,8 @@ def check(
                 f"'{name}' is held out of the shards, but the core job does not exclude "
                 f"it, so those tests fall into core."
             )
+
+    problems.extend(_solo_shard_problems(workflow_text, core_expressions))
 
     for name in sorted(connectors - set(seen) - held):
         problems.append(

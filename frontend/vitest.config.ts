@@ -26,7 +26,7 @@ export default defineConfig({
     // Every unit test under app/ and lib/. A hand-kept list let new test
     // files sit unrun: three never ran, and one of them caught a real bug.
     // Playwright (tests/e2e) and Electron (electron/, run by
-    // test:electron:local-sync) have their own runners.
+    // test:electron) have their own runners.
     include: ['app/**/*.test.{ts,tsx}', 'lib/**/*.test.{ts,tsx}'],
     passWithNoTests: false,
     // `include` lists every source file, loaded by a test or not, so the
@@ -37,6 +37,15 @@ export default defineConfig({
       exclude: ['**/*.test.{ts,tsx}', '**/__tests__/**', '**/*.d.ts'],
       reporter: ['text-summary', 'json-summary', 'json', 'html'],
       reportsDirectory: 'coverage/unit',
+      // Only ever raise the frontend minimum; never lower it to make a PR pass. Add tests instead.
+      // Enforced only by `npm run test:unit:coverage` (plain `test:unit` skips coverage).
+      // Keep this in step with the Slack text in .github/workflows/weekly-coverage.yml.
+      thresholds: {
+        statements: 33,
+        branches: 30,
+        functions: 29,
+        lines: 34,
+      },
     },
   },
   resolve: {

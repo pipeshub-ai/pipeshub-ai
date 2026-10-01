@@ -72,12 +72,14 @@ from app.models.entities import (
     RecordType,
     User,
 )
+from app.connectors.sources.web.address_guard import create_guarded_session, is_unsafe_url
 from app.connectors.sources.web.fetch_strategy import (
     MAX_RATE_LIMIT_BACKOFF,
     FetchResponse,
     build_stealth_headers,
     fetch_url_with_fallback,
     too_many_redirects_response,
+    unsafe_address_response,
 )
 from app.connectors.sources.web.crawl4ai_fetcher import Crawl4AIFetcher, FetchResult, get_shared_fetcher, release_shared_fetcher, resolve_fetch_status_code
 from app.connectors.sources.web.robots import RobotsRules
@@ -177,6 +179,7 @@ TOO_MANY_REDIRECTS_REASON = (
     "This page redirects too many times, so it couldn't be fetched. "
     "Check the address in a browser, then sync again."
 )
+UNSAFE_ADDRESS_REASON = "This address is on a private or internal network, so it wasn't fetched."
 ROBOTS_MAX_BYTES = 512 * 1024
 
 DOCUMENT_MIME_TYPES = {
@@ -484,7 +487,7 @@ class WebConnector(BaseConnector):
 
             # Initialize aiohttp session with realistic browser headers
             timeout = aiohttp.ClientTimeout(total=30)
-            self.session = aiohttp.ClientSession(
+            self.session = create_guarded_session(
                 timeout=timeout,
                 headers={
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -1406,7 +1409,7 @@ class WebConnector(BaseConnector):
         # headless won't change the answer.
         if result.status_code in {404, 405, 410, 413}:
             return False
-        if result.headers.get("X-Fetch-Skip-Reason") == "too_many_redirects":
+        if result.headers.get("X-Fetch-Skip-Reason") in {"too_many_redirects", "unsafe_address"}:
             return False  # the browser would follow the same chain, without checking each hop
         return True  # Bot-block, rate-limit, or server error — try headless
 
@@ -1703,12 +1706,22 @@ class WebConnector(BaseConnector):
         )
         if record is None or not record.storage_document_id:
             return None
+        etag, last_modified = await self._stored_validators(record)
         headers = {}
-        if record.etag:
-            headers["If-None-Match"] = record.etag
-        if record.ctag:
-            headers["If-Modified-Since"] = record.ctag
+        if etag:
+            headers["If-None-Match"] = etag
+        if last_modified:
+            headers["If-Modified-Since"] = last_modified
         return headers or None
+
+    async def _stored_validators(self, record: Record) -> tuple[str | None, str | None]:
+        """The ETag and Last-Modified stored for ``record``.
+
+        A lookup by external id returns the plain record; they are fields of its file record.
+        """
+        if not isinstance(record, FileRecord):
+            record = await self.data_entities_processor.get_file_record_by_id(record.id) or record
+        return getattr(record, "etag", None), getattr(record, "ctag", None)
 
     async def _headless_fetch(self, url: str, *, walk_first: bool = True) -> FetchResponse | None:
         """Fetch a single URL via crawl4ai (used outside the BFS crawl loop); documents go over plain HTTP.
@@ -1759,6 +1772,8 @@ class WebConnector(BaseConnector):
         if probed[1] == PROBE_UNENDING:
             return too_many_redirects_response(url)
         landing = probed[0]
+        if await is_unsafe_url(landing):
+            return unsafe_address_response(landing)
         return self._out_of_scope_response(landing) if self._outside_crawl(landing) else self._robots_skip_response(landing)
 
     @staticmethod
@@ -1903,6 +1918,8 @@ class WebConnector(BaseConnector):
         if self.session is None:
             return None
         for _ in range(MAX_PROBE_REDIRECTS + 1):
+            if await is_unsafe_url(url):
+                return url, 0, None  # never requested: not a public address
             try:
                 status, location, content_type = await self._probe_hop("HEAD", url)
             except (asyncio.TimeoutError, aiohttp.ClientError, OSError):
@@ -1994,6 +2011,7 @@ class WebConnector(BaseConnector):
                 reason = (
                     self._too_large_reason() if skip == "max_size_exceeded"
                     else TOO_MANY_REDIRECTS_REASON if skip == "too_many_redirects"
+                    else UNSAFE_ADDRESS_REASON if skip == "unsafe_address"
                     else None
                 )
                 self._record_final_failure(
@@ -2128,7 +2146,7 @@ class WebConnector(BaseConnector):
                 moved_to = result.final_url
                 stored_there = await self._stored_record(moved_to)
                 if stored_there is not None and stored_there.storage_document_id and self._validators_match(
-                    result, stored_there
+                    result, *await self._stored_validators(stored_there)
                 ):
                     # The 304 vouches for our copy at the new URL; only the old URL's record needs cleaning up.
                     await self._handle_gone_page(url, keep_id=stored_there.id)
@@ -2184,6 +2202,9 @@ class WebConnector(BaseConnector):
                 legacy_lookup = existing_record is not None
 
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
+            stored_etag, stored_last_modified = (
+                await self._stored_validators(existing_record) if existing_record else (None, None)
+            )
 
             # Get title and clean content for HTML
             title = self._extract_title_from_url(final_url)
@@ -2230,6 +2251,8 @@ class WebConnector(BaseConnector):
             await self._ensure_parent_records_exist(parent_url)
 
             if existing_record:
+                # Also on the legacy path: the stored validators below are kept only for unchanged content.
+                content_changed = existing_record.external_revision_id != content_md5_hash
                 if legacy_lookup:
                     is_new = True # Force record to be treated as new to migrate external_record_id to the normalized form
                 else:
@@ -2237,8 +2260,6 @@ class WebConnector(BaseConnector):
                         metadata_changed = True
                     elif existing_record.parent_external_record_id != parent_url:
                         metadata_changed = True
-                    if existing_record.external_revision_id != content_md5_hash:
-                        content_changed = True
                     is_updated = metadata_changed or content_changed
             else:
                 is_new = True
@@ -2310,15 +2331,17 @@ class WebConnector(BaseConnector):
                 parent_record_type=RecordType.FILE if parent_url else None,
                 storage_document_id=storage_document_id,
                 fetch_signed_url=fetch_signed_url,
-                # A validator the site didn't send this time is kept, not erased.
-                etag=self._header(result.headers, "ETag") or (existing_record.etag if existing_record else None),
+                # A validator the site didn't send this time is kept only while the content is the same;
+                # kept across a change, a later 304 would vouch for the old copy.
+                etag=self._header(result.headers, "ETag") or (None if content_changed else stored_etag),
                 # Last-Modified, kept verbatim to send back as If-Modified-Since.
-                ctag=self._header(result.headers, "Last-Modified") or (existing_record.ctag if existing_record else None),
+                ctag=self._header(result.headers, "Last-Modified")
+                or (None if content_changed else stored_last_modified),
             )
 
             # New or rotated validators on an unchanged page are saved as metadata: no re-index, no version bump.
             if existing_record and not legacy_lookup and not is_updated and (
-                (file_record.etag, file_record.ctag) != (existing_record.etag, existing_record.ctag)
+                (file_record.etag, file_record.ctag) != (stored_etag, stored_last_modified)
             ):
                 metadata_changed = is_updated = True
 
@@ -2556,17 +2579,17 @@ class WebConnector(BaseConnector):
         if self._normalize_url(requested_url) != self._normalize_url(record.weburl):
             await self._handle_gone_page(requested_url, keep_id=record.id)
 
-    def _validators_match(self, response: FetchResponse, record: Record) -> bool:
-        """Whether a 304 answered the validators stored with ``record``, and not another URL's.
+    def _validators_match(self, response: FetchResponse, stored_etag: str | None, stored_last_modified: str | None) -> bool:
+        """Whether a 304 answered the validators stored for a record, and not another URL's.
 
         Both validators are sent together, so a Last-Modified that happens to match says nothing
         when the ETag doesn't: the ETag decides whenever the 304 carries one.
         """
         etag = self._header(response.headers, "ETag")
         if etag:
-            return etag == getattr(record, "etag", None)
+            return etag == stored_etag
         last_modified = self._header(response.headers, "Last-Modified")
-        return bool(last_modified) and last_modified == getattr(record, "ctag", None)
+        return bool(last_modified) and last_modified == stored_last_modified
 
     async def _stored_record(self, url: str) -> Record | None:
         for candidate in self._stored_ids_for(url):
@@ -3096,8 +3119,8 @@ class WebConnector(BaseConnector):
                 token = await self._get_storage_token()
                 download_endpoint = f"{storage_url}/api/v1/document/internal/{record.storage_document_id}/download"
 
-                owned_session = self.session is None
-                session = self.session or aiohttp.ClientSession()
+                # Not self.session: the storage service is internal, which the crawl's session refuses.
+                session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
                 try:
                     async with session.get(
                         download_endpoint,
@@ -3111,8 +3134,7 @@ class WebConnector(BaseConnector):
                                 if signed_url:
                                     return signed_url
                 finally:
-                    if owned_session:
-                        await session.close()
+                    await session.close()
             except Exception as e:
                 self.logger.warning("Failed to get storage signed URL for record %s: %s", record.id, e)
 

@@ -4359,6 +4359,7 @@ def _make_code_record(
     rec.version = version
     rec.org_id = "org-1"
     rec.record_name = f"file_{record_id}.py"
+    rec.mime_type = "text/x-python"
     rec.virtual_record_id = None
     rec.origin = OriginTypes.CONNECTOR.value
     rec.to_kafka_record = MagicMock(return_value={"id": record_id})
@@ -4379,6 +4380,8 @@ def _make_old_record(
     rec.indexing_status = indexing_status
     rec.is_placeholder = False
     rec.version = version
+    rec.record_name = f"file_{record_id}.py"
+    rec.mime_type = "text/x-python"
     rec.virtual_record_id = None
     return rec
 
@@ -5074,12 +5077,106 @@ class TestOnRecordMetadataUpdateKb:
         mock_updated.assert_awaited_once()
 
 
+def _stored_share_record(**overrides) -> Record:
+    """What get_record_by_external_id returns: a plain Record, never a FileRecord."""
+    fields = {
+        "id": "stored-1",
+        "record_name": "notes.txt",
+        "record_type": RecordType.FILE,
+        "external_record_id": "share/old/notes.txt",
+        "external_revision_id": "share:44:10:2024-06-01T00:00:00+00:00",
+        "version": 2,
+        "origin": OriginTypes.CONNECTOR.value,
+        "connector_name": ConnectorsEnum.SMB,
+        "connector_id": "smb-1",
+        "mime_type": "text/plain",
+        "md5_hash": "b64c8be9d906c63822ca97dc5d5f7875",
+        "indexing_status": ProgressStatus.COMPLETED.value,
+        "parsing_status": ProgressStatus.COMPLETED.value,
+        "extraction_status": ProgressStatus.COMPLETED.value,
+        "created_at": 1000,
+        "virtual_record_id": "vr-1",
+    }
+    fields.update(overrides)
+    return Record(**fields)
+
+
+def _renamed_share_file(name: str, mime_type: str) -> FileRecord:
+    return FileRecord(
+        id="fresh-uuid",
+        record_name=name,
+        record_type=RecordType.FILE,
+        external_record_group_id="share",
+        external_record_id=f"share/new/{name}",
+        external_revision_id="share:44:10:2024-06-01T00:00:00+00:00",
+        version=2,
+        origin=OriginTypes.CONNECTOR.value,
+        connector_name=ConnectorsEnum.SMB,
+        connector_id="smb-1",
+        mime_type=mime_type,
+        indexing_status=ProgressStatus.QUEUED.value,
+        is_file=True,
+        extension=name.rsplit(".", 1)[-1],
+        size_in_bytes=10,
+    )
+
+
+class TestOnRecordsMovedKeepsStoredState:
+    pytestmark = pytest.mark.anyio
+
+    async def test_pure_rename_keeps_checksum_parse_state_and_created_at(self) -> None:
+        tx_store = _make_tx_store()
+        old_record = _stored_share_record()
+        new_record = _renamed_share_file("notes.txt", "text/plain")
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([(old_record.external_record_id, new_record, [])])
+
+        (written,) = tx_store.batch_upsert_records.await_args.args[0]
+        assert written.id == old_record.id
+        assert written.md5_hash == old_record.md5_hash
+        assert written.parsing_status == ProgressStatus.COMPLETED.value
+        assert written.extraction_status == ProgressStatus.COMPLETED.value
+        assert written.indexing_status == ProgressStatus.COMPLETED.value
+        assert written.created_at == 1000
+        event_types = [
+            m["eventType"]
+            for c in proc.messaging_producer.send_messages.call_args_list
+            for _key, m in c.args[1]
+        ]
+        assert "updateRecord" not in event_types
+
+    async def test_rename_to_another_file_type_reindexes_unchanged_bytes(self) -> None:
+        tx_store = _make_tx_store()
+        old_record = _stored_share_record()
+        new_record = _renamed_share_file("notes.md", "text/markdown")
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([(old_record.external_record_id, new_record, [])])
+
+        event_types = [
+            m["eventType"]
+            for c in proc.messaging_producer.send_messages.call_args_list
+            for _key, m in c.args[1]
+        ]
+        assert "updateRecord" in event_types
+        (written,) = tx_store.batch_upsert_records.await_args.args[0]
+        assert written.version == old_record.version
+        assert written.created_at == 1000
+
+
 class TestOnRecordsMovedKbUpload:
     @pytest.mark.asyncio
     async def test_upload_with_parent_creates_edge(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
-        old = MagicMock(id="r1", external_revision_id="rev1", indexing_status=ProgressStatus.COMPLETED.value)
+        old = MagicMock(
+            id="r1",
+            external_revision_id="rev1",
+            indexing_status=ProgressStatus.COMPLETED.value,
+            mime_type="application/pdf",
+            record_name="upload.pdf",
+        )
         tx_store.get_record_by_external_id = AsyncMock(return_value=old)
         new_record = _make_kb_upload_record(parent_external_record_id="parent-folder")
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -5094,7 +5191,13 @@ class TestOnRecordsMovedKbUpload:
     async def test_upload_to_root_no_parent_edge(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
-        old = MagicMock(id="r1", external_revision_id="rev1", indexing_status=ProgressStatus.COMPLETED.value)
+        old = MagicMock(
+            id="r1",
+            external_revision_id="rev1",
+            indexing_status=ProgressStatus.COMPLETED.value,
+            mime_type="application/pdf",
+            record_name="upload.pdf",
+        )
         tx_store.get_record_by_external_id = AsyncMock(return_value=old)
         new_record = _make_kb_upload_record(parent_external_record_id=None)
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -5121,7 +5224,13 @@ class TestOnRecordsMovedKbUpload:
     async def test_content_change_emits_update(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
-        old = MagicMock(id="r1", external_revision_id="old-rev", indexing_status=ProgressStatus.COMPLETED.value)
+        old = MagicMock(
+            id="r1",
+            external_revision_id="old-rev",
+            indexing_status=ProgressStatus.COMPLETED.value,
+            mime_type="application/pdf",
+            record_name="upload.pdf",
+        )
         tx_store.get_record_by_external_id = AsyncMock(return_value=old)
         new_record = _make_kb_upload_record()
         new_record.external_revision_id = "new-rev"
@@ -5136,7 +5245,13 @@ class TestOnRecordsMovedKbUpload:
     async def test_rename_only_no_reindex_event(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
-        old = MagicMock(id="r1", external_revision_id="same", indexing_status=ProgressStatus.COMPLETED.value)
+        old = MagicMock(
+            id="r1",
+            external_revision_id="same",
+            indexing_status=ProgressStatus.COMPLETED.value,
+            mime_type="application/pdf",
+            record_name="upload.pdf",
+        )
         tx_store.get_record_by_external_id = AsyncMock(return_value=old)
         new_record = _make_kb_upload_record()
         new_record.external_revision_id = "same"
@@ -5263,7 +5378,13 @@ class TestOnRecordsMovedOrgId:
     async def test_sets_org_id_on_move(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
-        old = MagicMock(id="r1", external_revision_id="same", indexing_status=ProgressStatus.COMPLETED.value)
+        old = MagicMock(
+            id="r1",
+            external_revision_id="same",
+            indexing_status=ProgressStatus.COMPLETED.value,
+            mime_type="application/pdf",
+            record_name="upload.pdf",
+        )
         tx_store.get_record_by_external_id = AsyncMock(return_value=old)
         tx_store.delete_parent_child_edge_to_record = AsyncMock()
         tx_store.batch_upsert_records = AsyncMock()

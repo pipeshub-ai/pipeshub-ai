@@ -13,7 +13,7 @@ import pytest
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 
-log = logging.getLogger("test")
+log = logging.getLogger(__name__)
 log.setLevel(logging.CRITICAL)
 
 

@@ -532,13 +532,13 @@ class BoxConnector(BaseConnector):
                     if existing_record:
                         file_record.parent_external_record_id = existing_record.parent_external_record_id
                         file_record.parent_record_type = existing_record.parent_record_type
-                        file_record.path = existing_record.path
+                        file_record.path = await self._stored_path(existing_record)
                 elif existing_record and not self._user_list_complete:
                     # The owner may be on a page of users that couldn't be read: keep the stored home.
                     file_record.external_record_group_id = existing_record.external_record_group_id
                     file_record.parent_external_record_id = existing_record.parent_external_record_id
                     file_record.parent_record_type = existing_record.parent_record_type
-                    file_record.path = existing_record.path
+                    file_record.path = await self._stored_path(existing_record)
                 elif not self._user_list_complete and owner_id and await self.data_entities_processor.get_user_by_source_id(
                     owner_id, self.connector_id
                 ):
@@ -580,6 +580,12 @@ class BoxConnector(BaseConnector):
             self.logger.error(f"Error processing Box entry {entry.get('id')}: {e}", exc_info=True)
             self._mark_read_incomplete(e)
             return None
+
+    async def _stored_path(self, existing_record: Record) -> str | None:
+        """The stored path of an item, which lives on its file record, not the base Record a lookup returns."""
+        # A read that fails raises rather than answering None, which would erase the item's place in its owner's tree.
+        stored = await self.data_entities_processor.get_file_record_by_id(existing_record.id)
+        return stored.path if stored is not None else None
 
     async def _get_permissions(self, item_id: str, item_type: str) -> list[Permission] | None:
         """

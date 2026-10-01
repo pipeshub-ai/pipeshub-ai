@@ -6,6 +6,7 @@ import LanguageDetector from 'i18next-browser-languagedetector';
 import { SUPPORTED_LNG_KEYS, SUPPORTED_LANGUAGES } from './supported-languages';
 import { locales } from './locales';
 import localePolicy from './locale-policy.json';
+import { addFormatters } from './formatters';
 
 const resources = Object.fromEntries(
   (Object.keys(SUPPORTED_LANGUAGES) as (keyof typeof SUPPORTED_LANGUAGES)[]).map(
@@ -29,5 +30,6 @@ i18n
       lookupLocalStorage: 'i18nextLng',
     },
   });
+addFormatters(i18n);
 
 export default i18n;

@@ -24,6 +24,7 @@ from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
 from app.agent_loop_lib.sandbox.coding.local import LocalCodingSandbox
 from app.agent_loop_lib.sandbox.coding.base import SandboxContext
+from app.agent_loop_lib.sandbox.coding.settings import SandboxUnavailableError
 from app.agent_loop_lib.sandbox.governor import reset_default_governor
 from app.agent_loop_lib.sandbox.manager import SandboxManager, SandboxType, UnknownSandboxError
 from app.agent_loop_lib.tools.base import ToolOutput
@@ -140,7 +141,7 @@ class TestBuildCodingSandboxManager:
     async def test_local_mode_registers_local_backend_with_curated_allowlist(
         self, monkeypatch,
     ) -> None:
-        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        monkeypatch.setenv("SANDBOX_MODE", "local")
         _, backend = await self._backend()
         assert isinstance(backend, LocalCodingSandbox)
         # The local backend delegates package policy to its EnvironmentManager.
@@ -180,7 +181,7 @@ class TestBuildCodingSandboxManager:
         assert backend._image_node_modules == "/home/sandbox/node_modules"
 
     async def test_limits_are_applied_to_registered_factory(self, monkeypatch) -> None:
-        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        monkeypatch.setenv("SANDBOX_MODE", "local")
         manager = await build_coding_sandbox_manager(max_concurrent=3, max_lifetime_s=60.0)
         entry = manager._factories[SandboxType.CODING]
         assert entry.limits.max_concurrent == 3
@@ -189,7 +190,7 @@ class TestBuildCodingSandboxManager:
     async def test_local_factory_produces_real_local_sandbox_instance(
         self, monkeypatch,
     ) -> None:
-        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        monkeypatch.setenv("SANDBOX_MODE", "local")
         manager = await build_coding_sandbox_manager()
         _, backend = await manager.get_or_create(SandboxType.CODING)
         assert isinstance(backend, LocalCodingSandbox)
@@ -215,7 +216,7 @@ class TestBuildCodingSandboxManager:
         """The governor's per-org cap and remote provider tagging both
         depend on the org reaching the sandbox — the tools call
         `get_or_create` with no context of their own."""
-        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        monkeypatch.setenv("SANDBOX_MODE", "local")
         manager = await build_coding_sandbox_manager(ctx=_make_context())
         entry = manager._factories[SandboxType.CODING]
         assert entry.default_ctx.org_id == "org-1"
@@ -227,7 +228,7 @@ class TestBuildCodingSandboxManager:
     ) -> None:
         """Per-request managers, one process-wide ceiling — otherwise N
         concurrent chats each get their own quota and nothing is capped."""
-        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        monkeypatch.setenv("SANDBOX_MODE", "local")
         first = await build_coding_sandbox_manager()
         second = await build_coding_sandbox_manager()
         assert first._governor is second._governor
@@ -238,7 +239,7 @@ class TestBuildCodingSandboxManager:
         """A backend that can't be resolved must fail loudly at wiring
         time; silently substituting an ungoverned manager would defer the
         failure into the middle of a conversation."""
-        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        monkeypatch.setenv("SANDBOX_MODE", "local")
         with patch(
             "app.agents.agent_loop.sandbox_bridge.build_default_registry"
         ) as mock_registry:
@@ -247,6 +248,20 @@ class TestBuildCodingSandboxManager:
             )
             with pytest.raises(ValueError, match="unknown sandbox backend"):
                 await build_coding_sandbox_manager()
+
+    async def test_unset_mode_is_unavailable_before_any_backend_is_built(
+        self, monkeypatch,
+    ) -> None:
+        """No `SANDBOX_MODE` used to mean `local`: generated code as a
+        subprocess of the query service. It now means no sandbox at all,
+        and the registry is never consulted."""
+        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        with patch(
+            "app.agents.agent_loop.sandbox_bridge.build_default_registry"
+        ) as mock_registry:
+            with pytest.raises(SandboxUnavailableError, match="SANDBOX_MODE is not set"):
+                await build_coding_sandbox_manager()
+        mock_registry.assert_not_called()
 
 
 class TestRegisterCodingSandboxTools:

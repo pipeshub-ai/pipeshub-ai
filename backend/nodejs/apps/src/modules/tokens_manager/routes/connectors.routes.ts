@@ -1040,7 +1040,7 @@ export function createConnectorRouter(
             payload: {
               orgId: req.user.orgId,
               appGroup: connector.name,
-              appGroupId: connector._id,
+              appGroupId: connector._id.toString(),
               credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH}`,
               refreshTokenRoute: `${config.cmBackend}/${REFRESH_TOKEN_PATH}`,
               apps: enabledApps,
@@ -1087,7 +1087,7 @@ export function createConnectorRouter(
             payload: {
               orgId: req.user.orgId,
               appGroup: connector.name,
-              appGroupId: connector._id,
+              appGroupId: connector._id.toString(),
               credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH}`,
               refreshTokenRoute: `${config.cmBackend}/${REFRESH_TOKEN_PATH}`,
               apps: [

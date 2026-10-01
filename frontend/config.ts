@@ -35,5 +35,10 @@ export { useUserPermission } from '@/lib/hooks/use-user-permission';
 export { PermissionLockIcon } from '@/app/components/ui/permission-lock-icon';
 export { PermissionDeniedDialog, usePermissionDeniedDialog } from '@/app/components/ui/permission-denied-dialog';
 export { InheritedConfigNotice } from '@/app/(main)/workspace/components/inherited-config-notice';
+export { KbListView } from '@/app/(main)/knowledge-base/components/kb-list-view';
+export { KbGridView } from '@/app/(main)/knowledge-base/components/kb-grid-view';
+export { FolderTreeItem } from '@/app/(main)/knowledge-base/sidebar/section-element/folder-tree-item';
+export type { FolderTreeItemProps } from '@/app/(main)/knowledge-base/sidebar/section-element/folder-tree-item';
+export { SelectionActionBar } from '@/app/(main)/knowledge-base/components/selection-action-bar';
 
 

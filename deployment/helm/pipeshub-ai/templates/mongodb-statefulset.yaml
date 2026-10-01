@@ -219,7 +219,9 @@ metadata:
     app.kubernetes.io/component: mongodb
 spec:
   backoffLimit: 10
-  ttlSecondsAfterFinished: 600
+  # Longer than helm --wait. A shorter TTL deletes a finished job while Helm is
+  # still waiting, and Helm then reports that job as NotFound.
+  ttlSecondsAfterFinished: 7200
   template:
     metadata:
       labels:

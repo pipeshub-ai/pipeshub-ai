@@ -39,7 +39,9 @@ test.describe('Invite a teammate', () => {
     await tagInput.fill(invitee);
     await tagInput.press('Enter');
     await dialog.getByRole('button', { name: 'Send Invite' }).click();
-    await expect(page.getByText('Invite sent!').first()).toBeVisible({ timeout: 15_000 });
+    // Delivery is asynchronous: the request only queues the email, and
+    // acceptInvite waits for it to land in Mailpit.
+    await expect(page.getByText('Invites queued').first()).toBeVisible({ timeout: 15_000 });
 
     const member = await acceptInvite(browser, invitee);
 

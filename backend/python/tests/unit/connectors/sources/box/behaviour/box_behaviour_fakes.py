@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from app.connectors.sources.box.connector import BoxConnector
-    from app.models.entities import AppUser, Record
+    from app.models.entities import AppUser, FileRecord, Record
 
 ROOT_ID = "0"
 SERVICE_ACCOUNT_ID = "svc-1"
@@ -410,6 +410,8 @@ class FakeBoxRecordsDb:
         self.fail_lookup_for: set[str] = set()
         self.fail_active_users = False
         self.failing: set[str] = set()
+        # Record ids whose record node is stored but whose file node is not.
+        self.missing_file_nodes: set[str] = set()
         self.fail_write_for: set[str] = set()
         self.fail_group_write_for: set[str] = set()
         self.shared_links: dict[str, set[str]] = {}
@@ -426,9 +428,33 @@ class FakeBoxRecordsDb:
         return {p.email if p.entity_type.value == "USER" else p.external_id for p in self.permissions.get(external_id, {}).values()}
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
+        """A base ``Record`` rebuilt from the stored node, as both graph providers return it.
+
+        No file-only fields (``path``, ``is_file``, ``etag``); those come from ``get_file_record_by_id``.
+        """
+        from app.models.entities import Record
+
         if external_record_id in self.fail_lookup_for:
             raise RuntimeError(f"database unavailable for {external_record_id}")
-        return self.records.get(external_record_id)
+        stored = self.records.get(external_record_id)
+        if stored is None:
+            return None
+        return Record.from_arango_base_record(stored.to_arango_base_record())
+
+    async def get_file_record_by_id(self, record_id: str) -> FileRecord | None:
+        """A ``FileRecord`` rebuilt from the file and record nodes; None only when no file node is stored.
+
+        A read that fails raises ``GraphQueryError``, as both providers do.
+        """
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+        from app.models.entities import FileRecord
+
+        if "get_file_record_by_id" in self.failing:
+            raise GraphQueryError(f"database unavailable (get_file_record_by_id {record_id})")
+        stored = next((r for r in self.records.values() if r.id == record_id), None)
+        if not isinstance(stored, FileRecord) or record_id in self.missing_file_nodes:
+            return None
+        return FileRecord.from_arango_record(stored.to_arango_record(), stored.to_arango_base_record())
 
     async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str) -> list[Any]:
         self._check("get_records_by_parent")
