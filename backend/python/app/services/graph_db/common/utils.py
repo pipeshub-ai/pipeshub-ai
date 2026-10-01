@@ -39,6 +39,12 @@ CONTAINER_FILTER_MAX_TERMS = 25_000
 # omitted is unrecoverable recall loss with nothing to notice.
 CONTAINER_INHERIT_MAX_DEPTH = 20
 
+# Records considered per entity when listing an entity's records, taken
+# before the newest-first sort. Without a bound, a language or broad category
+# linked to most of an org's records is sorted in full on every page. Past the
+# cap the order is newest among the first records found, and paging ends.
+ENTITY_CANDIDATE_SCAN_CAP = 10_000
+
 
 def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:
     """

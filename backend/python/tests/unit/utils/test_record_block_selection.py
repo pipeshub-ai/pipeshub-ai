@@ -164,6 +164,16 @@ class TestFallback:
 
         assert await _select(_record(), service, RenderBudget(max_chars=100_000)) is None
 
+    async def test_a_search_error_response_falls_back(self) -> None:
+        """The retrieval service reports a failed scoped search as an error
+        response, not an empty dict."""
+        service = MagicMock()
+        service.search_with_filters = AsyncMock(return_value={
+            "searchResults": [], "status": "error", "status_code": 500, "message": "boom",
+        })
+
+        assert await _select(_record(), service, RenderBudget(max_chars=100_000)) is None
+
     async def test_no_retrieval_service_falls_back(self) -> None:
         assert await _select(_record(), None, RenderBudget(max_chars=100_000)) is None
 

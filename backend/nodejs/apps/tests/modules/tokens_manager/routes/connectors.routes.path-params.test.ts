@@ -100,8 +100,10 @@ describe('Connector routes: path parameters stay inside their URL segment', () =
 
   for (const id of ['legacy.key:01', 'x'.repeat(80)]) {
     it(`still forwards a path-safe stored id of another shape (${id.slice(0, 16)}) on the other routes`, async () => {
-      h.backend.on('POST', `/api/v1/connectors/${id}/reindex`, { status: 200, body: { success: true } })
-      h.backend.on('PUT', `/api/v1/connectors/${id}/name`, { status: 200, body: { success: true } })
+      // The fake backend sees the raw path; FastAPI decodes %3A back to ':'.
+      const wireId = encodeURIComponent(id)
+      h.backend.on('POST', `/api/v1/connectors/${wireId}/reindex`, { status: 200, body: { success: true } })
+      h.backend.on('PUT', `/api/v1/connectors/${wireId}/name`, { status: 200, body: { success: true } })
       const token = sessionToken(h, member)
 
       const reindex = await call(h, 'POST', `/${id}/reindex`, token, {})
@@ -110,8 +112,8 @@ describe('Connector routes: path parameters stay inside their URL segment', () =
       expect(reindex.status).to.equal(200)
       expect(rename.status).to.equal(200)
       expect(h.backend.calls.map((c) => `${c.method} ${c.path}`)).to.deep.equal([
-        `POST /api/v1/connectors/${id}/reindex`,
-        `PUT /api/v1/connectors/${id}/name`,
+        `POST /api/v1/connectors/${wireId}/reindex`,
+        `PUT /api/v1/connectors/${wireId}/name`,
       ])
     })
   }

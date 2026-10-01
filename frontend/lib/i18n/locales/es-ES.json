@@ -52,6 +52,7 @@
     "thinkingFallback": "Pensando…",
     "refiningResponse": "Refinando la respuesta…",
     "errorFallback": "Se ha producido un error. Inténtelo de nuevo.",
+    "askQuestionResumeFailed": "No se pudieron enviar tus respuestas. Envía de nuevo para reintentar.",
     "copyCode": "Copiar",
     "copiedCode": "Copiado"
   },
@@ -227,6 +228,7 @@
   "nav": {
     "collections": "Colecciones",
     "allRecords": "Todos los registros",
+    "allArtifacts": "Todos los artefactos",
     "workspace": "Espacio de trabajo",
     "shared": "Compartido conmigo",
     "private": "Mis colecciones",
@@ -240,6 +242,31 @@
     "searchChats": "Buscar chats",
     "inbox": "Bandeja de entrada",
     "notifications": "Notificaciones"
+  },
+  "artifacts": {
+    "title": "Todos los artefactos",
+    "empty": "Aún no hay artefactos",
+    "emptyHint": "Los archivos que creen tus agentes en el chat aparecerán aquí.",
+    "loadFailed": "No se pudieron cargar los artefactos",
+    "previewFailed": "No se pudo previsualizar este archivo",
+    "downloadFailed": "No se pudo descargar este archivo",
+    "openInChat": "Abrir en el chat",
+    "searchPlaceholder": "Buscar artefactos",
+    "conversation": "Conversación",
+    "untitledChat": "—",
+    "name": "Nombre",
+    "size": "Tamaño",
+    "showing": "Mostrando {{start}}-{{end}} de {{total}}",
+    "types": {
+      "IMAGE": "Imagen",
+      "CHART": "Gráfico",
+      "DOCUMENT": "Documento",
+      "SPREADSHEET": "Hoja de cálculo",
+      "PRESENTATION": "Presentación",
+      "DATA_FILE": "Archivo de datos",
+      "CODE": "Código",
+      "CODE_OUTPUT": "Salida de código"
+    }
   },
   "notifications": {
     "title": "Notificaciones",
@@ -1230,6 +1257,8 @@
         "send": "Enviar invitación",
         "successTitle": "Invitaciones enviadas",
         "successDescription": "Se ha invitado a {{email}}",
+        "queuedTitle": "Invitaciones en cola",
+        "queuedDescription": "Los correos a {{email}} se están enviando en segundo plano. Recibirás una notificación si alguno no se puede entregar.",
         "invalidEmail": "Dirección de correo inválida",
         "errorGeneric": "No se pudieron enviar las invitaciones. Inténtalo de nuevo.",
         "importNoEmails": "No se encontraron direcciones de correo en el archivo",
@@ -4098,7 +4127,10 @@
       "orgEmailVerifiedTitle": "Organización verificada",
       "orgEmailVerifiedDescription": "Tu organización ya está activa. Inicia sesión para continuar.",
       "orgEmailVerifyFailedTitle": "Verificación fallida",
-      "orgEmailVerifyFailedDescription": "El enlace puede ser inválido o haber expirado. Por favor, regístrate nuevamente."
+      "orgEmailVerifyFailedDescription": "El enlace puede ser inválido o haber expirado. Por favor, regístrate nuevamente.",
+      "loadFailedTitle": "No se pudo cargar el inicio de sesión",
+      "loadFailedDescription": "PipesHub no pudo conectar con el servidor para cargar las opciones de inicio de sesión. Comprueba tu conexión o la dirección del servidor e inténtalo de nuevo.",
+      "retry": "Reintentar"
     },
     "common": {
       "signIn": "Iniciar sesión",
@@ -4132,6 +4164,11 @@
       "hidePassword": "Ocultar contraseña",
       "accountDisabled": "Su cuenta se ha deshabilitado.",
       "tooManyIncorrectCredentials": "Ha introducido credenciales incorrectas demasiadas veces"
+    },
+    "desktopHandoff": {
+      "title": "Inicio de sesión enviado a PipesHub",
+      "description": "Puedes cerrar esta pestaña y volver a la aplicación de PipesHub.",
+      "openApp": "Abrir PipesHub"
     }
   },
   "healthGate": {

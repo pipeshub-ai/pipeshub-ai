@@ -302,7 +302,7 @@ dependencies = [
     "requests-toolbelt==1.0.0",
     "requests==2.33.0",
     "selectolax>=0.3.21",
-    "sentence-transformers==3.4.1",
+    "sentence-transformers==5.6.0",
     "slack-sdk==3.27.0",
     "smbprotocol==1.17.0",
     "talon==1.4.4",

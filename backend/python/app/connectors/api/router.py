@@ -120,8 +120,8 @@ from app.connectors.services.vector_store_rebuild import (
     start_vector_store_reindex,
 )
 from app.edition_containers import ConnectorAppContainer
-from app.core.signed_url import SignedUrlHandler
-from app.models.entities import Record, RecordType
+from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
+from app.models.entities import ArtifactRecord, Record, RecordType
 from app.modules.demo_data.access import is_hidden_demo_record
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
@@ -1121,7 +1121,7 @@ async def get_signed_url(
 
         additional_claims = {
             "connector": connector,
-            "purpose": "file_processing",
+            "purpose": SIGNED_URL_PURPOSE,
             "org_id": caller_org,
         }
 
@@ -1313,21 +1313,24 @@ async def download_file(
         logger.info(f"Downloading file {record_id} with connector {connector}")
         # Verify signed URL using the handler
 
-        payload = signed_url_handler.validate_token(token)
+        payload = signed_url_handler.validate_token(
+            token, required_claims={"purpose": SIGNED_URL_PURPOSE}
+        )
         user_id = payload.user_id
 
-        # Auth middleware already populated request.state.user. Compare JWT
-        # org to the path when present. Tokens minted before org_id was added
-        # to additional_claims still work until expiry (~60m); ACL is not
-        # re-checked here — the signed URL remains valid until it expires.
-        caller = getattr(getattr(request, "state", None), "user", None)
-        if caller is not None:
-            raw_org = caller.get("orgId") if hasattr(caller, "get") else None
-            jwt_org = raw_org.strip() if isinstance(raw_org, str) else ""
-            if jwt_org and jwt_org != str(org_id or "").strip():
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
-                )
+        # The signed URL is not a credential on its own: a session caller must
+        # be the user it was minted for and still pass the record ACL below.
+        # Indexing service tokens carry no user and keep the org checks only.
+        caller_org, caller_user, is_scoped = _caller_org_and_user(request)
+        path_org = str(org_id or "").strip()
+        if caller_org != path_org:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
+        if not is_scoped and caller_user != str(user_id or "").strip():
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
 
         # Verify file_id matches the token
         if payload.record_id != record_id:
@@ -1356,10 +1359,17 @@ async def download_file(
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
             )
-        claims = getattr(payload, "additional_claims", None) or {}
-        if isinstance(claims, dict):
-            token_org = str(claims.get("org_id") or "").strip()
-            if token_org and token_org != record_org:
+        token_org = str(payload.additional_claims.get("org_id") or "").strip()
+        if token_org != record_org:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
+            )
+
+        if not is_scoped:
+            access = await graph_provider.check_record_access_with_details(
+                user_id, record_org, record_id
+            )
+            if not access:
                 raise HTTPException(
                     status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
                 )
@@ -1449,6 +1459,13 @@ async def stream_record(
                 detail="You do not have permission to access this record"
             )
         await _refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
+        if isinstance(record, ArtifactRecord):
+            from app.services.artifact_registry.gallery import ArtifactDisplayPolicy
+            if not ArtifactDisplayPolicy.is_user_visible_record(record):
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value,
+                    detail="Record not found",
+                )
         is_admin = is_request_admin(request)
         return await _resolve_record_content_response(
             record=record,

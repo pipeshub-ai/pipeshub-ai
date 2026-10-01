@@ -64,6 +64,7 @@
     "thinkingFallback": "思考中…",
     "refiningResponse": "正在潤飾回應…",
     "errorFallback": "發生錯誤。請再試一次。",
+    "askQuestionResumeFailed": "無法送出你的回答。請再次提交以重試。",
     "copyCode": "複製",
     "copiedCode": "已複製"
   },
@@ -233,6 +234,7 @@
   "nav": {
     "collections": "集合",
     "allRecords": "所有記錄",
+    "allArtifacts": "所有產物",
     "workspace": "工作區",
     "shared": "與我共用",
     "private": "我的集合",
@@ -246,6 +248,31 @@
     "searchChats": "搜尋對話",
     "inbox": "收件匣",
     "notifications": "通知"
+  },
+  "artifacts": {
+    "title": "所有產物",
+    "empty": "尚無產物",
+    "emptyHint": "代理程式在對話中建立的檔案會顯示在這裡。",
+    "loadFailed": "無法載入產物",
+    "previewFailed": "無法預覽此檔案",
+    "downloadFailed": "無法下載此檔案",
+    "openInChat": "在對話中開啟",
+    "searchPlaceholder": "搜尋產物",
+    "conversation": "對話",
+    "untitledChat": "—",
+    "name": "名稱",
+    "size": "大小",
+    "showing": "顯示第 {{start}}-{{end}} 項，共 {{total}} 項",
+    "types": {
+      "IMAGE": "圖片",
+      "CHART": "圖表",
+      "DOCUMENT": "文件",
+      "SPREADSHEET": "試算表",
+      "PRESENTATION": "簡報",
+      "DATA_FILE": "資料檔",
+      "CODE": "程式碼",
+      "CODE_OUTPUT": "程式碼輸出"
+    }
   },
   "notifications": {
     "title": "通知",
@@ -1231,6 +1258,8 @@
         "send": "傳送邀請",
         "successTitle": "邀請已傳送！",
         "successDescription": "已邀請 {{email}}",
+        "queuedTitle": "邀請已加入佇列",
+        "queuedDescription": "正在背景傳送電子郵件給 {{email}}。若有郵件無法送達，您將會收到通知。",
         "invalidEmail": "電子郵件地址無效",
         "errorGeneric": "傳送邀請失敗",
         "importNoEmails": "檔案中找不到任何電子郵件地址",
@@ -4075,7 +4104,10 @@
       "orgEmailVerifiedTitle": "組織已驗證",
       "orgEmailVerifiedDescription": "您的組織現已啟用。請登入以繼續。",
       "orgEmailVerifyFailedTitle": "驗證失敗",
-      "orgEmailVerifyFailedDescription": "連結可能無效或已過期。請重新註冊。"
+      "orgEmailVerifyFailedDescription": "連結可能無效或已過期。請重新註冊。",
+      "loadFailedTitle": "無法載入登入",
+      "loadFailedDescription": "PipesHub 無法連線至伺服器以載入登入選項。請檢查網路連線或伺服器位址，然後再試一次。",
+      "retry": "重試"
     },
     "common": {
       "signIn": "登入",
@@ -4109,6 +4141,11 @@
       "hidePassword": "隱藏密碼",
       "accountDisabled": "您的帳戶已停用。",
       "tooManyIncorrectCredentials": "您輸入錯誤憑證的次數過多"
+    },
+    "desktopHandoff": {
+      "title": "登入已傳送至 PipesHub",
+      "description": "您可以關閉此分頁並返回 PipesHub 應用程式。",
+      "openApp": "開啟 PipesHub"
     }
   },
   "healthGate": {
