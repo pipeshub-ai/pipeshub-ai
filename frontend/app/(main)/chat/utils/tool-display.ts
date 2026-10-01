@@ -3,6 +3,8 @@
  * and the agent activity timeline.
  */
 
+import type { MessagePart } from '../types';
+
 /**
  * The five `load_skill`/`skill_search`/... tools (see
  * `backend/python/app/agent_loop_lib/tools/builtin/data/skills.py`) go over
@@ -36,6 +38,22 @@ export function humanizeToolName(name: string): string {
   const words = segment.split(/[_\-\s]+/).filter(Boolean);
   if (words.length === 0) return 'Used a tool';
   return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+}
+
+/** True for the UI questionnaire tool, whose result is rendered as the card
+ *  rather than as prose — callers use this to keep the empty-answer fallback
+ *  out of a turn that is only a question. */
+export function isAskUserQuestionTool(toolName: string | undefined): boolean {
+  return typeof toolName === 'string' && toolName.includes('ask_user_question');
+}
+
+/** Resume can re-emit the same ask_user_question call — keep the first one. */
+export function appendResumeParts(existing: MessagePart[], incoming: MessagePart[]): MessagePart[] {
+  const hasAsk = existing.some((p) => p.type === 'tool_call' && isAskUserQuestionTool(p.toolName));
+  const extra = hasAsk
+    ? incoming.filter((p) => !(p.type === 'tool_call' && isAskUserQuestionTool(p.toolName)))
+    : incoming;
+  return extra.length ? [...existing, ...extra] : existing;
 }
 
 /** Extracts the toolset/connector prefix display name. */

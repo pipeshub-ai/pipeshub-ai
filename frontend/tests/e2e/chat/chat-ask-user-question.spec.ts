@@ -19,7 +19,8 @@
  *  4. User selects an option → Submit enabled
  *  5. User clicks Submit → store sets status 'submitted';
  *       a second stream fires to the existing agent conversation endpoint
- *       with the formatted answer as the new user message
+ *       with the formatted answer as the query (agent context) but no new
+ *       user bubble — the follow-up answer streams on the same assistant row
  *  6. Card collapses into the 'submitted' read-only view ("Question :", "Show more")
  *
  * ── i18n key → English string map (from en-US.json) ─────────────────────

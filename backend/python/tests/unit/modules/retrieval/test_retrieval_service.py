@@ -1157,9 +1157,10 @@ class TestSearchWithFilters:
         assert result["status"] == Status.ERROR.value
 
     @pytest.mark.asyncio
-    async def test_generic_exception_with_tool_ids_returns_empty_dict(
+    async def test_generic_exception_with_tool_ids_returns_error(
         self, retrieval_service, mock_graph_provider
     ):
+        """An empty dict read as a successful empty search to the KG tool."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
         retrieval_service._execute_parallel_searches = AsyncMock(
             side_effect=RuntimeError("unexpected")
@@ -1168,7 +1169,41 @@ class TestSearchWithFilters:
             queries=["test"], user_id="u1", org_id="o1",
             virtual_record_ids_from_tool=["vr1"]
         )
-        assert result == {}
+        assert result["status"] == Status.ERROR.value
+        assert result["status_code"] == 500
+        assert result["searchResults"] == []
+
+    @pytest.mark.asyncio
+    async def test_tool_ids_are_intersected_with_accessible_before_the_vector_query(
+        self, retrieval_service, mock_graph_provider, mock_vector_db_service
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {
+            "vr1": "rec1", "vr3": "rec3",
+        }
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[])
+
+        await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1",
+            virtual_record_ids_from_tool=["vr1", "vr2", "vr3", "vr1"],
+        )
+
+        must = mock_vector_db_service.filter_collection.call_args.kwargs["must"]
+        assert must["virtualRecordId"] == ["vr1", "vr3"]
+
+    @pytest.mark.asyncio
+    async def test_tool_ids_outside_the_accessible_set_skip_the_vector_query(
+        self, retrieval_service, mock_graph_provider
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[])
+
+        result = await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1",
+            virtual_record_ids_from_tool=["vr9"],
+        )
+
+        assert result["status"] == Status.ACCESSIBLE_RECORDS_NOT_FOUND.value
+        retrieval_service._execute_parallel_searches.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_filters_incomplete_results(

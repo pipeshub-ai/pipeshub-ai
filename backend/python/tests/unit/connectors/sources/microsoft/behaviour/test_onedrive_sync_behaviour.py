@@ -519,6 +519,43 @@ class TestDriveDeltaSync:
         (changed,) = db.content_updates
         assert changed.quick_xor_hash == "hash-2"
 
+    async def test_a_changed_file_whose_stored_record_cannot_be_read_is_held_then_read_again(self, cloud, tenant, db, checkpoints) -> None:
+        feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        feed.by_token[None] = page([drive_item("f1", "one.pdf")], delta_link=delta_link("u-ana", "D1"))
+        feed.by_token["D1"] = page([drive_item("f1", "one.pdf", etag="v2", quick_xor="hash-2")], delta_link=delta_link("u-ana", "D2"))
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        db.unreadable_file_records.add(db.records["f1"].id)
+
+        await connector.run_sync()
+
+        assert db.content_updates == []
+        assert drive_checkpoint(checkpoints)["deltaLink"] == delta_link("u-ana", "D1")
+
+        db.unreadable_file_records.clear()
+        await connector.run_sync()
+
+        (changed,) = db.content_updates
+        assert changed.quick_xor_hash == "hash-2"
+        assert drive_checkpoint(checkpoints)["deltaLink"] == delta_link("u-ana", "D2")
+
+    async def test_a_file_whose_stored_record_keeps_failing_is_skipped_after_five_attempts(self, cloud, tenant, db, checkpoints) -> None:
+        feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        feed.by_token[None] = page([drive_item("f1", "one.pdf")], delta_link=delta_link("u-ana", "D1"))
+        feed.by_token["D1"] = page([drive_item("f1", "one.pdf", etag="v2", quick_xor="hash-2")], delta_link=delta_link("u-ana", "D2"))
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        db.unreadable_file_records.add(db.records["f1"].id)
+
+        for _ in range(4):
+            await connector.run_sync()
+            assert drive_checkpoint(checkpoints)["deltaLink"] == delta_link("u-ana", "D1")
+        await connector.run_sync()
+
+        assert drive_checkpoint(checkpoints)["deltaLink"] == delta_link("u-ana", "D2")
+        assert db.content_updates == []
+        assert db.records["f1"].external_revision_id != "v2"
+
     async def test_one_malformed_item_does_not_stop_the_rest_of_the_page(self, cloud, tenant, db, checkpoints) -> None:
         broken = drive_item("f-bad", "bad.pdf")
         del broken["createdDateTime"]

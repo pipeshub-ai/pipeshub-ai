@@ -31,6 +31,19 @@ LEXICAL_QUERY_FIELDS = (PAGE_CONTENT_FIELD, STEMMED_PAGE_CONTENT_FIELD)
 
 
 class OpenSearchUtils:
+    @staticmethod
+    def nest_dotted_keys(payload: dict) -> dict:
+        """``{"metadata.status": 1, "connectorIds": [...]}`` as the nested
+        document a partial update expects."""
+        nested: dict = {}
+        for key, value in payload.items():
+            target = nested
+            *parents, leaf = key.split(".")
+            for parent in parents:
+                target = target.setdefault(parent, {})
+            target[leaf] = value
+        return nested
+
 
     @staticmethod
     def build_conditions(filters: Dict[str, Any]) -> List[FieldCondition]:

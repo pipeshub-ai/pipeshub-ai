@@ -226,6 +226,7 @@ export default function SingleProvider({
                 provider="sso"
                 samlProviderName={getSamlProviderNameFromAuthProviders(authProviders)}
                 onClick={auth.redirectToSSO}
+                loading={auth.ssoLoading}
                 primary
               />
             </Box>

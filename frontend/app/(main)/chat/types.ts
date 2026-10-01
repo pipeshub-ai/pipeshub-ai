@@ -1056,7 +1056,9 @@ export interface ChatSlot {
 
   /**
    * Pending interactive questionnaire from SSE `ask_user_question`.
-   * Cleared when the user submits answers or starts another stream that replaces messages.
+   * Stays on the same assistant row through submit (`status: 'submitted'`)
+   * so the follow-up answer streams in-place. Replaced by
+   * `persistedAskUserQuestion` after `onComplete` / reload.
    */
   pendingAskUserQuestion: PendingAskUserQuestion | null;
 

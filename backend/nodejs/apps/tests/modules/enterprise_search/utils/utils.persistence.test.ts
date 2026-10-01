@@ -14,6 +14,7 @@ import {
   saveCompleteAgentConversation,
   saveCompleteConversation,
   savePartialConversation,
+  staleAskUserQuestionToolCallIds,
 } from '../../../../src/modules/enterprise_search/utils/utils'
 import { InternalServerError, NotFoundError } from '../../../../src/libs/errors/http.errors'
 import { CONVERSATION_STATUS } from '../../../../src/modules/enterprise_search/constants/constants'
@@ -307,6 +308,96 @@ describe('Saving chat answers (enterprise search utils)', () => {
       ])
 
       expect(turn).to.not.have.property('tool_results')
+    })
+
+    it('replays the questions a regenerated answer carries itself', () => {
+      const payload = { name: 'ask_user_question', questions: [{ question: 'Which region?' }] }
+      const history = formatPreviousConversations([
+        {
+          messageType: 'bot_response',
+          content: '',
+          tools: [{ toolName: 'ask_user_question', toolResult: payload }],
+        } as unknown as IMessage,
+      ])
+
+      expect(at(history, 0).tool_results).to.deep.equal([
+        {
+          tool_id: 'ask_user_question',
+          tool_name: 'internaltools__ask_user_question',
+          result: JSON.stringify(payload),
+          status: 'success',
+        },
+      ])
+    })
+
+    it('replays only the newest questions row when older regenerations left theirs behind', () => {
+      const askRow = (question: string): IMessage => ({
+        messageType: 'tool_call',
+        content: '',
+        tools: [{ toolName: 'ask_user_question', toolResult: { questions: [{ question }] } }],
+      } as unknown as IMessage)
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'Which region?' } as IMessage,
+        { messageType: 'bot_response', content: '' } as IMessage,
+        askRow('discarded'),
+        askRow('current'),
+      ])
+
+      const results = at(history, 1).tool_results as Array<{ result: string }>
+      expect(results).to.have.length(1)
+      expect(results[0]?.result).to.contain('current')
+      expect(results[0]?.result).to.not.contain('discarded')
+    })
+  })
+
+  describe('staleAskUserQuestionToolCallIds', () => {
+    const row = (
+      messageType: string,
+      tools?: Array<{ toolName: string; toolResult: unknown }>,
+    ): IMessage & { _id: mongoose.Types.ObjectId } => ({
+      _id: new mongoose.Types.ObjectId(),
+      messageType,
+      content: '',
+      ...(tools ? { tools } : {}),
+    } as unknown as IMessage & { _id: mongoose.Types.ObjectId })
+    const askTools = [{ toolName: 'ask_user_question', toolResult: { questions: [] } }]
+
+    it('collects the questions rows on both sides of the turn being regenerated', () => {
+      const before = row('tool_call', askTools)
+      const bot = row('bot_response')
+      const after = row('tool_call', askTools)
+      const messages = [row('user_query'), before, bot, after, row('user_query')]
+
+      const stale = staleAskUserQuestionToolCallIds(messages, bot._id)
+
+      expect(stale.map((id) => id.toString())).to.have.members([
+        before._id.toString(),
+        after._id.toString(),
+      ])
+    })
+
+    it('leaves another turn\'s questions row alone', () => {
+      const otherTurnAsk = row('tool_call', askTools)
+      const bot = row('bot_response')
+      const messages = [otherTurnAsk, row('bot_response'), row('user_query'), bot]
+
+      expect(staleAskUserQuestionToolCallIds(messages, bot._id)).to.deep.equal([])
+    })
+
+    it('ignores a tool_call row for some other tool', () => {
+      const bot = row('bot_response')
+      const messages = [
+        bot,
+        row('tool_call', [{ toolName: 'jira.search', toolResult: {} }]),
+      ]
+
+      expect(staleAskUserQuestionToolCallIds(messages, bot._id)).to.deep.equal([])
+    })
+
+    it('returns nothing when the turn is outside the window', () => {
+      expect(
+        staleAskUserQuestionToolCallIds([row('bot_response')], new mongoose.Types.ObjectId()),
+      ).to.deep.equal([])
     })
   })
 

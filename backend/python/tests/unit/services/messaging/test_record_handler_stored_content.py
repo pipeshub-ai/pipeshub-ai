@@ -20,6 +20,8 @@ def _handler():
     event_processor = MagicMock()
     event_processor.graph_provider = AsyncMock()
     event_processor.processor = MagicMock()
+    # EventProcessor's real default; a bare MagicMock would hand the delete a non-awaitable entity store.
+    event_processor.sink_orchestrator = None
     pipeline = AsyncMock()
     pipeline.bulk_delete_embeddings = AsyncMock(return_value={"success": True})
     pipeline.purge_stored_documents = AsyncMock(return_value=[])

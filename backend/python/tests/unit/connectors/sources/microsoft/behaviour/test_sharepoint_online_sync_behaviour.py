@@ -220,15 +220,25 @@ class TestDriveDelta:
         assert [r.record_name for r in db.metadata_updates] == ["plan-final.pdf"]
         assert db.content_updates == []
 
-    async def test_a_file_whose_stored_hash_cannot_be_read_is_reindexed(self, connector, api, db, monkeypatch) -> None:
+    async def test_a_file_whose_stored_hash_cannot_be_read_is_reindexed(self, connector, api, db) -> None:
+        seed_file(db, connector, "i1", "plan.pdf", etag="e1", xor="h1")
+        delta_pages(api, {None: page([file_item("i1", "plan.pdf", etag="e1", xor="h1")], delta_link=delta_url("d1"))})
+        serve_item(api, "i1", [])
+        db.unreadable_file_records.add(db.records["i1"].id)
+
+        await sync_site(connector)
+
+        assert [r.external_record_id for r in db.content_updates] == ["i1"]
+
+    async def test_a_file_whose_file_node_is_missing_is_reindexed(self, connector, api, db, monkeypatch) -> None:
         seed_file(db, connector, "i1", "plan.pdf", etag="e1", xor="h1")
         delta_pages(api, {None: page([file_item("i1", "plan.pdf", etag="e1", xor="h1")], delta_link=delta_url("d1"))})
         serve_item(api, "i1", [])
 
-        async def unreadable(record_id: str) -> None:
+        async def no_file_node(record_id: str) -> None:
             return None
 
-        monkeypatch.setattr(db, "get_file_record_by_id", unreadable)
+        monkeypatch.setattr(db, "get_file_record_by_id", no_file_node)
 
         await sync_site(connector)
 
