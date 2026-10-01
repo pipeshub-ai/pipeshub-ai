@@ -1340,9 +1340,10 @@ class TestHandleCallback:
     @pytest.mark.asyncio
     async def test_callback_no_stored_state_raises(self, oauth_provider, mock_config_service):
         """No stored state raises ValueError."""
-        mock_config_service.get_config = AsyncMock(return_value={
-            "oauth": {"used_codes": []},
-        })
+        mock_config_service.get_config_with_version = AsyncMock(return_value=(
+            {"oauth": {"used_codes": []}},
+            1,
+        ))
 
         with pytest.raises(ValueError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="any-state")
