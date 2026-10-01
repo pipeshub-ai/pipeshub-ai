@@ -430,3 +430,34 @@ class TestDepartmentSeedKeys:
 
         assert global_department_key("Engineering") == global_department_key("Engineering")
         assert global_department_key("Engineering") != global_department_key("Sales")
+
+
+class TestNeo4jAliasHeal:
+    """KG-50: run once per database, marked done only when it succeeds."""
+
+    async def test_a_marked_database_is_not_scanned(self) -> None:
+        p = _neo4j([{"done": True}])
+        assert await p.heal_taxonomy_alias_nodes() == 0
+        assert p.client.execute_query.await_count == 1
+
+    async def test_each_taxonomy_label_is_healed_then_marked(self) -> None:
+        p = _neo4j()
+        p.client.execute_query = AsyncMock(side_effect=lambda q, **kw: (
+            [{"done": False}] if "RETURN count(m) > 0 AS done" in q
+            else [{"healed": 2}] if "IN TRANSACTIONS" in q
+            else []
+        ))
+        assert await p.heal_taxonomy_alias_nodes() == 2 * len(TAXONOMY_COLLECTIONS)
+        queries = [c.args[0] for c in p.client.execute_query.await_args_list]
+        assert sum("IN TRANSACTIONS OF" in q for q in queries) == len(TAXONOMY_COLLECTIONS)
+        assert "MERGE (m:SchemaMigration {id: $marker})" in queries[-1]
+
+    async def test_a_failure_leaves_the_marker_unset(self) -> None:
+        p = _neo4j()
+        p.client.execute_query = AsyncMock(side_effect=lambda q, **kw: (
+            [{"done": False}] if "RETURN count(m) > 0 AS done" in q else (_ for _ in ()).throw(RuntimeError("down"))
+        ))
+        with pytest.raises(RuntimeError):
+            await p.heal_taxonomy_alias_nodes()
+        queries = [c.args[0] for c in p.client.execute_query.await_args_list]
+        assert not any("MERGE (m:SchemaMigration" in q for q in queries)
