@@ -264,6 +264,8 @@ NODE_COLLECTIONS = [
 ]
 
 _WRITE_CONFLICT_ATTEMPTS = 6
+# Candidates per permitted-records query; see _walk_permitted_windows.
+_PERMITTED_WALK_CHUNK = 100
 _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
 _T = TypeVar("_T")
 
@@ -769,6 +771,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 await self.http_client.ensure_persistent_index(
                     spec.collection, [spec.scope_field, "_key"],
                 )
+
+        # "Anyone" shares are looked up per record by (file_key, organization),
+        # once per walked row in get_permitted_entity_records.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.ANYONE.value,
+            ["file_key", "organization"],
+        )
 
         # ==================== RECORD INDEXES (Highest Priority) ====================
         # Records are the most queried entity, especially in permission checks
@@ -17619,39 +17628,97 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not query_refs:
                 continue
             bind_vars: dict[str, Any] = {
-                "refs": query_refs,
                 "org_id": org_id,
-                "offset": max(0, offset),
                 "limit": limit,
                 "completed": ProgressStatus.COMPLETED.value,
                 "users_col": CollectionNames.USERS.value,
                 "user_key": user_key,
                 "app_level_connector_ids": list(app_level_connector_ids),
             }
-            # Arango rejects bind vars the query does not reference.
-            if ref_type != EntityType.RECORD.value:
-                bind_vars["window"] = max(1, window)
-                bind_vars["scan_cap"] = ENTITY_CANDIDATE_SCAN_CAP
             if record_types:
                 bind_vars["record_types"] = list(record_types)
-
-            rows = await self.execute_query(
-                self._permitted_entity_records_aql(ref_type, filter_record_types=bool(record_types)),
-                bind_vars=bind_vars,
-                **({"timeout_seconds": timeout_seconds} if timeout_seconds is not None else {}),
-            )
-            for row in rows or []:
-                if not row:
-                    continue
-                key = (ref_type, str(row.get("id") or ""))
-                if key in results:
-                    results[key] = PermittedEntityRows.from_window(
-                        row.get("hits") or [],
-                        limit=limit,
-                        window_size=int(row.get("window_size") or 0),
-                        capped=bool(row.get("capped")),
-                    )
+            query = self._permitted_entity_records_aql(ref_type, filter_record_types=bool(record_types))
+            for key, rows in (await self._walk_permitted_windows(
+                query, bind_vars, query_refs, ref_type,
+                offset=max(0, offset), window=max(1, window), limit=limit,
+                timeout_seconds=timeout_seconds,
+            )).items():
+                results[(ref_type, key)] = rows
         return results
+
+    async def _walk_permitted_windows(
+        self,
+        query: str,
+        bind_vars: dict[str, Any],
+        refs: list[dict[str, Any]],
+        ref_type: str,
+        *,
+        offset: int,
+        window: int,
+        limit: int,
+        timeout_seconds: float | None,
+    ) -> dict[str, PermittedEntityRows]:
+        """Run the permitted-records query over ``window`` in chunks of
+        ``_PERMITTED_WALK_CHUNK`` candidates, dropping each ref once it has
+        ``limit`` rows or its candidates run out.
+
+        AQL evaluates a subquery for every row of a block before a later
+        LIMIT applies, so one query over the whole window does the full
+        permission work (and holds its intermediate results) even when the
+        first rows already answer it; chunks restore the early stop.
+        """
+        started = time.monotonic()
+        hits: dict[str, list[dict[str, Any]]] = {ref["id"]: [] for ref in refs}
+        sizes: dict[str, int] = dict.fromkeys(hits, 0)
+        capped: dict[str, bool] = dict.fromkeys(hits, False)
+        short: set[str] = set()
+        pending = list(refs)
+        walked = 0
+        single = ref_type == EntityType.RECORD.value
+        while pending and walked < window:
+            size = window - walked if single else min(_PERMITTED_WALK_CHUNK, window - walked)
+            binds = {**bind_vars, "refs": pending, "offset": offset + walked}
+            # Arango rejects bind vars the query does not reference.
+            if not single:
+                binds["window"] = size
+                binds["scan_cap"] = ENTITY_CANDIDATE_SCAN_CAP
+            remaining = (
+                None if timeout_seconds is None
+                else max(0.1, timeout_seconds - (time.monotonic() - started))
+            )
+            rows = await self.execute_query(
+                query, bind_vars=binds,
+                **({"timeout_seconds": remaining} if remaining is not None else {}),
+            )
+            # No row for a ref (an unknown user returns none) ends its walk.
+            answered: set[str] = set()
+            for row in rows or []:
+                ref_id = str((row or {}).get("id") or "")
+                if ref_id not in hits:
+                    continue
+                answered.add(ref_id)
+                for hit in row.get("hits") or []:
+                    hits[ref_id].append({**hit, "pos": int(hit.get("pos") or 0) + walked})
+                got = int(row.get("window_size") or 0)
+                sizes[ref_id] += got
+                capped[ref_id] = capped[ref_id] or bool(row.get("capped"))
+                if got < size:
+                    short.add(ref_id)
+            short.update(r["id"] for r in pending if r["id"] not in answered)
+            walked += size
+            if single:
+                short.update(hits)
+            pending = [r for r in pending if r["id"] not in short and len(hits[r["id"]]) < limit]
+        return {
+            # A ref stopped by its limit has more candidates than were read;
+            # only a short chunk gives the window's true size.
+            ref_id: PermittedEntityRows.from_window(
+                ref_hits, limit=limit,
+                window_size=sizes[ref_id] if ref_id in short else max(sizes[ref_id], window),
+                capped=capped[ref_id],
+            )
+            for ref_id, ref_hits in hits.items()
+        }
 
     def _entity_refs_by_type(self, refs: list[dict[str, Any]]) -> dict[str, dict[str, list[str]]]:
         """``{type: {id: connector_ids}}`` for supported refs, first occurrence

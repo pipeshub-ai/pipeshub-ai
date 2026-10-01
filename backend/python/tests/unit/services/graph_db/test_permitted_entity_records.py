@@ -87,8 +87,36 @@ class TestArangoQuery:
         await p.get_permitted_entity_records([TOPIC_REF], "org1", "ukey", timeout_seconds=3.5, **KWARGS)
         call = p.execute_query.await_args
         binds = call.kwargs["bind_vars"]
-        assert (binds["user_key"], binds["offset"], binds["window"], binds["limit"]) == ("ukey", 20, 180, 2)
-        assert call.kwargs["timeout_seconds"] == 3.5
+        # The first chunk of the window; an empty answer ends the walk.
+        assert (binds["user_key"], binds["offset"], binds["window"], binds["limit"]) == ("ukey", 20, 100, 2)
+        assert 0 < call.kwargs["timeout_seconds"] <= 3.5
+        assert p.execute_query.await_count == 1
+
+    async def test_the_window_is_walked_in_chunks_until_the_limit(self) -> None:
+        """AQL runs a subquery for every row of a block before a later LIMIT,
+        so the window goes in chunks that stop once the limit is met."""
+        p = _arango([])
+        p.execute_query = AsyncMock(side_effect=[
+            [{"id": "t1", "hits": [], "window_size": 100, "capped": False}],
+            [{"id": "t1", "hits": [{"pos": 3, "row": {"_key": "a"}}, {"pos": 9, "row": {"_key": "b"}}],
+              "window_size": 80, "capped": True}],
+        ])
+        out = await p.get_permitted_entity_records([TOPIC_REF], "org1", "ukey", **{**KWARGS, "window": 400})
+        rows = out[("topic", "t1")]
+        assert [r["_key"] for r in rows] == ["a", "b"]
+        assert rows.examined == 110 and rows.capped is True
+        offsets = [c.kwargs["bind_vars"]["offset"] for c in p.execute_query.await_args_list]
+        assert offsets == [20, 120]
+
+    async def test_short_chunk_ends_the_walk_with_the_true_window_size(self) -> None:
+        p = _arango([])
+        p.execute_query = AsyncMock(side_effect=[
+            [{"id": "t1", "hits": [], "window_size": 100, "capped": False}],
+            [{"id": "t1", "hits": [], "window_size": 30, "capped": False}],
+        ])
+        rows = (await p.get_permitted_entity_records([TOPIC_REF], "org1", "ukey", **{**KWARGS, "window": 400}))[("topic", "t1")]
+        assert (rows.window_size, rows.examined) == (130, 130)
+        assert p.execute_query.await_count == 2
 
     async def test_record_refs_send_no_window_binds(self) -> None:
         p = _arango([])
@@ -143,3 +171,19 @@ class TestPermittedEntityRows:
             [{"pos": i, "row": {"_key": str(i)}} for i in range(5)], limit=2, window_size=100, capped=False,
         )
         assert [r["_key"] for r in rows] == ["0", "1"] and rows.examined == 2
+
+
+class TestAnyoneLookupIsIndexed:
+    """The walk looks an "anyone" share up per row; unindexed it scans every
+    org's shares per row (21 s for 800 rows with 20k shares on Neo4j)."""
+
+    def test_neo4j(self) -> None:
+        statements = _neo4j([])._generate_performance_indexes()
+        assert any("FOR (n:Anyone) ON (n.file_key, n.organization)" in s for s in statements)
+
+    async def test_arango(self) -> None:
+        p = _arango([])
+        p.http_client.ensure_persistent_index = AsyncMock()
+        await p._ensure_indexes()
+        calls = [c.args for c in p.http_client.ensure_persistent_index.await_args_list]
+        assert ("anyone", ["file_key", "organization"]) in calls
