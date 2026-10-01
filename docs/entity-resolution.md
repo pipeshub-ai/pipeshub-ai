@@ -74,6 +74,13 @@ record-group entities are identities and are never merged.
   `search_entities` results, never embedded. A point is rewritten only when
   its payload or membership changed.
 
+Aliases are written only to a node of the writing org: a legacy node (no
+`orgId`) or another org's node is left unchanged, so one tenant's spellings
+never reach another's entity search. A deduplicated record is projected
+from the nodes its copied edges reach. Its own org's nodes keep their
+aliases, nodes without an org (legacy, or global departments) are projected
+without aliases, and another org's node is skipped.
+
 Subcategories only resolve within their own level, and per-org nodes never
 link across orgs. Legacy global nodes created before the feature are not
 migrated; a reindex moves a record onto canonical nodes.

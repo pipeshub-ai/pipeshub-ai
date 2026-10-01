@@ -226,6 +226,8 @@ class TestAbstractMethodInventory:
         "get_record_key_by_external_id",
         "get_records_by_status",
         "get_app_needing_vector_membership_backfill",
+        "get_records_pending_duplicate_reconcile",
+        "update_node_fields_if_match",
         "get_entity_index_candidate",
         "page_entity_index_source",
         "page_records_for_vector_membership_backfill",
