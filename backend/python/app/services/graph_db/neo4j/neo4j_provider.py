@@ -8,6 +8,7 @@ Maps ArangoDB concepts (collections, _key, edges) to Neo4j concepts (labels, pro
 from __future__ import annotations
 
 import asyncio
+import random
 import hashlib
 import json
 import os
@@ -122,6 +123,7 @@ from app.services.graph_db.neo4j.neo4j_client import (
     Neo4jClient,
 )
 from app.services.graph_db.taxonomy import (
+    CATEGORY_HIERARCHY_PARENTS,
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
@@ -186,6 +188,8 @@ _METADATA_FILTERS: tuple[tuple[str, str, str, str, str], ...] = (
 
 # Edges one statement moves; a hub node's millions go in batches.
 _EDGE_MOVE_BATCH = 5000
+# Idempotent shared writes retried on a deadlock or lock timeout.
+_TRANSIENT_WRITE_ATTEMPTS = 6
 
 
 _EDGE_PROVENANCE_FIELDS = frozenset({"mergedFrom", "migratedFrom"})
@@ -412,6 +416,11 @@ class Neo4jProvider(IGraphDBProvider):
         re-running the block would apply them twice."""
         if self.client is None or not self.client.explicit_transactions:
             return False
+        return isinstance(error, TransientError)
+
+    def is_write_conflict(self, error: BaseException) -> bool:
+        """Deadlocks and lock timeouts are TransientErrors in either
+        transaction mode."""
         return isinstance(error, TransientError)
 
     async def rollback_transaction(self, transaction: str) -> None:
@@ -17105,6 +17114,38 @@ class Neo4jProvider(IGraphDBProvider):
         await self.client.execute_query(
             query, parameters={"id": node_id, "props": props}, txn_id=transaction,
         )
+
+    async def ensure_taxonomy_hierarchy_edge(
+        self,
+        child_collection: str,
+        child_key: str,
+        parent_key: str,
+    ) -> None:
+        """See :meth:`IGraphDBProvider.ensure_taxonomy_hierarchy_edge`."""
+        parent_collection = CATEGORY_HIERARCHY_PARENTS.get(child_collection)
+        if parent_collection is None:
+            raise ValueError(f"{child_collection!r} is not a subcategory level")
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        relationship = edge_collection_to_relationship(CollectionNames.INTER_CATEGORY_RELATIONS.value)
+        query = f"""
+            MATCH (child:{collection_to_label(child_collection)} {{id: $child}})
+            MATCH (parent:{collection_to_label(parent_collection)} {{id: $parent}})
+            MERGE (child)-[r:{relationship}]->(parent)
+            ON CREATE SET r.createdAtTimestamp = $now
+        """
+        parameters = {"child": child_key, "parent": parent_key, "now": get_epoch_timestamp_in_ms()}
+        # MERGE locks both end nodes before creating, so concurrent callers
+        # converge on one relationship; those locks are also what deadlocks
+        # them against each other, and re-running the MERGE is harmless.
+        for attempt in range(_TRANSIENT_WRITE_ATTEMPTS):
+            try:
+                await self.client.execute_query(query, parameters=parameters)
+                return
+            except TransientError:
+                if attempt == _TRANSIENT_WRITE_ATTEMPTS - 1:
+                    raise
+                await asyncio.sleep(random.uniform(0.02, 0.1) * (attempt + 1))
 
     async def add_taxonomy_aliases(
         self,

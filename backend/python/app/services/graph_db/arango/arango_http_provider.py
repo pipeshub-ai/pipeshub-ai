@@ -176,10 +176,12 @@ from app.services.graph_db.interface.graph_db_provider import (
     requested_scope_ids,
 )
 from app.services.graph_db.taxonomy import (
+    CATEGORY_HIERARCHY_PARENTS,
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
     alias_pairs as _alias_pairs,
+    hierarchy_edge_key,
     is_taxonomy_collection,
     subcategory_level,
 )
@@ -1034,6 +1036,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """A write-write conflict (errorNum 1200) with another writer, such as
         indexing updating the same record. A stream transaction rolls back
         whole, so the block can be re-run."""
+        return isinstance(error, Exception) and _is_write_conflict(error)
+
+    def is_write_conflict(self, error: BaseException) -> bool:
         return isinstance(error, Exception) and _is_write_conflict(error)
 
     async def rollback_transaction(self, transaction: str) -> None:
@@ -18014,6 +18019,45 @@ class ArangoHTTPProvider(IGraphDBProvider):
             raise RuntimeError(
                 f"create_taxonomy_node_if_absent failed for {collection}/{doc.get('_key')}"
             )
+
+    async def ensure_taxonomy_hierarchy_edge(
+        self,
+        child_collection: str,
+        child_key: str,
+        parent_key: str,
+    ) -> None:
+        """See :meth:`IGraphDBProvider.ensure_taxonomy_hierarchy_edge`.
+
+        An existing edge (older ones have random keys) is kept; otherwise the
+        edge is inserted under a deterministic key, so two writers that both
+        found none collide on one key instead of leaving two edges.
+        """
+        parent_collection = CATEGORY_HIERARCHY_PARENTS.get(child_collection)
+        if parent_collection is None:
+            raise ValueError(f"{child_collection!r} is not a subcategory level")
+        edges = CollectionNames.INTER_CATEGORY_RELATIONS.value
+        query = f"""
+            LET existing = FIRST(
+                FOR e IN {edges}
+                    FILTER e._from == @from AND e._to == @to
+                    LIMIT 1
+                    RETURN 1
+            )
+            FILTER existing == null
+            INSERT {{_key: @key, _from: @from, _to: @to, createdAtTimestamp: @now}}
+                INTO {edges} OPTIONS {{overwriteMode: "ignore"}}
+        """
+        bind_vars = {
+            "key": hierarchy_edge_key(child_key, parent_key),
+            "from": f"{child_collection}/{child_key}",
+            "to": f"{parent_collection}/{parent_key}",
+            "now": get_epoch_timestamp_in_ms(),
+        }
+
+        async def _insert() -> None:
+            await self.execute_query(query, bind_vars=bind_vars)
+
+        await self._retry_write_conflicts(_insert, transaction=None)
 
     async def add_taxonomy_aliases(
         self,

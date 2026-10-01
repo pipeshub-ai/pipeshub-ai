@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.models.blocks import SemanticMetadata
 
 
 # ---------------------------------------------------------------------------
@@ -13,7 +14,10 @@ from app.config.constants.arangodb import CollectionNames
 
 def _make_graph_provider():
     """Return a mock IGraphDBProvider."""
-    return AsyncMock()
+    provider = AsyncMock()
+    # A sync predicate: an AsyncMock answer would be a truthy coroutine.
+    provider.is_write_conflict = MagicMock(return_value=False)
+    return provider
 
 
 def _make_tx_store():
@@ -416,3 +420,29 @@ class TestSaveMetadataToDb:
         metadata = _make_semantic_metadata()
         with pytest.raises(Exception, match="DB connection lost"):
             await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
+
+
+class TestRecordWriteRetriesConflicts:
+    """KG-32: the record's graph write is re-run when it collides with
+    another record's write; every attempt starts from a fresh read."""
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_reruns_the_write_without_duplicating_entities(self, monkeypatch) -> None:
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+        provider = _make_graph_provider()
+        provider.is_write_conflict = MagicMock(side_effect=lambda e: "1200" in str(e))
+        transformer = _make_transformer(graph_provider=provider)
+        store = _make_tx_store()
+        store.batch_create_edges = AsyncMock(side_effect=[RuntimeError("[1200] write-write conflict"), None, None, None])
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_store.graph_data_store.GraphTransactionStore",
+            lambda provider, txn: store,
+        )
+        metadata = SemanticMetadata(categories=["Finance"], topics=["Budget"], languages=[], departments=[])
+
+        entities = await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
+
+        assert store.get_record_by_key.await_count == 2
+        assert sorted(e.name for e in entities) == ["Budget", "Finance"]
+        store.rollback.assert_awaited_once()
+        store.commit.assert_awaited_once()

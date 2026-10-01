@@ -6,6 +6,7 @@ from app.config.constants.arangodb import (
     CollectionNames,
     ProgressStatus,
 )
+from app.connectors.core.base.data_store.data_store import TransactionStore
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.blocks import SemanticMetadata
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
@@ -232,6 +233,41 @@ class GraphDBTransformer(Transformer):
                     )
 
     @staticmethod
+    def _primary_category(metadata: SemanticMetadata) -> str | None:
+        # An empty category used to create a node named ""; it is skipped,
+        # and the subcategory chain hangs off it, so it goes too.
+        return next(
+            (c for c in (metadata.categories or []) if isinstance(c, str) and c.strip()),
+            None,
+        )
+
+    async def _write_hierarchy_edges(
+        self, metadata: SemanticMetadata, resolution: EntityResolution,
+    ) -> None:
+        """Link the record's subcategory chain before its transaction opens.
+
+        The edges are shared by every record with the chain; written inside
+        each record's transaction, two records that both found no edge each
+        inserted one (ArangoDB) or deadlocked on the nodes (Neo4j).
+        """
+        primary = self._primary_category(metadata)
+        if not primary:
+            return
+        parent = await self._resolve_taxonomy_node(None, CATEGORY, primary, resolution)
+        provider = self.graph_data_store.graph_provider
+        levels = (
+            (SUBCATEGORY_1, metadata.sub_category_level_1),
+            (SUBCATEGORY_2, metadata.sub_category_level_2),
+            (SUBCATEGORY_3, metadata.sub_category_level_3),
+        )
+        for kind, name in levels:
+            if not name:
+                break
+            child = await self._resolve_taxonomy_node(None, kind, name, resolution)
+            await provider.ensure_taxonomy_hierarchy_edge(kind.collection, child.key, parent.key)
+            parent = child
+
+    @staticmethod
     def _taxonomy_entity_record(
         node: _TaxonomyNode,
         entity_type: EntityType,
@@ -363,244 +399,256 @@ class GraphDBTransformer(Transformer):
         entity nodes referenced during this call (newly created or reused).
         The caller uses these to sync entities to the vector store.
         """
-        touched_entities: List[EntityRecord] = []
-        # org_id comes from the record node once it is loaded below.
-        org_id_placeholder = ""
-
         self.logger.debug("🚀 Saving metadata to graph database")
         if resolution is not None:
             await self._write_canonical_nodes(resolution)
-        async with self.graph_data_store.transaction() as tx_store:
-            try:
-                # Retrieve the document content from graph database
-                record = await tx_store.get_record_by_key(
-                    record_id
-                )
+            await self._write_hierarchy_edges(metadata, resolution)
+        # Records sharing taxonomy nodes collide on them (Neo4j deadlocks,
+        # ArangoDB errorNum 1200); the write below re-reads the record's edges
+        # and writes only the difference, so it is safe to run again.
+        return await self.graph_data_store.execute_idempotent_in_transaction(
+            self._write_record_metadata,
+            record_id, metadata, virtual_record_id,
+            is_vlm_ocr_processed=is_vlm_ocr_processed, resolution=resolution,
+        )
 
-                if record is None:
-                    self.logger.error(f"❌ Record {record_id} not found in database")
-                    raise Exception(f"Record {record_id} not found in database")
+    async def _write_record_metadata(
+        self,
+        tx_store: TransactionStore,
+        record_id: str,
+        metadata: SemanticMetadata,
+        virtual_record_id: str,
+        *,
+        is_vlm_ocr_processed: bool,
+        resolution: EntityResolution | None,
+    ) -> list[EntityRecord]:
+        """One attempt at the record's graph write, inside ``tx_store``."""
+        touched_entities: list[EntityRecord] = []
+        try:
+            # Retrieve the document content from graph database
+            record = await tx_store.get_record_by_key(
+                record_id
+            )
 
-                # Use orgId stored on the record node for entity metadata
-                org_id_placeholder = record.get("orgId", "")
-                connector_ids_placeholder = (
-                    [record["connectorId"]] if record.get("connectorId") else []
-                )
-                record_group_ids_placeholder = (
-                    [record["recordGroupId"]] if record.get("recordGroupId") else []
-                )
+            if record is None:
+                self.logger.error(f"❌ Record {record_id} not found in database")
+                raise Exception(f"Record {record_id} not found in database")
 
-                record_from = f"{CollectionNames.RECORDS.value}/{record_id}"
+            # Use orgId stored on the record node for entity metadata
+            org_id_placeholder = record.get("orgId", "")
+            connector_ids_placeholder = (
+                [record["connectorId"]] if record.get("connectorId") else []
+            )
+            record_group_ids_placeholder = (
+                [record["recordGroupId"]] if record.get("recordGroupId") else []
+            )
 
-                # --- Reconcile department edges ---
-                new_dept_tos: Dict[str, str] = {}
-                for department in metadata.departments:
-                    try:
-                        results = await tx_store.get_nodes_by_filters(
-                            CollectionNames.DEPARTMENTS.value,
-                            {"departmentName": department},
-                        )
-                        if results:
-                            dept_key = self._node_key(results[0])
-                            dept_to = f"{CollectionNames.DEPARTMENTS.value}/{dept_key}"
-                            new_dept_tos[dept_to] = department
-                            touched_entities.append(EntityRecord(
-                                entity_id=dept_key,
-                                entity_type=EntityType.DEPARTMENT,
-                                name=department,
-                                org_id=org_id_placeholder,
-                                type_category=EntityTypeCategory.GENERIC_SCHEMA_FREE,
-                                connector_ids=connector_ids_placeholder,
-                                record_group_ids=record_group_ids_placeholder,
-                            ))
-                        else:
-                            self.logger.warning(f"⚠️ No department found for: {department}")
-                    except Exception as e:
-                        self.logger.error(f"❌ Error resolving department {department}: {str(e)}")
+            record_from = f"{CollectionNames.RECORDS.value}/{record_id}"
 
-                await self._reconcile_edges(
-                    tx_store, record_id, record_from,
-                    CollectionNames.BELONGS_TO_DEPARTMENT.value,
-                    new_dept_tos, "department",
-                )
-
-                # --- Reconcile category edges ---
-                new_cat_tos: Dict[str, str] = {}
-                cat_extracted: Dict[str, str] = {}
-
-                # Handle primary category. An empty category used to create a
-                # node named ""; it is skipped instead, and the subcategory
-                # chain hangs off the category so it is skipped with it.
-                primary_category = next(
-                    (c for c in (metadata.categories or []) if isinstance(c, str) and c.strip()),
-                    None,
-                )
-                category_key: Optional[str] = None
-                if primary_category:
-                    category_node = await self._resolve_taxonomy_node(
-                        tx_store, CATEGORY, primary_category, resolution
+            # --- Reconcile department edges ---
+            new_dept_tos: Dict[str, str] = {}
+            for department in metadata.departments:
+                try:
+                    results = await tx_store.get_nodes_by_filters(
+                        CollectionNames.DEPARTMENTS.value,
+                        {"departmentName": department},
                     )
-                    category_key = category_node.key
-                    cat_to = f"{CollectionNames.CATEGORIES.value}/{category_node.key}"
-                    new_cat_tos[cat_to] = category_node.name
-                    if category_node.extracted_name:
-                        cat_extracted[cat_to] = category_node.extracted_name
-                    touched_entities.append(self._taxonomy_entity_record(
-                        category_node, EntityType.CATEGORY, org_id_placeholder,
-                        connector_ids_placeholder, record_group_ids_placeholder,
-                    ))
-                else:
-                    self.logger.warning("⚠️ No category extracted for record %s", record_id)
+                    if results:
+                        dept_key = self._node_key(results[0])
+                        dept_to = f"{CollectionNames.DEPARTMENTS.value}/{dept_key}"
+                        new_dept_tos[dept_to] = department
+                        touched_entities.append(EntityRecord(
+                            entity_id=dept_key,
+                            entity_type=EntityType.DEPARTMENT,
+                            name=department,
+                            org_id=org_id_placeholder,
+                            type_category=EntityTypeCategory.GENERIC_SCHEMA_FREE,
+                            connector_ids=connector_ids_placeholder,
+                            record_group_ids=record_group_ids_placeholder,
+                        ))
+                    else:
+                        self.logger.warning(f"⚠️ No department found for: {department}")
+                except Exception as e:
+                    self.logger.error(f"❌ Error resolving department {department}: {str(e)}")
 
-                # Handle subcategories
-                async def handle_subcategory(
-                    name: str, kind: TaxonomyKind, parent_key: str, parent_collection: str
-                ) -> str:
-                    collection_name = kind.collection
-                    node = await self._resolve_taxonomy_node(tx_store, kind, name, resolution)
-                    key = node.key
+            await self._reconcile_edges(
+                tx_store, record_id, record_from,
+                CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                new_dept_tos, "department",
+            )
 
-                    sub_to = f"{collection_name}/{key}"
-                    new_cat_tos[sub_to] = node.name
-                    if node.extracted_name:
-                        cat_extracted[sub_to] = node.extracted_name
-                    touched_entities.append(self._taxonomy_entity_record(
-                        node, EntityType.SUBCATEGORY, org_id_placeholder,
-                        connector_ids_placeholder, record_group_ids_placeholder,
-                    ))
+            # --- Reconcile category edges ---
+            new_cat_tos: Dict[str, str] = {}
+            cat_extracted: Dict[str, str] = {}
 
-                    # Create hierarchy relationship (inter-category) only when it does
-                    # not already exist.  Skipping the write for existing edges avoids
-                    # the UPSERT UPDATE branch that takes a write lock on a shared row
-                    # and was the source of ArangoDB errorNum 1200 under concurrent
-                    # indexing load.
-                    if parent_key:
-                        existing_edge = await tx_store.get_edge(
-                            key, collection_name,
-                            parent_key, parent_collection,
+            primary_category = self._primary_category(metadata)
+            category_key: Optional[str] = None
+            if primary_category:
+                category_node = await self._resolve_taxonomy_node(
+                    tx_store, CATEGORY, primary_category, resolution
+                )
+                category_key = category_node.key
+                cat_to = f"{CollectionNames.CATEGORIES.value}/{category_node.key}"
+                new_cat_tos[cat_to] = category_node.name
+                if category_node.extracted_name:
+                    cat_extracted[cat_to] = category_node.extracted_name
+                touched_entities.append(self._taxonomy_entity_record(
+                    category_node, EntityType.CATEGORY, org_id_placeholder,
+                    connector_ids_placeholder, record_group_ids_placeholder,
+                ))
+            else:
+                self.logger.warning("⚠️ No category extracted for record %s", record_id)
+
+            # Handle subcategories
+            async def handle_subcategory(
+                name: str, kind: TaxonomyKind, parent_key: str, parent_collection: str
+            ) -> str:
+                collection_name = kind.collection
+                node = await self._resolve_taxonomy_node(tx_store, kind, name, resolution)
+                key = node.key
+
+                sub_to = f"{collection_name}/{key}"
+                new_cat_tos[sub_to] = node.name
+                if node.extracted_name:
+                    cat_extracted[sub_to] = node.extracted_name
+                touched_entities.append(self._taxonomy_entity_record(
+                    node, EntityType.SUBCATEGORY, org_id_placeholder,
+                    connector_ids_placeholder, record_group_ids_placeholder,
+                ))
+
+                # With a resolution the chain was linked before the transaction
+                # (_write_hierarchy_edges). Without one, create the hierarchy
+                # relationship only when it does not already exist: skipping
+                # the write for existing edges avoids the UPSERT UPDATE branch
+                # that takes a write lock on a shared row (ArangoDB errorNum
+                # 1200 under concurrent indexing load).
+                if parent_key and resolution is None:
+                    existing_edge = await tx_store.get_edge(
+                        key, collection_name,
+                        parent_key, parent_collection,
+                        CollectionNames.INTER_CATEGORY_RELATIONS.value,
+                    )
+                    if existing_edge is None:
+                        await tx_store.batch_create_edges(
+                            [{
+                                "from_id": key,
+                                "from_collection": collection_name,
+                                "to_id": parent_key,
+                                "to_collection": parent_collection,
+                                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                            }],
                             CollectionNames.INTER_CATEGORY_RELATIONS.value,
                         )
-                        if existing_edge is None:
-                            await tx_store.batch_create_edges(
-                                [{
-                                    "from_id": key,
-                                    "from_collection": collection_name,
-                                    "to_id": parent_key,
-                                    "to_collection": parent_collection,
-                                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                                }],
-                                CollectionNames.INTER_CATEGORY_RELATIONS.value,
-                            )
-                    return key
+                return key
 
-                # Process subcategories
-                sub1_key: Optional[str] = None
-                sub2_key: Optional[str] = None
-                if metadata.sub_category_level_1 and category_key:
-                    sub1_key = await handle_subcategory(
-                        metadata.sub_category_level_1, SUBCATEGORY_1,
-                        category_key, CollectionNames.CATEGORIES.value,
-                    )
-                if metadata.sub_category_level_2 and sub1_key:
-                    sub2_key = await handle_subcategory(
-                        metadata.sub_category_level_2, SUBCATEGORY_2,
-                        sub1_key, CollectionNames.SUBCATEGORIES1.value,
-                    )
-                if metadata.sub_category_level_3 and sub2_key:
-                    await handle_subcategory(
-                        metadata.sub_category_level_3, SUBCATEGORY_3,
-                        sub2_key, CollectionNames.SUBCATEGORIES2.value,
-                    )
-
-                # Reconcile category edges (convert set to dict for _reconcile_edges)
-                await self._reconcile_edges(
-                    tx_store, record_id, record_from,
-                    CollectionNames.BELONGS_TO_CATEGORY.value,
-                    new_cat_tos, "category", extracted_names=cat_extracted,
+            # Process subcategories
+            sub1_key: Optional[str] = None
+            sub2_key: Optional[str] = None
+            if metadata.sub_category_level_1 and category_key:
+                sub1_key = await handle_subcategory(
+                    metadata.sub_category_level_1, SUBCATEGORY_1,
+                    category_key, CollectionNames.CATEGORIES.value,
+                )
+            if metadata.sub_category_level_2 and sub1_key:
+                sub2_key = await handle_subcategory(
+                    metadata.sub_category_level_2, SUBCATEGORY_2,
+                    sub1_key, CollectionNames.SUBCATEGORIES1.value,
+                )
+            if metadata.sub_category_level_3 and sub2_key:
+                await handle_subcategory(
+                    metadata.sub_category_level_3, SUBCATEGORY_3,
+                    sub2_key, CollectionNames.SUBCATEGORIES2.value,
                 )
 
-                # --- Reconcile language edges ---
-                new_lang_tos: Dict[str, str] = {}
-                lang_extracted: Dict[str, str] = {}
-                for language in metadata.languages or []:
-                    if not isinstance(language, str) or not language.strip():
-                        continue
-                    lang_node = await self._resolve_taxonomy_node(
-                        tx_store, LANGUAGE, language, resolution
-                    )
-                    lang_to = f"{CollectionNames.LANGUAGES.value}/{lang_node.key}"
-                    new_lang_tos[lang_to] = lang_node.name
-                    if lang_node.extracted_name:
-                        lang_extracted[lang_to] = lang_node.extracted_name
-                    touched_entities.append(self._taxonomy_entity_record(
-                        lang_node, EntityType.LANGUAGE, org_id_placeholder,
-                        connector_ids_placeholder, record_group_ids_placeholder,
-                    ))
+            # Reconcile category edges (convert set to dict for _reconcile_edges)
+            await self._reconcile_edges(
+                tx_store, record_id, record_from,
+                CollectionNames.BELONGS_TO_CATEGORY.value,
+                new_cat_tos, "category", extracted_names=cat_extracted,
+            )
 
-                await self._reconcile_edges(
-                    tx_store, record_id, record_from,
-                    CollectionNames.BELONGS_TO_LANGUAGE.value,
-                    new_lang_tos, "language", extracted_names=lang_extracted,
+            # --- Reconcile language edges ---
+            new_lang_tos: Dict[str, str] = {}
+            lang_extracted: Dict[str, str] = {}
+            for language in metadata.languages or []:
+                if not isinstance(language, str) or not language.strip():
+                    continue
+                lang_node = await self._resolve_taxonomy_node(
+                    tx_store, LANGUAGE, language, resolution
                 )
+                lang_to = f"{CollectionNames.LANGUAGES.value}/{lang_node.key}"
+                new_lang_tos[lang_to] = lang_node.name
+                if lang_node.extracted_name:
+                    lang_extracted[lang_to] = lang_node.extracted_name
+                touched_entities.append(self._taxonomy_entity_record(
+                    lang_node, EntityType.LANGUAGE, org_id_placeholder,
+                    connector_ids_placeholder, record_group_ids_placeholder,
+                ))
 
-                # --- Reconcile topic edges ---
-                new_topic_tos: Dict[str, str] = {}
-                topic_extracted: Dict[str, str] = {}
-                for topic in metadata.topics or []:
-                    if not isinstance(topic, str) or not topic.strip():
-                        continue
-                    topic_node = await self._resolve_taxonomy_node(
-                        tx_store, TOPIC, topic, resolution
-                    )
-                    topic_to = f"{CollectionNames.TOPICS.value}/{topic_node.key}"
-                    new_topic_tos[topic_to] = topic_node.name
-                    if topic_node.extracted_name:
-                        topic_extracted[topic_to] = topic_node.extracted_name
-                    touched_entities.append(self._taxonomy_entity_record(
-                        topic_node, EntityType.TOPIC, org_id_placeholder,
-                        connector_ids_placeholder, record_group_ids_placeholder,
-                    ))
+            await self._reconcile_edges(
+                tx_store, record_id, record_from,
+                CollectionNames.BELONGS_TO_LANGUAGE.value,
+                new_lang_tos, "language", extracted_names=lang_extracted,
+            )
 
-                await self._reconcile_edges(
-                    tx_store, record_id, record_from,
-                    CollectionNames.BELONGS_TO_TOPIC.value,
-                    new_topic_tos, "topic", extracted_names=topic_extracted,
+            # --- Reconcile topic edges ---
+            new_topic_tos: Dict[str, str] = {}
+            topic_extracted: Dict[str, str] = {}
+            for topic in metadata.topics or []:
+                if not isinstance(topic, str) or not topic.strip():
+                    continue
+                topic_node = await self._resolve_taxonomy_node(
+                    tx_store, TOPIC, topic, resolution
                 )
+                topic_to = f"{CollectionNames.TOPICS.value}/{topic_node.key}"
+                new_topic_tos[topic_to] = topic_node.name
+                if topic_node.extracted_name:
+                    topic_extracted[topic_to] = topic_node.extracted_name
+                touched_entities.append(self._taxonomy_entity_record(
+                    topic_node, EntityType.TOPIC, org_id_placeholder,
+                    connector_ids_placeholder, record_group_ids_placeholder,
+                ))
 
-                self.logger.debug(
-                    "🚀 Metadata saved successfully for document"
+            await self._reconcile_edges(
+                tx_store, record_id, record_from,
+                CollectionNames.BELONGS_TO_TOPIC.value,
+                new_topic_tos, "topic", extracted_names=topic_extracted,
+            )
+
+            self.logger.debug(
+                "🚀 Metadata saved successfully for document"
+            )
+
+            # Update only extractionStatus — indexingStatus is managed
+            # independently by SinkOrchestrator.index().
+            timestamp = get_epoch_timestamp_in_ms()
+            status_doc = {
+                "id": record_id,
+                "extractionStatus": "COMPLETED",
+                "lastExtractionTimestamp": timestamp,
+                "isDirty": False,
+                "virtualRecordId": virtual_record_id,
+            }
+
+            if is_vlm_ocr_processed:
+                status_doc["isVLMOcrProcessed"] = True
+
+            self.logger.debug(
+                "🎯 Upserting extraction status (COMPLETED) for document"
+            )
+            success = await tx_store.batch_update_nodes(
+                [status_doc], CollectionNames.RECORDS.value
+            )
+            if not success:
+                self.logger.warning(
+                    "⚠️ Failed to update extraction status for record %s - record may not exist",
+                    record_id,
                 )
+                return touched_entities
 
-                # Update only extractionStatus — indexingStatus is managed
-                # independently by SinkOrchestrator.index().
-                timestamp = get_epoch_timestamp_in_ms()
-                status_doc = {
-                    "id": record_id,
-                    "extractionStatus": "COMPLETED",
-                    "lastExtractionTimestamp": timestamp,
-                    "isDirty": False,
-                    "virtualRecordId": virtual_record_id,
-                }
-
-                if is_vlm_ocr_processed:
-                    status_doc["isVLMOcrProcessed"] = True
-
-                self.logger.debug(
-                    "🎯 Upserting extraction status (COMPLETED) for document"
-                )
-                success = await tx_store.batch_update_nodes(
-                    [status_doc], CollectionNames.RECORDS.value
-                )
-                if not success:
-                    self.logger.warning(
-                        "⚠️ Failed to update extraction status for record %s - record may not exist",
-                        record_id,
-                    )
-                    return touched_entities
-
-            except Exception as e:
-                self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
-                raise
+        except Exception as e:
+            self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
+            raise
 
         return touched_entities
 
