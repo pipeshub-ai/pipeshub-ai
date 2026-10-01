@@ -72,3 +72,34 @@ def test_punctuation_that_changes_a_number_or_name_is_kept(a: str, b: str) -> No
 )
 def test_case_and_word_separators_still_match_around_numbers(a: str, b: str) -> None:
     assert spelling_key(a) == spelling_key(b)
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("(.NET)", "NET"),
+        ("(-5)", "5"),
+        ("[.NET]", "NET"),
+        ('".NET" runtime', "NET runtime"),
+        ("Runtime (.NET)", "Runtime NET"),
+    ],
+)
+def test_leading_mark_after_an_opening_bracket_or_quote_is_kept(a: str, b: str) -> None:
+    assert spelling_key(a) != spelling_key(b)
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("(.NET)", ".NET"),
+        ("(-5)", "-5"),
+        ("[(.NET)]", ".NET"),
+        ("Runtime (.NET)", "runtime .net"),
+    ],
+)
+def test_bracketed_leading_mark_matches_the_unbracketed_form(a: str, b: str) -> None:
+    assert spelling_key(a) == spelling_key(b)
+
+
+def test_mark_inside_a_word_is_still_dropped() -> None:
+    assert spelling_key("x(.net)") == spelling_key("xnet")

@@ -166,8 +166,10 @@ def _entity_notes(
         )
     if entities_skipped:
         notes.append(
-            f"Note: only the first {SEARCH_SCOPE_MAX_ENTITIES} entity_ids scoped this "
-            f"search; {entities_skipped} more were not applied. Search them separately."
+            f"Note: only the first {SEARCH_SCOPE_MAX_ENTITIES} record group/subcategory "
+            f"entity_ids scoped this search; {entities_skipped} more record group/subcategory "
+            "entity_ids were not applied. Search them separately. Department, category, "
+            "topic and language entity_ids are not limited."
         )
     return "".join(f"{note}\n\n" for note in notes)
 

@@ -24,6 +24,7 @@ _SIGNIFICANT_PUNCTUATION = frozenset("#%@*")
 # sit between digits, and of a name or sign (".NET", "-5") at a word's start.
 _NUMBER_SEPARATORS = frozenset(".,/-:")
 _LEADING_MARKS = frozenset(".-")
+_ASCII_OPENING_QUOTES = frozenset("\"'")
 
 
 def _strip_once(text: str) -> str:
@@ -68,7 +69,19 @@ def _keeps(text: str, i: int) -> bool:
     after = text[i + 1] if i + 1 < len(text) else " "
     if char in _NUMBER_SEPARATORS and before.isdigit() and after.isdigit():
         return True
-    return char in _LEADING_MARKS and before.isspace() and after.isalnum()
+    return char in _LEADING_MARKS and _starts_word(text, i) and after.isalnum()
+
+
+def _is_opener(char: str) -> bool:
+    return unicodedata.category(char) in ("Ps", "Pi") or char in _ASCII_OPENING_QUOTES
+
+
+def _starts_word(text: str, i: int) -> bool:
+    # Openers are dropped from the key, so "(.NET)" must key as ".NET", not "NET".
+    j = i - 1
+    while j >= 0 and _is_opener(text[j]):
+        j -= 1
+    return j < 0 or text[j].isspace()
 
 
 def spelling_key(name: str) -> str:

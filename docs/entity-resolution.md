@@ -47,8 +47,8 @@ pick the nodes.
    (`rejected_canonical`), since it would otherwise merge into an existing node
    the model was never offered. Combining marks, digits and symbols count as
    spelling ("दिन" is not "दीन", "C++" is not "C#"), and so does punctuation
-   inside a number or at the start of a name ("3.11" is not "311", ".NET" is
-   not "NET").
+   inside a number or at the start of a name, including after an opening
+   bracket or quote ("3.11" is not "311", ".NET" and "(.NET)" are not "NET").
 
 Languages go through a static ISO table and skip tiers 2 and 3. Departments
 keep their exact match against the org's department list. Record and

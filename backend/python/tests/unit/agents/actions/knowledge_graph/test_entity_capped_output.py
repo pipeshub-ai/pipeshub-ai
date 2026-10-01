@@ -126,5 +126,15 @@ class TestEntityNotes:
             unknown_entity_ids=[], filter_dropped=False, record_scope_applied=True,
             scope_truncated=False, entities_skipped=2,
         )
-        assert f"first {SEARCH_SCOPE_MAX_ENTITIES}" in note
-        assert "2" in note
+        assert f"first {SEARCH_SCOPE_MAX_ENTITIES} record group/subcategory entity_ids" in note
+        assert "2 more record group/subcategory entity_ids" in note
+
+    def test_skipped_note_does_not_count_name_filtered_entities(self) -> None:
+        """Topics and other name-filtered ids are never capped, so the note
+        must not read as if only the first N of all entity_ids applied."""
+        note = _entity_notes(
+            unknown_entity_ids=[], filter_dropped=False, record_scope_applied=True,
+            scope_truncated=False, entities_skipped=2,
+        )
+        assert f"first {SEARCH_SCOPE_MAX_ENTITIES} entity_ids" not in note
+        assert "topic" in note
