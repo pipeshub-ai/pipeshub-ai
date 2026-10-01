@@ -69,6 +69,11 @@ class ExtractionClient(BaseServiceClient):
         Returns ``None`` when the LLM produced no classification (e.g. empty
         document).  Raises :class:`ExtractionClientError` on explicit failures.
         Raises :class:`ServiceCallError` on connection problems.
+
+        The service has no record of its own, so *record_name* and *record_type*
+        travel with the request: the type selects the code prompt (``CODE_FILE``)
+        over the document prompt, and both give the document prompt its file
+        context.
         """
         payload = {
             "block_container": block_container.model_dump(mode="json"),

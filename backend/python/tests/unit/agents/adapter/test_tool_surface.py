@@ -223,6 +223,56 @@ class TestLiveApiApps:
         s = _resolve(["retrieval.search_internal_knowledge"])
         assert s.has_service_tools is False
 
+    @pytest.mark.parametrize("name", [
+        "retrieval__search_internal_knowledge",
+        "knowledgegraph__navigate",
+        "codegraph__query_code_graph",
+        "internaltools__ask_user_question",
+    ])
+    def test_internal_toolsets_are_not_live_apps_in_prefix_form(self, name: str) -> None:
+        """Source 3 splits on `__`, so an internal toolset reaches it as a prefix.
+
+        Misclassifying one here tells the model an internal tool is a live
+        connector *and* inflates the surface count, which switches on the
+        call-in-parallel instruction for a single surface.
+        """
+        s = _resolve([name])
+        assert s.live_api_apps == ()
+        assert s.has_service_tools is False
+
+
+class TestInternalToolsetKeys:
+
+    def test_fallback_matches_the_registry(self) -> None:
+        """The fallback is only consulted before discovery runs, so nothing else
+        would notice it drifting from the registry it stands in for."""
+        from app.agents.registry.toolset_registry import get_toolset_registry
+        from app.modules.agents.context.tool_surface import _FALLBACK_INTERNAL_KEYS
+
+        registry = get_toolset_registry()
+        # The registry is a process-wide singleton; discovery here must not
+        # decide what a later test sees.
+        snapshot = dict(registry._toolsets)
+        try:
+            registry.auto_discover_toolsets()
+            internal = {n for n, m in registry.get_all_toolsets().items()
+                        if m.get("isInternal")}
+        finally:
+            registry._toolsets.clear()
+            registry._toolsets.update(snapshot)
+        assert internal, "discovery registered nothing — the comparison is vacuous"
+        assert _FALLBACK_INTERNAL_KEYS == internal
+
+    def test_an_empty_registry_does_not_mean_nothing_is_internal(self) -> None:
+        from app.modules.agents.context import tool_surface
+
+        with patch.object(tool_surface, "get_toolset_registry", create=True):
+            with patch(
+                "app.agents.registry.toolset_registry.ToolsetRegistry.get_all_toolsets",
+                return_value={},
+            ):
+                assert "retrieval" in tool_surface._internal_toolset_keys()
+
 
 # ---------------------------------------------------------------------------
 # User-interaction tools

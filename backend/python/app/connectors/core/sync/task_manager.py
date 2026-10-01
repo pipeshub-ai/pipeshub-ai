@@ -202,3 +202,4 @@ class SyncTaskManager:
 # Separate registries: reindex must never cancel an in-flight sync.
 sync_task_manager = SyncTaskManager(label="Sync")
 reindex_task_manager = SyncTaskManager(label="Reindex")
+code_edge_build_task_manager = SyncTaskManager(label="Code edge build")

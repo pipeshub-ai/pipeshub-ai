@@ -265,3 +265,24 @@ async def test_an_unparseable_document_is_not_retried_and_leaves_the_breaker_clo
     assert calls == 1, "a document error must not be retried"
     assert not client.circuit_breaker.is_open
     assert client.circuit_breaker._consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_parse_forwards_file_path_when_given() -> None:
+    client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=1)
+
+    with patch.object(
+        client,
+        "_post_multipart",
+        new=AsyncMock(return_value=_make_response(200, _success_response())),
+    ) as post:
+        await client.parse(
+            file_content=b"x = 1\n",
+            record_name="a.py",
+            extension="py",
+            file_path="src/pkg/a.py",
+        )
+        assert post.await_args.kwargs["data"]["file_path"] == "src/pkg/a.py"
+
+        await client.parse(file_content=b"x = 1\n", record_name="a.py", extension="py")
+        assert "file_path" not in post.await_args.kwargs["data"]

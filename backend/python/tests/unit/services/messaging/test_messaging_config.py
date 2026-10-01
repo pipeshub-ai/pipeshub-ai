@@ -83,6 +83,7 @@ class TestRequiredTopics:
     def test_has_expected_topics(self):
         assert isinstance(REQUIRED_TOPICS, list)
         assert Topic.RECORD_EVENTS.value in REQUIRED_TOPICS
+        assert Topic.CODE_GRAPH_EVENTS.value in REQUIRED_TOPICS
         assert Topic.ENTITY_EVENTS.value in REQUIRED_TOPICS
         assert Topic.AI_CONFIG_EVENTS.value in REQUIRED_TOPICS
         assert Topic.SYNC_EVENTS.value in REQUIRED_TOPICS

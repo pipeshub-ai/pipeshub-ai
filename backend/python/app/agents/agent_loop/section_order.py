@@ -62,6 +62,15 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # `available_tools` grows when fetch_tools loads new toolsets; everything
     # before it in Band A still caches even if this block invalidates.
     ("available_tools",            Volatility.CONV),
+    # Appears mid-run on the same event that grows `available_tools` (a
+    # `fetch_tools` call or the CODE_FILE unlock), so it belongs in the block
+    # that already invalidates then rather than in byte-stable Band A.
+    ("code_navigation",            Volatility.CONV),
+    # Repo-shipped CLAUDE.md / AGENTS.md for the code this conversation
+    # retrieved, resolved by the `repo_instructions` hook. CONV, not STATIC:
+    # it appears on the same event as `code_navigation` above and is then
+    # byte-stable for the rest of the conversation.
+    # ("repo_instructions",          Volatility.CONV),
     ("knowledge_sources",          Volatility.CONV),
     ("capability_summary",         Volatility.CONV),
     ("user_context",               Volatility.CONV),

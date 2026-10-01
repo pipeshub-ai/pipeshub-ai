@@ -144,7 +144,9 @@ def _fetch_record_policy_for_exploration() -> str:
     return "\n\n" + policy_text("knowledgegraph__fetch_record")
 
 
-def _internal_exploration_instructions(context: "AgentContext | None") -> str | None:
+def _internal_exploration_instructions(
+    context: "AgentContext | None", tool_names: list[str] | None = None
+) -> str | None:
     """Per-request connector inventory + the fan-out/iteration playbook
     above, appended to `internal_exploration_agent`'s child prompt via
     `DomainAgentDefinition.instructions_factory`. Built from
@@ -165,7 +167,10 @@ def _internal_exploration_instructions(context: "AgentContext | None") -> str | 
     base = _EXPLORATION_PLAYBOOK + fetch_policy
     if context is None or not context.agent_knowledge:
         return base
-    source_table = context.get_source_catalog().render()
+    # Without `tool_names` every `granted(...)` lookup in the catalog returns
+    # None, which drops the fetch_record bullet and the code-graph guidance from
+    # the child's own prompt while leaving "navigate the record group" intact.
+    source_table = context.get_source_catalog().render(tool_names=tool_names)
     if not source_table:
         return base
     return f"{base}\n{source_table}"
@@ -204,9 +209,12 @@ class DomainAgentDefinition:
     differs by org/agent), use `instructions_factory` instead — the two
     compose (both are appended) rather than one overriding the other."""
 
-    instructions_factory: Callable[["AgentContext | None"], str | None] | None = None
+    instructions_factory: (
+        Callable[["AgentContext | None", list[str]], str | None] | None
+    ) = None
     """Optional per-request instructions builder, called with this
-    request's `AgentContext` at registration time (see
+    request's `AgentContext` and the child's granted tool names at
+    registration time (see
     `register_domain_agents()`). Returns `None` to add nothing — lets a
     domain (e.g. `internal_exploration_agent`) see request-scoped data
     (connector inventory, knowledge sources) that a static
@@ -550,7 +558,9 @@ def register_domain_agents(
         shared_names = [n for n in shared_tool_names if n in registered]
         extra_instructions = _combine_instructions(
             definition.extra_instructions,
-            definition.instructions_factory(context) if definition.instructions_factory else None,
+            definition.instructions_factory(
+                context, [*claimed_names, *delegate_names, *shared_names]
+            ) if definition.instructions_factory else None,
         )
         child_tool_names, tool_disclosure = (
             lazy_tools(tool_registry, [*claimed_names, *delegate_names, *shared_names])

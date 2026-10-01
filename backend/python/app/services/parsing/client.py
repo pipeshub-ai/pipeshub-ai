@@ -140,6 +140,7 @@ class ParsingClient(BaseServiceClient):
         org_id: str | None = None,
         provider: ParserProvider | None = None,
         skip_table_enrichment: bool = False,
+        file_path: str | None = None,
     ) -> ParseResult:
         """Parse *file_content* by calling the Parsing Service.
 
@@ -165,6 +166,8 @@ class ParsingClient(BaseServiceClient):
             form_data["org_id"] = org_id
         if provider is not None:
             form_data["provider"] = provider.value
+        if file_path:
+            form_data["file_path"] = file_path
 
         try:
             response = await self._post_multipart(

@@ -31,6 +31,7 @@ describe('KafkaAdminService', () => {
       expect(REQUIRED_KAFKA_TOPICS).to.be.an('array');
       const topicNames = REQUIRED_KAFKA_TOPICS.map(t => t.topic);
       expect(topicNames).to.include('record-events');
+      expect(topicNames).to.include('code-graph-events');
       expect(topicNames).to.include('entity-events');
       expect(topicNames).to.include('ai-config-events');
       expect(topicNames).to.include('sync-events');
