@@ -149,6 +149,14 @@ denominator. The published runs did this after each run finished:
 
 The report counts any answer that still failed as wrong.
 
+A provider's content filter can refuse an answer however often it is
+retried. The published runs re-asked those through another endpoint of the
+same model: copy the run's config, change only `answerer.provider` (here
+`azureOpenAI` to `openAI`; provider routing is not part of the config hash,
+so the copy resumes the run), register the model in PipesHub without making
+it the default, and resume with `--retry-errors`. OpenAI's endpoint refused
+none of the 34 answers Azure's filter had refused.
+
 If the second judge's provider fails (a daily quota, an outage), grading
 carries on with the primary judge and leaves the second judge's verdicts for
 later; the log says how many were deferred. Resume the run once the provider
