@@ -32,7 +32,7 @@ from app.models.entities import (
     TicketRecord,
     WebpageRecord,
 )
-from app.models.permission import EntityType, PermissionType
+from app.models.permission import EntityType, Permission, PermissionType
 
 
 # ---------------------------------------------------------------------------
@@ -716,7 +716,7 @@ class TestFullSyncEdgeRebuild:
             "content_url": "https://acme.zendesk.com/attachments/88",
         }]}
 
-        await zendesk_connector._build_attachment_child_records(comment, parent)
+        await zendesk_connector._build_attachment_child_records(comment, parent, [])
 
         file_record, _ = mock_data_entities_processor.on_new_records.await_args.args[0][0]
         assert file_record.parent_record_type == RecordType.TICKET
@@ -1164,7 +1164,7 @@ class TestStaleGrantReplacement:
         }]}
 
         await zendesk_connector._build_attachment_child_records(
-            comment, TestAttachmentChildRecords._parent()
+            comment, TestAttachmentChildRecords._parent(), []
         )
 
         published, _ = mock_data_entities_processor.on_new_records.await_args.args[0][0]
@@ -1185,7 +1185,7 @@ class TestStaleGrantReplacement:
         }]}
 
         await zendesk_connector._build_attachment_child_records(
-            comment, TestAttachmentChildRecords._parent()
+            comment, TestAttachmentChildRecords._parent(), []
         )
 
         mock_data_entities_processor.on_new_records.assert_not_awaited()
@@ -1974,6 +1974,30 @@ class TestStreamRecord:
         assert '"name": "Description"' in body
         assert "Comment by Sarah" in body
 
+    async def test_streamed_attachment_gets_the_tickets_grants(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        """A record created at stream time must not be born with no grants."""
+        datasource = _ready(zendesk_connector)
+        datasource.list_comments = AsyncMock(return_value=_make_response(data={
+            "comments": [{"id": 1, "author_id": 9, "body": "see file", "public": True,
+                          "attachments": [{
+                              "id": 88, "file_name": "a.txt",
+                              "content_url": "https://acme.zendesk.com/attachments/88",
+                          }]}],
+        }))
+        datasource.show_ticket = AsyncMock(return_value=_make_response(data={
+            "ticket": {"id": 23, "group_id": None, "requester_id": 9},
+        }))
+        zendesk_connector._user_id_to_data = {"9": {"email": "req@acme.com"}}
+        record = TestAttachmentChildRecords._parent()
+
+        await zendesk_connector._process_ticket_blockgroups_for_streaming(record)
+
+        _, permissions = mock_data_entities_processor.on_new_records.await_args.args[0][0]
+        assert {p.email for p in permissions if p.email} == {"req@acme.com"}
+        assert any(p.external_id == "role_all_tickets" for p in permissions)
+
     async def test_internal_notes_are_not_indexed(self, zendesk_connector):
         """The record carries a requester grant, so an internal note here leaks
         agent-only text to the customer who opened the ticket."""
@@ -2088,6 +2112,11 @@ class TestStreamRecord:
 # ===========================================================================
 
 
+PARENT_GRANT = Permission(
+    email="req@acme.com", type=PermissionType.READ, entity_type=EntityType.USER
+)
+
+
 class TestAttachmentChildRecords:
     @staticmethod
     def _parent():
@@ -2115,7 +2144,7 @@ class TestAttachmentChildRecords:
         }]}
 
         children = await zendesk_connector._build_attachment_child_records(
-            comment, self._parent()
+            comment, self._parent(), []
         )
 
         assert len(children) == 1
@@ -2125,24 +2154,29 @@ class TestAttachmentChildRecords:
         assert file_record.external_record_group_id == "group_7"
         assert file_record.parent_external_record_id == "23"
 
-    async def test_attachment_carries_no_permissions_of_its_own(
+    async def test_attachment_carries_the_parents_grants(
         self, zendesk_connector, mock_data_entities_processor
     ):
-        """It lands in the ticket's record group with inherit_permissions on, so the
-        group's grants apply; an explicit copy would drift from them."""
+        """The record group holds only the group grant; the requester and shared-org
+        grants live on the ticket, so inheritance alone locks an end user out."""
         parent = self._parent()
-        parent.reporter_email = "req@acme.com"
+        parent_permissions = [
+            Permission(external_id="group_7", type=PermissionType.READ, entity_type=EntityType.GROUP),
+            Permission(email="req@acme.com", type=PermissionType.READ, entity_type=EntityType.USER),
+        ]
         comment = {"id": 5, "public": True, "attachments": [{
             "id": 88, "file_name": "a.txt",
             "content_url": "https://acme.zendesk.com/attachments/88",
         }]}
 
-        await zendesk_connector._build_attachment_child_records(comment, parent)
+        await zendesk_connector._build_attachment_child_records(
+            comment, parent, parent_permissions
+        )
 
         record, permissions = (
             mock_data_entities_processor.on_new_records.await_args.args[0][0]
         )
-        assert permissions == []
+        assert permissions == parent_permissions
         assert record.inherit_permissions is True
         assert record.external_record_group_id == "group_7"
 
@@ -2157,7 +2191,7 @@ class TestAttachmentChildRecords:
         }]}
 
         children = await zendesk_connector._build_attachment_child_records(
-            comment, self._parent()
+            comment, self._parent(), []
         )
 
         assert children == []
@@ -2176,7 +2210,7 @@ class TestAttachmentChildRecords:
         ]}
 
         children = await zendesk_connector._build_attachment_child_records(
-            comment, self._parent()
+            comment, self._parent(), []
         )
 
         assert [child.child_name for child in children] == ["server.log"]
@@ -2188,13 +2222,13 @@ class TestAttachmentChildRecords:
         }]}
 
         assert await zendesk_connector._build_attachment_child_records(
-            comment, self._parent()
+            comment, self._parent(), []
         ) == []
 
     async def test_skips_attachment_without_content_url(self, zendesk_connector):
         comment = {"id": 5, "attachments": [{"id": 88, "file_name": "x.txt"}]}
         assert await zendesk_connector._build_attachment_child_records(
-            comment, self._parent()
+            comment, self._parent(), []
         ) == []
 
     @staticmethod
@@ -2220,11 +2254,56 @@ class TestAttachmentChildRecords:
         zendesk_connector._rebuild_ticket_edges = False
 
         children = await zendesk_connector._build_attachment_child_records(
-            self._comment(), self._parent()
+            self._comment(), self._parent(), []
         )
 
         assert children[0].child_id == "rec-att"
         mock_data_entities_processor.on_new_records.assert_not_awaited()
+
+    async def test_revision_changes_when_the_attachment_changes_group(self, zendesk_connector, mock_data_entities_processor):
+        """The processor only rewrites a stored record on a revision change."""
+        revisions = []
+        for group in ("group_7", "group_9"):
+            parent = self._parent()
+            parent.external_record_group_id = group
+            await zendesk_connector._build_attachment_child_records(
+                self._comment(), parent, []
+            )
+            record, _ = mock_data_entities_processor.on_new_records.await_args.args[0][0]
+            revisions.append(record.external_revision_id)
+
+        assert revisions[0] != revisions[1]
+
+    async def test_sync_replaces_grants_of_existing_attachment(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        """on_new_records only adds edges: without a replace, a ticket moved to
+        another group leaves the old group able to read its attachment."""
+        self._existing(mock_tx_store)
+        zendesk_connector._rebuild_ticket_edges = False
+
+        await zendesk_connector._build_attachment_child_records(
+            self._comment(), self._parent(), [PARENT_GRANT], refresh_permissions=True
+        )
+
+        mock_data_entities_processor.on_updated_record_permissions.assert_awaited_once()
+        file_record, permissions = (
+            mock_data_entities_processor.on_updated_record_permissions.await_args.args
+        )
+        assert file_record.id == "rec-att"
+        assert permissions == [PARENT_GRANT]
+
+    async def test_streaming_leaves_existing_attachment_grants_alone(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        self._existing(mock_tx_store)
+        zendesk_connector._rebuild_ticket_edges = False
+
+        await zendesk_connector._build_attachment_child_records(
+            self._comment(), self._parent(), []
+        )
+
+        mock_data_entities_processor.on_updated_record_permissions.assert_not_awaited()
 
     async def test_existing_attachment_reemitted_on_full_sync(
         self, zendesk_connector, mock_tx_store, mock_data_entities_processor
@@ -2234,14 +2313,14 @@ class TestAttachmentChildRecords:
         zendesk_connector._rebuild_ticket_edges = True
 
         await zendesk_connector._build_attachment_child_records(
-            self._comment(), self._parent()
+            self._comment(), self._parent(), [PARENT_GRANT]
         )
 
         published = mock_data_entities_processor.on_new_records.await_args.args[0]
         record, permissions = published[0]
         assert record.id == "rec-att"
         assert record.version == 4
-        assert permissions == []
+        assert permissions == [PARENT_GRANT]
 
     async def test_disabled_attachments_still_create_the_record(
         self, zendesk_connector, mock_data_entities_processor
@@ -2255,7 +2334,7 @@ class TestAttachmentChildRecords:
         }]}
 
         children = await zendesk_connector._build_attachment_child_records(
-            comment, self._parent()
+            comment, self._parent(), []
         )
 
         assert [child.child_name for child in children] == ["a.txt"]
@@ -2598,7 +2677,7 @@ class TestArticleAttachments:
         }])
 
         children = await zendesk_connector._build_article_attachment_child_records(
-            "55", self._parent()
+            "55", self._parent(), []
         )
 
         assert [child.child_name for child in children] == ["spec.PDF"]
@@ -2629,7 +2708,7 @@ class TestArticleAttachments:
         }])
 
         children = await zendesk_connector._build_article_attachment_child_records(
-            "55", self._parent()
+            "55", self._parent(), []
         )
 
         assert children == []
@@ -2648,7 +2727,7 @@ class TestArticleAttachments:
         }])
 
         children = await zendesk_connector._build_article_attachment_child_records(
-            "55", self._parent()
+            "55", self._parent(), []
         )
 
         assert [child.child_name for child in children] == ["terms.pdf"]
@@ -2683,7 +2762,7 @@ class TestArticleAttachments:
         )
 
         children = await zendesk_connector._build_article_attachment_child_records(
-            "55", self._parent()
+            "55", self._parent(), []
         )
 
         assert [child.child_name for child in children] == ["spec.pdf"]
