@@ -190,3 +190,29 @@ class TestRowDescriptionAlignment:
         assert texts["SEO"] == "DESC<SEO>"
         assert texts["Onboarding"] != "DESC<SEO>"
         assert texts["BackToSchool"] != "DESC<Onboarding>"
+
+
+class TestCaptionsSurviveEnrichment:
+    @pytest.mark.asyncio
+    async def test_sibling_tables_keep_their_captions_in_the_summary(self):
+        """Two tables with the same columns told apart only by <caption>: the LLM
+        summary replaced the parser's caption, so their rows were indistinguishable."""
+        from app.modules.parsers.html_parser.html_to_blocks import HtmlToBlocksConverter
+
+        table = (
+            "<table><caption>{}</caption><tr><th>Years</th><th>Capacity</th></tr>"
+            "<tr><td>{}</td><td>{}</td></tr></table>"
+        )
+        container = HtmlToBlocksConverter().convert(
+            table.format("Indoor arena", "1990-2000", "8,000")
+            + table.format("Outdoor stadium", "2001-2010", "30,000")
+        )
+        groups = [g for g in container.block_groups if g.type == GroupType.TABLE]
+
+        for group in groups:
+            await _enrich(group, container, _Harness())
+
+        assert [g.data["table_summary"] for g in groups] == [
+            "Indoor arena\ns",
+            "Outdoor stadium\ns",
+        ]

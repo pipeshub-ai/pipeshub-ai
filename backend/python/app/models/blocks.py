@@ -170,6 +170,20 @@ class TableMetadata(BaseModel):
     captions: Optional[list[str]] = Field(default_factory=list)
     footnotes: Optional[list[str]] = Field(default_factory=list)
 
+def summary_with_captions(summary: str, captions: Optional[list[str]]) -> str:
+    """*summary* led by each caption it does not already contain.
+
+    A caption is often the only thing telling apart sibling tables with the same
+    columns, and an LLM summary of the grid alone never sees it.
+    """
+    summary = summary or ""
+    missing = [
+        caption
+        for caption in dict.fromkeys((c or "").strip() for c in captions or [])
+        if caption and caption not in summary
+    ]
+    return "\n".join([*missing, summary] if summary else missing)
+
 class CodeMetadata(BaseModel):
     """Metadata specific to code blocks"""
     language: Optional[str] = None

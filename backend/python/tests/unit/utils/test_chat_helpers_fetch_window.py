@@ -11,6 +11,7 @@ from app.models.blocks import BlockType, GroupType
 from app.utils.chat_helpers import (
     CitationRefMapper,
     record_to_message_content,
+    table_group_summary_text,
     table_summary_text,
 )
 from app.utils.render_budget import TRUNCATION_MARKER, RenderBudget
@@ -406,3 +407,37 @@ class TestTableSummaryText:
     def test_missing_or_malformed_data_is_empty(self) -> None:
         assert table_summary_text(None) == ""
         assert table_summary_text({"table_summary": None}) == ""
+
+
+class TestTableCaptions:
+    def test_rows_read_on_their_own_show_their_table_caption(self) -> None:
+        """Rows of sibling tables with identical columns are told apart only by
+        the caption, which the summary written at indexing time did not keep."""
+        record = _table_record("rec-t", rows=3)
+        record["block_containers"]["block_groups"][0]["table_metadata"]["captions"] = [
+            "Indoor arena"
+        ]
+
+        text = _render(record, RenderBudget(max_chars=200_000))
+
+        assert "[Table #0: Indoor arena\na wide table]" in text
+
+    def test_a_stored_caption_the_summary_lacks_leads_it(self) -> None:
+        group = {
+            "data": {"table_summary": "Seating capacity by period."},
+            "table_metadata": {"captions": ["Indoor arena"]},
+        }
+
+        assert table_group_summary_text(group) == "Indoor arena\nSeating capacity by period."
+
+    def test_a_caption_already_in_the_summary_is_not_repeated(self) -> None:
+        group = {
+            "data": {"table_summary": "Indoor arena\nSeating capacity by period."},
+            "table_metadata": {"captions": ["Indoor arena"]},
+        }
+
+        assert table_group_summary_text(group) == "Indoor arena\nSeating capacity by period."
+
+    def test_a_table_without_captions_or_metadata_reads_as_before(self) -> None:
+        assert table_group_summary_text({"data": {"table_summary": "Rates"}}) == "Rates"
+        assert table_group_summary_text({"data": None, "table_metadata": None}) == ""
