@@ -112,6 +112,14 @@ STRICT_SCOPE_FILTER_KEY = "strictScope"
 #: that promotes its queued duplicates, and cleared by the indexing handler once
 #: their taxonomy has been copied. Declared in the strict records schema.
 DUPLICATE_RECONCILE_PENDING_FIELD = "duplicateReconcilePending"
+# When the retry sweep may next pick a pending primary up (epoch ms), and how
+# many retries failed; both re-armed by every promotion. The due time also
+# fences the flag clear: a sweep clears only the promotion it read.
+DUPLICATE_RECONCILE_DUE_AT_FIELD = "duplicateReconcileDueAt"
+DUPLICATE_RECONCILE_ATTEMPTS_FIELD = "duplicateReconcileAttempts"
+# The record handler reconciles within seconds of a promotion; only after this
+# is the primary the retry sweep's to take.
+DUPLICATE_RECONCILE_GRACE_MS = 10 * 60 * 1000
 
 
 def requested_scope_ids(filters: "Mapping[str, Any] | None") -> tuple[str, ...] | None:
@@ -1450,6 +1458,49 @@ class IGraphDBProvider(ABC):
 
         Selects documents where ``vectorMembershipBackfilled`` is missing or false
         and ``status`` is not ``DELETING``.
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_pending_duplicate_reconcile(
+        self,
+        due_before_ms: int,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """Up to ``limit`` records whose ``duplicateReconcilePending`` flag is
+        set and whose ``duplicateReconcileDueAt`` (missing counts as 0) is
+        before ``due_before_ms``: primaries whose handler left the reconcile
+        undone. See ``app.modules.indexing.duplicate_reconcile``.
+
+        Returns:
+            ``[{"_key", "duplicateReconcileAttempts", "duplicateReconcileDueAt"}]``.
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def update_node_fields_if_match(
+        self,
+        key: str,
+        collection: str,
+        updates: dict[str, Any],
+        expected: dict[str, Any],
+        transaction: str | None = None,
+    ) -> bool:
+        """Merge ``updates`` into the node only while every field in
+        ``expected`` still holds its value (``None`` means absent), in one
+        statement. Unlike ``update_node_if_match`` the document is merged,
+        not replaced. A ``None`` in ``updates`` removes or nulls the field.
+
+        Returns:
+            True iff the write applied.
+
+        Raises:
+            ValueError: when ``expected`` is empty.
+            Exception: on query failure.
         """
         pass
 
@@ -3129,9 +3180,11 @@ class IGraphDBProvider(ABC):
             transaction (Optional[str]): Optional transaction ID
             reason (Optional[str]): Optional failure/status reason to set on duplicates
 
-        When at least one duplicate is promoted, the reference record is
-        marked ``duplicateReconcilePending`` in the same batch, so a crash
-        before its taxonomy is copied to them is repaired on its next event.
+        When at least one duplicate is promoted to COMPLETED or EMPTY, the
+        reference record is marked ``duplicateReconcilePending`` in the same
+        batch, with ``duplicateReconcileDueAt`` set
+        ``DUPLICATE_RECONCILE_GRACE_MS`` ahead and its attempt count reset, so
+        a crash before its taxonomy is copied is repaired by the retry sweep.
 
         Returns:
             int: Number of records updated
@@ -5737,10 +5790,11 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List of dicts shaped like ``EntityRecord`` source fields:
-            ``{entityId, entityType, name, aliases, level}``, where ``aliases``
-            is a list of strings and ``level`` is the subcategory level
-            (``"1"``/``"2"``/``"3"``) or None for every other entity type.
-            ``sync_entities_for_duplicate`` reads all five.
+            ``{entityId, entityType, name, aliases, level, orgId}``, where
+            ``aliases`` is a list of strings, ``level`` is the subcategory
+            level (``"1"``/``"2"``/``"3"``) or None for every other entity
+            type, and ``orgId`` is the node's org or None (a legacy node or a
+            global department). ``sync_entities_for_duplicate`` reads all six.
         """
         pass
 
@@ -5897,6 +5951,7 @@ class IGraphDBProvider(ABC):
         aliases: list[str],
         normalized_aliases: list[str],
         *,
+        org_id: str,
         max_aliases: int = 20,
         transaction: str | None = None,
     ) -> None:
@@ -5907,10 +5962,16 @@ class IGraphDBProvider(ABC):
         taken on pairs, keyed by normalized form, so the stored lists stay
         aligned at the same length through dedupe and the cap.
 
+        Only a node of ``org_id`` is written. A legacy node (no ``orgId``)
+        is shared by every org, and another org's node is not this org's to
+        name; for either the call is a no-op, so one tenant's spellings never
+        reach another's entity search.
+
         A no-op when ``aliases`` is empty or the node does not exist.
 
         Raises:
-            ValueError: when ``collection`` is not a taxonomy collection.
+            ValueError: when ``collection`` is not a taxonomy collection, or
+                ``org_id`` is empty.
             Exception: on write failure.
         """
         pass

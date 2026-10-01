@@ -80,7 +80,7 @@ class TestArango:
     async def test_add_aliases_is_an_atomic_union_with_cap(self) -> None:
         p = _arango()
         await p.add_taxonomy_aliases(
-            TOPICS, "k1", ["A", "a", "", "B"], ["a", "a", "", "b"], max_aliases=5, transaction="t1",
+            TOPICS, "k1", ["A", "a", "", "B"], ["a", "a", "", "b"], max_aliases=5, transaction="t1", org_id="org-1",
         )
         query = p.execute_query.await_args.args[0]
         assert "UNION_DISTINCT" not in query and f"IN {TOPICS}" in query
@@ -88,14 +88,15 @@ class TestArango:
         assert "APPEND(displays, (FOR i IN fresh RETURN incoming_displays[i]))" in query
         assert "APPEND(normals, (FOR i IN fresh RETURN incoming_normals[i]))" in query
         assert p.execute_query.await_args.kwargs["bind_vars"] == {
-            "key": "k1", "aliases": ["A", "B"], "normalized": ["a", "b"], "max_aliases": 5,
+            "key": "k1", "org_id": "org-1", "aliases": ["A", "B"], "normalized": ["a", "b"],
+            "max_aliases": 5,
         }
 
     async def test_add_aliases_skips_the_update_when_nothing_changes(self) -> None:
         """An UPDATE locks a popular node for the rest of the record's
         transaction even when it writes the same lists back."""
         p = _arango()
-        await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"])
+        await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="org-1")
         query = p.execute_query.await_args.args[0]
         guard = query.index("FILTER LENGTH(fresh) > 0")
         assert guard < query.index("UPDATE doc")
@@ -112,7 +113,7 @@ class TestArango:
         conflict = RuntimeError('Query failed (status=409): {"errorMessage":"write-write conflict","errorNum":1200}')
         p.execute_query = AsyncMock(side_effect=[conflict, conflict, None])
 
-        await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"])
+        await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="org-1")
 
         assert p.execute_query.await_count == 3
 
@@ -124,30 +125,44 @@ class TestArango:
         p.execute_query = AsyncMock(side_effect=RuntimeError('{"errorNum":1200}'))
 
         with pytest.raises(RuntimeError):
-            await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"])
+            await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="org-1")
         assert p.execute_query.await_count == module._WRITE_CONFLICT_ATTEMPTS
 
     async def test_add_aliases_does_not_retry_inside_a_transaction_or_other_errors(self) -> None:
         p = _arango()
         p.execute_query = AsyncMock(side_effect=RuntimeError('{"errorNum":1200}'))
         with pytest.raises(RuntimeError):
-            await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], transaction="t1")
+            await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], transaction="t1", org_id="org-1")
         assert p.execute_query.await_count == 1
 
         p.execute_query = AsyncMock(side_effect=RuntimeError('{"errorNum":1203}'))
         with pytest.raises(RuntimeError):
-            await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"])
+            await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="org-1")
         assert p.execute_query.await_count == 1
 
     async def test_add_aliases_noop_and_validation(self) -> None:
         p = _arango()
-        await p.add_taxonomy_aliases(TOPICS, "k1", [], [])
-        await p.add_taxonomy_aliases(TOPICS, "", ["a"], ["a"])
+        await p.add_taxonomy_aliases(TOPICS, "k1", [], [], org_id="org-1")
+        await p.add_taxonomy_aliases(TOPICS, "", ["a"], ["a"], org_id="org-1")
         p.execute_query.assert_not_awaited()
         with pytest.raises(ValueError):
-            await p.add_taxonomy_aliases("records", "k1", ["a"], ["a"])
+            await p.add_taxonomy_aliases("records", "k1", ["a"], ["a"], org_id="org-1")
         with pytest.raises(ValueError):
-            await p.add_taxonomy_aliases(TOPICS, "k1", ["a", "b"], ["a"])
+            await p.add_taxonomy_aliases(TOPICS, "k1", ["a", "b"], ["a"], org_id="org-1")
+
+    async def test_add_aliases_only_touches_the_orgs_node(self) -> None:
+        """A legacy node (no org) or another org's node must not collect this
+        org's spellings; those aliases surface in other tenants' search."""
+        p = _arango()
+        await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="org-1")
+        query = p.execute_query.await_args.args[0]
+        assert "FILTER doc._key == @key AND doc.orgId == @org_id" in query
+
+    async def test_add_aliases_requires_an_org(self) -> None:
+        p = _arango()
+        with pytest.raises(ValueError):
+            await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="")
+        p.execute_query.assert_not_awaited()
 
     async def test_ensure_indexes_covers_every_taxonomy_collection(self) -> None:
         p = _arango()
@@ -191,22 +206,22 @@ class TestNeo4j:
 
     async def test_add_aliases_dedupes_in_cypher_with_cap(self) -> None:
         p = _neo4j()
-        await p.add_taxonomy_aliases(TOPICS, "k1", ["A", "a", "B"], ["a", "a", "b"], max_aliases=7)
+        await p.add_taxonomy_aliases(TOPICS, "k1", ["A", "a", "B"], ["a", "a", "b"], max_aliases=7, org_id="org-1")
         query, = p.client.execute_query.await_args.args
         assert "reduce(" not in query
         assert "WHERE NOT $normalized[i] IN normals] AS fresh" in query
         assert "(displays + [i IN fresh | $aliases[i]])[0..$max_aliases]" in query
         assert "(normals + [i IN fresh | $normalized[i]])[0..$max_aliases]" in query
         assert p.client.execute_query.await_args.kwargs["parameters"] == {
-            "key": "k1", "collection": TOPICS, "aliases": ["A", "B"], "normalized": ["a", "b"],
-            "max_aliases": 7,
+            "key": "k1", "org_id": "org-1", "collection": TOPICS, "aliases": ["A", "B"],
+            "normalized": ["a", "b"], "max_aliases": 7,
         }
 
     async def test_add_aliases_locks_the_node_before_reading_it(self) -> None:
         """Reading the lists in WITH takes no lock, so two writers read the
         same lists and the later SET drops the other's alias."""
         p = _neo4j()
-        await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"])
+        await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="org-1")
         query, = p.client.execute_query.await_args.args
         lock = query.index("SET n._aliasLock = true")
         assert lock < query.index("coalesce(n.aliases, [])")
@@ -214,15 +229,29 @@ class TestNeo4j:
 
     async def test_add_aliases_writes_indexed_alias_nodes_for_org_nodes(self) -> None:
         p = _neo4j()
-        await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"])
+        await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="org-1")
         query, = p.client.execute_query.await_args.args
-        assert "WHERE n.orgId IS NOT NULL" in query
+        # The match already pins the org, so every written node has one.
+        assert "WHERE n.orgId = $org_id" in query
         assert "UNWIND n.normalizedAliases AS normalized" in query
         assert (
             "MERGE (a:TaxonomyAlias {orgId: n.orgId, collection: $collection, normalized: normalized})"
             in query
         )
         assert "MERGE (a)-[:ALIAS_OF]->(n)" in query
+
+    async def test_add_aliases_only_touches_the_orgs_node(self) -> None:
+        p = _neo4j()
+        await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="org-1")
+        query, = p.client.execute_query.await_args.args
+        assert "MATCH (n:Topics {id: $key})\n            WHERE n.orgId = $org_id" in query
+        assert query.index("WHERE n.orgId = $org_id") < query.index("SET n._aliasLock = true")
+
+    async def test_add_aliases_requires_an_org(self) -> None:
+        p = _neo4j()
+        with pytest.raises(ValueError):
+            await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="")
+        p.client.execute_query.assert_not_awaited()
 
     async def test_missing_client_raises_and_bad_collection_rejected(self) -> None:
         p = _neo4j()
@@ -265,7 +294,9 @@ class TestParityAndPassthrough:
         store = GraphTransactionStore(provider, "txn-9")
         await store.find_taxonomy_nodes(TOPICS, "o", ["x"])
         await store.create_taxonomy_node_if_absent(TOPICS, {"id": "k"})
-        await store.add_taxonomy_aliases(TOPICS, "k", ["A"], ["a"], max_aliases=3)
+        await store.add_taxonomy_aliases(TOPICS, "k", ["A"], ["a"], max_aliases=3, org_id="org-1")
         provider.find_taxonomy_nodes.assert_awaited_once_with(TOPICS, "o", ["x"], transaction="txn-9")
         provider.create_taxonomy_node_if_absent.assert_awaited_once_with(TOPICS, {"id": "k"}, transaction="txn-9")
-        provider.add_taxonomy_aliases.assert_awaited_once_with(TOPICS, "k", ["A"], ["a"], max_aliases=3, transaction="txn-9")
+        provider.add_taxonomy_aliases.assert_awaited_once_with(
+            TOPICS, "k", ["A"], ["a"], org_id="org-1", max_aliases=3, transaction="txn-9",
+        )
