@@ -512,8 +512,17 @@ class RetrievalService:
                     must=must, should=should
                 )
             elif virtual_record_ids_from_tool:
-                filter  = await self.vector_db_service.filter_collection(
-                        must={"orgId": org_id,"virtualRecordId": virtual_record_ids_from_tool},
+                # Intersect before the vector query: rows outside the
+                # accessible set are dropped afterwards anyway, and letting
+                # them into the top-k crowds out the ones that survive.
+                scoped_virtual_ids = [
+                    vid for vid in dict.fromkeys(virtual_record_ids_from_tool)
+                    if vid in accessible_virtual_id_to_record_id
+                ]
+                if not scoped_virtual_ids:
+                    return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                filter = await self.vector_db_service.filter_collection(
+                        must={"orgId": org_id, "virtualRecordId": scoped_virtual_ids},
                     )
             else:
                 filter = await self.vector_db_service.filter_collection(
@@ -898,8 +907,6 @@ class RetrievalService:
             return self._create_empty_response(f"Bad request: {str(e)}", Status.ERROR)
         except Exception as e:
             self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
-            if virtual_record_ids_from_tool:
-                return {}
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
     async def _container_filter_enabled(self) -> bool:

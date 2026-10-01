@@ -136,10 +136,10 @@ export const checkServiceAccountAccess = async (
 ): Promise<boolean> => {
   const requestId = req.context?.requestId;
   try {
-    const agentKey = req.params.agentKey;
+    const agentKey = req.params.agentKey as string;
 
     const aiCommandOptions: AICommandOptions = {
-      uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/internal/service-account`,
+      uri: `${appConfig.aiBackend}/api/v1/agent/${encodeURIComponent(agentKey)}/internal/service-account`,
       method: HttpMethod.GET,
       headers: {
         ...(req.headers as Record<string, string>),

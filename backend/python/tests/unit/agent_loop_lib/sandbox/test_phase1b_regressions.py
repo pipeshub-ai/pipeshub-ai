@@ -571,7 +571,7 @@ class TestM12SettingsActuallyReachTheManager:
             build_coding_sandbox_manager,
         )
 
-        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        monkeypatch.setenv("SANDBOX_MODE", "local")
         monkeypatch.setenv("SANDBOX_MAX_CONCURRENT_PER_REQUEST", "2")
         monkeypatch.setenv("SANDBOX_MAX_LIFETIME_S", "42.5")
         monkeypatch.setenv("SANDBOX_PROVISION_TIMEOUT_S", "7.5")
@@ -589,7 +589,7 @@ class TestM12SettingsActuallyReachTheManager:
             build_coding_sandbox_manager,
         )
 
-        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        monkeypatch.setenv("SANDBOX_MODE", "local")
         monkeypatch.setenv("SANDBOX_MAX_CONCURRENT_PER_REQUEST", "2")
 
         manager = await build_coding_sandbox_manager(max_concurrent=9)
@@ -600,7 +600,7 @@ class TestM12SettingsActuallyReachTheManager:
             build_coding_sandbox_manager,
         )
 
-        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        monkeypatch.setenv("SANDBOX_MODE", "local")
         monkeypatch.setenv("SANDBOX_MAX_TOTAL", "7")
         monkeypatch.setenv("SANDBOX_MAX_PER_ORG", "3")
 
@@ -618,6 +618,7 @@ class TestM12SettingsActuallyReachTheManager:
             EnvSandboxSettingsLoader,
         )
 
+        monkeypatch.setenv("SANDBOX_MODE", "local")
         monkeypatch.setenv("SANDBOX_MAX_TOTAL", raw)
         settings = await EnvSandboxSettingsLoader().load(SandboxContext())
         assert settings.governor.max_total_sandboxes is None
@@ -746,6 +747,7 @@ class TestNetworkFlagStaysConsistentAcrossLayers:
         )
         from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled
 
+        monkeypatch.setenv("SANDBOX_MODE", "local")
         monkeypatch.setenv("SANDBOX_ALLOW_NETWORK", raw)
         settings = await EnvSandboxSettingsLoader().load(SandboxContext())
         assert settings.allow_network == sandbox_network_enabled(), raw
@@ -756,6 +758,7 @@ class TestNetworkFlagStaysConsistentAcrossLayers:
         )
         from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled
 
+        monkeypatch.setenv("SANDBOX_MODE", "local")
         monkeypatch.delenv("SANDBOX_ALLOW_NETWORK", raising=False)
         settings = await EnvSandboxSettingsLoader().load(SandboxContext())
         assert settings.allow_network is True

@@ -1,8 +1,11 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { createGlobalRateLimiter, createOAuthClientRateLimiter, createSkillsImportRateLimiter } from '../../../src/libs/middlewares/rate-limit.middleware'
+import express from 'express'
+import { AddressInfo } from 'net'
+import { createAuthRateLimiter, createGlobalRateLimiter, createOAuthClientRateLimiter, createSkillsImportRateLimiter } from '../../../src/libs/middlewares/rate-limit.middleware'
 import { Logger } from '../../../src/libs/services/logger.service'
+import { TrustProxySetting } from '../../../src/libs/utils/trust-proxy'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -414,57 +417,124 @@ describe('Rate Limit Middleware', () => {
   })
 
   // -----------------------------------------------------------------------
-  // Client IP extraction
+  // Client IP extraction (GHSA-78gw-g2h7-xvjj)
   // -----------------------------------------------------------------------
   describe('Client IP extraction', () => {
-    it('should use X-Forwarded-For header when present', (done) => {
-      const limiter = createGlobalRateLimiter(loggerStub as unknown as Logger, 100)
-      const req = createMockRequest({
-        headers: { 'x-forwarded-for': '203.0.113.50, 70.41.3.18' },
-        ip: '10.0.2.1',
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
+    // Real Express + socket so X-Forwarded-For handling and `trust proxy` are
+    // exercised end to end rather than through a hand-built req.ip.
+    async function sendRequests(
+      trustProxy: TrustProxySetting,
+      headers: Array<Record<string, string>>,
+    ): Promise<number[]> {
+      const app = express()
+      app.set('trust proxy', trustProxy)
+      app.use(createGlobalRateLimiter(loggerStub as unknown as Logger, 1))
+      app.get('/test', (_req, res) => { res.status(200).end() })
+      const server = app.listen(0)
+      await new Promise((resolve) => server.once('listening', resolve))
+      const { port } = server.address() as AddressInfo
+      try {
+        const statuses: number[] = []
+        for (const h of headers) {
+          const response = await fetch(`http://127.0.0.1:${port}/test`, { headers: h })
+          statuses.push(response.status)
+        }
+        return statuses
+      } finally {
+        server.close()
+      }
+    }
 
-      next.callsFake(() => {
-        expect(next.called).to.be.true
-        done()
-      })
-
-      limiter(req, res, next)
+    it('should ignore a rotated X-Forwarded-For when no proxy is trusted', async () => {
+      const statuses = await sendRequests(false, [
+        { 'X-Forwarded-For': '198.51.100.1' },
+        { 'X-Forwarded-For': '198.51.100.2' },
+      ])
+      expect(statuses).to.deep.equal([200, 429])
     })
 
-    it('should use X-Real-IP header when X-Forwarded-For is not present', (done) => {
-      const limiter = createGlobalRateLimiter(loggerStub as unknown as Logger, 100)
-      const req = createMockRequest({
-        headers: { 'x-real-ip': '203.0.113.60' },
-        ip: '10.0.2.2',
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      next.callsFake(() => {
-        expect(next.called).to.be.true
-        done()
-      })
-
-      limiter(req, res, next)
+    it('should ignore a rotated X-Real-IP', async () => {
+      const statuses = await sendRequests(false, [
+        { 'X-Real-IP': '198.51.100.1' },
+        { 'X-Real-IP': '198.51.100.2' },
+      ])
+      expect(statuses).to.deep.equal([200, 429])
     })
 
-    it('should fall back to req.ip when no forwarding headers present', (done) => {
-      const limiter = createGlobalRateLimiter(loggerStub as unknown as Logger, 100)
-      const req = createMockRequest({
-        ip: '192.168.0.100',
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
+    it('should key on the entry the trusted proxy appended, not the client-written one', async () => {
+      // Client forges the leftmost entry; the trusted proxy appends the real
+      // address on the right. Only the right entry must count.
+      const statuses = await sendRequests(1, [
+        { 'X-Forwarded-For': '6.6.6.1, 203.0.113.7' },
+        { 'X-Forwarded-For': '6.6.6.2, 203.0.113.7' },
+        { 'X-Forwarded-For': '6.6.6.3, 203.0.113.8' },
+      ])
+      expect(statuses).to.deep.equal([200, 429, 200])
+    })
 
-      next.callsFake(() => {
-        expect(next.called).to.be.true
-        done()
+    it('should group IPv6 clients by /56 subnet', (done) => {
+      const limiter = createGlobalRateLimiter(loggerStub as unknown as Logger, 1)
+      const req1 = createMockRequest({ ip: '2001:db8:abcd:1200::1' })
+      const res1 = createMockResponse()
+      const next1 = createMockNext()
+
+      next1.callsFake(() => {
+        const req2 = createMockRequest({ ip: '2001:db8:abcd:12ff::2' })
+        const res2 = createMockResponse()
+        res2.json.callsFake(() => {
+          expect(res2.statusCode).to.equal(429)
+          done()
+          return res2
+        })
+        limiter(req2, res2, createMockNext())
       })
 
-      limiter(req, res, next)
+      limiter(req1, res1, next1)
+    })
+
+    it('should fall back to the socket address when req.ip is undefined', (done) => {
+      const limiter = createGlobalRateLimiter(loggerStub as unknown as Logger, 1)
+      const socket = { remoteAddress: '10.0.9.9' }
+      const req1 = createMockRequest({ ip: undefined, socket })
+      const next1 = createMockNext()
+
+      next1.callsFake(() => {
+        const req2 = createMockRequest({ ip: undefined, socket })
+        const res2 = createMockResponse()
+        res2.json.callsFake(() => {
+          expect(res2.statusCode).to.equal(429)
+          done()
+          return res2
+        })
+        limiter(req2, res2, createMockNext())
+      })
+
+      limiter(req1, createMockResponse(), next1)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // createAuthRateLimiter
+  // -----------------------------------------------------------------------
+  describe('createAuthRateLimiter', () => {
+    it('should return 429 with an auth message once the limit is exceeded', (done) => {
+      const limiter = createAuthRateLimiter(loggerStub as unknown as Logger, 1)
+      const ip = '10.0.7.1'
+      const next1 = createMockNext()
+
+      next1.callsFake(() => {
+        const req2 = createMockRequest({ ip, path: '/authenticate' })
+        const res2 = createMockResponse()
+        res2.json.callsFake(() => {
+          expect(res2.statusCode).to.equal(429)
+          expect(res2.json.firstCall.args[0].error.message).to.include('authentication')
+          done()
+          return res2
+        })
+        limiter(req2, res2, createMockNext())
+      })
+
+      limiter(createMockRequest({ ip, path: '/initAuth' }), createMockResponse(), next1)
     })
   })
 })

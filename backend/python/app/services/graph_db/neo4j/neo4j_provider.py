@@ -80,11 +80,13 @@ from app.models.entities import (
     SQLTableRecord,
     SQLViewRecord,
 )
+from app.models.entities import EntityType as KnowledgeGraphEntityType
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES, EntityType
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
+    ENTITY_CANDIDATE_SCAN_CAP,
     MAX_DIRECT_GRANT_RECORDS,
     ROOT_SCOPED_CONNECTOR_TYPES,
     build_connector_stats_response,
@@ -92,6 +94,7 @@ from app.services.graph_db.common.utils import (
 )
 from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
+    DUPLICATE_RECONCILE_PENDING_FIELD,
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
     IGraphDBProvider,
@@ -103,6 +106,13 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.services.graph_db.neo4j.neo4j_client import (
     DEFAULT_MAX_CONNECTION_POOL_SIZE,
     Neo4jClient,
+)
+from app.services.graph_db.taxonomy import (
+    TAXONOMY_COLLECTIONS,
+    TAXONOMY_ENTITY_TYPES,
+    alias_pairs as _alias_pairs,
+    is_taxonomy_collection,
+    subcategory_level,
 )
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_cypher,
@@ -116,6 +126,11 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # Constants
 MAX_REINDEX_DEPTH = 100  # Maximum depth for reindexing records (unlimited depth is capped at this value)
 EDGE_DELETE_BATCH_SIZE = 2000  # Batch size for edge deletion to avoid huge single-query transactions
+
+# One node per stored taxonomy alias, so alias matches seek an index instead
+# of scanning a list property on every node of the org (see find_taxonomy_nodes).
+TAXONOMY_ALIAS_LABEL = "TaxonomyAlias"
+TAXONOMY_ALIAS_REL = "ALIAS_OF"
 
 # Search metadata filters: (filter key, relationship, target label, name property, query parameter).
 # The labels must be the ones the indexing writer stores (see COLLECTION_TO_LABEL).
@@ -395,6 +410,12 @@ class Neo4jProvider(IGraphDBProvider):
 
             constraints.append(constraint_query)
 
+        # Also backs the (orgId, collection, normalized) seek, and makes the
+        # MERGE in add_taxonomy_aliases converge under concurrent writers.
+        constraints.append(
+            f"CREATE CONSTRAINT taxonomyalias_key_unique IF NOT EXISTS "
+            f"FOR (a:{TAXONOMY_ALIAS_LABEL}) REQUIRE (a.orgId, a.collection, a.normalized) IS UNIQUE"
+        )
         return constraints
 
     def _generate_performance_indexes(self) -> list[str]:
@@ -413,6 +434,20 @@ class Neo4jProvider(IGraphDBProvider):
             List of Cypher CREATE INDEX queries
         """
         indexes = []
+
+        # ==================== TAXONOMY INDEXES ====================
+        # Entity resolution looks canonical taxonomy nodes up by
+        # (orgId, normalizedName) once per record — see find_taxonomy_nodes().
+        for taxonomy_collection in sorted(TAXONOMY_COLLECTIONS):
+            taxonomy_label = collection_to_label(taxonomy_collection)
+            indexes.append(
+                f"CREATE INDEX {taxonomy_label.lower()}_org_normalized_name IF NOT EXISTS "
+                f"FOR (n:{taxonomy_label}) ON (n.orgId, n.normalizedName)"
+            )
+            indexes.append(
+                f"CREATE INDEX {taxonomy_label.lower()}_org_id IF NOT EXISTS "
+                f"FOR (n:{taxonomy_label}) ON (n.orgId)"
+            )
 
         # ==================== RECORD INDEXES (Highest Priority) ====================
         # Records are the most queried entity, especially in permission checks
@@ -481,6 +516,21 @@ class Neo4jProvider(IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_md5_checksum IF NOT EXISTS "
             "FOR (n:Record) ON (n.md5Checksum)"
+        )
+
+        indexes.append(
+            "CREATE INDEX record_org_record_type IF NOT EXISTS "
+            "FOR (n:Record) ON (n.orgId, n.recordType)"
+        )
+
+        indexes.append(
+            "CREATE INDEX artifact_org_visibility IF NOT EXISTS "
+            "FOR (n:Artifact) ON (n.orgId, n.visibility)"
+        )
+
+        indexes.append(
+            "CREATE INDEX artifact_org_conversation IF NOT EXISTS "
+            "FOR (n:Artifact) ON (n.orgId, n.conversationId)"
         )
 
         # ==================== USER INDEXES (High Priority) ====================
@@ -652,7 +702,11 @@ class Neo4jProvider(IGraphDBProvider):
                 try:
                     await self.client.execute_query(constraint_query)
                 except Exception as e:
-                    self.logger.debug(f"Unique constraint creation (may already exist): {str(e)}")
+                    # IF NOT EXISTS makes "already exists" impossible here, so
+                    # a failure is real: duplicates already present, or an
+                    # unsupported constraint. Writes that rely on it (MERGE
+                    # convergence, index seeks) degrade silently otherwise.
+                    self.logger.warning(f"Unique constraint creation failed: {constraint_query} -> {str(e)}")
 
             self.logger.info(f"✅ Created {len(unique_constraints)} unique id constraints")
 
@@ -3258,15 +3312,21 @@ class Neo4jProvider(IGraphDBProvider):
         record_id: str,
         transaction: str | None = None
     ) -> FileRecord | None:
-        """Get file record by ID"""
+        """Get a file record by its internal ID.
+
+        None means the file or its record is not stored. A read that fails
+        raises GraphQueryError: callers act on None by treating the file as gone.
+        """
         try:
-            # Get file node
-            file = await self.get_document(record_id, CollectionNames.FILES.value, transaction)
+            file = await self.get_document(
+                record_id, CollectionNames.FILES.value, transaction, raise_on_error=True
+            )
             if not file:
                 return None
 
-            # Get record node
-            record = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
+            record = await self.get_document(
+                record_id, CollectionNames.RECORDS.value, transaction, raise_on_error=True
+            )
             if not record:
                 return None
 
@@ -3274,7 +3334,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get file record by ID failed: {str(e)}")
-            return None
+            raise GraphQueryError(f"Could not read file record {record_id}: {e}") from e
 
     # ==================== User Operations ====================
 
@@ -4208,6 +4268,11 @@ class Neo4jProvider(IGraphDBProvider):
                 # once per such record and drowns real problems.
                 self.logger.debug(f"Record {record_id} missing md5Checksum")
                 return None
+            if not org_id:
+                # As in update_queued_duplicates_status: without an org there is
+                # no scope, and another org's queued record must never be picked.
+                self.logger.warning(f"Record {record_id} has no orgId; not looking for queued duplicates")
+                return None
 
             # Find the first queued duplicate record
             query = """
@@ -4231,11 +4296,10 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Scoped to the reference record's own org: a queued duplicate in
             # another org must never be silently indexed from this org's event.
-            if org_id:
-                query += """
-                AND record.orgId = $org_id
-                """
-                params["org_id"] = org_id
+            query += """
+            AND record.orgId = $org_id
+            """
+            params["org_id"] = org_id
 
             query += """
             RETURN record
@@ -4312,6 +4376,7 @@ class Neo4jProvider(IGraphDBProvider):
             ref_record = dict(results[0]["record"])
             md5_checksum = ref_record.get("md5Checksum")
             size_in_bytes = ref_record.get("sizeInBytes")
+            org_id = ref_record.get("orgId")
 
             if not md5_checksum:
                 # Expected, not a fault: duplicates are matched by md5Checksum
@@ -4321,18 +4386,27 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.debug(f"Record {record_id} missing md5Checksum")
                 return 0
 
+            # QUEUED is also every new record's initial status, so without the
+            # org scope another org's unindexed copy would be marked done with
+            # this org's virtualRecordId. No orgId fails closed, as dedup does.
+            if not org_id:
+                self.logger.debug(f"Record {record_id} missing orgId, skipping queued duplicate update")
+                return 0
+
             # Find all queued duplicate records directly from RECORDS collection
             query = """
             MATCH (record:Record)
             WHERE record.md5Checksum = $md5_checksum
             AND record.id <> $record_id
             AND record.indexingStatus = $queued_status
+            AND record.orgId = $org_id
             """
 
             params = {
                 "md5_checksum": md5_checksum,
                 "record_id": record_id,
-                "queued_status": "QUEUED"
+                "queued_status": "QUEUED",
+                "org_id": org_id,
             }
 
             if size_in_bytes is not None:
@@ -4399,6 +4473,11 @@ class Neo4jProvider(IGraphDBProvider):
             if not updated_records:
                 return 0
 
+            # Same batch as the promotion: a crash after it would otherwise
+            # leave the duplicates COMPLETED with no taxonomy and nothing to
+            # trigger the copy, since a redelivery finds nothing QUEUED.
+            updated_records.append({"id": record_id, DUPLICATE_RECONCILE_PENDING_FIELD: True})
+
             success = await self.batch_update_nodes(
                 updated_records, CollectionNames.RECORDS.value, transaction
             )
@@ -4450,11 +4529,24 @@ class Neo4jProvider(IGraphDBProvider):
                 "BELONGS_TO_TOPIC"
             ]
 
+            # BELONGS_TO_CATEGORY targets both Categories and Subcategories1/2/3
+            # nodes. Resolving to a single hardcoded collection dropped every
+            # subcategory edge on copy (batch_create_edges MATCHes on the
+            # label). Build rel_type -> {label: collection} from the same
+            # taxonomy map get_taxonomy_entities_for_record uses, so the real
+            # node label picked out below always resolves correctly.
+            label_to_collection_by_rel_type: dict[str, dict[str, str]] = {}
+            for edge_collection, node_map in self._TAXONOMY_EDGE_GROUPS.values():
+                rel_type_key = edge_collection_to_relationship(edge_collection)
+                label_to_collection_by_rel_type[rel_type_key] = {
+                    collection_to_label(coll): coll for coll in node_map
+                }
+
             for rel_type in relationship_types:
                 # Find all relationships from source document
                 query = f"""
                 MATCH (source:Record {{id: $source_key}})-[r:{rel_type}]->(target)
-                RETURN target.id as target_id, r.createdAtTimestamp as timestamp
+                RETURN target.id as target_id, labels(target) as target_labels, r.createdAtTimestamp as timestamp
                 """
 
                 results = await self.client.execute_query(
@@ -4466,30 +4558,35 @@ class Neo4jProvider(IGraphDBProvider):
                 relationships = list(results) if results else []
 
                 if relationships:
+                    label_to_collection = label_to_collection_by_rel_type.get(rel_type, {})
                     # Create new relationships for target document
                     new_edges = []
                     for rel in relationships:
                         target_id = rel.get("target_id")
                         if target_id:
-                            # Determine target collection based on relationship type
-                            if rel_type == "BELONGS_TO_DEPARTMENT":
-                                target_collection = CollectionNames.DEPARTMENTS.value
-                            elif rel_type == "BELONGS_TO_CATEGORY":
-                                # Could be categories or subcategories - need to check
-                                target_collection = CollectionNames.CATEGORIES.value
-                            elif rel_type == "BELONGS_TO_LANGUAGE":
-                                target_collection = CollectionNames.LANGUAGES.value
-                            elif rel_type == "BELONGS_TO_TOPIC":
-                                target_collection = CollectionNames.TOPICS.value
-                            else:
-                                target_collection = CollectionNames.CATEGORIES.value
+                            target_labels = rel.get("target_labels") or []
+                            target_collection = next(
+                                (
+                                    label_to_collection[label]
+                                    for label in target_labels
+                                    if label in label_to_collection
+                                ),
+                                None,
+                            )
+                            if target_collection is None:
+                                # Unrecognised label — fall back to the group's
+                                # first collection rather than dropping the edge.
+                                target_collection = next(
+                                    iter(label_to_collection.values()),
+                                    CollectionNames.CATEGORIES.value,
+                                )
 
                             new_edge = {
                                 "from_id": target_key,
                                 "from_collection": CollectionNames.RECORDS.value,
                                 "to_id": target_id,
                                 "to_collection": target_collection,
-                                "createdAtTimestamp": get_epoch_timestamp_in_ms()
+                                "createdAtTimestamp": rel.get("timestamp") or get_epoch_timestamp_in_ms()
                             }
                             new_edges.append(new_edge)
 
@@ -4933,6 +5030,177 @@ class Neo4jProvider(IGraphDBProvider):
             query, parameters={"userId": user_id, "includeHidden": include_hidden}
         )
         return [r.get("kbId") for r in results if r.get("kbId")]
+
+    async def get_entity_access_context(
+        self,
+        user_id: str,
+        org_id: str,
+        source_ids: list[str] | None = None,
+        transaction: str | None = None,
+        exclude_app_ids: frozenset[str] = frozenset(),
+    ) -> dict[str, Any] | None:
+        """See :meth:`IGraphDBProvider.get_entity_access_context`.
+
+        App paths mirror `get_user_apps` plus the KB paths, and RecordGroup
+        paths mirror Paths 1-4 and the nested step of
+        `_build_permission_paths_cypher`.
+        """
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+
+        # Each aggregating CALL returns exactly one row, so a user with no apps
+        # or no record groups still yields a row (and is not mistaken for missing).
+        query = """
+        MATCH (u:User {userId: $user_id})
+        WITH u LIMIT 1
+
+        // The user everywhere, plus each source account they authenticated a
+        // connector as, counted for that connector only (get_accessible_containers).
+        OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(source_account:User)
+        WITH u, [{user: u, connectorId: null}] +
+                [p IN collect({user: source_account, connectorId: linked.connectorId})
+                   WHERE p.user IS NOT NULL] AS principals
+
+        CALL {
+            WITH u, principals
+            CALL {
+                WITH u
+                MATCH (u)-[:USER_APP_RELATION]->(app:App)
+                RETURN app
+                UNION
+                WITH u
+                MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)-[:USER_APP_RELATION]->(app:App)
+                RETURN app
+                UNION
+                WITH u
+                MATCH (u)-[:PERMISSION {type: 'USER'}]->(app:App {type: $kb_type})
+                WHERE app.orgId = $org_id
+                RETURN app
+                UNION
+                WITH u
+                MATCH (u)-[:PERMISSION {type: 'USER'}]->(:Teams)-[:PERMISSION {type: 'TEAM'}]->(app:App {type: $kb_type})
+                WHERE app.orgId = $org_id
+                RETURN app
+                UNION
+                WITH principals
+                UNWIND principals AS principal
+                MATCH (app:App {id: principal.connectorId})
+                RETURN app
+            }
+            WITH app
+            // A hidden KB (a project's linked collection) is reachable only
+            // when the caller names it, as in get_accessible_containers.
+            WHERE ((size($source_ids) = 0 AND coalesce(app.isHidden, false) = false)
+                   OR app.id IN $source_ids)
+              AND NOT app.id IN $exclude_app_ids
+            RETURN collect(app {.id, .name, .type, .permissionModel}) AS apps
+        }
+
+        WITH u, principals, apps,
+             [a IN apps
+              WHERE coalesce(a.type, '') <> $kb_type
+                AND coalesce(a.permissionModel, '') <> $app_level
+              | a.id] AS record_level_app_ids
+
+        CALL {
+            WITH u, principals, record_level_app_ids
+            CALL {
+                WITH principals, record_level_app_ids
+                UNWIND principals AS principal
+                WITH principal.user AS pu, principal.connectorId AS linked_connector, record_level_app_ids
+                MATCH (pu)-[:PERMISSION {type: 'USER'}]->(rg:RecordGroup)
+                WHERE (linked_connector IS NULL OR rg.connectorId = linked_connector)
+                  AND rg.orgId = $org_id
+                  AND coalesce(rg.isDeleted, false) = false
+                  AND rg.connectorId IN record_level_app_ids
+                RETURN rg
+                UNION
+                WITH principals, record_level_app_ids
+                UNWIND principals AS principal
+                WITH principal.user AS pu, principal.connectorId AS linked_connector, record_level_app_ids
+                MATCH (pu)-[:PERMISSION {type: 'USER'}]->(grp)
+                WHERE grp:Group OR grp:Role
+                MATCH (grp)-[:PERMISSION]->(rg:RecordGroup)
+                WHERE (linked_connector IS NULL OR rg.connectorId = linked_connector)
+                  AND rg.orgId = $org_id
+                  AND coalesce(rg.isDeleted, false) = false
+                  AND rg.connectorId IN record_level_app_ids
+                RETURN rg
+                UNION
+                // An ORG grant reaches every member, so a linked account adds nothing.
+                WITH u, record_level_app_ids
+                MATCH (u)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
+                MATCH (org)-[:PERMISSION {type: 'ORG'}]->(rg:RecordGroup)
+                WHERE rg.orgId = $org_id
+                  AND coalesce(rg.isDeleted, false) = false
+                  AND rg.connectorId IN record_level_app_ids
+                RETURN rg
+                UNION
+                WITH principals, record_level_app_ids
+                UNWIND principals AS principal
+                WITH principal.user AS pu, principal.connectorId AS linked_connector, record_level_app_ids
+                MATCH (pu)-[:PERMISSION {type: 'USER'}]->(team:Teams)
+                MATCH (team)-[:PERMISSION {type: 'TEAM'}]->(rg:RecordGroup)
+                WHERE (linked_connector IS NULL OR rg.connectorId = linked_connector)
+                  AND rg.orgId = $org_id
+                  AND coalesce(rg.isDeleted, false) = false
+                  AND rg.connectorId IN record_level_app_ids
+                RETURN rg
+            }
+            RETURN collect(rg) AS seed_rgs
+        }
+
+        // Records also inherit into record groups, so the walk is kept to
+        // record-group nodes; otherwise it continues through every record
+        // (and their attachments) under a seed. Checked on Neo4j 5.26 with
+        // PROFILE: the predicate must cover the whole path (a slice such as
+        // nodes(p)[1..] is not pushed into the expand), and `child` must stay
+        // unlabelled with its filters after the WITH, or the planner seeks
+        // child record groups by index and checks paths back to the seed
+        // (VarLengthExpand(Into)), three times the cost. The whole-path
+        // predicate still requires child to be a RecordGroup.
+        CALL {
+            WITH seed_rgs, record_level_app_ids
+            UNWIND seed_rgs AS seed
+            WITH seed, record_level_app_ids
+            WHERE coalesce(seed.hideChildren, false) = false
+            MATCH p = (seed)<-[:INHERIT_PERMISSIONS*1..__INHERIT_DEPTH__]-(child)
+            WHERE all(n IN nodes(p) WHERE n:RecordGroup)
+            WITH child, record_level_app_ids
+            WHERE child.orgId = $org_id
+              AND coalesce(child.isDeleted, false) = false
+              AND child.connectorId IN record_level_app_ids
+            RETURN collect(DISTINCT child.id) AS nested_rg_ids
+        }
+
+        CALL {
+            WITH seed_rgs, nested_rg_ids
+            UNWIND [rg IN seed_rgs | rg.id] + nested_rg_ids AS rg_id
+            RETURN collect(DISTINCT rg_id) AS record_group_ids
+        }
+
+        RETURN u.id AS user_key, apps, record_group_ids
+        """.replace("__INHERIT_DEPTH__", str(CONTAINER_INHERIT_MAX_DEPTH))
+        rows = await self.client.execute_query(
+            query,
+            parameters={
+                "user_id": user_id,
+                "org_id": org_id,
+                "source_ids": source_ids or [],
+                "exclude_app_ids": sorted(exclude_app_ids),
+                "kb_type": Connectors.KNOWLEDGE_BASE.value,
+                "app_level": PermissionModel.APP_LEVEL.value,
+            },
+            txn_id=transaction,
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "user_key": row.get("user_key"),
+            "apps": [dict(app) for app in row.get("apps") or []],
+            "record_group_ids": [str(rg_id) for rg_id in row.get("record_group_ids") or [] if rg_id],
+        }
 
     async def _get_kb_virtual_ids_for_kb(self, kb_id: str) -> dict[str, str]:
         """Every completed upload in one KB, independent of user.
@@ -12137,6 +12405,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE kbRecord.orgId = $org_id
                     AND kbRecord.isDeleted <> true
                     AND kbRecord.origin = "UPLOAD"
+                    AND kbRecord.recordType <> "ARTIFACT"
                     AND NOT kbRecord.mimeType = "application/vnd.folder"
                     {kb_record_filter}
 
@@ -12249,6 +12518,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE kbRecord.orgId = $org_id
                     AND kbRecord.isDeleted <> true
                     AND kbRecord.origin = "UPLOAD"
+                    AND kbRecord.recordType <> "ARTIFACT"
                     AND NOT kbRecord.mimeType = "application/vnd.folder"
                     {kb_record_filter}
 
@@ -12309,6 +12579,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE kbRecord.orgId = $org_id
                     AND kbRecord.isDeleted <> true
                     AND kbRecord.origin = "UPLOAD"
+                    AND kbRecord.recordType <> "ARTIFACT"
                     AND NOT kbRecord.mimeType = "application/vnd.folder"
 
                 WITH u, COLLECT({record: kbRecord, role: kb_role}) AS kbRecords
@@ -12428,6 +12699,171 @@ class Neo4jProvider(IGraphDBProvider):
                 "indexingStatus": [],
                 "permissions": []
             }
+
+    def _artifact_gallery_sort_expr(self, sort_by: str) -> str:
+        return {
+            "name": "art.name",
+            "createdAtTimestamp": "rec.createdAtTimestamp",
+            "updatedAtTimestamp": "rec.updatedAtTimestamp",
+            "artifactType": "art.artifactType",
+        }.get(sort_by, "rec.createdAtTimestamp")
+
+    def _artifact_gallery_where(
+        self,
+        search: str | None,
+        artifact_types: list[str] | None,
+        conversation_id: str | None,
+        date_from: int | None,
+        date_to: int | None,
+    ) -> tuple[str, dict]:
+        conditions: list[str] = []
+        params: dict = {}
+        if search:
+            conditions.append(
+                "(toLower(coalesce(art.name, '')) CONTAINS toLower($search) "
+                "OR toLower(coalesce(art.logicalName, '')) CONTAINS toLower($search))"
+            )
+            params["search"] = search
+        if artifact_types is not None:
+            conditions.append("art.artifactType IN $artifact_types")
+            params["artifact_types"] = artifact_types
+        if conversation_id:
+            conditions.append("art.conversationId = $conversation_id")
+            params["conversation_id"] = conversation_id
+        if date_from:
+            conditions.append("rec.createdAtTimestamp >= $date_from")
+            params["date_from"] = date_from
+        if date_to:
+            conditions.append("rec.createdAtTimestamp <= $date_to")
+            params["date_to"] = date_to
+        extra = (" AND " + " AND ".join(conditions)) if conditions else ""
+        return extra, params
+
+    @staticmethod
+    def _artifact_gallery_match() -> str:
+        return """
+            MATCH (u:User {id: $user_id})-[perm:PERMISSION {type: "USER"}]->(rec:Record)
+            WHERE rec.orgId = $org_id
+              AND rec.recordType = "ARTIFACT"
+              AND coalesce(rec.isDeleted, false) = false
+            MATCH (rec)-[:IS_OF_TYPE]->(art:Artifact)
+            WHERE art.artifactType <> "TOOL_RESULT"
+              AND coalesce(art.isTemporary, false) = false
+              AND coalesce(art.visibility, "VISIBLE") = "VISIBLE"
+        """
+
+    @staticmethod
+    def _artifact_gallery_return() -> str:
+        return """
+            RETURN {
+                id: rec.id,
+                recordName: rec.recordName,
+                recordType: rec.recordType,
+                mimeType: rec.mimeType,
+                sizeInBytes: rec.sizeInBytes,
+                version: rec.version,
+                createdAtTimestamp: rec.createdAtTimestamp,
+                updatedAtTimestamp: rec.updatedAtTimestamp,
+                artifactDoc: {
+                    name: art.name,
+                    artifactType: art.artifactType,
+                    conversationId: art.conversationId,
+                    visibility: art.visibility,
+                    mimeType: art.mimeType,
+                    sizeInBytes: art.sizeInBytes,
+                    logicalName: art.logicalName,
+                    contentHash: art.contentHash,
+                    versions: art.versions,
+                    description: art.description,
+                    sourceTool: art.sourceTool,
+                    isTemporary: art.isTemporary
+                },
+                permission: {role: perm.role, type: perm.type}
+            } AS result
+        """
+
+    async def list_accessible_artifacts(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: str | None,
+        artifact_types: list[str] | None,
+        conversation_id: str | None,
+        date_from: int | None,
+        date_to: int | None,
+        sort_by: str,
+        sort_order: str,
+    ) -> tuple[list[dict], int]:
+        """Permission-first gallery listing. ``user_id`` is the graph user key."""
+        try:
+            extra, extra_params = self._artifact_gallery_where(
+                search, artifact_types, conversation_id, date_from, date_to,
+            )
+            sort_expr = self._artifact_gallery_sort_expr(sort_by)
+            sort_dir = "ASC" if (sort_order or "").lower() == "asc" else "DESC"
+            params = {
+                "user_id": user_id,
+                "org_id": org_id,
+                "skip": skip,
+                "limit": limit,
+                **extra_params,
+            }
+            match = self._artifact_gallery_match()
+            query = (
+                match
+                + extra
+                + f"""
+            WITH rec, art, perm
+            ORDER BY {sort_expr} {sort_dir}, rec.id
+            SKIP $skip
+            LIMIT $limit
+            """
+                + self._artifact_gallery_return()
+            )
+            count_query = match + extra + "\n            RETURN count(rec) AS total\n            "
+            results = await self.client.execute_query(query, parameters=params)
+            count_results = await self.client.execute_query(count_query, parameters=params)
+            records = [row.get("result", row) for row in (results or [])]
+            total = 0
+            if count_results:
+                total = count_results[0].get("total", 0) if isinstance(count_results[0], dict) else count_results[0]
+            return records, int(total or 0)
+        except Exception as e:
+            self.logger.error("❌ Failed to list accessible artifacts: %s", str(e))
+            raise
+
+    async def get_artifact_detail(
+        self,
+        user_id: str,
+        org_id: str,
+        artifact_id: str,
+    ) -> dict | None:
+        """Permission-first single-artifact fetch. ``user_id`` is the graph user key."""
+        try:
+            query = (
+                self._artifact_gallery_match()
+                + """
+              AND rec.id = $artifact_id
+            """
+                + self._artifact_gallery_return()
+            )
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "user_id": user_id,
+                    "org_id": org_id,
+                    "artifact_id": artifact_id,
+                },
+            )
+            if not results:
+                return None
+            row = results[0]
+            return row.get("result", row)
+        except Exception as e:
+            self.logger.error("❌ Failed to get artifact detail: %s", str(e))
+            raise
 
     async def list_kb_records(
         self,
@@ -14569,9 +15005,14 @@ class Neo4jProvider(IGraphDBProvider):
         org_id: str,
         *,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> set[str]:
         """Batch KH permission_role check for record/recordGroup ancestor ids."""
-        if not nodes or not user_key or not self.client:
+        if not nodes or not user_key:
+            return set()
+        if not self.client:
+            if raise_on_error:
+                raise RuntimeError("Neo4j client is not connected")
             return set()
 
         record_ids = [
@@ -14645,6 +15086,8 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.warning(
                 "filter_nodes_with_permission_role: Cypher failed — %s", exc
             )
+            if raise_on_error:
+                raise
             return set()
 
     @staticmethod
@@ -15018,6 +15461,460 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as exc:
             self.logger.warning("get_record_parent_adjacency: Cypher failed — %s", exc)
             return {"nodes": {}, "parents": {}}
+
+    # ------------------------------------------------------------------
+    # Knowledge-graph taxonomy entities
+    # ------------------------------------------------------------------
+
+    _TAXONOMY_EDGE_GROUPS: dict[str, tuple[str, dict[str, str]]] = {
+        "category_group": (
+            CollectionNames.BELONGS_TO_CATEGORY.value,
+            {
+                CollectionNames.CATEGORIES.value: KnowledgeGraphEntityType.CATEGORY.value,
+                CollectionNames.SUBCATEGORIES1.value: KnowledgeGraphEntityType.SUBCATEGORY.value,
+                CollectionNames.SUBCATEGORIES2.value: KnowledgeGraphEntityType.SUBCATEGORY.value,
+                CollectionNames.SUBCATEGORIES3.value: KnowledgeGraphEntityType.SUBCATEGORY.value,
+            },
+        ),
+        "department_group": (
+            CollectionNames.BELONGS_TO_DEPARTMENT.value,
+            {CollectionNames.DEPARTMENTS.value: KnowledgeGraphEntityType.DEPARTMENT.value},
+        ),
+        "topic_group": (
+            CollectionNames.BELONGS_TO_TOPIC.value,
+            {CollectionNames.TOPICS.value: KnowledgeGraphEntityType.TOPIC.value},
+        ),
+        "language_group": (
+            CollectionNames.BELONGS_TO_LANGUAGE.value,
+            {CollectionNames.LANGUAGES.value: KnowledgeGraphEntityType.LANGUAGE.value},
+        ),
+    }
+
+    # Entity type -> (Record->entity relationship, entity labels). Fixed so no
+    # caller-supplied value is ever interpolated into Cypher; ``record`` is
+    # handled separately in ``_entity_candidate_records_cypher``.
+    _ENTITY_CANDIDATE_TARGETS: dict[str, tuple[str, tuple[str, ...]]] = {
+        KnowledgeGraphEntityType.DEPARTMENT.value: (
+            edge_collection_to_relationship(CollectionNames.BELONGS_TO_DEPARTMENT.value),
+            (collection_to_label(CollectionNames.DEPARTMENTS.value),),
+        ),
+        KnowledgeGraphEntityType.CATEGORY.value: (
+            edge_collection_to_relationship(CollectionNames.BELONGS_TO_CATEGORY.value),
+            (collection_to_label(CollectionNames.CATEGORIES.value),),
+        ),
+        KnowledgeGraphEntityType.SUBCATEGORY.value: (
+            edge_collection_to_relationship(CollectionNames.BELONGS_TO_CATEGORY.value),
+            (
+                collection_to_label(CollectionNames.SUBCATEGORIES1.value),
+                collection_to_label(CollectionNames.SUBCATEGORIES2.value),
+                collection_to_label(CollectionNames.SUBCATEGORIES3.value),
+            ),
+        ),
+        KnowledgeGraphEntityType.TOPIC.value: (
+            edge_collection_to_relationship(CollectionNames.BELONGS_TO_TOPIC.value),
+            (collection_to_label(CollectionNames.TOPICS.value),),
+        ),
+        KnowledgeGraphEntityType.LANGUAGE.value: (
+            edge_collection_to_relationship(CollectionNames.BELONGS_TO_LANGUAGE.value),
+            (collection_to_label(CollectionNames.LANGUAGES.value),),
+        ),
+        KnowledgeGraphEntityType.RECORD_GROUP.value: (
+            edge_collection_to_relationship(CollectionNames.BELONGS_TO.value),
+            (collection_to_label(CollectionNames.RECORD_GROUPS.value),),
+        ),
+    }
+
+    async def _get_taxonomy_entities_for_record_via_edge(
+        self,
+        record_key: str,
+        edge_collection: str,
+        node_label_types: dict[str, str],
+        transaction: str | None,
+    ) -> list[dict[str, Any]]:
+        """Taxonomy nodes one record links to over ``edge_collection`` — the
+        record itself pins the scope, so there is no org filter and no
+        pagination.
+
+        Departments are the one taxonomy label that stores its name in
+        ``departmentName`` rather than ``name``.
+        """
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        rel_type = edge_collection_to_relationship(edge_collection)
+        node_labels = [collection_to_label(c) for c in node_label_types]
+        label_to_type = {
+            collection_to_label(c): etype for c, etype in node_label_types.items()
+        }
+        label_to_collection = {collection_to_label(c): c for c in node_label_types}
+        query = f"""
+            MATCH (rec:{record_label} {{id: $record_key}})-[:{rel_type}]->(v)
+            WHERE any(l IN labels(v) WHERE l IN $node_labels)
+            RETURN DISTINCT v.id AS entityId,
+                   coalesce(v.name, v.departmentName, v.id) AS name,
+                   coalesce(v.aliases, []) AS aliases, labels(v) AS nodeLabels
+        """
+        # Any failure propagates: a partial result would read as the record
+        # having fewer entities.
+        rows = await self.client.execute_query(
+            query,
+            parameters={"record_key": record_key, "node_labels": node_labels},
+            txn_id=transaction,
+        )
+        results: list[dict[str, Any]] = []
+        for row in rows or []:
+            if not row.get("entityId"):
+                continue
+            matched_label = next(
+                (label for label in row.get("nodeLabels") or [] if label in label_to_type),
+                None,
+            )
+            if not matched_label:
+                continue
+            results.append(
+                {
+                    "entityId": row["entityId"],
+                    "name": row.get("name") or row["entityId"],
+                    "entityType": label_to_type[matched_label],
+                    "level": subcategory_level(label_to_collection.get(matched_label)),
+                    "aliases": [str(a) for a in (row.get("aliases") or []) if a],
+                }
+            )
+        return results
+
+    async def get_taxonomy_entities_for_record(
+        self,
+        record_key: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_taxonomy_entities_for_record`."""
+        if not record_key:
+            return []
+        groups = list(self._TAXONOMY_EDGE_GROUPS.values())
+        if transaction is not None:
+            # Queries on one txn_id serialise on the client's per-transaction
+            # lock anyway, so overlapping them buys nothing.
+            results: list[dict[str, Any]] = []
+            for edge_collection, node_map in groups:
+                results.extend(
+                    await self._get_taxonomy_entities_for_record_via_edge(
+                        record_key, edge_collection, node_map, transaction
+                    )
+                )
+            return results
+        grouped = await asyncio.gather(
+            *(
+                self._get_taxonomy_entities_for_record_via_edge(
+                    record_key, edge_collection, node_map, None
+                )
+                for edge_collection, node_map in groups
+            )
+        )
+        return [row for rows in grouped for row in rows]
+
+    _ENTITY_CANDIDATE_RECORD_PROJECTION = (
+        "rec {_key: rec.id, .recordName, .recordType, .connectorId, .virtualRecordId, "
+        ".webUrl, .sourceLastModifiedTimestamp, .updatedAtTimestamp}"
+    )
+
+    def _entity_node_match(self, entity_type: str) -> tuple[str, str]:
+        """The record relationship for ``entity_type`` and a clause binding
+        ``e`` to the node whose id is ``ref.id``."""
+        relationship, labels = self._ENTITY_CANDIDATE_TARGETS[entity_type]
+        if len(labels) == 1:
+            return relationship, f"MATCH (e:{labels[0]} {{id: ref.id}})"
+        # One index seek per label instead of an unlabeled scan.
+        branches = "\n                UNION\n                ".join(
+            f"""WITH ref
+                MATCH (e:{label} {{id: ref.id}})
+                RETURN e"""
+            for label in labels
+        )
+        return relationship, f"""CALL {{
+                {branches}
+              }}"""
+
+    def _entity_candidate_records_cypher(self, entity_type: str) -> str:
+        projection = self._ENTITY_CANDIDATE_RECORD_PROJECTION
+        if entity_type == KnowledgeGraphEntityType.RECORD.value:
+            return f"""
+            UNWIND $refs AS ref
+            OPTIONAL MATCH (rec:Record {{id: ref.id}})
+            WHERE rec.orgId = $org_id
+              AND coalesce(rec.isDeleted, false) = false
+              AND rec.indexingStatus = $completed
+              AND rec.connectorId IN ref.connectorIds
+              AND ($record_types IS NULL OR rec.recordType IN $record_types)
+            RETURN ref.id AS id,
+                   CASE WHEN rec IS NULL OR $offset > 0 THEN [] ELSE [{projection}] END AS rows
+            """
+
+        relationship, entity_match = self._entity_node_match(entity_type)
+        if entity_type == KnowledgeGraphEntityType.RECORD_GROUP.value:
+            entity_match += "\n              WHERE e.orgId = $org_id"
+
+        # The aggregating CALL yields one row per ref even when nothing matches.
+        return f"""
+            UNWIND $refs AS ref
+            CALL {{
+              WITH ref
+              {entity_match}
+              MATCH (rec:Record)-[:{relationship}]->(e)
+              WHERE rec.orgId = $org_id
+                AND coalesce(rec.isDeleted, false) = false
+                AND rec.indexingStatus = $completed
+                AND rec.connectorId IN ref.connectorIds
+                AND ($record_types IS NULL OR rec.recordType IN $record_types)
+              WITH DISTINCT rec
+              LIMIT $scan_cap
+              WITH rec
+              ORDER BY coalesce(rec.sourceLastModifiedTimestamp, rec.updatedAtTimestamp, 0) DESC, rec.id ASC
+              SKIP $offset LIMIT $limit
+              RETURN collect({projection}) AS rows
+            }}
+            RETURN ref.id AS id, rows
+            """
+
+    async def get_entity_candidate_records(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        *,
+        record_types: list[str] | None = None,
+        limit_per_entity: int = 20,
+        offset: int = 0,
+        transaction: str | None = None,
+    ) -> dict[tuple[str, str], list[dict[str, Any]]]:
+        """See :meth:`IGraphDBProvider.get_entity_candidate_records`."""
+        if not refs or not org_id:
+            return {}
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+
+        refs_by_type: dict[str, list[dict[str, Any]]] = {}
+        seen: set[tuple[str, str]] = set()
+        for ref in refs:
+            ref_id = ref.get("id")
+            ref_type = ref.get("type")
+            if not ref_id or (
+                ref_type != KnowledgeGraphEntityType.RECORD.value
+                and ref_type not in self._ENTITY_CANDIDATE_TARGETS
+            ):
+                continue
+            # A repeated ref would return its own row and overwrite the first one's.
+            if (ref_type, str(ref_id)) in seen:
+                continue
+            seen.add((ref_type, str(ref_id)))
+            refs_by_type.setdefault(ref_type, []).append(
+                {"id": str(ref_id), "connectorIds": list(ref.get("connectorIds") or [])}
+            )
+
+        results: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for entity_type, typed_refs in refs_by_type.items():
+            rows = await self.client.execute_query(
+                self._entity_candidate_records_cypher(entity_type),
+                parameters={
+                    "refs": typed_refs,
+                    "org_id": org_id,
+                    "record_types": list(record_types) if record_types else None,
+                    "offset": max(0, offset),
+                    "limit": max(1, limit_per_entity),
+                    "scan_cap": ENTITY_CANDIDATE_SCAN_CAP,
+                    # Search only returns indexed records; listing others offers
+                    # records whose content cannot be read.
+                    "completed": ProgressStatus.COMPLETED.value,
+                },
+                txn_id=transaction,
+            )
+            for typed_ref in typed_refs:
+                results.setdefault((entity_type, typed_ref["id"]), [])
+            for row in rows or []:
+                if row.get("id"):
+                    results[(entity_type, str(row["id"]))] = [
+                        dict(rec) for rec in row.get("rows") or []
+                    ]
+        return results
+
+    # ------------------------------------------------------------------
+    # Taxonomy entity resolution (per-org canonical nodes)
+    # ------------------------------------------------------------------
+
+
+    async def get_taxonomy_entity_membership(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        transaction: str | None = None,
+    ) -> dict[tuple[str, str], dict[str, list[str]]]:
+        """See :meth:`IGraphDBProvider.get_taxonomy_entity_membership`."""
+        if not refs or not org_id:
+            return {}
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        ids_by_type: dict[str, list[str]] = {}
+        for ref in refs:
+            ref_id, ref_type = str(ref.get("id") or ""), ref.get("type")
+            if ref_id and ref_type in TAXONOMY_ENTITY_TYPES:
+                bucket = ids_by_type.setdefault(ref_type, [])
+                if ref_id not in bucket:
+                    bucket.append(ref_id)
+
+        results: dict[tuple[str, str], dict[str, list[str]]] = {}
+        for ref_type, ref_ids in ids_by_type.items():
+            relationship, entity_match = self._entity_node_match(ref_type)
+            # The aggregating CALL yields one row per ref even when nothing links.
+            query = f"""
+            UNWIND $refs AS ref
+            CALL {{
+              WITH ref
+              {entity_match}
+              OPTIONAL MATCH (rec:Record)-[:{relationship}]->(e)
+              WHERE rec.orgId = $org_id AND coalesce(rec.isDeleted, false) = false
+              RETURN [c IN collect(DISTINCT rec.connectorId) WHERE c IS NOT NULL] AS connector_ids,
+                     [g IN collect(DISTINCT rec.recordGroupId) WHERE g IS NOT NULL] AS group_ids
+            }}
+            RETURN ref.id AS id, connector_ids, group_ids
+            """
+            rows = await self.client.execute_query(
+                query,
+                parameters={"refs": [{"id": ref_id} for ref_id in ref_ids], "org_id": org_id},
+                txn_id=transaction,
+            )
+            for ref_id in ref_ids:
+                results[(ref_type, ref_id)] = {"connectorIds": [], "recordGroupIds": []}
+            for row in rows or []:
+                key = (ref_type, str(row.get("id") or ""))
+                if key in results:
+                    results[key] = {
+                        "connectorIds": [str(c) for c in row.get("connector_ids") or []],
+                        "recordGroupIds": [str(g) for g in row.get("group_ids") or []],
+                    }
+        return results
+
+    async def find_taxonomy_nodes(
+        self,
+        collection: str,
+        org_id: str,
+        normalized_names: list[str],
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_taxonomy_nodes`."""
+        if not org_id or not normalized_names or not is_taxonomy_collection(collection):
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        label = collection_to_label(collection)
+        # Both branches seek an index: (orgId, normalizedName) on the node, and
+        # (orgId, collection, normalized) on the TaxonomyAlias nodes written by
+        # add_taxonomy_aliases. A list property cannot be index-seeked.
+        projection = (
+            "RETURN n.id AS id, n.name AS name, n.normalizedName AS normalizedName, "
+            "coalesce(n.aliases, []) AS aliases, "
+            "coalesce(n.normalizedAliases, []) AS normalizedAliases"
+        )
+        query = f"""
+            MATCH (n:{label})
+            WHERE n.orgId = $org_id AND n.normalizedName IN $names
+            {projection}
+            UNION
+            MATCH (a:{TAXONOMY_ALIAS_LABEL})
+            WHERE a.orgId = $org_id AND a.collection = $collection AND a.normalized IN $names
+            MATCH (a)-[:{TAXONOMY_ALIAS_REL}]->(n:{label})
+            WHERE n.orgId = $org_id
+            {projection}
+        """
+        rows = await self.client.execute_query(
+            query,
+            parameters={
+                "org_id": org_id,
+                "collection": collection,
+                "names": list(dict.fromkeys(normalized_names)),
+            },
+            txn_id=transaction,
+        )
+        return [dict(row) for row in rows or []]
+
+    async def create_taxonomy_node_if_absent(
+        self,
+        collection: str,
+        node: dict[str, Any],
+        transaction: str | None = None,
+    ) -> None:
+        """See :meth:`IGraphDBProvider.create_taxonomy_node_if_absent`."""
+        if not is_taxonomy_collection(collection):
+            raise ValueError(f"{collection!r} is not a taxonomy collection")
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        props = self._arango_to_neo4j_node(dict(node), collection)
+        node_id = props.pop("id", None)
+        if not node_id:
+            raise ValueError("taxonomy node needs an id")
+        props.pop("aliases", None)
+        label = collection_to_label(collection)
+        query = f"""
+            MERGE (n:{label} {{id: $id}})
+            ON CREATE SET n += $props
+            RETURN n.id AS id
+        """
+        await self.client.execute_query(
+            query, parameters={"id": node_id, "props": props}, txn_id=transaction,
+        )
+
+    async def add_taxonomy_aliases(
+        self,
+        collection: str,
+        key: str,
+        aliases: list[str],
+        normalized_aliases: list[str],
+        *,
+        max_aliases: int = 20,
+        transaction: str | None = None,
+    ) -> None:
+        """See :meth:`IGraphDBProvider.add_taxonomy_aliases`."""
+        if not is_taxonomy_collection(collection):
+            raise ValueError(f"{collection!r} is not a taxonomy collection")
+        pairs = _alias_pairs(aliases, normalized_aliases)
+        if not key or not pairs:
+            return
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        label = collection_to_label(collection)
+        # The first SET takes the node's write lock before the lists are read;
+        # without it two writers read the same lists and the later SET drops
+        # the other's alias. Merged as pairs so both lists stay aligned; the
+        # stored lists are cut to their common length first so a skewed node
+        # heals. Every stored alias also gets an indexed TaxonomyAlias node,
+        # which is what find_taxonomy_nodes seeks.
+        query = f"""
+            MATCH (n:{label} {{id: $key}})
+            SET n._aliasLock = true
+            WITH n, coalesce(n.aliases, []) AS displays, coalesce(n.normalizedAliases, []) AS normals
+            WITH n, displays, normals,
+                CASE WHEN size(displays) < size(normals) THEN size(displays) ELSE size(normals) END AS paired
+            WITH n, displays[0..paired] AS displays, normals[0..paired] AS normals
+            WITH n, displays, normals,
+                [i IN range(0, size($normalized) - 1) WHERE NOT $normalized[i] IN normals] AS fresh
+            SET n.aliases = (displays + [i IN fresh | $aliases[i]])[0..$max_aliases],
+                n.normalizedAliases = (normals + [i IN fresh | $normalized[i]])[0..$max_aliases]
+            REMOVE n._aliasLock
+            WITH n
+            WHERE n.orgId IS NOT NULL
+            UNWIND n.normalizedAliases AS normalized
+            MERGE (a:{TAXONOMY_ALIAS_LABEL} {{orgId: n.orgId, collection: $collection, normalized: normalized}})
+            MERGE (a)-[:{TAXONOMY_ALIAS_REL}]->(n)
+            RETURN count(a) AS aliases
+        """
+        await self.client.execute_query(
+            query,
+            parameters={
+                "key": key,
+                "collection": collection,
+                "aliases": [display for display, _ in pairs],
+                "normalized": [normalized for _, normalized in pairs],
+                "max_aliases": max(1, max_aliases),
+            },
+            txn_id=transaction,
+        )
 
     async def get_user_app_ids(
         self,

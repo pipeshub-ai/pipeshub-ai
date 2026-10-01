@@ -91,6 +91,7 @@ describe('POST /userAccount/authenticate over HTTP', () => {
     );
 
     const container = new Container();
+    container.bind('Logger').toConstantValue(logger);
     container.bind('AppConfig').toConstantValue(config);
     container.bind('SessionService').toConstantValue(sessionService);
     container.bind('UserAccountController').toConstantValue(controller);
