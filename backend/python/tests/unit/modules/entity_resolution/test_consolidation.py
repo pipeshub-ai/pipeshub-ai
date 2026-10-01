@@ -22,6 +22,7 @@ from app.modules.entity_resolution.consolidation import (
 )
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.normalizer import normalize_name
+from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -190,9 +191,9 @@ class FakeStore:
         self.deletes: list[tuple[str, str, list[str]]] = []
 
     async def upsert_entities_batch(self, entities: list, batch_size: int = 64, *,
-                                    merge_membership: bool = True) -> int:
+                                    merge_membership: bool = True) -> EntityWriteOutcome:
         self.upserts.extend(entities)
-        return 0
+        return EntityWriteOutcome(written=len(entities))
 
     async def delete_entities(self, org_id: str, entity_type: str, entity_ids: list[str]) -> None:
         self.deletes.append((org_id, entity_type, sorted(entity_ids)))

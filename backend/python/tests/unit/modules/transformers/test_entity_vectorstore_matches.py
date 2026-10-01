@@ -304,13 +304,15 @@ class TestMembershipReadIsByPointId:
 
         await store.upsert_entities_batch([self._entity("a"), self._entity("b")])
 
-        service.retrieve_points.assert_awaited_once()
-        collection, ids = service.retrieve_points.await_args.args
-        assert collection == store.collection_name
-        assert ids == [
+        # One read before embedding, without the locks, and the
+        # authoritative one under them; both by id, never a search.
+        assert service.retrieve_points.await_count == 2
+        expected = [
             EntityVectorStore._point_id("org-1", "topic", "a"),
             EntityVectorStore._point_id("org-1", "topic", "b"),
         ]
+        for call in service.retrieve_points.await_args_list:
+            assert call.args == (store.collection_name, expected)
         service.scroll.assert_not_called()
 
     async def test_a_write_not_yet_searchable_is_still_merged(self) -> None:
