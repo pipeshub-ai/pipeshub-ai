@@ -1,0 +1,33 @@
+{
+ "runs": [
+  "20260929T183724Z-full-rag-625d2d4d",
+  "20260929T230844Z-full-rag-rerank-a4d4d11b",
+  "20260930T173635Z-full-rag-s2b-91643e63",
+  "20260930T190328Z-full-rag-rerank-bge-0d84582b",
+  "20261001T015552Z-full-pipeshub-5f0576d4"
+ ],
+ "systems": {
+  "adv-dense-decompose": "20260929T183724Z-full-rag-625d2d4d",
+  "adv-dense-expand": "20260929T183724Z-full-rag-625d2d4d",
+  "adv-hybrid": "20260929T183724Z-full-rag-625d2d4d",
+  "adv-hybrid-decompose": "20260929T183724Z-full-rag-625d2d4d",
+  "adv-hybrid-expand": "20260929T183724Z-full-rag-625d2d4d",
+  "adv-sparse": "20260929T183724Z-full-rag-625d2d4d",
+  "adv-std-hybrid": "20260929T183724Z-full-rag-625d2d4d",
+  "closed_book": "20260929T183724Z-full-rag-625d2d4d",
+  "naive-std": "20260929T183724Z-full-rag-625d2d4d",
+  "naive_rag": "20260929T183724Z-full-rag-625d2d4d",
+  "oracle": "20260929T183724Z-full-rag-625d2d4d",
+  "adv-hybrid-decompose-rerank": "20260929T230844Z-full-rag-rerank-a4d4d11b",
+  "adv-hybrid-decompose-rerank-s2b": "20260929T230844Z-full-rag-rerank-a4d4d11b",
+  "adv-hybrid-expand-rerank": "20260929T230844Z-full-rag-rerank-a4d4d11b",
+  "adv-hybrid-rerank": "20260929T230844Z-full-rag-rerank-a4d4d11b",
+  "adv-std-hybrid-decompose-rerank-s2b": "20260929T230844Z-full-rag-rerank-a4d4d11b",
+  "adv-std-hybrid-expand-rerank": "20260929T230844Z-full-rag-rerank-a4d4d11b",
+  "adv-hybrid-expand-s2b": "20260930T173635Z-full-rag-s2b-91643e63",
+  "adv-std-hybrid-expand-rerank-s2b": "20260930T173635Z-full-rag-s2b-91643e63",
+  "adv-hybrid-expand-rerank-bge": "20260930T190328Z-full-rag-rerank-bge-0d84582b",
+  "pipeshub": "20261001T015552Z-full-pipeshub-5f0576d4"
+ },
+ "refused_anywhere": []
+}

@@ -1,0 +1,131 @@
+run_name: full-pipeshub
+seed: 20241015
+dataset:
+  name: frames
+  split: all
+  limit: null
+  question_ids: null
+corpus:
+  tier: GD
+  snapshot: '2024-10-15T00:00:00Z'
+  scope: all
+  distractor_count: 10000
+  fetch_workers: 4
+  max_failed_gold_ratio: 0.005
+pipeshub:
+  base_url: http://localhost:3000
+  connector_url: http://localhost:8088
+  stream_timeout_s: 1800
+  index_timeout_s: 172800
+  index_poll_interval_s: 30
+  min_gold_indexed_ratio: 1.0
+  min_indexed_ratio: 0.999
+  upload_batch_size: 50
+  search_limit: 100
+  custom_instructions: DO NOT ANSWER QUESTIONS FROM YOUR TRAINING MEMORY
+answerer:
+  model: gpt-5.6-luna
+  provider: azureOpenAI
+  model_key: null
+  is_reasoning: true
+  reasoning_effort: high
+  deployment: null
+  call_provider: null
+embedding:
+  model: text-embedding-3-small
+  provider: azureOpenAI
+  pipeshub_provider: null
+  deployment: null
+qdrant:
+  url: http://localhost:6333
+  collection: records
+standard_index:
+  chunk_tokens: 512
+  chunk_overlap: 64
+  embed_batch_size: 128
+  embed_workers: 4
+  collection_prefix: frames_std
+pricing:
+  gpt-5.6-luna:
+    input_per_mtok: 0.2
+    cached_input_per_mtok: 0.02
+    output_per_mtok: 1.2
+    long_context_threshold: 272000
+    long_context_input_multiplier: 2.0
+    long_context_output_multiplier: 1.5
+    source: OpenAI API pricing, standard tier, effective 2026-07-30
+systems:
+- kind: oracle
+  label: null
+  repeats: 1
+  concurrency: 12
+  options: {}
+- kind: pipeshub
+  label: null
+  repeats: 1
+  concurrency: 3
+  options: {}
+grading:
+  primary:
+    model: claude-sonnet-5
+    provider: anthropic
+    model_key: null
+    is_reasoning: false
+    reasoning_effort: null
+    deployment: null
+    call_provider: null
+  secondary:
+    model: gemini-3.8-flash
+    provider: gemini
+    model_key: null
+    is_reasoning: false
+    reasoning_effort: null
+    deployment: null
+    call_provider: null
+  strict_grader: true
+  claim_support: true
+  max_claims: 8
+  fuzzy_threshold: 90
+  concurrency: 8
+  evidence_support:
+    judge: primary
+    max_evidence_tokens: 6000
+    recheck_evidence_tokens: 128000
+    systems: null
+guard:
+  allowed_tool_patterns:
+  - retrieval__*
+  - knowledgegraph__*
+  - knowledgehub__*
+  - internal_exploration_agent
+  - final_answer
+  - create_plan
+  - critique_plan
+  - replan
+  - write_todos
+  - task_complete
+  - verify_result
+  - request_review
+  - list_toolsets
+  - fetch_tools
+  - search_tools
+  - skills_list
+  - calculator__*
+  - date_calculator__*
+  denied_tool_patterns:
+  - '*web_search*'
+  - '*fetch_url*'
+  - '*browser*'
+  - run_code
+  - execute_*
+  - '*sandbox*'
+  - '*coding*'
+  - mcp*
+  strict: true
+limits:
+  max_error_rate: 0.2
+  min_items_for_breaker: 20
+  max_cost_usd: 600.0
+stats:
+  bootstrap_samples: 10000
+  confidence: 0.95

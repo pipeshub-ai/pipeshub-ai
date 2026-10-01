@@ -1,0 +1,26 @@
+{
+  "run_id": "20260929T183724Z-full-rag-625d2d4d",
+  "run_name": "full-rag",
+  "created_at": "2026-10-01T08:45:34.858209Z",
+  "config_hash": "625d2d4d23dd78a7d53148c080c5b719b8888a05fbfc1e67c9040c0483c6dd09",
+  "harness_version": "1.0.0",
+  "git_sha": "5b6d47f0bbe52864ce85f1e244a3a752bd76c30a",
+  "dataset_revision": "58d9fb6330f3ab1316d1eca12e5e8ef23dcc22ef",
+  "dataset_sha256": "4255093c93b595b5b04c7c8dde290b48ec87d72ca0fb0b760d9dd02740d669ff",
+  "split_sha256": "fe4fe15c6965d43e142ea7ca3c2b607c56adfa5e36b62f260cc7ec2d9a3e8eed",
+  "corpus_version": "a89e6af1958919f1a04abc2d78b33f380e8293d284d608fe6d31a2c09fe71989",
+  "snapshot": "2024-10-15T00:00:00Z",
+  "models": {
+    "answerer": "gpt-5.6-luna",
+    "judge_primary": "claude-sonnet-5",
+    "judge_secondary": "gemini-3.8-flash"
+  },
+  "backend": {},
+  "answer_prompts": {
+    "frames-answer-v3": "ebb2d970d9d12f71ffc9f6f9510e8460a4bfa68f61cb394d17f8c0c4598f24cb",
+    "frames-answer-grounded-v1": "d2eaae9a7dbbf583b4e546bbf2bff02ebe087c473fc433a29c3688b0accab01e",
+    "rag-answer-v2": "b71b091d1c49d601bcf4397134c905c532ce7879ede7a42f9a4234c4c8962844",
+    "rag-expand-v1": "e76faa0ef91e5b6b111ccfc904a628c188a165116346a567f1e8e6d7b5b2e1c6",
+    "rag-decompose-v1": "8f47dd340531aa7fc64902d12a456021e47fff2c9ed936e386cf0907d5331f53"
+  }
+}
