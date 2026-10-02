@@ -1151,7 +1151,7 @@ class TestUpdateRecord:
 
         result = await service.update_record("user1", "rec1", {})
         assert result == {"success": False, "code": 500, "reason": action_failed("update this file")}
-        service.processor.on_record_metadata_update.assert_not_awaited()
+        service.processor_for_kb.return_value.on_record_metadata_update.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_ignores_unmapped_update_keys(self, service):
@@ -2829,7 +2829,7 @@ class TestFolderDepthLimit:
 
         assert result["code"] == 400
         assert result["reason"] == FOLDER_DEPTH_LIMIT_REASON
-        service.processor.on_new_records.assert_not_awaited()
+        service.processor_for_kb.return_value.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_upload_past_the_limit_creates_nothing(self, service):
@@ -2841,7 +2841,7 @@ class TestFolderDepthLimit:
         )
 
         assert result["code"] == 400
-        service.processor.on_new_records.assert_not_awaited()
+        service.processor_for_kb.return_value.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_move_folder_whose_subtree_would_pass_the_limit_is_rejected(self, service):
