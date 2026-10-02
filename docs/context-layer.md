@@ -92,4 +92,3 @@ Answers cite blocks as `[source](refN)`. Each reference maps to a real block, an
 - MCP exposes search, chat and record tools. `grep`, `navigate` and the entity tools are available to PipesHub's own agents and are coming to MCP next.
 - A `wc -l` style count can include records the user cannot open. The lines themselves are filtered.
 - `grep` skips very large records (over 20 MB of text). Search still finds them.
-- `grep` can't yet match accented or non-Latin characters (é, ü, Cyrillic, Chinese). Search still finds that text.
