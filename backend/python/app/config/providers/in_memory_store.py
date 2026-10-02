@@ -140,7 +140,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
                 return False  # Key was not created (already exists)
 
             logger.debug("🔄 Storing new key-value pair")
-            self.store[key] = KeyData(value, next(self._next_version), ttl)
+            self.store[key] = KeyData(copy.deepcopy(value), next(self._next_version), ttl)
             logger.debug("🔄 Notifying watchers")
             self._notify_watchers(key, value)
             logger.debug("✅ Key created successfully")
@@ -168,7 +168,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
                 raise KeyError(f'Key "{key}" does not exist.')
 
             logger.debug("🔄 Updating value")
-            self.store[key] = KeyData(value, next(self._next_version), ttl)
+            self.store[key] = KeyData(copy.deepcopy(value), next(self._next_version), ttl)
             logger.debug("🔄 Notifying watchers")
             self._notify_watchers(key, value)
             logger.debug("✅ Value updated successfully")
@@ -190,7 +190,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             if key in self.store:
                 data = self.store[key]
                 if not data.is_expired():
-                    return data.value
+                    return copy.deepcopy(data.value)
                 else:
                     logger.debug("⚠️ Key exists but has expired")
             else:
@@ -220,9 +220,9 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             
             if current_version == expected_version:
                 new_version = next(self._next_version)
-                self.store[key] = KeyData(new_value, new_version, ttl)
+                self.store[key] = KeyData(copy.deepcopy(new_value), new_version, ttl)
                 self._notify_watchers(key, new_value)
-                return True, (new_value, new_version)
+                return True, (copy.deepcopy(new_value), new_version)
             else:
                 return False, (copy.deepcopy(current_data.value) if current_data else None, current_version)
 

@@ -8,19 +8,18 @@ import logging
 import random
 import weakref
 from datetime import datetime, timedelta
-from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
+from app.connectors.core.base.token_service.oauth_service import (
+    OAuthToken,
+    RefreshTokenInvalidError,
+)
 from app.connectors.core.constants import (
     AuthFieldKeys,
     ConnectorRequestKeys,
     ConnectorStateKeys,
     OAuthConfigKeys,
-)
-from app.connectors.core.base.token_service.oauth_service import (
-    OAuthToken,
-    RefreshTokenInvalidError,
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.interface.producer import IMessagingProducer
@@ -72,7 +71,7 @@ class TokenRefreshService:
         self,
         configuration_service: ConfigurationService,
         graph_provider: IGraphDBProvider,
-        messaging_producer: Optional[IMessagingProducer] = None,
+        messaging_producer: IMessagingProducer | None = None,
     ) -> None:
         self.configuration_service = configuration_service
         self.graph_provider = graph_provider
@@ -563,7 +562,7 @@ class TokenRefreshService:
 
     def _adopt_already_rotated_token(
         self, config: dict, requested_refresh_token: str
-    ) -> tuple[Optional[OAuthToken], str]:
+    ) -> tuple[OAuthToken | None, str]:
         """If store already rotated the RT, reuse the live token instead of POSTing the consumed one."""
         credentials = config.get("credentials") or {}
         stored_rt = credentials.get("refresh_token") or requested_refresh_token
@@ -596,7 +595,7 @@ class TokenRefreshService:
             await self._handle_refresh_token_invalid(connector_id, e, refresh_token)
             raise
 
-    async def _stored_refresh_token(self, connector_id: str) -> Optional[str]:
+    async def _stored_refresh_token(self, connector_id: str) -> str | None:
         """The refresh token currently persisted for this connector, if any."""
         try:
             config = await self.configuration_service.get_config(
@@ -612,7 +611,7 @@ class TokenRefreshService:
         self,
         connector_id: str,
         error: Exception,
-        refresh_token: Optional[str] = None,
+        refresh_token: str | None = None,
     ) -> None:
         """Deactivate the connector after MAX_REFRESH_TOKEN_INVALID_FAILURES consecutive rejections."""
         if refresh_token is not None:
@@ -699,7 +698,7 @@ class TokenRefreshService:
                 )
                 if edges:
                     from_val = edges[0].get("_from")
-                    if from_val: 
+                    if from_val:
                         org_id = from_val.split("/")[-1]
 
 
@@ -788,13 +787,13 @@ class TokenRefreshService:
 
         try:
             self.logger.info(f"🔄 Refreshing token for connector {connector_id}")
-            new_token = await oauth_provider.refresh_access_token(refresh_token)
+            new_token = await oauth_provider.refresh_access_token(refresh_token, persist_credentials=False)
             self.logger.info(f"✅ Successfully refreshed token for connector {connector_id}")
 
-            await self._persist_refreshed_credentials(connector_id, config_key, config, new_token)
+            final_token = await self._persist_refreshed_credentials(connector_id, config_key, config, new_token)
 
             self._invalid_refresh_failures.pop(connector_id, None)
-            return new_token
+            return final_token
         finally:
             await oauth_provider.close()
 
@@ -804,11 +803,13 @@ class TokenRefreshService:
         config_key: str,
         fallback_config: dict,
         new_token: OAuthToken,
-    ) -> None:
+    ) -> OAuthToken:
         """Save the new access and refresh token together, retrying a failed write.
 
         Raises ``CredentialSaveError`` when nothing was stored.
         """
+        original_auth_generation = fallback_config.get('auth_generation')
+
         for attempt in range(1, 6):
             try:
                 latest, version = await self.configuration_service.get_config_with_version(config_key, raise_on_error=True)
@@ -817,29 +818,41 @@ class TokenRefreshService:
                 latest = None
                 version = "error"
 
-            if latest is None and version is None:
+            if version == "error":
+                # Transient read error or decrypt error, handled by retry loop
+                pass
+            elif latest is None and version is None:
                 self.logger.warning(f"Connector {connector_id} config not found; assuming deleted.")
-                return
+                raise CredentialSaveError("Connector config deleted during refresh")
+            elif not isinstance(latest, dict):
+                raise CredentialSaveError("Connector config is not a dictionary")
+            else:
+                current_auth_generation = latest.get('auth_generation')
+                if current_auth_generation != original_auth_generation:
+                    self.logger.warning(f"Auth generation changed for {connector_id}, discarding stale refresh.")
+                    creds = latest.get('credentials')
+                    if not creds:
+                        raise CredentialSaveError("Credentials were revoked during refresh")
+                    return OAuthToken.from_dict(creds)
 
-            if latest is not None:
                 if self._credentials_match(latest.get('credentials'), new_token):
                     self.logger.info(f"💾 Refreshed credentials already stored for connector {connector_id}")
-                    return
-                    
+                    return new_token
+
                 updated = {**latest, 'credentials': new_token.to_dict()}
                 success, _ = await self.configuration_service.compare_and_set(config_key, version, updated)
-                
+
                 if success:
                     self.logger.info(f"💾 Updated stored credentials for connector {connector_id}")
-                    return
-                
+                    return new_token
+
             self.logger.warning(
                 f"Saving refreshed credentials for connector {connector_id} failed "
                 f"(attempt {attempt}/5)"
             )
             if attempt < 5:
                 await asyncio.sleep(0.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.1))
-                
+
         raise CredentialSaveError(
             f"Could not save refreshed credentials for connector {connector_id} after "
             f"5 attempts. The old refresh token may already be spent, "

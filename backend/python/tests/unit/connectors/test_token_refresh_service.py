@@ -260,7 +260,7 @@ class TestRotatingRefreshTokenSafety:
         mock_config_service.get_config_with_version = AsyncMock(side_effect=get_config_with_version)
         mock_config_service.compare_and_set = AsyncMock(side_effect=compare_and_set)
 
-        async def fake_refresh(refresh_token: str):
+        async def fake_refresh(refresh_token: str, persist_credentials: bool = True):
             sent.append(refresh_token)
             if refresh_token != "rt-old":
                 raise RefreshTokenInvalidError("refresh_token is invalid")

@@ -98,7 +98,7 @@ class ConfigurationService:
             # Check cache first
             if use_cache and key in self.cache:
                 self.logger.debug("📦 Cache hit for key: %s", key)
-                return self.cache[key]
+                return copy.deepcopy(self.cache[key])
 
             # Only passed when set, so the default call is unchanged for every
             # store and test double; the encrypted stores swallow a failed read
@@ -112,12 +112,12 @@ class ConfigurationService:
                 env_fallback = self._get_env_fallback(key)
                 if env_fallback is not None:
                     self.logger.debug("📦 Using environment variable fallback for key: %s", key)
-                    self.cache[key] = env_fallback
+                    self.cache[key] = copy.deepcopy(env_fallback)
                     return env_fallback
 
                 self.logger.debug("📦 Cache miss for key: %s", key)
                 return default
-            self.cache[key] = value
+            self.cache[key] = copy.deepcopy(value)
             return value
         except Exception as e:
             self.logger.error("❌ Failed to get config %s: %s", key, str(e))
@@ -173,11 +173,11 @@ class ConfigurationService:
             if success:
                 new_value, new_version = result
                 # Update cache
-                self.cache[key] = new_value
+                self.cache[key] = copy.deepcopy(new_value)
                 self.logger.info("✅ Successfully conditionally set config for key: %s", key)
                 # Publish cache invalidation
                 await self._publish_cache_invalidation(key)
-                return True, (new_value, new_version)
+                return True, (copy.deepcopy(new_value), new_version)
             else:
                 self.logger.debug("⚠️ Conflict in compare_and_set for key: %s", key)
                 return False, result

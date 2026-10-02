@@ -913,6 +913,8 @@ class TestRefreshAccessToken:
     async def test_basic_refresh(self, mock_config_service):
         """Basic refresh returns new token and updates config."""
         config = _make_oauth_config()
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({}, 1))
+        mock_config_service.compare_and_set = AsyncMock(return_value=(True, ({}, 2)))
         provider = OAuthProvider(config, mock_config_service, "/path")
 
         provider._make_token_request = AsyncMock(return_value={
@@ -926,7 +928,7 @@ class TestRefreshAccessToken:
         assert token.refresh_token == "new-refresh"
 
         # Should have updated config
-        mock_config_service.set_config.assert_awaited_once()
+        mock_config_service.compare_and_set.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_refresh_preserves_old_refresh_token(self, mock_config_service):
@@ -1050,7 +1052,8 @@ class TestRefreshAccessToken:
     async def test_refresh_updates_credentials_in_config(self, mock_config_service):
         """refresh_access_token stores new token in config service."""
         config = _make_oauth_config()
-        mock_config_service.get_config = AsyncMock(return_value={"existing": "data"})
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({"existing": "data"}, 1))
+        mock_config_service.compare_and_set = AsyncMock(return_value=(True, ({"existing": "data"}, 2)))
         provider = OAuthProvider(config, mock_config_service, "/path")
 
         provider._make_token_request = AsyncMock(return_value={
@@ -1060,16 +1063,17 @@ class TestRefreshAccessToken:
 
         token = await provider.refresh_access_token("old-ref")
 
-        # Verify set_config was called with credentials
-        set_call = mock_config_service.set_config.call_args
-        stored_config = set_call[0][1]
+        # Verify compare_and_set was called with credentials
+        set_call = mock_config_service.compare_and_set.call_args
+        stored_config = set_call[0][2]
         assert stored_config["credentials"]["access_token"] == "refreshed"
 
     @pytest.mark.asyncio
     async def test_refresh_config_not_dict_creates_new(self, mock_config_service):
         """When get_config returns non-dict, a new dict is created."""
         config = _make_oauth_config()
-        mock_config_service.get_config = AsyncMock(return_value="not a dict")
+        mock_config_service.get_config_with_version = AsyncMock(return_value=("not a dict", 1))
+        mock_config_service.compare_and_set = AsyncMock(return_value=(True, ({}, 2)))
         provider = OAuthProvider(config, mock_config_service, "/path")
 
         provider._make_token_request = AsyncMock(return_value={
@@ -1078,8 +1082,8 @@ class TestRefreshAccessToken:
 
         token = await provider.refresh_access_token("ref-tok")
 
-        set_call = mock_config_service.set_config.call_args
-        stored_config = set_call[0][1]
+        set_call = mock_config_service.compare_and_set.call_args
+        stored_config = set_call[0][2]
         assert "credentials" in stored_config
 
     @pytest.mark.asyncio
@@ -1178,19 +1182,21 @@ class TestRevokeToken:
     @pytest.mark.asyncio
     async def test_revoke_clears_credentials(self, oauth_provider, mock_config_service):
         """revoke_token clears credentials in config."""
-        mock_config_service.get_config = AsyncMock(return_value={"credentials": {"access_token": "tok"}})
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({"credentials": {"access_token": "tok"}}, 1))
+        mock_config_service.compare_and_set = AsyncMock(return_value=(True, ({"credentials": None}, 2)))
 
         result = await oauth_provider.revoke_token()
         assert result is True
 
-        set_call = mock_config_service.set_config.call_args
-        stored = set_call[0][1]
+        mock_config_service.compare_and_set.assert_awaited_once()
+        set_call = mock_config_service.compare_and_set.call_args
+        stored = set_call[0][2]
         assert stored["credentials"] is None
 
     @pytest.mark.asyncio
     async def test_revoke_with_non_dict_config(self, oauth_provider, mock_config_service):
         """revoke_token handles non-dict config gracefully."""
-        mock_config_service.get_config = AsyncMock(return_value=None)
+        mock_config_service.get_config_with_version = AsyncMock(return_value=(None, 1))
 
         result = await oauth_provider.revoke_token()
         assert result is True
@@ -1504,6 +1510,6 @@ class TestSlackTokenEndpoint:
 
         new_access, new_refresh = slack.issued[0]
         assert (token.access_token, token.refresh_token) == (new_access, new_refresh)
-        mock_config_service.set_config.assert_awaited_once()
-        saved = mock_config_service.set_config.await_args.args[1]["credentials"]
+        mock_config_service.compare_and_set.assert_awaited_once()
+        saved = mock_config_service.compare_and_set.await_args.args[2]["credentials"]
         assert (saved["access_token"], saved["refresh_token"], saved["expires_in"]) == (new_access, new_refresh, 43200)

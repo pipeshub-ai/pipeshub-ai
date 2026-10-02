@@ -108,8 +108,14 @@ jobs:
             backend: etcd
             compose: docker-compose.integration.kv.yml
             services: etcd-kv-it
-            tests: tests/integration/kv
+            tests: tests/integration/kv tests/integration/test_cross_writer_race_e2e.py
             select: etcd
+          - suite: kv
+            backend: redis
+            compose: docker-compose.integration.kv.yml
+            services: redis-kv-it
+            tests: tests/integration/kv tests/integration/test_cross_writer_race_e2e.py
+            select: redis
 
     env:
       COMPOSE: ${{ matrix.compose }}
@@ -126,6 +132,8 @@ jobs:
       ARANGO_IT_PASSWORD: ensure-it-pass
       REDIS_IT_HOST: localhost
       REDIS_IT_PORT: '6389'
+      ETCD_IT_PORT: '2389'
+      ETCD_IT_URL: http://localhost:2389
 
     steps:
       - name: Checkout code

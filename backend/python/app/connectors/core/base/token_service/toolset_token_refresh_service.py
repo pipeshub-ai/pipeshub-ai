@@ -7,6 +7,7 @@ Separate from connector token refresh to avoid interference
 import asyncio
 import logging
 import time
+import random
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Dict, Optional
 
@@ -765,82 +766,88 @@ class ToolsetTokenRefreshService:
         try:
             # 5. Perform the token refresh
             self.logger.info(f"🔄 Refreshing token for toolset {config_path} (type: {toolset_type})")
-            new_token = await oauth_provider.refresh_access_token(refresh_token)
+            new_token = await oauth_provider.refresh_access_token(refresh_token, persist_credentials=False)
             self.logger.info(f"✅ Successfully refreshed token for toolset {config_path}")
 
-            # 6. Update stored credentials with retry on verification failure
-            config["credentials"] = new_token.to_dict()
-            config["updatedAt"] = int(datetime.now().timestamp() * 1000)  # Epoch timestamp in ms
-
-            # Retry logic to handle transient verification failures from race conditions
-            max_retries = TOKEN_REFRESH_MAX_RETRIES
-            retry_delay = INITIAL_RETRY_DELAY
-            last_error = None
-
-            for attempt in range(max_retries):
-                # Add pre-write delay on retries to ensure previous write/verification completes
-                if attempt > 0:
-                    pre_write_delay = 0.1  # 100ms delay before retry
-                    self.logger.debug(
-                        f"⏸️ Waiting {pre_write_delay}s before retry attempt {attempt + 1} "
-                        f"for toolset {config_path} (allows previous verification to complete)"
-                    )
-                    await asyncio.sleep(pre_write_delay)
-
-                try:
-                    success = await self.configuration_service.set_config(config_path, config)
-
-                    if success:
-                        if attempt > 0:
-                            self.logger.info(
-                                f"💾 Updated stored credentials for toolset {config_path} "
-                                f"on attempt {attempt + 1}/{max_retries}"
-                            )
-                        else:
-                            self.logger.info(f"💾 Updated stored credentials for toolset {config_path}")
-
-                        # Add small delay after successful write to ensure verification completes
-                        # This prevents interference if another operation starts immediately
-                        await asyncio.sleep(0.05)
-                        break  # Success!
-
-                    # set_config returned False (verification failed)
-                    last_error = "Verification failed"
-                    if attempt < max_retries - 1:
-                        self.logger.warning(
-                            f"⚠️ Verification failed for toolset {config_path} "
-                            f"(attempt {attempt + 1}/{max_retries}). "
-                            f"Will wait {retry_delay}s before next attempt..."
-                        )
-                        await asyncio.sleep(retry_delay)
-                        retry_delay *= 2  # Exponential backoff
-
-                except Exception as e:
-                    last_error = str(e)
-                    self.logger.warning(
-                        f"⚠️ Error saving credentials for toolset {config_path} "
-                        f"(attempt {attempt + 1}/{max_retries}): {e}"
-                    )
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(retry_delay)
-                        retry_delay *= 2
-            else:
-                # All retries exhausted
-                raise Exception(
-                    f"Failed to save refreshed credentials for {config_path} "
-                    f"after {max_retries} attempts. Last error: {last_error}"
-                )
-
+            final_token = await self._persist_refreshed_credentials(config_path, config, new_token)
+            
             # Update last refresh time to prevent duplicate refreshes
             self._last_refresh_time[config_path] = time.time()
             self.logger.debug(f"📝 Updated last refresh time for {config_path}")
 
             self._invalid_refresh_failures.pop(config_path, None)
 
-            return new_token
+            return final_token
         finally:
             # Always clean up OAuth provider
             await oauth_provider.close()
+
+    async def _persist_refreshed_credentials(
+        self,
+        config_path: str,
+        fallback_config: dict,
+        new_token: 'OAuthToken',
+    ) -> 'OAuthToken':
+        from app.connectors.core.base.token_service.token_refresh_service import CredentialSaveError
+        original_auth_generation = fallback_config.get('auth_generation')
+
+        for attempt in range(1, 6):
+            try:
+                latest, version = await self.configuration_service.get_config_with_version(config_path, raise_on_error=True)
+            except Exception as e:
+                self.logger.error(f"Read error for {config_path}: {e}")
+                latest = None
+                version = "error"
+
+            if version == "error":
+                pass
+            elif latest is None and version is None:
+                self.logger.warning(f"Toolset {config_path} config not found; assuming deleted.")
+                raise CredentialSaveError("Toolset config deleted during refresh")
+            elif not isinstance(latest, dict):
+                raise CredentialSaveError("Toolset config is not a dictionary")
+            else:
+                current_auth_generation = latest.get('auth_generation')
+                if current_auth_generation != original_auth_generation:
+                    self.logger.warning(f"Auth generation changed for {config_path}, discarding stale refresh.")
+                    creds = latest.get('credentials')
+                    if not creds:
+                        raise CredentialSaveError("Credentials were revoked during refresh")
+                    return new_token.__class__.from_dict(creds)
+
+                if self._credentials_match(latest.get('credentials'), new_token):
+                    self.logger.info(f"💾 Refreshed credentials already stored for toolset {config_path}")
+                    return new_token
+
+                updated = {
+                    **latest,
+                    'credentials': new_token.to_dict(),
+                    'updatedAt': int(datetime.now().timestamp() * 1000)
+                }
+                success, _ = await self.configuration_service.compare_and_set(config_path, version, updated)
+
+                if success:
+                    self.logger.info(f"💾 Updated stored credentials for toolset {config_path}")
+                    return new_token
+
+            self.logger.warning(
+                f"Saving refreshed credentials for toolset {config_path} failed (attempt {attempt}/5)"
+            )
+            if attempt < 5:
+                await asyncio.sleep(0.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.1))
+
+        raise CredentialSaveError(
+            f"Could not save refreshed credentials for toolset {config_path} after 5 attempts."
+        )
+
+    @staticmethod
+    def _credentials_match(stored: dict | None, new_token: 'OAuthToken') -> bool:
+        if not isinstance(stored, dict):
+            return False
+        return (
+            stored.get('access_token') == new_token.access_token and
+            stored.get('refresh_token') == new_token.refresh_token
+        )
 
     async def _handle_refresh_token_invalid(self, config_path: str, error: Exception) -> None:
         """Deactivate the toolset after MAX_REFRESH_TOKEN_INVALID_FAILURES consecutive rejections."""

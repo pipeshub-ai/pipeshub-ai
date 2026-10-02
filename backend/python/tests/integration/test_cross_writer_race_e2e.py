@@ -2,18 +2,28 @@ import asyncio
 import json
 import os
 import uuid
-import pytest
-import pytest_asyncio
 from unittest.mock import MagicMock
 
-from app.config.configuration_service import ConfigurationService
+import pytest
+import pytest_asyncio
+
+from app.config.configuration_service import (
+    ConcurrentModificationError,
+    ConfigurationService,
+)
+from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
-from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
-from app.config.key_value_store_factory import StoreConfig
-from app.connectors.core.base.token_service.token_refresh_service import TokenRefreshService, OAuthToken
-from app.connectors.core.base.token_service.oauth_service import OAuthProvider, OAuthConfig
-from app.config.configuration_service import ConcurrentModificationError
+from app.connectors.core.base.token_service.oauth_service import (
+    OAuthConfig,
+    OAuthProvider,
+)
+from app.connectors.core.base.token_service.token_refresh_service import (
+    OAuthToken,
+    TokenRefreshService,
+)
+
+pytestmark = [pytest.mark.integration]
 
 @pytest_asyncio.fixture(params=["in_memory", "redis", "etcd"])
 async def config_service(request):
@@ -26,27 +36,29 @@ async def config_service(request):
     elif store_type == "redis":
         try:
             import redis.asyncio as _redis
-            _probe = _redis.Redis(host="localhost", port=6379, socket_connect_timeout=2)
+            port = int(os.environ.get("REDIS_IT_PORT", "6379"))
+            _probe = _redis.Redis(host="localhost", port=port, socket_connect_timeout=2)
             await _probe.ping()
             await _probe.aclose()
         except Exception:
-            pytest.skip("Redis not reachable at localhost:6379")
+            pytest.skip(f"Redis not reachable at localhost:{port}")
         store = RedisDistributedKeyValueStore(
             serializer=lambda x: json.dumps(x).encode(),
             deserializer=lambda x: json.loads(x.decode()),
-            host="localhost", port=6379, db=0, key_prefix="test_cas:",
+            host="localhost", port=port, db=0, key_prefix="test_cas:",
         )
     elif store_type == "etcd":
         try:
             import asyncio as _asyncio
-            _, _w = await _asyncio.open_connection("localhost", 2379)
+            port = int(os.environ.get("ETCD_IT_PORT", "2379"))
+            _, _w = await _asyncio.open_connection("localhost", port)
             _w.close()
         except Exception:
-            pytest.skip("etcd not reachable at localhost:2379")
+            pytest.skip(f"etcd not reachable at localhost:{port}")
         store = Etcd3DistributedKeyValueStore(
             serializer=lambda x: json.dumps(x).encode(),
             deserializer=lambda x: json.loads(x.decode()),
-            host="localhost", port=2379,
+            host="localhost", port=port,
         )
 
     cs = ConfigurationService(logger=logger, key_value_store=store)
@@ -69,24 +81,24 @@ async def test_token_refresh_race(config_service, caplog):
     """
     connector_id = f"conn_{uuid.uuid4().hex}"
     config_key = f"/services/connectors/{connector_id}/config"
-    
+
     # Initialize config
     await config_service.set_config(config_key, {"credentials": {"access_token": "old", "refresh_token": "old"}})
-    
+
     service = TokenRefreshService(
         configuration_service=config_service,
         graph_provider=MagicMock(),
     )
-    
+
     token1 = OAuthToken(access_token="new1", refresh_token="new_refresh1")
     token2 = OAuthToken(access_token="new2", refresh_token="new_refresh2")
-    
+
     # Run two persists concurrently
     await asyncio.gather(
         service._persist_refreshed_credentials(connector_id, config_key, {}, token1),
         service._persist_refreshed_credentials(connector_id, config_key, {}, token2),
     )
-    
+
     # One of them should have won, and the other should have retried and succeeded or recognized it as done
     # The final state should have one of the new tokens
     final_config, _ = await config_service.get_config_with_version(config_key)
@@ -101,9 +113,9 @@ async def test_oauth_start_authorization_race(config_service):
     """
     connector_id = f"conn_{uuid.uuid4().hex}"
     config_key = f"/services/connectors/{connector_id}/config"
-    
+
     await config_service.set_config(config_key, {"credentials": {"access_token": "old"}})
-    
+
     oauth_config = OAuthConfig(
         client_id="test",
         client_secret="test",
@@ -111,22 +123,22 @@ async def test_oauth_start_authorization_race(config_service):
         authorize_url="http://auth",
         token_url="http://token"
     )
-    
+
     service = OAuthProvider(
         configuration_service=config_service,
         config=oauth_config,
         connector_name=connector_id,
         credentials_path=config_key
     )
-    
+
     # We patch generate_state so we know the state
     service.config.generate_state = lambda: uuid.uuid4().hex
-    
+
     urls = await asyncio.gather(
         service.start_authorization(use_pkce=True),
         service.start_authorization(use_pkce=True)
     )
-    
+
     assert len(urls) == 2
     final_config, _ = await config_service.get_config_with_version(config_key)
     assert "oauth" in final_config
@@ -141,20 +153,19 @@ async def test_save_connector_instance_filters_race(config_service):
     """
     connector_id = f"conn_{uuid.uuid4().hex}"
     config_key = f"/services/connectors/{connector_id}/config"
-    
+
     await config_service.set_config(config_key, {"filters": {"values": ["old"]}})
-    
+
     async def simulate_filter_save(new_values):
-        import random
         for attempt in range(1, 6):
             config, version = await config_service.get_config_with_version(config_key)
             if not config:
                 config = {}
             if "filters" not in config:
                 config["filters"] = {}
-                
+
             config["filters"]["values"] = new_values
-            
+
             success, _ = await config_service.compare_and_set(config_key, version, config)
             if success:
                 return True
@@ -169,8 +180,8 @@ async def test_save_connector_instance_filters_race(config_service):
         simulate_filter_save(["D"]),
         simulate_filter_save(["E"])
     )
-    
+
     assert all(results)
-    
+
     final_config, _ = await config_service.get_config_with_version(config_key)
     assert final_config["filters"]["values"] in [["A"], ["B"], ["C"], ["D"], ["E"]]
