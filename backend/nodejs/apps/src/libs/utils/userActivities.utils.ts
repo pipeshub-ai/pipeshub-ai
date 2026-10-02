@@ -19,3 +19,20 @@ export const SESSION_INVALIDATING_ACTIVITIES = [
   userActivitiesType.ACCOUNT_BLOCKED,
   userActivitiesType.ACCOUNT_DELETED,
 ] as const;
+
+// A password change issues the caller's new tokens in its own second, so other
+// activities spare tokens issued up to a second before them. A deletion issues
+// none, and a re-invite restores the account, so it ends every token issued in
+// its second or before.
+const SESSION_INVALIDATE_TOKEN_DELAY_MS = 1000;
+
+export function activityEndsSession(
+  activity: { activityType?: string; createdAt?: Date | null },
+  tokenIssuedAtSeconds: number | undefined,
+): boolean {
+  const issuedAt = tokenIssuedAtSeconds ? tokenIssuedAtSeconds * 1000 : 0;
+  const at = activity.createdAt?.getTime() || 0;
+  return activity.activityType === userActivitiesType.ACCOUNT_DELETED
+    ? at >= issuedAt
+    : at > issuedAt + SESSION_INVALIDATE_TOKEN_DELAY_MS;
+}

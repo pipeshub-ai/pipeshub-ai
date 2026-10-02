@@ -854,6 +854,26 @@ describe('UserAccountController sign-in flow', () => {
       expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
     });
 
+    it('mints no token when the account is deleted while the refresh is running', async () => {
+      // The first check sees nothing; the deletion lands before the token is minted.
+      let checks = 0;
+      stubLatestInvalidation(async () => {
+        checks += 1;
+        return checks === 1 ? null : { createdAt: new Date(), activityType: 'ACCOUNT DELETED' };
+      });
+      iamService.getUserById.resolves({ statusCode: 200, data: { ...alice } });
+      credentialsByUser[alice._id] = credentialsDoc({ userId: alice._id, orgId });
+      const res = makeRes();
+      const next = sinon.stub();
+
+      await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+      expect(checks).to.equal(2);
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+      expect(res.body).to.be.undefined;
+    });
+
     it('keeps the one-second allowance for a sign-out in the second the token was issued', async () => {
       stubLatestInvalidation({ createdAt: new Date(issuedAt * 1000 + 500), activityType: 'LOGOUT' });
       iamService.getUserById.resolves({ statusCode: 200, data: { ...alice } });

@@ -123,7 +123,7 @@ function normalizedEmail(value: unknown): string {
 
 export const MAX_BULK_INVITE = 1000;
 export const USER_DELETE_NOT_RECORDED =
-  "We couldn't delete this user just now, and nothing was changed. Please try again in a moment.";
+  "We couldn't delete this user just now. They are still a member; please try again in a moment.";
 
 // Linear-time email check: each segment excludes its following separator
 // (`@`/`.`), so there is no ambiguous backtracking (avoids ReDoS).

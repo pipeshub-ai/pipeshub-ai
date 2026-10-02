@@ -19337,9 +19337,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: |
-            The deletion could not be recorded, so nothing was changed and the user's
-            sessions stay as they were. Safe to retry: "We couldn't delete this user just
-            now, and nothing was changed. Please try again in a moment."
+            The deletion could not be recorded, so the user was not deleted. Safe to retry:
+            "We couldn't delete this user just now. They are still a member; please try
+            again in a moment." If the write timed out it may still have been saved, in
+            which case the user's existing sessions have ended and they sign in again.
           content:
             application/json:
               schema:
