@@ -505,6 +505,35 @@ describe('TelemetryService', () => {
       }
     });
 
+    it('should read a stored boolean without throwing', async () => {
+      // The config blob is raw JSON, so a hand-edited or older blob can hold a
+      // boolean. Calling trim() on it would abort initialization before the
+      // pusher ever starts.
+      for (const [stored, expected] of [
+        [false, false],
+        [true, true],
+      ] as const) {
+        delete process.env[ENV_KEY];
+        (TelemetryService as any).instance = undefined;
+        const raw = JSON.stringify({
+          serverUrl: VALID_URL,
+          apiKey: 'test-api-key',
+          installId: 'install-1234',
+          appVersion: '9.9.9',
+          pushIntervalMs: '60000',
+          enableMetricCollection: stored,
+        });
+        const svc = new TelemetryService(mockKvStore(raw) as any);
+        await flushAsync();
+
+        expect(
+          (svc as any).enableMetricCollection,
+          `stored=${String(stored)}`,
+        ).to.equal(expected);
+        (svc as any).stopMetricsPush();
+      }
+    });
+
     it('should seed the stored default from the env var rather than hardcoding true', async () => {
       sandbox
         .stub(TelemetryService.prototype as any, 'startMetricsPush')

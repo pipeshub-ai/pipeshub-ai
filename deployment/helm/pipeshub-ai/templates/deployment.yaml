@@ -239,8 +239,11 @@ spec:
               value: {{ .Values.messageBroker.type | default "redis" | quote }}
             - name: REDIS_STREAMS_MAXLEN
               value: {{ .Values.messageBroker.redisStreamsMaxLen | default "500000" | quote }}
+            # No `default` filter: Helm treats numeric 0 as empty, which would
+            # turn an explicit REDIS_MAX_DELIVERIES=0 into a blank value and fall
+            # back to the in-tree default. values.yaml supplies the empty default.
             - name: REDIS_MAX_DELIVERIES
-              value: {{ .Values.messageBroker.redisMaxDeliveries | default "" | quote }}
+              value: {{ .Values.messageBroker.redisMaxDeliveries | quote }}
 
             {{- if eq .Values.messageBroker.type "kafka" }}
             # Kafka config

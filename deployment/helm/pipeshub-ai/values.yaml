@@ -645,12 +645,13 @@ messageBroker:
   type: redis
   redisStreamsMaxLen: "500000"
   # Delivery-count backstop for the indexing dead-letter path. `times_delivered`
-  # counts every delivery, including the consumer's own hold/release re-reads,
-  # so a long queue under a throttled indexer crosses the in-tree default of 10
-  # and marks healthy records FAILED with no processing failure behind it
-  # (#3298). Raise it above the expected hold/release cycles for large or
-  # throttled corpora. Empty keeps the in-tree default. Read by both brokers
-  # despite the name.
+  # counts actual deliveries — the first read, a claim after a restart, and an
+  # idle-drain recovery pass. The consumer's own hold/release refresh uses
+  # XCLAIM JUSTID, which resets idle time without incrementing the counter, so
+  # it does not consume this budget. Raise it above the delivery-counting reads
+  # and recovery passes a record can see before it is processed (#3298).
+  # Values below MAX_DELIVERY_ATTEMPTS + 1 are floored to that. Empty keeps the
+  # in-tree default. Read by both brokers despite the name.
   redisMaxDeliveries: ""
 
 # Celery (backend/python/app/core/celery_app.py) has no Redis Cluster

@@ -49,9 +49,17 @@ const TRUE_SPELLINGS = new Set(['1', 'true', 'yes', 'on']);
 const envFlag = (value: string): boolean =>
   TRUE_SPELLINGS.has(value.trim().toLowerCase());
 
-// Reads the stored setting, which the UI writes as 'true'/'false'. Blank or
-// absent falls back to the shipped default rather than parsing as false.
-const storedFlag = (value: string | undefined, fallback: boolean): boolean => {
+// Reads the stored setting. The config blob is raw JSON, so this arrives as
+// either a string (what the UI writes) or a boolean (a hand-edited or older
+// blob); a boolean is a real value, not something to trim. Blank or absent
+// falls back to the shipped default rather than parsing as false.
+const storedFlag = (
+  value: boolean | string | undefined,
+  fallback: boolean,
+): boolean => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
   if (value == null || value.trim() === '') {
     return fallback;
   }
@@ -148,13 +156,20 @@ export class TelemetryService implements ITelemetryService {
   }
 
   // Env wins over the stored config: that one is only reachable from the UI,
-  // and the first push has already happened by then (#3299). Blank = no override.
+  // which nobody can reach before the pusher's first interval fires (#3299).
+  // Blank = no override.
   private resolveEnableMetricCollection(config: MetricsConfig): boolean {
     const fromEnv = process.env.ENABLE_METRIC_COLLECTION;
     if (fromEnv != null && fromEnv.trim() !== '') {
       return envFlag(fromEnv);
     }
-    return storedFlag(config[keyValues.ENABLE_METRIC_COLLECTION], true);
+    // The declared type understates this: the blob is raw JSON, so a boolean
+    // is possible at runtime.
+    const stored = config[keyValues.ENABLE_METRIC_COLLECTION] as
+      | string
+      | boolean
+      | undefined;
+    return storedFlag(stored, true);
   }
 
   private async persistMissingDefaults(config: MetricsConfig): Promise<void> {
@@ -183,8 +198,13 @@ export class TelemetryService implements ITelemetryService {
     ];
     let changed = false;
     for (const [key, makeDefault] of defaults) {
-      const stored = config[key];
-      if (stored == null || stored.trim() === '') {
+      // A stored boolean is a real value; calling trim() on it would throw and
+      // abort initialization before startOrStopMetricCollection runs.
+      const stored = config[key] as string | boolean | undefined;
+      const unset =
+        stored == null ||
+        (typeof stored === 'string' && stored.trim() === '');
+      if (unset) {
         config[key] = makeDefault();
         changed = true;
       }
