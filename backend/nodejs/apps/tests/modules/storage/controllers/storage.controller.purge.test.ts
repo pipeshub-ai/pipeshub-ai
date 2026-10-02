@@ -168,6 +168,17 @@ describe('StorageController purge', () => {
       expect(rows).to.deep.equal([sibling, otherOrgsTwin])
     })
 
+    it('looks documents up only in ways an index answers', async () => {
+      await controller.purgeVirtualRecordDocuments(request({ virtualRecordId: 'vr-1' }), makeRes(), sinon.stub())
+
+      const filter = (DocumentModel.find as unknown as sinon.SinonStub).firstCall.args[0]
+      const indexed = DocumentModel.schema.indexes().map(([keys]) => Object.keys(keys))
+      for (const branch of filter.$or as Filter[]) {
+        const covered = indexed.some((keys) => keys.every((key) => key in branch))
+        expect(covered, `no index serves ${Object.keys(branch).join(', ')}`).to.be.true
+      }
+    })
+
     it('answers purged 0 when nothing is filed there', async () => {
       const res = makeRes()
 

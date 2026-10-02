@@ -456,11 +456,15 @@ export class StorageController {
       const orgIdText = extractOrgId(req);
       const orgId = new mongoose.Types.ObjectId(orgIdText);
       const virtualRecordId = String(req.params.virtualRecordId);
+      // orgId sits in each branch so each one can use its own index.
       const documents = await DocumentModel.find({
-        orgId,
         $or: [
-          { documentPath: getFullDocumentPath(orgIdText, `records/${virtualRecordId}`) },
           {
+            orgId,
+            documentPath: getFullDocumentPath(orgIdText, `records/${virtualRecordId}`),
+          },
+          {
+            orgId,
             documentName: {
               $in: [`record_${virtualRecordId}`, `metadata_${virtualRecordId}`],
             },
