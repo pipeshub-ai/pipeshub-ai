@@ -184,13 +184,6 @@ def build_foundry_judge_client(
     return AnthropicJudgeClient(AnthropicFoundry(api_key=api_key, timeout=120, **where), model)
 
 
-def build_anthropic_judge_client(api_key: str, model: str) -> AnthropicJudgeClient:
-    """Claude through Anthropic's own API, with the same Messages client as Foundry."""
-    from anthropic import Anthropic
-
-    return AnthropicJudgeClient(Anthropic(api_key=api_key, timeout=120), model)
-
-
 def _foundry_judge(key: str | None, model: str) -> JudgeModel:
     model = model or os.getenv("JUDGE_AZURE_DEPLOYMENT") or ""
     endpoint = os.getenv("JUDGE_AZURE_ENDPOINT") or ""
@@ -224,12 +217,6 @@ def _dedicated_judge(provider: str) -> JudgeModel:
     model = os.getenv("JUDGE_MODEL") or ""
     if provider == "anthropic_foundry":
         return _foundry_judge(key, model)
-    if provider == "anthropic":
-        # Not LangChain: it sends a temperature, which newer Claude models refuse.
-        missing = [name for name, value in (("JUDGE_API_KEY", key), ("JUDGE_MODEL", model)) if not value]
-        if missing:
-            raise JudgeConfigError(f"JUDGE_PROVIDER=anthropic but not set: {', '.join(missing)}.")
-        return JudgeModel(build_anthropic_judge_client(key or "", model), "anthropic", model, dedicated=True)
     endpoint = os.getenv("JUDGE_AZURE_ENDPOINT")
     deployment = os.getenv("JUDGE_AZURE_DEPLOYMENT")
     needed = {"JUDGE_API_KEY": key}
