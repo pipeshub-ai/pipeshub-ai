@@ -401,6 +401,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
 
         self.pages_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self._space_listing_complete = False
+        # Spaces this sync wrote to the graph; one whose permissions couldn't be read is listed but not saved.
+        self._saved_space_ids: set[str] = set()
         self.audit_log_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
 
         self.sync_filters: FilterCollection = FilterCollection()
@@ -789,6 +791,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
             base_url = None  # Extract from first response
             record_groups = []
             self._space_listing_complete = False
+            self._saved_space_ids = set()
             # A listed space that couldn't be processed would look like one that left.
             skipped_a_space = False
 
@@ -885,6 +888,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
                 # Save batch to database
                 if record_groups_with_permissions:
                     await self.data_entities_processor.on_new_record_groups(record_groups_with_permissions)
+                    self._saved_space_ids.update(str(g.external_group_id) for g, _ in record_groups_with_permissions)
                     self.logger.info(f"Synced batch of {len(record_groups_with_permissions)} spaces")
 
                 # Next page: prefer _links.next (cursor or start), else bump start by batch size
@@ -1712,8 +1716,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
         after_key: str | None = None
         try:
             stored_spaces = await self._stored_space_ids()
-            if not wanted <= stored_spaces:
-                # Every listed space was just saved, so a read that misses one failed (the stores answer [] on error).
+            if not stored_spaces or not self._saved_space_ids <= stored_spaces:
+                # A read that misses a space this sync saved failed: the stores answer [] on error.
                 raise RuntimeError("the stored spaces read back without the spaces just saved")
             # From the stored spaces too: one whose last record already went has nothing in the scan below.
             by_space: dict[str, list[Record]] = {space_id: [] for space_id in stored_spaces - wanted}

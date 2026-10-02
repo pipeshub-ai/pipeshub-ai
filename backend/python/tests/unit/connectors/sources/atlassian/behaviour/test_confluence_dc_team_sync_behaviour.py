@@ -1521,6 +1521,22 @@ class TestRemovalFromSource:
         await connector.run_sync()
         assert "20" not in db.record_groups
 
+    async def test_a_new_space_whose_permissions_cannot_be_read_does_not_stop_a_removal(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        atlassian_api.on("GET", f"{API}/space", {"results": [space("ENG", 10), space("HR", 20)], "_links": {"base": BASE}})
+        await connector.run_sync()
+        # OPS is new and its grants can't be read, so it is listed but not saved; HR has left.
+        atlassian_api.on("GET", f"{API}/space/OPS/permissions", json_response({"message": "busy"}, status=503))
+        atlassian_api.on("GET", f"{API}/space", {"results": [space("ENG", 10), space("OPS", 30)], "_links": {"base": BASE}})
+
+        await connector.run_sync()
+
+        assert "30" not in db.record_groups
+        assert "20" not in db.record_groups
+        assert "10" in db.record_groups
+
     async def test_a_space_removed_in_several_deletes_does_not_trip_over_records_already_taken(
         self, atlassian_api, db, store, search, monkeypatch
     ) -> None:
