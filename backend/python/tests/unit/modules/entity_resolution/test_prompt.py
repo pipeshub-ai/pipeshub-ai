@@ -84,3 +84,16 @@ def test_decision_schema_accepts_minimal_and_full_answers() -> None:
     assert parsed.decisions[0].canonical_name == ""
     assert parsed.decisions[1].target == "k-1"
     assert MergeDecisions.model_validate({}).decisions == []
+
+
+def test_aliases_shown_per_candidate_are_capped() -> None:
+    """Nodes keep up to 200 spellings; the prompt shows a few per candidate,
+    or three popular candidates would multiply every item's size."""
+    from app.modules.entity_resolution.prompt import PROMPT_ALIASES_PER_MATCH
+
+    offered = tuple(
+        WinnerCandidate(f"k{i}", f"Release {i}", tuple(f"spelling {i}-{j}" for j in range(200)))
+        for i in range(3)
+    )
+    rendered = _items_block(build_prompt(None, [_name(0, TOPIC, "Release x")], {0: offered}))
+    assert all(len(m["aliases"]) == PROMPT_ALIASES_PER_MATCH for m in rendered[0]["matches"])
