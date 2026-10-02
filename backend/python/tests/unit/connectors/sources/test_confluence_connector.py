@@ -9671,3 +9671,61 @@ class TestSweepPlaceholderRecords:
         }
         assert "B" in submitted
         assert "A" in submitted
+
+
+class TestIncludeJiraScopeSetting:
+    """Runtime Jira linking reads the connector's setting, else its OAuth app's."""
+
+    @pytest.mark.asyncio
+    async def test_connector_setting_wins_without_reading_the_app(self):
+        c = _mk_connector()
+        with patch("app.edition_config.fetch_oauth_config_by_id", new_callable=AsyncMock) as fetch:
+            value = await c._include_jira_scope_setting({"includeJiraScope": "no", "oauthConfigId": "app-1"})
+
+        assert value == "no"
+        fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_the_oauth_app_setting(self):
+        c = _mk_connector()
+        with patch(
+            "app.edition_config.fetch_oauth_config_by_id",
+            new_callable=AsyncMock,
+            return_value={"config": {"includeJiraScope": "yes"}},
+        ) as fetch:
+            value = await c._include_jira_scope_setting(
+                {"oauthConfigId": "app-1", "inheritedFromOrgId": "parent-org"}
+            )
+
+        assert value == "yes"
+        assert fetch.call_args.kwargs["oauth_config_id"] == "app-1"
+        assert fetch.call_args.kwargs["org_id"] == "parent-org"
+
+    @pytest.mark.asyncio
+    async def test_unreadable_oauth_app_disables_jira_linking(self):
+        c = _mk_connector()
+        with patch(
+            "app.edition_config.fetch_oauth_config_by_id",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("kv down"),
+        ):
+            value = await c._include_jira_scope_setting({"oauthConfigId": "app-1"})
+
+        assert value is None
+
+    @pytest.mark.asyncio
+    async def test_oauth_connector_linked_to_opted_in_app_links_users(self):
+        c = _mk_connector()
+        c.config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "OAUTH", "oauthConfigId": "app-1"}}
+        )
+        c.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        c._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+        with patch(
+            "app.edition_config.fetch_oauth_config_by_id",
+            new_callable=AsyncMock,
+            return_value={"config": {"includeJiraScope": "yes"}},
+        ):
+            await c._link_platform_users_via_jira()
+
+        c._get_fresh_datasource.assert_awaited_once()

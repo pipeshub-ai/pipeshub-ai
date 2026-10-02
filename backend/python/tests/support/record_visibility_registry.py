@@ -46,6 +46,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "filter_accessible_virtual_record_ids": (Rule.LIVE, "search permission check"),
     "filter_accessible_record_ids": (Rule.LIVE, "search permission check"),
     "get_records_by_virtual_record_id": (Rule.LIVE, "decides whether a VRID's vectors may be deleted"),
+    "get_virtual_record_ids_shared_outside_connector": (
+        Rule.LIVE,
+        "content a connector delete rebuilds; only a live record elsewhere is re-indexed for it",
+    ),
     "find_duplicate_records": (Rule.LIVE, "a copy must not take COMPLETED from a record without vectors"),
     "find_next_queued_duplicate": (Rule.LIVE, "dedup never hands work to a trashed record"),
     "update_queued_duplicates_status": (Rule.LIVE, "dedup never copies status onto a trashed record"),
@@ -91,6 +95,12 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "is_record_descendant_of": (Rule.ALL, _STRUCTURE),
     "get_record_owner_source_user_email": (Rule.ALL, _STRUCTURE),
     "get_taxonomy_entities_for_record": (Rule.ALL, _STRUCTURE),
+    "get_record_path": (Rule.ALL, _STRUCTURE),
+    "get_record_path_segments": (Rule.ALL, "storage path of a record the caller already resolved"),
+    "get_descendant_virtual_record_ids": (
+        Rule.ALL,
+        "a storage move takes every stored file under the folder, or a restored record would lose its content",
+    ),
     # Writes.
     "reindex_single_record": (Rule.WRITE, "refuses a deleted record"),
     "reindex_record_group_records": (Rule.WRITE, "walks with get_records_by_record_group"),
