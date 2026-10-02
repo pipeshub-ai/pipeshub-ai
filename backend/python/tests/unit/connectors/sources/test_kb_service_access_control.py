@@ -57,11 +57,11 @@ def _make_service():
         logger=logger,
         graph_provider=graph_provider,
         kafka_service=kafka_service,
-        processor=AsyncMock(),
+        processor_for_kb=AsyncMock(return_value=AsyncMock()),
     )
-    svc.processor.on_new_records = AsyncMock()
-    svc.processor.on_record_metadata_update = AsyncMock()
-    svc.processor.on_records_deleted_cascade = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
+    svc.processor_for_kb.return_value.on_new_records = AsyncMock()
+    svc.processor_for_kb.return_value.on_record_metadata_update = AsyncMock()
+    svc.processor_for_kb.return_value.on_records_deleted_cascade = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
     return svc, graph_provider
 
 

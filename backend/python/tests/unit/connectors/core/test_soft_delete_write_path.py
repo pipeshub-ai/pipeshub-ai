@@ -227,7 +227,7 @@ class TestSyncSkipsTheTrash:
             version=2, origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_DRIVE,
             connector_id="c1", is_file=True,
         )
-        assert await proc._process_record(incoming, [], store) is None
+        assert await proc._process_record(incoming, [], store) == (None, [])
         store.batch_upsert_records.assert_not_called()
         store.batch_create_edges.assert_not_called()
 
@@ -255,4 +255,4 @@ class TestSyncSkipsTheTrash:
             external_revision_id="new", version=2, origin=OriginTypes.CONNECTOR,
             connector_name=Connectors.GOOGLE_DRIVE, connector_id="c1", is_file=True,
         )
-        assert await proc._process_record(incoming, [], store) is not None
+        assert (await proc._process_record(incoming, [], store))[0] is not None

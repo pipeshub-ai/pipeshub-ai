@@ -886,6 +886,7 @@ class ArangoHTTPClient:
         fields: List[str],
         *,
         sparse: bool = False,
+        unique: bool = False,
     ) -> bool:
         """
         Create a persistent index on a collection (idempotent).
@@ -895,6 +896,8 @@ class ArangoHTTPClient:
             fields: List of field names for the compound index
             sparse: Leave out documents where any indexed field is null or
                 missing, so an index over a rarely-set field stays small
+            unique: Enforce uniqueness. Creation fails outright if the collection
+                already holds duplicates, so callers must tolerate a False return.
 
         Returns:
             bool: True if index exists or was created
@@ -903,6 +906,7 @@ class ArangoHTTPClient:
         payload: dict[str, Any] = {
             "type": "persistent",
             "fields": fields,
+            "unique": unique,
         }
         if sparse:
             payload["sparse"] = True

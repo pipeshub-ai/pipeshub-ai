@@ -219,6 +219,13 @@ class TestGetUserContext:
             _get_user_context(request)
 
 
+def _readable_graph() -> MagicMock:
+    graph = MagicMock()
+    graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
+    graph.check_record_access_with_details = AsyncMock(return_value={"record": {}})
+    return graph
+
+
 class TestBuildPriorRoutingMessages:
     """Covers _build_prior_routing_messages (replaces legacy _build_routing_context)."""
 
@@ -323,12 +330,35 @@ class TestBuildPriorRoutingMessages:
             },
             blob_store=blob,
             org_id="org-x",
+            user_id="u1",
+            graph_provider=_readable_graph(),
             is_multimodal_llm=False,
         )
         assert len(msgs) == 1
         assert isinstance(msgs[0], HumanMessage)
         assert isinstance(msgs[0].content, list)
         blob.get_record_from_storage.assert_awaited_once_with("vr-pdf", "org-x")
+
+    @pytest.mark.asyncio
+    async def test_attachment_the_caller_cannot_read_is_not_loaded(self) -> None:
+        from app.api.routes.agent import _build_prior_routing_messages
+        blob = MagicMock()
+        blob.get_record_from_storage = AsyncMock()
+        graph = _readable_graph()
+        graph.check_record_access_with_details = AsyncMock(return_value=None)
+        history = {
+            "previous_conversations": [{
+                "role": "user_query",
+                "content": "read this",
+                "attachments": [{"mimeType": "application/pdf", "virtualRecordId": "vr-other"}],
+            }],
+        }
+        for caller in ({"user_id": "u1", "graph_provider": graph}, {}):
+            msgs = await _build_prior_routing_messages(
+                history, blob_store=blob, org_id="org-x", is_multimodal_llm=False, **caller,
+            )
+            assert msgs[0].content == "read this"
+        blob.get_record_from_storage.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_skips_pdf_row_when_vrid_missing(self) -> None:
@@ -380,6 +410,8 @@ class TestBuildPriorRoutingMessages:
             },
             blob_store=blob,
             org_id="org-i",
+            user_id="u1",
+            graph_provider=_readable_graph(),
             is_multimodal_llm=True,
         )
         assert isinstance(msgs[0], HumanMessage)

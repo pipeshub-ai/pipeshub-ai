@@ -69,6 +69,16 @@ class TestMaybeCompress:
         assert is_compressed is True
         assert isinstance(payload, str) and payload
 
+    def test_compression_disabled_stores_large_record_as_json(self, monkeypatch) -> None:
+        # Plain JSON stays greppable by storage pattern match.
+        monkeypatch.setenv("BLOB_STORAGE_COMPRESSION", "false")
+        monkeypatch.setenv(bs_mod._COMPRESSION_THRESHOLD_ENV, "1024")
+        payload, is_compressed = _make_blob_storage()._maybe_compress_record(
+            _record_of_json_size(4096)
+        )
+        assert is_compressed is False
+        assert payload is None
+
     def test_boundary_is_exclusive(self, monkeypatch) -> None:
         """Exactly at the threshold stays uncompressed; one byte over compresses."""
         blob = _make_blob_storage()

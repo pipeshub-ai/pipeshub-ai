@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional,Dict, List, Literal, TypeVar
+from urllib.parse import quote
 from uuid import uuid4
 from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
@@ -47,6 +48,27 @@ def resolve_weburl(weburl: str | None, frontend_url: str | None) -> str | None:
     if not frontend_url:
         return None
     return f"{frontend_url.rstrip('/')}/{weburl.lstrip('/')}"
+
+
+# Shared Gmail mailboxes are synced once but opened by many users, so those
+# connectors store this placeholder and each read path fills in the viewer's email.
+USER_EMAIL_PLACEHOLDER = "{user.email}"
+_GMAIL_CONNECTORS = frozenset({
+    Connectors.GOOGLE_MAIL.value,
+    Connectors.GOOGLE_MAIL_WORKSPACE.value,
+})
+
+
+def substitute_user_email(
+    weburl: str | None,
+    user_email: str | None,
+    connector_name: str | None,
+) -> str | None:
+    if connector_name not in _GMAIL_CONNECTORS:
+        return weburl
+    if not weburl or not user_email or USER_EMAIL_PLACEHOLDER not in weburl:
+        return weburl
+    return weburl.replace(USER_EMAIL_PLACEHOLDER, quote(user_email, safe="@"))
 
 
 class LlmTextContent(BaseModel):
@@ -2921,8 +2943,10 @@ class Person(BaseModel):
     """Lightweight entity for external email addresses (not organization members)."""
     id: str = Field(description="Unique identifier", default_factory=lambda: str(uuid4()))
     email: str = Field(description="Email address")
+    org_id: str | None = Field(default=None, description="Owning org for this Person")
     created_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Creation timestamp")
     updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Update timestamp")
+    full_name: str | None = Field(default=None, description="Display name")
     # Salesforce contact fields
     first_name: str | None = Field(default=None, description="First name")
     last_name: str | None = Field(default=None, description="Last name")
@@ -2931,9 +2955,15 @@ class Person(BaseModel):
     def to_arango_person(self) -> dict[str, Any]:
         return {
             "_key": self.id,
-            "email": self.email,
+            # (orgId, email) is this node's business key and carries a composite unique
+            # index. Atomic upserts match on exact equality, so the stored form must be
+            # normalised or Foo@x.com and foo@x.com become two nodes every reader sees
+            # as one.
+            "email": self.email.lower(),
+            "orgId": self.org_id,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
+            "fullName": self.full_name,
             "firstName": self.first_name,
             "lastName": self.last_name,
             "phone": self.phone,
@@ -2944,8 +2974,10 @@ class Person(BaseModel):
         return Person(
             id=data.get("_key"),
             email=data.get("email"),
+            org_id=data.get("orgId"),
             created_at=data.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
             updated_at=data.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()),
+            full_name=data.get("fullName"),
             first_name=data.get("firstName"),
             last_name=data.get("lastName"),
             phone=data.get("phone"),

@@ -438,6 +438,7 @@ EXERCISED_HERE: dict[str, str] = {
     "get_failed_records_with_active_users": "test_failed_records",
     "get_record_by_weburl": "test_weburl_lookup",
     "get_entity_candidate_records": "test_entity_candidate_records",
+    "get_virtual_record_ids_shared_outside_connector": "test_content_shared_outside_a_deleted_connector",
     "get_knowledge_hub_children": "test_knowledge_hub_browse",
     "get_knowledge_hub_search": "test_knowledge_hub_search",
     "get_record_by_id": "test_point_reads_return_the_trash_with_its_state",
@@ -541,10 +542,27 @@ async def test_vector_delete_authority(world: _World) -> None:
     assert set(got) == {world.ids["live_shared"]}
 
 
+async def test_content_shared_outside_a_deleted_connector(world: _World) -> None:
+    """Shared with a live record elsewhere: rebuilt. Shared only with the trash elsewhere: not."""
+    g = world.graph
+    shares = {"kb_live": "live", "kb_child_live": "trashed", "kb_trashed": "live_failed"}
+    for kb_record, outside in shares.items():
+        await g.update_node(
+            world.ids[kb_record], CollectionNames.RECORDS.value, {"virtualRecordId": world.vrids[outside]}
+        )
+    got = await g.get_virtual_record_ids_shared_outside_connector(world.kb_id)
+    assert set(got) == {world.vrids["live"], world.vrids["live_failed"]}, got
+
+
 async def test_knowledge_hub_browse(world: _World) -> None:
-    got = await world.graph.get_knowledge_hub_children(
+    browse = world.graph.get_knowledge_hub_children(
         world.kb_id, "app", world.org_id, world.user_key, 0, 50, "name", "asc",
     )
+    if isinstance(world.graph, ArangoHTTPProvider):
+        with pytest.raises(Exception, match=ARANGO_APP_BROWSE_FAILS):
+            await browse
+        return
+    got = await browse
     ids = {n.get("id") for n in got.get("nodes", [])}
     assert world.ids["kb_live"] in ids
     assert world.ids["kb_trashed"] not in ids
@@ -599,6 +617,10 @@ async def test_linked_records(world: _World) -> None:
 # the day one is fixed this file is updated and the LIVE claim is checked there too.
 ARANGO_LIST_ALL_RECORDS_FAILS = "bind parameter 'limit' was not declared in the query"
 ARANGO_LIST_KB_RECORDS_FAILS = "collection or view not found: user_permission"
+# Main's external-collaborator branch (#3115) declares parent_rgs again inside the
+# record permission probe, so Arango refuses to parse app browse. Renaming it is not
+# the fix: the query then runs out of memory while the optimizer plans it.
+ARANGO_APP_BROWSE_FAILS = "variable 'parent_rgs' is assigned multiple times"
 
 
 async def test_all_records_list(world: _World) -> None:
