@@ -2086,7 +2086,12 @@ class BlobStorage(Transformer):
                 "record": compressed_record if use_compression else record,
                 "virtualRecordId": virtual_record_id
             }
-            json_data = _json_utf8_bytes(upload_data)
+            # Cloud uploads send `json=upload_data`, which ASCII-escapes; size what is sent.
+            json_data = (
+                _json_utf8_bytes(upload_data)
+                if storage_type == "local"
+                else json.dumps(upload_data).encode("utf-8")
+            )
             file_size_bytes = len(json_data)
 
             if storage_type == "local":

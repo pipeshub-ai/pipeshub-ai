@@ -74,3 +74,46 @@ def test_lone_surrogate_falls_back_to_ascii_escapes() -> None:
 
     assert b"\\ud800" in body
     assert json.loads(body) == {"data": "broken \ud800 text"}
+
+
+def _session_cm(post_resp: AsyncMock | None = None) -> AsyncMock:
+    session = AsyncMock()
+    if post_resp is not None:
+        session.post = MagicMock(return_value=post_resp)
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    return session
+
+
+def _sent(record: dict) -> dict:
+    return {"isCompressed": False, "record": record, "virtualRecordId": "vr-1"}
+
+
+@pytest.mark.asyncio
+async def test_next_version_size_matches_bytes_sent_to_cloud() -> None:
+    bs = _make_bs()
+    bs.config_service.get_config = AsyncMock(
+        side_effect=[{"scopedJwtSecret": "secret"}, {"cm": {"endpoint": "http://localhost:3001"}}, {"storageType": "s3"}]
+    )
+    bs._get_signed_url = AsyncMock(return_value={"signedUrl": "https://x/y"})
+    bs._upload_to_signed_url = AsyncMock(return_value=200)
+
+    with patch("app.modules.transformers.blob_storage.aiohttp.ClientSession", return_value=_session_cm()):
+        _, size = await bs.upload_next_version("org-1", "rec-1", "doc-1", _record(), "vr-1")
+
+    assert size == len(json.dumps(_sent(_record())).encode("utf-8"))
+
+
+@pytest.mark.asyncio
+async def test_next_version_size_matches_bytes_stored_locally() -> None:
+    bs = _make_bs()
+    resp = AsyncMock()
+    resp.status = 200
+    resp.json = AsyncMock(return_value={"_id": "doc-1"})
+    resp.__aenter__ = AsyncMock(return_value=resp)
+    resp.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("app.modules.transformers.blob_storage.aiohttp.ClientSession", return_value=_session_cm(resp)):
+        _, size = await bs.upload_next_version("org-1", "rec-1", "doc-1", _record(), "vr-1")
+
+    assert size == len(_json_utf8_bytes(_sent(_record())))
