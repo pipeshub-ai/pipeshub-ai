@@ -399,6 +399,47 @@ check "installer .env documents ENABLE_METRIC_COLLECTION" "$inner" "ENABLE_METRI
 check "helm values expose enableMetricCollection" "$helm_values" "enableMetricCollection"
 check "helm deployment wires ENABLE_METRIC_COLLECTION" "$helm_tpl" "ENABLE_METRIC_COLLECTION"
 
+echo "== Both knobs survive --reconfigure =="
+# The wizard rewrites .env in full, so a knob it does not read back is dropped.
+# Losing the telemetry opt-out re-enables collection; losing the delivery cap
+# silently reverts a throttled operator to the in-tree default of 10.
+check "reconfigure reads back ENABLE_METRIC_COLLECTION" "$inner" 'get_existing_val ENABLE_METRIC_COLLECTION'
+check "reconfigure reads back REDIS_MAX_DELIVERIES" "$inner" 'get_existing_val REDIS_MAX_DELIVERIES'
+if grep -E '^# ENABLE_METRIC_COLLECTION=false$' <<<"$inner" >/dev/null; then
+  fail "installer .env must render ENABLE_METRIC_COLLECTION through optional_env_line"
+else
+  pass "installer .env renders ENABLE_METRIC_COLLECTION through optional_env_line"
+fi
+if grep -E '^# REDIS_MAX_DELIVERIES=10$' <<<"$inner" >/dev/null; then
+  fail "installer .env must render REDIS_MAX_DELIVERIES through optional_env_line"
+else
+  pass "installer .env renders REDIS_MAX_DELIVERIES through optional_env_line"
+fi
+
+# Exercise the real helpers: a value an operator set must come back verbatim,
+# and an unset knob must stay a comment rather than becoming `KEY=`.
+eval "$(extract_fn optional_env_line "$INNER_INSTALLER")"
+check "optional_env_line keeps a set value" \
+  "$(optional_env_line ENABLE_METRIC_COLLECTION "false" "false")" \
+  "ENABLE_METRIC_COLLECTION=false"
+check "optional_env_line keeps a raised cap" \
+  "$(optional_env_line REDIS_MAX_DELIVERIES "100000" "10")" \
+  "REDIS_MAX_DELIVERIES=100000"
+check "optional_env_line comments out an unset knob" \
+  "$(optional_env_line REDIS_MAX_DELIVERIES "" "10")" \
+  "# REDIS_MAX_DELIVERIES=10"
+(
+  # Defined later in this file; pull it in here rather than depend on order.
+  eval "$(extract_fn get_existing_val "$INNER_INSTALLER")"
+  ENV_FILE="$TMP_ROOT/env_reconfigure"
+  printf 'ENABLE_METRIC_COLLECTION=false\nREDIS_MAX_DELIVERIES=100000\n' >"$ENV_FILE"
+  check "reads back a stored opt-out" "$(get_existing_val ENABLE_METRIC_COLLECTION "")" "false"
+  check "reads back a stored delivery cap" "$(get_existing_val REDIS_MAX_DELIVERIES "")" "100000"
+  # Absent keys must yield the empty default, so the placeholder is emitted.
+  : >"$ENV_FILE"
+  check "missing opt-out yields empty" "$(get_existing_val ENABLE_METRIC_COLLECTION "")" ""
+)
+
 echo "== OAuth device / DCR launch defaults =="
 envtmpl="$(cat "$COMPOSE_DIR/env.template")"
 compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"

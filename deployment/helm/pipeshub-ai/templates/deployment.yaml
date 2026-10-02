@@ -174,8 +174,12 @@ spec:
             - name: FRONTEND_PUBLIC_URL
               value: {{ .Values.config.frontendPublicUrl | quote }}
             # Telemetry opt-out before the first push (#3299).
+            # No `default` filter: sprig treats boolean false as empty, which
+            # would turn `--set config.enableMetricCollection=false` into a blank
+            # value and hand control back to the in-app toggle. values.yaml
+            # already supplies the empty default.
             - name: ENABLE_METRIC_COLLECTION
-              value: {{ .Values.config.enableMetricCollection | default "" | quote }}
+              value: {{ .Values.config.enableMetricCollection | quote }}
             
             # Internal service URLs
             - name: QUERY_BACKEND

@@ -425,8 +425,13 @@ wins over the stored setting; leave it unset to keep using the in-app toggle.
 `true` is accepted too, but is only useful to re-enable collection on a host whose
 stored setting was turned off.
 
+A value set here survives `./install.sh --reconfigure`, which rewrites `.env` in
+full; the installer reads the key back before regenerating the file.
+
 This is separate from the `telemetry` block in the Helm chart, which configures
-OpenTelemetry tracing, not the metrics collector.
+OpenTelemetry tracing, not the metrics collector. On Helm, set
+`config.enableMetricCollection` — a bare `false` is passed through, so
+`--set config.enableMetricCollection=false` opts out.
 
 ---
 
@@ -453,7 +458,9 @@ Released 50 entry(ies) held longer than 900s back to the pending list…
 ```
 
 Raise it above the number of hold/release cycles you expect to see before a record is
-reached. Setting it to `100000` disables the backstop in practice; the app-tracked failure
+reached. A value set here survives `./install.sh --reconfigure`; the installer reads the
+key back before regenerating `.env`, so a raised cap is not silently reverted to the
+shipped default. Setting it to `100000` disables the backstop in practice; the app-tracked failure
 counter is unaffected either way, so genuine processing failures are still caught after
 `MAX_DELIVERY_ATTEMPTS` attempts. Note that `MAX_DELIVERY_ATTEMPTS` is documented in
 `env.template` but is **not** forwarded by the compose files — only `.env` keys the

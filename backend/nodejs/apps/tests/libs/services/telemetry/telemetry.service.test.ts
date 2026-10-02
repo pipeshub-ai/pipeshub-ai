@@ -441,6 +441,25 @@ describe('TelemetryService', () => {
       expect((svc as any).pushInterval).to.be.null;
     });
 
+    it('should accept every truthy spelling the Python pusher accepts', async () => {
+      // A spelling one service reads as enabled and the other as disabled
+      // would leave telemetry on in half the stack.
+      for (const value of ['1', 'true', 'yes', 'on', ' TRUE ', 'Yes']) {
+        process.env[ENV_KEY] = value;
+        (TelemetryService as any).instance = undefined;
+        const svc = new TelemetryService(
+          mockKvStore(storedConfig({ enableMetricCollection: 'false' })) as any,
+        );
+        await flushAsync();
+
+        expect(
+          (svc as any).enableMetricCollection,
+          `value="${value}"`,
+        ).to.equal(true);
+        (svc as any).stopMetricsPush();
+      }
+    });
+
     it('should accept the other falsy spellings', async () => {
       for (const value of ['0', 'off', 'no', 'FALSE', ' false ']) {
         process.env[ENV_KEY] = value;
@@ -500,6 +519,25 @@ describe('TelemetryService', () => {
         (svc as any).getEncryptionService().decrypt(kv.set.firstCall.args[1]),
       ) as Record<string, string>;
       expect(stored.enableMetricCollection).to.equal('false');
+    });
+
+    it('should seed the shipped default when the env var is whitespace-only', async () => {
+      // Persisting the raw whitespace would make the stored value read as false
+      // on the next resolve, turning "no override" into an opt-out.
+      sandbox
+        .stub(TelemetryService.prototype as any, 'startMetricsPush')
+        .resolves();
+      process.env[ENV_KEY] = '   ';
+      const kv = mockKvStore(null);
+      const svc = new TelemetryService(kv as any);
+      await flushAsync();
+
+      const stored = JSON.parse(
+        (svc as any).getEncryptionService().decrypt(kv.set.firstCall.args[1]),
+      ) as Record<string, string>;
+      expect(stored.enableMetricCollection).to.equal('true');
+      expect((svc as any).enableMetricCollection).to.be.true;
+      (svc as any).stopMetricsPush();
     });
   });
 });

@@ -1172,6 +1172,13 @@ if ! ${SKIP_WIZARD:-false}; then
   MONGO_CACHE_GB="$(get_existing_val MONGO_CACHE_GB "")"
   MONGO_MEMORY_LIMIT="$(get_existing_val MONGO_MEMORY_LIMIT "")"
 
+  # Same reason for the telemetry opt-out (#3299) and the dead-letter backstop
+  # (#3298): both are operator-set knobs documented only in env.template, so
+  # --reconfigure would drop an opt-out or a raised delivery cap and quietly
+  # restore the shipped default.
+  ENABLE_METRIC_COLLECTION="$(get_existing_val ENABLE_METRIC_COLLECTION "")"
+  REDIS_MAX_DELIVERIES="$(get_existing_val REDIS_MAX_DELIVERIES "")"
+
   # App container memory. An explicit APP_MEMORY_LIMIT always wins -- from the
   # environment for scripted installs, or from an existing .env so
   # --reconfigure never silently resizes a tuned deployment. Only a fresh
@@ -1274,7 +1281,8 @@ ROTATE_SIGNING_SECRETS=${ROTATE_SIGNING_SECRETS}
 FRONTEND_PUBLIC_URL=${FRONTEND_PUBLIC_URL}
 
 # Telemetry: uncomment to opt out before the first push (#3299).
-# ENABLE_METRIC_COLLECTION=false
+# Kept across --reconfigure when set.
+$(optional_env_line ENABLE_METRIC_COLLECTION "$ENABLE_METRIC_COLLECTION" "false")
 
 # Host port PipesHub is exposed on
 APP_PORT=${APP_PORT}
@@ -1302,7 +1310,8 @@ KV_STORE_TYPE=${KV_STORE}
 MESSAGE_BROKER=${BROKER}
 REDIS_STREAMS_MAXLEN=500000
 # Indexing dead-letter backstop (#3298). Read by both brokers.
-# REDIS_MAX_DELIVERIES=10
+# Kept across --reconfigure when set.
+$(optional_env_line REDIS_MAX_DELIVERIES "$REDIS_MAX_DELIVERIES" "10")
 
 # ── Redis ────────────────────────────────────────────────────────────────────
 REDIS_PASSWORD=${REDIS_PASSWORD}

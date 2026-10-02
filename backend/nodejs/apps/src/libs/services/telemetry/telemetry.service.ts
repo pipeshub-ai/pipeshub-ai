@@ -15,7 +15,6 @@ import { setInstallInfo } from './modules/install-metrics';
 import { createHash, randomUUID } from 'crypto';
 const SCHEMA_VERSION = 1;
 const METRICS_VERSION = '2';
-import { parseBoolean } from '../../../modules/storage/utils/utils';
 import { configPaths } from '../../../modules/configuration_manager/paths/paths';
 import { EncryptionService } from '../../encryptor/encryptor';
 import { loadConfigurationManagerConfig } from '../../../modules/configuration_manager/config/config';
@@ -38,6 +37,25 @@ const firstNonEmpty = (...values: (string | undefined)[]): string => {
     }
   }
   return '';
+};
+
+// The Python services parse the same variable (backend/python/app/telemetry/pusher.py,
+// `_as_bool`) and accept these spellings. Anything else -- including 'false',
+// 'no', and '0' -- is false. Keeping the two lists identical matters: a value
+// this service read as disabled but the pusher read as enabled would leave
+// telemetry on in half the stack.
+const TRUE_SPELLINGS = new Set(['1', 'true', 'yes', 'on']);
+
+const envFlag = (value: string): boolean =>
+  TRUE_SPELLINGS.has(value.trim().toLowerCase());
+
+// Reads the stored setting, which the UI writes as 'true'/'false'. Blank or
+// absent falls back to the shipped default rather than parsing as false.
+const storedFlag = (value: string | undefined, fallback: boolean): boolean => {
+  if (value == null || value.trim() === '') {
+    return fallback;
+  }
+  return TRUE_SPELLINGS.has(value.trim().toLowerCase());
 };
 
 interface MetricsConfig {
@@ -134,11 +152,9 @@ export class TelemetryService implements ITelemetryService {
   private resolveEnableMetricCollection(config: MetricsConfig): boolean {
     const fromEnv = process.env.ENABLE_METRIC_COLLECTION;
     if (fromEnv != null && fromEnv.trim() !== '') {
-      return parseBoolean(fromEnv);
+      return envFlag(fromEnv);
     }
-    return parseBoolean(
-      firstNonEmpty(config[keyValues.ENABLE_METRIC_COLLECTION], 'true'),
-    );
+    return storedFlag(config[keyValues.ENABLE_METRIC_COLLECTION], true);
   }
 
   private async persistMissingDefaults(config: MetricsConfig): Promise<void> {
@@ -153,7 +169,16 @@ export class TelemetryService implements ITelemetryService {
       [keyValues.PUSH_INTERVAL, () => String(DEFAULTS.PUSH_INTERVAL)],
       [
         keyValues.ENABLE_METRIC_COLLECTION,
-        () => this.getEnv('ENABLE_METRIC_COLLECTION', 'true'),
+        // Normalize before persisting. Storing the raw env value would persist
+        // a whitespace-only string, which `storedFlag` then reads as false --
+        // turning "blank env = no override" into an opt-out.
+        () => {
+          const fromEnv = process.env.ENABLE_METRIC_COLLECTION;
+          if (fromEnv == null || fromEnv.trim() === '') {
+            return 'true';
+          }
+          return envFlag(fromEnv) ? 'true' : 'false';
+        },
       ],
     ];
     let changed = false;
