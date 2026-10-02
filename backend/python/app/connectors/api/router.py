@@ -7047,6 +7047,75 @@ def _tag_instance_name(connector_obj: BaseConnector, name: str | None) -> None:
         connector_obj.instance_name = name
 
 
+async def _evict_cached_connector(
+    container: ConnectorAppContainer,
+    connector_id: str,
+    logger: logging.Logger,
+) -> None:
+    """Drop the in-memory connector so the next enable rebuilds it from scratch."""
+    if not hasattr(container, "connectors_map") or connector_id not in container.connectors_map:
+        return
+    logger.info(f"Removing connector {connector_id} from connectors_map")
+    existing_connector = container.connectors_map.pop(connector_id)
+    try:
+        if hasattr(existing_connector, "cleanup"):
+            await existing_connector.cleanup()
+        logger.info(f"Cleaned up connector instance {connector_id}")
+    except Exception as cleanup_err:
+        logger.error(f"Error cleaning up connector {connector_id}: {cleanup_err}")
+
+
+async def _revert_toggle(
+    connector_registry: ConnectorRegistry,
+    graph_provider: IGraphDBProvider,
+    connector_id: str,
+    instance: dict[str, Any],
+    status_field: str,
+    owner_updates: dict[str, Any],
+    *,
+    previous: bool,
+    written_at: int | None,
+    user_id: str,
+    org_id: str,
+    is_admin: bool,
+    logger: logging.Logger,
+) -> bool:
+    """Restore the pre-toggle state unless a newer write has landed since.
+
+    Returns whether the revert was applied. Never raises, so the caller's error
+    propagates.
+    """
+    reverted: dict[str, Any] = {
+        status_field: previous,
+        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        **{key: instance.get(key) for key in owner_updates},
+    }
+    try:
+        # Toggles flip, so a stale revert can undo a newer successful one; only
+        # revert while the document is still the version this request wrote.
+        current = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        if not current or written_at is None or current.get("updatedAtTimestamp") != written_at:
+            logger.warning(
+                f"Not reverting {status_field} for connector {connector_id}: "
+                "it changed after this toggle was written"
+            )
+            return False
+        ok = await connector_registry.update_connector_instance(
+            connector_id=connector_id,
+            updates=reverted,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin,
+        )
+        if not ok:
+            logger.error(f"Could not revert {status_field} for connector {connector_id}")
+            return False
+        return True
+    except Exception:
+        logger.exception(f"Could not revert {status_field} for connector {connector_id}")
+        return False
+
+
 async def _ensure_connector_initialized(
     container: ConnectorAppContainer,
     connector_id: str,
@@ -7507,18 +7576,33 @@ async def toggle_connector_instance(
                 "timestamp": get_epoch_timestamp_in_ms()
             }
 
-            await producer.send_message(topic="entity-events", message=message)
+
+            try:
+                await producer.send_message(topic="entity-events", message=message)
+            except Exception:
+                # The flip is already committed; without this the connector reads as
+                # enabled with no appEnabled event and no schedule behind it.
+                reverted = await _revert_toggle(
+                    connector_registry,
+                    graph_provider,
+                    connector_id,
+                    instance,
+                    status_field,
+                    owner_updates,
+                    previous=not target_status,
+                    written_at=success.get("updatedAtTimestamp") if isinstance(success, dict) else None,
+                    user_id=user_id,
+                    org_id=org_id,
+                    is_admin=is_admin,
+                    logger=logger,
+                )
+                if reverted and target_status:
+                    await _evict_cached_connector(container, connector_id, logger)
+                raise
 
             # When disabling sync, remove connector from map and cleanup so re-enable does full init
-            if not target_status and hasattr(container, "connectors_map") and connector_id in container.connectors_map:
-                logger.info(f"Removing connector {connector_id} from connectors_map after toggle off")
-                existing_connector = container.connectors_map.pop(connector_id)
-                try:
-                    if hasattr(existing_connector, "cleanup"):
-                        await existing_connector.cleanup()
-                    logger.info(f"Cleaned up connector instance {connector_id}")
-                except Exception as cleanup_err:
-                    logger.error(f"Error cleaning up connector {connector_id} after toggle off: {cleanup_err}")
+            if not target_status:
+                await _evict_cached_connector(container, connector_id, logger)
 
         return {
             "success": True,

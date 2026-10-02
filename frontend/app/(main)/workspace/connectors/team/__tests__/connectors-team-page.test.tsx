@@ -234,4 +234,18 @@ describe('Team connectors page: turning sync on and off', () => {
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
     expect(toasts()).toEqual([]);
   });
+
+  it('re-reads the connector after a failed toggle so the switch shows the real state', async () => {
+    openTypePage(makeInstance({ isActive: false }));
+    api.toggleConnector.mockRejectedValue({ type: 'SERVER_ERROR', message: 'down', statusCode: 500 });
+    const toggle = await screen.findByRole('switch');
+    await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
+    api.getConnectorInstance.mockClear();
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(api.getConnectorInstance).toHaveBeenCalledWith('conn-1'));
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
+    expect(toasts().map((t) => t.title)).not.toContain('Connector sync enabled');
+  });
 });
