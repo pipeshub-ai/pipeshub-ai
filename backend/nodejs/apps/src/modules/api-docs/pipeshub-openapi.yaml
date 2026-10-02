@@ -39369,15 +39369,15 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Either the caller's OAuth token lacks the `config:write` scope,
-            or the embedding server rejected the request under its own
-            policy: `model` is not in `EMBEDDING_SERVER_ALLOWED_MODELS`, or
-            `trustRemoteCode: true` was requested while
-            `EMBEDDING_SERVER_ALLOW_REMOTE_CODE` is disabled on the server.
-            The embedding-server rejection is proxied verbatim using
-            FastAPI's `{"detail": ...}` envelope, not the Node.js
-            `ErrorResponse` shape used for the scope failure.
-            It is also returned when the caller is not an admin of this organization.
+            The caller is not an admin of this organization, the caller's
+            OAuth token lacks the `config:write` scope, or the embedding
+            server rejected the request under its own policy: `model` is not
+            in `EMBEDDING_SERVER_ALLOWED_MODELS`, or `trustRemoteCode: true`
+            was requested while `EMBEDDING_SERVER_ALLOW_REMOTE_CODE` is
+            disabled on the server. The admin and scope refusals use the
+            Node.js `ErrorResponse` shape. Only the embedding-server
+            rejection is proxied verbatim in FastAPI's `{"detail": ...}`
+            envelope.
           content:
             application/json:
               schema:
