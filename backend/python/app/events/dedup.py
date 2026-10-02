@@ -23,6 +23,18 @@ from typing import Any
 
 from app.config.constants.arangodb import ProgressStatus
 
+# What a COMPLETED record's extractionStatus reads while its extraction has not
+# produced taxonomy edges yet, and what it reads once it has.
+EXTRACTION_NOT_FINISHED = (
+    None,
+    ProgressStatus.NOT_STARTED.value,
+    ProgressStatus.IN_PROGRESS.value,
+)
+EXTRACTION_FINISHED = (
+    ProgressStatus.COMPLETED.value,
+    ProgressStatus.FAILED.value,
+)
+
 
 @dataclass(frozen=True)
 class DedupDecision:

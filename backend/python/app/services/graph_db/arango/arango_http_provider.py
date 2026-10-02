@@ -6998,7 +6998,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 # Map indexing status to extraction status
                 # For EMPTY status, extraction status should also be EMPTY, not FAILED
                 if new_indexing_status == ProgressStatus.COMPLETED.value:
-                    extraction_status = ProgressStatus.COMPLETED.value
+                    # The promoted copy ran no extraction of its own, so the
+                    # reference record's result is its result, failed or
+                    # deferred included.
+                    extraction_status = (
+                        ref_record.get("extractionStatus") or ProgressStatus.COMPLETED.value
+                    )
                 elif new_indexing_status == ProgressStatus.EMPTY.value:
                     extraction_status = ProgressStatus.EMPTY.value
                 else:

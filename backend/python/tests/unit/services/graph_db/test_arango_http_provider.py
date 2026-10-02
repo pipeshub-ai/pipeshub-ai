@@ -4307,6 +4307,25 @@ class TestUpdateQueuedDuplicatesStatus:
             assert result == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("extraction", ["FAILED", "NOT_STARTED"])
+    async def test_promoted_duplicates_take_the_reference_records_extraction_status(
+        self, connected_provider, extraction
+    ):
+        """They ran no extraction of their own; COMPLETED was a claim nothing
+        backed when the reference record's had failed or been deferred."""
+        connected_provider.http_client.execute_aql.side_effect = [
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123",
+              "extractionStatus": extraction}],
+            [{"_key": "r2", "md5Checksum": "abc123"}],
+        ]
+        with patch.object(
+            connected_provider, "batch_update_nodes",
+            new_callable=AsyncMock, return_value=True
+        ) as mock_update:
+            await connected_provider.update_queued_duplicates_status("r1", "COMPLETED")
+            assert mock_update.call_args[0][0][0]["extractionStatus"] == extraction
+
+    @pytest.mark.asyncio
     async def test_empty_status_mapping(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
             [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123"}],

@@ -2537,6 +2537,28 @@ class TestDuplicateAndSyncOperations:
         assert neo4j_provider.batch_update_nodes.await_args.args[2] == "txn-upd"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("extraction", ["FAILED", "NOT_STARTED"])
+    async def test_promoted_duplicates_take_the_reference_records_extraction_status(
+        self, neo4j_provider: Neo4jProvider, extraction
+    ):
+        """They ran no extraction of their own; COMPLETED was a claim nothing
+        backed when the reference record's had failed or been deferred."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1",
+                             "extractionStatus": extraction}}],
+                [{"record": {"id": "rec-2"}}],
+            ]
+        )
+        neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "rec-2"})  # type: ignore[method-assign]
+        neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED", virtual_record_id="v-1")
+
+        payload = neo4j_provider.batch_update_nodes.await_args.args[0]
+        assert payload[0]["extractionStatus"] == extraction
+
+    @pytest.mark.asyncio
     async def test_update_queued_duplicates_status_maps_failed_and_empty(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[

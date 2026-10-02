@@ -2456,3 +2456,376 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
 
         assert result.skip_indexing is True
         assert doc["indexingStatus"] == ProgressStatus.QUEUED.value
+
+
+# ===========================================================================
+# Duplicate attach: ordering, the twin's extraction window, and the recheck
+# after parking
+# ===========================================================================
+
+_FLAG = "duplicateReconcilePending"
+
+_TWIN = {
+    "_key": "twin",
+    "orgId": "org-1",
+    "md5Checksum": "abc",
+    "recordType": "FILE",
+    "sizeInBytes": 10,
+    "virtualRecordId": "vr-1",
+    "summaryDocumentId": "sum-1",
+    "indexingStatus": ProgressStatus.COMPLETED.value,
+    "extractionStatus": ProgressStatus.COMPLETED.value,
+}
+
+
+def _twin(**overrides):
+    return {**_TWIN, **overrides}
+
+
+def _copy(key="r1", **overrides):
+    return {
+        "_key": key,
+        "orgId": "org-1",
+        "md5Checksum": "abc",
+        "recordType": "FILE",
+        "sizeInBytes": 10,
+        "indexingStatus": ProgressStatus.QUEUED.value,
+        "virtualRecordId": None,
+        "summaryDocumentId": None,
+        **overrides,
+    }
+
+
+def _writes(gp, key):
+    """Field sets written to one record, in order, skipping the md5 write."""
+    return [
+        c.args[2] for c in gp.update_node.await_args_list
+        if c.args[0] == key and "md5Checksum" not in c.args[2]
+    ]
+
+
+class TestProcessedTwinAttachOrdering:
+    """The same-collection attach writes the record's status last.
+
+    The record handler drops a redelivered newRecord for a COMPLETED record.
+    Writing COMPLETED first turned any failure in the edge copy or the
+    membership sync into a permanent one: the record claimed to be indexed
+    while its connectorId was missing from the VRID's points.
+    """
+
+    @pytest.mark.asyncio
+    async def test_status_is_written_after_edges_identity_and_sync(self):
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        order = []
+
+        async def _copy_edges(src, dst):
+            order.append("edges")
+            return True
+
+        async def _update(key, collection, fields):
+            if "indexingStatus" in fields:
+                order.append("status")
+            elif "virtualRecordId" in fields:
+                order.append("identity")
+            return True
+
+        async def _sync(vrid):
+            order.append("sync")
+
+        gp.copy_document_relationships = AsyncMock(side_effect=_copy_edges)
+        gp.update_node = AsyncMock(side_effect=_update)
+        doc = _copy(indexingStatus=ProgressStatus.NOT_STARTED.value)
+
+        with patch.object(ep, "sync_vector_membership", side_effect=_sync):
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        assert order == ["edges", "identity", "sync", "status"]
+        assert doc["indexingStatus"] == ProgressStatus.COMPLETED.value
+        assert doc["virtualRecordId"] == "vr-1"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_sync_leaves_status_unwritten_and_restores_identity(self):
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        doc = _copy(virtualRecordId="vr-own", summaryDocumentId="sum-own")
+
+        with patch.object(
+            ep, "sync_vector_membership", new_callable=AsyncMock,
+            side_effect=IndexingError("qdrant down"),
+        ):
+            with pytest.raises(IndexingError, match="qdrant down"):
+                await ep._check_duplicate_by_md5(b"x", doc)
+
+        writes = _writes(gp, "r1")
+        assert all("indexingStatus" not in w for w in writes)
+        assert writes[-1] == {"virtualRecordId": "vr-own", "summaryDocumentId": "sum-own"}
+
+    @pytest.mark.asyncio
+    async def test_redelivery_after_a_failed_sync_attaches(self):
+        """The record keeps its old status, so its redelivered event gets past
+        the COMPLETED guard and the attach runs again."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        sync = AsyncMock(side_effect=[IndexingError("qdrant down"), None])
+
+        with patch.object(ep, "sync_vector_membership", sync):
+            with pytest.raises(IndexingError):
+                await ep._check_duplicate_by_md5(b"x", _copy())
+            doc = _copy()
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        assert doc["indexingStatus"] == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_a_failed_status_write_restores_identity_and_membership(self):
+        """By then the record's connectorId is on the VRID's points."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+
+        async def _update(key, collection, fields):
+            return "indexingStatus" not in fields
+
+        gp.update_node = AsyncMock(side_effect=_update)
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
+            with pytest.raises(IndexingError, match="duplicate record fields"):
+                await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert _writes(gp, "r1")[-1] == {"virtualRecordId": None, "summaryDocumentId": None}
+        assert sync.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_cancellation_mid_attach_restores_identity(self):
+        import asyncio
+
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+
+        with patch.object(
+            ep, "sync_vector_membership", new_callable=AsyncMock,
+            side_effect=asyncio.CancelledError(),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert _writes(gp, "r1")[-1] == {"virtualRecordId": None, "summaryDocumentId": None}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_restore_does_not_replace_the_original_error(self):
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        calls = {"n": 0}
+
+        async def _update(key, collection, fields):
+            calls["n"] += 1
+            if calls["n"] > 2:
+                raise RuntimeError("graph down")
+            return True
+
+        gp.update_node = AsyncMock(side_effect=_update)
+
+        with patch.object(
+            ep, "sync_vector_membership", new_callable=AsyncMock,
+            side_effect=IndexingError("qdrant down"),
+        ):
+            with pytest.raises(IndexingError, match="qdrant down"):
+                await ep._check_duplicate_by_md5(b"x", _copy())
+
+    @pytest.mark.asyncio
+    async def test_empty_twin_without_vrid_is_attached_without_a_sync(self):
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [
+            _twin(virtualRecordId=None, indexingStatus=ProgressStatus.EMPTY.value,
+                  extractionStatus=None)
+        ]
+        doc = _copy()
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        sync.assert_not_awaited()
+        assert doc["indexingStatus"] == ProgressStatus.EMPTY.value
+        assert doc["extractionStatus"] == ProgressStatus.NOT_STARTED.value
+
+    @pytest.mark.asyncio
+    async def test_entities_are_synced_once_the_record_is_attached(self):
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        seen = {}
+
+        async def _sync_entities(doc):
+            seen["status"] = doc.get("indexingStatus")
+
+        ep.sink_orchestrator = MagicMock()
+        ep.sink_orchestrator.sync_entities_for_duplicate = AsyncMock(side_effect=_sync_entities)
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock):
+            await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert seen == {"status": ProgressStatus.COMPLETED.value}
+
+
+class TestAttachDuringTwinExtraction:
+    """A twin reads COMPLETED seconds before its extraction writes its edges.
+
+    Reproduced on a dev stack: a second upload landed 6s after the first read
+    COMPLETED and 3s before its edges existed, copied none, and kept none for
+    good, because the twin's reconcile only runs for copies it promoted. The
+    twin's pending flag is what asks for that reconcile.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("extraction", [
+        ProgressStatus.NOT_STARTED.value, ProgressStatus.IN_PROGRESS.value, None,
+    ])
+    async def test_the_twin_is_flagged_before_anything_is_copied(self, extraction):
+        ep, _, _, gp = _make_event_processor()
+        twin = _twin(extractionStatus=extraction)
+        gp.find_duplicate_records.return_value = [twin]
+        gp.get_document = AsyncMock(return_value=twin)
+        order = []
+
+        async def _update(key, collection, fields):
+            if _FLAG in fields:
+                order.append(("flag", key))
+            return True
+
+        async def _copy_edges(src, dst):
+            order.append(("edges", dst))
+            return True
+
+        gp.update_node = AsyncMock(side_effect=_update)
+        gp.copy_document_relationships = AsyncMock(side_effect=_copy_edges)
+        doc = _copy()
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock):
+            await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert order == [("flag", "twin"), ("edges", "r1")]
+        assert doc["extractionStatus"] == (extraction or ProgressStatus.NOT_STARTED.value)
+
+    @pytest.mark.asyncio
+    async def test_a_twin_that_finished_meanwhile_gives_its_edges_directly(self):
+        """It may have read its flag before the flag was written; then nothing
+        else would bring its edges over."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [
+            _twin(extractionStatus=ProgressStatus.NOT_STARTED.value)
+        ]
+        gp.get_document = AsyncMock(return_value=_twin(extractionStatus=ProgressStatus.FAILED.value))
+        gp.copy_document_relationships = AsyncMock(return_value=True)
+        doc = _copy()
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock):
+            await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert gp.copy_document_relationships.await_count == 2
+        assert doc["extractionStatus"] == ProgressStatus.FAILED.value
+
+    @pytest.mark.asyncio
+    async def test_a_twin_that_finished_extracting_is_not_flagged(self):
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock):
+            await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert _writes(gp, "twin") == []
+        gp.get_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_flag_write_fails_the_attach(self):
+        """Attaching anyway would leave the copy without edges and nothing to
+        bring them; failing redelivers the event."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [
+            _twin(extractionStatus=ProgressStatus.NOT_STARTED.value)
+        ]
+
+        async def _update(key, collection, fields):
+            return _FLAG not in fields
+
+        gp.update_node = AsyncMock(side_effect=_update)
+
+        with pytest.raises(IndexingError, match="reconciliation"):
+            await ep._check_duplicate_by_md5(b"x", _copy())
+
+        gp.copy_document_relationships.assert_not_awaited()
+
+
+class TestParkedDuplicateRecheck:
+    """A record parked behind an in-flight twin reads again after parking.
+
+    The twin promotes what it finds QUEUED only after writing COMPLETED. If it
+    finished between this record's read and its QUEUED write, it found nothing,
+    and an upload parked that way is never promoted or swept.
+    """
+
+    _IN_FLIGHT = {"_key": "twin", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
+
+    @pytest.mark.asyncio
+    async def test_a_twin_that_finished_meanwhile_is_attached_inline(self):
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records = AsyncMock(side_effect=[[self._IN_FLIGHT], [_twin()]])
+        doc = _copy(indexingStatus=ProgressStatus.NOT_STARTED.value)
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        assert result.virtual_record_id == "vr-1"
+        sync.assert_awaited_once_with("vr-1")
+        assert doc["indexingStatus"] == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_a_twin_still_in_flight_leaves_it_parked_after_one_recheck(self):
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records = AsyncMock(return_value=[self._IN_FLIGHT])
+        doc = _copy(indexingStatus=ProgressStatus.NOT_STARTED.value)
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        assert doc["indexingStatus"] == ProgressStatus.QUEUED.value
+        assert gp.find_duplicate_records.await_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("after", [
+        [],
+        [{"_key": "twin", "indexingStatus": ProgressStatus.FAILED.value}],
+    ])
+    async def test_a_twin_gone_or_failed_meanwhile_unparks_it(self, after):
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records = AsyncMock(side_effect=[[self._IN_FLIGHT], after])
+
+        result = await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert result.skip_indexing is False
+        assert result.virtual_record_id is None
+
+    @pytest.mark.asyncio
+    async def test_a_twin_whose_stored_content_is_gone_is_not_reused_on_recheck(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.find_duplicate_records = AsyncMock(side_effect=[[self._IN_FLIGHT], [_twin()]])
+        processor.sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value=None)
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
+            result = await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert result.skip_indexing is False
+        sync.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_recheck_when_the_queued_write_fails(self):
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records = AsyncMock(return_value=[self._IN_FLIGHT])
+        gp.update_node = _fail_every_write_except_md5()
+
+        with pytest.raises(IndexingError, match="QUEUED"):
+            await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert gp.find_duplicate_records.await_count == 1
