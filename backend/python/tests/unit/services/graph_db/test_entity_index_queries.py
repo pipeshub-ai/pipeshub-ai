@@ -58,7 +58,7 @@ def test_sources_are_a_fixed_set() -> None:
         RECORDS, GROUPS, DEPARTMENTS, TOPICS,
         CollectionNames.CATEGORIES.value, CollectionNames.LANGUAGES.value,
         CollectionNames.SUBCATEGORIES1.value, CollectionNames.SUBCATEGORIES2.value,
-        CollectionNames.SUBCATEGORIES3.value,
+        CollectionNames.SUBCATEGORIES3.value, CollectionNames.USERS.value,
     }
 
 
@@ -67,7 +67,7 @@ class TestValidation:
     async def test_unknown_source_is_rejected_before_querying(self, make) -> None:
         p = make([])
         with pytest.raises(ValueError):
-            await p.page_entity_index_source("users", "org-1", None, 10)
+            await p.page_entity_index_source("permissions", "org-1", None, 10)
         with pytest.raises(ValueError):
             await p.page_entity_index_source("topics) DETACH DELETE n //", "org-1", None, 10)
 
