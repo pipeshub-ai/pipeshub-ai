@@ -81,7 +81,8 @@ SCENARIOS: list[tuple[str, str | None, str | None, str]] = [
     # by the old strip rule; only the shared OAuth-app config still has it.
     ("cloud_legacy", None, None, "https://gitlab.com"),
     ("ee_legacy", None, "https://git.example.com", "https://git.example.com"),
-    # Mixed / explicit override — per-instance value wins over shared.
+    # Mixed / explicit override — per-instance value wins over shared for API calls;
+    # the OAuth refresh keeps to the shared app's host.
     (
         "ee_instance_overrides_shared",
         "https://gitlab.team-a.example",
@@ -161,6 +162,9 @@ class TestTokenRefreshOAuthFlowAcrossDeployments:
         oauth_flow_config = await svc._build_complete_oauth_config(
             "conn1", "GITLAB", auth_config
         )
+        # The shared app's secret is only ever sent to the host set on that app, so the
+        # per-instance value (still used for API calls) does not steer the refresh.
+        expected_host = instance_url_on_shared or "https://gitlab.com"
 
         # For Cloud (no instanceUrl anywhere) we don't set the key — that's
         # fine because the unmodified gitlab.com URLs already target Cloud.

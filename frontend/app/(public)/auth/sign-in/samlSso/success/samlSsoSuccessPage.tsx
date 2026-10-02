@@ -8,21 +8,13 @@ import { getCookie } from '@/lib/utils/cookies';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { buildDesktopDeepLink, isDesktopOAuthState } from '@/lib/auth/desktop-oauth';
 import DesktopHandoffNotice from '@/app/(public)/auth/desktop-handoff-notice';
+import { getSafeReturnTo } from '@/lib/utils/safe-return-to';
 
 const ACCESS_COOKIE = 'accessToken';
 const REFRESH_COOKIE = 'refreshToken';
 
 /** Survives React Strict Mode remounts (useRef resets). */
 let samlBridgeRan = false;
-
-/** Same-origin relative path only; blocks protocol-relative and external URLs. */
-function getSafeReturnTo(raw: string | null): string | null {
-  if (!raw || typeof raw !== 'string') return null;
-  const trimmed = raw.trim();
-  if (!trimmed.startsWith('/')) return null;
-  if (trimmed.startsWith('//')) return null;
-  return trimmed;
-}
 
 export default function SamlSsoSuccessPage() {
   const router = useRouter();

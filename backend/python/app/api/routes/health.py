@@ -29,6 +29,7 @@ from app.utils.aimodels import (
     get_image_generation_model,
     get_stt_model,
     get_tts_model,
+    require_public_endpoint,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -280,6 +281,18 @@ def _is_capability_error(exc: Exception) -> bool:
     return any(marker in message for marker in _CAPABILITY_ERROR_MARKERS)
 
 
+async def _endpoint_refusal(config: dict) -> JSONResponse | None:
+    """A 400 for a config whose endpoint this deployment may not call, else None."""
+    configuration = config.get("configuration")
+    if not isinstance(configuration, dict):
+        return None  # the health check that follows reports the malformed config
+    try:
+        await require_public_endpoint(configuration.get("endpoint"))
+    except ValueError as e:
+        return _config_error(str(e), config, configuration.get("model", ""))
+    return None
+
+
 def _config_error(
     message: str, config: dict, model_name: str, **extra: object
 ) -> JSONResponse:
@@ -480,7 +493,7 @@ async def llm_health_check(request: Request, llm_configs: list[dict] = Body(...)
         )
 
     for llm_config in llm_configs:
-        response = await perform_llm_health_check(llm_config, logger)
+        response = await _endpoint_refusal(llm_config) or await perform_llm_health_check(llm_config, logger)
         if response.status_code != 200:
             return response
 
@@ -777,6 +790,11 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
     """Health check endpoint to validate embedding configurations."""
     logger = None
     try:
+        for embedding_config in embedding_configs:
+            refusal = await _endpoint_refusal(embedding_config)
+            if refusal is not None:
+                return refusal
+
         # Initialize components
         dense_embeddings, retrieval_service, logger = await initialize_embedding_model(request, embedding_configs)
 
@@ -1189,7 +1207,7 @@ async def _probe_vision(llm_model: BaseChatModel, logger: Logger) -> str | None:
     except Exception as image_error:
         if _is_capability_error(image_error):
             logger.info("Model rejected image input: %s", image_error)
-            return f"Model doesn't support images/vision: {_extract_error_message(image_error)}"
+            return f"Model doesn't support images/vision: {_short_provider_reason(image_error)}".rstrip(": ")
         # Rate limit, gateway 5xx, auth: says nothing about vision support, so
         # reporting "no vision" here would tell the admin to disable a
         # capability the model may well have.
@@ -1241,7 +1259,7 @@ async def _probe_image_embedding(
         )
     except Exception as exc:
         logger.warning("Could not build a multimodal embedding provider: %s", exc)
-        return f"This provider cannot embed images: {_extract_error_message(exc)}"
+        return f"This provider cannot embed images: {_short_provider_reason(exc)}".rstrip(": ")
 
     if multimodal_provider is None or not multimodal_provider.supports_multimodal():
         return (
@@ -1258,7 +1276,7 @@ async def _probe_image_embedding(
         raise
     except Exception as exc:
         if _is_capability_error(exc):
-            return f"Model cannot embed images: {_extract_error_message(exc)}"
+            return f"Model cannot embed images: {_short_provider_reason(exc)}".rstrip(": ")
         raise
 
     first = results[0] if results else None
@@ -1889,6 +1907,10 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
     try:
         logger.info(f"Health check endpoint called for {model_type}")
 
+        refusal = await _endpoint_refusal(model_config)
+        if refusal is not None:
+            return refusal
+
         if model_type == "embedding":
             logger.info(f"Performing embedding health check for {model_config.get('provider')} with configuration model {model_config.get('configuration', {}).get('model', '')}")
             return await perform_embedding_health_check(request, model_config, logger)
@@ -1938,7 +1960,7 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
             status_code=500,
             content={
                 "status": "not healthy",
-                "error": f"Health check failed: {str(e)}",
+                "error": f"Health check failed: {_short_provider_reason(e) or type(e).__name__}",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )

@@ -285,6 +285,7 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_records_recursive(
         self, record_ids: list[str], connector_id: str, cascade_children: bool = True,
+        within_folder_id: str | None = None,
     ) -> dict:
         """Delete records within the active transaction.
 
@@ -294,6 +295,7 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.delete_records_recursive(
             record_ids, connector_id, transaction=self.txn, cascade_children=cascade_children,
+            within_folder_id=within_folder_id,
         )
 
     async def delete_single_record(self, record_id: str) -> dict:
