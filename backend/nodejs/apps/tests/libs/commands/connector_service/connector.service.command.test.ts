@@ -9,13 +9,21 @@ import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
 
 describe('ConnectorServiceCommand', () => {
   let fetchStub: sinon.SinonStub
+  let originalEnv: string | undefined
 
   beforeEach(() => {
     fetchStub = sinon.stub(global, 'fetch')
+    originalEnv = process.env.CONNECTOR_BACKEND
+    process.env.CONNECTOR_BACKEND = 'http://connector.local'
   })
 
   afterEach(() => {
     sinon.restore()
+    if (originalEnv !== undefined) {
+      process.env.CONNECTOR_BACKEND = originalEnv
+    } else {
+      delete process.env.CONNECTOR_BACKEND
+    }
   })
 
   function makeFetchResponse(
