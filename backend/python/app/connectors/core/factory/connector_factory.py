@@ -159,6 +159,7 @@ class ConnectorFactory:
         "gitlabpersonal": GitLabPersonalConnector,
         "githubteams": GitHubTeamsConnector,
         "mariadb": MariaDBConnector,
+        "snowflake": SnowflakeConnector,
         "slackworkspace": SlackConnector,
         "slack": SlackIndividualConnector,
         "smb": SmbConnector,
