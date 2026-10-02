@@ -550,6 +550,23 @@ class TestRunSync:
         assert connector._external_record_id_for_rel_path("kept.txt") in remaining
         assert connector._external_record_id_for_rel_path("stale.txt") not in remaining
 
+    async def test_full_run_prunes_a_vanished_record_that_is_in_the_trash(
+        self, connector: LocalFsConnector, graph_store
+    ) -> None:
+        # The prune lists every record, trash included; a LIVE listing would
+        # never retire a trashed record whose file is gone.
+        await _seed_files(connector, "stale.txt", "kept.txt")
+        stale_id = connector._external_record_id_for_rel_path("stale.txt")
+        for doc in _records_snapshot(graph_store).values():
+            if doc.get("externalRecordId") == stale_id:
+                graph_store.collections[CollectionNames.RECORDS.value][doc["_key"]]["isDeleted"] = True
+
+        await self._run(connector, [(_events_for("kept.txt"), False)])
+
+        remaining = {doc.get("externalRecordId") for doc in _records_snapshot(graph_store).values()}
+        assert connector._external_record_id_for_rel_path("kept.txt") in remaining
+        assert stale_id not in remaining
+
     @staticmethod
     def _resume_point() -> dict[str, Any]:
         """A sync point left by a previous run, which makes the next one INCREMENTAL."""

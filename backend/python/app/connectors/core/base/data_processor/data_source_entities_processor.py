@@ -50,6 +50,7 @@ from app.services.cache.invalidation_hooks import (
     notify_connector_sync_completed,
     notify_kb_records_changed,
 )
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.vector_db.membership import record_group_id_from_edge
@@ -3264,6 +3265,7 @@ class DataSourceEntitiesProcessor:
         is_placeholder: bool | None = None,
         after_key: str | None = None,
         exclude_statuses: list[str] | None = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Get records by indexing status, scoped to the current org.
 
@@ -3281,6 +3283,7 @@ class DataSourceEntitiesProcessor:
                 is_placeholder=is_placeholder,
                 after_key=after_key,
                 exclude_statuses=exclude_statuses,
+                visibility=visibility,
             )
 
     async def get_placeholder_records(
@@ -4064,6 +4067,7 @@ class DataSourceEntitiesProcessor:
         is_placeholder: bool | None = None,
         after_key: str | None = None,
         exclude_statuses: list[str] | None = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_records_by_status(
@@ -4076,6 +4080,7 @@ class DataSourceEntitiesProcessor:
                 is_placeholder=is_placeholder,
                 after_key=after_key,
                 exclude_statuses=exclude_statuses,
+                visibility=visibility,
             )
 
     async def get_record_by_external_revision_id(
