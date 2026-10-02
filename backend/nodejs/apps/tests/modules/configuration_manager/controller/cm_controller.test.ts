@@ -3408,7 +3408,7 @@ describe('ConfigurationManager Controller', () => {
 
       expect(next.called).to.be.false
       expect(res.status.calledWith(400)).to.be.true
-      expect(res.json.firstCall.args[0].error.message).to.not.equal(IN_USE)
+      expect(res.json.firstCall.args[0].error.message).to.equal(setupError.message)
       expect(kvs.set.called).to.be.false
     })
 
