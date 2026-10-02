@@ -311,7 +311,6 @@ async function processSlackMessage(
   // instead of falling back to the server clock.
   const userTimezone = lookupResult.user.tz || undefined;
   const configService = ConfigService.getInstance();
-  const accessToken = slackJwtGenerator(email, await configService.getScopedJwtSecret());
 
   const currentAgentId = resolvedSlackBot?.agentId || null;
   console.log("currentAgentId", currentAgentId);
@@ -319,6 +318,13 @@ async function processSlackMessage(
   if (!currentBotId) {
     throw new Error("Unable to resolve Slack bot id for conversation persistence.");
   }
+
+  const accessToken = slackJwtGenerator(
+    email,
+    await configService.getScopedJwtSecret(),
+    undefined,
+    { configId: currentBotId },
+  );
 
   const conversation = await getFromDatabase(
     threadId,

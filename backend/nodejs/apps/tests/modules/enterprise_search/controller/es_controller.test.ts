@@ -63,10 +63,11 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/schema/search.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
-import { BadRequestError } from '../../../../src/libs/errors/http.errors'
+import { BadRequestError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
+import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 
@@ -389,6 +390,11 @@ describe('Enterprise Search Controller', () => {
     // Individual tests can `.resolves(...)` a different value after this.
     if (!(ProjectService.getAccessibleProjectIds as any).restore) {
       sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
+    }
+    // Scoped-token hydration resolves the sole org before looking the user up,
+    // so every hydration path needs this or it buffers for 10s.
+    if (!(Org.find as any).restore) {
+      stubMongooseFind(Org, 'find', [{ _id: new mongoose.Types.ObjectId(VALID_OID2) }])
     }
   })
 
@@ -5426,6 +5432,64 @@ describe('Enterprise Search Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+
+    it('should refuse a Slack-minted token when the instance has more than one org', async () => {
+      const handler = streamChatInternal(createMockAppConfig())
+
+      // This edition's Slack config carries no orgId, so two orgs means there is
+      // no safe answer — it must refuse rather than pick one.
+      stubMongooseFind(Org, 'find', [
+        { _id: new mongoose.Types.ObjectId(VALID_OID2) },
+        { _id: new mongoose.Types.ObjectId(VALID_OID3) },
+      ])
+      const usersFindOne = sinon.stub(Users, 'findOne').resolves(null)
+
+      const req: any = {
+        headers: { authorization: 'Bearer slack-token' },
+        body: { query: 'test' },
+        params: {},
+        query: {},
+        context: { requestId: 'req-123' },
+        on: sinon.stub(),
+        tokenPayload: { email: 'test@test.com', configId: 'cfg-1' },
+      }
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      // Refused before any user lookup, so no tenant's data is touched.
+      expect(usersFindOne.called).to.be.false
+    })
+
+    it('should scope the user lookup to the sole org', async () => {
+      const handler = streamChatInternal(createMockAppConfig())
+
+      stubMongooseFind(Org, 'find', [{ _id: new mongoose.Types.ObjectId(VALID_OID2) }])
+      const usersFindOne = sinon.stub(Users, 'findOne').resolves(null)
+
+      const req: any = {
+        headers: { authorization: 'Bearer slack-token' },
+        body: { query: 'test' },
+        params: {},
+        query: {},
+        context: { requestId: 'req-123' },
+        on: sinon.stub(),
+        tokenPayload: { email: 'test@test.com', configId: 'cfg-1' },
+      }
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(usersFindOne.calledOnce).to.be.true
+      const lookupFilter = usersFindOne.firstCall.args[0] as { orgId?: unknown }
+      expect(String(lookupFilter.orgId)).to.equal(VALID_OID2)
     })
   })
 
