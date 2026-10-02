@@ -278,12 +278,12 @@ async def test_what_is_reported_deleted_is_exactly_what_was_deleted(tree: _Tree)
         assert not reported, f"the stopped delete reported removed records: {result}"
 
 
+# ArangoDB only, and not collected for Neo4j at all: the graph jobs fail on any skip,
+# and Neo4j's delete walks the live tree in the statement itself.
+@pytest.mark.parametrize("tree", ["arango"], indirect=True)
 async def test_a_move_committed_during_the_deletes_deletes_nothing(tree: _Tree) -> None:
-    """ArangoDB only: a move that commits after the first re-read is outside the delete's
-    snapshot; the re-read after the deletes must roll the whole delete back. (Neo4j's delete
-    walks the live tree in the statement itself.)"""
-    if isinstance(tree.graph, Neo4jProvider):
-        pytest.skip("Neo4j re-walks the live subtree in its delete statement")
+    """A move that commits after the first re-read is outside the delete's snapshot; the
+    re-read after the deletes must roll the whole delete back."""
     original = tree.graph.execute_query
     moved = False
 
