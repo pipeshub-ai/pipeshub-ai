@@ -38,6 +38,8 @@ RECORD_ENTITY_TYPE = "record"
 RECORD_GROUP_ENTITY_TYPE = "record_group"
 # A member of the org, reached through the records that name them (KG-13).
 PERSON_ENTITY_TYPE = "person"
+# An external organisation (a CRM account), reached through its records (KG-13).
+ORGANIZATION_ENTITY_TYPE = "organization"
 TAXONOMY_ENTITY_TYPES: frozenset[str] = frozenset(
     {"department", "category", "subcategory", "topic", "language"}
 )
@@ -45,6 +47,7 @@ SEARCHABLE_ENTITY_TYPES: frozenset[str] = TAXONOMY_ENTITY_TYPES | {
     RECORD_ENTITY_TYPE,
     RECORD_GROUP_ENTITY_TYPE,
     PERSON_ENTITY_TYPE,
+    ORGANIZATION_ENTITY_TYPE,
 }
 
 # Redis TAG queries get too long past this; the connector pass still covers
@@ -577,6 +580,7 @@ __all__ = [
     "EntityRecordPage",
     "PREVIEW_RECORD_COUNT",
     "RECORD_ENTITY_TYPE",
+    "ORGANIZATION_ENTITY_TYPE",
     "PERSON_ENTITY_TYPE",
     "RECORD_GROUP_ENTITY_TYPE",
     "SEARCHABLE_ENTITY_TYPES",
