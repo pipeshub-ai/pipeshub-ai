@@ -1,7 +1,7 @@
 """Domain, "anyone" and "anyone with the link" shares stay off: nothing starts writing them.
 
-Search honours an ``anyone`` document for a file (org-wide read access), so the
-product decision to ignore link-style shares holds only while nothing writes
+PipesHub decided link-style shares grant nothing. Search no longer reads
+``anyone`` documents, and this keeps the write side honest too: nothing writes
 those documents and the permission step keeps ignoring these share types. This
 pins both statically; tests/integration/test_link_and_domain_shares_e2e.py
 checks the outcome on real graphs.

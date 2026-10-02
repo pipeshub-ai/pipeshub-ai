@@ -6,15 +6,16 @@ writes no permission for them (the branches in
 ``DataSourceEntitiesProcessor._handle_record_permissions`` are switched off), so
 a colleague who was not named on a file cannot find or open it. That is a
 product decision, and this test keeps it from changing by accident, for
-example by someone restoring those branches or a connector starting to write
-``anyone`` nodes, which both backends' read queries would still honour.
+example by someone restoring those branches. Search does not read ``anyone``
+documents, so one written anyway (by older data or a stray writer) grants nothing;
+the last test pins that too.
 
 It drives the production path on a real graph: the processor stores a record
 shared with the owner plus a domain, an anyone and an anyone-with-link grant,
 and a control record shared with the colleague by name. Then it checks:
 
 * whether the sync wrote any grant for them: a permission edge, or an ``anyone``
-  document, which search honours; and
+  document; and
 * ``get_accessible_virtual_record_ids``, what search returns to the colleague.
 
 The control record proves search can see a grant, so a denial means something.
@@ -221,7 +222,7 @@ async def _sync_the_two_files(env: _Env) -> tuple[FileRecord, FileRecord]:
 
 
 async def _anyone_documents_for(graph: IGraphDBProvider, file_id: str) -> int:
-    """The "anyone" documents naming this file, which search would honour."""
+    """The "anyone" documents naming this file."""
     if isinstance(graph, Neo4jProvider):
         rows = await graph.client.execute_query(
             "MATCH (a:Anyone {file_key: $id}) RETURN count(a) AS c", parameters={"id": file_id}
@@ -235,7 +236,7 @@ async def _anyone_documents_for(graph: IGraphDBProvider, file_id: str) -> int:
 
 
 async def test_the_sync_writes_no_grant_for_link_style_shares(env: _Env) -> None:
-    """Search honours an "anyone" document or a permission edge; the sync must write neither.
+    """The sync writes neither a permission edge nor an "anyone" document for these shares.
 
     The owner's edge is checked first: the permission write shares one try block,
     so a share type that raised would drop the owner's edge too, and "no extra
@@ -259,7 +260,7 @@ async def test_the_sync_writes_no_grant_for_link_style_shares(env: _Env) -> None
         "A domain, anyone or anyone-with-link share has started writing a permission."
     )
     assert await _anyone_documents_for(env.graph, widely_shared.id) == 0, (
-        "The sync wrote an \"anyone\" document for the file, which search treats as readable by the whole org."
+        "The sync wrote an \"anyone\" document for the file, for a share PipesHub decided grants nothing."
     )
 
 
@@ -282,7 +283,7 @@ async def test_search_does_not_return_the_widely_shared_file_to_the_colleague(en
 async def test_an_anyone_document_grants_no_search_access(env: _Env) -> None:
     """An "anyone" document, even one written today by the permission writer, makes nothing searchable."""
     widely_shared, named_share = await _sync_the_two_files(env)
-    # The production writer of the shape search reads: {file_key, organization, active}.
+    # Written the way the production writer does: {file_key, organization, active}.
     await env.graph.process_file_permissions(
         env.org_id, widely_shared.id, [{"id": "anyone-perm", "type": "anyone", "role": "reader"}]
     )
