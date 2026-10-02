@@ -154,6 +154,10 @@ class EventService:
             )
             return await self._auto_initialize_connector(connector_name, connector_id)
 
+    async def get_or_init_connector(self, connector_name: str, connector_id: str) -> BaseConnector | None:
+        """Live connector instance for HTTP callers, built from its app doc if missing."""
+        return await self._ensure_connector(connector_name, connector_id)
+
     async def _auto_initialize_connector(
         self, connector_name: str, connector_id: str
     ) -> BaseConnector | None:

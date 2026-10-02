@@ -303,14 +303,30 @@ class TestDeleteKnowledgeBase:
         resp = client.delete("/api/v1/kb/kb1")
         assert resp.status_code == 200
 
+    def test_success_drops_the_kbs_connector_instance(self):
+        app, kb_svc, _ = _make_app()
+        kb_connector = MagicMock()
+        kb_connector.cleanup = AsyncMock()
+        app.container.connectors_map = {"kb1": kb_connector}
+        kb_svc.delete_knowledge_base = AsyncMock(return_value={"success": True})
+
+        resp = TestClient(app).delete("/api/v1/kb/kb1")
+
+        assert resp.status_code == 200
+        assert "kb1" not in app.container.connectors_map
+        kb_connector.cleanup.assert_awaited_once()
+
     def test_failure(self):
         app, kb_svc, _ = _make_app()
+        kb_connector = MagicMock()
+        app.container.connectors_map = {"kb1": kb_connector}
         kb_svc.delete_knowledge_base = AsyncMock(return_value={
             "success": False, "code": 403, "reason": "Not owner"
         })
         client = TestClient(app)
         resp = client.delete("/api/v1/kb/kb1")
         assert resp.status_code == 403
+        assert app.container.connectors_map == {"kb1": kb_connector}
 
     def test_unexpected_exception(self):
         app, kb_svc, _ = _make_app()
@@ -617,22 +633,34 @@ class TestUploadRecordsToFolder:
 
 
 class TestKbRouterDependencyWiring:
-    @pytest.mark.asyncio
-    async def test_get_kb_service_wires_dependencies(self):
-        """get_kb_service injects graph provider, processor, and config from app state."""
+    @staticmethod
+    async def _service_with_kb_connector(connector, kb_doc=None, entity_store=None):
         from app.connectors.sources.localKB.api.kb_router import get_kb_service
 
         request = MagicMock()
-        request.app.container = MagicMock()
-        request.app.container.logger.return_value = MagicMock()
-        request.app.container.kafka_service.return_value = AsyncMock()
-        request.app.container.config_service.return_value = MagicMock()
+        request.state.user = {"userId": "user1", "orgId": "org1"}
         request.app.state.graph_provider = AsyncMock()
-        request.app.state.kb_entities_processor = AsyncMock()
+        request.app.state.graph_provider.get_document = AsyncMock(
+            return_value={"orgId": "org1"} if kb_doc is None else kb_doc
+        )
+        if entity_store is not None:
+            request.app.container.entity_vector_store = AsyncMock(return_value=entity_store)
+        event_service = MagicMock()
+        event_service.get_or_init_connector = AsyncMock(return_value=connector)
+        with patch("app.edition_services.EventService", return_value=event_service, create=True):
+            svc = await get_kb_service(request)
+        return svc, request, event_service
 
-        svc = await get_kb_service(request)
+    @pytest.mark.asyncio
+    async def test_processor_comes_from_the_kbs_connector_instance(self):
+        connector = MagicMock()
+        connector.data_entities_processor.org_id = "org1"
+
+        svc, request, event_service = await self._service_with_kb_connector(connector)
+
         assert svc.graph_provider is request.app.state.graph_provider
-        assert svc.processor is request.app.state.kb_entities_processor
+        assert await svc.processor_for_kb("kb1") is connector.data_entities_processor
+        event_service.get_or_init_connector.assert_awaited_once_with("kb", "kb1")
         # container.entity_vector_store is unconfigured on this bare MagicMock,
         # so awaiting it raises — must degrade to None rather than propagate.
         assert svc.entity_vector_store is None
@@ -641,21 +669,41 @@ class TestKbRouterDependencyWiring:
     async def test_get_kb_service_resolves_entity_vector_store(self):
         """When the container resolves entity_vector_store successfully, it
         must be threaded into the KnowledgeBaseService for KB-delete cleanup."""
-        from app.connectors.sources.localKB.api.kb_router import get_kb_service
-
-        request = MagicMock()
-        request.app.container = MagicMock()
-        request.app.container.logger.return_value = MagicMock()
-        request.app.container.kafka_service.return_value = AsyncMock()
-        request.app.container.config_service.return_value = MagicMock()
-        request.app.state.graph_provider = AsyncMock()
-        request.app.state.kb_entities_processor = AsyncMock()
         entity_store = MagicMock()
-        request.app.container.entity_vector_store = AsyncMock(return_value=entity_store)
 
-        svc = await get_kb_service(request)
+        svc, _, _ = await self._service_with_kb_connector(MagicMock(), entity_store=entity_store)
 
         assert svc.entity_vector_store is entity_store
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "kb_doc",
+        [{"orgId": "org2"}, {"name": "legacy KB without orgId"}, {}],
+        ids=["other-org", "no-orgId", "missing-doc"],
+    )
+    async def test_refuses_kb_not_owned_by_callers_org_before_building_it(self, kb_doc):
+        svc, _, event_service = await self._service_with_kb_connector(MagicMock(), kb_doc=kb_doc)
+
+        with pytest.raises(PermissionError):
+            await svc.processor_for_kb("kb1")
+        event_service.get_or_init_connector.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_refuses_instance_bound_to_another_orgs_processor(self):
+        connector = MagicMock()
+        connector.data_entities_processor.org_id = "org2"
+
+        svc, _, _ = await self._service_with_kb_connector(connector)
+
+        with pytest.raises(PermissionError):
+            await svc.processor_for_kb("kb1")
+
+    @pytest.mark.asyncio
+    async def test_fails_when_kb_has_no_connector_instance(self):
+        svc, _, _ = await self._service_with_kb_connector(None)
+
+        with pytest.raises(LookupError):
+            await svc.processor_for_kb("kb1")
 
     @pytest.mark.asyncio
     async def test_get_kafka_service_from_container(self):

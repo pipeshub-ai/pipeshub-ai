@@ -60,6 +60,6 @@ def service(mock_logger, mock_graph_provider, mock_kafka_service, mock_processor
         mock_logger,
         mock_graph_provider,
         mock_kafka_service,
-        processor=mock_processor,
+        processor_for_kb=AsyncMock(return_value=mock_processor),
         config_service=mock_config_service,
     )

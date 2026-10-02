@@ -132,7 +132,7 @@ async def test_the_files_under_what_is_deleted_are_scheduled_first(service, kind
     _writer(service)
     order = []
     service.kafka_service.publish_event = AsyncMock(side_effect=lambda topic, event: order.append("publish"))
-    service.processor.on_records_deleted_cascade = AsyncMock(
+    service.processor_for_kb.return_value.on_records_deleted_cascade = AsyncMock(
         side_effect=lambda *a, **k: order.append("delete") or {"success": True, "successfully_deleted": 1, "total_requested": 1}
     )
 
@@ -159,4 +159,4 @@ async def test_a_removal_that_cannot_be_published_deletes_nothing(service, kind)
     assert result["success"] is False
     assert result["code"] == 503
     assert "nothing was deleted" in result["reason"]
-    service.processor.on_records_deleted_cascade.assert_not_awaited()
+    service.processor_for_kb.return_value.on_records_deleted_cascade.assert_not_awaited()
