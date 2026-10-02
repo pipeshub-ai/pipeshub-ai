@@ -77,6 +77,7 @@ from app.connectors.sources.google.common.impersonation import (
 from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     ANCESTOR_FETCH_CONCURRENCY,
     HELD_FILTER_FOLDERS,
+    HELD_REMOVED_CHANGES,
     MAX_UNRECOGNISED_403_RUNS,
     PLACEHOLDER_SWEEP_SAFETY_MAX,
     FolderFailureRuns,
@@ -1750,7 +1751,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         file that is still there, or an owner who can't be asked, drops just this user's
         access. A shared drive file only ever loses this user's access here.
         Any failed read or delete raises, so the user's checkpoint stays put and the
-        change is read again next sync.
+        change is read again next sync; ``_apply_removed_change`` bounds how long an
+        unrecognised 403 can do that.
         """
         if not file_id:
             return
@@ -1782,6 +1784,65 @@ class GoogleDriveTeamConnector(BaseConnector):
         await self.data_entities_processor.delete_permission_from_record(
             record_id=record.id, user_email=user.email
         )
+
+    async def _apply_removed_change(
+        self,
+        change: dict,
+        user: AppUser,
+        owner_sources: dict[str, GoogleDriveDataSource],
+        held: FolderFailureRuns,
+        sync_point_key: str,
+    ) -> HttpError | None:
+        """Apply a `removed` change, giving up on one an unrecognised 403 keeps failing.
+
+        Returns that 403 while the file has failed fewer than MAX_UNRECOGNISED_403_RUNS
+        runs in a row, so the caller holds the checkpoint once the rest of the feed is
+        read. At the limit only this user's access is dropped and the checkpoint may
+        move on; the record stays for everyone else. Any other failure raises as before.
+        """
+        file_id = change.get("fileId")
+        try:
+            await self._handle_removed_change(file_id, user, owner_sources, drive_id=change.get("driveId"))
+        except HttpError as e:
+            if not file_id or not is_unrecognised_403(e):
+                raise
+            runs = held.record_failure(file_id)
+            await self._save_held_removed_changes(held, sync_point_key)
+            if runs < MAX_UNRECOGNISED_403_RUNS:
+                self.logger.warning(
+                    f"Could not tell whether file {file_id}, which {user.email} can no longer open, "
+                    "was deleted: Google Drive refused the check with no reason this connector "
+                    "recognises (HTTP 403). The change is read again next run "
+                    f"(attempt {runs} of {MAX_UNRECOGNISED_403_RUNS})."
+                )
+                return e
+            self.logger.error(
+                f"Removing only {user.email}'s access to file {file_id}: Google Drive has refused "
+                f"the check with no reason this connector recognises (HTTP 403) on {MAX_UNRECOGNISED_403_RUNS} "
+                "runs in a row. The file stays indexed for anyone else who has access, so "
+                f"{user.email}'s other changes can sync. If the file was deleted, it is removed "
+                "once another user's sync, or a full sync, can confirm it."
+            )
+            record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=file_id
+            )
+            if record is not None:
+                await self.data_entities_processor.delete_permission_from_record(
+                    record_id=record.id, user_email=user.email
+                )
+            return None
+        if file_id:
+            held.clear(file_id)
+            await self._save_held_removed_changes(held, sync_point_key)
+        return None
+
+    async def _save_held_removed_changes(self, held: FolderFailureRuns, sync_point_key: str) -> None:
+        # Saved as soon as it changes, so a run that fails on something else still counts.
+        if held.changed:
+            await self.drive_delta_sync_point.update_sync_point(
+                sync_point_key, {HELD_REMOVED_CHANGES: held.to_stored()}
+            )
+            held.saved()
 
     async def _drive_has_synced_member(self, drive_id: str) -> bool:
         """Whether an active synced user belongs to a shared drive, directly or through a group.
@@ -2965,10 +3026,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                     await self.drive_delta_sync_point.update_sync_point(sync_point_key, holds.changes())
                 raise
 
-            # Save start page token to sync point after initial sync
+            # Save start page token to sync point after initial sync. A fresh feed
+            # starts every removed change's count over.
+            stale_removals = {HELD_REMOVED_CHANGES: []} if (sync_point or {}).get(HELD_REMOVED_CHANGES) else {}
             await self.drive_delta_sync_point.update_sync_point(
                 sync_point_key,
-                {"pageToken": start_page_token, **holds.checkpoint_changes()}
+                {"pageToken": start_page_token, **holds.checkpoint_changes(), **stale_removals}
             )
 
             self.logger.info(f"✅ Full sync completed for user {user.email}. Processed {total_files} files. Saved page token: {start_page_token[:20]}...")
@@ -2980,6 +3043,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             current_page_token = page_token
             total_changes = 0
             owner_sources: dict[str, GoogleDriveDataSource] = {}
+            held_removals = FolderFailureRuns(sync_point.get(HELD_REMOVED_CHANGES))
+            removal_retry_error: HttpError | None = None
 
             while True:
                 # Prepare changes_list parameters
@@ -3022,9 +3087,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                     file_metadata = change.get("file")
 
                     if is_removed:
-                        await self._handle_removed_change(
-                            change.get("fileId"), user, owner_sources, drive_id=change.get("driveId")
+                        error = await self._apply_removed_change(
+                            change, user, owner_sources, held_removals, sync_point_key
                         )
+                        removal_retry_error = removal_retry_error or error
                         continue
 
                     if file_metadata and file_metadata.get("trashed"):
@@ -3103,14 +3169,18 @@ class GoogleDriveTeamConnector(BaseConnector):
             batch_records, batch_count = await self._process_remaining_batch_records(
                 batch_records, f"user {user.email}"
             )
+            # The whole feed is read first, so removed changes refused alike use their runs together.
+            if removal_retry_error is not None:
+                raise removal_retry_error
 
             # Update sync point with latest page token
             if current_page_token and current_page_token != page_token:
                 self.logger.info(f"💾 Updating sync point from {page_token[:20]}... to {current_page_token[:20]}...")
-                await self.drive_delta_sync_point.update_sync_point(
-                    sync_point_key,
-                    {"pageToken": current_page_token}
-                )
+                checkpoint: dict[str, object] = {"pageToken": current_page_token}
+                # Counts at the limit were kept until now, so a replay gave up again at once.
+                if held_removals.folder_ids():
+                    checkpoint[HELD_REMOVED_CHANGES] = []
+                await self.drive_delta_sync_point.update_sync_point(sync_point_key, checkpoint)
                 self.logger.info(f"✅ Incremental sync completed for user {user.email}. Processed {total_changes} changes.")
             else:
                 self.logger.info("Sync point not updated (token unchanged)")

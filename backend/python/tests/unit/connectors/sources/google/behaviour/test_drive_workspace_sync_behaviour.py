@@ -750,6 +750,58 @@ async def test_a_permission_lookup_that_fails_holds_the_removed_change(ws: Works
     assert "f1" not in ws.records.records
 
 
+def alice_checking(r: ApiRequest) -> bool:
+    return r.identity == ALICE and r.query.get("fields") == "id, trashed"
+
+
+@pytest.mark.parametrize("reason", [None, "aReasonGoogleAddsLater"])
+async def test_a_removed_change_refused_without_a_known_reason_drops_only_that_users_access_on_the_fifth_run(
+    ws: Workspace, reason: str | None
+) -> None:
+    _file_in_filtered_out_drive(ws)
+    await ws.sync()
+    checkpoint = ws.user_checkpoint(BOB)
+
+    ws.world.unshare("f1", BOB)
+    ws.http.fail("GET", "/drive/v3/files/f1", 403, reason, when=alice_checking)
+    for run in range(1, 5):
+        await ws.sync()
+        assert ws.user_checkpoint(BOB) == checkpoint
+        assert BOB in ws.records.perm_emails("f1")
+        assert user_sync_point(ws, BOB)["heldRemovedChanges"] == [f"f1:{run}"]
+
+    await ws.sync()
+
+    assert ws.user_checkpoint(BOB) != checkpoint, "Bob's changes move on after the fifth refusal"
+    assert BOB not in ws.records.perm_emails("f1")
+    assert ALICE in ws.records.perm_emails("f1")
+    assert "f1" in ws.records.records, "giving up never deletes the file for everyone"
+    assert ws.records.deleted == []
+    assert user_sync_point(ws, BOB)["heldRemovedChanges"] == []
+
+
+async def test_a_removed_change_whose_refusal_clears_before_the_limit_is_decided_normally(ws: Workspace) -> None:
+    ws.world.add_item("a1", "plan.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
+    await ws.sync()
+    checkpoint = ws.user_checkpoint(BOB)
+
+    ws.world.delete("a1")
+    ws.http.fail("GET", "/drive/v3/files/a1", 403, "aReasonGoogleAddsLater", when=alice_checking)
+    for _ in range(2):
+        await ws.sync()
+    assert "a1" in ws.records.records
+    assert ws.user_checkpoint(BOB) == checkpoint
+    assert user_sync_point(ws, BOB)["heldRemovedChanges"] == ["a1:2"]
+
+    ws.http.clear_faults()
+    await ws.sync()
+
+    assert "a1" not in ws.records.records, "the owner now says it is gone, so it is deleted for everyone"
+    assert ws.user_checkpoint(BOB) != checkpoint
+    assert user_sync_point(ws, BOB)["heldRemovedChanges"] == []
+    assert user_sync_point(ws, ALICE)["heldRemovedChanges"] == []
+
+
 async def test_a_file_owned_outside_the_workspace_only_loses_the_removed_users_access(ws: Workspace) -> None:
     ws.world.files["ext-root"] = FileState(
         {"id": "ext-root", "name": "My Drive", "mimeType": FOLDER, "owners": [{"emailAddress": PARTNER}], "parents": []}

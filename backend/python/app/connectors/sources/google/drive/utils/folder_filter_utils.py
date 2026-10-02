@@ -85,6 +85,8 @@ MAX_UNRECOGNISED_403_RUNS = 5
 HELD_FILTER_FOLDERS = "heldFilterFolders"
 HELD_SHARED_FOLDERS = "heldSharedFolders"
 SKIPPED_SHARED_FOLDERS = "skippedSharedFolders"
+# And files whose removed change in a user's changes feed keeps failing the same way.
+HELD_REMOVED_CHANGES = "heldRemovedChanges"
 
 
 def _403_reasons(error: HttpError) -> set:
@@ -135,7 +137,7 @@ def is_unrecognised_403(error: HttpError) -> bool:
 
 
 class FolderFailureRuns:
-    """How many runs in a row each folder has failed on an unrecognised 403.
+    """How many runs in a row each folder (or file) has failed on an unrecognised 403.
 
     Kept in a sync point as a list of "folderId:runs" strings. Sync-point writes merge:
     Arango merges a nested object key by key and Neo4j cannot store one at all, while a
@@ -172,6 +174,10 @@ class FolderFailureRuns:
     @property
     def changed(self) -> bool:
         return self.to_stored() != self._loaded
+
+    def saved(self) -> None:
+        """Take the current counts as the stored ones."""
+        self._loaded = self.to_stored()
 
     def to_stored(self) -> list[str]:
         return [f"{folder_id}:{runs}" for folder_id, runs in sorted(self._runs.items())]
