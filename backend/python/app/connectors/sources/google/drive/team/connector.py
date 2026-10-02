@@ -86,6 +86,7 @@ from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     fetch_folder_children,
     has_entered_scope,
     has_exited_scope,
+    is_directory_refusal_403,
     is_permission_denied_403,
     is_retryable_403,
     is_unrecognised_403,
@@ -1810,20 +1811,17 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def _synced_group_members(self, group_email: str) -> set[str] | None:
         """Emails of the synced users in a group, nested groups included.
 
-        None when the directory refuses or doesn't know the group, so the caller can
-        tell "nobody synced is in it" from "can't say". Read once per run; any other
-        failed read raises.
+        None when the directory doesn't know the group or says "forbidden", so the
+        caller can tell "nobody synced is in it" from "can't say". Read once per run;
+        any other failed read raises, so the change is read again next sync.
         """
         if group_email in self._group_members_cache:
             return self._group_members_cache[group_email]
         try:
             members = await self._fetch_group_members(group_email, include_derived=True)
         except HttpError as e:
-            # A quota 403 clears with time, so it is retried rather than read as a refusal.
-            refused = e.resp.status == HttpStatusCode.NOT_FOUND.value or (
-                is_permission_denied_403(e) or is_unrecognised_403(e)
-            )
-            if not refused:
+            # A 403 with no reason, or one not known here, may clear, so it is not a refusal.
+            if e.resp.status != HttpStatusCode.NOT_FOUND.value and not is_directory_refusal_403(e):
                 raise
             self.logger.info(f"The directory could not list the members of {group_email}: {e}")
             found = None

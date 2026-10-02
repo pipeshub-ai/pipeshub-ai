@@ -675,7 +675,10 @@ async def test_a_file_shared_with_a_group_the_directory_wont_list_is_kept(ws: Wo
     assert ws.user_checkpoint(BOB) != checkpoint, "a refusal that won't go away doesn't hold Bob's changes"
 
 
-@pytest.mark.parametrize(("status", "reason"), [(500, "backendError"), (403, "rateLimitExceeded")])
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [(500, "backendError"), (403, "rateLimitExceeded"), (403, None), (403, "aReasonGoogleAddsLater")],
+)
 async def test_a_group_member_read_that_fails_holds_the_removed_change(
     ws: Workspace, backoff_sleeps: list[float], status: int, reason: str
 ) -> None:
@@ -694,6 +697,28 @@ async def test_a_group_member_read_that_fails_holds_the_removed_change(
     assert "g1" in ws.records.records, "Alice can still open it through sales@"
     assert ws.user_checkpoint(BOB) != checkpoint
     assert ws.records.deleted == []
+
+
+@pytest.mark.parametrize("reason", [None, "aReasonGoogleAddsLater"])
+async def test_a_drive_member_group_read_refused_without_a_known_reason_holds_the_removed_change(
+    ws: Workspace, backoff_sleeps: list[float], reason: str | None
+) -> None:
+    ws.world.add_group("eng@example.com", ["ghost@example.com"])
+    ws.world.add_drive("sd-4", "Platform", {"eng@example.com": "organizer"})
+    ws.world.add_item("p1", "runbook.txt", parent="sd-4", perms=[{"type": "user", "role": "writer", "emailAddress": BOB}])
+    await ws.sync()
+    assert "p1" in ws.records.records
+    checkpoint = ws.user_checkpoint(BOB)
+
+    ws.world.delete("p1")
+    ws.http.fail("GET", "/admin/directory/v1/groups/eng@example.com/members", 403, reason)
+    await ws.sync()
+    assert "p1" in ws.records.records
+    assert ws.user_checkpoint(BOB) == checkpoint, "a refusal that may clear is not taken for a drive member"
+
+    ws.http.clear_faults()
+    await ws.sync()
+    assert "p1" not in ws.records.records, "nobody synced is in eng@, so the replayed change deletes it"
 
 
 async def test_a_group_grant_lookup_that_fails_holds_the_removed_change(ws: Workspace) -> None:

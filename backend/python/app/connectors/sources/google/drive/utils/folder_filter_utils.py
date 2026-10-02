@@ -71,6 +71,11 @@ QUOTA_403_REASONS = {
     "userRateLimitExceeded",
 }
 
+# The Admin Directory's reason when the caller is not authorized to read a resource,
+# such as a group outside its reach. It does not clear by retrying; a 403 with no
+# reason, or with one not listed here, might.
+DIRECTORY_REFUSAL_403_REASONS = {"forbidden"}
+
 # Runs in a row one folder may fail on an unrecognised 403 before it is skipped, so a
 # folder Drive keeps refusing without a reason we recognise cannot fail every run for good.
 MAX_UNRECOGNISED_403_RUNS = 5
@@ -112,6 +117,12 @@ def is_permission_denied_403(error: HttpError) -> bool:
     """
     reasons = _403_reasons(error)
     return bool(reasons) and reasons <= PERMISSION_DENIED_403_REASONS
+
+
+def is_directory_refusal_403(error: HttpError) -> bool:
+    """True only for an Admin Directory 403 whose every reported reason is "forbidden"."""
+    reasons = _403_reasons(error)
+    return bool(reasons) and reasons <= DIRECTORY_REFUSAL_403_REASONS
 
 
 def is_unrecognised_403(error: HttpError) -> bool:

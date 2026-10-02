@@ -83,7 +83,10 @@ from app.connectors.sources.google.common.impersonation import (
     get_impersonation_candidates,
     resolve_explicit_user,
 )
-from app.connectors.sources.google.drive.utils.folder_filter_utils import pass_folder_filter
+from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+    is_directory_refusal_403,
+    pass_folder_filter,
+)
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -4995,3 +4998,24 @@ class TestExternalCollaborators:
         assert src.index("_process_users_in_batches") < src.index(
             "await self._flush_external_app_users()"
         )
+
+
+@pytest.mark.parametrize(
+    ("status", "details", "refused"),
+    [
+        (403, [{"reason": "forbidden"}], True),
+        (403, [{"reason": "forbidden"}, {"reason": "rateLimitExceeded"}], False),
+        (403, [{"reason": "aReasonGoogleAddsLater"}], False),
+        (403, [], False),
+        (403, "Forbidden", False),
+        (404, [{"reason": "forbidden"}], False),
+    ],
+)
+def test_only_an_explicit_directory_forbidden_is_a_refusal(status: int, details: object, refused: bool) -> None:
+    from googleapiclient.errors import HttpError
+
+    resp = MagicMock()
+    resp.status = status
+    error = HttpError(resp, b"{}")
+    error.error_details = details
+    assert is_directory_refusal_403(error) is refused
