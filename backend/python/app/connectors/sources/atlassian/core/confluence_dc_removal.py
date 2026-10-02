@@ -124,8 +124,8 @@ class ConfluenceDataCenterRemovalMixin:
         Read from the database listing, not the search index; None unless read to
         the end. Only a response without a next link ends it; an empty page that
         still points further, or one without a results list, is a failed read.
-        A server too old to know archived pages answers that listing with 400,
-        which reads as none.
+        A server too old to know archived pages answers that listing's first
+        page with 400, which reads as none; a 400 on a later page is a failed read.
         """
         content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
         statuses = ("current", "archived") if record_type == RecordType.CONFLUENCE_PAGE else ("current",)
@@ -143,7 +143,13 @@ class ConfluenceDataCenterRemovalMixin:
                     self.logger.warning(f"Could not list the {content_type}s of space {space_key}; nothing removed: {e}")
                     return None
                 if status == "archived" and response is not None and response.status == HttpStatusCode.BAD_REQUEST.value:
-                    break
+                    if start == 0:
+                        break
+                    # A server that served earlier archived pages knows the listing; a 400 now is a failed read.
+                    self.logger.warning(
+                        f"Could not list the archived {content_type}s of space {space_key} past {start}; nothing removed"
+                    )
+                    return None
                 data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
                 results = data.get("results") if isinstance(data, dict) else None
                 if not isinstance(results, list):
