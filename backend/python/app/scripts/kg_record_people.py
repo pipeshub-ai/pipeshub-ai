@@ -95,6 +95,10 @@ async def backfill(
             stamped = await graph.stamp_external_org_parents(org_id)
         except Exception as exc:  # accounts left unstamped are not linked; reported below
             out.write(json.dumps({"stamp_accounts": "failed", "error": type(exc).__name__}) + "\n")
+    else:
+        # Stamping is a write, so the dry run cannot count the account edges
+        # of accounts it would stamp.
+        out.write(json.dumps({"stamp_accounts": "skipped in a dry run; their records count no account edge"}) + "\n")
     while True:
         ids = await graph.page_record_ids_by_type(org_id, LINKED_TYPES, after_key=after, limit=page_size)
         if not ids:

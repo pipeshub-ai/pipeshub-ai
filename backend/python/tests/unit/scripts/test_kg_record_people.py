@@ -111,7 +111,7 @@ async def test_a_failed_page_is_reported_and_the_run_carries_on() -> None:
     code = await backfill(graph, MagicMock(), "org-1", apply=False, logger=logging.getLogger("t"), out=out)
     lines = _lines(out)
     assert code == 1
-    assert lines[0] == {"after": "m1", "error": "RuntimeError"}
+    assert lines[1] == {"after": "m1", "error": "RuntimeError"}
     assert lines[-1]["total"] == {"records": 1, "edges": 2, "skipped": 0, "failed_pages": 1}
 
 
@@ -128,7 +128,7 @@ async def test_records_that_could_not_be_read_are_reported() -> None:
     graph, out = _graph([["m1", "m2"]]), io.StringIO()
     graph.get_typed_records_batch = AsyncMock(return_value={"m1": _mail("m1")})
     await backfill(graph, MagicMock(), "org-1", apply=False, logger=logging.getLogger("t"), out=out)
-    assert _lines(out)[0]["skipped"] == 1
+    assert _lines(out)[1]["skipped"] == 1
     assert _lines(out)[-1]["total"]["skipped"] == 1
 
 
