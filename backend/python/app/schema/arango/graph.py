@@ -107,7 +107,7 @@ EDGE_DEFINITIONS = [
     {
         "edge_collection": CollectionNames.ENTITY_RELATIONS.value,
         "from_vertex_collections": [CollectionNames.RECORDS.value],
-        "to_vertex_collections": [CollectionNames.USERS.value],
+        "to_vertex_collections": [CollectionNames.USERS.value, CollectionNames.ORGS.value],
     },
     # Agent Builder Graph Edges
     {

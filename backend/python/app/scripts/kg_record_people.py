@@ -1,8 +1,11 @@
-"""Operator command: link existing records to the members they name (KG-13).
+"""Operator command: link existing records to the members they name and the
+CRM accounts they belong to (KG-13).
 
-New and updated records are linked as they sync (``record_people``). This
-backfills the records synced before that, from the people their type
-documents already hold, with no connector re-sync. A dry run unless
+New and updated records are linked as they sync (``record_people``,
+``record_organizations``). This backfills the records synced before that,
+from what their type documents and record groups already hold, with no
+connector re-sync. With ``--apply`` it first stamps the tenant on CRM
+accounts written before accounts recorded one. A dry run unless
 ``--apply``; re-running is safe, since each record's edges are replaced.
 
     python -m app.scripts.kg_record_people backfill --org ORG [--apply]
@@ -22,6 +25,9 @@ from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
 )
+from app.connectors.core.base.data_processor.record_organizations import (
+    link_record_organization,
+)
 from app.connectors.core.base.data_processor.record_people import link_record_people
 from app.modules.indexing.entity_index_rebuild import EntityIndexState
 
@@ -29,7 +35,7 @@ if TYPE_CHECKING:
     from logging import Logger
 
     from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
-    from app.models.entities import User
+    from app.models.entities import Record, User
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 # Every record type stored in a type collection whose records record_people
@@ -57,7 +63,12 @@ class _DryRunStore:
     async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> User | None:
         return await self._graph.get_user_by_source_id(source_user_id, connector_id)
 
-    async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> None:
+    async def get_record_group_organization(self, record_group_id: str, org_id: str) -> str | None:
+        return await self._graph.get_record_group_organization(record_group_id, org_id)
+
+    async def delete_edges_between_collections(
+        self, from_id: str, from_collection: str, edge_collection: str, to_collection: str,
+    ) -> None:
         return None
 
     async def batch_create_entity_relations(self, edges: list[dict]) -> None:
@@ -74,10 +85,16 @@ async def backfill(
     out: TextIO,
     page_size: int = PAGE_SIZE,
 ) -> int:
-    """Link every person-naming record of ``org_id``; returns the exit code.
-    A failed page is reported and skipped, so a re-run finishes it."""
+    """Link every person-naming or account record of ``org_id``; returns the
+    exit code. A failed page is reported and skipped, so a re-run finishes it."""
     after: str | None = None
     totals = {"records": 0, "edges": 0, "skipped": 0, "failed_pages": 0}
+    stamped: int | None = None
+    if apply:
+        try:
+            stamped = await graph.stamp_external_org_parents(org_id)
+        except Exception as exc:  # accounts left unstamped are not linked; reported below
+            out.write(json.dumps({"stamp_accounts": "failed", "error": type(exc).__name__}) + "\n")
     while True:
         ids = await graph.page_record_ids_by_type(org_id, LINKED_TYPES, after_key=after, limit=page_size)
         if not ids:
@@ -87,13 +104,13 @@ async def backfill(
             records = list((await graph.get_typed_records_batch(ids)).values())
             if apply:
                 async def _write(tx_store: object, page: list = records) -> int:
-                    return sum([await link_record_people(r, tx_store, logger) for r in page])
+                    return sum([await _link(r, tx_store, logger) for r in page])
 
                 edges = await data_store.execute_idempotent_in_transaction(_write)
             else:
                 dry = _DryRunStore(graph)
                 for record in records:
-                    await link_record_people(record, dry, logger)
+                    await _link(record, dry, logger)
                 edges = dry.edges
         except Exception as exc:  # a page that fails is reported; the rest carry on
             totals["failed_pages"] += 1
@@ -119,10 +136,18 @@ async def backfill(
         except Exception:
             reprojected = False
     out.write(json.dumps({
-        "org": org_id, "total": totals, "applied": apply, "entity_index_rerun": reprojected,
+        "org": org_id, "total": totals, "applied": apply, "accounts_stamped": stamped,
+        "entity_index_rerun": reprojected,
     }) + "\n")
-    partial = totals["failed_pages"] or totals["skipped"] or reprojected is False
+    partial = totals["failed_pages"] or totals["skipped"] or reprojected is False or (apply and stamped is None)
     return EXIT_PARTIAL if partial else 0
+
+
+async def _link(record: Record, store: object, logger: Logger) -> int:
+    return (
+        await link_record_people(record, store, logger)
+        + await link_record_organization(record, store, logger)
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

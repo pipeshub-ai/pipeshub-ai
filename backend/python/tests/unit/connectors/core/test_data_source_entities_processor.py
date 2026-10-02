@@ -126,6 +126,7 @@ def _make_tx_store():
     tx_store.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1", "id": "org-1"}])
     tx_store.delete_edges_to = AsyncMock(return_value=0)
     tx_store.delete_edges_from = AsyncMock(return_value=0)
+    tx_store.delete_edges_between_collections = AsyncMock(return_value=0)
     tx_store.delete_parent_child_edge_to_record = AsyncMock()
     tx_store.delete_edge = AsyncMock(return_value=True)
     tx_store.get_edge = AsyncMock(return_value=None)
@@ -2844,8 +2845,8 @@ class TestProcessRecordTicket:
         assert result is not None
         # Should have called delete_edges_by_relationship_types (from _handle_related_external_records)
         tx_store.delete_edges_by_relationship_types.assert_awaited()
-        # Should have called delete_edges_from (from the person edges)
-        tx_store.delete_edges_from.assert_awaited()
+        # The person edges are replaced
+        tx_store.delete_edges_between_collections.assert_awaited()
 
 
 # ===========================================================================
@@ -4652,8 +4653,8 @@ class TestProcessRecordRevisionMatch:
         result, _ = await proc._process_record(project, [], tx_store)
 
         assert result is not None
-        # delete_edges_from is called by the person edges
-        tx_store.delete_edges_from.assert_awaited()
+        # The person edges are replaced
+        tx_store.delete_edges_between_collections.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_mail_record_links_its_sender_and_recipients(self):

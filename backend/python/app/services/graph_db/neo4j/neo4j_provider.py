@@ -16581,12 +16581,24 @@ class Neo4jProvider(IGraphDBProvider):
             edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value),
             (collection_to_label(CollectionNames.USERS.value),),
         ),
+        KnowledgeGraphEntityType.ORGANIZATION.value: (
+            edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value),
+            (collection_to_label(CollectionNames.ORGS.value),),
+        ),
     }
-    # Entity types whose nodes carry orgId and are matched against it.
-    _ORG_SCOPED_ENTITY_TYPES = frozenset({
-        KnowledgeGraphEntityType.RECORD_GROUP.value, KnowledgeGraphEntityType.PERSON.value,
+    # How a node ``e`` of each tenant-owned entity type is matched to $org_id.
+    # An external organisation (a CRM account) carries its tenant as
+    # parentOrgId; the tenant org itself is never an entity.
+    _ENTITY_TENANT_SCOPE = {
+        KnowledgeGraphEntityType.RECORD_GROUP.value: "e.orgId = $org_id",
+        KnowledgeGraphEntityType.PERSON.value: "e.orgId = $org_id",
+        KnowledgeGraphEntityType.ORGANIZATION.value: "e.isExternal = true AND e.parentOrgId = $org_id",
+    }
+    # Entity types records reach over entityRelations (KG-13).
+    _LINKED_ENTITY_TYPES = frozenset({
+        KnowledgeGraphEntityType.PERSON.value, KnowledgeGraphEntityType.ORGANIZATION.value,
     })
-    _MEMBERSHIP_ENTITY_TYPES = TAXONOMY_ENTITY_TYPES | {KnowledgeGraphEntityType.PERSON.value}
+    _MEMBERSHIP_ENTITY_TYPES = TAXONOMY_ENTITY_TYPES | _LINKED_ENTITY_TYPES
 
     async def _get_taxonomy_entities_for_record_via_edge(
         self,
@@ -16728,8 +16740,8 @@ class Neo4jProvider(IGraphDBProvider):
             """
 
         relationship, entity_match = self._entity_node_match(entity_type)
-        if entity_type in self._ORG_SCOPED_ENTITY_TYPES:
-            entity_match += "\n              WHERE e.orgId = $org_id"
+        if entity_type in self._ENTITY_TENANT_SCOPE:
+            entity_match += f"\n              WHERE {self._ENTITY_TENANT_SCOPE[entity_type]}"
 
         # The aggregating CALL yields one row per ref even when nothing matches.
         return f"""
@@ -16810,8 +16822,8 @@ class Neo4jProvider(IGraphDBProvider):
             """
 
         relationship, entity_match = self._entity_node_match(entity_type)
-        if entity_type in self._ORG_SCOPED_ENTITY_TYPES:
-            entity_match += "\n              WHERE e.orgId = $org_id"
+        if entity_type in self._ENTITY_TENANT_SCOPE:
+            entity_match += f"\n              WHERE {self._ENTITY_TENANT_SCOPE[entity_type]}"
         # Sorting the capped scan is cheap; the permission walk is the cost,
         # and it stops at $limit permitted rows or the end of the window.
         return f"""
@@ -16862,22 +16874,82 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def get_record_people(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
         """See :meth:`IGraphDBProvider.get_record_people`."""
+        return await self._record_linked_entities(
+            record_id, org_id, KnowledgeGraphEntityType.PERSON.value,
+            "e.fullName AS name, e.email AS email",
+        )
+
+    async def get_record_organizations(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_record_organizations`."""
+        return await self._record_linked_entities(
+            record_id, org_id, KnowledgeGraphEntityType.ORGANIZATION.value, "e.name AS name",
+        )
+
+    async def _record_linked_entities(
+        self, record_id: str, org_id: str, entity_type: str, fields: str,
+    ) -> list[dict[str, Any]]:
         if not record_id or not org_id:
             return []
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
-        relationship = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+        relationship, (label,) = self._ENTITY_CANDIDATE_TARGETS[entity_type]
         rows = await self.client.execute_query(
             f"""
-            MATCH (:Record {{id: $record_id}})-[:{relationship}]-(u:User)
-            WHERE u.orgId = $org_id
-            WITH DISTINCT u
-            RETURN u.id AS id, u.fullName AS name, u.email AS email
+            MATCH (:Record {{id: $record_id}})-[:{relationship}]{self._candidate_arrow(entity_type)}(e:{label})
+            WHERE {self._ENTITY_TENANT_SCOPE[entity_type]}
+            WITH DISTINCT e
+            RETURN e.id AS id, {fields}
             ORDER BY id
             """,
             parameters={"record_id": record_id, "org_id": org_id},
         )
         return [dict(r) for r in rows or [] if r.get("id")]
+
+    async def get_record_group_organization(
+        self, record_group_id: str, org_id: str, transaction: str | None = None,
+    ) -> str | None:
+        """See :meth:`IGraphDBProvider.get_record_group_organization`."""
+        if not record_group_id or not org_id:
+            return None
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (:{collection_to_label(CollectionNames.RECORD_GROUPS.value)} {{id: $group_id}})
+                  -[:{edge_collection_to_relationship(CollectionNames.DEAL_OF.value)}]->
+                  (e:{collection_to_label(CollectionNames.ORGS.value)})
+            WHERE {self._ENTITY_TENANT_SCOPE[KnowledgeGraphEntityType.ORGANIZATION.value]}
+            RETURN e.id AS id
+            ORDER BY id
+            LIMIT 1
+            """,
+            parameters={"group_id": record_group_id, "org_id": org_id},
+            txn_id=transaction,
+        )
+        return next((r["id"] for r in rows or [] if r.get("id")), None)
+
+    async def stamp_external_org_parents(self, org_id: str) -> int:
+        """See :meth:`IGraphDBProvider.stamp_external_org_parents`."""
+        if not org_id:
+            return 0
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        label = collection_to_label(CollectionNames.ORGS.value)
+        relationships = "|".join(
+            edge_collection_to_relationship(c)
+            for c in (CollectionNames.PROSPECT.value, CollectionNames.CUSTOMER.value)
+        )
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (:{label} {{id: $org_id}})-[:{relationships}]->(e:{label})
+            WHERE e.isExternal = true AND e.parentOrgId IS NULL
+            WITH DISTINCT e
+            SET e.parentOrgId = $org_id
+            RETURN count(e) AS stamped
+            """,
+            parameters={"org_id": org_id},
+        )
+        return int((rows or [{}])[0].get("stamped") or 0)
 
     async def get_permitted_entity_records(
         self,
@@ -16999,8 +17071,8 @@ class Neo4jProvider(IGraphDBProvider):
         results: dict[tuple[str, str], dict[str, list[str]]] = {}
         for ref_type, ref_ids in ids_by_type.items():
             relationship, entity_match = self._entity_node_match(ref_type)
-            if ref_type in self._ORG_SCOPED_ENTITY_TYPES:
-                entity_match += "\n              WHERE e.orgId = $org_id"
+            if ref_type in self._ENTITY_TENANT_SCOPE:
+                entity_match += f"\n              WHERE {self._ENTITY_TENANT_SCOPE[ref_type]}"
             # The aggregating CALL yields one row per ref even when nothing links.
             query = f"""
             UNWIND $refs AS ref

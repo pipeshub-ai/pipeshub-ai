@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from email.utils import getaddresses, parseaddr
 from typing import TYPE_CHECKING, Protocol
 
-from app.config.constants.arangodb import CollectionNames, EntityRelations
+from app.config.constants.arangodb import CollectionNames, EntityOrigin, EntityRelations
 from app.models.entities import (
     CommentRecord,
     DealRecord,
@@ -65,7 +65,9 @@ class PersonLink:
 class PeopleStore(Protocol):
     async def get_user_by_email(self, email: str) -> User | None: ...
     async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> User | None: ...
-    async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> None: ...
+    async def delete_edges_between_collections(
+        self, from_id: str, from_collection: str, edge_collection: str, to_collection: str,
+    ) -> None: ...
     async def batch_create_entity_relations(self, edges: list[dict]) -> None: ...
 
 
@@ -148,16 +150,20 @@ def person_links(record: Record) -> list[PersonLink]:
 async def link_record_people(record: Record, store: PeopleStore, logger: Logger) -> int:
     """Replace ``record``'s person edges with the members it names now.
 
-    Idempotent: the record's existing ``entityRelations`` edges are removed
-    and the current ones written, so a re-sync that drops an assignee drops
-    the edge. Returns the number of edges written. A lookup failure skips
+    Idempotent: the record's existing edges to members are removed and the
+    current ones written, so a re-sync that drops an assignee drops the
+    edge. Its other ``entityRelations`` edges (organisations) are left to
+    their own writers. Returns the number of edges written. A lookup failure skips
     that person (logged by record id, never by address); the others are
     still linked.
     """
     if not isinstance(record, LINKED_RECORD_TYPES):
         return 0
     try:
-        await store.delete_edges_from(record.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value)
+        await store.delete_edges_between_collections(
+            record.id, CollectionNames.RECORDS.value,
+            CollectionNames.ENTITY_RELATIONS.value, CollectionNames.USERS.value,
+        )
     except Exception as exc:  # stale edges are rewritten below
         logger.warning("Could not clear person edges of record %s: %s", record.id, exc)
 
@@ -198,6 +204,8 @@ async def link_record_people(record: Record, store: PeopleStore, logger: Logger)
             "_from": f"{CollectionNames.RECORDS.value}/{record.id}",
             "_to": f"{CollectionNames.USERS.value}/{user.id}",
             "edgeType": link.edge_type.value,
+            "origin": EntityOrigin.INFERRED.value,
+            "source": record.connector_id,
             "createdAtTimestamp": now,
             "updatedAtTimestamp": now,
         }
