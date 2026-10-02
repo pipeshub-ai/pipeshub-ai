@@ -5,7 +5,9 @@ import nock from 'nock'
 import * as cmConfig from '../../../../src/modules/configuration_manager/config/config'
 import * as encryptorModule from '../../../../src/libs/encryptor/encryptor'
 import { CONFIG_SECRET_PLACEHOLDER } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets'
-import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
+import { AIServiceCommand, type AICommandOptions } from '../../../../src/libs/commands/ai_service/ai.service.command'
+import type { AIServiceResponse } from '../../../../src/modules/enterprise_search/types/conversation.interfaces'
+import type { AIModelConfiguration } from '../../../../src/modules/configuration_manager/types/ai-models.types'
 import type { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import * as generateAuthTokenModule from '../../../../src/modules/auth/utils/generateAuthToken'
 import * as s3HealthCheckModule from '../../../../src/modules/storage/utils/s3-health-check.util'
@@ -3239,21 +3241,21 @@ describe('ConfigurationManager Controller', () => {
 
     // Records what reaches the AI service and answers the embedding takeover
     // check with `takeoverStatus` (400 is its answer while vectors are stored).
-    interface SentModel {
-      becomesActive?: boolean
-      configuration?: { model?: string }
-    }
+    type SentModel = Pick<
+      AIModelConfiguration,
+      'provider' | 'configuration' | 'isMultimodal' | 'isReasoning' | 'isDefault' | 'contextLength'
+    >
+    type HealthCheckPayload = SentModel & { modelType: string; becomesActive?: boolean }
+    // By the time execute() runs, AIServiceCommand holds the body as the JSON string it sends.
+    type QueuedCommand = Pick<AICommandOptions, 'uri'> & { body?: string }
     interface SentCommand {
-      uri: string
+      uri: AICommandOptions['uri']
       body: unknown
     }
-    const payload = (c?: SentCommand) => c?.body as SentModel | undefined
+    const payload = (c?: SentCommand) => c?.body as HealthCheckPayload | undefined
     const models = (c?: SentCommand) => c?.body as SentModel[] | undefined
 
-    interface AiAnswer {
-      statusCode: number
-      data: Record<string, unknown>
-    }
+    type AiAnswer = AIServiceResponse<{ status: string; message?: string; error?: string }>
     const healthy: AiAnswer = { statusCode: 200, data: { status: 'healthy' } }
     // What /health-check/embedding answers while vectors from another model are stored.
     const collectionRefusal: AiAnswer = {
@@ -3267,8 +3269,8 @@ describe('ConfigurationManager Controller', () => {
 
     function stubAiService(takeoverStatus = 200, healthCheck: AiAnswer = healthy) {
       const calls: SentCommand[] = []
-      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function (this: unknown) {
-        const command = this as { uri: string; body?: string }
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function (this: AIServiceCommand<unknown>) {
+        const command = this as unknown as QueuedCommand
         const uri = command.uri
         calls.push({ uri, body: command.body ? (JSON.parse(command.body) as unknown) : undefined })
         if (uri.endsWith('/embedding-health-check')) {
@@ -3290,13 +3292,15 @@ describe('ConfigurationManager Controller', () => {
     const takeoverCalls = (calls: SentCommand[]) =>
       calls.filter((c) => c.uri.endsWith('/embedding-health-check'))
 
-    function storedModels(embedding: Record<string, unknown>[]) {
+    type StoredModel = Pick<AIModelConfiguration, 'modelKey' | 'isDefault' | 'provider' | 'configuration'>
+
+    function storedModels(embedding: StoredModel[]) {
       mockEncService.decrypt.returns(JSON.stringify({ llm: [], embedding }))
       return createMockKeyValueStore({ get: sinon.stub().resolves('encrypted:data') })
     }
 
-    const openai = { modelKey: 'k1', isDefault: true, provider: 'openai', configuration: { model: 'text-embedding-3-small' } }
-    const local = { modelKey: 'k2', isDefault: false, provider: 'sentenceTransformers', configuration: { model: 'BAAI/bge-small-en-v1.5' } }
+    const openai: StoredModel = { modelKey: 'k1', isDefault: true, provider: 'openai', configuration: { model: 'text-embedding-3-small' } }
+    const local: StoredModel = { modelKey: 'k2', isDefault: false, provider: 'sentenceTransformers', configuration: { model: 'BAAI/bge-small-en-v1.5' } }
 
     async function add(kvs: ReturnType<typeof storedModels>, isDefault: boolean) {
       const req = createMockRequest({
@@ -3441,7 +3445,7 @@ describe('ConfigurationManager Controller', () => {
       const { kvs, res } = await addAnswering(configError)
 
       expect(res.status.calledWith(400)).to.be.true
-      expect(res.json.firstCall.args[0].error.message).to.equal(configError.data.message)
+      expect(res.json.firstCall.args[0].error.message).to.equal(configError.data?.message)
       expect(kvs.set.called).to.be.false
     })
 
@@ -3457,7 +3461,7 @@ describe('ConfigurationManager Controller', () => {
       const { kvs, res } = await editDefaultModelNameAnswering(configError)
 
       expect(res.status.calledWith(400)).to.be.true
-      expect(res.json.firstCall.args[0].error.message).to.equal(configError.data.message)
+      expect(res.json.firstCall.args[0].error.message).to.equal(configError.data?.message)
       expect(kvs.set.called).to.be.false
     })
 
