@@ -280,6 +280,39 @@ class TestSyncRecordGroupEntity:
         assert [e.entity_type for e in entities] == [EntityType.RECORD, EntityType.RECORD_GROUP]
 
     @pytest.mark.asyncio
+    async def test_people_the_record_names_get_points_with_merged_membership(self) -> None:
+        """KG-13 slice 2: each member the record names gets a person point,
+        merged so it keeps every connector and group it was named in."""
+        orch = self._make_orchestrator_with_evs(group_doc={"groupName": "Engineering"})
+        orch.graph_provider.get_record_people = AsyncMock(return_value=[
+            {"id": "u-ann", "name": "Ann Lee", "email": "ann@acme.com"},
+            {"id": "u-bob", "name": None, "email": "bob@acme.com"},
+        ])
+        ctx = self._make_ctx_with_group(record_group_id="rg-1")
+        ctx.record.record_name = "Q3 plan.pdf"
+
+        await orch._sync_record_identity_entities(ctx)
+
+        calls = orch.entity_vector_store.upsert_entities_batch.await_args_list
+        people = next(c for c in calls if c.args[0][0].entity_type == EntityType.PERSON)
+        assert people.kwargs["merge_membership"] is True
+        assert [(e.entity_id, e.name) for e in people.args[0]] == [("u-ann", "Ann Lee"), ("u-bob", "bob@acme.com")]
+        assert people.args[0][0].connector_ids == ["conn-1"] and people.args[0][0].record_group_ids == ["rg-1"]
+        orch.graph_provider.get_record_people.assert_awaited_once_with("rec-001", "org-1")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_people_lookup_still_writes_the_title(self) -> None:
+        orch = self._make_orchestrator_with_evs(group_doc={"groupName": "Engineering"})
+        orch.graph_provider.get_record_people = AsyncMock(side_effect=RuntimeError("down"))
+        ctx = self._make_ctx_with_group(record_group_id="rg-1")
+        ctx.record.record_name = "Q3 plan.pdf"
+
+        await orch._sync_record_identity_entities(ctx)
+
+        (call,) = orch.entity_vector_store.upsert_entities_batch.await_args_list
+        assert [e.entity_type for e in call.args[0]] == [EntityType.RECORD, EntityType.RECORD_GROUP]
+
+    @pytest.mark.asyncio
     async def test_a_failed_group_lookup_still_writes_the_title(self) -> None:
         orch = self._make_orchestrator_with_evs()
         orch.graph_provider.get_record_group_by_id = AsyncMock(side_effect=RuntimeError("boom"))

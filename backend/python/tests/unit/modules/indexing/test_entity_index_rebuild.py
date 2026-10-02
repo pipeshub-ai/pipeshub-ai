@@ -42,6 +42,7 @@ TOPICS = CollectionNames.TOPICS.value
 CATEGORIES = CollectionNames.CATEGORIES.value
 DEPARTMENTS = CollectionNames.DEPARTMENTS.value
 SUB2 = CollectionNames.SUBCATEGORIES2.value
+USERS = CollectionNames.USERS.value
 
 FP = "openai:text-embedding-3-small:1536"
 MARKER = entity_index_marker(FP)
@@ -240,6 +241,11 @@ class TestMarker:
     def test_marker_carries_version_and_fingerprint(self) -> None:
         assert MARKER == f"v{ENTITY_INDEX_VERSION}:{FP}"
         assert fingerprint_of(MARKER) == FP
+
+    def test_the_version_covers_people(self) -> None:
+        """Bumped when people joined the org pass, so a deployment whose orgs
+        were already done projects its people."""
+        assert ENTITY_INDEX_VERSION >= 2
 
     def test_marker_changes_with_the_fingerprint(self) -> None:
         assert entity_index_marker("a:b:3") != entity_index_marker("a:b:4")
@@ -497,7 +503,7 @@ class TestTaxonomyPass:
         assert set(ENTITY_INDEX_TAXONOMY_SOURCES) == {
             CATEGORIES, DEPARTMENTS, CollectionNames.LANGUAGES.value,
             CollectionNames.SUBCATEGORIES1.value, SUB2,
-            CollectionNames.SUBCATEGORIES3.value, TOPICS,
+            CollectionNames.SUBCATEGORIES3.value, TOPICS, USERS,
         }
 
     async def test_walks_each_collection_once_and_completes(self) -> None:
@@ -547,6 +553,20 @@ class TestTaxonomyPass:
         (written,) = store.written()
         assert (written.entity_type, written.name) == (EntityType.DEPARTMENT, "Finance")
 
+    async def test_people_are_projected_as_indexing_writes_them(self) -> None:
+        """KG-13: members linked before people were indexed become
+        searchable without a re-index; a member no record names is not."""
+        from app.models.entities import EntityRecord
+
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: MARKER, EntityIndexState.PHASE: USERS})
+        graph.sources[(USERS, "org-1")] = [{"_key": "u1", "name": "Ann Lee"}, {"_key": "u2", "name": "Bob"}]
+        graph.membership[("person", "u1")] = {"connectorIds": ["c1"], "recordGroupIds": ["g1"]}
+        await _rebuilder(graph, store).tick()
+        (written,) = store.written()
+        assert written == EntityRecord.for_person("u1", "Ann Lee", "org-1", "c1", "g1")
+        assert store.deletes == [("org-1", "person", ["u2"])]
+
     async def test_membership_lookup_failure_counts_the_page_and_deletes_nothing(self) -> None:
         graph, store = FakeGraph(), FakeStore()
         graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: MARKER, EntityIndexState.PHASE: TOPICS})
@@ -585,6 +605,7 @@ class TestSweep:
             DEPARTMENTS: {"d-global": {"orgId": None}, "d-mine": {"orgId": "org-1"}},
             GROUPS: {"g-live": {"orgId": "org-1"}, "g-other": {"orgId": "org-2"}},
             SUB2: {"s-live": {"orgId": "org-1"}},
+            USERS: {"u-live": {"orgId": "org-1"}, "u-other": {"orgId": "org-2"}},
         }
         store.points = [
             _point("topic", "t-live"), _point("topic", "t-legacy"), _point("topic", "t-other"),
@@ -595,11 +616,13 @@ class TestSweep:
             _point("record_group", "g-gone"),
             _point("subcategory", "s-live", "2"), _point("subcategory", "s-gone", "2"),
             _point("subcategory", "s-nolevel", None),
+            _point("person", "u-live"), _point("person", "u-other"), _point("person", "u-gone"),
         ]
         assert await _rebuilder(graph, store).tick() == "sweep"
 
         assert sorted(store.deletes) == [
             ("org-1", "department", ["d-gone"]),
+            ("org-1", "person", ["u-gone", "u-other"]),
             ("org-1", "record_group", ["g-gone", "g-other"]),
             ("org-1", "subcategory", ["s-gone"]),
             ("org-1", "topic", ["t-gone", "t-other"]),
@@ -614,7 +637,7 @@ class TestSweep:
         await _rebuilder(graph, store).tick()
         (call,) = store.page_calls
         assert "record" not in call[1]
-        assert {"topic", "category", "subcategory", "language", "department", "record_group"} <= set(call[1])
+        assert {"topic", "category", "subcategory", "language", "department", "record_group", "person"} <= set(call[1])
 
     async def test_sweep_is_resumable_across_ticks(self) -> None:
         graph, store = FakeGraph(), FakeStore()

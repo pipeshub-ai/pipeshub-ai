@@ -5912,6 +5912,19 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_record_people(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
+        """Members of ``org_id`` linked to the record by an ``entityRelations``
+        edge in either direction (record -> user from ``record_people``,
+        user -> record from message mentions), each once:
+        ``{"id", "name", "email"}``. ``name`` is the user's full name or
+        None.
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
     async def get_permitted_entity_records(
         self,
         refs: list[dict[str, Any]],
@@ -5971,9 +5984,11 @@ class IGraphDBProvider(ABC):
         org_id: str,
         transaction: str | None = None,
     ) -> dict[tuple[str, str], dict[str, list[str]]]:
-        """Which connectors and record groups still reach each taxonomy entity,
-        from the graph: the distinct ``connectorId`` / ``recordGroupId`` of
-        non-deleted records in ``org_id`` with a ``belongsTo*`` edge to it.
+        """Which connectors and record groups still reach each taxonomy entity
+        or person, from the graph: the distinct ``connectorId`` /
+        ``recordGroupId`` of non-deleted records in ``org_id`` with a
+        ``belongsTo*`` edge to it, or for a person an ``entityRelations`` edge
+        in either direction (a person of another org reaches nothing).
 
         The entity vector store's stored membership is only a projection of
         this; connector cleanup uses it before deleting a point that looks
@@ -5981,8 +5996,8 @@ class IGraphDBProvider(ABC):
 
         Args:
             refs: ``{"id": str, "type": str}`` for ``department``, ``category``,
-                ``subcategory`` (levels 1-3), ``topic`` or ``language``; other
-                types are ignored.
+                ``subcategory`` (levels 1-3), ``topic``, ``language`` or
+                ``person``; other types are ignored.
             org_id: Organization scope. Empty returns ``{}`` without querying.
             transaction: Optional transaction id.
 
