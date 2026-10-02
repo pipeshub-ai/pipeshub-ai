@@ -34,6 +34,7 @@ from app.connectors.sources.snowflake.data_fetcher import (
     SnowflakeStage,
     SnowflakeTable,
     SnowflakeView,
+    unreadable_key,
 )
 
 
@@ -435,7 +436,7 @@ class TestFetchTables:
                     "rows": 10,
                     "bytes": 200,
                     "kind": "TABLE",
-                    "last_altered": "2024-06-01",
+                    "created_on": "2024-01-01T00:00:00.000-07:00",
                 }
             ]
         )
@@ -444,13 +445,74 @@ class TestFetchTables:
         assert tables[0].row_count == 10
         assert tables[0].bytes == 200
         assert tables[0].table_type == "TABLE"
-        assert tables[0].last_altered == "2024-06-01"
+        # SHOW TABLES has no last-altered column; fetch_all reads it from INFORMATION_SCHEMA.
+        assert tables[0].last_altered is None
 
     @pytest.mark.asyncio
     async def test_failure(self) -> None:
         f = _make_fetcher()
         f.data_source.list_tables.return_value = _resp(success=False, error="bad")
         assert await f._fetch_tables("DB", "S") == []
+
+
+_LAST_ALTERED_ROW_TYPE = {"rowType": [{"name": "TABLE_NAME"}, {"name": "LAST_ALTERED"}]}
+
+
+class TestFetchLastAlteredInSchema:
+    @pytest.mark.asyncio
+    async def test_reads_every_result_partition(self) -> None:
+        f = _make_fetcher()
+        f.data_source.execute_sql.return_value = _resp(data={
+            "statementHandle": "h-1",
+            "resultSetMetaData": {
+                **_LAST_ALTERED_ROW_TYPE,
+                "partitionInfo": [{"rowCount": 1}, {"rowCount": 1}],
+            },
+            "data": [["T1", "1759400000.000000000"]],
+        })
+        f.data_source.get_statement_status = AsyncMock(
+            return_value=_resp(data={"data": [["T2", "1759403600.000000000"]]})
+        )
+
+        assert await f._fetch_last_altered_in_schema("DB", "S") == {
+            "T1": "1759400000.000000000",
+            "T2": "1759403600.000000000",
+        }
+        statement = f.data_source.execute_sql.await_args.kwargs["statement"]
+        assert "DB.INFORMATION_SCHEMA.TABLES" in statement
+        assert "TABLE_SCHEMA = 'S'" in statement
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("unread", ["refused", "partition"])
+    async def test_an_unread_result_marks_the_schema_unreadable(self, unread: str) -> None:
+        f = _make_fetcher()
+        f.data_source.list_databases.return_value = _resp(data=[{"name": "DB"}])
+        f.data_source.list_schemas.return_value = _resp(data=[{"name": "S"}])
+        f.data_source.list_tables.return_value = _resp(data=[{"name": "T1", "rows": 1, "bytes": 1}])
+        f.data_source.list_views.return_value = _resp(data=[])
+        f.data_source.list_stages.return_value = _resp(data=[])
+        f.data_source.get_statement_status = AsyncMock(return_value=_resp(success=False, error="gone"))
+
+        async def execute_sql(statement: str, **_: object) -> SimpleNamespace:
+            if "INFORMATION_SCHEMA.TABLES" not in statement:
+                return _resp(data={"resultSetMetaData": {"rowType": []}, "data": []})
+            if unread == "refused":
+                return _resp(success=False, error="denied", status_code=422, sql_state="42501")
+            return _resp(data={
+                "statementHandle": "h-1",
+                "resultSetMetaData": {
+                    **_LAST_ALTERED_ROW_TYPE,
+                    "partitionInfo": [{"rowCount": 1}, {"rowCount": 1}],
+                },
+                "data": [["T1", "1759400000.000000000"]],
+            })
+
+        f.data_source.execute_sql.side_effect = execute_sql
+
+        h = await f.fetch_all(include_files=False, include_relationships=True)
+
+        assert unreadable_key("last_altered", "DB.S") in h.unreadable
+        assert h.tables["DB.S"][0].last_altered is None
 
 
 class TestFetchViews:

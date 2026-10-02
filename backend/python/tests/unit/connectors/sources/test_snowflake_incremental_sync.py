@@ -45,11 +45,18 @@ class FakeSnowflake:
             "T1": {"rows": 10, "bytes": 100},
             "T2": {"rows": 5, "bytes": 50},
         }
+        # INFORMATION_SCHEMA.TABLES.LAST_ALTERED as the SQL API returns a
+        # TIMESTAMP_LTZ: epoch seconds in a string. SHOW TABLES has no such column.
+        self.last_altered: dict[str, str] = {
+            "T1": "1759400000.000000000",
+            "T2": "1759400000.000000000",
+        }
         self.views: dict[str, str] = {"V1": "SELECT * FROM T1"}
         self.files: dict[str, str] = {"a.csv": "md5-a"}
         self.refuse_tables = False
         self.refuse_views = False
         self.refuse_columns = False
+        self.refuse_last_altered = False
         self.refuse_ddl = False
         # Stage files past this index come back in a second SQL API partition.
         self.files_in_first_partition: int | None = None
@@ -101,6 +108,13 @@ class FakeSnowflake:
                 ["TABLE_NAME", "COLUMN_NAME", "DATA_TYPE"],
                 [[t, "ID", "NUMBER"] for t in self.tables],
             ))
+        if "INFORMATION_SCHEMA.TABLES" in statement:
+            if self.refuse_last_altered:
+                return _refused()
+            return _ok(_rows(
+                ["TABLE_NAME", "LAST_ALTERED"],
+                [[t, self.last_altered[t]] for t in self.tables],
+            ))
         if "GET_DDL('VIEW'" in statement:
             if self.refuse_ddl:
                 return _refused()
@@ -119,7 +133,9 @@ class Neo4jLikeSyncPointStore:
 
     async def get_sync_point(self, key: str, *, raise_on_error: bool = False) -> dict | None:
         if self.fail_reads:
-            raise ConnectionError("graph store unavailable")
+            if raise_on_error:
+                raise ConnectionError("graph store unavailable")
+            return None
         node = self.nodes.get(key)
         return dict(node) if node else None
 
@@ -255,6 +271,33 @@ async def test_second_sync_upserts_and_requeues_only_what_changed(env) -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_update_that_keeps_rows_and_bytes_is_requeued(env) -> None:
+    await env.sync()
+    env.source.last_altered["T1"] = "1759403600.000000000"
+
+    await env.sync()
+
+    assert env.processor.upserted == [T1]
+    assert env.processor.queued == [T1]
+
+
+@pytest.mark.asyncio
+async def test_failed_last_altered_read_holds_the_change_for_next_sync(env) -> None:
+    await env.sync()
+    env.source.last_altered["T1"] = "1759403600.000000000"
+    env.source.refuse_last_altered = True
+
+    await env.sync()
+    assert env.processor.upserted == []
+    assert env.processor.deleted == []
+
+    env.source.refuse_last_altered = False
+    await env.sync()
+    assert env.processor.upserted == [T1]
+    assert env.processor.queued == [T1]
+
+
+@pytest.mark.asyncio
 async def test_nothing_changed_upserts_nothing(env) -> None:
     await env.sync()
     await env.sync()
@@ -357,7 +400,7 @@ async def test_run_incremental_sync_takes_the_same_path(env) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("refused", ["refuse_views", "refuse_columns"])
+@pytest.mark.parametrize("refused", ["refuse_views", "refuse_columns", "refuse_last_altered"])
 async def test_a_failed_read_of_one_kind_does_not_freeze_the_others(env, refused) -> None:
     await env.sync()
     setattr(env.source, refused, True)
@@ -426,3 +469,13 @@ async def test_an_unread_result_partition_does_not_delete_its_files(env) -> None
 
     assert env.processor.deleted == []
     assert FILE_B in env.processor.records
+
+
+@pytest.mark.asyncio
+async def test_views_sync_when_the_warehouse_is_blank(env) -> None:
+    env.connector.warehouse = ""
+    env.connector.data_fetcher = SnowflakeDataFetcher(env.source, "")
+
+    await env.sync()
+
+    assert V1 in env.processor.upserted

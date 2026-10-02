@@ -32,7 +32,8 @@ def unreadable_key(kind: str, scope: str) -> str:
     """An entry in SnowflakeHierarchy.unreadable: ``kind`` could not be read under ``scope``.
 
     ``kind`` is "tables", "views" or "files" for a failed listing, or "columns"
-    for a failed column read, which leaves the tables listed but their columns empty.
+    or "last_altered" for a failed read that leaves the tables listed but that
+    detail of them empty.
     """
     return f"{kind}:{scope}"
 
@@ -333,9 +334,15 @@ class SnowflakeDataFetcher:
                     except SnowflakeFetchError:
                         self.hierarchy.unreadable.add(unreadable_key("columns", schema_key))
                         all_columns = {}
+                    try:
+                        last_altered = await self._fetch_last_altered_in_schema(db.name, schema.name)
+                    except SnowflakeFetchError:
+                        self.hierarchy.unreadable.add(unreadable_key("last_altered", schema_key))
+                        last_altered = {}
                     for table in tables:
                         table.columns = all_columns.get(table.name, [])
-                    
+                        table.last_altered = last_altered.get(table.name)
+
                     fks = await self._fetch_foreign_keys_in_schema(db.name, schema.name)
                     self.hierarchy.foreign_keys.extend(fks)
                     
@@ -429,8 +436,6 @@ class SnowflakeDataFetcher:
                 comment=item.get("comment"),
                 table_type=item.get("kind") or item.get("table_type"),
                 created_at=item.get("created_on"),
-                # last_altered is typically available from INFORMATION_SCHEMA or SHOW TABLES
-                last_altered=item.get("last_altered") or item.get("changed_on"),
             ))
         return tables
     
@@ -634,6 +639,42 @@ class SnowflakeDataFetcher:
         self._columns_cache[cache_key] = columns_by_table
         return columns_by_table
     
+    async def _fetch_last_altered_in_schema(self, database: str, schema: str) -> dict[str, str]:
+        """LAST_ALTERED of each table in the schema, by table name.
+
+        SHOW TABLES has no last-altered column, and an UPDATE that keeps the row
+        count and byte estimate moves only this. Raises SnowflakeFetchError when
+        any part of the result can't be read.
+        """
+        if not self.warehouse:
+            return {}
+
+        escaped_schema = schema.replace("'", "''")
+        sql = f"""
+        SELECT TABLE_NAME, LAST_ALTERED
+        FROM {database}.INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_SCHEMA = '{escaped_schema}'
+        """
+        response = await self.data_source.execute_sql(
+            statement=sql,
+            database=database,
+            warehouse=self.warehouse,
+        )
+        context = f"Failed to fetch last-altered times for {database}.{schema}"
+        if not response.success:
+            logger.warning("%s: %s", context, response.error)
+            raise SnowflakeFetchError.from_response(response, context)
+
+        rows = await self._read_all_partitions(response.data)
+        if rows is None:
+            logger.warning("%s: could not read every result partition", context)
+            raise SnowflakeFetchError(context)
+        return {
+            row[0]: row[1]
+            for row in rows
+            if isinstance(row, list) and len(row) >= 2 and row[0] and row[1]
+        }
+
     async def get_table_ddl(
         self, database: str, schema: str, table: str, strict: bool = False
     ) -> Optional[str]:

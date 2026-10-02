@@ -665,13 +665,14 @@ class SnowflakeConnector(BaseConnector):
                     await self._sync_stages(db.name, schema.name, stages)
                     self.sync_stats.stages_synced += len(stages)
 
-                    columns_unread = unreadable_key("columns", schema_key) in unreadable
+                    carry = {
+                        part for part in ("columns", "last_altered")
+                        if unreadable_key(part, schema_key) in unreadable
+                    }
                     changed = self._select_changed(
                         "tables",
                         {
-                            t.fqn: (t, self._table_revision(
-                                t, prior["tables"].get(t.fqn) if columns_unread else None
-                            ))
+                            t.fqn: (t, self._table_revision(t, prior["tables"].get(t.fqn), carry))
                             for t in tables
                         },
                         prior, next_state, listed, unreadable,
@@ -800,22 +801,28 @@ class SnowflakeConnector(BaseConnector):
             if entry.startswith(prefix)
         )
 
-    def _table_revision(self, table: SnowflakeTable, carry_columns_from: Optional[str] = None) -> str:
-        column_signature = self._compute_column_signature(table.columns)
-        if carry_columns_from is not None:
-            # The columns read failed, which leaves table.columns empty. Reusing the
-            # saved signature keeps that from looking like a schema change, while row,
-            # byte and last-altered changes still count; a real column change is
-            # caught by the first sync that can read the columns.
-            column_signature = carry_columns_from.rsplit("|", 1)[-1]
-        return "|".join(
-            str(part) for part in (
-                table.row_count,
-                table.bytes,
-                table.last_altered,
-                column_signature,
-            )
-        )
+    def _table_revision(
+        self,
+        table: SnowflakeTable,
+        saved: Optional[str] = None,
+        carry: Optional[set[str]] = None,
+    ) -> str:
+        parts = {
+            "rows": str(table.row_count),
+            "bytes": str(table.bytes),
+            "last_altered": str(table.last_altered),
+            "columns": self._compute_column_signature(table.columns),
+        }
+        saved_parts = saved.split("|") if saved else []
+        if len(saved_parts) == len(parts):
+            # A failed read of the columns or of LAST_ALTERED leaves that part empty.
+            # Reusing the saved part keeps the gap from looking like a change, while
+            # the other parts still count; and since the saved value is kept, the
+            # first sync that can read it again compares against it.
+            for index, name in enumerate(parts):
+                if carry and name in carry:
+                    parts[name] = saved_parts[index]
+        return "|".join(parts.values())
 
     def _view_revision(self, view: SnowflakeView) -> Optional[str]:
         # None when the listing carries no definition: such a view is re-read every
@@ -1053,10 +1060,10 @@ class SnowflakeConnector(BaseConnector):
                 # Fetch view definition
                 # Strict, so a failed GET_DDL skips the view: upserting it would blank the
                 # stored definition, and leaving it out of the synced set keeps its saved
-                # revision so the next sync retries. Without a warehouse GET_DDL can never
-                # run, so such views sync without a definition as before.
+                # revision so the next sync retries. Without a warehouse (unset or blank)
+                # GET_DDL can never run, so such views sync without a definition as before.
                 definition = await self._fetch_view_definition(
-                    database_name, schema_name, view.name, strict=self.warehouse is not None
+                    database_name, schema_name, view.name, strict=bool(self.warehouse)
                 )
                 source_tables = self._parse_source_tables(definition)
                 frontend_url = os.getenv("FRONTEND_PUBLIC_URL", "").rstrip("/")
