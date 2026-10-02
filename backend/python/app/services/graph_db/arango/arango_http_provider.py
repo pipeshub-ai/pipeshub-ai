@@ -17501,30 +17501,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 )"""
         scope = f"LET targets = [{targets}]"
         if entity_type == EntityType.PERSON.value:
-            # Either direction: record_people writes record -> user, Slack
-            # mentions user -> record.
-            person_scan = f"""(
-                    FOR record_id IN UNION_DISTINCT(
-                        (FOR edge IN {edge_collection}
-                            FILTER edge._to IN targets AND STARTS_WITH(edge._from, "{records}/")
-                            RETURN edge._from),
-                        (FOR edge IN {edge_collection}
-                            FILTER edge._from IN targets AND STARTS_WITH(edge._to, "{records}/")
-                            RETURN edge._to)
-                    )
-                        LET rec = DOCUMENT(record_id)
-                        FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
+            return "", f"""(
+                    {self._person_records_loop("ref.id")}
+                        FILTER rec.orgId == @org_id AND rec.isDeleted != true
                         FILTER rec.indexingStatus == @completed
                         FILTER rec.connectorId IN ref.connectorIds
                         {record_type_filter}
                         LIMIT @scan_cap
                         RETURN rec
                 )"""
-            scope = (
-                f'LET person = DOCUMENT(CONCAT("{CollectionNames.USERS.value}/", ref.id))\n                '
-                + scope
-            )
-            return scope, f"(person != null AND person.orgId == @org_id) ? {person_scan} : []"
         if entity_type == EntityType.RECORD_GROUP.value:
             scope = (
                 f'LET rg = DOCUMENT(CONCAT("{CollectionNames.RECORD_GROUPS.value}/", ref.id))\n                '
@@ -17532,6 +17517,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return scope, f"(rg != null AND rg.orgId == @org_id) ? {scan_subquery} : []"
         return scope, scan_subquery
+
+    @staticmethod
+    def _person_records_loop(user_key: str) -> str:
+        """AQL binding ``rec`` to each record linked to the org member whose
+        key is ``user_key``, over entityRelations in either direction
+        (record_people writes record -> user, Slack mentions user -> record).
+
+        A traversal streams, so a caller's LIMIT stops it early; the user
+        lookup is a loop rather than a ternary, which AQL would hoist and
+        evaluate for a user of another org too."""
+        users, records = CollectionNames.USERS.value, CollectionNames.RECORDS.value
+        return f"""FOR person IN {users}
+                        FILTER person._key == {user_key} AND person.orgId == @org_id
+                        FOR rec IN 1..1 ANY person {CollectionNames.ENTITY_RELATIONS.value}
+                            OPTIONS {{order: "bfs", uniqueVertices: "global"}}
+                            FILTER rec != null AND IS_SAME_COLLECTION("{records}", rec)"""
 
     _ENTITY_CANDIDATE_SORT = (
         "SORT NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) DESC, key ASC"
@@ -17889,29 +17890,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
         for ref_type, ref_ids in ids_by_type.items():
             edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[ref_type]
             targets = ", ".join(f'CONCAT("{c}/", ref_id)' for c in target_collections)
-            linked = f"""(FOR edge IN {edge_collection}
-                        FILTER edge._to IN targets AND STARTS_WITH(edge._from, "{records}/")
-                        RETURN edge._from)"""
-            gate = ""
             if ref_type == EntityType.PERSON.value:
-                # Either direction, as in _entity_candidate_scan_aql.
-                linked = f"""UNION_DISTINCT({linked},
-                    (FOR edge IN {edge_collection}
-                        FILTER edge._from IN targets AND STARTS_WITH(edge._to, "{records}/")
-                        RETURN edge._to))"""
-                gate = (
-                    f'LET person = DOCUMENT(CONCAT("{CollectionNames.USERS.value}/", ref_id))\n'
-                    "                FILTER person != null AND person.orgId == @org_id"
-                )
+                linked = self._person_records_loop("ref_id")
+            else:
+                linked = f"""FOR edge IN {edge_collection}
+                        FILTER edge._to IN targets
+                        FILTER STARTS_WITH(edge._from, "{records}/")
+                        LET rec = DOCUMENT(edge._from)"""
             query = f"""
             FOR ref_id IN @ref_ids
                 LET targets = [{targets}]
                 // COLLECT inside the subquery keeps memory at the number of
                 // distinct pairs, not the number of records linked to the entity.
                 LET members = (
-                    {gate}
-                    FOR record_id IN {linked}
-                        LET rec = DOCUMENT(record_id)
+                    {linked}
                         FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
                         COLLECT connectorId = rec.connectorId, recordGroupId = rec.recordGroupId
                         RETURN {{connectorId, recordGroupId}}

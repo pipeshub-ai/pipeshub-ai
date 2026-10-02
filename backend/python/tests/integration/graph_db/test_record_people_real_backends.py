@@ -48,17 +48,25 @@ async def backend(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatc
         await _cleanup(provider, org)
 
 
-async def _cleanup(provider: Neo4jProvider | ArangoHTTPProvider, org: str) -> None:
+async def _cleanup(provider: Neo4jProvider | ArangoHTTPProvider, org: str, *, disconnect: bool = True) -> None:
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
     if isinstance(provider, Neo4jProvider):
-        await provider.client.execute_query("MATCH (n) WHERE n.orgId = $org DETACH DELETE n", parameters={"org": org})
-        await provider.disconnect()
+        await provider.client.execute_query(
+            "MATCH (n) WHERE n.orgId = $org OR (n:Organization AND n.id = $org) DETACH DELETE n",
+            parameters={"org": org},
+        )
+        if disconnect:
+            await provider.disconnect()
         return
     aql = provider.http_client.execute_aql
     for edges in (CollectionNames.ENTITY_RELATIONS.value, CollectionNames.IS_OF_TYPE.value):
         await aql(f"FOR e IN {edges} FILTER CONTAINS(e._from, @org) REMOVE e IN {edges}", {"org": org})
-    for docs in (CollectionNames.RECORDS.value, CollectionNames.MAILS.value, CollectionNames.TICKETS.value, CollectionNames.USERS.value):
+    await aql(f"REMOVE {{_key: @org}} IN {CollectionNames.ORGS.value} OPTIONS {{ignoreErrors: true}}", {"org": org})
+    for docs in (
+        CollectionNames.RECORDS.value, CollectionNames.MAILS.value, CollectionNames.TICKETS.value,
+        CollectionNames.USERS.value,
+    ):
         await aql(f"FOR d IN {docs} FILTER d.orgId == @org REMOVE d IN {docs}", {"org": org})
 
 
@@ -68,6 +76,10 @@ async def _seed(provider: Neo4jProvider | ArangoHTTPProvider, org: str) -> str:
         {"id": f"{org}-bob", "userId": f"{org}-bob", "orgId": org, "email": f"bob@{org}.test", "fullName": "Bob"},
     ]
     await provider.batch_upsert_nodes(users, CollectionNames.USERS.value)
+    await provider.batch_upsert_nodes(
+        [{"id": org, "accountType": "enterprise", "isActive": True, "entityIndexState": "v2:fp"}],
+        CollectionNames.ORGS.value,
+    )
     mail_id = f"{org}-mail"
     await provider.batch_upsert_records([MailRecord(
         id=mail_id, org_id=org, external_record_id=mail_id, record_name="Quarterly plan",
@@ -119,6 +131,11 @@ async def test_backfill_links_member_sender_and_recipients_once(backend) -> None
         assert await _edges(provider, mail_id) == [(f"{org}-ann", "AUTHORED_BY"), (f"{org}-bob", "ADDRESSED_TO")]
         # A Salesforce CASE is a ticket too.
         assert await _edges(provider, f"{org}-case") == [(f"{org}-bob", "ASSIGNED_TO")]
+        # The org pass re-runs, so the entity index projects these people.
+        (org_doc,) = await provider.get_nodes_by_field_in(
+            CollectionNames.ORGS.value, "id", [org], return_fields=["entityIndexState"],
+        )
+        assert org_doc["entityIndexState"] is None
 
 
 async def test_a_person_lists_the_records_naming_them_in_either_direction(backend) -> None:
@@ -146,6 +163,13 @@ async def test_a_person_lists_the_records_naming_them_in_either_direction(backen
     ))[("person", f"{org}-bob")]
     assert sorted(r["_key"] for r in permitted) == sorted([mail_id, f"{org}-case"])
 
+    # A record-level connector where the viewer holds no permission on any
+    # record naming the person shows nothing.
+    unpermitted = (await provider.get_permitted_entity_records(
+        [ref], org, f"{org}-ann", app_level_connector_ids=[],
+    ))[("person", f"{org}-bob")]
+    assert unpermitted == []
+
     people = await provider.get_record_people(f"{org}-case", org)
     assert [(p["id"], p["email"]) for p in people] == [(f"{org}-bob", f"bob@{org}.test")]
     assert await provider.get_record_people(f"{org}-case", f"{org}-x") == []
@@ -159,7 +183,7 @@ async def test_the_rebuild_reads_people_and_their_membership(backend) -> None:
     await provider.ensure_schema()
     await _seed(provider, org)
     await provider.batch_upsert_nodes([{
-        "id": f"{org}-cat", "userId": f"{org}-cat", "orgId": org, "email": f"cat@{org}.test",
+        "id": f"{org}-cat", "userId": f"{org}-cat", "orgId": org, "email": f"cat@{org}.test", "fullName": "",
     }], CollectionNames.USERS.value)
     await backfill(provider, GraphDataStore(logger, provider), org, apply=True, logger=logger, out=io.StringIO())
     await provider.batch_create_entity_relations([{
@@ -177,3 +201,30 @@ async def test_the_rebuild_reads_people_and_their_membership(backend) -> None:
     assert all(membership[("person", r["id"])]["connectorIds"] == [f"{org}-conn"] for r in refs)
     elsewhere = await provider.get_taxonomy_entity_membership(refs, f"{org}-x")
     assert all(not m["connectorIds"] for m in elsewhere.values())
+
+
+async def test_a_user_of_another_org_never_surfaces_through_this_orgs_records(backend) -> None:
+    """The user gate, not only the record filter: the record is this org's,
+    the linked user is not."""
+    provider, org = backend
+    await provider.ensure_schema()
+    await _seed(provider, org)
+    outsider = f"{org}-out"
+    await provider.batch_upsert_nodes([{
+        "id": outsider, "userId": outsider, "orgId": f"{org}-x", "email": f"out@{org}.test", "fullName": "Out",
+    }], CollectionNames.USERS.value)
+    await provider.batch_create_entity_relations([{
+        "_from": f"records/{org}-case", "_to": f"users/{outsider}", "edgeType": "ASSIGNED_TO", "createdAtTimestamp": 1,
+    }])
+    try:
+        ref = {"id": outsider, "type": "person", "connectorIds": [f"{org}-conn"]}
+        assert (await provider.get_entity_candidate_records([ref], org))[("person", outsider)] == []
+        permitted = await provider.get_permitted_entity_records(
+            [ref], org, f"{org}-ann", app_level_connector_ids=[f"{org}-conn"],
+        )
+        assert permitted[("person", outsider)] == []
+        membership = await provider.get_taxonomy_entity_membership([{"id": outsider, "type": "person"}], org)
+        assert membership[("person", outsider)] == {"connectorIds": [], "recordGroupIds": []}
+        assert await provider.get_record_people(f"{org}-case", org) == []
+    finally:
+        await _cleanup(provider, f"{org}-x", disconnect=False)

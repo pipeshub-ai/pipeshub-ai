@@ -264,34 +264,43 @@ class SinkOrchestrator(Transformer):
                     )
             except Exception as exc:
                 self.logger.warning("Record entity sync failed for record %s (non-fatal): %s", record.id, exc)
-        await self._sync_record_people_entities(record)
+        await self._sync_record_people_entities(
+            record.id, record.org_id, record.connector_id, record.record_group_id,
+        )
 
-    async def _sync_record_people_entities(self, record: Record) -> None:
+    async def _sync_record_people_entities(
+        self, record_id: str, org_id: str, connector_id: str | None, record_group_id: str | None,
+    ) -> int:
         """A person point for each member the record names (KG-13), merged so
         it keeps every connector and group it was named in. Best-effort, as
-        the identity points: the B-1 rebuild projects people too."""
+        the identity points: the B-1 rebuild projects people too. Returns how
+        many points were not written (a failed lookup counts as one)."""
         from app.models.entities import EntityRecord
 
         try:
-            people = await self.graph_provider.get_record_people(record.id, record.org_id)
+            people = await self.graph_provider.get_record_people(record_id, org_id)
         except Exception as exc:
-            self.logger.warning("Person lookup failed for record %s (non-fatal): %s", record.id, exc)
-            return
-        entities = [
-            EntityRecord.for_person(
-                person["id"], person.get("name") or person.get("email") or person["id"],
-                record.org_id, record.connector_id, record.record_group_id,
-            )
-            for person in people or [] if person.get("id")
-        ]
+            self.logger.warning("Person lookup failed for record %s (non-fatal): %s", record_id, exc)
+            return 1
+        entities = []
+        for person in people or []:
+            # Named as the rebuild names them (fullName, else email), so both
+            # write the same point; a member with neither is not searchable.
+            name = (person.get("name") or "").strip() or (person.get("email") or "").strip()
+            if person.get("id") and name:
+                entities.append(EntityRecord.for_person(
+                    person["id"], name, org_id, connector_id, record_group_id,
+                ))
         if not entities:
-            return
+            return 0
         try:
             outcome = await self.entity_vector_store.upsert_entities_batch(entities, merge_membership=True)
-            if outcome.failed:
-                self.logger.warning("Person points for record %s not written (%d of %d)", record.id, outcome.failed, len(entities))
         except Exception as exc:
-            self.logger.warning("Person entity sync failed for record %s (non-fatal): %s", record.id, exc)
+            self.logger.warning("Person entity sync failed for record %s (non-fatal): %s", record_id, exc)
+            return len(entities)
+        if outcome.failed:
+            self.logger.warning("Person points for record %s not written (%d of %d)", record_id, outcome.failed, len(entities))
+        return outcome.failed
 
     async def sync_entities_for_duplicate(self, record_doc: dict) -> bool:
         """Re-project a deduplicated record's taxonomy into the entities
@@ -403,6 +412,9 @@ class SinkOrchestrator(Transformer):
                 failed += (await self.entity_vector_store.upsert_entities_batch(
                     identities, merge_membership=False,
                 )).failed
+            failed += await self._sync_record_people_entities(
+                str(record_key), org_id, connector_id, record_group_id,
+            )
             if failed:
                 self.logger.warning(
                     "Entity vector sync for deduplicated record %s left %d entities unwritten",

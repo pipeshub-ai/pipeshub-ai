@@ -23,6 +23,7 @@ from app.config.constants.arangodb import (
     CollectionNames,
 )
 from app.connectors.core.base.data_processor.record_people import link_record_people
+from app.modules.indexing.entity_index_rebuild import EntityIndexState
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -107,8 +108,21 @@ async def backfill(
         out.write(json.dumps({
             "after": after, "records": len(records), "skipped": skipped, "edges": edges, "applied": apply,
         }) + "\n")
-    out.write(json.dumps({"org": org_id, "total": totals, "applied": apply}) + "\n")
-    return EXIT_PARTIAL if totals["failed_pages"] or totals["skipped"] else 0
+    reprojected = None
+    if apply:
+        # The entity index projects people in its org pass, which may have run
+        # before these edges existed; clearing its state re-runs it.
+        try:
+            reprojected = bool(await graph.update_node(org_id, CollectionNames.ORGS.value, {
+                EntityIndexState.STATE: None, EntityIndexState.TARGET: None,
+            }))
+        except Exception:
+            reprojected = False
+    out.write(json.dumps({
+        "org": org_id, "total": totals, "applied": apply, "entity_index_rerun": reprojected,
+    }) + "\n")
+    partial = totals["failed_pages"] or totals["skipped"] or reprojected is False
+    return EXIT_PARTIAL if partial else 0
 
 
 def build_parser() -> argparse.ArgumentParser:

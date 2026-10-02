@@ -14,8 +14,9 @@ projects what the graph already holds, with no extraction or LLM call:
   stale winners).
 
 A document is done when its ``entityIndexState`` equals the current marker,
-``v<ENTITY_INDEX_VERSION>:<embedding fingerprint>``, so a model change re-runs
-every pass, and each point records the model that embedded it, so a point
+``v<version>:<embedding fingerprint>`` (``ENTITY_INDEX_VERSION`` for
+connectors, ``ORG_PASS_VERSION`` for orgs), so a model change re-runs every
+pass, and each point records the model that embedded it, so a point
 from another model is re-embedded whenever it is next written. Mechanics
 follow ``vector_membership_backfill``: one Redis leader, one page per tick, a
 resumable cursor on the document, bounded attempts, backoff on failure.
@@ -50,9 +51,11 @@ if TYPE_CHECKING:
     )
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
-# Bump when what a pass writes changes, so every document is re-projected.
+# Bump when what a pass writes changes, so its documents are re-projected;
+# separate, so a change to one pass does not re-scan every connector.
+ENTITY_INDEX_VERSION = 1
 # 2: people (KG-13).
-ENTITY_INDEX_VERSION = 2
+ORG_PASS_VERSION = 2
 
 LEADER_KEY = "entity_index_rebuild:leader"
 PAGE_SIZE = 200
@@ -135,8 +138,8 @@ class EntityIndexState:
     SWEEP_FAILURES = "entityIndexSweepFailures"
 
 
-def entity_index_marker(fingerprint: str) -> str:
-    return f"v{ENTITY_INDEX_VERSION}:{fingerprint}"
+def entity_index_marker(fingerprint: str, version: int = ENTITY_INDEX_VERSION) -> str:
+    return f"v{version}:{fingerprint}"
 
 
 def fingerprint_of(marker: object) -> str | None:
@@ -234,13 +237,15 @@ class EntityIndexRebuilder:
         """``not_leader``, ``idle``, ``connector``, ``taxonomy`` or ``sweep``."""
         if not await self.lock.try_acquire():
             return "not_leader"
-        marker = entity_index_marker(await self.store.embedding_fingerprint())
+        fingerprint = await self.store.embedding_fingerprint()
+        marker = entity_index_marker(fingerprint)
 
         app = await self.graph.get_entity_index_candidate(_APPS, marker)
         if app and (key := _key_of(app)):
             await self._run_page(_Pass(_APPS, key, app, CONNECTOR_SOURCES, marker))
             return "connector"
 
+        marker = entity_index_marker(fingerprint, ORG_PASS_VERSION)
         sweep_before = self.now_ms() - SWEEP_INTERVAL_MS
         org = await self.graph.get_entity_index_candidate(
             _ORGS, marker, sweep_before=sweep_before,
@@ -611,6 +616,7 @@ async def run_entity_index_rebuild_loop(
 __all__ = [
     "ENTITY_INDEX_TAXONOMY_SOURCES",
     "ENTITY_INDEX_VERSION",
+    "ORG_PASS_VERSION",
     "EntityIndexRebuilder",
     "EntityIndexState",
     "entity_index_marker",
