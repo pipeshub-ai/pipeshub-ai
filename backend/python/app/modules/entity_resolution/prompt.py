@@ -11,6 +11,9 @@ if TYPE_CHECKING:
     from app.modules.entity_resolution.models import ExtractedName, WinnerCandidate
 
 _SUMMARY_MAX_CHARS = 1200
+# Spellings shown per offered match; a node keeps up to MAX_TAXONOMY_ALIASES,
+# and the prompt pays for every alias of every candidate of every item.
+PROMPT_ALIASES_PER_MATCH = 10
 
 _PROMPT = """# Task
 You maintain a knowledge-graph taxonomy for one organisation. A document was just classified and produced the names below. For each name decide whether it denotes the SAME concept as one of the existing entities offered next to it (its nearest matches, listed in no particular order), or the same concept as another name in this list, or a genuinely new concept.
@@ -50,7 +53,7 @@ def build_prompt(
             "kind": _kind_label(item),
         }
         entry["matches"] = [
-            {"id": c.entity_id, "name": c.name, "aliases": list(c.aliases)}
+            {"id": c.entity_id, "name": c.name, "aliases": list(c.aliases[:PROMPT_ALIASES_PER_MATCH])}
             for c in _shuffled(item, candidates.get(item.index) or ())
         ]
         rendered.append(entry)

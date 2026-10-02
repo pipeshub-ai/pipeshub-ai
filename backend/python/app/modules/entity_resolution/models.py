@@ -112,7 +112,9 @@ class ResolutionStats:
     names_dropped: int = 0
     names_deduped: int = 0
     tier0_hits: int = 0
+    # Names given at least one live candidate (not candidates offered).
     winners_offered: int = 0
+    # Candidates dropped as stale (deleted, another org's, merged away).
     stale_winners: int = 0
     model_calls: int = 0
     model_failures: int = 0

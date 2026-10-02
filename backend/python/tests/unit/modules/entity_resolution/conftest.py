@@ -111,10 +111,6 @@ class FakeEntityVectorStore:
             }
         return EntityWriteOutcome(written=len(entities))
 
-    async def find_best_matches(self, names, org_id, entity_type, level=None) -> list[dict[str, Any] | None]:
-        found = await self.find_candidates(names, org_id, entity_type, level, k=1)
-        return [c[0] if c else None for c in found]
-
     async def find_candidates(self, names, org_id, entity_type, level=None, *, k=3) -> list[list[dict[str, Any]]]:
         """Token-overlap ranking over the canonical names, best first.
         ``force_winner`` pins the first candidate for a name."""

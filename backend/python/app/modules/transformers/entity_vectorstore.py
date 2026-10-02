@@ -198,7 +198,7 @@ def _type_groups(
     from app.models.entities import EntityType
 
     record = EntityType.RECORD.value
-    if entity_types is None:
+    if not entity_types:
         return [(None, record), (record, None)]
     others = [t for t in entity_types if t != record]
     if record in entity_types and others:
@@ -1217,11 +1217,14 @@ class EntityVectorStore:
         Record titles outnumber the other entities by orders of magnitude, and
         in one pool a word shared by many titles pushed the taxonomy entities
         out (KG-14). So when both are asked for, a pass is two requests with
-        ``top_k`` each, titles apart, merged alternately with the other types
-        first; a pass can therefore return up to ``2 * top_k`` hits.
+        half of ``top_k`` each, titles apart, merged alternately with the
+        other types first. A caller that later sorts by score keeps that order
+        only on ties; fused scores are ranks within each request, so the
+        result stays roughly alternating.
 
-        Each hit is ``{entityId, entityType, name, canonicalName, aliases,
-        score, connectorIds, recordGroupIds}``.
+        Each hit is ``{entityId, entityType, name, canonicalName, score,
+        connectorIds, recordGroupIds}``; aliases are a matching aid and are
+        not returned (KG-17).
 
         Raises on a vector DB failure so callers can tell it apart from "no
         match".
@@ -1263,7 +1266,7 @@ class EntityVectorStore:
                     sparse_query=sparse_vec,
                     text_query=query,
                     filter=await self.vector_db_service.filter_collection(**filter_kwargs),
-                    limit=top_k,
+                    limit=max(1, -(-top_k // len(groups))),
                     fusion_method=FusionMethod.RRF,
                     with_payload=True,
                 ))
@@ -1295,7 +1298,6 @@ class EntityVectorStore:
             "entityType": meta.get("entityType"),
             "name": meta.get("name", hit.payload.get("page_content", "")),
             "canonicalName": meta.get("canonicalName"),
-            "aliases": meta.get("aliases") or [],
             "score": round(hit.score, 4),
             "connectorIds": hit.payload.get(CONNECTOR_IDS_FIELD) or [],
             "recordGroupIds": hit.payload.get(RECORD_GROUP_IDS_FIELD) or [],
@@ -1318,18 +1320,6 @@ class EntityVectorStore:
         if len(self._query_vector_cache) > _QUERY_VECTOR_CACHE_SIZE:
             self._query_vector_cache.popitem(last=False)
         return dense_vec, sparse_vec
-
-    async def find_best_matches(
-        self,
-        names: list[str],
-        org_id: str,
-        entity_type: str,
-        level: str | None = None,
-    ) -> list[dict[str, Any] | None]:
-        """The single nearest existing entity for each of ``names``; ``None``
-        where there is none. See :meth:`find_candidates`."""
-        candidates = await self.find_candidates(names, org_id, entity_type, level, k=1)
-        return [found[0] if found else None for found in candidates]
 
     async def find_candidates(
         self,
@@ -1391,9 +1381,13 @@ class EntityVectorStore:
             )
             for text, dense, sparse in zip(texts, dense_vecs, sparse_vecs)
         ]
-        batch_results = await self.vector_db_service.query_nearest_points(
-            collection_name=self.collection_name, requests=requests,
-        )
+        try:
+            batch_results = await self.vector_db_service.query_nearest_points(
+                collection_name=self.collection_name, requests=requests,
+            )
+        except Exception:
+            await self._reset_if_collection_changed()
+            raise
 
         for position, index in enumerate(indices):
             hits = batch_results[position] if position < len(batch_results) else []
@@ -1418,64 +1412,4 @@ class EntityVectorStore:
                 })
                 if len(results[index]) == k:
                     break
-        return results
-        indices = [i for i, name in enumerate(cleaned) if name]
-        if not indices:
-            return results
-
-        texts = [cleaned[i] for i in indices]
-        dense_vecs = await self._embed(texts)
-        sparse_vecs = await self._embed_sparse(texts)
-
-        must_conditions: dict[str, Any] = {
-            "metadata.orgId": org_id,
-            "metadata.entityType": entity_type,
-        }
-        if level:
-            must_conditions["metadata.level"] = level
-        filter_expr = await self.vector_db_service.filter_collection(must=must_conditions)
-
-        from app.services.vector_db.models import FusionMethod, HybridSearchRequest
-
-        requests = [
-            HybridSearchRequest(
-                dense_query=dense,
-                sparse_query=sparse,
-                text_query=text,
-                filter=filter_expr,
-                limit=1,
-                fusion_method=FusionMethod.RRF,
-                with_payload=True,
-            )
-            for text, dense, sparse in zip(texts, dense_vecs, sparse_vecs)
-        ]
-        try:
-            batch_results = await self.vector_db_service.query_nearest_points(
-                collection_name=self.collection_name, requests=requests,
-            )
-        except Exception:
-            await self._reset_if_collection_changed()
-            raise
-
-        for position, index in enumerate(indices):
-            hits = batch_results[position] if position < len(batch_results) else []
-            if not hits:
-                continue
-            hit = hits[0]
-            meta = _entity_metadata(hit.payload)
-            if meta.get("orgId") != org_id or meta.get("entityType") != entity_type:
-                continue
-            if (meta.get("level") or None) != (level or None):
-                continue
-            entity_id = meta.get("entityId")
-            if not entity_id:
-                continue
-            results[index] = {
-                "entityId": entity_id,
-                "entityType": meta.get("entityType"),
-                "name": meta.get("name") or hit.payload.get("page_content") or entity_id,
-                "aliases": list(meta.get("aliases") or []),
-                "level": meta.get("level"),
-                "score": round(hit.score, 4),
-            }
         return results

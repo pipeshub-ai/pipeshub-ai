@@ -63,6 +63,12 @@ logger = logging.getLogger("entity-store-it")
 DIM = 16
 
 
+async def _best(store, names, org_id, entity_type, level=None) -> list:
+    """The first candidate per name, as the resolver's single best match."""
+    found = await store.find_candidates(names, org_id, entity_type, level, k=1)
+    return [c[0] if c else None for c in found]
+
+
 class _StubEmbeddings:
     """Deterministic unit vectors from the text's hash: equal text, equal vector."""
 
@@ -231,7 +237,7 @@ class TestMembershipReads:
         assert list(payload["metadata"]["aliases"]) == ["RC"]
         # The vector was kept: the entity is still found by its name.
         await _publish_writes(store)
-        (match,) = await store.find_best_matches(["Release checklist"], org, "topic")
+        (match,) = await _best(store, ["Release checklist"], org, "topic")
         assert match["entityId"] == "t1"
 
     async def test_updating_a_missing_point_is_ignored(self, store: EntityVectorStore) -> None:
@@ -257,8 +263,8 @@ class TestMatchesAndSearch:
         ])
         await _publish_writes(store)
 
-        (level_one,) = await store.find_best_matches(["2024"], org, "subcategory", level="1")
-        (level_three,) = await store.find_best_matches(["2024"], org, "subcategory", level="3")
+        (level_one,) = await _best(store, ["2024"], org, "subcategory", level="1")
+        (level_three,) = await _best(store, ["2024"], org, "subcategory", level="3")
 
         assert level_one == {
             "entityId": "2024", "entityType": "subcategory", "name": "2024",
@@ -714,4 +720,4 @@ class TestSearchPasses:
 
         types = [h["entityType"] for h in hits]
         assert {"sec-topic", "audit-topic"} <= {h["entityId"] for h in hits}
-        assert types.count("record") == 4
+        assert types.count("record") == 2  # top_k split evenly between the two requests
