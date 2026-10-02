@@ -57,6 +57,9 @@ class FakeSnowflake:
         self.refuse_views = False
         self.refuse_columns = False
         self.refuse_last_altered = False
+        # Listed by SHOW TABLES but left out of INFORMATION_SCHEMA.TABLES, as
+        # Snowflake documents for a role that holds MANAGE GRANTS.
+        self.missing_from_information_schema: set[str] = set()
         self.refuse_ddl = False
         # Stage files past this index come back in a second SQL API partition.
         self.files_in_first_partition: int | None = None
@@ -113,7 +116,11 @@ class FakeSnowflake:
                 return _refused()
             return _ok(_rows(
                 ["TABLE_NAME", "LAST_ALTERED"],
-                [[t, self.last_altered[t]] for t in self.tables],
+                [
+                    [t, self.last_altered[t]]
+                    for t in self.tables
+                    if t not in self.missing_from_information_schema
+                ],
             ))
         if "GET_DDL('VIEW'" in statement:
             if self.refuse_ddl:
@@ -292,6 +299,23 @@ async def test_failed_last_altered_read_holds_the_change_for_next_sync(env) -> N
     assert env.processor.deleted == []
 
     env.source.refuse_last_altered = False
+    await env.sync()
+    assert env.processor.upserted == [T1]
+    assert env.processor.queued == [T1]
+
+
+@pytest.mark.asyncio
+async def test_a_table_missing_from_information_schema_holds_its_last_altered(env) -> None:
+    await env.sync()
+    before = _saved_revisions(env, "tables")[T1]
+    env.source.last_altered["T1"] = "1759403600.000000000"
+    env.source.missing_from_information_schema = {"T1"}
+
+    await env.sync()
+    assert env.processor.upserted == []
+    assert _saved_revisions(env, "tables")[T1] == before
+
+    env.source.missing_from_information_schema = set()
     await env.sync()
     assert env.processor.upserted == [T1]
     assert env.processor.queued == [T1]
@@ -479,3 +503,18 @@ async def test_views_sync_when_the_warehouse_is_blank(env) -> None:
     await env.sync()
 
     assert V1 in env.processor.upserted
+
+
+@pytest.mark.asyncio
+async def test_a_view_synced_without_a_warehouse_is_read_once_one_is_set(env) -> None:
+    env.connector.warehouse = ""
+    env.connector.data_fetcher = SnowflakeDataFetcher(env.source, "")
+    await env.sync()
+    assert env.processor.records[V1].definition is None
+
+    env.connector.warehouse = "WH"
+    env.connector.data_fetcher = SnowflakeDataFetcher(env.source, "WH")
+    await env.sync()
+
+    assert V1 in env.processor.upserted
+    assert env.processor.records[V1].definition == "SELECT * FROM T1"

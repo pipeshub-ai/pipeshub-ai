@@ -665,14 +665,15 @@ class SnowflakeConnector(BaseConnector):
                     await self._sync_stages(db.name, schema.name, stages)
                     self.sync_stats.stages_synced += len(stages)
 
-                    carry = {
-                        part for part in ("columns", "last_altered")
-                        if unreadable_key(part, schema_key) in unreadable
-                    }
                     changed = self._select_changed(
                         "tables",
                         {
-                            t.fqn: (t, self._table_revision(t, prior["tables"].get(t.fqn), carry))
+                            t.fqn: (
+                                t,
+                                self._table_revision(
+                                    t, prior["tables"].get(t.fqn), self._unread_parts(t, unreadable)
+                                ),
+                            )
                             for t in tables
                         },
                         prior, next_state, listed, unreadable,
@@ -800,6 +801,15 @@ class SnowflakeConnector(BaseConnector):
             for entry in unreadable
             if entry.startswith(prefix)
         )
+
+    @staticmethod
+    def _unread_parts(table: SnowflakeTable, unreadable: set[str]) -> set[str]:
+        """The revision parts of ``table`` that Snowflake failed to read, for its schema or for it alone."""
+        scopes = (f"{table.database_name}.{table.schema_name}", table.fqn)
+        return {
+            part for part in ("columns", "last_altered")
+            if any(unreadable_key(part, scope) in unreadable for scope in scopes)
+        }
 
     def _table_revision(
         self,
@@ -1359,7 +1369,9 @@ class SnowflakeConnector(BaseConnector):
         """
         Sync views using async generator for memory-efficient processing.
 
-        Returns the external ids of the views upserted.
+        Returns the external ids of the views upserted with a definition. One
+        upserted without (no warehouse to run GET_DDL) is left out, so its
+        listing's hash is not saved and the first sync that can run GET_DDL reads it.
         
         Processes views in batches, fetching definitions one at a time and
         yielding to the event loop to prevent blocking on large datasets.
@@ -1378,7 +1390,8 @@ class SnowflakeConnector(BaseConnector):
             database_name, schema_name, views
         ):
             batch.append((record, perms))
-            synced.add(record.external_record_id)
+            if record.definition:
+                synced.add(record.external_record_id)
             total_synced += 1
             
             # Log view enrichment for debugging

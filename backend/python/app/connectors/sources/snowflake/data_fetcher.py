@@ -33,7 +33,8 @@ def unreadable_key(kind: str, scope: str) -> str:
 
     ``kind`` is "tables", "views" or "files" for a failed listing, or "columns"
     or "last_altered" for a failed read that leaves the tables listed but that
-    detail of them empty.
+    detail of them empty. A "last_altered" scope is a schema, or a single table
+    that SHOW TABLES lists but INFORMATION_SCHEMA.TABLES leaves out.
     """
     return f"{kind}:{scope}"
 
@@ -339,6 +340,15 @@ class SnowflakeDataFetcher:
                     except SnowflakeFetchError:
                         self.hierarchy.unreadable.add(unreadable_key("last_altered", schema_key))
                         last_altered = {}
+                    else:
+                        # Snowflake documents that INFORMATION_SCHEMA can omit tables SHOW TABLES
+                        # lists, e.g. for a role with MANAGE GRANTS: their time is unknown, not None.
+                        if self.warehouse:
+                            self.hierarchy.unreadable.update(
+                                unreadable_key("last_altered", table.fqn)
+                                for table in tables
+                                if table.name not in last_altered
+                            )
                     for table in tables:
                         table.columns = all_columns.get(table.name, [])
                         table.last_altered = last_altered.get(table.name)
