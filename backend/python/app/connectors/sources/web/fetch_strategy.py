@@ -389,12 +389,21 @@ def _curl_hop(
 
     Not streamed: in curl_cffi 0.14 a streamed request that fails before its headers arrive (a
     timeout, a refused connection) resets one curl handle from two threads at once, which
-    corrupts the heap and aborts the whole connector service. The body is capped as it arrives.
+    corrupts the heap and aborts the whole connector service. A declared size past the cap is
+    refused by curl itself at the headers (CURLOPT_MAXFILESIZE); an undeclared one is capped as
+    it arrives.
     """
+    from curl_cffi.const import CurlECode, CurlOpt
     from curl_cffi.curl import CURL_WRITEFUNC_ERROR
 
     body = bytearray()
     too_large = False
+    options = dict(session.curl_options or {})
+    if max_bytes is None:
+        options.pop(CurlOpt.MAXFILESIZE_LARGE, None)
+    else:
+        options[CurlOpt.MAXFILESIZE_LARGE] = max_bytes
+    session.curl_options = options
 
     def collect(chunk: bytes) -> int:
         nonlocal too_large
@@ -411,6 +420,7 @@ def _curl_hop(
             )
         except Exception as e:
             response = getattr(e, "response", None)
+            too_large = too_large or getattr(e, "code", None) == CurlECode.FILESIZE_EXCEEDED
             if not too_large or response is None:
                 raise
         peer_ip = response.primary_ip

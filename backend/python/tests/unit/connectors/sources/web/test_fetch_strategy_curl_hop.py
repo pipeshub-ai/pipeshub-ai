@@ -8,6 +8,7 @@ import asyncio
 import ipaddress
 import logging
 import threading
+import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -55,6 +56,41 @@ def port() -> Iterator[int]:
         server.server_close()
 
 
+@pytest.fixture
+def trickle() -> Iterator[tuple[int, list[str]]]:
+    """Declares a body far past any cap, then sends it a kilobyte at a time, slowly enough that
+    no request reading it would reach the cap before its timeout."""
+    hits: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            hits.append(self.path)
+            self.send_response(302 if self.path == "/moved" else 200)
+            self.send_header("Content-Length", "50000000")
+            if self.path == "/moved":
+                self.send_header("Location", "/page")
+            self.end_headers()
+            try:
+                for _ in range(40):
+                    self.wfile.write(b"y" * 1000)
+                    self.wfile.flush()
+                    time.sleep(0.5)
+            except OSError:
+                pass
+
+        def log_message(self, *_: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_port, hits
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def _loopback(port: int) -> PublicTarget:
     return PublicTarget(scheme="http", host="127.0.0.1", port=port, addresses=(ipaddress.ip_address("127.0.0.1"),))
 
@@ -85,6 +121,53 @@ def test_a_page_within_the_limit_comes_back_whole(port: int) -> None:
 def test_a_page_past_the_limit_without_a_declared_size_is_too_large_and_its_body_dropped(port: int) -> None:
     hop = _hop(port, "/undeclared", max_bytes=100_000)
     assert (hop.status, hop.too_large, hop.body) == (200, True, b"")
+
+
+def test_a_page_declaring_a_size_past_the_limit_is_refused_at_its_headers(trickle: tuple[int, list[str]]) -> None:
+    port, _ = trickle
+    started = time.monotonic()
+    hop = _hop(port, "/page", max_bytes=100_000)
+    assert (hop.status, hop.too_large, hop.body) == (200, True, b"")
+    assert time.monotonic() - started < 2, "the body was read instead of refused at the headers"
+
+
+def test_a_redirect_declaring_a_large_body_is_still_handed_back(trickle: tuple[int, list[str]]) -> None:
+    port, _ = trickle
+    hop = _hop(port, "/moved", max_bytes=100_000)
+    assert hop.status == 302
+    assert fetch_strategy._header(hop.headers, "Location") == "/page"
+
+
+def test_a_page_within_the_limit_is_not_capped_by_an_earlier_hops_limit(port: int) -> None:
+    pin = _loopback(port)
+    session = Session(impersonate="chrome", timeout=5, trust_env=False)
+    try:
+        for max_bytes in (100_000, None):
+            url, session.curl_options = _curl_pinned_request(f"http://127.0.0.1:{port}/page", pin)
+            hop = _curl_hop(session, threading.Lock(), url, {}, 5, max_bytes, pin)
+        assert (hop.status, hop.too_large, hop.body) == (200, False, BODY)
+    finally:
+        session.close()
+
+
+async def test_a_walk_skips_a_page_declaring_a_size_past_the_limit_without_trying_another_profile(
+    trickle: tuple[int, list[str]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port, hits = trickle
+
+    async def resolve(url: str) -> PublicTarget:
+        return _loopback(port)
+
+    monkeypatch.setattr(fetch_strategy, "resolve_target", resolve)
+    monkeypatch.setattr(fetch_strategy, "_CURL_PROFILES", ["chrome", "safari", "edge"])
+    walk = _HopWalk(url=f"http://127.0.0.1:{port}/page", referer=None, extra_headers=None, allow_hop=None,
+                    validators_for=None, max_bytes=100_000)
+
+    result = await _hops_curl_cffi(walk, 5, logging.getLogger("test_curl_hop"))
+
+    assert result is not None
+    assert result.headers.get("X-Fetch-Skip-Reason") == "max_size_exceeded"
+    assert hits == ["/page"]
 
 
 def test_a_redirect_is_handed_back_not_followed(port: int) -> None:
