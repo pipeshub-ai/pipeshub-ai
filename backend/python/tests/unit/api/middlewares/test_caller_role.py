@@ -8,6 +8,7 @@ import httpx
 import pytest
 from jose import jwt
 
+from app.api.middlewares import caller_role
 from app.api.middlewares.caller_role import (
     CALLER_ROLE_PATH,
     SERVICE_AUTHORIZATION_HEADER,
@@ -115,6 +116,19 @@ class TestFetchCallerRole:
         with _node(handler):
             result = await fetch_caller_role(_request(_BEARER), _config_service())
         assert result == CallerRole(CallerRoleStatus.UNKNOWN)
+
+    async def test_an_unreadable_ca_bundle_fails_closed_without_calling_node(self) -> None:
+        seen: list = []
+        # The context is cached once built; start from none, and leave none behind.
+        caller_role._ssl_context.cache_clear()
+        with _node(_seen_by_node(seen)), patch(
+            "app.api.middlewares.caller_role.httpx.create_ssl_context",
+            side_effect=FileNotFoundError("no such CA file"),
+        ):
+            result = await fetch_caller_role(_request(_BEARER), _config_service())
+        caller_role._ssl_context.cache_clear()
+        assert result == CallerRole(CallerRoleStatus.UNKNOWN)
+        assert seen == []
 
     async def test_non_json_body_fails_closed(self):
         with _node(lambda _: httpx.Response(200, text="<html>")):

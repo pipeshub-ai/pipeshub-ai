@@ -147,7 +147,14 @@ async def fetch_caller_role(
     headers.update(await _service_credentials(config_service))
     url = f"{await _nodejs_endpoint(config_service)}{CALLER_ROLE_PATH}"
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS, verify=_ssl_context()) as client:
+        # A bad SSL_CERT_FILE or SSL_CERT_DIR raises OSError here; it must answer
+        # "unknown" (503), not escape as a refused token (401).
+        ssl_context = _ssl_context()
+    except OSError as exc:
+        logger.warning("Caller role SSL setup failed: %s", type(exc).__name__)
+        return _UNKNOWN
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS, verify=ssl_context) as client:
             response = await client.get(url, headers=headers)
     except httpx.HTTPError as exc:
         logger.warning("Caller role lookup failed: %s", type(exc).__name__)
