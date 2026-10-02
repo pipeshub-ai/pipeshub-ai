@@ -40889,6 +40889,24 @@ paths:
                     type: array
                     items:
                       type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        agentId:
+                          type: string
+                          nullable: true
+                        createdAt:
+                          type: string
+                        updatedAt:
+                          type: string
+                        botToken:
+                          type: string
+                          description: Masked. The stored bot token is not returned.
+                        signingSecret:
+                          type: string
+                          description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
         '403':
@@ -40918,12 +40936,72 @@ paths:
               schema:
                 type: object
                 properties:
-                  message:
+                  status:
                     type: string
+                  config:
+                    type: object
+                    description: The created configuration. botToken and signingSecret are masked.
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      agentId:
+                        type: string
+                        nullable: true
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      botToken:
+                        type: string
+                        description: Masked. The stored bot token is not returned.
+                      signingSecret:
+                        type: string
+                        description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
         '403':
           description: Forbidden - Admin access required
+
+  /configurationManager/internal/slack-bot:
+    get:
+      tags:
+        - Configuration Manager
+      summary: Get Slack bot credentials for signature verification
+      description: |
+        Service-to-service only. Requires the slack-bot:verify scope, which only
+        the Slack bot process mints. Returns the fields that process needs to
+        verify a request signature. Bot tokens and signing secrets are not masked.
+      operationId: getInternalSlackBotConfigs
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Slack bot credentials retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  configs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        agentId:
+                          type: string
+                          nullable: true
+                        botToken:
+                          type: string
+                        signingSecret:
+                          type: string
+        '401':
+          description: The scoped token was missing, invalid, or did not include slack-bot:verify
 
   /configurationManager/slack-bot/{configId}:
     put:
@@ -40956,8 +41034,29 @@ paths:
               schema:
                 type: object
                 properties:
-                  message:
+                  status:
                     type: string
+                  config:
+                    type: object
+                    description: The updated configuration. botToken and signingSecret are masked.
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      agentId:
+                        type: string
+                        nullable: true
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      botToken:
+                        type: string
+                        description: Masked. The stored bot token is not returned.
+                      signingSecret:
+                        type: string
+                        description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
         '403':
