@@ -1,5 +1,6 @@
 """An instance's inline `auth` holds credentials: non-admins never receive it, admins get it
-masked, and a masked value echoed back on update must never overwrite the stored secret."""
+masked, and a masked value echoed back on update must never overwrite the stored secret
+or be saved as a new one."""
 
 from __future__ import annotations
 
@@ -7,6 +8,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -26,6 +28,7 @@ def toolsets(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
         lambda cfg, **_: {k: (MASK if k in {"clientSecret", "apiKey"} else v) for k, v in cfg.items()},
     )
     monkeypatch.setattr(module, "is_redacted_placeholder", lambda v: v == MASK)
+    monkeypatch.setattr(module, "REDACTED_PLACEHOLDER", MASK)
     return module
 
 
@@ -37,6 +40,20 @@ class TestInstanceForResponse:
 
         assert safe["auth"] == {"clientId": "cid", "clientSecret": MASK}
         assert SECRET not in str(safe)
+
+    def test_nested_object_is_hidden_whole(self, toolsets: ModuleType) -> None:
+        instance = {"_id": "i1", "auth": {"baseUrl": "https://jira.example.com", "credentials": {"apiToken": SECRET}}}
+
+        safe = toolsets._instance_for_response(instance, is_admin=True)
+
+        assert safe["auth"] == {"baseUrl": "https://jira.example.com", "credentials": MASK}
+
+    def test_list_is_hidden_only_when_it_holds_an_object(self, toolsets: ModuleType) -> None:
+        instance = {"_id": "i1", "auth": {"scopes": ["read", "write"], "accounts": [{"password": SECRET}]}}
+
+        safe = toolsets._instance_for_response(instance, is_admin=True)
+
+        assert safe["auth"] == {"scopes": ["read", "write"], "accounts": MASK}
 
     def test_non_admin_gets_no_inline_auth_at_all(self, toolsets: ModuleType) -> None:
         instance = {"_id": "i1", "instanceName": "n", "auth": {"clientId": "cid", "clientSecret": SECRET}}
@@ -72,8 +89,56 @@ class TestKeepStoredSecrets:
             "clientSecret": "rotated"
         }
 
+    def test_masked_nested_object_keeps_the_stored_one(self, toolsets: ModuleType) -> None:
+        stored = {"baseUrl": "old", "credentials": {"apiToken": SECRET}}
+
+        merged = toolsets._keep_stored_secrets({"baseUrl": "new", "credentials": MASK}, stored)
+
+        assert merged == {"baseUrl": "new", "credentials": {"apiToken": SECRET}}
+
     def test_masked_value_without_a_stored_secret_is_dropped(self, toolsets: ModuleType) -> None:
         assert toolsets._keep_stored_secrets({"clientSecret": MASK}, None) == {}
+
+
+class TestOAuthConfigSave:
+    async def _save(
+        self, toolsets: ModuleType, auth_config: dict, stored: list[dict], oauth_config_id: str | None
+    ) -> None:
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(return_value=stored)
+        config_service.set_config = AsyncMock()
+        with patch.object(toolsets, "_prepare_toolset_auth_config", new=AsyncMock(side_effect=lambda cfg, *_: cfg)):
+            await toolsets._create_or_update_toolset_oauth_config(
+                toolset_type="jira",
+                auth_config={"type": "OAUTH", **auth_config},
+                instance_name="Jira",
+                user_id="u1",
+                org_id="o1",
+                config_service=config_service,
+                registry=MagicMock(),
+                base_url="https://app.example.com",
+                oauth_config_id=oauth_config_id,
+            )
+
+    @pytest.mark.parametrize("key", ["clientSecret", "client_secret", "clientsecret"])
+    async def test_masked_secret_keeps_the_stored_one_in_every_spelling(self, toolsets: ModuleType, key: str) -> None:
+        stored = [{"_id": "cfg", "orgId": "o1", "config": {"clientId": "old-id", key: SECRET}}]
+
+        await self._save(toolsets, {"clientId": "new-id", key: MASK}, stored, "cfg")
+
+        assert stored[0]["config"] == {"clientId": "new-id", key: SECRET}
+
+    @pytest.mark.parametrize("oauth_config_id", [None, "inherited-or-deleted"])
+    async def test_masked_value_is_never_saved_as_a_new_config(
+        self, toolsets: ModuleType, oauth_config_id: str | None
+    ) -> None:
+        stored: list[dict] = []
+
+        with pytest.raises(HTTPException) as exc:
+            await self._save(toolsets, {"clientId": "cid", "clientSecret": MASK}, stored, oauth_config_id)
+
+        assert exc.value.status_code == 400
+        assert stored == []
 
 
 class TestListInstances:
@@ -116,6 +181,15 @@ class TestWithTheRealEditionMasker:
 
         assert SECRET not in str(safe)
         assert safe["auth"] == {"clientId": "cid", "clientSecret": edition.REDACTED_PLACEHOLDER}
+
+    def test_admin_response_never_carries_a_nested_secret(self) -> None:
+        from app.api.routes import toolsets
+
+        safe = toolsets._instance_for_response(
+            {"_id": "i1", "auth": {"credentials": {"clientSecret": SECRET, "apiToken": SECRET}}}, is_admin=True
+        )
+
+        assert SECRET not in str(safe)
 
     def test_echoing_the_masked_value_back_keeps_the_stored_secret(self) -> None:
         import app.edition_config as edition

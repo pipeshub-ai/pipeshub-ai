@@ -35,6 +35,7 @@ from app.connectors.core.base.token_service.oauth_service import (
 from app.connectors.core.registry.auth_builder import OAuthScopeType
 from app.edition_containers import ConnectorAppContainer
 from app.edition_config import (
+    REDACTED_PLACEHOLDER,
     check_user_is_admin,
     get_oauth_credentials_for_toolset,
     get_toolset_by_id,
@@ -223,6 +224,18 @@ def _validate_dict(value: object, field_name: str, *, allow_empty: bool = True) 
     return value
 
 
+def _holds_object(value: object) -> bool:
+    return isinstance(value, dict) or (isinstance(value, list) and any(_holds_object(v) for v in value))
+
+
+def _mask_inline_auth(auth: dict[str, Any]) -> dict[str, Any]:
+    """Edition masking, with any nested object hidden whole: the masker reads top-level keys only."""
+    return {
+        key: REDACTED_PLACEHOLDER if _holds_object(value) else value
+        for key, value in mask_oauth_secrets(auth).items()
+    }
+
+
 def _instance_for_response(instance: dict[str, Any], *, is_admin: bool) -> dict[str, Any]:
     """Copy of *instance* that is safe to return.
 
@@ -234,7 +247,7 @@ def _instance_for_response(instance: dict[str, Any], *, is_admin: bool) -> dict[
     safe = {k: v for k, v in instance.items() if k != "auth"}
     auth = instance["auth"]
     if is_admin and isinstance(auth, dict) and auth:
-        safe["auth"] = mask_oauth_secrets(auth)
+        safe["auth"] = _mask_inline_auth(auth)
     return safe
 
 
@@ -792,6 +805,8 @@ async def _create_or_update_toolset_oauth_config(
                     for k, v in enriched.items():
                         if k == "type":
                             continue  # Skip type field
+                        if is_redacted_placeholder(v):
+                            continue  # A masked value echoed back keeps what is stored
                         if k == "clientSecret" and (
                             not v or not str(v).strip() or is_redacted_placeholder(v)
                         ):
@@ -807,6 +822,8 @@ async def _create_or_update_toolset_oauth_config(
             logger.warning("OAuth config not found, creating new one")
 
         # Create new OAuth config
+        if any(is_redacted_placeholder(v) for v in auth_config.values()):
+            raise InvalidAuthConfigError("a masked value cannot be saved. Enter the value again.")
         enriched = await _prepare_toolset_auth_config(
             auth_config, toolset_type, registry, config_service, base_url
         )
@@ -834,6 +851,8 @@ async def _create_or_update_toolset_oauth_config(
         await config_service.set_config(path, oauth_configs)
         return new_cfg["_id"]
 
+    except InvalidAuthConfigError:
+        raise
     except Exception as e:
         logger.error(f"Error creating/updating toolset OAuth config: {e}", exc_info=True)
         return None
