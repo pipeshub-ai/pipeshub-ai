@@ -119,4 +119,4 @@ class TestToolQuestion:
     def test_the_mcp_server_received_the_call(self, order_turn) -> None:
         _trace, calls = order_turn
         asked = [str((c.get("arguments") or {}).get("order_id", "")) for c in calls if c.get("tool") == ORDER_TOOL]
-        assert any("5821" in order_id for order_id in asked), f"calls the MCP server saw: {calls}"
+        assert any(order_id.strip().upper() == _ORDER_ID for order_id in asked), f"calls the MCP server saw: {calls}"

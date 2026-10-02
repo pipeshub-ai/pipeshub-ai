@@ -267,6 +267,9 @@ def personal_access_token(pipeshub_client: PipeshubClient) -> Iterator[str]:
         yield token["accessToken"]
     finally:
         try:
-            requests.delete(f"{base_url}{PATS}/{token['id']}", headers=headers, timeout=30)
+            revoked = requests.delete(f"{base_url}{PATS}/{token['id']}", headers=headers, timeout=30)
+            # 404: already revoked. Anything else unsuccessful leaves a 30-day token live.
+            if revoked.status_code >= 300 and revoked.status_code != 404:
+                logger.warning("could not revoke personal access token %s: HTTP %s", token["id"], revoked.status_code)
         except Exception:  # noqa: BLE001 - teardown must not mask test results
             logger.warning("could not revoke personal access token %s", token["id"])

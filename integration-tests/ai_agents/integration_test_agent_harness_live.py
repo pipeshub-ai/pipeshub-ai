@@ -41,7 +41,8 @@ from helper.clients.conversations_client import ConversationsClient
 pytestmark = [pytest.mark.integration, pytest.mark.ai_agents]
 
 _SKILL = "docx"
-_SKILL_TOOLS = ("load_skill", "skill_search", "skills_list", "load_skill_resource")
+# Calls that load a skill; searching for or listing skills is not loading one.
+_SKILL_TOOLS = ("load_skill", "load_skill_resource")
 _FILE = f"it-harness-brief-{uuid.uuid4().hex[:6]}.docx"
 _ZIP_MAGIC = b"PK"
 
