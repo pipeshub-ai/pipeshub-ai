@@ -562,6 +562,24 @@ class TestGetNodes:
         assert result.success is True
 
     @pytest.mark.asyncio
+    async def test_gmail_weburl_placeholder_resolved_to_viewer_email(self, service, mock_graph_provider):
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "uk1", "email": "viewer@acme.com"}
+        placeholder_url = "https://mail.google.com/mail?authuser={user.email}#all/m1"
+        mock_graph_provider.get_knowledge_hub_search.return_value = {
+            "nodes": [
+                {"id": "r1", "nodeType": "record", "origin": "CONNECTOR",
+                 "connector": "GMAIL WORKSPACE", "webUrl": placeholder_url},
+                {"id": "r2", "nodeType": "record", "origin": "CONNECTOR",
+                 "connector": "DRIVE", "webUrl": placeholder_url},
+            ],
+            "total": 2,
+        }
+        mock_graph_provider.get_knowledge_hub_filter_options.return_value = {"apps": []}
+        result = await service.get_nodes(user_id="u1", org_id="o1", q="invoice")
+        assert result.items[0].webUrl == "https://mail.google.com/mail?authuser=viewer@acme.com#all/m1"
+        assert result.items[1].webUrl == placeholder_url
+
+    @pytest.mark.asyncio
     async def test_search_scoped_with_flattening_filters(self, service, mock_graph_provider):
         mock_graph_provider.get_user_by_user_id.return_value = {"_key": "uk1"}
         mock_graph_provider.get_knowledge_hub_search.return_value = {
@@ -808,14 +826,24 @@ class TestGetBreadcrumbs:
             {"id": "r", "name": "Root", "nodeType": "app"},
             {"id": "f", "name": "Folder", "nodeType": "folder", "subType": None},
         ]
-        result = await service._get_breadcrumbs("f")
+        result = await service._get_breadcrumbs("f", "user-1", "org-1")
         assert len(result) == 2
         assert isinstance(result[0], BreadcrumbItem)
 
     @pytest.mark.asyncio
+    async def test_forwards_the_caller_identity(self, service, mock_graph_provider):
+        """Breadcrumbs are permission-filtered by the provider, so dropping the user here
+        would silently restore the leak this filtering exists to close."""
+        mock_graph_provider.get_knowledge_hub_breadcrumbs.return_value = []
+        await service._get_breadcrumbs("f", "user-1", "org-1")
+        kwargs = mock_graph_provider.get_knowledge_hub_breadcrumbs.await_args.kwargs
+        assert kwargs["user_key"] == "user-1"
+        assert kwargs["org_id"] == "org-1"
+
+    @pytest.mark.asyncio
     async def test_returns_empty_on_error(self, service, mock_graph_provider):
         mock_graph_provider.get_knowledge_hub_breadcrumbs.side_effect = RuntimeError("fail")
-        result = await service._get_breadcrumbs("n1")
+        result = await service._get_breadcrumbs("n1", "user-1", "org-1")
         assert result == []
 
 

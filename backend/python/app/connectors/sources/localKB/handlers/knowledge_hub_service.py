@@ -28,7 +28,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     SortField,
     SortOrder,
 )
-from app.models.entities import RecordType
+from app.models.entities import RecordType, substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.indexing_progress import (
@@ -295,6 +295,11 @@ class KnowledgeHubService:
                 if include and 'availableFilters' in include:
                     available_filters = await self._get_available_filters(user_key, org_id, excluded)
 
+            user_email = user.get('email')
+            for item in items:
+                if item.webUrl:
+                    item.webUrl = substitute_user_email(item.webUrl, user_email, item.connector)
+
             # Permissions are now included directly from queries (userRole field)
             # No need for separate batch permission fetch
 
@@ -377,7 +382,7 @@ class KnowledgeHubService:
                     response.filters.available = available_filters
 
                 if 'breadcrumbs' in include and parent_id:
-                    response.breadcrumbs = await self._get_breadcrumbs(parent_id)
+                    response.breadcrumbs = await self._get_breadcrumbs(parent_id, user_key, org_id)
 
                 if 'counts' in include:
                     # TODO(Counts): Per-type breakdown only reflects current page items, not all
@@ -827,13 +832,17 @@ class KnowledgeHubService:
             )
         return None
 
-    async def _get_breadcrumbs(self, node_id: str) -> list[BreadcrumbItem]:
+    async def _get_breadcrumbs(
+        self, node_id: str, user_key: str, org_id: str
+    ) -> list[BreadcrumbItem]:
         """
-        Get breadcrumb trail for a node using the optimized provider method.
+        Get breadcrumb trail for a node, filtered to what this user can see.
         """
         try:
             # Use the provider's optimized AQL query
-            breadcrumbs_data = await self.graph_provider.get_knowledge_hub_breadcrumbs(node_id=node_id)
+            breadcrumbs_data = await self.graph_provider.get_knowledge_hub_breadcrumbs(
+                node_id=node_id, user_key=user_key, org_id=org_id
+            )
 
             # Convert to BreadcrumbItem objects
             return [

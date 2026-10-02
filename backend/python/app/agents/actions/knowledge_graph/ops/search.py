@@ -34,6 +34,13 @@ from app.utils.chat_helpers import (
     get_flattened_results,
     get_record_id_shortener_if_enabled,
 )
+from app.utils.pattern_match import (
+    await_pattern_match,
+    cancel_task_if_running,
+    merge_pattern_match_results,
+    render_pattern_match_hint,
+    run_pattern_match_with_llm_grep,
+)
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
@@ -226,6 +233,8 @@ async def execute_search(
     if time_error is not None:
         return time_error
 
+    # Declared outside the try so the finally can always cancel it.
+    pattern_match_task: asyncio.Task[list[dict[str, Any]]] | None = None
     try:
         logger_instance = state.get("logger", logger)
         logger_instance.info("knowledgegraph__search: query=%r", query[:100])
@@ -316,6 +325,59 @@ async def execute_search(
                     "results": [],
                     "result_count": 0,
                 })
+
+        def _empty_result() -> str:
+            if failed_sources:
+                # Nothing found where the search ran, but some sources were never searched.
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"{failed_sources} of the sources you named could not be searched "
+                        "and the rest returned nothing, so this does not show the information is missing. "
+                        "Try again, or search with source_ids omitted."
+                    ),
+                    "results": [],
+                    "result_count": 0,
+                })
+            message = "No results found"
+            # The model picks sources by name, and a name rarely says what a
+            # source holds, so an empty narrowed search says little about
+            # whether the answer exists. source_ids stays a hard filter; the
+            # model is told to look everywhere before concluding, as with dates.
+            if narrowed_scope is not None and filter_groups != base_scope.to_filter_groups():
+                message = NARROWED_SEARCH_EMPTY_MESSAGE
+            notes = _entity_notes(
+                unknown_entity_ids=unknown_entity_ids,
+                filter_dropped=False,
+                record_scope_applied=bool(virtual_record_ids_from_tool),
+                scope_truncated=entity_scope_truncated,
+            )
+            if notes:
+                message = f"{message}\n\n{notes.strip()}"
+            return json.dumps({
+                "status": "success",
+                "message": message,
+                "results": [],
+                "result_count": 0,
+            })
+
+        # Grep knows nothing of entity scope, so an entity-scoped search would
+        # be widened by its hits; it runs only for unscoped-by-entity searches.
+        entity_scoped = bool(entity_filter_groups or record_scoped_entities)
+        if config_service is not None and not entity_scoped:
+            pattern_match_task = asyncio.create_task(
+                run_pattern_match_with_llm_grep(
+                    query=query,
+                    config_service=config_service,
+                    org_id=org_id,
+                    user_id=user_id,
+                    graph_provider=graph_provider,
+                    filters=filter_groups,
+                    logger_instance=logger_instance,
+                    llm=state.get("llm"),
+                    user_query=state.get("query"),
+                )
+            )
 
         is_service_account = bool(state.get("is_service_account", False))
         fan_out_sources = explicit_ids and (len(resolved_apps) > 1 or len(resolved_kbs) > 1)
@@ -426,10 +488,12 @@ async def execute_search(
                 })
             return results.get("searchResults", []), results.get("virtual_to_record_map", {}), None
 
+        entity_filter_dropped = False
         search_results, virtual_to_record_map, error_json = await _attempt(
             entity_filter_groups, virtual_record_ids_from_tool,
         )
         if error_json is not None:
+            await cancel_task_if_running(pattern_match_task)
             return error_json
 
         # Entity filters are a hard AND constraint at the graph layer — if no
@@ -437,7 +501,6 @@ async def execute_search(
         # extraction/linking gap), the candidate set is empty even though
         # content-matching documents exist. Retry once without them, and say
         # so in the result so the model does not treat it as entity-scoped.
-        entity_filter_dropped = False
         if not search_results and entity_filter_groups:
             logger_instance.info(
                 "knowledgegraph__search: entity-filtered search returned zero "
@@ -451,62 +514,29 @@ async def execute_search(
                 {}, virtual_record_ids_from_tool,
             )
             if fallback_error is not None:
+                await cancel_task_if_running(pattern_match_task)
                 return fallback_error
             if fallback_results:
                 search_results, virtual_to_record_map = fallback_results, fallback_map
                 entity_filter_dropped = True
 
-        if not search_results and failed_sources:
-            # Nothing found where the search ran, but some sources were never searched.
-            return json.dumps({
-                "status": "error",
-                "message": (
-                    f"{failed_sources} of the sources you named could not be searched "
-                    "and the rest returned nothing, so this does not show the information is missing. "
-                    "Try again, or search with source_ids omitted."
-                ),
-                "results": [],
-                "result_count": 0,
-            })
+        raw_pattern_records: list[dict[str, Any]] = []
+        if pattern_match_task is not None:
+            raw_pattern_records = await await_pattern_match(pattern_match_task, logger_instance)
+            if raw_pattern_records:
+                logger_instance.info(
+                    "Pattern match: %d raw record(s)", len(raw_pattern_records),
+                )
 
-        if not search_results:
-            message = "No results found"
-            # The model picks sources by name, and a name rarely says what a
-            # source holds, so an empty narrowed search says little about
-            # whether the answer exists. source_ids stays a hard filter; the
-            # model is told to look everywhere before concluding, as with dates.
-            if narrowed_scope is not None and filter_groups != base_scope.to_filter_groups():
-                message = NARROWED_SEARCH_EMPTY_MESSAGE
-            notes = _entity_notes(
-                unknown_entity_ids=unknown_entity_ids,
-                filter_dropped=False,
-                record_scope_applied=bool(virtual_record_ids_from_tool),
-                scope_truncated=entity_scope_truncated,
-            )
-            if notes:
-                message = f"{message}\n\n{notes.strip()}"
-            return json.dumps({
-                "status": "success",
-                "message": message,
-                "results": [],
-                "result_count": 0,
-            })
+        if not search_results and not raw_pattern_records:
+            return _empty_result()
 
         blob_store = BlobStorage(
             logger=logger_instance,
             config_service=config_service,
             graph_provider=graph_provider,
         )
-        is_multimodal_llm = False
-        try:
-            llm_config = state.get("llm")
-            if hasattr(llm_config, "model_name"):
-                model_name = str(llm_config.model_name).lower()
-                is_multimodal_llm = any(m in model_name for m in [
-                    "gpt-4-vision", "gpt-4o", "claude-3", "gemini-pro-vision",
-                ])
-        except Exception:
-            pass
+        is_multimodal_llm = bool(state.get("is_multimodal_llm", False))
 
         virtual_record_id_to_result: dict[str, Any] = {}
         flattened_results = await get_flattened_results(
@@ -534,6 +564,36 @@ async def execute_search(
         final_results = search_results if not flattened_results else flattened_results
         if not per_source_fan_out:
             final_results = final_results[:adjusted_limit]
+
+        pm_record_entries: list[dict[str, Any]] = []
+        if raw_pattern_records:
+            try:
+                pm_record_entries = await merge_pattern_match_results(
+                    raw_records=raw_pattern_records,
+                    virtual_record_id_to_result=virtual_record_id_to_result,
+                    user_id=user_id,
+                    org_id=org_id,
+                    blob_store=blob_store,
+                    graph_provider=graph_provider,
+                    is_multimodal_llm=is_multimodal_llm,
+                    logger_instance=logger_instance,
+                    time_range=time_range,
+                    filters=filter_groups,
+                    config_service=config_service,
+                )
+                if pm_record_entries:
+                    logger_instance.info(
+                        "Pattern match: %d record(s) found via grep", len(pm_record_entries),
+                    )
+            except Exception as exc:
+                logger_instance.warning(
+                    "Pattern match merge failed, continuing with semantic results only: %s", exc,
+                )
+
+        # Grep hits can all be dropped by the merge (permissions, time range);
+        # that is still an empty search and must answer like one.
+        if not final_results and not pm_record_entries:
+            return _empty_result()
 
         # Accumulate into state for citation pipeline
         from app.agents.actions.retrieval.retrieval import _dedupe_append_final_results
@@ -633,19 +693,42 @@ async def execute_search(
             record_scope_applied=bool(virtual_record_ids_from_tool),
             scope_truncated=entity_scope_truncated,
         )
-        summary = (
-            f"Top {len(final_results)} block{'s' if len(final_results) != 1 else ''} "
-            f"from {len(virtual_record_id_to_result)} record{'s' if len(virtual_record_id_to_result) != 1 else ''} "
-            "(ranked sample — other records may match).\n\n"
-            f"{entity_notes}"
-            f"{coverage_note}"
-        )
+        has_semantic_blocks = len(final_results) > 0
+        if has_semantic_blocks:
+            summary = (
+                f"Top {len(final_results)} block{'s' if len(final_results) != 1 else ''} "
+                f"from {len(virtual_record_id_to_result)} record{'s' if len(virtual_record_id_to_result) != 1 else ''} "
+                "(ranked sample — other records may match).\n\n"
+                f"{entity_notes}"
+                f"{coverage_note}"
+            )
+        else:
+            n_pm = len(pm_record_entries)
+            summary = (
+                f"No content blocks from semantic search, but {n_pm} "
+                f"record{'s' if n_pm != 1 else ''} found via keyword matching. "
+                "Review the record names below and fetch the most relevant "
+                "one(s) directly.\n\n"
+                f"{entity_notes}"
+            )
         from app.agents.actions.retrieval.retrieval import compose_result_tail
+        try:
+            pm_hint = render_pattern_match_hint(
+                pm_record_entries, virtual_record_id_to_result,
+                has_semantic_blocks=has_semantic_blocks,
+            )
+        except Exception as exc:
+            # The semantic answer above is complete without the hint.
+            logger_instance.warning("Pattern match hint failed, omitting it: %s", exc)
+            pm_hint = ""
         return summary + "\n".join(formatted_records) + compose_result_tail(
             virtual_record_id_to_result, candidate_suffix,
-        )
+        ) + pm_hint
 
     except Exception as exc:
         logger_instance = state.get("logger", logger) if state else logger
         logger_instance.error("knowledgegraph__search error: %s", exc, exc_info=True)
         return json.dumps({"status": "error", "message": f"Search error: {exc}"})
+    finally:
+        # No-op once awaited; stops the grep + LLM call when semantic search fails.
+        await cancel_task_if_running(pattern_match_task)

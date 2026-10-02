@@ -65,7 +65,7 @@ def _make_kb_service():
         logger=logger,
         graph_provider=graph_provider,
         kafka_service=kafka_service,
-        processor=processor,
+        processor_for_kb=AsyncMock(return_value=processor),
     )
 
 
@@ -367,7 +367,7 @@ class TestKnowledgeBaseService:
 
         result = await svc.create_folder_in_kb("kb-1", "Docs", "user-1", "org-1")
         assert result["success"] is True
-        svc.processor.on_new_records.assert_awaited_once()
+        svc.processor_for_kb.return_value.on_new_records.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_create_folder_name_conflict(self):

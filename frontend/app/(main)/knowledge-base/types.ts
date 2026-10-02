@@ -415,6 +415,8 @@ export interface KnowledgeHubApiResponse {
   breadcrumbs?: Breadcrumb[];
   counts?: NodeCounts;
   permissions?: NodePermissions;
+  /** Deepest a collection folder may be nested; a folder directly in the collection is depth 1. */
+  maxFolderDepth?: number;
 }
 
 /**

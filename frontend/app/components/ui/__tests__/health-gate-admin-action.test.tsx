@@ -30,6 +30,9 @@ vi.mock('@/lib/store/user-store', () => ({
   useUserStore: (selector: (s: unknown) => unknown) => selector(undefined),
 }));
 
+let shouldPoll = true;
+vi.mock('@/config', () => ({ useShouldPollServiceHealth: () => shouldPoll }));
+
 // The component reads plain selectors and store methods from the same hook.
 const healthState = {
   startBackgroundPolling: vi.fn(),
@@ -54,11 +57,54 @@ import { HealthGate } from '../health-gate';
 beforeEach(() => {
   toastError.mockClear();
   toastUpdate.mockClear();
+  healthState.startBackgroundPolling.mockClear();
+  healthState.stopBackgroundPolling.mockClear();
 });
 
 afterEach(() => {
   cleanup();
   isAdmin = null;
+  shouldPoll = true;
+});
+
+describe('service health polling', () => {
+  it('never polls for a user outside the operator org', () => {
+    shouldPoll = false;
+    render(
+      <HealthGate>
+        <div>body</div>
+      </HealthGate>,
+    );
+
+    expect(healthState.startBackgroundPolling).not.toHaveBeenCalled();
+    expect(featureFlagsState.fetchFlags).toHaveBeenCalled();
+  });
+
+  it('starts once eligibility resolves and stops if it is lost', () => {
+    shouldPoll = false;
+    const view = render(
+      <HealthGate>
+        <div>body</div>
+      </HealthGate>,
+    );
+    expect(healthState.startBackgroundPolling).not.toHaveBeenCalled();
+
+    shouldPoll = true;
+    view.rerender(
+      <HealthGate>
+        <div>body</div>
+      </HealthGate>,
+    );
+    expect(healthState.startBackgroundPolling).toHaveBeenCalledTimes(1);
+
+    shouldPoll = false;
+    view.rerender(
+      <HealthGate>
+        <div>body</div>
+      </HealthGate>,
+    );
+    expect(healthState.stopBackgroundPolling).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('the "View status" action on the services toast', () => {

@@ -1,7 +1,8 @@
 """Generic Connector Factory for creating and managing connectors"""
 
+import asyncio
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.connector.connector_service import (
@@ -97,8 +98,19 @@ from app.connectors.sources.mariadb.connector import MariaDBConnector
 from app.connectors.sources.smb.connector import SmbConnector
 
 
+if TYPE_CHECKING:
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+
+
 class ConnectorFactory:
     """Generic factory for creating and managing connectors"""
+
+    # Processors shared per (processor class, org) for connectors with
+    # shares_org_processor; keyed by class so edition subclasses never mix.
+    _shared_org_processors: dict[tuple[type, str], "DataSourceEntitiesProcessor"] = {}
+    _shared_org_processor_locks: dict[tuple[type, str], asyncio.Lock] = {}
 
     # Registry of available connectors
     _connector_registry: dict[str, type[BaseConnector]] = {
@@ -208,6 +220,36 @@ class ConnectorFactory:
         return cls._connector_registry.copy()
 
     @classmethod
+    async def _shared_org_processor(
+        cls,
+        processor_cls: type,
+        org_id: str,
+        logger: logging.Logger,
+        data_store_provider: GraphDataStore,
+        config_service: ConfigurationService,
+    ) -> "DataSourceEntitiesProcessor":
+        """The org's processor for this class, built and initialized on first use.
+
+        Only cached once initialize() succeeds, so a failed start (e.g. broker
+        down) is retried by the next caller rather than handed out half-built.
+        """
+        key = (processor_cls, org_id)
+        processor = cls._shared_org_processors.get(key)
+        if processor is not None:
+            return processor
+        # Per-key lock: concurrent first calls for one org build one processor,
+        # while other orgs' first calls are not serialized behind it.
+        lock = cls._shared_org_processor_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            processor = cls._shared_org_processors.get(key)
+            if processor is None:
+                processor = processor_cls(logger, data_store_provider, config_service)
+                processor.org_id = org_id
+                await processor.initialize()
+                cls._shared_org_processors[key] = processor
+        return processor
+
+    @classmethod
     async def create_connector(
         cls,
         name: str,
@@ -241,10 +283,23 @@ class ConnectorFactory:
             last_synced_by = kwargs.pop("last_synced_by", None)
             from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
             processor_cls = data_entities_processor_cls or DataSourceEntitiesProcessor
-            data_entities_processor = processor_cls(logger, data_store_provider, config_service)
-            if org_id:
-                data_entities_processor.org_id = org_id
-            await data_entities_processor.initialize()
+            # `is True`: a MagicMock connector class would otherwise opt in. A store
+            # scoped to another org (or to none, "") must never back a shared
+            # processor; OSS stores carry no org and are single-tenant.
+            store_org_id = getattr(data_store_provider, "org_id", None)
+            if (
+                org_id
+                and getattr(connector_class, "shares_org_processor", False) is True
+                and store_org_id in (None, org_id)
+            ):
+                data_entities_processor = await cls._shared_org_processor(
+                    processor_cls, org_id, logger, data_store_provider, config_service
+                )
+            else:
+                data_entities_processor = processor_cls(logger, data_store_provider, config_service)
+                if org_id:
+                    data_entities_processor.org_id = org_id
+                await data_entities_processor.initialize()
 
             thread_pool = kwargs.pop("thread_pool", None)
 

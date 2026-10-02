@@ -261,6 +261,21 @@ class TestEnsureConnector:
             assert result is None
 
 
+class TestGetOrInitConnector:
+    @pytest.mark.asyncio
+    async def test_delegates_to_ensure_connector(self, service):
+        mock_conn = MagicMock()
+        with patch.object(service, "_ensure_connector", AsyncMock(return_value=mock_conn)) as ensure:
+            result = await service.get_or_init_connector("kb", "kb1")
+        assert result is mock_conn
+        ensure.assert_awaited_once_with("kb", "kb1")
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_connector_cannot_be_built(self, service):
+        service.graph_provider.get_document = AsyncMock(return_value=None)
+        with patch.object(service, "_get_connector", return_value=None):
+            assert await service.get_or_init_connector("kb", "kb1") is None
+
 # ===========================================================================
 # process_event
 # ===========================================================================
