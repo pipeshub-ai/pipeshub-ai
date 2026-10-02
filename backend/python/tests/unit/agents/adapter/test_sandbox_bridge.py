@@ -105,9 +105,9 @@ def _make_context(**overrides: Any) -> AgentContext:
 
 
 class TestSandboxNetworkEnabled:
-    def test_defaults_to_enabled_when_unset(self, monkeypatch) -> None:
+    def test_defaults_to_disabled_when_unset(self, monkeypatch) -> None:
         monkeypatch.delenv("SANDBOX_ALLOW_NETWORK", raising=False)
-        assert sandbox_network_enabled() is True
+        assert sandbox_network_enabled() is False
 
     @pytest.mark.parametrize("value", ["false", "False", "0", "no", "off"])
     def test_falsy_values_disable_network(self, monkeypatch, value: str) -> None:

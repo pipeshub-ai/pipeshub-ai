@@ -1,6 +1,7 @@
 """``filter_accessible_record_ids`` against a real Neo4j and a real ArangoDB.
 
-Requires: docker compose -f tests/integration/compose/graph-db.yml up -d
+Requires: docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml up -d
+(from the repository root). The backend-matrix workflow runs this file on both graph backends.
 Run: pytest tests/integration/graph_db/ -m integration
 
 This gates what graph enrichment shows the LLM about records linked to a search
@@ -49,8 +50,8 @@ async def neo4j_provider():
     from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
-    uri = os.environ.get("NEO4J_TEST_URI", "bolt://localhost:7699")
-    password = os.environ.get("NEO4J_TEST_PASSWORD", "testpassword")
+    uri = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
+    password = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
     logger = _log()
     client = Neo4jClient(
         uri=uri, username="neo4j", password=password, database="neo4j", logger=logger
@@ -74,9 +75,9 @@ async def arango_provider():
     from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
     from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
-    url = os.environ.get("ARANGO_TEST_URL", "http://localhost:8539")
-    password = os.environ.get("ARANGO_TEST_PASSWORD", "testpassword")
-    db = os.environ.get("ARANGO_TEST_DB", "es")
+    url = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
+    password = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
+    db = "accessible_record_relations_it"
     logger = _log()
     client = ArangoHTTPClient(
         base_url=url, username="root", password=password, database=db, logger=logger

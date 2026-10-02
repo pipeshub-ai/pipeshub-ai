@@ -65,7 +65,6 @@ from app.config.constants.service import (
 from app.edition_config import (
     allowed_connector_list_scopes,
     annotate_oauth_inheritance,
-    assert_hard_delete_record_org,
     authorize_connector_stats,
     build_graph_data_store,
     default_connector_scope,
@@ -1133,36 +1132,6 @@ async def get_signed_url(
     except Exception as e:
         logger.error(f"Error getting signed URL: {repr(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=action_failed("open this file")) from e
-
-@router.delete("/api/v1/delete/record/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE))])
-@inject
-async def handle_record_deletion(
-    record_id: str,
-    request: Request,
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-) -> dict | None:
-    try:
-        await assert_hard_delete_record_org(request, graph_provider, record_id)
-        response = await graph_provider.delete_records_and_relations(
-            record_id, hard_delete=True
-        )
-        if not response:
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This file")
-            )
-        return {
-            "status": "success",
-            "message": "Record deleted successfully",
-            "response": response,
-        }
-    except HTTPException as he:
-        raise he  # Re-raise HTTP exceptions as-is
-    except Exception as e:
-        logger.error(f"Error deleting record: {str(e)}")
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=action_failed("delete this file"),
-        ) from e
 
 @router.get("/api/v1/internal/stream/record/{record_id}/", response_model=None)
 @inject
@@ -2279,6 +2248,19 @@ async def delete_record(
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail="You do not have access to this record",
+            )
+
+        # Only uploads are role-checked by the providers, and a synced record deleted here
+        # would return on the next sync, so those are removed at the source instead.
+        record = has_access.get("record") or {}
+        if (
+            record.get("origin") != OriginTypes.UPLOAD.value
+            and record.get("connectorName") != Connectors.KNOWLEDGE_BASE.value
+        ):
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only files uploaded to a knowledge base can be deleted here. To remove a record "
+                "synced from a connector, delete the item in the source app or remove the connector.",
             )
 
         result = await graph_provider.delete_record(
@@ -4426,6 +4408,15 @@ async def get_connector_instance_config(
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=not_found("This connector")
+            )
+
+        # The config carries the owner's credentials, so being able to see a personal
+        # connector (as a share recipient can, in the enterprise edition) is not enough to read it.
+        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.warning(f"Config read refused for personal connector {connector_id}: caller is not its creator")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the person who created this connector can view its configuration",
             )
 
         connector_type = instance.get("type", "")

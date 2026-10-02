@@ -1151,7 +1151,7 @@ class TestUpdateRecord:
 
         result = await service.update_record("user1", "rec1", {})
         assert result == {"success": False, "code": 500, "reason": action_failed("update this file")}
-        service.processor.on_record_metadata_update.assert_not_awaited()
+        service.processor_for_kb.return_value.on_record_metadata_update.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_ignores_unmapped_update_keys(self, service):
@@ -1305,7 +1305,41 @@ class TestDeleteRecordsInFolder:
 
         result = await service.delete_records_in_folder("kb1", "f1", ["r1"], "user1")
         assert result["success"] is True
-        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(["r1"], "kb1")
+        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
+            ["r1"], "kb1", within_folder_id="f1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_delete_is_scoped_to_the_folder_in_the_same_query(self, service):
+        """The cascade gets the folder, so containment is checked where the delete runs."""
+        _setup_writer(service)
+        service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+
+        await service.delete_records_in_folder("kb1", "f1", ["in-f1", "in-f2"], "user1")
+
+        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
+            ["in-f1", "in-f2"], "kb1", within_folder_id="f1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_only_ids_outside_the_folder_answers_404(self, service):
+        _setup_writer(service)
+        service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+        # What the real cascade reports when no root passed the containment check.
+        service.processor_for_kb.return_value.on_records_deleted_cascade = AsyncMock(return_value={
+            "success": True, "deleted_records": [], "total_requested": 2,
+            "successfully_deleted": 0, "failed_count": 2,
+            "failed_records": [
+                {"record_id": "in-f2", "reason": "Validation failed"},
+                {"record_id": "root", "reason": "Validation failed"},
+            ],
+        })
+
+        result = await service.delete_records_in_folder("kb1", "f1", ["in-f2", "root"], "user1")
+
+        assert result["success"] is False
+        assert result["code"] == 404
+        assert {f["record_id"] for f in result["failed_records"]} == {"in-f2", "root"}
 
     @pytest.mark.asyncio
     async def test_insufficient_permission(self, service):
@@ -2845,7 +2879,7 @@ class TestFolderDepthLimit:
 
         assert result["code"] == 400
         assert result["reason"] == FOLDER_DEPTH_LIMIT_REASON
-        service.processor.on_new_records.assert_not_awaited()
+        service.processor_for_kb.return_value.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_upload_past_the_limit_creates_nothing(self, service):
@@ -2857,7 +2891,7 @@ class TestFolderDepthLimit:
         )
 
         assert result["code"] == 400
-        service.processor.on_new_records.assert_not_awaited()
+        service.processor_for_kb.return_value.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_move_folder_whose_subtree_would_pass_the_limit_is_rejected(self, service):

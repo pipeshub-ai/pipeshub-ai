@@ -8,7 +8,7 @@ the record as one of them, through the same access check search and chat use.
 
   order 1  TC-DRV-PERM-001  — a file nobody was given stays with its owner
   order 2  TC-DRV-PERM-002  — a file shared with the second user opens for them
-  order 3  TC-DRV-PERM-003  — shared with everyone in the domain (known gap, xfail)
+  order 3  TC-DRV-PERM-003  — shared with everyone in the domain: grants no access (by decision)
   order 4  TC-DRV-PERM-004  — taking the share away removes their access, not the owner's
 """
 
@@ -33,7 +33,7 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (  # no
 )
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import wait_for_sync_completion  # noqa: E402
-from helper.record_access import AccessDenied, wait_for_record_access  # noqa: E402
+from helper.record_access import wait_for_record_access  # noqa: E402
 from pipeshub_client import PipeshubClient  # noqa: E402
 
 pytestmark = [
@@ -92,26 +92,22 @@ class TestDriveWorkspacePermissions:
         )
 
     @pytest.mark.order(3)
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AccessDenied,
-        reason=(
-            "Domain-wide Drive shares are dropped: the connector maps them to a DOMAIN "
-            "permission, and the step that writes permission edges has that branch "
-            "commented out, so no colleague is ever granted access. Everyone in the "
-            "domain can open the file in Drive; nobody but the owner can in PipesHub."
-        ),
-    )
-    async def test_tc_drv_perm_003_domain_share_opens_for_colleague(
+    async def test_tc_drv_perm_003_domain_share_grants_no_access(
         self, drive_workspace_permission_connector: dict[str, Any]
     ) -> None:
+        """A file shared with everyone in the Drive domain stays with its owner here.
+
+        Domain-wide, "anyone" and "anyone with the link" shares are deliberately
+        not turned into access in PipesHub. This guards that decision: a change
+        that started mapping domain shares to access would fail here.
+        """
         state = drive_workspace_permission_connector
         if "domain_share_error" in state:
             pytest.skip(f"Workspace refused a domain-wide share: {state['domain_share_error']}")
 
         wait_for_record_access(
-            state["reader"], state["domain_record_id"], expect_access=True,
-            description="a file shared with everyone in their domain",
+            state["reader"], state["domain_record_id"], expect_access=False,
+            description="a file shared only with everyone in their domain",
             timeout=60,
         )
 

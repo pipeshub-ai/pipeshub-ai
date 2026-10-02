@@ -1658,6 +1658,45 @@ class TestStreamRecord:
             result = await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
             mock_stream.assert_called_once()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("file_name", ["file.docx", "../../file.docx", "/etc/file.docx"])
+    async def test_stream_regular_file_to_pdf_writes_inside_temp_dir(self, connector, file_name):
+        record = MagicMock(spec=Record)
+        record.external_record_id = "file-1"
+        record.record_name = file_name
+        record.id = "rec-1"
+
+        mock_service = MagicMock()
+        connector._get_drive_service_for_user = AsyncMock(return_value=mock_service)
+        connector._get_file_metadata_from_drive = AsyncMock(return_value={
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        })
+        connector._convert_to_pdf = AsyncMock(return_value="/tmp/test_dir/file.pdf")
+
+        user_perm = MagicMock()
+        user_perm.email = "u@t.com"
+        connector.data_store_provider = _make_mock_data_store_provider(user_with_perm=user_perm)
+
+        status = MagicMock()
+        status.progress.return_value = 1.0
+        with patch(
+            "app.connectors.sources.google.drive.team.connector.MediaIoBaseDownload"
+        ) as mock_download, patch(
+            "app.connectors.sources.google.drive.team.connector.create_stream_record_response"
+        ) as mock_stream, patch("builtins.open", MagicMock()), patch(
+            "tempfile.TemporaryDirectory"
+        ) as mock_tmp:
+            mock_tmp.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
+            mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
+            mock_download.return_value.next_chunk.return_value = (status, True)
+            mock_stream.return_value = MagicMock()
+
+            await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
+
+            path, temp_dir = connector._convert_to_pdf.await_args.args
+            assert temp_dir == "/tmp/test_dir"
+            assert os.path.dirname(path) == temp_dir
+
 
 class TestGetDriveServiceForUser:
     @pytest.mark.asyncio

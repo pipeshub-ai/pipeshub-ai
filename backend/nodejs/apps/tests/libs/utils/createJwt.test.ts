@@ -1,7 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import jwt from 'jsonwebtoken'
+import jwt, { type JwtPayload } from 'jsonwebtoken'
 import {
   mailJwtGenerator,
   jwtGeneratorForForgotPasswordLink,
@@ -18,9 +18,14 @@ import {
   jwtGeneratorForOtpMail,
   jwtGeneratorForEmailVerified,
   jwtGeneratorForMailAuth,
+  describeLinkLifetime,
+  parseLinkLifetime,
+  passwordResetLinkLifetime,
 } from '../../../src/libs/utils/createJwt'
 import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum'
 import { deriveUserActionSecret } from '../../../src/libs/utils/jwtKeys'
+
+type SignedLifetime = JwtPayload & { exp: number; iat: number }
 
 describe('createJwt', () => {
   const secret = 'test-secret-key-12345'
@@ -88,6 +93,71 @@ describe('createJwt', () => {
       )
       const decoded = jwt.verify(passwordResetToken, userActionSecret) as any
       expect(decoded.exp - decoded.iat).to.equal(20 * 60)
+    })
+
+    describe('with PASSWORD_RESET_LINK_EXPIRY set', () => {
+      const original = process.env.PASSWORD_RESET_LINK_EXPIRY
+
+      afterEach(() => {
+        if (original === undefined) {
+          delete process.env.PASSWORD_RESET_LINK_EXPIRY
+        } else {
+          process.env.PASSWORD_RESET_LINK_EXPIRY = original
+        }
+      })
+
+      it('uses the configured lifetime for the link', () => {
+        process.env.PASSWORD_RESET_LINK_EXPIRY = '60s'
+        const { passwordResetToken } = jwtGeneratorForForgotPasswordLink(
+          'user@example.com',
+          'user-123',
+          'org-456',
+          secret,
+        )
+        const decoded = jwt.verify(passwordResetToken, userActionSecret) as SignedLifetime
+        expect(decoded.exp - decoded.iat).to.equal(60)
+      })
+
+      it('falls back to 20 minutes when the value is blank', () => {
+        process.env.PASSWORD_RESET_LINK_EXPIRY = '  '
+        expect(passwordResetLinkLifetime()).to.deep.equal({
+          seconds: 1200,
+          description: '20 minutes',
+        })
+      })
+
+      const lifetimeOf = (): number => {
+        const { passwordResetToken } = jwtGeneratorForForgotPasswordLink(
+          'user@example.com',
+          'user-123',
+          'org-456',
+          secret,
+        )
+        const decoded = jwt.verify(passwordResetToken, userActionSecret) as SignedLifetime
+        return decoded.exp - decoded.iat
+      }
+
+      it('reads a bare number as seconds, not milliseconds', () => {
+        process.env.PASSWORD_RESET_LINK_EXPIRY = '90'
+        expect(lifetimeOf()).to.equal(90)
+        expect(passwordResetLinkLifetime().description).to.equal('90 seconds')
+      })
+
+      it('still reads a duration with a unit', () => {
+        process.env.PASSWORD_RESET_LINK_EXPIRY = '30m'
+        expect(lifetimeOf()).to.equal(30 * 60)
+        expect(passwordResetLinkLifetime().description).to.equal('30 minutes')
+      })
+
+      for (const unusable of ['abc', '0', '-5', '10ms', '0.2s', '0.5s', '9'.repeat(400), '20 fortnights']) {
+        it(`refuses ${JSON.stringify(unusable)} with an error naming the variable`, () => {
+          process.env.PASSWORD_RESET_LINK_EXPIRY = unusable
+          expect(() => passwordResetLinkLifetime()).to.throw(
+            /^PASSWORD_RESET_LINK_EXPIRY: .* is not a usable link lifetime/,
+          )
+          expect(() => lifetimeOf()).to.throw(/PASSWORD_RESET_LINK_EXPIRY/)
+        })
+      }
     })
 
     it('should embed correct claims in mailAuthToken', () => {
@@ -603,6 +673,22 @@ describe('createJwt', () => {
         expect(() => jwt.verify(token, secret)).to.throw(jwt.JsonWebTokenError, 'invalid signature')
         expect(() => jwt.verify(token, userActionSecret)).to.not.throw()
       })
+    })
+  })
+
+  describe('describeLinkLifetime', () => {
+    it('spells out minutes, hours, days and seconds', () => {
+      expect(describeLinkLifetime('20m')).to.equal('20 minutes')
+      expect(describeLinkLifetime('1h')).to.equal('1 hour')
+      expect(describeLinkLifetime('2 days')).to.equal('2 days')
+      expect(describeLinkLifetime('1.5h')).to.equal('1.5 hours')
+      expect(describeLinkLifetime('90')).to.equal('90 seconds')
+      expect(describeLinkLifetime(90)).to.equal('90 seconds')
+    })
+
+    it('agrees with the seconds the token is signed for', () => {
+      expect(parseLinkLifetime('1.5h').seconds).to.equal(5400)
+      expect(parseLinkLifetime(' 2 days ').seconds).to.equal(172800)
     })
   })
 })

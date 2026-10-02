@@ -104,6 +104,14 @@ const UserActivitySchema = new Schema<IUserActivity>(
   { timestamps: true },
 );
 
+// Every authenticated request looks up the caller's latest session-ending
+// activity: equality on userId, orgId and isDeleted, activityType in a set,
+// newest createdAt first. Without this each lookup scanned the collection.
+UserActivitySchema.index(
+  { userId: 1, orgId: 1, isDeleted: 1, activityType: 1, createdAt: -1 },
+  { name: 'session_ending_activity_lookup' },
+);
+
 // 🔹 Ensure Validation Runs on `findOneAndUpdate`
 UserActivitySchema.pre('findOneAndUpdate', function (next) {
   this.setOptions({ runValidators: true });

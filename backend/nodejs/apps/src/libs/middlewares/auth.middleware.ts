@@ -326,6 +326,7 @@ export class AuthMiddleware {
 
         const decoded = await this.tokenService.verifyScopedToken(token, scope);
         req.tokenPayload = decoded;
+        req.verifiedToken = token;
 
         const userId = decoded?.userId;
         const orgId = decoded?.orgId;

@@ -296,7 +296,12 @@ describe('UserAccountController sign-in flow', () => {
     sinon.stub(UserCredentials, 'findOne').callsFake(((filter: { userId: string }) =>
       Promise.resolve(credentialsByUser[String(filter.userId)] ?? null)) as unknown as typeof UserCredentials.findOne);
     sinon.stub(UserCredentials, 'findOneAndUpdate').callsFake(((
-      filter: { userId: string; hashedOTP?: string },
+      filter: {
+        userId: string;
+        hashedOTP?: string;
+        isBlocked?: { $ne: boolean };
+        wrongCredentialCount?: { $lt: number };
+      },
       update: {
         $inc?: { wrongCredentialCount?: number };
         $set?: Record<string, unknown>;
@@ -305,6 +310,14 @@ describe('UserAccountController sign-in flow', () => {
     ) => {
       const doc = credentialsByUser[String(filter.userId)];
       if (!doc || ('hashedOTP' in filter && doc.hashedOTP !== filter.hashedOTP)) {
+        return Promise.resolve(null);
+      }
+      // An attempt is only reserved while the account is unlocked and under the limit.
+      if (
+        (filter.isBlocked && doc.isBlocked === true) ||
+        (filter.wrongCredentialCount &&
+          doc.wrongCredentialCount >= filter.wrongCredentialCount.$lt)
+      ) {
         return Promise.resolve(null);
       }
       if (update.$inc?.wrongCredentialCount) {
@@ -316,6 +329,25 @@ describe('UserAccountController sign-in flow', () => {
       }
       return Promise.resolve(doc);
     }) as unknown as typeof UserCredentials.findOneAndUpdate);
+    sinon.stub(UserCredentials, 'updateOne').callsFake(((
+      filter: {
+        userId: string;
+        isBlocked?: { $ne: boolean };
+        wrongCredentialCount?: number;
+      },
+      update: { $set?: Record<string, unknown> },
+    ) => {
+      const doc = credentialsByUser[String(filter.userId)];
+      const matches =
+        doc &&
+        !(filter.isBlocked && doc.isBlocked === true) &&
+        (filter.wrongCredentialCount === undefined ||
+          doc.wrongCredentialCount === filter.wrongCredentialCount);
+      if (matches) {
+        Object.assign(doc, update.$set ?? {});
+      }
+      return Promise.resolve({});
+    }) as unknown as typeof UserCredentials.updateOne);
     configuredSteps = [['password']];
     sinon.stub(Org, 'findOne').callsFake((() =>
       Promise.resolve({ _id: orgId, shortName: 'Acme' })) as unknown as typeof Org.findOne);

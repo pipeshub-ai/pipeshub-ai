@@ -251,6 +251,15 @@ def _reset_default_backpressure_coordinator():
     set_default_backpressure_coordinator(None)
 
 
+@pytest.fixture(autouse=True)
+def _no_dns_for_model_endpoints(monkeypatch):
+    """A model health check looks its endpoint's name up before calling it; unit tests must
+    not reach a resolver. Tests of the lookup set their own answers."""
+    aimodels = sys.modules.get("app.utils.aimodels")
+    if aimodels is not None:
+        monkeypatch.setattr(aimodels, "_resolved_addresses", lambda host: [])
+
+
 @pytest.fixture
 def logger():
     """Provide a silent logger for tests."""

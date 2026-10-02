@@ -144,6 +144,7 @@ from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
+    CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
     KB_MAX_FOLDER_DEPTH,
     KB_ROLE_PRIORITY,
@@ -158,7 +159,9 @@ from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     STRICT_SCOPE_FILTER_KEY,
+    FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     AccessibleContainers,
+    FolderChangedDuringDelete,
     IGraphDBProvider,
     _containers_from_row,
     _distinct_connector_types,
@@ -13057,6 +13060,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         connector_id: str,
         transaction: str | None = None,
         cascade_children: bool = True,
+        within_folder_id: str | None = None,
     ) -> dict:
         """Delete records and their owned descendants, scoped by connector_id.
 
@@ -13071,6 +13075,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         *cascade_children*, type docs removed, and a deleteRecord event emitted per
         record that carries a virtualRecordId (Qdrant cleanup).
         """
+        # Once this call has written, a failure must reach a caller-owned transaction
+        # as an exception: a returned failure would let it commit a half-done delete.
+        writes_started = False
         try:
             if not record_ids:
                 return {
@@ -13089,17 +13096,31 @@ class ArangoHTTPProvider(IGraphDBProvider):
             try:
                 traversal_types = "['PARENT_CHILD', 'ATTACHMENT']" if cascade_children else "['ATTACHMENT']"
                 inventory_query = """
-                LET valid_roots = (
+                LET checked = (
                     FOR rid IN @record_ids
                         LET rec = DOCUMENT('records', rid)
                         FILTER rec != null AND rec.isDeleted != true
                         FILTER rec.connectorId == @connector_id
-                        RETURN rec
+                        // The containment path's edge keys, so they can be locked before the delete.
+                        LET inside = @folder_id == null ? [] : FIRST(
+                            FOR anc, edge, path IN 1..""" + str(CONTAINMENT_MAX_DEPTH) + """ INBOUND rec._id @@record_relations
+                                PRUNE edge != null AND edge.relationshipType NOT IN ['PARENT_CHILD', 'ATTACHMENT']
+                                FILTER path.edges[*].relationshipType ALL IN ['PARENT_CHILD', 'ATTACHMENT']
+                                FILTER anc._key == @folder_id
+                                LIMIT 1
+                                RETURN path.edges[*]._key
+                        )
+                        FILTER inside != null
+                        RETURN { rec: rec, inside: inside }
                 )
+                LET valid_roots = checked[*].rec
+                // Every edge on the path must be a containment edge. FILTER alone does not
+                // stop the walk, so without PRUNE a RELATED edge leads on to its target's children.
                 LET all_records = (
                     FOR root IN valid_roots
-                        FOR v, e, p IN 0..20 OUTBOUND root._id @@record_relations
-                            FILTER LENGTH(p.edges) == 0 OR p.edges[-1].relationshipType IN """ + traversal_types + """
+                        FOR v, e, p IN 0..""" + str(CONTAINMENT_MAX_DEPTH) + """ OUTBOUND root._id @@record_relations
+                            PRUNE e != null AND e.relationshipType NOT IN """ + traversal_types + """
+                            FILTER p.edges[*].relationshipType ALL IN """ + traversal_types + """
                             RETURN DISTINCT v
                 )
                 LET records_with_type = (
@@ -13113,9 +13134,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         )
                         RETURN { record: rec, type_target: tt }
                 )
+                LET tree_edges = @folder_id == null ? [] : UNIQUE(
+                    FOR root IN valid_roots
+                        FOR v, e, p IN 1..""" + str(CONTAINMENT_MAX_DEPTH) + """ OUTBOUND root._id @@record_relations
+                            PRUNE e != null AND e.relationshipType NOT IN """ + traversal_types + """
+                            FILTER p.edges[*].relationshipType ALL IN """ + traversal_types + """
+                            RETURN e._key
+                )
                 RETURN {
                     valid_root_keys: valid_roots[*]._key,
-                    records_with_type: records_with_type
+                    records_with_type: records_with_type,
+                    guard_edges: UNIQUE(APPEND(FLATTEN(checked[*].inside), tree_edges))
                 }
                 """
                 inv_results = await self.execute_query(
@@ -13123,15 +13152,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     bind_vars={
                         "record_ids": record_ids,
                         "connector_id": connector_id,
+                        "folder_id": within_folder_id,
                         "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                         "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                     },
                     transaction=txn_id,
                 )
                 inventory = inv_results[0] if inv_results else {}
+                guard_edges = inventory.get("guard_edges") or []
+                if within_folder_id and guard_edges:
+                    # Reads here are not isolated from other writers, so the check above
+                    # holds only if its edges stay put. Writing to them takes their locks
+                    # until commit; an edge a concurrent move already removed is "not
+                    # found", which aborts the delete and keeps every record.
+                    for marker in ("true", "null"):
+                        await self.execute_query(
+                            "FOR k IN @keys UPDATE k WITH { deleteGuard: " + marker + " } "
+                            "IN @@record_relations OPTIONS { keepNull: false }",
+                            bind_vars={
+                                "keys": guard_edges,
+                                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                            },
+                            transaction=txn_id,
+                        )
                 valid_root_keys = inventory.get("valid_root_keys", [])
                 records_with_type = inventory.get("records_with_type", [])
                 record_keys = [rt["record"]["_key"] for rt in records_with_type]
+                if within_folder_id and valid_root_keys:
+                    await self._abort_if_records_moved_in(valid_root_keys, record_keys, traversal_types)
                 type_targets = [rt["type_target"] for rt in records_with_type if rt.get("type_target")]
                 failed_records = [
                     {"record_id": rid, "reason": "Validation failed"}
@@ -13166,6 +13214,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             ) > 0
                             UPDATE rec WITH {{ externalParentId: null }} IN @@records
                         """
+                        writes_started = True
                         await self.execute_query(
                             clear_orphan_parent_query,
                             bind_vars={
@@ -13179,6 +13228,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         )
 
                 node_ids = [f"records/{k}" for k in record_keys]
+                writes_started = True
                 if node_ids:
                     # Dynamic edge sweep: remove every edge touching the deleted records
                     # (recordRelations, isOfType, belongsTo, inheritPermissions, permission,
@@ -13190,6 +13240,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     await self._delete_isoftype_targets_from_collected(txn_id, type_targets, edge_collections)
                 if record_keys:
                     await self._delete_nodes_by_keys(txn_id, record_keys, CollectionNames.RECORDS.value)
+                if within_folder_id and valid_root_keys:
+                    # Again after the deletes: a move committed while they ran is outside
+                    # this transaction's snapshot, so its new edge was left in place.
+                    await self._abort_if_records_moved_in(valid_root_keys, record_keys, traversal_types)
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)
 
@@ -13232,7 +13286,48 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 raise db_error
         except Exception as e:
             self.logger.error(f"❌ Failed to delete records recursively: {str(e)}")
+            if transaction is not None and writes_started:
+                raise
+            if isinstance(e, FolderChangedDuringDelete):
+                return {
+                    "success": False, "reason": FOLDER_CHANGED_DURING_DELETE_MESSAGE, "code": 409, "eventData": None,
+                }
             return {"success": False, "reason": str(e), "code": 500, "eventData": None}
+
+    async def _abort_if_records_moved_in(
+        self, root_keys: list[str], inventory_keys: list[str], traversal_types: str,
+    ) -> None:
+        """Raise when the committed subtree under *root_keys* holds records the inventory missed.
+
+        The edge lock catches a record moved out, but a record moved in arrives on a
+        new edge it cannot lock, and the transaction's snapshot never shows it. Left
+        alone it would survive under a deleted parent. This read runs outside the
+        transaction to see the committed tree: once before any delete, and again
+        after the deletes, before the commit, for a move that commits while they run.
+        """
+        live_keys = await self.execute_query(
+            """
+            FOR root_key IN @root_keys
+                FOR v, e, p IN 0..""" + str(CONTAINMENT_MAX_DEPTH) + """ OUTBOUND CONCAT(@records, "/", root_key) @@record_relations
+                    PRUNE e != null AND e.relationshipType NOT IN """ + traversal_types + """
+                    FILTER p.edges[*].relationshipType ALL IN """ + traversal_types + """
+                    RETURN DISTINCT v._key
+            """,
+            bind_vars={
+                "root_keys": root_keys,
+                "records": CollectionNames.RECORDS.value,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+            },
+        )
+        if live_keys is None:
+            raise RuntimeError("Could not re-read the folder before deleting from it")
+        moved_in = set(live_keys) - set(inventory_keys)
+        if moved_in:
+            self.logger.warning(
+                "Folder delete stopped: %d record(s) were moved into the folder while it was being deleted",
+                len(moved_in),
+            )
+            raise FolderChangedDuringDelete(FOLDER_CHANGED_DURING_DELETE_MESSAGE)
 
 
     async def delete_single_record(

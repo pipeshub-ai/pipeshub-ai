@@ -13,7 +13,6 @@ assertion at another record's data.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from typing import Any, AsyncGenerator
@@ -21,12 +20,14 @@ from typing import Any, AsyncGenerator
 import pytest
 import pytest_asyncio
 
+from helper.cleanup_sources import (
+    folder_id_of as _folder_id,
+    wait_for_embeddings as _wait_for_embeddings,
+    wait_for_virtual_id as _wait_for_virtual_id,
+)
 from helper.clients.kb_client import KBClient
 
 logger = logging.getLogger("cleanup-fixtures")
-
-INDEXING_TIMEOUT = 300
-POLL = 5
 
 POLICY = b"""# Falconry Reimbursement Policy
 
@@ -133,55 +134,15 @@ async def second_indexed_record(
         yield record
 
 
-async def _wait_for_virtual_id(kb_client: KBClient, record_id: str) -> str:
-    """The record's own virtual id, which is what the other stores key on."""
-    deadline = asyncio.get_event_loop().time() + INDEXING_TIMEOUT
-    while asyncio.get_event_loop().time() < deadline:
-        payload = kb_client.get_record(record_id)
-        virtual_id = (payload.get("record") or {}).get("virtualRecordId")
-        if virtual_id:
-            return str(virtual_id)
-        await asyncio.sleep(POLL)
-    raise AssertionError(
-        f"Record {record_id} never got a virtualRecordId within "
-        f"{INDEXING_TIMEOUT}s, so there is nothing to key the other three "
-        "stores on."
-    )
-
-
-async def _wait_for_embeddings(vector_store, virtual_id: str, record_id: str) -> None:
-    """Block until the record is really in the vector database.
-
-    Fails rather than proceeding on an empty result. Every assertion downstream
-    would otherwise be checking that nothing is nothing, which passes and means
-    nothing — the exact failure these tests exist to rule out.
-    """
-    deadline = asyncio.get_event_loop().time() + INDEXING_TIMEOUT
-    while asyncio.get_event_loop().time() < deadline:
-        if await vector_store.count_for_virtual_record(virtual_id):
-            logger.info("Record %s indexed as virtual record %s", record_id, virtual_id)
-            return
-        await asyncio.sleep(POLL)
-
-    raise AssertionError(
-        f"Record {record_id} (virtual {virtual_id}) produced no embeddings "
-        f"within {INDEXING_TIMEOUT}s. Check that an embedding model is "
-        "configured for the org — with none, indexing fails and the record is "
-        "dead-lettered rather than falling back to the local embedder."
-    )
-
-
 @pytest_asyncio.fixture(loop_scope="session")
 async def record_in_a_folder(
     kb_client: KBClient, vector_store, mongo_store, test_org_id: str
 ) -> AsyncGenerator[dict[str, Any], None]:
     """A record inside a folder, for the folder-delete scenario.
 
-    One level deep, because that is as deep as the API goes. A folder cannot be
-    put inside another folder: `POST /{kb_id}/folder` ignores a `parentId` in
-    the body and creates at the root, and the route that does take a parent is
-    not exposed by the gateway. So a "nested" fixture would silently build two
-    sibling folders and test nothing.
+    One level deep. Nested folders are built with the ``?folderId=`` query
+    parameter (a ``parentId`` in the body is ignored); test_folder_deletion.py's
+    sub-folder scenario does that.
     """
     kb = kb_client.create_kb(f"cleanup-folder-{uuid.uuid4().hex[:8]}")
     kb_id = kb["id"]
@@ -222,14 +183,3 @@ async def record_in_a_folder(
                 kb_id,
                 exc,
             )
-
-
-def _folder_id(payload: dict[str, Any]) -> str:
-    """The id out of a folder-create reply, whichever key it used."""
-    for container in (payload, payload.get("folder") or {}, payload.get("data") or {}):
-        if isinstance(container, dict):
-            for key in ("id", "folderId", "_key"):
-                value = container.get(key)
-                if value:
-                    return str(value)
-    raise AssertionError(f"No folder id in the create response: {payload}")
