@@ -33,6 +33,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import Permission
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
 # ---------------------------------------------------------------------------
@@ -766,7 +767,10 @@ class TestOnRecordsMovedSnapshotIntegration:
         new_record = _make_record(external_record_id="ext-new", record_name="new.txt")
         new_record.external_revision_id = "rev-1"
 
-        tx_store.get_record_by_external_id.return_value = old_record
+        async def lookup(*_args, visibility=RecordVisibility.ALL, **_kwargs) -> object:
+            return None if visibility is RecordVisibility.DELETED else old_record
+
+        tx_store.get_record_by_external_id.side_effect = lookup
 
         proc._storage_cleanup.build_record_path.side_effect = [
             # Snapshot call

@@ -25,6 +25,10 @@ from app.connectors.services.vector_cleanup_events import (
     MAX_VIRTUAL_RECORD_IDS_PER_EVENT,
 )
 from app.models.entities import FileRecord, Record, RecordType
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    matches_visibility,
+)
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
@@ -346,3 +350,124 @@ class TestSyncSkipsTheTrash:
             connector_name=Connectors.GOOGLE_DRIVE, connector_id="c1", is_file=True,
         )
         assert (await proc._process_record(incoming, [], store))[0] is not None
+
+
+# ---------------------------------------------------------------------------
+# A move onto an external id a trashed record still holds
+# ---------------------------------------------------------------------------
+
+
+class _MoveStore(AsyncMock):
+    """Records by id. An external-id lookup returns the first match, as both
+    graph stores do (``LIMIT 1``), so a trashed holder stored first wins."""
+
+    # The keys this path may write; any other raises, as Arango's strict schema would refuse it.
+    _FIELDS = {"externalRecordId": "external_record_id", "trashedExternalRecordId": "trashed_external_record_id"}
+
+    def __init__(self, *records: Record) -> None:
+        super().__init__()
+        self.docs = {r.id: r for r in records}
+        self.get_edges_from_node = AsyncMock(return_value=[])
+
+    def _get_child_mock(self, **kwargs: object) -> AsyncMock:
+        return AsyncMock(**kwargs)
+
+    def holders(self, external_id: str) -> list[str]:
+        return [r.id for r in self.docs.values() if r.external_record_id == external_id]
+
+    async def get_record_by_external_id(
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+    ) -> Record | None:
+        return next(
+            (r for r in self.docs.values()
+             if r.connector_id == connector_id and r.external_record_id == external_id
+             and matches_visibility(r, visibility)),
+            None,
+        )
+
+    async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool:
+        for node in nodes:
+            stored = self.docs.get(node["id"])
+            if stored is None:
+                return False
+            fields = {self._FIELDS[k]: v for k, v in node.items() if k != "id"}
+            self.docs[node["id"]] = stored.model_copy(update=fields)
+        return True
+
+    async def batch_upsert_records(self, records: list[Record]) -> None:
+        self.docs.update({r.id: r for r in records})
+
+    async def delete_record_by_key(self, key: str) -> None:
+        self.docs.pop(key, None)
+
+
+def _moving_processor(store: _MoveStore) -> DataSourceEntitiesProcessor:
+    proc = _processor()
+    _with_store(proc, store)
+    proc._handle_record_group = AsyncMock(return_value=None)
+    proc._handle_parent_record = AsyncMock()
+    proc._handle_record_permissions = AsyncMock()
+    proc._get_storage_cleanup = MagicMock(return_value=None)
+    return proc
+
+
+def _published(proc: DataSourceEntitiesProcessor, event_type: str) -> list[dict]:
+    return [
+        c.args[1]["payload"] for c in proc.messaging_producer.send_message.await_args_list
+        if c.args[1]["eventType"] == event_type
+    ]
+
+
+class TestMoveOntoAnIdHeldInTheTrash:
+    """GitLab, GitHub, network share, Local FS and KB moves all land here."""
+
+    @staticmethod
+    def _move() -> tuple[str, Record, list]:
+        return ("src/old.py", _stored("fresh-uuid", external_record_id="src/new.py", version=0), [])
+
+    async def test_the_trash_entry_survives_and_the_moved_record_owns_the_id(self) -> None:
+        trashed = _stored(
+            "trashed-1", external_record_id="src/new.py", virtual_record_id="vr-trashed",
+            is_deleted=True, deleted_at=1, delete_source=DeleteSource.USER, delete_batch_id="b-1",
+        )
+        live = _stored("live-1", external_record_id="src/old.py", virtual_record_id="vr-live")
+        store = _MoveStore(trashed, live)
+        proc = _moving_processor(store)
+
+        await proc.on_records_moved([self._move()])
+
+        kept = store.docs["trashed-1"]
+        assert (kept.is_deleted, kept.delete_batch_id, kept.virtual_record_id) == (True, "b-1", "vr-trashed")
+        assert kept.trashed_external_record_id == "src/new.py"
+        assert kept.external_record_id == "trashed:trashed-1"
+        assert store.holders("src/new.py") == ["live-1"]
+        assert (await store.get_record_by_external_id("c1", "src/new.py")).id == "live-1"
+        assert _published(proc, EventTypes.DELETE_RECORD.value) == []
+
+    async def test_a_live_duplicate_is_still_retired_and_the_trashed_one_kept(self) -> None:
+        trashed = _stored(
+            "trashed-1", external_record_id="src/new.py", virtual_record_id="vr-trashed",
+            is_deleted=True, deleted_at=1, delete_source=DeleteSource.CONNECTOR,
+        )
+        duplicate = _stored("dup-1", external_record_id="src/new.py", virtual_record_id="vr-dup")
+        live = _stored("live-1", external_record_id="src/old.py")
+        store = _MoveStore(trashed, duplicate, live)
+        proc = _moving_processor(store)
+
+        await proc.on_records_moved([self._move()])
+
+        assert "dup-1" not in store.docs
+        assert store.docs["trashed-1"].is_deleted is True
+        assert store.holders("src/new.py") == ["live-1"]
+        assert [p["recordId"] for p in _published(proc, EventTypes.DELETE_RECORD.value)] == ["dup-1"]
+
+    async def test_a_failed_release_fails_the_move(self) -> None:
+        trashed = _stored("trashed-1", external_record_id="src/new.py", is_deleted=True, deleted_at=1)
+        store = _MoveStore(trashed, _stored("live-1", external_record_id="src/old.py"))
+        store.batch_update_nodes = AsyncMock(return_value=False)
+        proc = _moving_processor(store)
+
+        with pytest.raises(RuntimeError, match="Could not release"):
+            await proc.on_records_moved([self._move()])
+        assert store.docs["trashed-1"].external_record_id == "src/new.py"
+        assert _published(proc, EventTypes.DELETE_RECORD.value) == []

@@ -290,6 +290,7 @@ class Record(BaseModel):
     delete_batch_id: str | None = Field(default=None, description="Shared by every record one delete action trashed, so a restore brings back the same set")
     purge_attempts: int | None = Field(default=None, description="Failed purge attempts")
     purge_last_error: str | None = Field(default=None, description="Last purge error, shortened")
+    trashed_external_record_id: str | None = Field(default=None, description="External id this trashed record held before a live record moved onto it; restore puts it back")
 
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
@@ -415,6 +416,7 @@ class Record(BaseModel):
             "deleteBatchId": self.delete_batch_id,
             "purgeAttempts": self.purge_attempts,
             "purgeLastError": self.purge_last_error,
+            "trashedExternalRecordId": self.trashed_external_record_id,
         }
         base.update({k: v for k, v in delete_state.items() if v is not None})
         return base
@@ -435,6 +437,7 @@ class Record(BaseModel):
             "delete_batch_id": record_doc.get("deleteBatchId"),
             "purge_attempts": record_doc.get("purgeAttempts"),
             "purge_last_error": record_doc.get("purgeLastError"),
+            "trashed_external_record_id": record_doc.get("trashedExternalRecordId"),
         }
 
     @staticmethod

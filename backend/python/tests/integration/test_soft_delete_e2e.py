@@ -18,6 +18,9 @@ file that was already in the trash. A second file sits outside the folder.
 - An Outlook sync delete (by external id) goes to the trash as a CONNECTOR
   delete and takes exactly what that backend's hard delete removes: the
   message with its direct attachments on Arango, the message alone on Neo4j.
+- A move onto an external id a trashed record holds keeps the trash entry: it
+  gives the id up (kept in ``trashedExternalRecordId``) and no ``deleteRecord``
+  is published.
 - With the flag off, the same cascade still removes the records.
 
 Arango enforces the records schema strictly, so its run also proves the write
@@ -62,6 +65,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.entities import FileRecord, MailRecord, RecordType
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -432,6 +436,40 @@ async def test_an_upsert_reusing_a_trashed_records_id_leaves_it_in_the_trash(
         True, f"ext-{world.ids['drive_file']}", "drive_file.pdf",
     )
     assert world.producer.of_type(EventTypes.NEW_RECORD.value) == []
+
+
+async def test_a_move_onto_an_id_held_in_the_trash_keeps_the_trash_entry(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GitLab, GitHub, network share and KB renames move records here; the trashed
+    holder of the target id gives the id up instead of being retired."""
+    _flag(monkeypatch, True)
+    monkeypatch.setattr(world.processor, "_get_storage_cleanup", lambda: None)
+    await world.processor.on_record_deleted(world.ids["drive_file"])
+    world.producer.events.clear()
+    target = f"ext-{world.ids['drive_file']}"
+
+    moved = _file(world, "drive_child", kb=False)
+    moved.id = str(uuid.uuid4())
+    moved.external_record_id = target
+    moved.record_name = "moved.pdf"
+    await world.processor.on_records_moved([(f"ext-{world.ids['drive_child']}", moved, [])])
+
+    trashed = await world.stored("drive_file")
+    assert trashed is not None
+    assert (trashed["isDeleted"], trashed["deleteSource"], trashed["virtualRecordId"]) == (
+        True, "CONNECTOR", f"vr-{world.ids['drive_file']}",
+    )
+    assert (trashed["externalRecordId"], trashed["trashedExternalRecordId"]) == (
+        f"trashed:{world.ids['drive_file']}", target,
+    )
+    assert (await world.stored("drive_child"))["externalRecordId"] == target
+    holder = await world.graph.get_record_by_external_id(world.connector_id, target, visibility=RecordVisibility.ALL)
+    assert holder is not None and holder.id == world.ids["drive_child"]
+    assert await world.graph.get_record_by_external_id(
+        world.connector_id, target, visibility=RecordVisibility.DELETED
+    ) is None
+    assert world.producer.of_type(EventTypes.DELETE_RECORD.value) == []
 
 
 async def _visible(w: _World, names: tuple[str, ...]) -> set[str]:

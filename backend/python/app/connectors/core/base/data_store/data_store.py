@@ -87,7 +87,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+    ) -> Optional[Record]:
         pass
 
     @abstractmethod

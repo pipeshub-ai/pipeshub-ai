@@ -55,6 +55,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
 # ---------------------------------------------------------------------------
@@ -5209,12 +5210,21 @@ def _make_old_record(
     return rec
 
 
+def _live_lookup(record) -> AsyncMock:
+    """An external-id lookup that finds *record* (live) and nothing in the trash."""
+
+    async def lookup(*_args, visibility=RecordVisibility.ALL, **_kwargs) -> object:
+        return None if visibility is RecordVisibility.DELETED else record
+
+    return AsyncMock(side_effect=lookup)
+
+
 def _setup_proc_for_moved(tx_store, *, old_record, new_record_id: str = "old-rec-1"):
     """Wire up a processor for on_records_moved with all internal helpers mocked."""
     proc = _make_processor()
     proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
-    tx_store.get_record_by_external_id = AsyncMock(return_value=old_record)
+    tx_store.get_record_by_external_id = _live_lookup(old_record)
 
     # Mock complex graph-building internals that are tested elsewhere
     proc._handle_record_group = AsyncMock(return_value=None)
@@ -5996,7 +6006,7 @@ class TestOnRecordsMovedKbUpload:
             mime_type="application/pdf",
             record_name="upload.pdf",
         )
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        tx_store.get_record_by_external_id = _live_lookup(old)
         new_record = _make_kb_upload_record(parent_external_record_id="parent-folder")
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
@@ -6017,7 +6027,7 @@ class TestOnRecordsMovedKbUpload:
             mime_type="application/pdf",
             record_name="upload.pdf",
         )
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        tx_store.get_record_by_external_id = _live_lookup(old)
         new_record = _make_kb_upload_record(parent_external_record_id=None)
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
@@ -6050,7 +6060,7 @@ class TestOnRecordsMovedKbUpload:
             mime_type="application/pdf",
             record_name="upload.pdf",
         )
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        tx_store.get_record_by_external_id = _live_lookup(old)
         new_record = _make_kb_upload_record()
         new_record.external_revision_id = "new-rev"
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -6071,7 +6081,7 @@ class TestOnRecordsMovedKbUpload:
             mime_type="application/pdf",
             record_name="upload.pdf",
         )
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        tx_store.get_record_by_external_id = _live_lookup(old)
         new_record = _make_kb_upload_record()
         new_record.external_revision_id = "same"
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -6096,7 +6106,7 @@ class TestOnRecordsMovedKbUpload:
             indexing_status=ProgressStatus.COMPLETED.value,
             virtual_record_id="vr-1",
         )
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        tx_store.get_record_by_external_id = _live_lookup(old)
         new_record = _make_kb_upload_record()
         new_record.external_revision_id = "new-rev"
         new_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
@@ -6128,7 +6138,7 @@ class TestOnRecordsMovedKbUpload:
             indexing_status=ProgressStatus.COMPLETED.value,
             virtual_record_id="vr-1",
         )
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        tx_store.get_record_by_external_id = _live_lookup(old)
         new_record = _make_kb_upload_record()
         new_record.external_revision_id = "new-rev"
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -6204,7 +6214,7 @@ class TestOnRecordsMovedOrgId:
             mime_type="application/pdf",
             record_name="upload.pdf",
         )
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        tx_store.get_record_by_external_id = _live_lookup(old)
         tx_store.delete_parent_child_edge_to_record = AsyncMock()
         tx_store.batch_upsert_records = AsyncMock()
         new_record = _make_kb_upload_record()
@@ -6450,8 +6460,9 @@ class TestOnRecordsMovedDuplicateGuard:
     def _setup(tx_store, old_record, interloper):
         proc = _setup_proc_for_moved(tx_store, old_record=old_record)
 
-        async def by_external_id(*, connector_id, external_id):  # noqa: ARG001
-            return old_record if external_id == "/ns/-/blob/HEAD/src/old.py" else interloper
+        async def by_external_id(*, connector_id, external_id, visibility=RecordVisibility.ALL):  # noqa: ARG001
+            found = old_record if external_id == "/ns/-/blob/HEAD/src/old.py" else interloper
+            return None if visibility is RecordVisibility.DELETED else found
 
         tx_store.get_record_by_external_id = AsyncMock(side_effect=by_external_id)
         tx_store.delete_parent_child_edge_to_record = AsyncMock()

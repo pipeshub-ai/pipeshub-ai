@@ -71,6 +71,9 @@ PendingMove = tuple[str, str, str, str | tuple[str, ...] | None]
 
 _NO_OLD_PATH = object()  # sentinel: "no pre-computed old_path supplied"
 
+# Unique per record and never a source id, so no sync or move can land on it.
+TRASHED_EXTERNAL_ID_PREFIX = "trashed:"
+
 # ~39 bytes per vrid in the move-tree JSON body; Node accepts 10 MB.
 _MAX_FOLDER_MOVE_VRIDS = 100_000
 
@@ -1971,6 +1974,18 @@ class DataSourceEntitiesProcessor:
                         connector_id=new_record.connector_id,
                         external_id=new_record.external_record_id,
                     )
+                    if duplicate is not None:
+                        # A trashed holder is never retired: that would destroy
+                        # the trash entry and publish deleteRecord for its content.
+                        await self._release_external_id_from_trash(
+                            tx_store, new_record.connector_id, new_record.external_record_id
+                        )
+                        if not is_live_record(duplicate):
+                            duplicate = await tx_store.get_record_by_external_id(
+                                connector_id=new_record.connector_id,
+                                external_id=new_record.external_record_id,
+                                visibility=RecordVisibility.LIVE,
+                            )
                     if duplicate is not None and duplicate.id != old_record.id:
                         self.logger.warning(
                             "Retiring duplicate record %s: external id %s is already "
@@ -2233,6 +2248,40 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error(f"on_records_moved failed: {e}", exc_info=True)
             raise
+
+    async def _release_external_id_from_trash(
+        self, tx_store: TransactionStore, connector_id: str, external_id: str
+    ) -> None:
+        """Move every trashed record holding *external_id* off it, keeping the
+        original in ``trashedExternalRecordId`` for restore.
+
+        Lookups by external id stop at the first match, so a trashed and a live
+        record sharing one id would each be returned at random.
+        """
+        released: set[str] = set()
+        while (
+            trashed := await tx_store.get_record_by_external_id(
+                connector_id=connector_id, external_id=external_id, visibility=RecordVisibility.DELETED
+            )
+        ) is not None:
+            if trashed.id in released:
+                raise RuntimeError(
+                    f"Record {trashed.id} in the trash still holds external id {external_id} after release"
+                )
+            released.add(trashed.id)
+            updated = await tx_store.batch_update_nodes(
+                [{
+                    "id": trashed.id,
+                    "externalRecordId": f"{TRASHED_EXTERNAL_ID_PREFIX}{trashed.id}",
+                    "trashedExternalRecordId": external_id,
+                }],
+                CollectionNames.RECORDS.value,
+            )
+            if updated is not True:
+                raise RuntimeError(f"Could not release external id {external_id} from trashed record {trashed.id}")
+            self.logger.info(
+                "Record %s in the trash gave up external id %s to a moved record", trashed.id, external_id
+            )
 
     async def _publish_delete_events(self, event_data: dict | None) -> list[str]:
         """Publish deleteRecord events (Qdrant vector cleanup) for a delete result.
