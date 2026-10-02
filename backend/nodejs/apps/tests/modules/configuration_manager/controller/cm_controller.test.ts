@@ -3267,7 +3267,11 @@ describe('ConfigurationManager Controller', () => {
       data: { status: 'error', message: 'The model "text-embedding-nope" was not found. Check the model name.' },
     }
 
-    function stubAiService(takeoverStatus = 200, healthCheck: AiAnswer = healthy) {
+    function stubAiService(
+      takeoverStatus = 200,
+      healthCheck: AiAnswer = healthy,
+      takeoverRefusal: { status: string; message: string } = { status: 'not healthy', message: 'refused' },
+    ) {
       const calls: SentCommand[] = []
       sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function (this: AIServiceCommand<unknown>) {
         const command = this as unknown as QueuedCommand
@@ -3276,7 +3280,7 @@ describe('ConfigurationManager Controller', () => {
         if (uri.endsWith('/embedding-health-check')) {
           return takeoverStatus === 200
             ? { statusCode: 200, data: { status: 'healthy' } }
-            : { statusCode: takeoverStatus, data: { status: 'not healthy', message: 'refused' } }
+            : { statusCode: takeoverStatus, data: takeoverRefusal }
         }
         if (uri.includes('/model-usage/')) {
           return { statusCode: 200, data: { success: true, agents: [] } }
@@ -3386,6 +3390,25 @@ describe('ConfigurationManager Controller', () => {
 
       expect(models(takeoverCalls(calls)[0])).to.deep.equal([])
       expect(next.firstCall.args[0].message).to.equal(IN_USE)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it('keeps the setup error when the built-in model the delete falls back to cannot be used', async () => {
+      const setupError = { status: 'error', message: 'The built-in embedding model could not be loaded.' }
+      stubAiService(400, healthy, setupError)
+      const kvs = storedModels([openai])
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await deleteAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k1' } }),
+        res,
+        next,
+      )
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.not.equal(IN_USE)
       expect(kvs.set.called).to.be.false
     })
 

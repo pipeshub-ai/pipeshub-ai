@@ -3881,7 +3881,7 @@ export const deleteAIModelProvider =
           req,
           appConfig,
         );
-        if (takeover.statusCode === 400) {
+        if (isEmbeddingInUseRefusal(takeover)) {
           throw new BadRequestError(EMBEDDING_MODEL_IN_USE_MESSAGE);
         }
         if (!takeover.data || takeover.statusCode !== 200) {
