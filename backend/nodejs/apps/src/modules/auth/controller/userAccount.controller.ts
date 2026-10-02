@@ -1163,10 +1163,14 @@ export class UserAccountController {
               : 0;
             const activityTimestamp =
               invalidatingActivity.createdAt?.getTime() || 0;
-            if (
-              activityTimestamp >
-              tokenIssuedAt + SESSION_INVALIDATE_TOKEN_DELAY_MS
-            ) {
+            // A re-invite restores a deleted account, so a deletion ends every token
+            // issued in its second or before, without the usual one-second allowance.
+            const sessionInvalidated =
+              invalidatingActivity.activityType === ACCOUNT_DELETED
+                ? activityTimestamp >= tokenIssuedAt
+                : activityTimestamp >
+                  tokenIssuedAt + SESSION_INVALIDATE_TOKEN_DELAY_MS;
+            if (sessionInvalidated) {
               throw new UnauthorizedError(
                 invalidatingActivity.activityType === ACCOUNT_DELETED
                   ? ACCOUNT_NO_LONGER_ACTIVE

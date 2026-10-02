@@ -843,6 +843,30 @@ describe('UserAccountController sign-in flow', () => {
       expect(iamService.getUserById.called).to.be.false;
     });
 
+    it('refuses a refresh token issued in the same second the account was deleted', async () => {
+      stubLatestInvalidation({ createdAt: new Date(issuedAt * 1000 + 500), activityType: 'ACCOUNT DELETED' });
+      const res = makeRes();
+      const next = sinon.stub();
+
+      await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+    });
+
+    it('keeps the one-second allowance for a sign-out in the second the token was issued', async () => {
+      stubLatestInvalidation({ createdAt: new Date(issuedAt * 1000 + 500), activityType: 'LOGOUT' });
+      iamService.getUserById.resolves({ statusCode: 200, data: { ...alice } });
+      credentialsByUser[alice._id] = credentialsDoc({ userId: alice._id, orgId });
+      const res = makeRes();
+      const next = sinon.stub();
+
+      await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+      expect(next.called).to.be.false;
+      expect(res.body?.accessToken).to.be.a('string');
+    });
+
     // The lookup goes through the real IAM client, so a deleted account reaches
     // the controller the way production sees it: an axios error for the 404.
     describe('when the account lookup is the real IAM client', () => {

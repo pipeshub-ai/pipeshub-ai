@@ -19335,6 +19335,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The deletion could not be recorded, so nothing was changed and the user's
+            sessions stay as they were. Safe to retry: "We couldn't delete this user just
+            now, and nothing was changed. Please try again in a moment."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/{id}/email:
     get:
