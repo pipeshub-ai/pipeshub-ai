@@ -512,7 +512,8 @@ class RSSConnector(BaseConnector):
                     raise self._source_fetch_error(result)
                 return None
 
-            feed = feedparser.parse(result.content_bytes)
+            # Given bytes, feedparser first tries them as a file name on this host.
+            feed = feedparser.parse(BytesIO(result.content_bytes))
 
             if feed.bozo and not feed.entries:
                 self.logger.warning(

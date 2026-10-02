@@ -106,6 +106,8 @@ spec:
               value: {{ .Values.config.sandboxAllowNetwork | quote }}
             - name: SANDBOX_EGRESS_NETWORK
               value: {{ .Values.config.sandboxEgressNetwork | quote }}
+            - name: SANDBOX_EGRESS_ALLOW_CIDRS
+              value: {{ .Values.config.sandboxEgressAllowCidrs | default "" | quote }}
             {{- with (include "pipeshub-ai.dockerHost" .) }}
             - name: DOCKER_HOST
               value: {{ . | quote }}

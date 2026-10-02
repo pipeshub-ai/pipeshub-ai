@@ -5763,7 +5763,7 @@ class TestOnRecordsDeletedCascade:
         await proc.on_records_deleted_cascade(["r1"], "kb-123")
 
         tx_store.delete_records_recursive.assert_awaited_once_with(
-            ["r1"], "kb-123", cascade_children=True,
+            ["r1"], "kb-123", cascade_children=True, within_folder_id=None,
         )
         proc.messaging_producer.send_message.assert_awaited_once()
         assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
@@ -5869,7 +5869,7 @@ class TestOnRecordsDeletedCascadeAttachmentOnly:
         await proc.on_records_deleted_cascade(["r1"], "conn-123", cascade_children=False)
 
         tx_store.delete_records_recursive.assert_awaited_once_with(
-            ["r1"], "conn-123", cascade_children=False,
+            ["r1"], "conn-123", cascade_children=False, within_folder_id=None,
         )
         proc.messaging_producer.send_message.assert_awaited_once()
         assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"

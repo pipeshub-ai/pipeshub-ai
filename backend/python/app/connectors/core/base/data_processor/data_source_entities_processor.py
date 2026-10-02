@@ -50,6 +50,10 @@ from app.services.cache.invalidation_hooks import (
     notify_connector_sync_completed,
     notify_kb_records_changed,
 )
+from app.services.graph_db.interface.graph_db_provider import (
+    FOLDER_CHANGED_DURING_DELETE_MESSAGE,
+    FolderChangedDuringDelete,
+)
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.vector_db.membership import record_group_id_from_edge
@@ -2280,6 +2284,7 @@ class DataSourceEntitiesProcessor:
     async def on_records_deleted_cascade(
         self, record_ids: list[str], connector_id: str,
         cascade_children: bool = True,
+        within_folder_id: str | None = None,
     ) -> dict:
         """Recursively delete records — the single delete path for files, folders and
         multi-record deletes, generic across KB and connectors.
@@ -2293,6 +2298,10 @@ class DataSourceEntitiesProcessor:
 
         When *cascade_children* is False, only ATTACHMENT edges are traversed —
         PARENT_CHILD children (e.g. stories under a deleted epic) are left intact.
+
+        With *within_folder_id*, only roots contained in that folder are deleted;
+        the check runs in the delete's own transaction, so a record moved out in
+        the meantime is kept.
         """
         if not record_ids:
             return {
@@ -2303,10 +2312,15 @@ class DataSourceEntitiesProcessor:
                 "successfully_deleted": 0,
                 "failed_count": 0,
             }
-        async with self.data_store_provider.transaction() as tx_store:
-            result = await tx_store.delete_records_recursive(
-                record_ids, connector_id, cascade_children=cascade_children,
-            )
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                result = await tx_store.delete_records_recursive(
+                    record_ids, connector_id, cascade_children=cascade_children,
+                    within_folder_id=within_folder_id,
+                )
+        except FolderChangedDuringDelete:
+            # The transaction rolled back, so nothing was deleted.
+            return {"success": False, "code": 409, "reason": FOLDER_CHANGED_DURING_DELETE_MESSAGE, "eventData": None}
         if (result or {}).get("successfully_deleted"):
             # Before publishing: the transaction has committed, so the records are
             # already gone, and _publish_delete_events can fail. Invalidating

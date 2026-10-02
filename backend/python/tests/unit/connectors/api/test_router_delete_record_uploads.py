@@ -20,8 +20,11 @@ def _request() -> MagicMock:
 
 
 def _provider(origin: str = "UPLOAD") -> AsyncMock:
+    connector_name = "KB" if origin == "UPLOAD" else "DRIVE"
     provider = AsyncMock()
-    provider.check_record_access_with_details = AsyncMock(return_value={"record": {"id": "r1"}})
+    provider.check_record_access_with_details = AsyncMock(
+        return_value={"record": {"id": "r1", "origin": origin, "connectorName": connector_name}}
+    )
     provider.get_document = AsyncMock(return_value={"id": "r1", "connectorId": "kb-1", "origin": origin})
     provider.get_uploaded_document_ids = AsyncMock(return_value=[DOC_ID])
     provider.delete_record = AsyncMock(return_value={"success": True, "eventData": None})
@@ -63,10 +66,13 @@ async def test_a_removal_that_cannot_be_published_deletes_nothing():
 async def test_a_connector_record_schedules_no_storage_removal():
     provider, kafka = _provider(origin="CONNECTOR"), AsyncMock()
 
-    await delete_record("r1", _request(), provider, kafka)
+    with pytest.raises(HTTPException) as caught:
+        await delete_record("r1", _request(), provider, kafka)
 
+    assert caught.value.status_code == 403
     provider.get_uploaded_document_ids.assert_not_awaited()
     kafka.publish_event.assert_not_awaited()
+    provider.delete_record.assert_not_awaited()
 
 
 @pytest.mark.asyncio

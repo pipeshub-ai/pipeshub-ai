@@ -1530,14 +1530,17 @@ class KnowledgeBaseService:
                     "code": 404
                 }
 
-            # Delete through the shared processor — same generic cascade as the KB-root
-            # path (a folder is just a record). folder_id is no longer used to filter the
-            # delete; records are scoped by the KB (connectorId == kb_id).
+            # Containment is checked by the delete query itself: an id from another
+            # folder, the KB root, or moved out since the request began is kept and
+            # reported as failed. Its files are safe in the removal scheduled here,
+            # since the consumer skips any file a record still lists.
             refused = await self._schedule_upload_removal(kb_id, record_ids=record_ids)
             if refused:
                 return refused
             processor = await self.processor_for_kb(kb_id)
-            result = await processor.on_records_deleted_cascade(record_ids, kb_id)
+            result = await processor.on_records_deleted_cascade(
+                record_ids, kb_id, within_folder_id=folder_id
+            )
             if result and result.get("success"):
                 result.pop("eventData", None)
                 # Bulk-delete best practice: none of the requested ids matched → 404.

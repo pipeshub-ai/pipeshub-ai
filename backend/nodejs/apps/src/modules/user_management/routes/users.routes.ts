@@ -51,8 +51,15 @@ const UserIdValidationSchema = z.object({
 });
 const MultipleUserBody = z.object({
   userIds: z
-    .array(z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid MongoDB ObjectId'))
-    .min(1, 'At least one userId is required'),
+    .array(
+      z
+        .string()
+        .regex(
+          /^[a-fA-F0-9]{24}$/,
+          'Each user ID must be a 24-character user ID. Remove any empty or incomplete IDs and try again.',
+        ),
+    )
+    .min(1, 'Send at least one user ID to look up.'),
 });
 const MultipleUserValidationSchema = z.object({
   body: MultipleUserBody,
@@ -296,8 +303,8 @@ export function createUserRouter(container: Container) {
   );
 
   // The caller's own live role. No OAuth scope: it discloses only the bearer's role.
-  // Internal services use it to resolve OAuth/PAT roles and to learn that a token was
-  // revoked or its user deleted (authenticate answers 401 in those cases).
+  // Internal services use it to resolve OAuth/PAT roles and to learn that a session
+  // has ended, a token was revoked or its user deleted (authenticate answers 401).
   router.get(
     '/me/role',
     authMiddleware.authenticate,
