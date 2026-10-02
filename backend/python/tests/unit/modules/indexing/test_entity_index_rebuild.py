@@ -23,6 +23,7 @@ from app.modules.indexing.entity_index_rebuild import (
     ENTITY_INDEX_VERSION,
     MAX_ATTEMPTS,
     MAX_TICK_ERRORS,
+    ORG_PASS_VERSION,
     TAXONOMY_PAGE_SIZE,
     EntityIndexRebuilder,
     EntityIndexState,
@@ -56,6 +57,7 @@ USERS = CollectionNames.USERS.value
 
 FP = "openai:text-embedding-3-small:1536"
 MARKER = entity_index_marker(FP)
+ORG_MARKER = entity_index_marker(FP, ORG_PASS_VERSION)
 NOW = 1_800_000_000_000
 
 
@@ -243,7 +245,7 @@ def _org(key: str = "org-1", /, **extra: object) -> dict[str, Any]:
 
 
 def _done_org(key: str = "org-1", /, **extra: object) -> dict[str, Any]:
-    return _org(key, **{EntityIndexState.STATE: MARKER, EntityIndexState.SWEPT_AT: NOW, **extra})
+    return _org(key, **{EntityIndexState.STATE: ORG_MARKER, EntityIndexState.SWEPT_AT: NOW, **extra})
 
 
 def _rec(key: str, *, name: str = "", org: str = "org-1", group: str | None = "g1",
@@ -275,10 +277,11 @@ class TestMarker:
         assert MARKER == f"v{ENTITY_INDEX_VERSION}:{FP}"
         assert fingerprint_of(MARKER) == FP
 
-    def test_the_version_covers_people(self) -> None:
-        """Bumped when people joined the org pass, so a deployment whose orgs
-        were already done projects its people."""
-        assert ENTITY_INDEX_VERSION >= 2
+    def test_people_rerun_the_org_pass_only(self) -> None:
+        """People joined the org pass: orgs already done project them, and no
+        connector is re-scanned for it."""
+        assert ORG_PASS_VERSION >= 2
+        assert ENTITY_INDEX_VERSION == 1
 
     def test_marker_changes_with_the_fingerprint(self) -> None:
         assert entity_index_marker("a:b:3") != entity_index_marker("a:b:4")
@@ -551,12 +554,12 @@ class TestTaxonomyPass:
         assert outcomes.count("taxonomy") == len(ENTITY_INDEX_TAXONOMY_SOURCES)
         assert [c[0] for c in graph.page_calls] == list(ENTITY_INDEX_TAXONOMY_SOURCES)
         assert all(c[1] == "org-1" for c in graph.page_calls)
-        assert graph.docs[ORGS]["org-1"][EntityIndexState.STATE] == MARKER
+        assert graph.docs[ORGS]["org-1"][EntityIndexState.STATE] == ORG_MARKER
 
     async def test_reached_nodes_get_graph_membership_and_unreached_are_deleted(self) -> None:
         graph, store = FakeGraph(), FakeStore()
         graph.docs[ORGS]["org-1"] = _org(**{
-            EntityIndexState.TARGET: MARKER, EntityIndexState.PHASE: TOPICS, EntityIndexState.SWEPT_AT: NOW,
+            EntityIndexState.TARGET: ORG_MARKER, EntityIndexState.PHASE: TOPICS, EntityIndexState.SWEPT_AT: NOW,
         })
         graph.sources[(TOPICS, "org-1")] = [
             {"_key": "t1", "name": "Pricing", "aliases": ["pricing model"]},
@@ -575,7 +578,7 @@ class TestTaxonomyPass:
 
     async def test_subcategory_level_comes_from_its_collection(self) -> None:
         graph, store = FakeGraph(), FakeStore()
-        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: MARKER, EntityIndexState.PHASE: SUB2})
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: ORG_MARKER, EntityIndexState.PHASE: SUB2})
         graph.sources[(SUB2, "org-1")] = [{"_key": "s1", "name": "Pricing", "aliases": []}]
         graph.membership[("subcategory", "s1")] = {"connectorIds": ["c1"], "recordGroupIds": []}
         await _rebuilder(graph, store).tick()
@@ -584,7 +587,7 @@ class TestTaxonomyPass:
 
     async def test_departments_are_projected_by_name(self) -> None:
         graph, store = FakeGraph(), FakeStore()
-        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: MARKER, EntityIndexState.PHASE: DEPARTMENTS})
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: ORG_MARKER, EntityIndexState.PHASE: DEPARTMENTS})
         graph.sources[(DEPARTMENTS, "org-1")] = [{"_key": "d1", "name": "Finance"}]
         graph.membership[("department", "d1")] = {"connectorIds": ["c1"], "recordGroupIds": []}
         await _rebuilder(graph, store).tick()
@@ -597,7 +600,7 @@ class TestTaxonomyPass:
         from app.models.entities import EntityRecord
 
         graph, store = FakeGraph(), FakeStore()
-        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: MARKER, EntityIndexState.PHASE: USERS})
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: ORG_MARKER, EntityIndexState.PHASE: USERS})
         graph.sources[(USERS, "org-1")] = [{"_key": "u1", "name": "Ann Lee"}, {"_key": "u2", "name": "Bob"}]
         graph.membership[("person", "u1")] = {"connectorIds": ["c1"], "recordGroupIds": ["g1"]}
         await _rebuilder(graph, store).tick()
@@ -607,7 +610,7 @@ class TestTaxonomyPass:
 
     async def test_membership_lookup_failure_counts_the_page_and_deletes_nothing(self) -> None:
         graph, store = FakeGraph(), FakeStore()
-        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: MARKER, EntityIndexState.PHASE: TOPICS})
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: ORG_MARKER, EntityIndexState.PHASE: TOPICS})
         graph.sources[(TOPICS, "org-1")] = [{"_key": "t1", "name": "A"}, {"_key": "t2", "name": "B"}]
         graph.membership_error = RuntimeError("db down")
         await _rebuilder(graph, store).tick()
@@ -618,7 +621,7 @@ class TestTaxonomyPass:
 
     async def test_unnamed_node_is_skipped(self) -> None:
         graph, store = FakeGraph(), FakeStore()
-        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: MARKER, EntityIndexState.PHASE: TOPICS})
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: ORG_MARKER, EntityIndexState.PHASE: TOPICS})
         graph.sources[(TOPICS, "org-1")] = [{"_key": "t1", "name": " "}]
         await _rebuilder(graph, store).tick()
         assert store.upserts == [] and store.deletes == []
@@ -636,7 +639,7 @@ def _point(entity_type: str, entity_id: str, level: str | None = None) -> Entity
 class TestSweep:
     async def test_runs_after_the_pass_and_deletes_only_stale_points(self) -> None:
         graph, store = FakeGraph(), FakeStore()
-        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: MARKER})
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: ORG_MARKER})
         graph.nodes = {
             TOPICS: {"t-live": {"orgId": "org-1"}, "t-legacy": {"orgId": None},
                      "t-other": {"orgId": "org-2"}},
@@ -671,7 +674,7 @@ class TestSweep:
 
     async def test_record_points_are_never_swept(self) -> None:
         graph, store = FakeGraph(), FakeStore()
-        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: MARKER})
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: ORG_MARKER})
         await _rebuilder(graph, store).tick()
         (call,) = store.page_calls
         assert "record" not in call[1]
@@ -679,7 +682,7 @@ class TestSweep:
 
     async def test_sweep_is_resumable_across_ticks(self) -> None:
         graph, store = FakeGraph(), FakeStore()
-        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: MARKER})
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: ORG_MARKER})
         store.points = [_point("topic", f"t{i}") for i in range(5)]
         rebuilder = _rebuilder(graph, store, sweep_points_per_tick=2)
         await rebuilder.tick()
@@ -705,7 +708,7 @@ class TestSweep:
 
     async def test_lookup_failure_deletes_nothing_then_gives_up(self, caplog) -> None:
         graph, store = FakeGraph(), FakeStore()
-        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: MARKER})
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: ORG_MARKER})
         store.points = [_point("topic", "t1")]
         graph.lookup_error = RuntimeError("db down")
         rebuilder = _rebuilder(graph, store)
@@ -723,7 +726,7 @@ class TestSweep:
 
     async def test_lost_leadership_deletes_nothing(self) -> None:
         graph, store = FakeGraph(), FakeStore()
-        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: MARKER})
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: ORG_MARKER})
         store.points = [_point("topic", "t-gone")]
         await _rebuilder(graph, store, FakeLock(keep=False)).tick()
         assert store.deletes == [] and graph.updates == []
@@ -841,7 +844,7 @@ class TestSameShapeAsIndexTime:
 class TestTaxonomyRaces:
     async def test_lost_lease_during_a_slow_membership_read_writes_nothing(self) -> None:
         graph, store = FakeGraph(), FakeStore()
-        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: MARKER, EntityIndexState.PHASE: TOPICS})
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: ORG_MARKER, EntityIndexState.PHASE: TOPICS})
         graph.sources[(TOPICS, "org-1")] = [{"_key": "t1", "name": "A"}, {"_key": "t2", "name": "B"}]
         graph.membership[("topic", "t1")] = {"connectorIds": ["c1"], "recordGroupIds": []}
         assert await _rebuilder(graph, store, FakeLock(keep=False)).tick() == "taxonomy"
@@ -851,7 +854,7 @@ class TestTaxonomyRaces:
         """Indexing wrote the point after the first read; deleting it would
         hide the entity until another of its records is indexed."""
         graph, store = FakeGraph(), FakeStore()
-        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: MARKER, EntityIndexState.PHASE: TOPICS})
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: ORG_MARKER, EntityIndexState.PHASE: TOPICS})
         graph.sources[(TOPICS, "org-1")] = [{"_key": "t1", "name": "A"}, {"_key": "t2", "name": "B"}]
         reads = {"n": 0}
         real = graph.get_taxonomy_entity_membership
@@ -878,8 +881,8 @@ class TestSweepScanFailures:
         """Redis refuses offsets past 10,000; an uncounted failure would keep
         this org first in line for ever."""
         graph, store = FakeGraph(), FakeStore()
-        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: MARKER})
-        graph.docs[ORGS]["org-2"] = _org("org-2", **{EntityIndexState.STATE: MARKER})
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: ORG_MARKER})
+        graph.docs[ORGS]["org-2"] = _org("org-2", **{EntityIndexState.STATE: ORG_MARKER})
         store.page_entity_points = AsyncMock(side_effect=RuntimeError("offset beyond 10000"))
         rebuilder = _rebuilder(graph, store)
         for _ in range(MAX_ATTEMPTS):

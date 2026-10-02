@@ -14,12 +14,13 @@ projects what the graph already holds, with no extraction or LLM call:
   stale winners).
 
 A document is done when its ``entityIndexState`` equals the current marker,
-``v<ENTITY_INDEX_VERSION>:<embedding fingerprint>``, so a model change re-runs
-every pass, and each point records the model that embedded it, so a point
-from another model is re-embedded whenever it is next written. The marker
-also carries the collection's stamp (``EntityVectorStore.collection_stamp``),
-so a collection dropped, recreated or emptied from outside is refilled the
-same way. Mechanics
+``v<version>:<embedding fingerprint>`` (``ENTITY_INDEX_VERSION`` for
+connectors, ``ORG_PASS_VERSION`` for orgs), so a model change re-runs every
+pass, and each point records the model that embedded it, so a point from
+another model is re-embedded whenever it is next written. The marker also
+carries the collection's stamp (``EntityVectorStore.collection_stamp``), so a
+collection dropped, recreated or emptied from outside is refilled the same
+way. Mechanics
 follow ``vector_membership_backfill``: one Redis leader, one page per tick, a
 resumable cursor on the document, bounded attempts, backoff on failure.
 """
@@ -64,9 +65,11 @@ if TYPE_CHECKING:
     )
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
-# Bump when what a pass writes changes, so every document is re-projected.
+# Bump when what a pass writes changes, so its documents are re-projected;
+# separate, so a change to one pass does not re-scan every connector.
+ENTITY_INDEX_VERSION = 1
 # 2: people (KG-13).
-ENTITY_INDEX_VERSION = 2
+ORG_PASS_VERSION = 2
 
 LEADER_KEY = "entity_index_rebuild:leader"
 PAGE_SIZE = 200
@@ -167,10 +170,10 @@ class EntityIndexState:
     SWEEP_FAILURES = "entityIndexSweepFailures"
 
 
-def entity_index_marker(fingerprint: str, stamp: str = "") -> str:
+def entity_index_marker(fingerprint: str, stamp: str = "", *, version: int = ENTITY_INDEX_VERSION) -> str:
     """``stamp`` is ``EntityVectorStore.collection_stamp``: a document done
     under another stamp was projected into a collection that is gone."""
-    return f"v{ENTITY_INDEX_VERSION}{'@' + stamp if stamp else ''}:{fingerprint}"
+    return f"v{version}{'@' + stamp if stamp else ''}:{fingerprint}"
 
 
 _MARKER = re.compile(r"v\d+(?:@[0-9a-z]+)?:(.+)", re.DOTALL)
@@ -281,13 +284,15 @@ class EntityIndexRebuilder:
         # Read every tick, after the line above may have recreated the
         # collection: a collection without its stamp gets a new one, which no
         # document has reached, so every pass runs again.
-        marker = entity_index_marker(fingerprint, await self.store.collection_stamp())
+        stamp = await self.store.collection_stamp()
+        marker = entity_index_marker(fingerprint, stamp)
 
         app = await self.graph.get_entity_index_candidate(_APPS, marker)
         if app and (key := _key_of(app)):
             await self._run_page(_Pass(_APPS, key, app, CONNECTOR_SOURCES, marker))
             return "connector"
 
+        marker = entity_index_marker(fingerprint, stamp, version=ORG_PASS_VERSION)
         sweep_before = self.now_ms() - SWEEP_INTERVAL_MS
         org = await self.graph.get_entity_index_candidate(
             _ORGS, marker, sweep_before=sweep_before,
@@ -826,6 +831,7 @@ async def run_entity_index_rebuild_loop(
 __all__ = [
     "ENTITY_INDEX_TAXONOMY_SOURCES",
     "ENTITY_INDEX_VERSION",
+    "ORG_PASS_VERSION",
     "EntityIndexRebuilder",
     "EntityIndexState",
     "entity_index_marker",
