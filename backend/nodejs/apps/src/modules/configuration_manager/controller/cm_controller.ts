@@ -3210,13 +3210,20 @@ const checkEmbeddingModelTakeover = async (
   return (await command.execute()) as AIServiceResponse;
 };
 
-// The takeover check answers 400 only while vectors from the outgoing model
-// are stored; anything else is the incoming model's own health failure.
+// The AI service refuses an embedding change with a 400 marked "not healthy"
+// only while the vector store holds vectors from another model. Its other 400s
+// ("error": a bad model name, a dimensions override, a failed image probe) are
+// the model's own setup problems and keep their own text.
+const isEmbeddingInUseRefusal = (
+  response: AIServiceResponse | undefined,
+): boolean =>
+  response?.statusCode === 400 && response.data?.status === 'not healthy';
+
 const takeoverRefusalMessage = (
   takeover: AIServiceResponse,
   fallback: string,
 ): string =>
-  takeover.statusCode === 400
+  isEmbeddingInUseRefusal(takeover)
     ? EMBEDDING_MODEL_IN_USE_MESSAGE
     : healthCheckFailureMessage(takeover.data, fallback);
 
@@ -3315,8 +3322,10 @@ export const addAIModelProvider =
       if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
         const errData: any = aiResponseData?.data ?? {};
         const reasonMessage =
-          (errData && (errData.message ?? errData.error?.message)) ??
-          `Failed to do health check of ${modelType} configuration, check credentials again`;
+          modelType === 'embedding' && isEmbeddingInUseRefusal(aiResponseData)
+            ? EMBEDDING_MODEL_IN_USE_MESSAGE
+            : ((errData && (errData.message ?? errData.error?.message)) ??
+              `Failed to do health check of ${modelType} configuration, check credentials again`);
 
         // The reason is written for the admin filling in the dialog ("Incorrect
         // API key provided"); the raw body behind it is for the log only.
@@ -3601,8 +3610,10 @@ export const updateAIModelProvider =
       if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
         const errData: any = aiResponseData?.data ?? {};
         const reasonMessage =
-          (errData && (errData.message ?? errData.error?.message)) ??
-          `Failed to do health check of ${modelType} configuration, check credentials again`;
+          modelType === 'embedding' && isEmbeddingInUseRefusal(aiResponseData)
+            ? EMBEDDING_MODEL_IN_USE_MESSAGE
+            : ((errData && (errData.message ?? errData.error?.message)) ??
+              `Failed to do health check of ${modelType} configuration, check credentials again`);
 
         // The reason is written for the admin filling in the dialog ("Incorrect
         // API key provided"); the raw body behind it is for the log only.

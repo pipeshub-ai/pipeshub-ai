@@ -3250,7 +3250,22 @@ describe('ConfigurationManager Controller', () => {
     const payload = (c?: SentCommand) => c?.body as SentModel | undefined
     const models = (c?: SentCommand) => c?.body as SentModel[] | undefined
 
-    function stubAiService(takeoverStatus = 200) {
+    interface AiAnswer {
+      statusCode: number
+      data: Record<string, unknown>
+    }
+    const healthy: AiAnswer = { statusCode: 200, data: { status: 'healthy' } }
+    // What /health-check/embedding answers while vectors from another model are stored.
+    const collectionRefusal: AiAnswer = {
+      statusCode: 400,
+      data: { status: 'not healthy', error: 'Remove the indexed documents first', message: 'Remove the indexed documents first' },
+    }
+    const configError: AiAnswer = {
+      statusCode: 400,
+      data: { status: 'error', message: 'The model "text-embedding-nope" was not found. Check the model name.' },
+    }
+
+    function stubAiService(takeoverStatus = 200, healthCheck: AiAnswer = healthy) {
       const calls: SentCommand[] = []
       sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function (this: unknown) {
         const command = this as { uri: string; body?: string }
@@ -3263,6 +3278,9 @@ describe('ConfigurationManager Controller', () => {
         }
         if (uri.includes('/model-usage/')) {
           return { statusCode: 200, data: { success: true, agents: [] } }
+        }
+        if (uri.endsWith('/health-check/embedding')) {
+          return healthCheck
         }
         return { statusCode: 200, data: { status: 'healthy' } }
       })
@@ -3380,6 +3398,67 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(takeoverCalls(calls)).to.have.length(0)
+    })
+
+    async function addAnswering(healthCheck: AiAnswer) {
+      stubAiService(200, healthCheck)
+      const kvs = storedModels([openai])
+      const res = createMockResponse()
+      await addAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({
+          body: { modelType: 'embedding', provider: local.provider, configuration: local.configuration, isDefault: true },
+        }),
+        res,
+        createMockNext(),
+      )
+      return { kvs, res }
+    }
+
+    async function editDefaultModelNameAnswering(healthCheck: AiAnswer) {
+      stubAiService(200, healthCheck)
+      const kvs = storedModels([openai, local])
+      const res = createMockResponse()
+      await updateAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({
+          params: { modelType: 'embedding', modelKey: 'k1' },
+          body: { provider: openai.provider, configuration: { model: 'text-embedding-3-large' }, isDefault: true },
+        }),
+        res,
+        createMockNext(),
+      )
+      return { kvs, res }
+    }
+
+    it('gives the plain refusal when the default model being added meets stored vectors', async () => {
+      const { kvs, res } = await addAnswering(collectionRefusal)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal(IN_USE)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it("keeps the health check's own reason when the model being added is misconfigured", async () => {
+      const { kvs, res } = await addAnswering(configError)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal(configError.data.message)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it('gives the plain refusal when an edit changes the model name of the default while vectors are stored', async () => {
+      const { kvs, res } = await editDefaultModelNameAnswering(collectionRefusal)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal(IN_USE)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it("keeps the health check's own reason when an edit to the default is misconfigured", async () => {
+      const { kvs, res } = await editDefaultModelNameAnswering(configError)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal(configError.data.message)
+      expect(kvs.set.called).to.be.false
     })
 
     it('checks the model that takes over when an edit takes the default off the model that embeds', async () => {
