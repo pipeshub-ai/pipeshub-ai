@@ -239,6 +239,65 @@ class TestFlagOn:
 
 
 # ---------------------------------------------------------------------------
+# Delete by external id (Outlook's sync delete)
+# ---------------------------------------------------------------------------
+
+
+def _request_result(marked: list[tuple[str, str | None]], *, success: bool = True) -> dict:
+    """``delete_record``'s soft result, as both providers shape it."""
+    if not success:
+        return {"success": False, "code": 403, "reason": "Only mailbox owner can delete emails"}
+    return {
+        "success": True, "record_id": marked[0][0], "connectorId": "c1", "orgId": "org-1", "softDeleted": True,
+        "batchId": "b-ext", "softDeletedRecords": [{"record_id": r, "virtual_record_id": v} for r, v in marked],
+        "virtualRecordIds": [v for _, v in marked if v], "eventData": None,
+    }
+
+
+class TestDeleteByExternalId:
+    async def test_flag_off_hard_deletes_as_before(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        with flag(False):
+            await proc.delete_record_by_external_id("c1", "msg-1", "u1")
+        store.delete_record_by_external_id.assert_awaited_once_with("c1", "msg-1", "u1")
+        proc.messaging_producer.send_message.assert_not_called()
+
+    async def test_flag_on_trashes_what_the_hard_delete_removes_as_a_connector_delete(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.delete_record_by_external_id = AsyncMock(
+            return_value=_request_result([("m1", "vm"), ("a1", "va")])
+        )
+        with flag(True), patch(f"{MODULE}.record_soft_deleted") as counted:
+            await proc.delete_record_by_external_id("c1", "msg-1", "u1")
+
+        store.delete_record_by_external_id.assert_awaited_once_with("c1", "msg-1", "u1", soft_delete=True)
+        counted.assert_called_once_with("CONNECTOR", 2)
+        assert _event_types(proc) == [EventTypes.SOFT_DELETE_RECORDS.value]
+        payload = proc.messaging_producer.send_message.await_args.args[1]["payload"]
+        assert payload["virtualRecordIds"] == ["vm", "va"]
+        assert (payload["batchId"], payload["deleteSource"]) == ("b-ext", "CONNECTOR")
+
+    async def test_flag_on_a_message_not_stored_or_already_trashed_is_left_alone(self) -> None:
+        proc = _processor()
+        _with_store(proc, AsyncMock()).delete_record_by_external_id = AsyncMock(return_value=None)
+        with flag(True):
+            await proc.delete_record_by_external_id("c1", "msg-1", "u1")
+        proc.messaging_producer.send_message.assert_not_called()
+
+    async def test_flag_on_a_refused_delete_raises_on_either_backend(self) -> None:
+        """Arango raises inside the store; Neo4j reports the refusal. The sync sees a failure either way."""
+        proc = _processor()
+        _with_store(proc, AsyncMock()).delete_record_by_external_id = AsyncMock(
+            return_value=_request_result([], success=False)
+        )
+        with flag(True), pytest.raises(RuntimeError, match="mailbox owner"):
+            await proc.delete_record_by_external_id("c1", "msg-1", "u1")
+        proc.messaging_producer.send_message.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Sync leaves trashed records alone
 # ---------------------------------------------------------------------------
 

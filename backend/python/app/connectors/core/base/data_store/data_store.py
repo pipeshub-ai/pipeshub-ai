@@ -277,7 +277,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> None:
+    async def delete_record_by_external_id(
+        self, connector_id: str, external_id: str, user_id: str | None = None, *, soft_delete: bool = False,
+    ) -> dict | None:
         pass
 
     @abstractmethod

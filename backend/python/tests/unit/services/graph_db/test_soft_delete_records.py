@@ -126,6 +126,100 @@ class TestApiDeleteRouting:
         provider.delete_records_and_relations.assert_not_called()
 
 
+def _outlook_mail() -> dict:
+    return {"_key": "m1", "id": "m1", "orgId": "o1", "connectorId": "c1",
+            "connectorName": "OUTLOOK", "origin": "CONNECTOR"}
+
+
+def _stored_mail(provider) -> None:
+    stored = MagicMock()
+    stored.id, stored.org_id = "m1", "o1"
+    provider.get_record_by_external_id = AsyncMock(return_value=stored)
+
+
+class TestSyncDeleteByExternalId:
+    """Outlook's sync delete: with ``soft_delete`` the trash takes what that backend's hard delete removes."""
+
+    @staticmethod
+    def _arango_outlook() -> tuple[ArangoHTTPProvider, list[str]]:
+        provider = _arango()
+        _stored_mail(provider)
+        provider.http_client.get_document = AsyncMock(return_value=_outlook_mail())
+        provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+        provider._check_record_permission = AsyncMock(return_value="OWNER")
+        provider._direct_attachment_ids = AsyncMock(return_value=["a1"])
+        removed: list[str] = []
+        provider._delete_outlook_edges = AsyncMock()
+        provider._delete_file_record = AsyncMock()
+        provider._delete_mail_record = AsyncMock()
+        provider._delete_main_record = AsyncMock(side_effect=lambda key, txn=None: removed.append(key))
+        provider.soft_delete_records = AsyncMock(return_value=soft_delete_result(
+            ["m1", "a1"], ["m1", "a1"],
+            [{"id": "m1", "vrid": "vm", "orgId": "o1"}, {"id": "a1", "vrid": "va", "orgId": "o1"}], "b1",
+        ))
+        return provider, removed
+
+    async def test_arango_trashes_the_mail_and_its_direct_attachments_like_the_hard_delete(self) -> None:
+        hard, removed = self._arango_outlook()
+        await hard.delete_record_by_external_id("c1", "msg-1", "u1")
+        hard.soft_delete_records.assert_not_called()
+
+        soft, _ = self._arango_outlook()
+        result = await soft.delete_record_by_external_id("c1", "msg-1", "u1", soft_delete=True)
+
+        soft._delete_main_record.assert_not_called()
+        args, kwargs = soft.soft_delete_records.await_args
+        assert sorted(args[0]) == sorted(removed) == ["a1", "m1"]
+        assert (kwargs["delete_source"], kwargs["deleted_by_user_id"], kwargs["follow"]) == ("CONNECTOR", None, ())
+        assert result["softDeleted"] is True and result["virtualRecordIds"] == ["vm", "va"]
+
+    async def test_arango_keeps_the_mailbox_owner_check(self) -> None:
+        provider, _ = self._arango_outlook()
+        provider._check_record_permission = AsyncMock(return_value="READER")
+        with pytest.raises(Exception, match="Only mailbox owner"):
+            await provider.delete_record_by_external_id("c1", "msg-1", "u1", soft_delete=True)
+        provider.soft_delete_records.assert_not_called()
+
+    async def test_neo4j_trashes_the_mail_alone_like_the_hard_delete(self) -> None:
+        def neo4j_outlook() -> Neo4jProvider:
+            provider = _neo4j()
+            _stored_mail(provider)
+            provider.get_document = AsyncMock(side_effect=lambda key, collection, txn=None: (
+                _outlook_mail() if collection == "records" else None
+            ))
+            provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+            provider.delete_records_and_relations = AsyncMock()
+            provider._create_deleted_record_event_payload = AsyncMock(return_value=None)
+            provider.soft_delete_records = AsyncMock(return_value=soft_delete_result(
+                ["m1"], ["m1"], [{"id": "m1", "vrid": "vm", "orgId": "o1"}], "b1"
+            ))
+            return provider
+
+        hard = neo4j_outlook()
+        await hard.delete_record_by_external_id("c1", "msg-1", "u1")
+        removed = [c.args[0] for c in hard.delete_records_and_relations.await_args_list]
+
+        soft = neo4j_outlook()
+        result = await soft.delete_record_by_external_id("c1", "msg-1", "u1", soft_delete=True)
+
+        soft.delete_records_and_relations.assert_not_called()
+        soft.get_user_by_user_id.assert_not_called()
+        args, kwargs = soft.soft_delete_records.await_args
+        assert args[0] == removed == ["m1"]
+        assert (kwargs["delete_source"], kwargs["deleted_by_user_id"], kwargs["follow"]) == ("CONNECTOR", None, ())
+        assert result["softDeleted"] is True
+
+    @pytest.mark.parametrize("backend", ["arango", "neo4j"])
+    async def test_a_message_already_in_the_trash_is_not_looked_up(self, backend) -> None:
+        """A redelivered removal must not raise on a record the trash already holds."""
+        from app.services.graph_db.common.record_visibility import RecordVisibility
+
+        provider = _arango() if backend == "arango" else _neo4j()
+        provider.get_record_by_external_id = AsyncMock(return_value=None)
+        assert await provider.delete_record_by_external_id("c1", "msg-1", "u1", soft_delete=True) is None
+        assert provider.get_record_by_external_id.await_args.kwargs["visibility"] is RecordVisibility.LIVE
+
+
 class TestFlag:
     async def test_off_by_default(self) -> None:
         config = MagicMock()

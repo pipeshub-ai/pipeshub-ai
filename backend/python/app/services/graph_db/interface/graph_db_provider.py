@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
+from app.config.constants.arangodb import DeleteSource
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
@@ -4035,6 +4036,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         soft_delete: bool = False,
+        delete_source: DeleteSource = DeleteSource.USER,
     ) -> dict:
         """
         Main entry point for record deletion - routes to connector-specific methods.
@@ -4044,10 +4046,13 @@ class IGraphDBProvider(ABC):
             user_id (str): User ID performing the deletion
             org_id (str): Caller's organization; records outside it are reported as not found
             transaction (Optional[str]): Optional transaction context
-            soft_delete (bool): After the same permission checks, move the record and
-                its containment subtree to the trash (``soft_delete_records``, source
-                USER) instead of removing them. The result's ``eventData`` is then a
-                ``softDeleteRecords`` event.
+            soft_delete (bool): After the same permission checks, move to the trash
+                (``soft_delete_records``) exactly what the hard delete would remove,
+                instead of removing it. The caller publishes the vectors-only
+                cleanup from the result's ``virtualRecordIds``.
+            delete_source (DeleteSource): Who the soft delete is recorded as.
+                USER names ``user_id`` as the deleter; CONNECTOR (a sync delete)
+                names no one.
 
         Returns:
             Dict: Result with success status and reason
@@ -4060,8 +4065,10 @@ class IGraphDBProvider(ABC):
         connector_id: str,
         external_id: str,
         user_id: str,
-        transaction: str | None = None
-    ) -> None:
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
+    ) -> dict | None:
         """
         Delete a record by external ID.
 
@@ -4070,6 +4077,12 @@ class IGraphDBProvider(ABC):
             external_id (str): External record ID
             user_id (str): User ID performing the deletion
             transaction (Optional[str]): Optional transaction context
+            soft_delete (bool): Move to the trash, as a CONNECTOR delete, exactly
+                what the hard delete would remove. A record already in the trash
+                is left alone.
+
+        Returns:
+            The ``delete_record`` result, or None when there is no such record.
         """
         pass
 

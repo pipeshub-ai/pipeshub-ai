@@ -117,7 +117,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "batch_upsert_record_permissions": (Rule.WRITE, ""),
     "delete_records_and_relations": (Rule.WRITE, ""),
     "delete_record": (Rule.WRITE, ""),
-    "delete_record_by_external_id": (Rule.WRITE, "looks the record up with ALL"),
+    "delete_record_by_external_id": (Rule.WRITE, "looks the record up with ALL; LIVE for a soft delete"),
     "remove_user_access_to_record": (Rule.WRITE, "looks the record up with ALL"),
     "delete_records_recursive": (Rule.WRITE, ""),
     "delete_single_record": (Rule.WRITE, ""),

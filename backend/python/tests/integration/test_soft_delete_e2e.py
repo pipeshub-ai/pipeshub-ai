@@ -15,6 +15,9 @@ file that was already in the trash. A second file sits outside the folder.
 - A UI/API delete by the KB owner goes to the trash as a USER delete, and
   takes exactly what that backend's hard delete removes: a folder alone, a
   mail with its direct attachments on Arango and alone on Neo4j.
+- An Outlook sync delete (by external id) goes to the trash as a CONNECTOR
+  delete and takes exactly what that backend's hard delete removes: the
+  message with its direct attachments on Arango, the message alone on Neo4j.
 - With the flag off, the same cascade still removes the records.
 
 Arango enforces the records schema strictly, so its run also proves the write
@@ -57,7 +60,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
-from app.models.entities import FileRecord, RecordType
+from app.models.entities import FileRecord, MailRecord, RecordType
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -81,6 +84,7 @@ KB_NAMES = ("folder", "file_a", "file_b", "attachment", "old_trash", "outside")
 DRIVE_NAMES = ("drive_file", "drive_child")
 # A mail with a direct attachment, an attachment of that attachment, and a PARENT_CHILD child.
 MAIL_NAMES = ("mail", "mail_attachment", "mail_attachment_attachment", "mail_child")
+OUTLOOK_NAMES = ("outlook_mail", "outlook_attachment", "outlook_attachment_attachment")
 
 
 class _Producer:
@@ -152,7 +156,7 @@ async def _remove(graph: IGraphDBProvider, w: _World) -> None:
     if isinstance(graph, Neo4jProvider):
         await graph.client.execute_query("MATCH (n) WHERE n.id IN $ids DETACH DELETE n", parameters={"ids": ids})
         return
-    for collection in (CollectionNames.RECORDS.value, CollectionNames.FILES.value,
+    for collection in (CollectionNames.RECORDS.value, CollectionNames.FILES.value, CollectionNames.MAILS.value,
                        CollectionNames.USERS.value, CollectionNames.APPS.value):
         await graph.http_client.execute_aql(
             f"FOR d IN {collection} FILTER d._key IN @ids REMOVE d IN {collection}", {"ids": ids}
@@ -212,14 +216,23 @@ def _file(w: _World, name: str, *, kb: bool, folder: bool = False, **extra: obje
     return FileRecord(**{**fields, **extra})
 
 
-def _mail_file(w: _World, name: str) -> FileRecord:
-    return _file(w, name, kb=False, connector_name=Connectors.GOOGLE_MAIL, connector_id=w.mail_connector_id)
+def _mail_file(w: _World, name: str, connector: Connectors = Connectors.GOOGLE_MAIL) -> FileRecord:
+    return _file(w, name, kb=False, connector_name=connector, connector_id=w.mail_connector_id)
+
+
+def _outlook_message(w: _World) -> MailRecord:
+    return MailRecord(
+        id=w.ids["outlook_mail"], org_id=w.org_id, record_name="Quarterly numbers",
+        record_type=RecordType.MAIL, external_record_id=f"ext-{w.ids['outlook_mail']}", version=1,
+        origin=OriginTypes.CONNECTOR, connector_name=Connectors.OUTLOOK, connector_id=w.mail_connector_id,
+        mime_type="text/html", indexing_status=ProgressStatus.COMPLETED.value, subject="Quarterly numbers",
+    )
 
 
 async def _seed(w: _World) -> None:
     g = w.graph
     now = get_epoch_timestamp_in_ms()
-    for name in (*KB_NAMES, *DRIVE_NAMES, *MAIL_NAMES):
+    for name in (*KB_NAMES, *DRIVE_NAMES, *MAIL_NAMES, *OUTLOOK_NAMES):
         w.ids[name] = f"{name}-{uuid.uuid4().hex[:12]}"
 
     await g.batch_upsert_nodes(
@@ -245,8 +258,10 @@ async def _seed(w: _World) -> None:
         _file(w, "drive_file", kb=False),
         _file(w, "drive_child", kb=False),
         *(_mail_file(w, n) for n in MAIL_NAMES),
+        _outlook_message(w),
+        *(_mail_file(w, n, Connectors.OUTLOOK) for n in OUTLOOK_NAMES[1:]),
     ])
-    for name in ("file_a", "file_b", "attachment", "outside", "drive_file", "drive_child"):
+    for name in ("file_a", "file_b", "attachment", "outside", "drive_file", "drive_child", *OUTLOOK_NAMES):
         await g.update_node(w.ids[name], CollectionNames.RECORDS.value, {"virtualRecordId": f"vr-{w.ids[name]}"})
 
     def edge(from_id: str, from_col: str, to_id: str, to_col: str, **extra: object) -> dict:
@@ -256,7 +271,8 @@ async def _seed(w: _World) -> None:
     records, apps, users = CollectionNames.RECORDS.value, CollectionNames.APPS.value, CollectionNames.USERS.value
     await g.batch_create_edges(
         [edge(w.user_key, users, w.kb_id, apps, role="OWNER", type="USER"),
-         edge(w.user_key, users, w.ids["mail"], records, role="OWNER", type="USER")],
+         edge(w.user_key, users, w.ids["mail"], records, role="OWNER", type="USER"),
+         edge(w.user_key, users, w.ids["outlook_mail"], records, role="OWNER", type="USER")],
         collection=CollectionNames.PERMISSION.value,
     )
     await g.batch_create_edges(
@@ -271,7 +287,10 @@ async def _seed(w: _World) -> None:
            edge(w.ids["mail"], records, w.ids["mail_attachment"], records, relationshipType="ATTACHMENT"),
            edge(w.ids["mail_attachment"], records, w.ids["mail_attachment_attachment"], records,
                 relationshipType="ATTACHMENT"),
-           edge(w.ids["mail"], records, w.ids["mail_child"], records, relationshipType="PARENT_CHILD")],
+           edge(w.ids["mail"], records, w.ids["mail_child"], records, relationshipType="PARENT_CHILD"),
+           edge(w.ids["outlook_mail"], records, w.ids["outlook_attachment"], records, relationshipType="ATTACHMENT"),
+           edge(w.ids["outlook_attachment"], records, w.ids["outlook_attachment_attachment"], records,
+                relationshipType="ATTACHMENT")],
         collection=CollectionNames.RECORD_RELATIONS.value,
     )
 
@@ -437,6 +456,38 @@ async def test_an_api_mail_delete_takes_what_the_hard_delete_takes(world: _World
     result = await world.graph.delete_record(world.ids["mail"], world.user_id, world.org_id, soft_delete=soft)
     assert result["success"] is True, result
     assert before - await _visible(world, MAIL_NAMES) == expected
+
+
+@pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
+async def test_an_outlook_sync_delete_takes_what_the_hard_delete_takes(
+    world: _World, monkeypatch: pytest.MonkeyPatch, soft: bool,
+) -> None:
+    """Outlook deletes by external id; Arango's hard path also removes direct attachments, Neo4j's does not."""
+    _flag(monkeypatch, soft)
+    expected = (
+        {"outlook_mail", "outlook_attachment"} if isinstance(world.graph, ArangoHTTPProvider) else {"outlook_mail"}
+    )
+    before = await _visible(world, OUTLOOK_NAMES)
+    await world.processor.delete_record_by_external_id(
+        world.mail_connector_id, f"ext-{world.ids['outlook_mail']}", world.user_id,
+    )
+    assert before - await _visible(world, OUTLOOK_NAMES) == expected
+
+    if not soft:
+        assert world.producer.of_type(EventTypes.SOFT_DELETE_RECORDS.value) == []
+        return
+    docs = [await world.stored(n) for n in expected]
+    assert {(d["deleteSource"], d.get("deletedByUserId")) for d in docs} == {("CONNECTOR", None)}
+    assert len({d["deleteBatchId"] for d in docs}) == 1
+    (event,) = world.producer.of_type(EventTypes.SOFT_DELETE_RECORDS.value)
+    assert set(event["payload"]["virtualRecordIds"]) == {f"vr-{world.ids[n]}" for n in expected}
+    assert world.producer.of_type(EventTypes.DELETE_RECORD.value) == []
+
+    # The removal arriving again finds nothing live to act on.
+    await world.processor.delete_record_by_external_id(
+        world.mail_connector_id, f"ext-{world.ids['outlook_mail']}", world.user_id,
+    )
+    assert len(world.producer.of_type(EventTypes.SOFT_DELETE_RECORDS.value)) == 1
 
 
 async def test_with_the_flag_off_a_cascade_still_removes_the_records(

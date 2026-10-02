@@ -2421,16 +2421,13 @@ class DataSourceEntitiesProcessor:
         result = dict(result)
         result["deleted_records"] = result.get("soft_deleted_records", [])
         result["softDeleted"] = True
-        marked = len(result["deleted_records"])
-        record_soft_deleted(DeleteSource(delete_source).value, marked)
-        if marked:
-            await notify_kb_records_changed(connector_id)
-        unpublished = await self._publish_soft_delete_events(
-            org_id=result.get("org_id") or self.org_id,
+        unpublished = await self._finish_soft_delete(
             connector_id=connector_id,
+            org_id=result.get("org_id"),
+            marked=len(result["deleted_records"]),
             virtual_record_ids=result.get("virtual_record_ids", []),
             batch_id=batch_id,
-            delete_source=DeleteSource(delete_source).value,
+            delete_source=delete_source,
         )
         if unpublished:
             # The hard path's key, so callers read one shape whichever path ran.
@@ -2441,6 +2438,29 @@ class DataSourceEntitiesProcessor:
             ]
             result["vectorCleanupFailedVirtualRecordIds"] = unpublished
         return result
+
+    async def _finish_soft_delete(
+        self,
+        *,
+        connector_id: str,
+        org_id: str | None,
+        marked: int,
+        virtual_record_ids: list[str],
+        batch_id: str,
+        delete_source: DeleteSource,
+    ) -> list[str]:
+        """After the trash transaction commits: count it, refresh KB caches, publish the vector cleanup."""
+        source = DeleteSource(delete_source).value
+        record_soft_deleted(source, marked)
+        if marked:
+            await notify_kb_records_changed(connector_id)
+        return await self._publish_soft_delete_events(
+            org_id=org_id or self.org_id,
+            connector_id=connector_id,
+            virtual_record_ids=virtual_record_ids,
+            batch_id=batch_id,
+            delete_source=source,
+        )
 
     async def _publish_soft_delete_events(
         self,
@@ -4199,6 +4219,25 @@ class DataSourceEntitiesProcessor:
     async def delete_record_by_external_id(
         self, connector_id: str, external_id: str, user_id: str | None = None
     ) -> None:
+        if await is_soft_delete_enabled(self.config_service):
+            async with self.data_store_provider.transaction() as tx_store:
+                result = await tx_store.delete_record_by_external_id(
+                    connector_id, external_id, user_id, soft_delete=True
+                )
+            if not result:
+                return
+            if not result.get("success"):
+                # Arango raises on a refused delete; Neo4j reports it. Fail the same way on both.
+                raise RuntimeError(f"Could not move record {external_id} to the trash: {result.get('reason')}")
+            await self._finish_soft_delete(
+                connector_id=result.get("connectorId") or connector_id,
+                org_id=result.get("orgId"),
+                marked=len(result.get("softDeletedRecords") or []),
+                virtual_record_ids=result.get("virtualRecordIds") or [],
+                batch_id=result["batchId"],
+                delete_source=DeleteSource.CONNECTOR,
+            )
+            return
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.delete_record_by_external_id(connector_id, external_id, user_id)
 

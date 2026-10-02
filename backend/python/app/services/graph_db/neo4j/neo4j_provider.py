@@ -7716,6 +7716,7 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         soft_delete: bool = False,
+        delete_source: DeleteSource = DeleteSource.USER,
     ) -> dict:
         """Main entry point for record deletion. KB records require OWNER, WRITER, or FILEORGANIZER."""
         try:
@@ -7764,14 +7765,17 @@ class Neo4jProvider(IGraphDBProvider):
                     }
 
             if soft_delete:
-                deleter = await self.get_user_by_user_id(user_id)
+                deleted_by = None
+                if DeleteSource(delete_source) is DeleteSource.USER:
+                    deleter = await self.get_user_by_user_id(user_id) or {}
+                    deleted_by = deleter.get("id") or deleter.get("_key")
                 # The record alone: the hard delete below removes only this vertex.
                 result = await self.soft_delete_records(
                     [record_id],
                     record.get("connectorId") or "",
-                    delete_source=DeleteSource.USER.value,
+                    delete_source=DeleteSource(delete_source).value,
                     batch_id=str(uuid.uuid4()),
-                    deleted_by_user_id=(deleter or {}).get("id") or (deleter or {}).get("_key"),
+                    deleted_by_user_id=deleted_by,
                     follow=(),
                     transaction=transaction,
                 )
@@ -7835,18 +7839,28 @@ class Neo4jProvider(IGraphDBProvider):
         connector_id: str,
         external_id: str,
         user_id: str,
-        transaction: str | None = None
-    ) -> None:
-        """Delete a record by external ID"""
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
+    ) -> dict | None:
+        """Delete a record by external ID; ``soft_delete`` trashes, as a CONNECTOR delete, what the hard delete removes."""
         try:
             record = await self.get_record_by_external_id(
-                connector_id, external_id, transaction, visibility=RecordVisibility.ALL
+                connector_id,
+                external_id,
+                transaction,
+                visibility=RecordVisibility.LIVE if soft_delete else RecordVisibility.ALL,
             )
             if not record:
                 self.logger.warning(f"⚠️ Record {external_id} not found for connector {connector_id}")
-                return
+                return None
 
-            await self.delete_record(record.id, user_id, record.org_id, transaction)
+            if soft_delete:
+                return await self.delete_record(
+                    record.id, user_id, record.org_id, transaction,
+                    soft_delete=True, delete_source=DeleteSource.CONNECTOR,
+                )
+            return await self.delete_record(record.id, user_id, record.org_id, transaction)
 
         except Exception as e:
             self.logger.error(f"❌ Delete record by external ID failed: {str(e)}")

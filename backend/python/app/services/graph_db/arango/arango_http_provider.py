@@ -8550,6 +8550,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         soft_delete: bool = False,
+        delete_source: DeleteSource = DeleteSource.USER,
     ) -> dict:
         """
         Main entry point for record deletion - routes to connector-specific methods.
@@ -8586,15 +8587,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Route to connector-specific deletion method
             if origin == OriginTypes.UPLOAD.value or connector_name == Connectors.KNOWLEDGE_BASE.value:
-                return await self.delete_knowledge_base_record(record_id, user_id, record, transaction, soft_delete=soft_delete)
+                return await self.delete_knowledge_base_record(record_id, user_id, record, transaction, soft_delete=soft_delete, delete_source=delete_source)
             elif connector_name == Connectors.GOOGLE_DRIVE.value:
-                return await self.delete_google_drive_record(record_id, user_id, record, transaction, soft_delete=soft_delete)
+                return await self.delete_google_drive_record(record_id, user_id, record, transaction, soft_delete=soft_delete, delete_source=delete_source)
             elif connector_name == Connectors.GOOGLE_MAIL.value:
-                return await self.delete_gmail_record(record_id, user_id, record, transaction, soft_delete=soft_delete)
+                return await self.delete_gmail_record(record_id, user_id, record, transaction, soft_delete=soft_delete, delete_source=delete_source)
             elif connector_name == Connectors.OUTLOOK.value:
-                return await self.delete_outlook_record(record_id, user_id, record, transaction, soft_delete=soft_delete)
+                return await self.delete_outlook_record(record_id, user_id, record, transaction, soft_delete=soft_delete, delete_source=delete_source)
             elif connector_name == Connectors.LOCAL_FS.value:
-                return await self.delete_local_fs_record(record_id, user_id, record, transaction, soft_delete=soft_delete)
+                return await self.delete_local_fs_record(record_id, user_id, record, transaction, soft_delete=soft_delete, delete_source=delete_source)
             else:
                 return {
                     "success": False,
@@ -8615,8 +8616,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         connector_id: str,
         external_id: str,
         user_id: str,
-        transaction: str | None = None
-    ) -> None:
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
+    ) -> dict | None:
         """
         Delete a record by external ID.
 
@@ -8625,6 +8628,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             external_id: External record ID
             user_id: User ID performing the deletion
             transaction: Optional transaction ID
+            soft_delete: Move to the trash, as a CONNECTOR delete, exactly what
+                the hard delete would remove. A record already in the trash is
+                left alone.
+
+        Returns:
+            The ``delete_record`` result, or None when there is no such record.
         """
         try:
             self.logger.debug(f"🗂️ Deleting record {external_id} from {connector_id}")
@@ -8634,14 +8643,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 connector_id,
                 external_id,
                 transaction=transaction,
-                visibility=RecordVisibility.ALL,
+                visibility=RecordVisibility.LIVE if soft_delete else RecordVisibility.ALL,
             )
             if not record:
                 self.logger.warning(f"⚠️ Record {external_id} not found in {connector_id}")
-                return
+                return None
 
             # Delete record using the record's internal ID and user_id
-            deletion_result = await self.delete_record(record.id, user_id, record.org_id, transaction=transaction)
+            if soft_delete:
+                deletion_result = await self.delete_record(
+                    record.id, user_id, record.org_id, transaction=transaction,
+                    soft_delete=True, delete_source=DeleteSource.CONNECTOR,
+                )
+            else:
+                deletion_result = await self.delete_record(record.id, user_id, record.org_id, transaction=transaction)
 
             # Check if deletion was successful
             if deletion_result.get("success"):
@@ -8650,6 +8665,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 error_reason = deletion_result.get("reason", "Unknown error")
                 self.logger.error(f"❌ Failed to delete record {external_id}: {error_reason}")
                 raise Exception(f"Deletion failed: {error_reason}")
+            return deletion_result
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete record {external_id} from {connector_id}: {str(e)}")
@@ -9571,11 +9587,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None,
         *,
         with_attachments: bool = False,
+        delete_source: DeleteSource = DeleteSource.USER,
     ) -> dict:
-        """The UI/API delete once permissions pass: what the hard delete removes goes to the trash.
+        """A delete once permissions pass: what the hard delete removes goes to the trash.
 
         That is the record alone, plus its direct attachments for a mail
         (``with_attachments``); nothing below them, and no PARENT_CHILD children.
+        A connector sync delete (``delete_source`` CONNECTOR) names no user.
         """
         record_ids = [record_id]
         if with_attachments and is_live_record(record):
@@ -9583,9 +9601,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         result = await self.soft_delete_records(
             record_ids,
             record.get("connectorId") or "",
-            delete_source=DeleteSource.USER.value,
+            delete_source=DeleteSource(delete_source).value,
             batch_id=str(uuid.uuid4()),
-            deleted_by_user_id=user_key,
+            deleted_by_user_id=user_key if DeleteSource(delete_source) is DeleteSource.USER else None,
             follow=(),
             transaction=transaction,
         )
@@ -9612,6 +9630,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         soft_delete: bool = False,
+        delete_source: DeleteSource = DeleteSource.USER,
     ) -> dict:
         """Delete a Knowledge Base record - handles uploads and KB-specific logic."""
         try:
@@ -9654,7 +9673,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Execute KB-specific deletion
             if soft_delete:
-                return await self._soft_delete_for_request(record_id, record, user_key, transaction)
+                return await self._soft_delete_for_request(
+                    record_id, record, user_key, transaction, delete_source=delete_source
+                )
             return await self._execute_kb_record_deletion(record_id, record, kb_context, transaction)
 
         except Exception as e:
@@ -9673,6 +9694,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         soft_delete: bool = False,
+        delete_source: DeleteSource = DeleteSource.USER,
     ) -> dict:
         """Delete a Google Drive record - handles Drive-specific permissions and logic."""
         try:
@@ -9700,7 +9722,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Execute Drive-specific deletion
             if soft_delete:
-                return await self._soft_delete_for_request(record_id, record, user_key, transaction)
+                return await self._soft_delete_for_request(
+                    record_id, record, user_key, transaction, delete_source=delete_source
+                )
             return await self._execute_drive_record_deletion(record_id, record, user_role, transaction)
 
         except Exception as e:
@@ -9719,6 +9743,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         soft_delete: bool = False,
+        delete_source: DeleteSource = DeleteSource.USER,
     ) -> dict:
         """Delete a Gmail record - handles Gmail-specific permissions and logic."""
         try:
@@ -9747,7 +9772,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Execute Gmail-specific deletion
             if soft_delete:
                 return await self._soft_delete_for_request(
-                    record_id, record, user_key, transaction, with_attachments=True
+                    record_id, record, user_key, transaction, with_attachments=True,
+                    delete_source=delete_source,
                 )
             return await self._execute_gmail_record_deletion(record_id, record, user_role, transaction)
 
@@ -9767,6 +9793,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         soft_delete: bool = False,
+        delete_source: DeleteSource = DeleteSource.USER,
     ) -> dict:
         """Delete an Outlook record - handles email and its attachments."""
         try:
@@ -9795,7 +9822,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Execute deletion
             if soft_delete:
                 return await self._soft_delete_for_request(
-                    record_id, record, user_key, transaction, with_attachments=True
+                    record_id, record, user_key, transaction, with_attachments=True,
+                    delete_source=delete_source,
                 )
             return await self._execute_outlook_record_deletion(record_id, record, transaction)
 
@@ -9815,6 +9843,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         soft_delete: bool = False,
+        delete_source: DeleteSource = DeleteSource.USER,
     ) -> dict:
         """
         Delete a Local FS record. Local FS DELETED events come from the
@@ -9860,7 +9889,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
 
             if soft_delete:
-                return await self._soft_delete_for_request(record_id, record, user.get('_key'), transaction)
+                return await self._soft_delete_for_request(
+                    record_id, record, user.get('_key'), transaction, delete_source=delete_source
+                )
             return await self._execute_local_fs_record_deletion(record_id, record, transaction)
 
         except Exception as e:
