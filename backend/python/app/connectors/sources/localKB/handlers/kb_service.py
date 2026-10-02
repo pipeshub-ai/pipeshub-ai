@@ -887,10 +887,16 @@ class KnowledgeBaseService:
         return None
 
     async def _org_of_records(self, kb_id: str, record_ids: List[str]) -> str:
+        # Reads raise: a failed read must stop the delete, not look like "no organisation".
         for record_id in record_ids:
-            record = await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+            record = await self.graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
             if record and record.get("connectorId") == kb_id and record.get("orgId"):
                 return str(record["orgId"])
+        kb = await self.graph_provider.get_document(kb_id, CollectionNames.APPS.value, raise_on_error=True)
+        if kb and kb.get("orgId"):
+            return str(kb["orgId"])
         raise ValueError(f"No record of knowledge base {kb_id} names its organisation")
 
     async def _publish_with_retry(self, event: dict, kb_id: str) -> None:

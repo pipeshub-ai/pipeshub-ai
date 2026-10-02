@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import EventTypes
+from app.config.constants.arangodb import CollectionNames, EventTypes
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 DOC_IDS = ["65f1c0ffee0123456789abc1", "65f1c0ffee0123456789abc2"]
 
@@ -159,4 +163,55 @@ async def test_a_removal_that_cannot_be_published_deletes_nothing(service, kind)
     assert result["success"] is False
     assert result["code"] == 503
     assert "nothing was deleted" in result["reason"]
+    service.processor_for_kb.return_value.on_records_deleted_cascade.assert_not_awaited()
+
+
+def _documents(records: dict, kb: dict | None) -> Callable[..., Awaitable[dict | None]]:
+    async def read(key: str, collection: str, *args: object, **kwargs: object) -> dict | None:
+        return kb if collection == CollectionNames.APPS.value else records.get(key)
+    return read
+
+
+def _every_read_raises(service) -> bool:
+    return all(c.kwargs.get("raise_on_error") is True for c in service.graph_provider.get_document.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_the_organisation_comes_from_the_kb_when_no_record_names_it(service) -> None:
+    _writer(service)
+    service.graph_provider.get_document = AsyncMock(
+        side_effect=_documents({"f1": {"connectorId": "kb1"}}, {"_key": "kb1", "orgId": "org-from-kb"})
+    )
+
+    result = await service.delete_folder("kb1", "f1", "user1")
+
+    assert result["success"] is True
+    event = service.kafka_service.publish_event.await_args_list[0].args[1]
+    assert event["payload"]["orgId"] == "org-from-kb"
+    assert _every_read_raises(service)
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_record_deletes_nothing(service) -> None:
+    """A failed read is not "no organisation": nothing is scheduled or deleted."""
+    _writer(service)
+
+    service.graph_provider.get_document = AsyncMock(side_effect=RuntimeError("graph busy"))
+
+    result = await service.delete_folder("kb1", "f1", "user1")
+
+    assert (result["success"], result["code"]) == (False, 503)
+    assert _every_read_raises(service)
+    service.kafka_service.publish_event.assert_not_awaited()
+    service.processor_for_kb.return_value.on_records_deleted_cascade.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_organisation_anywhere_deletes_nothing(service) -> None:
+    _writer(service)
+    service.graph_provider.get_document = AsyncMock(side_effect=_documents({"f1": {"connectorId": "kb1"}}, {"_key": "kb1"}))
+
+    result = await service.delete_folder("kb1", "f1", "user1")
+
+    assert (result["success"], result["code"]) == (False, 503)
     service.processor_for_kb.return_value.on_records_deleted_cascade.assert_not_awaited()
