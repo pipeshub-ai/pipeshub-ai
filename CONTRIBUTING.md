@@ -162,6 +162,18 @@ docker run -d --name mongodb --restart always -p 27017:27017 \
 Do not start these unless you change the env defaults:
 
 - ArangoDB instead of Neo4j: `DATA_STORE=arangodb`. Do not run it next to Neo4j.
+- ArcadeDB instead of Neo4j: `DATA_STORE=arcadedb`. ArcadeDB speaks openCypher over
+  the same Bolt wire protocol as Neo4j, so `ArcadeDBProvider` reuses `Neo4jProvider`
+  almost unchanged. The Bolt plugin is opt-in and separate from the HTTP API on
+  2480, which the app also uses to create the database (ArcadeDB's Cypher engine
+  does not implement `CREATE DATABASE`):
+
+  ```bash
+  docker run -d --name arcadedb --restart always -p 2480:2480 -p 7687:7687 \
+    -e JAVA_OPTS="-Darcadedb.server.rootPassword=your_arcadedb_password \
+      -Darcadedb.server.plugins=Bolt:com.arcadedb.bolt.BoltProtocolPlugin" \
+    arcadedata/arcadedb:26.9.1
+  ```
 - Kafka instead of Redis Streams: `MESSAGE_BROKER=kafka` (ZooKeeper and Kafka).
 - etcd instead of Redis KV: `KV_STORE_TYPE=etcd`.
 
@@ -231,7 +243,7 @@ Three application layers, plus stores:
    - **Docling** (8081, `app.docling_main`) — PDF and other complex documents.
    - **Parsing** (8092) and **Extraction** (8093) — optional; only with `USE_PARSING_SERVICE=true`.
 
-**Stores (defaults in `backend/env.template`):** Redis (config KV and Redis Streams as the event bus), Qdrant (vectors), Neo4j (graph), MongoDB (sessions and metadata). ArangoDB can replace Neo4j. Kafka can replace Redis Streams on a larger deployment. etcd can replace Redis as the KV store.
+**Stores (defaults in `backend/env.template`):** Redis (config KV and Redis Streams as the event bus), Qdrant (vectors), Neo4j (graph), MongoDB (sessions and metadata). ArangoDB or ArcadeDB can replace Neo4j. Kafka can replace Redis Streams on a larger deployment. etcd can replace Redis as the KV store.
 
 In Docker (`./install.sh --build`), Node serves the API and the built UI together on port **3000**.
 
