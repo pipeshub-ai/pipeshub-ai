@@ -10,7 +10,7 @@ import json
 import uuid
 import re
 from collections.abc import AsyncGenerator
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from logging import Logger
 from typing import Any, Literal, Optional
 from urllib.parse import parse_qs, urlparse
@@ -373,6 +373,8 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
 
         self.pages_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self._space_listing_complete = False
+        # Items the by-id syncs of the current space listing failed to save; counted in failedPages.
+        self._id_sync_failed_items: list[tuple[str, str, str]] = []
 
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
@@ -851,7 +853,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 within the sync filters; the checkpoint is neither read nor moved.
 
         Returns:
-            Whether the listing was read in full.
+            Whether the listing was read in full; by id, also whether every item was saved.
         """
         # Derive content_type from record_type for logging and sync point
         content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
@@ -1230,26 +1232,33 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
 
             # Update sync checkpoint with current time (only if we synced something)
             # Using current time instead of last item's time avoids re-fetching due to the 24-hour offset
+            if only_ids is not None:
+                self._id_sync_failed_items.extend(failed_items)
+                self.logger.info(f"✅ {content_type.capitalize()} sync by id complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}")
+                return listing_complete and not failed_items
+
             settled = True
-            if space is not None and only_ids is None:
+            self._id_sync_failed_items = []
+            if space is not None:
+                # A given-up item the search didn't return again is unchanged; syncing it by id would only fail again.
                 settled = await self._reconcile_space_content(space, record_type, ContentListing(
-                    full=not last_sync_time, complete=listing_complete, seen=frozenset(seen),
+                    full=not last_sync_time, complete=listing_complete, seen=frozenset(seen | set(given_up)),
                     checkpoint_key=sync_point_key, checkpoint_time=None,
                 ))
-            if only_ids is None and not listing_complete:
+            if not listing_complete:
                 self.logger.warning(
                     f"Keeping the {content_type}s checkpoint for space {space_key}: not everything in "
                     "this window could be read, so the next sync reads it again"
                 )
-            elif only_ids is None and not settled:
-                self.logger.warning(
-                    f"Keeping the {content_type}s checkpoint for space {space_key}: some removals "
-                    "could not be checked or made, so the next sync repeats them"
-                )
-            elif only_ids is None:
+            else:
+                if not settled:
+                    self.logger.warning(
+                        f"Keeping the {content_type}s checkpoint for space {space_key}: some removals or "
+                        "re-syncs could not be checked or made, so the next sync repeats them"
+                    )
                 await self._save_content_checkpoint(
-                    sync_point_key, last_sync_data, failed_items, given_up, content_type, space_key,
-                    synced_any=total_synced > 0,
+                    sync_point_key, last_sync_data, failed_items + self._id_sync_failed_items, given_up,
+                    content_type, space_key, synced_any=total_synced > 0, hold=not settled,
                 )
 
             self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}")
@@ -1272,11 +1281,14 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
         space_key: str,
         *,
         synced_any: bool,
+        hold: bool = False,
     ) -> None:
         """Move the checkpoint to now, or keep it while any item that failed still has attempts left.
 
         Each failed item has its own count. One that fails ``MAX_FAILED_PAGE_ATTEMPTS`` syncs
-        in a row is given up on and skipped until its last-modified time changes.
+        in a row is given up on and skipped until its last-modified time changes. With
+        ``hold`` the checkpoint stays where it is, but the counts are still saved, so an
+        item that keeps failing is given up on and stops holding it.
         """
         stored = last_sync_data or {}
         attempts_before = _stored_map(stored.get("failedPages"))
@@ -1297,22 +1309,23 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 "they next change"
             )
 
-        if held:
+        counts_changed = bool(
+            failed_items or stored.get("failedPages") or given_up != _stored_map(stored.get("givenUpPages"))
+        )
+        if held or (hold and counts_changed):
             checkpoint: dict[str, Any] = {}
             if stored.get("last_sync_time"):
                 checkpoint["last_sync_time"] = stored["last_sync_time"]
-            titles = {item_id: title for item_id, title, _ in failed_items}
-            self.logger.warning(
-                f"Keeping the {content_type}s checkpoint for space {space_key}: "
-                + ", ".join(f"'{titles[i]}' ({i}, attempt {n} of {MAX_FAILED_PAGE_ATTEMPTS})" for i, n in held.items())
-                + " could not be saved and will be read again next sync"
-            )
-        elif synced_any or failed_items or stored.get("failedPages") or given_up != _stored_map(stored.get("givenUpPages")):
-            now = datetime.now(timezone.utc)
-            checkpoint = {"last_sync_time": now.strftime("%Y-%m-%dT%H:%M:%S.000Z")}
-            # The listing re-reads TIME_OFFSET_HOURS before the checkpoint; older given-up items can't come back.
-            forget_before = now - timedelta(hours=TIME_OFFSET_HOURS * 2)
-            given_up = {i: when for i, when in given_up.items() if self._listed_after(when, forget_before)}
+            if held:
+                titles = {item_id: title for item_id, title, _ in failed_items}
+                self.logger.warning(
+                    f"Keeping the {content_type}s checkpoint for space {space_key}: "
+                    + ", ".join(f"'{titles[i]}' ({i}, attempt {n} of {MAX_FAILED_PAGE_ATTEMPTS})" for i, n in held.items())
+                    + " could not be saved and will be read again next sync"
+                )
+        elif not hold and (synced_any or counts_changed):
+            # Given-up items are kept until they change: by-id sync would otherwise retry one the search no longer returns.
+            checkpoint = {"last_sync_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")}
             self.logger.info(f"Updated {content_type}s sync checkpoint to {checkpoint['last_sync_time']}")
         else:
             return
@@ -1323,16 +1336,6 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
         if given_up or stored.get("givenUpPages"):
             checkpoint["givenUpPages"] = json.dumps(given_up, sort_keys=True)
         await self.pages_sync_point.update_sync_point(sync_point_key, checkpoint)
-
-    @staticmethod
-    def _listed_after(when: str, cutoff: datetime) -> bool:
-        # A version-number marker has no time to compare, so it is kept.
-        if when.startswith("version:"):
-            return True
-        try:
-            return datetime.fromisoformat(when.replace("Z", "+00:00")) >= cutoff
-        except (AttributeError, ValueError):
-            return False
 
     async def _fetch_all_attachments(self, content_id: str) -> tuple[list[dict[str, Any]], Optional[str]]:
         """

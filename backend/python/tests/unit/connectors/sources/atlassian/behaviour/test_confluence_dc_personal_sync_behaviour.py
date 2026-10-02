@@ -1134,6 +1134,40 @@ class TestRemovalFromSource:
         asked = [c for c in search.cql if "id in (p1)" in c]
         assert asked and all("lastModified >" not in c and "ancestor in" not in c for c in asked)
 
+    async def test_a_page_that_keeps_failing_when_synced_by_id_is_counted_and_given_up_on(
+        self, atlassian_api, records_db, checkpoints, search
+    ) -> None:
+        connector = await self._synced(atlassian_api, records_db, checkpoints, search)
+        # Outside the search window, so only the by-id sync ever reads it.
+        search.existing[self.PAGES] = [content("p1"), content("p2"), content("p3", ancestors=[{"id": "p2"}])]
+        del records_db.records["p2"]
+        records_db.fail_lookup_for = {"p2"}
+
+        def by_id(request: httpx.Request) -> httpx.Response:
+            cql = AtlassianApiStub.query(request)["cql"]
+            search.cql.append(cql)
+            return json_response(listing([content("p2")] if "id in (p2)" in cql else []))
+
+        atlassian_api.on("GET", f"{API}/content/search", by_id)
+        held = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
+
+        for attempt in range(1, 5):
+            await connector.run_sync()
+            stored = checkpoints.values_for("confluence_pages/ENG")
+            assert json.loads(stored["failedPages"]) == {"p2": attempt}
+            assert stored["last_sync_time"] == held, "a page that failed to save holds the checkpoint"
+
+        await connector.run_sync()
+        assert json.loads(checkpoints.values_for("confluence_pages/ENG")["givenUpPages"]) == {"p2": "2024-05-01T10:00:00.000Z"}
+
+        for _ in range(2):
+            search.cql.clear()
+            await connector.run_sync()
+            stored = checkpoints.values_for("confluence_pages/ENG")
+            assert not [c for c in search.cql if "id in (p2)" in c], "an unchanged given-up page is not synced by id again"
+            assert stored["last_sync_time"] > held
+            assert json.loads(stored["givenUpPages"]) == {"p2": "2024-05-01T10:00:00.000Z"}, "kept until it changes"
+
     async def test_an_archived_page_the_account_can_see_is_kept(self, atlassian_api, records_db, checkpoints, search) -> None:
         connector = await self._synced(atlassian_api, records_db, checkpoints, search)
         search.existing[self.PAGES] = [content("p2"), content("p3", ancestors=[{"id": "p2"}])]
