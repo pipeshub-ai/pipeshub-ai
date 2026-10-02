@@ -278,6 +278,7 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_records_recursive(
         self, record_ids: list[str], connector_id: str, cascade_children: bool = True,
+        within_folder_id: str | None = None,
     ) -> dict:
         """Delete records within the active transaction.
 
@@ -287,6 +288,7 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.delete_records_recursive(
             record_ids, connector_id, transaction=self.txn, cascade_children=cascade_children,
+            within_folder_id=within_folder_id,
         )
 
     async def delete_single_record(self, record_id: str) -> dict:
@@ -319,6 +321,35 @@ class GraphTransactionStore(TransactionStore):
 
     async def batch_upsert_people(self, people: list[Person]) -> None:
         return await self.graph_provider.batch_upsert_people(people, transaction=self.txn)
+
+    async def get_person_by_email(self, email: str, org_id: str) -> Optional[Person]:
+        return await self.graph_provider.get_person_by_email(email, org_id, transaction=self.txn)
+
+    async def upsert_person_by_email(self, person: Person) -> Optional[str]:
+        return await self.graph_provider.upsert_person_by_email(person, transaction=self.txn)
+
+    async def ensure_app_membership(
+        self,
+        principal_id: str,
+        principal_collection: str,
+        connector_id: str,
+        *,
+        is_external: bool,
+        source_user_id: str | None = None,
+    ) -> None:
+        return await self.graph_provider.ensure_app_membership(
+            principal_id,
+            principal_collection,
+            connector_id,
+            is_external=is_external,
+            source_user_id=source_user_id,
+            transaction=self.txn,
+        )
+
+    async def reap_stale_external_app_relations(self, connector_id: str) -> int:
+        return await self.graph_provider.reap_stale_external_app_relations(
+            connector_id, transaction=self.txn
+        )
 
     async def create_user_group_hierarchy(
         self,
@@ -467,6 +498,10 @@ class GraphTransactionStore(TransactionStore):
     async def get_record_path(self, record_id: str) -> Optional[str]:
         """Get full hierarchical path for a record by traversing parent-child edges."""
         return await self.graph_provider.get_record_path(record_id, transaction=self.txn)
+
+    async def get_record_path_segments(self, record_id: str) -> list[str]:
+        """Get individual record names from root to this record."""
+        return await self.graph_provider.get_record_path_segments(record_id, transaction=self.txn)
 
     async def get_app_creator_user(self, connector_id:str) ->Optional[User]:
         """Get the creator user for a connector/app by connectorId."""

@@ -981,7 +981,7 @@ describe('AuthMiddleware', () => {
       sinon.stub(UserActivities, 'findOne').returns(mockQuery)
 
       const middleware = authMiddleware.scopedTokenValidator(TokenScopes.PASSWORD_RESET)
-      const req = createMockRequest({ headers: { authorization: 'Bearer scoped-token' } })
+      const req = createMockRequest({ headers: { authorization: 'Bearer scoped-token extra' } })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -989,6 +989,8 @@ describe('AuthMiddleware', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args).to.have.length(0)
+      // Handlers identify the link by the token verified here, not the raw header.
+      expect(req.verifiedToken).to.equal('scoped-token')
     })
 
     it('should not check password activity for non-password-reset scopes', async () => {

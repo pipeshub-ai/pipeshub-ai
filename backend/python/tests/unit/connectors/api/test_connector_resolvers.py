@@ -204,18 +204,6 @@ class TestAuthorizeConnectorStats:
 
 
 # ---------------------------------------------------------------------------
-# assert_hard_delete_record_org (OSS no-op)
-# ---------------------------------------------------------------------------
-
-
-class TestAssertHardDeleteRecordOrg:
-    async def test_no_op(self) -> None:
-        from app.connectors.api.connector_resolvers import assert_hard_delete_record_org
-
-        await assert_hard_delete_record_org(MagicMock(), AsyncMock(), "rec-1")
-
-
-# ---------------------------------------------------------------------------
 # strip_redacted_fields (OSS passthrough)
 # ---------------------------------------------------------------------------
 

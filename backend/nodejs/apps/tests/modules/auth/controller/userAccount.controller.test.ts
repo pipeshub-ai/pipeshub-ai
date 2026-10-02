@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import {
   UserAccountController,
@@ -16,7 +17,14 @@ import {
   WRONG_EMAIL_OR_PASSWORD,
   WRONG_SIGN_IN_CODE,
   ACCOUNT_NO_LONGER_ACTIVE,
+  RESET_LINK_ALREADY_USED,
+  RESET_LINK_NOT_CHECKED,
 } from '../../../../src/modules/auth/controller/userAccount.controller';
+import { UsedPasswordResetLink } from '../../../../src/modules/auth/schema/usedPasswordResetLink.schema';
+import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
+import { AuthTokenService } from '../../../../src/libs/services/authtoken.service';
+import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum';
+import { jwtGeneratorForForgotPasswordLink } from '../../../../src/libs/utils/createJwt';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 
@@ -30,10 +38,40 @@ import {
   UnauthorizedError,
   InternalServerError,
   ForbiddenError,
+  ServiceUnavailableError,
 } from '../../../../src/libs/errors/http.errors';
 
 // The account-locked email is sent in the background; this lets it run.
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+// Behaves like the collection's unique index on linkHash: a second insert of
+// the same hash is refused with Mongo's duplicate-key error.
+function fakeUsedResetLinks(): Set<string> {
+  const used = new Set<string>();
+  sinon.stub(UsedPasswordResetLink, 'init').resolves();
+  sinon.stub(UsedPasswordResetLink, 'create').callsFake((async (doc: any) => {
+    if (used.has(doc.linkHash)) {
+      throw Object.assign(new Error('E11000 duplicate key error'), { code: 11000 });
+    }
+    used.add(doc.linkHash);
+    return doc;
+  }) as any);
+  sinon.stub(UsedPasswordResetLink, 'deleteOne').callsFake(((filter: any) => {
+    used.delete(filter.linkHash);
+    return Promise.resolve({ acknowledged: true, deletedCount: 1 });
+  }) as any);
+  return used;
+}
+
+function resetLinkRequest(password: string, token = 'reset-link-token'): any {
+  return {
+    body: { password },
+    headers: { authorization: `Bearer ${token}` },
+    verifiedToken: token,
+    tokenPayload: { orgId: 'o1', userId: 'u1', exp: Math.floor(Date.now() / 1000) + 1200 },
+    ip: '127.0.0.1',
+  };
+}
 
 describe('UserAccountController', () => {
   let controller: UserAccountController;
@@ -296,6 +334,8 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 5,
         save: saveStub,
       } as any);
+      sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({} as unknown as ClaimedCredentials);
 
       const result = await controller.verifyOTP('u1', 'o1', otp, 'test@test.com', '127.0.0.1');
@@ -347,12 +387,16 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      const release = sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       const claim = sinon
         .stub(UserCredentials, 'findOneAndUpdate')
-        .resolves({ wrongCredentialCount: 0 } as unknown as ClaimedCredentials);
+        .resolves({ wrongCredentialCount: 1 } as unknown as ClaimedCredentials);
 
       const result = await controller.verifyOTP('u1', 'o1', otp, 'test@test.com', '127.0.0.1');
       expect(result.statusCode).to.equal(200);
+      // The claim matches on the code alone, so a concurrent reservation
+      // cannot stop a correct code being used.
       expect(claim.firstCall.args[0]).to.deep.equal({
         userId: 'u1',
         orgId: 'o1',
@@ -360,9 +404,20 @@ describe('UserAccountController', () => {
         hashedOTP,
       });
       expect(claim.firstCall.args[1]).to.deep.equal({
-        $set: { wrongCredentialCount: 0 },
         $unset: { hashedOTP: '', otpValidity: '' },
       });
+      // The counter is reset afterwards, and only if nothing else was counted.
+      expect(release.calledAfter(claim)).to.be.true;
+      expect(release.firstCall.args).to.deep.equal([
+        {
+          userId: 'u1',
+          orgId: 'o1',
+          isDeleted: false,
+          isBlocked: { $ne: true },
+          wrongCredentialCount: 1,
+        },
+        { $set: { wrongCredentialCount: 0 } },
+      ]);
     });
 
     it('should refuse a matching OTP that another request has already used', async () => {
@@ -375,6 +430,8 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as unknown as ClaimedCredentials);
+      sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      const release = sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(null);
 
       try {
@@ -384,6 +441,7 @@ describe('UserAccountController', () => {
         expect(error).to.be.instanceOf(UnauthorizedError);
         expect((error as Error).message).to.equal(OTP_ALREADY_USED);
       }
+      expect(release.called).to.be.false;
     });
 
     it('should throw UnauthorizedError when OTP does not match', async () => {
@@ -397,11 +455,12 @@ describe('UserAccountController', () => {
         save: sinon.stub().resolves(),
       } as any);
 
-      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
+      const reserve = sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
+        hashedOTP,
         wrongCredentialCount: 2,
       } as any);
 
-      sinon.stub(UserActivities, 'create').resolves({} as any);
+      const activity = sinon.stub(UserActivities, 'create').resolves({} as any);
 
       try {
         await controller.verifyOTP('u1', 'o1', '000000', 'test@test.com', '127.0.0.1');
@@ -410,6 +469,93 @@ describe('UserAccountController', () => {
         expect(error).to.be.instanceOf(UnauthorizedError);
         expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
       }
+      // Only the reservation: a wrong code is never claimed.
+      expect(reserve.calledOnce).to.be.true;
+      expect(activity.calledWith(sinon.match({ activityType: 'WRONG OTP' }))).to.be.true;
+    });
+
+    it('counts the attempt before it compares the code', async () => {
+      const hashedOTP = await bcrypt.hash('654321', 4);
+      sinon.stub(UserCredentials, 'findOne').resolves({
+        isBlocked: false,
+        hashedOTP,
+        otpValidity: Date.now() + 600000,
+        wrongCredentialCount: 0,
+      } as any);
+      const reserve = sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      const compare = sinon.spy(bcrypt, 'compare');
+
+      await controller
+        .verifyOTP('u1', 'o1', '000000', 'test@test.com', '127.0.0.1')
+        .catch(() => undefined);
+
+      const real = compare.getCalls().find((c) => c.args[1] === hashedOTP);
+      expect(real).to.exist;
+      expect(reserve.firstCall.calledBefore(real!)).to.be.true;
+    });
+
+    it('never compares against the real code when no attempt is left', async () => {
+      const hashedOTP = await bcrypt.hash('123456', 4);
+      sinon.stub(UserCredentials, 'findOne').resolves({
+        isBlocked: false,
+        hashedOTP,
+        otpValidity: Date.now() + 600000,
+        wrongCredentialCount: 4,
+      } as any);
+      // Another request took the last attempt between the read and this one.
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(null);
+      const compare = sinon.spy(bcrypt, 'compare');
+
+      try {
+        await controller.verifyOTP('u1', 'o1', '123456', 'test@test.com', '127.0.0.1');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
+      }
+      expect(compare.getCalls().some((c) => c.args[1] === hashedOTP)).to.be.false;
+    });
+  });
+
+  describe('releaseCredentialAttempt', () => {
+    it('resets the counter only while it still reads what this request reserved and the account is unlocked', async () => {
+      const update = sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+
+      await controller.releaseCredentialAttempt('u1', 'o1', 3);
+
+      expect(update.firstCall.args).to.deep.equal([
+        {
+          userId: 'u1',
+          orgId: 'o1',
+          isDeleted: false,
+          isBlocked: { $ne: true },
+          wrongCredentialCount: 3,
+        },
+        { $set: { wrongCredentialCount: 0 } },
+      ]);
+    });
+  });
+
+  describe('reserveCredentialAttempt', () => {
+    it('takes an attempt in one conditional write, only while unlocked and under the limit', async () => {
+      const reserved = { wrongCredentialCount: 3 };
+      const update = sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(reserved as any);
+
+      expect(await controller.reserveCredentialAttempt('u1', 'o1')).to.equal(reserved);
+      expect(update.firstCall.args).to.deep.equal([
+        {
+          userId: 'u1',
+          orgId: 'o1',
+          isDeleted: false,
+          isBlocked: { $ne: true },
+          wrongCredentialCount: { $lt: 5 },
+        },
+        { $inc: { wrongCredentialCount: 1 } },
+        { new: true },
+      ]);
     });
   });
 
@@ -935,11 +1081,8 @@ describe('UserAccountController', () => {
     });
 
     it('should call next(NotFoundError) when user not found by ID', async () => {
-      const req: any = {
-        body: { password: 'NewPass1!' },
-        tokenPayload: { orgId: 'o1', userId: 'u1' },
-        ip: '127.0.0.1',
-      };
+      fakeUsedResetLinks();
+      const req = resetLinkRequest('NewPass1!');
 
       mockIamService.getUserById.resolves({
         statusCode: 404,
@@ -1390,6 +1533,34 @@ describe('UserAccountController', () => {
   });
 
   describe('sendForgotPasswordEmail', () => {
+    it('tells the reader the configured lifetime, a bare number read as seconds', async () => {
+      const original = process.env.PASSWORD_RESET_LINK_EXPIRY;
+      process.env.PASSWORD_RESET_LINK_EXPIRY = '90';
+      try {
+        sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
+        mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+        await controller.sendForgotPasswordEmail({
+          _id: 'u1',
+          email: 'user@example.com',
+          orgId: 'o1',
+          fullName: 'Test User',
+        });
+
+        const { templateData } = mockMailService.sendMail.firstCall.args[0];
+        expect(templateData.linkLifetime).to.equal('90 seconds');
+        const token = templateData.link.split('#token=')[1];
+        const claims = jwt.decode(token) as { iat: number; exp: number };
+        expect(claims.exp - claims.iat).to.equal(90);
+      } finally {
+        if (original === undefined) {
+          delete process.env.PASSWORD_RESET_LINK_EXPIRY;
+        } else {
+          process.env.PASSWORD_RESET_LINK_EXPIRY = original;
+        }
+      }
+    });
+
     it('should send email and return status 200', async () => {
       const user = {
         _id: 'u1',
@@ -1589,6 +1760,7 @@ describe('UserAccountController', () => {
       const hashedOTP = await bcrypt.hash('654321', 10);
       const saveStub = sinon.stub().resolves();
       const updatedCredential: any = {
+        hashedOTP,
         wrongCredentialCount: 5,
         isBlocked: false,
         blockExpiresAt: null,
@@ -1816,6 +1988,10 @@ describe('UserAccountController', () => {
         blockExpiresAt: new Date(Date.now() - 60_000),
         save: saveStub,
       } as any);
+      sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 
       const result = await controller.authenticateWithPassword(user, password, '127.0.0.1');
@@ -1836,6 +2012,7 @@ describe('UserAccountController', () => {
         save: sinon.stub().resolves(),
       } as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
+        hashedPassword,
         wrongCredentialCount: 1,
         isBlocked: false,
         save: sinon.stub().resolves(),
@@ -1863,11 +2040,75 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      const reset = sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 
       const result = await controller.authenticateWithPassword(user, password, '127.0.0.1');
 
       expect(result.statusCode).to.equal(200);
+      // The reserved attempt is given back only while nothing else was counted
+      // since and the account is not locked.
+      expect(reset.firstCall.args).to.deep.equal([
+        {
+          userId: 'u1',
+          orgId: 'o1',
+          isDeleted: false,
+          isBlocked: { $ne: true },
+          wrongCredentialCount: 1,
+        },
+        { $set: { wrongCredentialCount: 0 } },
+      ]);
+    });
+
+    it('counts the attempt before it compares the password', async () => {
+      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
+      const hashedPassword = await bcrypt.hash('CorrectPass1!', 4);
+
+      sinon.stub(UserCredentials, 'findOne').resolves({
+        hashedPassword,
+        isBlocked: false,
+        wrongCredentialCount: 0,
+      } as any);
+      const reserve = sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      const compare = sinon.spy(bcrypt, 'compare');
+
+      await controller
+        .authenticateWithPassword(user, 'WrongPass1!', '127.0.0.1')
+        .catch(() => undefined);
+
+      const real = compare.getCalls().find((c) => c.args[1] === hashedPassword);
+      expect(real).to.exist;
+      expect(reserve.firstCall.calledBefore(real!)).to.be.true;
+    });
+
+    it('never compares against the real password when no attempt is left', async () => {
+      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
+      const password = 'CorrectPass1!';
+      const hashedPassword = await bcrypt.hash(password, 4);
+
+      sinon.stub(UserCredentials, 'findOne').resolves({
+        hashedPassword,
+        isBlocked: false,
+        wrongCredentialCount: 4,
+      } as any);
+      // Another request took the last attempt between the read and this one.
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(null);
+      const compare = sinon.spy(bcrypt, 'compare');
+
+      try {
+        await controller.authenticateWithPassword(user, password, '127.0.0.1');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(BadRequestError);
+        expect((error as BadRequestError).message).to.equal(WRONG_EMAIL_OR_PASSWORD);
+      }
+      expect(compare.getCalls().some((c) => c.args[1] === hashedPassword)).to.be.false;
     });
 
     it('should block account after 5 wrong passwords, set cooldown expiry and send mail', async () => {
@@ -1875,6 +2116,7 @@ describe('UserAccountController', () => {
       const hashedPassword = await bcrypt.hash('CorrectPass1!', 10);
       const saveStub = sinon.stub().resolves();
       const updatedCredential: any = {
+        hashedPassword,
         wrongCredentialCount: 5,
         isBlocked: false,
         blockExpiresAt: null,
@@ -1928,6 +2170,8 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({} as unknown as ClaimedCredentials);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 
@@ -1985,6 +2229,10 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockSessionService.completeAuthentication.resolves();
 
@@ -2032,6 +2280,10 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockSessionService.completeAuthentication.resolves();
       mockIamService.updateUser.resolves({ statusCode: 200 });
@@ -2080,6 +2332,10 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockSessionService.updateSession.resolves();
 
@@ -2319,13 +2575,186 @@ describe('UserAccountController', () => {
     });
   });
 
+  describe('resetPasswordViaEmailLink - one use per link', () => {
+    const newResponse = () => ({
+      status: sinon.stub().returnsThis(),
+      send: sinon.stub().returnsThis(),
+    });
+
+    beforeEach(() => {
+      // Slow enough that both requests are in flight together, as they are
+      // when a link is opened twice at once.
+      mockIamService.getUserById.callsFake(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve({ statusCode: 200, data: { _id: 'u1', orgId: 'o1' } }),
+              20,
+            ),
+          ),
+      );
+      sinon.stub(UserCredentials, 'findOne').resolves(null);
+      sinon.stub(UserCredentials.prototype, 'save').resolves({});
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
+    it('lets exactly one of two simultaneous uses of the same link through', async () => {
+      fakeUsedResetLinks();
+      const first = { res: newResponse(), next: sinon.stub() };
+      const second = { res: newResponse(), next: sinon.stub() };
+
+      await Promise.all([
+        controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), first.res as any, first.next),
+        controller.resetPasswordViaEmailLink(resetLinkRequest('SecondValid1!'), second.res as any, second.next),
+      ]);
+
+      const outcomes = [first, second];
+      const succeeded = outcomes.filter((o) => o.res.status.calledWith(200));
+      const refused = outcomes.filter((o) => o.next.called);
+      expect(succeeded).to.have.lengthOf(1);
+      expect(refused).to.have.lengthOf(1);
+      const error = refused[0]!.next.firstCall.args[0];
+      expect(error).to.be.instanceOf(UnauthorizedError);
+      expect(error.message).to.equal(RESET_LINK_ALREADY_USED);
+      // The refused request stopped before any reset work.
+      expect(mockIamService.getUserById.calledOnce).to.be.true;
+      expect((UserActivities.create as sinon.SinonStub).calledOnce).to.be.true;
+    });
+
+    it('refuses the reset, changing nothing, when the one-use index cannot be built', async () => {
+      sinon.stub(UsedPasswordResetLink, 'init').rejects(new Error('index options conflict'));
+      sinon.stub(UsedPasswordResetLink, 'ensureIndexes').rejects(new Error('index options conflict'));
+      const create = sinon.stub(UsedPasswordResetLink, 'create').resolves({} as any);
+
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+
+      const error = next.firstCall.args[0];
+      expect(error).to.be.instanceOf(ServiceUnavailableError);
+      expect(error.message).to.equal(RESET_LINK_NOT_CHECKED);
+      expect(create.called).to.be.false;
+      expect(mockIamService.getUserById.called).to.be.false;
+      expect((UserActivities.create as sinon.SinonStub).called).to.be.false;
+    });
+
+    it('builds the one-use index again after an earlier build failed', async () => {
+      const used = fakeUsedResetLinks();
+      (UsedPasswordResetLink.init as sinon.SinonStub).rejects(new Error('mongo was briefly down'));
+      const rebuild = sinon.stub(UsedPasswordResetLink, 'ensureIndexes').resolves();
+
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+
+      expect(rebuild.calledOnce).to.be.true;
+      expect(next.called).to.be.false;
+      expect(used.size).to.equal(1);
+    });
+
+    it('refuses a link that was already used', async () => {
+      fakeUsedResetLinks();
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+      const again = sinon.stub();
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('SecondValid1!'), newResponse() as any, again);
+
+      expect(next.called).to.be.false;
+      expect(again.firstCall.args[0].message).to.equal(RESET_LINK_ALREADY_USED);
+    });
+
+    it('hands the link back when the new password is refused', async () => {
+      const used = fakeUsedResetLinks();
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('weak'), res, next);
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(used.size).to.equal(0);
+
+      const retry = { res: newResponse(), next: sinon.stub() };
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('StrongEnough1!'), retry.res as any, retry.next);
+      expect(retry.next.called).to.be.false;
+      expect(retry.res.status.calledWith(200)).to.be.true;
+    });
+
+    it('counts two header spellings of the same link as one link', async () => {
+      fakeUsedResetLinks();
+      const scopedSecret = 'test-scoped-secret';
+      const { passwordResetToken } = jwtGeneratorForForgotPasswordLink(
+        'user@example.com', 'u1', 'o1', scopedSecret,
+      );
+      sinon.stub(UserActivities, 'findOne').returns({
+        sort: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(null),
+      } as any);
+      const middleware = new AuthMiddleware(
+        mockLogger,
+        new AuthTokenService('test-jwt-secret', scopedSecret),
+      ).scopedTokenValidator(TokenScopes.PASSWORD_RESET);
+
+      // The middleware reads only the second space-separated part, so all of
+      // these carry the same verified link.
+      const spellings = [
+        `Bearer ${passwordResetToken}`,
+        `Bearer ${passwordResetToken} `,
+        `Bearer ${passwordResetToken} trailing`,
+      ];
+      const outcomes = [];
+      for (const authorization of spellings) {
+        const req: any = { headers: { authorization }, body: { password: 'FirstValid1!' }, ip: '127.0.0.1' };
+        const passed = sinon.stub();
+        await middleware(req, {} as any, passed);
+        expect(passed.firstCall.args, authorization).to.deep.equal([]);
+        const outcome = { res: newResponse(), next: sinon.stub() };
+        await controller.resetPasswordViaEmailLink(req, outcome.res as any, outcome.next);
+        outcomes.push(outcome);
+      }
+
+      expect(outcomes[0]!.res.status.calledWith(200)).to.be.true;
+      for (const later of outcomes.slice(1)) {
+        expect(later.next.firstCall.args[0].message).to.equal(RESET_LINK_ALREADY_USED);
+      }
+    });
+
+    for (const [failure, arrange] of [
+      ['the account lookup throws', () => mockIamService.getUserById.rejects(new Error('socket hang up'))],
+      ['the account lookup finds nobody', () => mockIamService.getUserById.resolves({ statusCode: 404 })],
+      ['reading the credentials throws', () => (UserCredentials.findOne as sinon.SinonStub).rejects(new Error('mongo down'))],
+      ['saving the password throws', () => (UserCredentials.prototype.save as sinon.SinonStub).rejects(new Error('write failed'))],
+    ] as const) {
+      it(`hands the link back when ${failure} before the password is saved`, async () => {
+        const used = fakeUsedResetLinks();
+        arrange();
+
+        await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+
+        expect(next.calledOnce).to.be.true;
+        expect(used.size, 'the link is usable again').to.equal(0);
+      });
+    }
+
+    it('keeps the link spent once the password is saved, even if recording the change fails', async () => {
+      const used = fakeUsedResetLinks();
+      (UserActivities.create as sinon.SinonStub).rejects(new Error('insert failed'));
+
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+      expect(next.calledOnce).to.be.true;
+      expect((UserCredentials.prototype.save as sinon.SinonStub).calledOnce).to.be.true;
+      expect(used.size, 'the link stays used').to.equal(1);
+
+      const again = sinon.stub();
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('SecondValid1!'), newResponse() as any, again);
+      expect(again.firstCall.args[0].message).to.equal(RESET_LINK_ALREADY_USED);
+    });
+
+    it('lets two different links for the same account each work', async () => {
+      fakeUsedResetLinks();
+      const a = { res: newResponse(), next: sinon.stub() };
+      const b = { res: newResponse(), next: sinon.stub() };
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!', 'link-a'), a.res as any, a.next);
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('SecondValid1!', 'link-b'), b.res as any, b.next);
+      expect(a.next.called || b.next.called).to.be.false;
+    });
+  });
+
   describe('resetPasswordViaEmailLink - success', () => {
     it('should reset password successfully via email link', async () => {
-      const req: any = {
-        body: { password: 'NewValidPass1!' },
-        tokenPayload: { orgId: 'o1', userId: 'u1' },
-        ip: '127.0.0.1',
-      };
+      fakeUsedResetLinks();
+      const req = resetLinkRequest('NewValidPass1!');
 
       mockIamService.getUserById.resolves({
         statusCode: 200,
@@ -2953,6 +3382,8 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({} as unknown as ClaimedCredentials);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 
@@ -2963,8 +3394,8 @@ describe('UserAccountController', () => {
     });
   });
 
-  describe('verifyOTP - incrementWrongCredentialCount returns null', () => {
-    it('should throw BadRequestError when incrementWrongCredentialCount returns null', async () => {
+  describe('verifyOTP - no attempt could be reserved', () => {
+    it('answers like a wrong code when the reservation finds no credential', async () => {
       const hashedOTP = await bcrypt.hash('654321', 10);
 
       sinon.stub(UserCredentials, 'findOne').resolves({
@@ -2981,14 +3412,14 @@ describe('UserAccountController', () => {
         await controller.verifyOTP('u1', 'o1', '000000', 'test@test.com', '127.0.0.1');
         expect.fail('Should have thrown');
       } catch (error) {
-        expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.equal('Please request OTP before login');
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
       }
     });
   });
 
-  describe('authenticateWithPassword - incrementWrongCredentialCount returns null', () => {
-    it('should throw BadRequestError when increment returns null', async () => {
+  describe('authenticateWithPassword - no attempt could be reserved', () => {
+    it('answers like a wrong password when the reservation finds no credential', async () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
       const hashedPassword = await bcrypt.hash('CorrectPass1!', 10);
 
@@ -3007,7 +3438,7 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.equal('Please request OTP before login');
+        expect((error as BadRequestError).message).to.equal(WRONG_EMAIL_OR_PASSWORD);
       }
     });
   });

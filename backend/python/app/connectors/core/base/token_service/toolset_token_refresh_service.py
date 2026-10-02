@@ -532,7 +532,10 @@ class ToolsetTokenRefreshService:
         Raises:
             ValueError: If credentials cannot be found
         """
-        # Load the full user toolset config to get oauthConfigId and other metadata
+        # Load the full user toolset config to get oauthConfigId and other metadata.
+        # Until it is read the config counts as linked: stored credentials are a fallback
+        # only for a config known to have no central app.
+        linked_to_central_app = True
         try:
             full_user_config = await self.configuration_service.get_config(
                 config_path,
@@ -542,6 +545,12 @@ class ToolsetTokenRefreshService:
 
             if not full_user_config or not isinstance(full_user_config, dict):
                 raise ValueError(f"Could not load toolset config from {config_path}")
+
+            # Tokens of a config linked to a central OAuth app were issued to that app, so
+            # nothing saved under its own "auth" may choose the credentials or where they go.
+            linked_to_central_app = bool(full_user_config.get("oauthConfigId"))
+            if linked_to_central_app:
+                full_user_config = {**full_user_config, "auth": {}}
 
             # Use the new centralized OAuth credential fetching
             from app.api.routes.toolsets import get_oauth_credentials_for_toolset
@@ -554,8 +563,8 @@ class ToolsetTokenRefreshService:
 
             # oauth_creds now contains ALL OAuth config fields dynamically
             # (clientId, clientSecret, tenantId, domain, scopes, URLs, etc.)
-            client_id = oauth_creds.get("clientId")
-            client_secret = oauth_creds.get("clientSecret")
+            client_id = oauth_creds.get("clientId") or oauth_creds.get("client_id")
+            client_secret = oauth_creds.get("clientSecret") or oauth_creds.get("client_secret")
 
             if not client_id or not client_secret:
                 raise ValueError(
@@ -563,11 +572,10 @@ class ToolsetTokenRefreshService:
                     f"Available fields: {list(oauth_creds.keys())}"
                 )
 
-            # Merge OAuth credentials into auth_config (preserves all fields)
-            # Priority: oauth_creds (central config) > auth_config (user overrides)
-            for key, value in oauth_creds.items():
-                if key not in auth_config:  # Don't overwrite user overrides
-                    auth_config[key] = value
+            # Credentials and endpoints come from the same place. Rebinding, rather than
+            # merging into the stored dict, also keeps the client secret out of what is
+            # saved back after the refresh.
+            auth_config = {**oauth_creds, "clientId": client_id, "clientSecret": client_secret}
 
             self.logger.debug(
                 "✅ Fetched OAuth credentials for token refresh from centralized config. "
@@ -575,6 +583,10 @@ class ToolsetTokenRefreshService:
             )
 
         except Exception as e:
+            if linked_to_central_app:
+                raise ValueError(
+                    f"OAuth app for toolset {config_path} could not be loaded: {e}"
+                ) from e
             self.logger.error(
                 f"Failed to fetch OAuth credentials for {config_path}: {e}. "
                 f"Falling back to legacy auth_config (if available).",

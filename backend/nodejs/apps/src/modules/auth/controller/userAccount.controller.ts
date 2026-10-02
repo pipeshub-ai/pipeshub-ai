@@ -9,8 +9,10 @@ import {
   iamUserLookupJwtGenerator,
   jwtGeneratorForForgotPasswordLink,
   mailJwtGenerator,
+  passwordResetLinkLifetime,
   refreshTokenJwtGenerator,
 } from '../../../libs/utils/createJwt';
+import { isDuplicateKeyError } from '../../../libs/utils/mongo.utils';
 import { generateOtp } from '../utils/generateOtp';
 
 import { passwordValidator } from '../utils/passwordValidator';
@@ -19,6 +21,10 @@ import {
   AuthMethodType,
   OrgAuthConfig,
 } from '../schema/orgAuthConfiguration.schema';
+import {
+  UsedPasswordResetLink,
+  hashResetLink,
+} from '../schema/usedPasswordResetLink.schema';
 import {
   activityEndsSession,
   SESSION_INVALIDATING_ACTIVITIES,
@@ -50,6 +56,7 @@ import {
   HttpError,
   InternalServerError,
   NotFoundError,
+  ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { BaseError } from '../../../libs/errors/base.error';
@@ -105,6 +112,13 @@ export const ACCOUNT_NO_LONGER_ACTIVE =
 const isAccountRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
+export const RESET_LINK_ALREADY_USED =
+  'This reset link has already been used. Request a new one from the sign-in page.';
+export const RESET_LINK_NOT_CHECKED =
+  "We couldn't reset your password just now, and nothing was changed. Please try again in a moment.";
+// The longest-lived link (a new account's first password) lasts 48 hours.
+const RESET_LINK_FALLBACK_LIFETIME_MS = 48 * 60 * 60 * 1000;
+const MAX_WRONG_CREDENTIAL_ATTEMPTS = 5;
 
 export const SIGN_IN_SESSION_EXPIRED =
   'Your sign-in session expired. Start again from the sign-in page.';
@@ -324,7 +338,7 @@ export class UserAccountController {
     email: string,
     ipAddress: string,
   ) {
-    let userCredentials = await UserCredentials.findOne({
+    const userCredentials = await UserCredentials.findOne({
       userId,
       orgId,
       isDeleted: false,
@@ -352,29 +366,31 @@ export class UserAccountController {
       throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
     }
 
+    // The attempt is counted before the code is compared. Counting it
+    // afterwards lets every request already in flight be compared before the
+    // first of them has raised the counter, so a burst gets past the limit.
+    const attempt = await this.reserveCredentialAttempt(userId, orgId);
+    if (!attempt?.hashedOTP) {
+      await compareWithDecoyHash(inputOTP);
+      throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
+    }
+
     // Ensure OTP is a string for bcrypt.compare (bcrypt requires both arguments to be strings)
     const otpString = String(inputOTP);
-    const isMatching = await bcrypt.compare(
-      otpString,
-      userCredentials.hashedOTP,
-    );
+    const isMatching = await bcrypt.compare(otpString, attempt.hashedOTP);
     this.logger.debug('isMatching', isMatching);
     if (!isMatching) {
-      userCredentials = await this.incrementWrongCredentialCount(userId, orgId);
-      if (!userCredentials) {
-        throw new BadRequestError('Please request OTP before login');
-      }
       await UserActivities.create({
         email: email,
         activityType: WRONG_OTP,
         ipAddress: ipAddress,
         loginMode: 'OTP',
       });
-      if (userCredentials.wrongCredentialCount >= 5) {
+      if (attempt.wrongCredentialCount >= MAX_WRONG_CREDENTIAL_ATTEMPTS) {
         this.logger.warn('blocked', email);
-        userCredentials.isBlocked = true;
-        userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
-        await userCredentials.save();
+        attempt.isBlocked = true;
+        attempt.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
+        await attempt.save();
         await UserActivities.create({
           userId: userId,
           orgId: orgId,
@@ -392,22 +408,63 @@ export class UserAccountController {
     // Clearing the code in the same write that matches it makes it single-use,
     // even when two requests race with the same code.
     const claimed = await UserCredentials.findOneAndUpdate(
-      { userId, orgId, isDeleted: false, hashedOTP: userCredentials.hashedOTP },
-      {
-        $set: { wrongCredentialCount: 0 },
-        $unset: { hashedOTP: '', otpValidity: '' },
-      },
+      { userId, orgId, isDeleted: false, hashedOTP: attempt.hashedOTP },
+      { $unset: { hashedOTP: '', otpValidity: '' } },
       { new: true },
     );
     if (!claimed) {
       throw new UnauthorizedError(OTP_ALREADY_USED);
     }
+    // After the claim, and separate from it: tying the claim to the counter
+    // would let another request's reservation stop a correct code being used.
+    await this.releaseCredentialAttempt(
+      userId,
+      orgId,
+      attempt.wrongCredentialCount,
+    );
 
     return { statusCode: 200 };
   }
 
   async verifyPassword(password: string, hashedPassword: string) {
     return bcrypt.compare(password, hashedPassword);
+  }
+
+  // Shared by the code and the password sign-in. Null once the account is
+  // locked or has no attempts left.
+  async reserveCredentialAttempt(userId: string, orgId: string) {
+    return UserCredentials.findOneAndUpdate(
+      {
+        userId,
+        orgId,
+        isDeleted: false,
+        isBlocked: { $ne: true },
+        wrongCredentialCount: { $lt: MAX_WRONG_CREDENTIAL_ATTEMPTS },
+      },
+      { $inc: { wrongCredentialCount: 1 } },
+      { new: true },
+    );
+  }
+
+  // Resets the counter after a successful sign-in, but only while it still
+  // reads what this request's reservation left it at and the account is not
+  // locked. Otherwise a success would wipe out attempts that other requests
+  // reserved in the meantime.
+  async releaseCredentialAttempt(
+    userId: string,
+    orgId: string,
+    reservedCount: number,
+  ) {
+    await UserCredentials.updateOne(
+      {
+        userId,
+        orgId,
+        isDeleted: false,
+        isBlocked: { $ne: true },
+        wrongCredentialCount: reservedCount,
+      },
+      { $set: { wrongCredentialCount: 0 } },
+    );
   }
 
   async incrementWrongCredentialCount(userId: string, orgId: string) {
@@ -568,6 +625,7 @@ export class UserAccountController {
           orgName: org?.shortName || org?.registeredName,
           name: user.fullName,
           link: resetPasswordLink,
+          linkLifetime: passwordResetLinkLifetime().description,
         },
       });
 
@@ -597,6 +655,7 @@ export class UserAccountController {
     orgId: string,
     newPassword: string,
     ipAddress: string,
+    onPasswordSaved?: () => void,
   ) {
     try {
       const isPasswordValid = passwordValidator(newPassword);
@@ -642,6 +701,7 @@ export class UserAccountController {
         userCredentialData.ipAddress = ipAddress;
       }
       await userCredentialData.save();
+      onPasswordSaved?.();
 
       await UserActivities.create({
         orgId: orgId,
@@ -886,20 +946,102 @@ export class UserAccountController {
       }
       const orgId = req.tokenPayload?.orgId;
       const userId = req.tokenPayload?.userId;
-      const userFindResult = await this.iamService.getUserById(
-        userId,
-        iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
-      );
+      const linkHash = await this.claimResetLink(req);
+      let passwordSaved = false;
+      try {
+        const userFindResult = await this.iamService.getUserById(
+          userId,
+          iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
+        );
 
-      if (userFindResult.statusCode !== 200) {
-        throw new NotFoundError(SESSION_NO_LONGER_VALID);
+        if (userFindResult.statusCode !== 200) {
+          throw new NotFoundError(SESSION_NO_LONGER_VALID);
+        }
+        await this.updatePassword(userId, orgId, password, req.ip!, () => {
+          passwordSaved = true;
+        });
+      } catch (error) {
+        // Until the new password is saved nothing has changed, so the link is
+        // handed back for another attempt. Once it is saved the link is spent,
+        // even if recording the change fails afterwards.
+        if (!passwordSaved) {
+          await this.releaseResetLink(linkHash);
+        }
+        throw error;
       }
-      await this.updatePassword(userId, orgId, password, req.ip!);
 
       res.status(200).send({ data: 'password reset' });
       return;
     } catch (error) {
       next(error);
+    }
+  }
+
+  /**
+   * Mark the link used before any reset work, so of two simultaneous requests
+   * only one proceeds. The PASSWORD_CHANGED check in scopedTokenValidator stops
+   * a later reuse, but that activity is written only when a reset finishes.
+   */
+  private async claimResetLink(
+    req: AuthenticatedServiceRequest,
+  ): Promise<string> {
+    // The token the middleware verified, not a re-parse of the header: two
+    // spellings of one header must be one link.
+    const token = req.verifiedToken ?? '';
+    if (token === '') {
+      throw new UnauthorizedError('No token provided');
+    }
+    const linkHash = hashResetLink(token);
+    const exp: unknown = req.tokenPayload?.exp;
+    const expiresAt = new Date(
+      typeof exp === 'number'
+        ? exp * 1000
+        : Date.now() + RESET_LINK_FALLBACK_LIFETIME_MS,
+    );
+
+    try {
+      // Mongoose builds indexes in the background; without the unique index
+      // both inserts would succeed, so a link could be used twice.
+      await UsedPasswordResetLink.init();
+    } catch (initError) {
+      // init() keeps its first rejection for the life of the process, so a
+      // failed build is retried here rather than refusing every later reset.
+      try {
+        await UsedPasswordResetLink.ensureIndexes();
+      } catch (error) {
+        this.logger.error('The used reset link index could not be built', {
+          error: error instanceof Error ? error.message : String(error),
+          firstError: initError instanceof Error ? initError.message : String(initError),
+        });
+        throw new ServiceUnavailableError(RESET_LINK_NOT_CHECKED);
+      }
+    }
+
+    try {
+      await UsedPasswordResetLink.create({
+        linkHash,
+        userId: String(req.tokenPayload?.userId),
+        orgId: String(req.tokenPayload?.orgId),
+        expiresAt,
+      });
+    } catch (error) {
+      if (isDuplicateKeyError(error)) {
+        throw new UnauthorizedError(RESET_LINK_ALREADY_USED);
+      }
+      throw error;
+    }
+    return linkHash;
+  }
+
+  private async releaseResetLink(linkHash: string): Promise<void> {
+    try {
+      await UsedPasswordResetLink.deleteOne({ linkHash });
+    } catch (error) {
+      // The reset's own error is the one to report; this only costs the person
+      // a fresh link.
+      this.logger.error('Could not hand back an unused reset link', {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -1303,7 +1445,7 @@ export class UserAccountController {
     const orgId = user.orgId;
     const email = user.email;
 
-    let userCredentials = await UserCredentials.findOne({
+    const userCredentials = await UserCredentials.findOne({
       orgId,
       userId,
       isDeleted: false,
@@ -1329,26 +1471,29 @@ export class UserAccountController {
       throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
     }
 
+    // Counted before the compare, for the same reason as a sign-in code.
+    const attempt = await this.reserveCredentialAttempt(userId, orgId);
+    if (!attempt?.hashedPassword) {
+      await compareWithDecoyHash(password);
+      throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
+    }
+
     const isPasswordCorrect = await this.verifyPassword(
       password,
-      userCredentials.hashedPassword,
+      attempt.hashedPassword,
     );
 
     if (!isPasswordCorrect) {
-      userCredentials = await this.incrementWrongCredentialCount(userId, orgId);
-      if (!userCredentials) {
-        throw new BadRequestError('Please request OTP before login');
-      }
       await UserActivities.create({
         email: email,
         activityType: WRONG_PASSWORD,
         ipAddress: ip,
         loginMode: 'PASSWORD',
       });
-      if (userCredentials.wrongCredentialCount >= 5) {
-        userCredentials.isBlocked = true;
-        userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
-        await userCredentials.save();
+      if (attempt.wrongCredentialCount >= MAX_WRONG_CREDENTIAL_ATTEMPTS) {
+        attempt.isBlocked = true;
+        attempt.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
+        await attempt.save();
         await UserActivities.create({
           userId: userId,
           orgId: orgId,
@@ -1360,10 +1505,12 @@ export class UserAccountController {
         this.notifyAccountLocked(String(email), String(userId), String(orgId));
       }
       throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
-    } else {
-      userCredentials.wrongCredentialCount = 0;
-      await userCredentials.save();
     }
+    await this.releaseCredentialAttempt(
+      userId,
+      orgId,
+      attempt.wrongCredentialCount,
+    );
 
     await UserActivities.create({
       orgId: orgId,

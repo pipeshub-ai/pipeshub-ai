@@ -70,6 +70,10 @@ class BaseConnector(ABC):
     # Set by ConnectorFactory after construction, before init(). Connectors built
     # directly (tests, scripts) fall back to the process-wide pool.
     _shared_thread_pool: SharedConnectorThreadPool | None = None
+    # When True, ConnectorFactory hands every instance in an org the same processor
+    # (and so one messaging producer), instead of building one per instance. Only
+    # safe for connectors whose processor carries no per-instance state.
+    shares_org_processor: bool = False
 
     def __init__(
         self,

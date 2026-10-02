@@ -752,7 +752,7 @@ class TestNetworkFlagStaysConsistentAcrossLayers:
         settings = await EnvSandboxSettingsLoader().load(SandboxContext())
         assert settings.allow_network == sandbox_network_enabled(), raw
 
-    async def test_both_default_to_enabled_when_unset(self, monkeypatch) -> None:
+    async def test_both_default_to_disabled_when_unset(self, monkeypatch) -> None:
         from app.agent_loop_lib.sandbox.coding.settings import (
             EnvSandboxSettingsLoader,
         )
@@ -761,8 +761,8 @@ class TestNetworkFlagStaysConsistentAcrossLayers:
         monkeypatch.setenv("SANDBOX_MODE", "local")
         monkeypatch.delenv("SANDBOX_ALLOW_NETWORK", raising=False)
         settings = await EnvSandboxSettingsLoader().load(SandboxContext())
-        assert settings.allow_network is True
-        assert sandbox_network_enabled() is True
+        assert settings.allow_network is False
+        assert sandbox_network_enabled() is False
 
 
 class TestReconnectPreservesTheProviderClock:

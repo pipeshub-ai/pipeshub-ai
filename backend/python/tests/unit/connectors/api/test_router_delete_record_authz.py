@@ -1,6 +1,6 @@
 """DELETE /api/v1/records/{record_id} must be scoped to the caller's org and to
-records the caller can access, and KB records additionally to the caller's
-role on the KB.
+records the caller can access, must refuse records synced from a connector, and
+must hold KB records additionally to the caller's role on the KB.
 
 The route is driven end to end against a real Neo4jProvider whose I/O is
 mocked, so the tests exercise the actual authorization decision rather than a
@@ -50,7 +50,7 @@ def _provider(
     provider.client = AsyncMock()
     provider.get_document = AsyncMock(side_effect=get_document)
     provider.check_record_access_with_details = AsyncMock(
-        return_value={"record": {"id": RECORD_ID}} if has_access else None
+        return_value={"record": {"id": RECORD_ID, **kind}} if has_access else None
     )
     provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb-1"})
     provider.get_user_by_user_id = AsyncMock(return_value={"id": "ukey-a"})
@@ -68,15 +68,16 @@ def _assert_untouched(provider: Neo4jProvider, kafka: AsyncMock) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", [CONNECTOR, KB], ids=["connector", "kb"])
-async def test_cross_org_delete_is_404_and_leaves_graph_and_vectors(kind: dict) -> None:
+@pytest.mark.parametrize(("kind", "status"), [(CONNECTOR, 403), (KB, 404)], ids=["connector", "kb"])
+async def test_cross_org_delete_is_refused_and_leaves_graph_and_vectors(kind: dict, status: int) -> None:
+    # The access check is mocked open here; a synced record is refused before the provider's org check.
     provider = _provider(record_org=ORG_B, kind=kind, kb_role="OWNER")
     kafka = AsyncMock()
 
     with pytest.raises(HTTPException) as exc:
         await delete_record(RECORD_ID, _request(org_id=ORG_A), provider, kafka)
 
-    assert exc.value.status_code == 404
+    assert exc.value.status_code == status
     _assert_untouched(provider, kafka)
 
 
@@ -110,7 +111,37 @@ async def test_kb_record_without_write_role_gets_403(kb_role: str | None) -> Non
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", [CONNECTOR, KB], ids=["connector", "kb"])
+async def test_synced_record_is_refused_and_left_in_place() -> None:
+    provider = _provider(record_org=ORG_A, kind=CONNECTOR)
+    kafka = AsyncMock()
+
+    with pytest.raises(HTTPException) as exc:
+        await delete_record(RECORD_ID, _request(org_id=ORG_A), provider, kafka)
+
+    assert exc.value.status_code == 403
+    assert "source app" in exc.value.detail
+    _assert_untouched(provider, kafka)
+
+
+@pytest.mark.asyncio
+async def test_access_result_without_record_details_is_refused() -> None:
+    provider = _provider(record_org=ORG_A, kind=KB, kb_role="OWNER")
+    provider.check_record_access_with_details = AsyncMock(return_value={"permissions": []})
+    kafka = AsyncMock()
+
+    with pytest.raises(HTTPException) as exc:
+        await delete_record(RECORD_ID, _request(org_id=ORG_A), provider, kafka)
+
+    assert exc.value.status_code == 403
+    _assert_untouched(provider, kafka)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind",
+    [KB, {"connectorName": "KB", "origin": "CONNECTOR"}, {"connectorName": "DRIVE", "origin": "UPLOAD"}],
+    ids=["kb", "kb-connector-name-only", "upload-origin-only"],
+)
 async def test_same_org_delete_removes_record_and_publishes_vector_cleanup(kind: dict) -> None:
     provider = _provider(record_org=ORG_A, kind=kind, kb_role="WRITER")
     kafka = AsyncMock()

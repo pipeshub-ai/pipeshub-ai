@@ -93,7 +93,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout main
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
 
@@ -128,7 +128,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Run the release-changelog skill
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # v1
         env:
           # Read-only: this job has only read permissions.
           GH_TOKEN: ${{ github.token }}
@@ -167,7 +167,7 @@ jobs:
           git diff --cached --binary > "$RUNNER_TEMP/changelog.patch"
 
       - name: Upload the patch
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: changelog-patch
           path: ${{ runner.temp }}/changelog.patch
@@ -183,12 +183,12 @@ jobs:
       pull-requests: write
     steps:
       - name: Checkout the base the patch was made on
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.generate.outputs.base_sha }}
 
       - name: Download the patch
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: changelog-patch
           path: ${{ runner.temp }}/patch
