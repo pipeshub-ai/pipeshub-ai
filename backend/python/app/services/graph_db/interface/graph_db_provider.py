@@ -16,6 +16,10 @@ from typing import TYPE_CHECKING, Any, Optional
 from app.models.entities import Person
 
 
+class FolderChangedDuringDelete(RuntimeError):
+    """Records were moved into a folder while it was being deleted; nothing was deleted."""
+
+
 @dataclass(frozen=True)
 class AccessibleContainers:
     """The containers a user may search, in place of enumerating their records.

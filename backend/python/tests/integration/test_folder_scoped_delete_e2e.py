@@ -274,3 +274,35 @@ async def test_what_is_reported_deleted_is_exactly_what_was_deleted(tree: _Tree)
     assert reported == gone, f"reported deleted {reported}, actually gone {gone}"
     if await tree.exists("b1"):
         assert await tree.exists("sub"), f"b1 was moved into sub and kept, but sub was deleted: {result}"
+        assert await tree.exists("s1"), f"the stopped delete removed s1: {result}"
+        assert not reported, f"the stopped delete reported removed records: {result}"
+
+
+async def test_a_move_committed_during_the_deletes_deletes_nothing(tree: _Tree) -> None:
+    """ArangoDB only: a move that commits after the first re-read is outside the delete's
+    snapshot; the re-read after the deletes must roll the whole delete back. (Neo4j's delete
+    walks the live tree in the statement itself.)"""
+    if isinstance(tree.graph, Neo4jProvider):
+        pytest.skip("Neo4j re-walks the live subtree in its delete statement")
+    original = tree.graph.execute_query
+    moved = False
+
+    async def move_in_after_the_first_reread(query, *args, **kwargs):
+        nonlocal moved
+        result = await original(query, *args, **kwargs)
+        if not moved and "@root_keys" in query:
+            moved = True
+            assert await tree.graph.delete_parent_child_edge_to_record(tree.ids["b1"])
+            await tree.link("sub", "b1", "PARENT_CHILD")
+        return result
+
+    tree.graph.execute_query = move_in_after_the_first_reread
+    try:
+        result = await tree.delete(["sub"], within_folder_id=tree.ids["folder_a"])
+    finally:
+        tree.graph.execute_query = original
+
+    assert moved, "the delete never re-read the folder"
+    assert result["success"] is False and result.get("code") == 409, result
+    for name in ("sub", "s1", "b1"):
+        assert await tree.exists(name), f"{name} was deleted by a delete that reported nothing deleted: {result}"

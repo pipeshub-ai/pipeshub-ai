@@ -11,6 +11,7 @@ import pytest
 from app.config.constants.arangodb import CollectionNames
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from app.services.graph_db.interface.graph_db_provider import FolderChangedDuringDelete
 
 
 # ---------------------------------------------------------------------------
@@ -4141,8 +4142,9 @@ class TestDeleteRecordsRecursive:
         assert result["success"] is True
         assert result["eventData"] is None
 
-    def _folder_scoped(self, connected_provider, live_keys) -> None:
-        """Inventory sees sub and s1; the committed tree re-read outside the txn holds *live_keys*."""
+    def _folder_scoped(self, connected_provider, live_keys, live_keys_after=None) -> None:
+        """Inventory sees sub and s1; the committed tree re-read outside the txn holds *live_keys*,
+        and *live_keys_after* on the re-read after the deletes (the same when not given)."""
         inventory = [{
             "valid_root_keys": ["sub"],
             "records_with_type": [
@@ -4158,7 +4160,10 @@ class TestDeleteRecordsRecursive:
             if "deleteGuard" in query:
                 return []
             assert transaction is None, "the moved-in check must read the committed tree"
-            return live_keys
+            rereads.append(1)
+            return live_keys if len(rereads) == 1 or live_keys_after is None else live_keys_after
+
+        rereads: list[int] = []
 
         connected_provider._get_all_edge_collections = AsyncMock(return_value=["recordRelations"])
         connected_provider.execute_query = AsyncMock(side_effect=execute_query)
@@ -4183,6 +4188,37 @@ class TestDeleteRecordsRecursive:
         assert result["success"] is True
         assert {r["record_id"] for r in result["deleted_records"]} == {"sub", "s1"}
         connected_provider._delete_nodes_by_keys.assert_called_once()
+
+    async def test_a_move_committed_during_the_deletes_rolls_back_the_callers_transaction(
+        self, connected_provider
+    ) -> None:
+        self._folder_scoped(connected_provider, ["sub", "s1"], live_keys_after=["sub", "s1", "moved_in"])
+        with pytest.raises(FolderChangedDuringDelete):
+            await connected_provider.delete_records_recursive(
+                ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
+            )
+
+    async def test_a_move_committed_during_the_deletes_rolls_back_its_own_transaction(
+        self, connected_provider
+    ) -> None:
+        self._folder_scoped(connected_provider, ["sub", "s1"], live_keys_after=["sub", "s1", "moved_in"])
+        connected_provider.begin_transaction = AsyncMock(return_value="own_txn")
+        connected_provider.commit_transaction = AsyncMock()
+        connected_provider.rollback_transaction = AsyncMock()
+
+        result = await connected_provider.delete_records_recursive(["sub"], "c1", within_folder_id="folder_a")
+
+        assert result["success"] is False and result["code"] == 409
+        connected_provider.rollback_transaction.assert_awaited_once_with("own_txn")
+        connected_provider.commit_transaction.assert_not_called()
+
+    async def test_a_failure_after_writing_reaches_the_callers_transaction(self, connected_provider) -> None:
+        self._folder_scoped(connected_provider, ["sub", "s1"])
+        connected_provider._delete_nodes_by_keys = AsyncMock(side_effect=RuntimeError("node delete failed"))
+        with pytest.raises(RuntimeError, match="node delete failed"):
+            await connected_provider.delete_records_recursive(
+                ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
+            )
 
     async def test_folder_scoped_delete_fails_when_the_recheck_cannot_read(self, connected_provider) -> None:
         self._folder_scoped(connected_provider, None)

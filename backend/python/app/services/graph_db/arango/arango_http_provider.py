@@ -149,6 +149,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_PENDING_FIELD,
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
+    FolderChangedDuringDelete,
     IGraphDBProvider,
     _containers_from_row,
     _distinct_connector_types,
@@ -12501,6 +12502,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         *cascade_children*, type docs removed, and a deleteRecord event emitted per
         record that carries a virtualRecordId (Qdrant cleanup).
         """
+        # Once this call has written, a failure must reach a caller-owned transaction
+        # as an exception: a returned failure would let it commit a half-done delete.
+        writes_started = False
         try:
             if not record_ids:
                 return {
@@ -12637,6 +12641,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             ) > 0
                             UPDATE rec WITH {{ externalParentId: null }} IN @@records
                         """
+                        writes_started = True
                         await self.execute_query(
                             clear_orphan_parent_query,
                             bind_vars={
@@ -12650,6 +12655,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         )
 
                 node_ids = [f"records/{k}" for k in record_keys]
+                writes_started = True
                 if node_ids:
                     # Dynamic edge sweep: remove every edge touching the deleted records
                     # (recordRelations, isOfType, belongsTo, inheritPermissions, permission,
@@ -12661,6 +12667,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     await self._delete_isoftype_targets_from_collected(txn_id, type_targets, edge_collections)
                 if record_keys:
                     await self._delete_nodes_by_keys(txn_id, record_keys, CollectionNames.RECORDS.value)
+                if within_folder_id and valid_root_keys:
+                    # Again after the deletes: a move committed while they ran is outside
+                    # this transaction's snapshot, so its new edge was left in place.
+                    await self._abort_if_records_moved_in(valid_root_keys, record_keys, traversal_types)
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)
 
@@ -12703,6 +12713,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 raise db_error
         except Exception as e:
             self.logger.error(f"❌ Failed to delete records recursively: {str(e)}")
+            if transaction is not None and writes_started:
+                raise
+            if isinstance(e, FolderChangedDuringDelete):
+                return {"success": False, "reason": str(e), "code": 409, "eventData": None}
             return {"success": False, "reason": str(e), "code": 500, "eventData": None}
 
     async def _abort_if_records_moved_in(
@@ -12713,8 +12727,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         The edge lock catches a record moved out, but a record moved in arrives on a
         new edge it cannot lock, and the transaction's snapshot never shows it. Left
         alone it would survive under a deleted parent. This read runs outside the
-        transaction to see the committed tree, and before any delete, so a caller
-        that commits after a failed result has nothing half-deleted to commit.
+        transaction to see the committed tree: once before any delete, and again
+        after the deletes, before the commit, for a move that commits while they run.
         """
         live_keys = await self.execute_query(
             """
@@ -12738,7 +12752,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "Folder delete stopped: %d record(s) were moved into the folder while it was being deleted",
                 len(moved_in),
             )
-            raise RuntimeError(
+            raise FolderChangedDuringDelete(
                 "Records were moved into this folder while it was being deleted, so nothing was deleted. "
                 "Try the delete again."
             )
