@@ -3390,6 +3390,10 @@ class JiraConnector(BaseConnector):
         # (is_new_project=True means sync points were wiped, so edges need to be
         # recreated even for unchanged issues; _process_record is idempotent).
         if not is_issue_changed and not is_new_project:
+            # Count toward Scanned/Unchanged so Current sync explains the gap
+            # vs lifetime Records Status Completed.
+            if existing_record is not None:
+                await self.data_entities_processor._track_unchanged(existing_record)
             return records, delete_ids, True
 
         # Record group is always the project. Parent ticket link follows Jira's

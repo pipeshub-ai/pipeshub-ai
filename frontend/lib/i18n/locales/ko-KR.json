@@ -550,6 +550,31 @@
     "confirm": "확인"
   },
   "kb": {
+    "indexingProgress": {
+      "steps": {
+        "queued": "대기 중",
+        "extract": "추출",
+        "index": "인덱싱",
+        "done": "완료"
+      },
+      "stage": {
+        "queued": "대기 중",
+        "extracting": "콘텐츠 추출 중",
+        "indexing": "인덱싱 중",
+        "completed": "완료됨",
+        "failed": "실패",
+        "processing": "처리 중"
+      },
+      "embeddingChunk": "청크 {{current}}/{{total}} 임베딩 중",
+      "extractingPage": "페이지 {{current}}/{{total}} 추출 중",
+      "rollupProgress": "{{total}}개 중 {{completed}}개 인덱싱됨",
+      "rollupIndexed": "{{total}}개 인덱싱됨",
+      "rollupRecords_other": "레코드 {{count}}개: {{completed}}개 인덱싱됨",
+      "rollupFailed": "{{count}}개 실패",
+      "rollupSkipped": "{{count}}개 건너뜀",
+      "indexedTooltip": "인덱싱됨",
+      "indexingPercent": "인덱싱 중 {{percent}}%"
+    },
     "viewToggle": "보기 전환",
     "collectionsView": "컬렉션 보기",
     "allRecordsView": "모든 레코드 보기",
@@ -2448,6 +2473,107 @@
         "desktopRequiredTitle": "데스크톱 앱 필요",
         "desktopRequiredDescription": "로컬 파일 시스템 커넥터는 PipesHub 데스크톱 앱에서만 사용할 수 있습니다. 이 커넥터를 설정하려면 데스크톱 앱을 사용하세요."
       },
+      "syncProgress": {
+        "status": "상태",
+        "removing": "제거 중…",
+        "indexingCount": "{{total}}개 중 {{processed}}개 인덱싱 중",
+        "fullSyncDiscovering": "전체 동기화 - 소스 동기화 중…",
+        "fullSyncCheckingChanges": "소스의 변경 사항을 확인하는 중 - 새 페이지나 업데이트된 페이지만 다시 인덱싱합니다.",
+        "discovering": "소스 동기화 중…",
+        "queuedCount": "{{count}}개 대기 중",
+        "stillProcessing_other": "레코드 {{count}}개 아직 처리 중",
+        "priorSyncStillProcessing_other": "이전 동기화의 레코드 {{count}}개 아직 처리 중",
+        "indexed": "인덱싱됨",
+        "syncFailed": "동기화 실패",
+        "failedCount": "{{count}}개 실패",
+        "calculating": "진행률을 계산하는 중입니다",
+        "currentSync": "현재 동기화",
+        "breakdownScanned": "검사됨",
+        "breakdownUnchanged": "변경 없음",
+        "breakdownQueued": "신규/변경 항목 대기 중",
+        "breakdownFailed": "실패",
+        "breakdownSkipped": "건너뜀",
+        "badgeFullSync": "전체 동기화…",
+        "badgeSyncing": "동기화 중…",
+        "conflict": {
+          "fullOverFull": {
+            "title": "전체 동기화가 이미 실행 중입니다",
+            "message": "전체 동기화가 이미 진행 중입니다. 다시 시작하면 현재 동기화가 취소되고 모든 항목을 처음부터 다시 인덱싱합니다.",
+            "confirm": "전체 동기화 다시 시작",
+            "cancel": "현재 동기화 유지"
+          },
+          "fullOverQuick": {
+            "title": "동기화가 실행 중입니다",
+            "message": "현재 동기화가 진행 중입니다. 전체 동기화를 시작하면 이 동기화가 취소되고 모든 항목을 처음부터 다시 인덱싱합니다.",
+            "confirm": "취소하고 전체 동기화",
+            "cancel": "현재 동기화 유지"
+          },
+          "quickOverFull": {
+            "title": "전체 동기화 진행 중",
+            "message": "전체 동기화가 실행 중이며 일반 동기화보다 더 철저합니다. 지금 일반 동기화를 실행하면 전체 동기화가 취소되므로, 전체 동기화가 끝날 때까지 기다리는 것을 고려하세요.",
+            "confirm": "취소하고 동기화",
+            "cancel": "전체 동기화 유지"
+          },
+          "quickOverQuick": {
+            "title": "동기화가 이미 실행 중입니다",
+            "message": "동기화가 이미 진행 중입니다. 다시 시작하면 현재 동기화가 취소되고 처음부터 다시 시작합니다.",
+            "confirm": "동기화 다시 시작",
+            "cancel": "현재 동기화 유지"
+          },
+          "restartError": "동기화를 다시 시작할 수 없습니다. 다시 시도하세요.",
+          "lockedTitle": "동기화 준비 중",
+          "lockedMessage": "전체 동기화를 준비하는 중이라 아직 중단할 수 없습니다. 잠시 후 다시 시도하세요."
+        },
+        "lastSync": "마지막 동기화",
+        "failure": {
+          "auth": {
+            "title": "인증 실패",
+            "summary": "이 커넥터가 소스에 로그인할 수 없습니다.",
+            "remediation": "관리 → 승인에서 다시 연결하세요. 그래도 실패하면 관리자가 앱이나 해당 범위를 승인해야 할 수 있습니다."
+          },
+          "rateLimit": {
+            "title": "요청 한도 도달",
+            "summary": "소스가 일시적으로 동기화 속도를 제한했습니다.",
+            "remediation": "몇 분 기다린 후 다시 시도하세요. 계속 발생하면 동기화 빈도를 줄이세요."
+          },
+          "permission": {
+            "title": "액세스 권한 없음",
+            "summary": "이 계정은 동기화하도록 선택한 콘텐츠 중 일부를 읽을 수 없습니다.",
+            "remediation": "이 커넥터가 동기화해야 하는 파일이나 공유 드라이브에 대한 액세스 권한을 부여한 후 다시 시도하세요."
+          },
+          "network": {
+            "title": "연결 문제",
+            "summary": "소스에 안정적으로 연결할 수 없었습니다.",
+            "remediation": "소스와의 네트워크 연결을 확인한 후 동기화를 다시 시도하세요."
+          },
+          "cancelled": {
+            "title": "동기화 취소됨",
+            "summary": "동기화가 완료되기 전에 중지되었습니다.",
+            "remediation": "준비가 되면 동기화를 다시 시작하세요."
+          },
+          "unknown": {
+            "title": "동기화 실패",
+            "summary": "동기화하는 중에 문제가 발생했습니다.",
+            "remediation": "동기화를 다시 시도하세요. 다시 실패하면 커넥터 설정을 확인하거나 관리자에게 문의하세요."
+          },
+          "reasons": {
+            "unauthorized_client": "Google이 요청한 범위에 대한 액세스 토큰을 이 앱이 받지 못하도록 차단했습니다.",
+            "invalid_grant": "저장된 Google 로그인이 만료되었거나 취소되었습니다.",
+            "invalid_client": "Google 앱 자격 증명이 잘못되었거나 취소된 것 같습니다.",
+            "access_denied": "이 커넥터를 승인하는 중에 액세스가 거부되었습니다."
+          }
+        },
+        "queue": {
+          "waitingCompact": "대기열에서 기다리는 중",
+          "waitingDetail": "공유 인덱싱 대기열에서 기다리는 중 · 앞에 작업 약 {{count}}개",
+          "etaAlmostDone": "거의 완료",
+          "etaAboutAMinute": "약 1분",
+          "etaMinutes": "약 {{minutes}}분",
+          "etaMinutesRange": "약 {{low}}–{{high}}분",
+          "etaAboutAnHour": "약 1시간",
+          "etaMayTakeAWhile": "시간이 걸릴 수 있음"
+        }
+      },
       "syncStatus": {
         "paused": "동기화 일시 중지됨",
         "preparing": "동기화 준비 중...",
@@ -3224,6 +3350,15 @@
       "statusHealthy": "정상",
       "statusUnhealthy": "비정상",
       "statusUnknown": "알 수 없음",
+      "statusPending": "대기 중",
+      "statusStarting": "시작 중",
+      "stateMessage": {
+        "healthy": "{{name}}이(가) 준비되었습니다",
+        "unhealthy": "{{name}}이(가) 응답했지만 정상이 아닙니다",
+        "starting": "{{name}}을(를) 기다리는 중",
+        "pending": "백엔드 구성을 기다리는 중",
+        "unknown": "{{name}}을(를) 확인할 수 없습니다"
+      },
       "infra": {
         "redis": {
           "label": "Redis",

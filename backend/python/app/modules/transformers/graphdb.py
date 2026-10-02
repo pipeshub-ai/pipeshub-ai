@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 
 from app.config.constants.arangodb import (
     CollectionNames,
+    IndexingStage,
     ProgressStatus,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
@@ -23,6 +24,7 @@ from app.modules.entity_resolution.models import (
 from app.modules.entity_resolution.normalizer import display_form, normalize_name
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.indexing_progress import build_indexing_progress
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -76,6 +78,8 @@ class GraphDBTransformer(Transformer):
                         "lastExtractionTimestamp": timestamp,
                         "isDirty": False,
                         "virtualRecordId": virtual_record_id,
+                        "lastIndexTimestamp": timestamp,
+                        **build_indexing_progress(IndexingStage.COMPLETED, timestamp=timestamp),
                     }
                     self.logger.debug(
                         "🎯 Upserting extraction status for document"
@@ -579,6 +583,8 @@ class GraphDBTransformer(Transformer):
                     "lastExtractionTimestamp": timestamp,
                     "isDirty": False,
                     "virtualRecordId": virtual_record_id,
+                    "lastIndexTimestamp": timestamp,
+                    **build_indexing_progress(IndexingStage.COMPLETED, timestamp=timestamp),
                 }
 
                 if is_vlm_ocr_processed:

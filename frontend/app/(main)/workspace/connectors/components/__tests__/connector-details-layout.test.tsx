@@ -152,7 +152,7 @@ describe('ConnectorDetailsLayout: instance status', () => {
 
   it('shows that a sync is running', () => {
     renderLayout({ instances: [makeInstance({ isActive: true, status: 'SYNCING' })] });
-    expect(screen.getByText('Sync in progress')).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toBe('Syncing source…');
   });
 
   it('locks sync and hides the sync buttons while an instance is being removed', () => {

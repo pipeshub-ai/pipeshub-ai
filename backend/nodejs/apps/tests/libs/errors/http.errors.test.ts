@@ -9,6 +9,8 @@ import {
   ForbiddenError,
   NotFoundError,
   ConflictError,
+  ConnectorSyncInProgressError,
+  ConnectorSyncLockedError,
   TooManyRequestsError,
   InternalServerError,
   ServiceUnavailableError,
@@ -429,6 +431,88 @@ describe('HTTP Errors', () => {
       const json = error.toJSON();
       expect(json).to.have.property('name', 'ConflictError');
       expect(json).to.have.property('code', 'HTTP_CONFLICT');
+      expect(json).to.have.property('statusCode', 409);
+    });
+  });
+
+  describe('ConnectorSyncInProgressError', () => {
+    it('should have correct name', () => {
+      const error = new ConnectorSyncInProgressError('Sync in progress');
+      expect(error.name).to.equal('ConnectorSyncInProgressError');
+    });
+
+    it('should have correct code', () => {
+      const error = new ConnectorSyncInProgressError('Sync in progress');
+      expect(error.code).to.equal('HTTP_CONNECTOR_SYNC_IN_PROGRESS');
+    });
+
+    it('should have correct statusCode of 409', () => {
+      const error = new ConnectorSyncInProgressError('Sync in progress');
+      expect(error.statusCode).to.equal(409);
+    });
+
+    it('should preserve error message', () => {
+      const error = new ConnectorSyncInProgressError('Sync in progress');
+      expect(error.message).to.equal('Sync in progress');
+    });
+
+    it('should be instanceof HttpError', () => {
+      const error = new ConnectorSyncInProgressError('Sync in progress');
+      expect(error).to.be.an.instanceOf(HttpError);
+    });
+
+    it('should accept metadata', () => {
+      const metadata = { currentStatus: 'SYNCING', requestedFullSync: true };
+      const error = new ConnectorSyncInProgressError('Sync in progress', metadata);
+      expect(error.metadata).to.deep.equal(metadata);
+    });
+
+    it('should serialize to JSON via toJSON()', () => {
+      const error = new ConnectorSyncInProgressError('Sync in progress');
+      const json = error.toJSON();
+      expect(json).to.have.property('name', 'ConnectorSyncInProgressError');
+      expect(json).to.have.property('code', 'HTTP_CONNECTOR_SYNC_IN_PROGRESS');
+      expect(json).to.have.property('statusCode', 409);
+    });
+  });
+
+  describe('ConnectorSyncLockedError', () => {
+    it('should have correct name', () => {
+      const error = new ConnectorSyncLockedError('Connector locked');
+      expect(error.name).to.equal('ConnectorSyncLockedError');
+    });
+
+    it('should have correct code', () => {
+      const error = new ConnectorSyncLockedError('Connector locked');
+      expect(error.code).to.equal('HTTP_CONNECTOR_SYNC_LOCKED');
+    });
+
+    it('should have correct statusCode of 409', () => {
+      const error = new ConnectorSyncLockedError('Connector locked');
+      expect(error.statusCode).to.equal(409);
+    });
+
+    it('should preserve error message', () => {
+      const error = new ConnectorSyncLockedError('Connector locked');
+      expect(error.message).to.equal('Connector locked');
+    });
+
+    it('should be instanceof HttpError', () => {
+      const error = new ConnectorSyncLockedError('Connector locked');
+      expect(error).to.be.an.instanceOf(HttpError);
+    });
+
+    it('should accept metadata', () => {
+      const metadata = { currentStatus: 'FULL_SYNCING', requestedFullSync: true };
+      const error = new ConnectorSyncLockedError('Connector locked', metadata);
+      expect(error.metadata).to.deep.equal(metadata);
+    });
+
+    it('should serialize to JSON via toJSON()', () => {
+      const error = new ConnectorSyncLockedError('Connector locked');
+      const json = error.toJSON();
+      expect(json).to.have.property('name', 'ConnectorSyncLockedError');
+      expect(json).to.have.property('code', 'HTTP_CONNECTOR_SYNC_LOCKED');
       expect(json).to.have.property('statusCode', 409);
     });
   });

@@ -163,7 +163,7 @@ export function buildFilterParams(
   const params: KnowledgeHubQueryParams = {
     page: pagination?.page ?? 1,
     limit: pagination?.limit ?? 50,
-    include: 'counts,permissions,breadcrumbs,availableFilters',
+    include: 'counts,permissions,breadcrumbs,availableFilters,indexingRollup',
   };
 
   // Search query (omit `q` until long enough — backend returns 400 otherwise)
@@ -250,7 +250,7 @@ export function buildAllRecordsFilterParams(
   const params: KnowledgeHubQueryParams = {
     page: pagination.page,
     limit: pagination.limit,
-    include: 'counts,permissions,breadcrumbs,availableFilters',
+    include: 'counts,permissions,breadcrumbs,availableFilters,indexingRollup',
   };
 
   const searchTrimmedAll = filter.searchQuery?.trim();

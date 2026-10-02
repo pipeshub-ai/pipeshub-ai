@@ -11,9 +11,12 @@ import { isLocalFsConnectorType, localFsDesktopToast } from '../utils/local-fs-h
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import {
+  isConnectorSyncInProgressError,
+  isConnectorSyncLockedError,
   startConnectorSync,
   toggleConnectorSyncOn,
 } from '../utils/connector-sync-actions';
+import { useSyncConflictGuard } from '../utils/use-sync-conflict-guard';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
@@ -486,48 +489,63 @@ function PersonalConnectorsPageContent() {
   );
 
   // ── Success dialog handlers ─────────────────────────────────
+  const { guard: syncConflictGuard, dialog: syncConflictDialog } = useSyncConflictGuard();
+
   const handleStartSyncingFromDialog = useCallback(async () => {
     setShowConfigSuccessDialog(false);
     const instanceId = newlyConfiguredConnectorId;
     setNewlyConfiguredConnectorId(null);
     if (!instanceId) return;
 
-    try {
-      const outcome = await startConnectorSync({
-        _key: instanceId,
-        type: connectorTypeInfo?.type,
-      });
-      if (outcome?.kind === 'requires-desktop') {
-        addToast(localFsDesktopToast(outcome));
-        return;
-      }
-      if (isLocalFsConnectorType(connectorTypeInfo?.type ?? '')) {
-        const fresh = await refreshConnectorRowQuiet(instanceId);
-        let config = instanceConfigs[instanceId];
-        if (!config) {
-          config = await ConnectorsApi.getConnectorConfig(instanceId);
-          setInstanceConfig(instanceId, config);
+    const doStartSync = async (force: boolean) => {
+      try {
+        const outcome = await startConnectorSync(
+          { _key: instanceId, type: connectorTypeInfo?.type },
+          { force }
+        );
+        if (outcome.kind === 'requires-desktop') {
+          addToast(localFsDesktopToast(outcome));
+          return;
         }
-        await ensureLocalWatcherForInstance(fresh, config);
-      } else {
-        await refreshConnectorRowQuiet(instanceId);
+        if (isLocalFsConnectorType(connectorTypeInfo?.type ?? '')) {
+          const fresh = await refreshConnectorRowQuiet(instanceId);
+          let config = instanceConfigs[instanceId];
+          if (!config) {
+            config = await ConnectorsApi.getConnectorConfig(instanceId);
+            setInstanceConfig(instanceId, config);
+          }
+          await ensureLocalWatcherForInstance(fresh, config);
+        } else {
+          await refreshConnectorRowQuiet(instanceId);
+        }
+        addToast({
+          variant: 'success',
+          title: t('workspace.connectors.toasts.syncStarted', {
+            name: connectorTypeInfo?.name ?? 'connector',
+          }),
+          description: t('workspace.connectors.toasts.syncStartedLongDescription'),
+          duration: 3000,
+        });
+      } catch (error) {
+        if (isConnectorSyncInProgressError(error) || isConnectorSyncLockedError(error)) {
+          throw error;
+        }
+        addToast({
+          variant: 'error',
+          title: t('workspace.connectors.toasts.syncError'),
+          description:
+            error instanceof Error && error.message.trim()
+              ? error.message.trim()
+              : undefined,
+        });
       }
-      addToast({
-        variant: 'success',
-        title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'connector' }),
-        description: t('workspace.connectors.toasts.syncStartedLongDescription'),
-        duration: 3000,
-      });
-    } catch (error) {
-      addToast({
-        variant: 'error',
-        title: t('workspace.connectors.toasts.syncError'),
-        description:
-          error instanceof Error && error.message.trim()
-            ? error.message.trim()
-            : undefined,
-      });
-    }
+    };
+
+    const currentStatus = instances.find((i) => i._key === instanceId)?.status;
+    await syncConflictGuard(doStartSync, {
+      requestedFullSync: false,
+      currentStatus,
+    });
   }, [
     newlyConfiguredConnectorId,
     connectorTypeInfo,
@@ -538,6 +556,8 @@ function PersonalConnectorsPageContent() {
     setShowConfigSuccessDialog,
     setNewlyConfiguredConnectorId,
     instanceConfigs,
+    instances,
+    syncConflictGuard,
     t,
   ]);
 
@@ -579,12 +599,14 @@ function PersonalConnectorsPageContent() {
           onStartSyncing={handleStartSyncingFromDialog}
           onDoLater={handleDoLater}
         />
+        {syncConflictDialog}
       </>
     );
   }
 
   return (
     <>
+      {syncConflictDialog}
       <ConnectorCatalogLayout
         title={t('workspace.sidebar.nav.yourConnectors')}
         subtitle={t('workspace.connectors.subtitle')}

@@ -550,6 +550,31 @@
     "confirm": "確認"
   },
   "kb": {
+    "indexingProgress": {
+      "steps": {
+        "queued": "排隊中",
+        "extract": "擷取",
+        "index": "索引",
+        "done": "完成"
+      },
+      "stage": {
+        "queued": "排隊中",
+        "extracting": "正在擷取內容",
+        "indexing": "正在建立索引",
+        "completed": "已完成",
+        "failed": "失敗",
+        "processing": "處理中"
+      },
+      "embeddingChunk": "正在嵌入第 {{current}}/{{total}} 個區塊",
+      "extractingPage": "正在擷取第 {{current}}/{{total}} 頁",
+      "rollupProgress": "已建立索引 {{completed}}/{{total}}",
+      "rollupIndexed": "已建立索引 {{total}} 個",
+      "rollupRecords_other": "{{count}} 筆記錄：已建立索引 {{completed}} 筆",
+      "rollupFailed": "{{count}} 個失敗",
+      "rollupSkipped": "{{count}} 個已略過",
+      "indexedTooltip": "已建立索引",
+      "indexingPercent": "正在建立索引 {{percent}}%"
+    },
     "viewToggle": "檢視切換",
     "collectionsView": "集合檢視",
     "allRecordsView": "所有記錄檢視",
@@ -2448,6 +2473,107 @@
         "desktopRequiredTitle": "需要桌面應用程式",
         "desktopRequiredDescription": "本機檔案系統連接器僅適用於 PipesHub 桌面應用程式。請使用桌面應用程式設定此連接器。"
       },
+      "syncProgress": {
+        "status": "狀態",
+        "removing": "正在移除…",
+        "indexingCount": "正在建立索引 {{processed}}/{{total}}",
+        "fullSyncDiscovering": "完整同步 - 正在同步來源…",
+        "fullSyncCheckingChanges": "正在檢查來源的變更 - 只會重新建立新增或更新頁面的索引。",
+        "discovering": "正在同步來源…",
+        "queuedCount": "{{count}} 個排隊中",
+        "stillProcessing_other": "{{count}} 筆記錄仍在處理中",
+        "priorSyncStillProcessing_other": "上次同步的 {{count}} 筆記錄仍在處理中",
+        "indexed": "已建立索引",
+        "syncFailed": "同步失敗",
+        "failedCount": "{{count}} 個失敗",
+        "calculating": "正在計算進度",
+        "currentSync": "目前同步",
+        "breakdownScanned": "已掃描",
+        "breakdownUnchanged": "未變更",
+        "breakdownQueued": "新增/變更的已排入佇列",
+        "breakdownFailed": "失敗",
+        "breakdownSkipped": "已略過",
+        "badgeFullSync": "完整同步…",
+        "badgeSyncing": "同步中…",
+        "conflict": {
+          "fullOverFull": {
+            "title": "完整同步已在執行",
+            "message": "完整同步已在進行中。重新開始會取消目前的同步，並從頭重新建立所有內容的索引。",
+            "confirm": "重新開始完整同步",
+            "cancel": "保留目前同步"
+          },
+          "fullOverQuick": {
+            "title": "同步正在執行",
+            "message": "目前有同步正在進行。開始完整同步會取消它，並從頭重新建立所有內容的索引。",
+            "confirm": "取消並完整同步",
+            "cancel": "保留目前同步"
+          },
+          "quickOverFull": {
+            "title": "完整同步進行中",
+            "message": "完整同步正在執行，比一般同步更徹底。現在執行一般同步會取消它，建議等完整同步完成。",
+            "confirm": "取消並同步",
+            "cancel": "保留完整同步"
+          },
+          "quickOverQuick": {
+            "title": "同步已在執行",
+            "message": "同步已在進行中。重新開始會取消目前的同步並從頭開始。",
+            "confirm": "重新開始同步",
+            "cancel": "保留目前同步"
+          },
+          "restartError": "無法重新開始同步。請再試一次。",
+          "lockedTitle": "同步準備中",
+          "lockedMessage": "完整同步正在準備，暫時無法中斷。請稍後再試。"
+        },
+        "lastSync": "上次同步",
+        "failure": {
+          "auth": {
+            "title": "驗證失敗",
+            "summary": "此連接器無法登入來源。",
+            "remediation": "請在「管理 → 授權」中重新連線。如果仍然失敗，可能需要管理員核准此應用程式或其權限範圍。"
+          },
+          "rateLimit": {
+            "title": "已達速率限制",
+            "summary": "來源暫時限制了同步速度。",
+            "remediation": "請等候幾分鐘後再試。如果此問題持續發生，請降低同步頻率。"
+          },
+          "permission": {
+            "title": "缺少存取權",
+            "summary": "此帳戶無法讀取部分已選擇同步的內容。",
+            "remediation": "請授予此連接器需要同步的檔案或共用雲端硬碟的存取權，然後再試一次。"
+          },
+          "network": {
+            "title": "連線問題",
+            "summary": "無法穩定連線到來源。",
+            "remediation": "請檢查與來源的網路連線，然後重試同步。"
+          },
+          "cancelled": {
+            "title": "同步已取消",
+            "summary": "同步在完成前已停止。",
+            "remediation": "準備好後請重新開始同步。"
+          },
+          "unknown": {
+            "title": "同步失敗",
+            "summary": "同步時發生問題。",
+            "remediation": "請重試同步。如果再次失敗，請檢查連接器設定或聯絡管理員。"
+          },
+          "reasons": {
+            "unauthorized_client": "Google 已阻止此應用程式取得所要求權限範圍的存取權杖。",
+            "invalid_grant": "已儲存的 Google 登入已過期或已被撤銷。",
+            "invalid_client": "Google 應用程式憑證似乎無效或已被撤銷。",
+            "access_denied": "授權此連接器時存取遭拒。"
+          }
+        },
+        "queue": {
+          "waitingCompact": "正在佇列中等候",
+          "waitingDetail": "正在共用索引佇列中等候 · 前面約有 {{count}} 個工作",
+          "etaAlmostDone": "即將完成",
+          "etaAboutAMinute": "約 1 分鐘",
+          "etaMinutes": "約 {{minutes}} 分鐘",
+          "etaMinutesRange": "約 {{low}}–{{high}} 分鐘",
+          "etaAboutAnHour": "約 1 小時",
+          "etaMayTakeAWhile": "可能需要一段時間"
+        }
+      },
       "syncStatus": {
         "paused": "同步已暫停",
         "preparing": "正在準備同步...",
@@ -3224,6 +3350,15 @@
       "statusHealthy": "正常",
       "statusUnhealthy": "異常",
       "statusUnknown": "未知",
+      "statusPending": "待處理",
+      "statusStarting": "正在啟動",
+      "stateMessage": {
+        "healthy": "{{name}} 已就緒",
+        "unhealthy": "{{name}} 已回應，但狀態異常",
+        "starting": "正在等待 {{name}}",
+        "pending": "正在等待後端設定",
+        "unknown": "無法檢查 {{name}}"
+      },
       "infra": {
         "redis": {
           "label": "Redis",

@@ -143,10 +143,21 @@ describe('startConnectorSync', () => {
   it('passes a backend failure through without marking the card syncing', async () => {
     fakeApi({
       [`GET ${BASE}/c1`]: { status: 200, data: { connector: instance() } },
+      [`POST ${BASE}/c1/resync`]: { status: 500, data: { message: 'The connector service could not start the sync.' } },
+    });
+    await expect(startConnectorSync({ _key: 'c1' })).rejects.toMatchObject({
+      message: 'The connector service could not start the sync.',
+    });
+    expect(card()?.status).toBe('IDLE');
+  });
+
+  it('reports a sync that is already running as one the user can restart', async () => {
+    fakeApi({
+      [`GET ${BASE}/c1`]: { status: 200, data: { connector: instance() } },
       [`POST ${BASE}/c1/resync`]: { status: 409, data: { message: 'A sync is already running for this connector.' } },
     });
     await expect(startConnectorSync({ _key: 'c1' })).rejects.toMatchObject({
-      message: 'A sync is already running for this connector.',
+      code: 'CONNECTOR_SYNC_IN_PROGRESS',
     });
     expect(card()?.status).toBe('IDLE');
   });

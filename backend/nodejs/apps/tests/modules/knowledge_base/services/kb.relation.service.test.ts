@@ -444,6 +444,28 @@ describe('RecordRelationService', () => {
       expect(payload).to.have.property('connector', 'Slack')
       expect(payload).to.have.property('connectorId', 'conn-2')
       expect(payload).to.have.property('fullSync', true)
+      expect(payload).to.have.property('force', false)
+    })
+
+    it('carries force so the connectors service cancels the running sync', async () => {
+      const service = new RecordRelationService(
+        mockEventProducer,
+        mockSyncEventProducer,
+        mockDefaultConfig,
+      )
+      await new Promise(resolve => setTimeout(resolve, 10))
+
+      await service.resyncConnectorRecords({
+        connectorName: 'googledrive',
+        connectorId: 'conn-1',
+        orgId: 'org-1',
+        fullSync: false,
+        force: true,
+      })
+
+      const event = mockSyncEventProducer.publishEvent.firstCall.args[0]
+      expect(event.eventType).to.equal('googledrive.resync')
+      expect(event.payload).to.include({ fullSync: false, force: true })
     })
   })
 
