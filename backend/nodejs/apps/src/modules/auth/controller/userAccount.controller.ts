@@ -91,6 +91,7 @@ const {
 } = userActivitiesType;
 export const SALT_ROUNDS = 10;
 const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
+const MAX_WRONG_CREDENTIAL_ATTEMPTS = 5;
 const SESSION_INVALIDATE_TOKEN_DELAY_MS = 1000;
 
 export const SIGN_IN_SESSION_EXPIRED =
@@ -311,7 +312,7 @@ export class UserAccountController {
     email: string,
     ipAddress: string,
   ) {
-    let userCredentials = await UserCredentials.findOne({
+    const userCredentials = await UserCredentials.findOne({
       userId,
       orgId,
       isDeleted: false,
@@ -339,29 +340,31 @@ export class UserAccountController {
       throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
     }
 
+    // The attempt is counted before the code is compared. Counting it
+    // afterwards lets every request already in flight be compared before the
+    // first of them has raised the counter, so a burst gets past the limit.
+    const attempt = await this.reserveCredentialAttempt(userId, orgId);
+    if (!attempt?.hashedOTP) {
+      await compareWithDecoyHash(inputOTP);
+      throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
+    }
+
     // Ensure OTP is a string for bcrypt.compare (bcrypt requires both arguments to be strings)
     const otpString = String(inputOTP);
-    const isMatching = await bcrypt.compare(
-      otpString,
-      userCredentials.hashedOTP,
-    );
+    const isMatching = await bcrypt.compare(otpString, attempt.hashedOTP);
     this.logger.debug('isMatching', isMatching);
     if (!isMatching) {
-      userCredentials = await this.incrementWrongCredentialCount(userId, orgId);
-      if (!userCredentials) {
-        throw new BadRequestError('Please request OTP before login');
-      }
       await UserActivities.create({
         email: email,
         activityType: WRONG_OTP,
         ipAddress: ipAddress,
         loginMode: 'OTP',
       });
-      if (userCredentials.wrongCredentialCount >= 5) {
+      if (attempt.wrongCredentialCount >= MAX_WRONG_CREDENTIAL_ATTEMPTS) {
         this.logger.warn('blocked', email);
-        userCredentials.isBlocked = true;
-        userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
-        await userCredentials.save();
+        attempt.isBlocked = true;
+        attempt.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
+        await attempt.save();
         await UserActivities.create({
           userId: userId,
           orgId: orgId,
@@ -379,7 +382,7 @@ export class UserAccountController {
     // Clearing the code in the same write that matches it makes it single-use,
     // even when two requests race with the same code.
     const claimed = await UserCredentials.findOneAndUpdate(
-      { userId, orgId, isDeleted: false, hashedOTP: userCredentials.hashedOTP },
+      { userId, orgId, isDeleted: false, hashedOTP: attempt.hashedOTP },
       {
         $set: { wrongCredentialCount: 0 },
         $unset: { hashedOTP: '', otpValidity: '' },
@@ -395,6 +398,22 @@ export class UserAccountController {
 
   async verifyPassword(password: string, hashedPassword: string) {
     return bcrypt.compare(password, hashedPassword);
+  }
+
+  // Shared by the code and the password sign-in. Null once the account is
+  // locked or has no attempts left.
+  async reserveCredentialAttempt(userId: string, orgId: string) {
+    return UserCredentials.findOneAndUpdate(
+      {
+        userId,
+        orgId,
+        isDeleted: false,
+        isBlocked: { $ne: true },
+        wrongCredentialCount: { $lt: MAX_WRONG_CREDENTIAL_ATTEMPTS },
+      },
+      { $inc: { wrongCredentialCount: 1 } },
+      { new: true },
+    );
   }
 
   async incrementWrongCredentialCount(userId: string, orgId: string) {
@@ -1254,7 +1273,7 @@ export class UserAccountController {
     const orgId = user.orgId;
     const email = user.email;
 
-    let userCredentials = await UserCredentials.findOne({
+    const userCredentials = await UserCredentials.findOne({
       orgId,
       userId,
       isDeleted: false,
@@ -1280,26 +1299,29 @@ export class UserAccountController {
       throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
     }
 
+    // Counted before the compare, for the same reason as a sign-in code.
+    const attempt = await this.reserveCredentialAttempt(userId, orgId);
+    if (!attempt?.hashedPassword) {
+      await compareWithDecoyHash(password);
+      throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
+    }
+
     const isPasswordCorrect = await this.verifyPassword(
       password,
-      userCredentials.hashedPassword,
+      attempt.hashedPassword,
     );
 
     if (!isPasswordCorrect) {
-      userCredentials = await this.incrementWrongCredentialCount(userId, orgId);
-      if (!userCredentials) {
-        throw new BadRequestError('Please request OTP before login');
-      }
       await UserActivities.create({
         email: email,
         activityType: WRONG_PASSWORD,
         ipAddress: ip,
         loginMode: 'PASSWORD',
       });
-      if (userCredentials.wrongCredentialCount >= 5) {
-        userCredentials.isBlocked = true;
-        userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
-        await userCredentials.save();
+      if (attempt.wrongCredentialCount >= MAX_WRONG_CREDENTIAL_ATTEMPTS) {
+        attempt.isBlocked = true;
+        attempt.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
+        await attempt.save();
         await UserActivities.create({
           userId: userId,
           orgId: orgId,
@@ -1311,10 +1333,13 @@ export class UserAccountController {
         this.notifyAccountLocked(String(email), String(userId), String(orgId));
       }
       throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
-    } else {
-      userCredentials.wrongCredentialCount = 0;
-      await userCredentials.save();
     }
+    // A plain write: the record read above still holds the count from before
+    // the attempt was reserved, so saving it could leave the attempt counted.
+    await UserCredentials.updateOne(
+      { userId, orgId, isDeleted: false },
+      { $set: { wrongCredentialCount: 0 } },
+    );
 
     await UserActivities.create({
       orgId: orgId,

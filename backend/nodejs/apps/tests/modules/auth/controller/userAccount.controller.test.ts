@@ -295,6 +295,7 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 5,
         save: saveStub,
       } as any);
+      sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({} as unknown as ClaimedCredentials);
 
       const result = await controller.verifyOTP('u1', 'o1', otp, 'test@test.com', '127.0.0.1');
@@ -346,6 +347,7 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
       const claim = sinon
         .stub(UserCredentials, 'findOneAndUpdate')
         .resolves({ wrongCredentialCount: 0 } as unknown as ClaimedCredentials);
@@ -374,6 +376,7 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as unknown as ClaimedCredentials);
+      sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(null);
 
       try {
@@ -396,11 +399,12 @@ describe('UserAccountController', () => {
         save: sinon.stub().resolves(),
       } as any);
 
-      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
+      const reserve = sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
+        hashedOTP,
         wrongCredentialCount: 2,
       } as any);
 
-      sinon.stub(UserActivities, 'create').resolves({} as any);
+      const activity = sinon.stub(UserActivities, 'create').resolves({} as any);
 
       try {
         await controller.verifyOTP('u1', 'o1', '000000', 'test@test.com', '127.0.0.1');
@@ -409,6 +413,74 @@ describe('UserAccountController', () => {
         expect(error).to.be.instanceOf(UnauthorizedError);
         expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
       }
+      // Only the reservation: a wrong code is never claimed.
+      expect(reserve.calledOnce).to.be.true;
+      expect(activity.calledWith(sinon.match({ activityType: 'WRONG OTP' }))).to.be.true;
+    });
+
+    it('counts the attempt before it compares the code', async () => {
+      const hashedOTP = await bcrypt.hash('654321', 4);
+      sinon.stub(UserCredentials, 'findOne').resolves({
+        isBlocked: false,
+        hashedOTP,
+        otpValidity: Date.now() + 600000,
+        wrongCredentialCount: 0,
+      } as any);
+      const reserve = sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      const compare = sinon.spy(bcrypt, 'compare');
+
+      await controller
+        .verifyOTP('u1', 'o1', '000000', 'test@test.com', '127.0.0.1')
+        .catch(() => undefined);
+
+      const real = compare.getCalls().find((c) => c.args[1] === hashedOTP);
+      expect(real).to.exist;
+      expect(reserve.firstCall.calledBefore(real!)).to.be.true;
+    });
+
+    it('never compares against the real code when no attempt is left', async () => {
+      const hashedOTP = await bcrypt.hash('123456', 4);
+      sinon.stub(UserCredentials, 'findOne').resolves({
+        isBlocked: false,
+        hashedOTP,
+        otpValidity: Date.now() + 600000,
+        wrongCredentialCount: 4,
+      } as any);
+      // Another request took the last attempt between the read and this one.
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(null);
+      const compare = sinon.spy(bcrypt, 'compare');
+
+      try {
+        await controller.verifyOTP('u1', 'o1', '123456', 'test@test.com', '127.0.0.1');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
+      }
+      expect(compare.getCalls().some((c) => c.args[1] === hashedOTP)).to.be.false;
+    });
+  });
+
+  describe('reserveCredentialAttempt', () => {
+    it('takes an attempt in one conditional write, only while unlocked and under the limit', async () => {
+      const reserved = { wrongCredentialCount: 3 };
+      const update = sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(reserved as any);
+
+      expect(await controller.reserveCredentialAttempt('u1', 'o1')).to.equal(reserved);
+      expect(update.firstCall.args).to.deep.equal([
+        {
+          userId: 'u1',
+          orgId: 'o1',
+          isDeleted: false,
+          isBlocked: { $ne: true },
+          wrongCredentialCount: { $lt: 5 },
+        },
+        { $inc: { wrongCredentialCount: 1 } },
+        { new: true },
+      ]);
     });
   });
 
@@ -1586,6 +1658,7 @@ describe('UserAccountController', () => {
       const hashedOTP = await bcrypt.hash('654321', 10);
       const saveStub = sinon.stub().resolves();
       const updatedCredential: any = {
+        hashedOTP,
         wrongCredentialCount: 5,
         isBlocked: false,
         blockExpiresAt: null,
@@ -1813,6 +1886,10 @@ describe('UserAccountController', () => {
         blockExpiresAt: new Date(Date.now() - 60_000),
         save: saveStub,
       } as any);
+      sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 
       const result = await controller.authenticateWithPassword(user, password, '127.0.0.1');
@@ -1833,6 +1910,7 @@ describe('UserAccountController', () => {
         save: sinon.stub().resolves(),
       } as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
+        hashedPassword,
         wrongCredentialCount: 1,
         isBlocked: false,
         save: sinon.stub().resolves(),
@@ -1860,11 +1938,68 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      const reset = sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 
       const result = await controller.authenticateWithPassword(user, password, '127.0.0.1');
 
       expect(result.statusCode).to.equal(200);
+      // The reserved attempt is given back by a write of its own.
+      expect(reset.firstCall.args).to.deep.equal([
+        { userId: 'u1', orgId: 'o1', isDeleted: false },
+        { $set: { wrongCredentialCount: 0 } },
+      ]);
+    });
+
+    it('counts the attempt before it compares the password', async () => {
+      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
+      const hashedPassword = await bcrypt.hash('CorrectPass1!', 4);
+
+      sinon.stub(UserCredentials, 'findOne').resolves({
+        hashedPassword,
+        isBlocked: false,
+        wrongCredentialCount: 0,
+      } as any);
+      const reserve = sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      const compare = sinon.spy(bcrypt, 'compare');
+
+      await controller
+        .authenticateWithPassword(user, 'WrongPass1!', '127.0.0.1')
+        .catch(() => undefined);
+
+      const real = compare.getCalls().find((c) => c.args[1] === hashedPassword);
+      expect(real).to.exist;
+      expect(reserve.firstCall.calledBefore(real!)).to.be.true;
+    });
+
+    it('never compares against the real password when no attempt is left', async () => {
+      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
+      const password = 'CorrectPass1!';
+      const hashedPassword = await bcrypt.hash(password, 4);
+
+      sinon.stub(UserCredentials, 'findOne').resolves({
+        hashedPassword,
+        isBlocked: false,
+        wrongCredentialCount: 4,
+      } as any);
+      // Another request took the last attempt between the read and this one.
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(null);
+      const compare = sinon.spy(bcrypt, 'compare');
+
+      try {
+        await controller.authenticateWithPassword(user, password, '127.0.0.1');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(BadRequestError);
+        expect((error as BadRequestError).message).to.equal(WRONG_EMAIL_OR_PASSWORD);
+      }
+      expect(compare.getCalls().some((c) => c.args[1] === hashedPassword)).to.be.false;
     });
 
     it('should block account after 5 wrong passwords, set cooldown expiry and send mail', async () => {
@@ -1872,6 +2007,7 @@ describe('UserAccountController', () => {
       const hashedPassword = await bcrypt.hash('CorrectPass1!', 10);
       const saveStub = sinon.stub().resolves();
       const updatedCredential: any = {
+        hashedPassword,
         wrongCredentialCount: 5,
         isBlocked: false,
         blockExpiresAt: null,
@@ -1925,6 +2061,7 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({} as unknown as ClaimedCredentials);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 
@@ -1982,6 +2119,10 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockSessionService.completeAuthentication.resolves();
 
@@ -2029,6 +2170,10 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockSessionService.completeAuthentication.resolves();
       mockIamService.updateUser.resolves({ statusCode: 200 });
@@ -2077,6 +2222,10 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockSessionService.updateSession.resolves();
 
@@ -2950,6 +3099,7 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({} as unknown as ClaimedCredentials);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 
@@ -2960,8 +3110,8 @@ describe('UserAccountController', () => {
     });
   });
 
-  describe('verifyOTP - incrementWrongCredentialCount returns null', () => {
-    it('should throw BadRequestError when incrementWrongCredentialCount returns null', async () => {
+  describe('verifyOTP - no attempt could be reserved', () => {
+    it('answers like a wrong code when the reservation finds no credential', async () => {
       const hashedOTP = await bcrypt.hash('654321', 10);
 
       sinon.stub(UserCredentials, 'findOne').resolves({
@@ -2978,14 +3128,14 @@ describe('UserAccountController', () => {
         await controller.verifyOTP('u1', 'o1', '000000', 'test@test.com', '127.0.0.1');
         expect.fail('Should have thrown');
       } catch (error) {
-        expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.equal('Please request OTP before login');
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
       }
     });
   });
 
-  describe('authenticateWithPassword - incrementWrongCredentialCount returns null', () => {
-    it('should throw BadRequestError when increment returns null', async () => {
+  describe('authenticateWithPassword - no attempt could be reserved', () => {
+    it('answers like a wrong password when the reservation finds no credential', async () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
       const hashedPassword = await bcrypt.hash('CorrectPass1!', 10);
 
@@ -3004,7 +3154,7 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.equal('Please request OTP before login');
+        expect((error as BadRequestError).message).to.equal(WRONG_EMAIL_OR_PASSWORD);
       }
     });
   });
