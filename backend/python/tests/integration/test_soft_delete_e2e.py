@@ -12,7 +12,9 @@ file that was already in the trash. A second file sits outside the folder.
 - An attachments-only cascade and a single-record connector delete mark only
   what they reach.
 - A sync of an item the user deleted leaves it in the trash.
-- A UI/API delete by the KB owner goes to the trash as a USER delete.
+- A UI/API delete by the KB owner goes to the trash as a USER delete, and
+  takes exactly what that backend's hard delete removes: a folder alone, a
+  mail with its direct attachments on Arango and alone on Neo4j.
 - With the flag off, the same cascade still removes the records.
 
 Arango enforces the records schema strictly, so its run also proves the write
@@ -77,6 +79,8 @@ logger = logging.getLogger("soft-delete-it")
 
 KB_NAMES = ("folder", "file_a", "file_b", "attachment", "old_trash", "outside")
 DRIVE_NAMES = ("drive_file", "drive_child")
+# A mail with a direct attachment, an attachment of that attachment, and a PARENT_CHILD child.
+MAIL_NAMES = ("mail", "mail_attachment", "mail_attachment_attachment", "mail_child")
 
 
 class _Producer:
@@ -107,6 +111,7 @@ class _World:
     user_key: str
     kb_id: str
     connector_id: str
+    mail_connector_id: str
     ids: dict[str, str] = field(default_factory=dict)
 
     async def stored(self, name: str) -> dict | None:
@@ -143,7 +148,7 @@ async def _connect_arango() -> IGraphDBProvider:
 
 
 async def _remove(graph: IGraphDBProvider, w: _World) -> None:
-    ids = [*w.ids.values(), w.user_key, w.kb_id, w.connector_id]
+    ids = [*w.ids.values(), w.user_key, w.kb_id, w.connector_id, w.mail_connector_id]
     if isinstance(graph, Neo4jProvider):
         await graph.client.execute_query("MATCH (n) WHERE n.id IN $ids DETACH DELETE n", parameters={"ids": ids})
         return
@@ -181,7 +186,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         w = _World(
             graph=graph, processor=processor, producer=producer,
             org_id=f"org-soft-{suffix}", user_id=f"user-soft-{suffix}", user_key=f"ukey-soft-{suffix}",
-            kb_id=f"kb-soft-{suffix}", connector_id=f"drive-soft-{suffix}",
+            kb_id=f"kb-soft-{suffix}", connector_id=f"drive-soft-{suffix}", mail_connector_id=f"gmail-soft-{suffix}",
         )
         processor.org_id = w.org_id
         cleanup.push_async_callback(_remove, graph, w)
@@ -190,27 +195,31 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
 
 
 def _file(w: _World, name: str, *, kb: bool, folder: bool = False, **extra: object) -> FileRecord:
-    return FileRecord(
-        id=w.ids[name],
-        org_id=w.org_id,
-        record_name=f"{name}.pdf",
-        record_type=RecordType.FILE,
-        external_record_id=f"ext-{w.ids[name]}",
-        version=1,
-        origin=OriginTypes.UPLOAD if kb else OriginTypes.CONNECTOR,
-        connector_name=Connectors.KNOWLEDGE_BASE if kb else Connectors.GOOGLE_DRIVE,
-        connector_id=w.kb_id if kb else w.connector_id,
-        mime_type="application/vnd.folder" if folder else "application/pdf",
-        indexing_status=ProgressStatus.COMPLETED.value,
-        is_file=not folder,
-        **extra,
-    )
+    fields: dict = {
+        "id": w.ids[name],
+        "org_id": w.org_id,
+        "record_name": f"{name}.pdf",
+        "record_type": RecordType.FILE,
+        "external_record_id": f"ext-{w.ids[name]}",
+        "version": 1,
+        "origin": OriginTypes.UPLOAD if kb else OriginTypes.CONNECTOR,
+        "connector_name": Connectors.KNOWLEDGE_BASE if kb else Connectors.GOOGLE_DRIVE,
+        "connector_id": w.kb_id if kb else w.connector_id,
+        "mime_type": "application/vnd.folder" if folder else "application/pdf",
+        "indexing_status": ProgressStatus.COMPLETED.value,
+        "is_file": not folder,
+    }
+    return FileRecord(**{**fields, **extra})
+
+
+def _mail_file(w: _World, name: str) -> FileRecord:
+    return _file(w, name, kb=False, connector_name=Connectors.GOOGLE_MAIL, connector_id=w.mail_connector_id)
 
 
 async def _seed(w: _World) -> None:
     g = w.graph
     now = get_epoch_timestamp_in_ms()
-    for name in (*KB_NAMES, *DRIVE_NAMES):
+    for name in (*KB_NAMES, *DRIVE_NAMES, *MAIL_NAMES):
         w.ids[name] = f"{name}-{uuid.uuid4().hex[:12]}"
 
     await g.batch_upsert_nodes(
@@ -235,6 +244,7 @@ async def _seed(w: _World) -> None:
         _file(w, "outside", kb=True),
         _file(w, "drive_file", kb=False),
         _file(w, "drive_child", kb=False),
+        *(_mail_file(w, n) for n in MAIL_NAMES),
     ])
     for name in ("file_a", "file_b", "attachment", "outside", "drive_file", "drive_child"):
         await g.update_node(w.ids[name], CollectionNames.RECORDS.value, {"virtualRecordId": f"vr-{w.ids[name]}"})
@@ -245,7 +255,8 @@ async def _seed(w: _World) -> None:
 
     records, apps, users = CollectionNames.RECORDS.value, CollectionNames.APPS.value, CollectionNames.USERS.value
     await g.batch_create_edges(
-        [edge(w.user_key, users, w.kb_id, apps, role="OWNER", type="USER")],
+        [edge(w.user_key, users, w.kb_id, apps, role="OWNER", type="USER"),
+         edge(w.user_key, users, w.ids["mail"], records, role="OWNER", type="USER")],
         collection=CollectionNames.PERMISSION.value,
     )
     await g.batch_create_edges(
@@ -256,7 +267,11 @@ async def _seed(w: _World) -> None:
         [edge(w.ids["folder"], records, w.ids[c], records, relationshipType="PARENT_CHILD")
          for c in ("file_a", "file_b", "old_trash")]
         + [edge(w.ids["file_b"], records, w.ids["attachment"], records, relationshipType="ATTACHMENT"),
-           edge(w.ids["drive_file"], records, w.ids["drive_child"], records, relationshipType="PARENT_CHILD")],
+           edge(w.ids["drive_file"], records, w.ids["drive_child"], records, relationshipType="PARENT_CHILD"),
+           edge(w.ids["mail"], records, w.ids["mail_attachment"], records, relationshipType="ATTACHMENT"),
+           edge(w.ids["mail_attachment"], records, w.ids["mail_attachment_attachment"], records,
+                relationshipType="ATTACHMENT"),
+           edge(w.ids["mail"], records, w.ids["mail_child"], records, relationshipType="PARENT_CHILD")],
         collection=CollectionNames.RECORD_RELATIONS.value,
     )
 
@@ -359,6 +374,30 @@ async def test_an_api_delete_by_the_owner_goes_to_the_trash(world: _World) -> No
 
     again = await world.graph.delete_record(world.ids["outside"], world.user_id, world.org_id, soft_delete=True)
     assert again["success"] is False and again["code"] == 404
+
+
+async def _visible(w: _World, names: tuple[str, ...]) -> set[str]:
+    return {n for n in names if (doc := await w.stored(n)) is not None and doc.get("isDeleted") is not True}
+
+
+@pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
+async def test_an_api_folder_delete_takes_the_folder_alone(world: _World, soft: bool) -> None:
+    """The record DELETE route's hard path removes this vertex only, so the trash takes it only."""
+    names = ("folder", "file_a", "file_b", "attachment", "outside")
+    before = await _visible(world, names)
+    result = await world.graph.delete_record(world.ids["folder"], world.user_id, world.org_id, soft_delete=soft)
+    assert result["success"] is True, result
+    assert before - await _visible(world, names) == {"folder"}
+
+
+@pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
+async def test_an_api_mail_delete_takes_what_the_hard_delete_takes(world: _World, soft: bool) -> None:
+    """Arango's mail delete also removes the direct attachments; Neo4j's removes the mail alone."""
+    expected = {"mail", "mail_attachment"} if isinstance(world.graph, ArangoHTTPProvider) else {"mail"}
+    before = await _visible(world, MAIL_NAMES)
+    result = await world.graph.delete_record(world.ids["mail"], world.user_id, world.org_id, soft_delete=soft)
+    assert result["success"] is True, result
+    assert before - await _visible(world, MAIL_NAMES) == expected
 
 
 async def test_with_the_flag_off_a_cascade_still_removes_the_records(

@@ -9566,17 +9566,40 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record: dict,
         user_key: str | None,
         transaction: str | None,
+        *,
+        with_attachments: bool = False,
     ) -> dict:
-        """The UI/API delete once permissions pass: the record and its subtree go to the trash."""
+        """The UI/API delete once permissions pass: what the hard delete removes goes to the trash.
+
+        That is the record alone, plus its direct attachments for a mail
+        (``with_attachments``); nothing below them, and no PARENT_CHILD children.
+        """
+        record_ids = [record_id]
+        if with_attachments and is_live_record(record):
+            record_ids += await self._direct_attachment_ids(record_id, transaction)
         result = await self.soft_delete_records(
-            [record_id],
+            record_ids,
             record.get("connectorId") or "",
             delete_source=DeleteSource.USER.value,
             batch_id=str(uuid.uuid4()),
             deleted_by_user_id=user_key,
+            follow=(),
             transaction=transaction,
         )
         return soft_delete_request_result(record_id, record, result)
+
+    async def _direct_attachment_ids(self, record_id: str, transaction: str | None) -> list[str]:
+        attachment_ids = await self.http_client.execute_aql(
+            f"""
+            FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                FILTER edge._from == @record_from
+                    AND edge.relationshipType == 'ATTACHMENT'
+                RETURN PARSE_IDENTIFIER(edge._to).key
+            """,
+            bind_vars={"record_from": f"records/{record_id}"},
+            txn_id=transaction,
+        )
+        return attachment_ids or []
 
     async def delete_knowledge_base_record(
         self,
@@ -9720,7 +9743,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Execute Gmail-specific deletion
             if soft_delete:
-                return await self._soft_delete_for_request(record_id, record, user_key, transaction)
+                return await self._soft_delete_for_request(
+                    record_id, record, user_key, transaction, with_attachments=True
+                )
             return await self._execute_gmail_record_deletion(record_id, record, user_role, transaction)
 
         except Exception as e:
@@ -9766,7 +9791,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Execute deletion
             if soft_delete:
-                return await self._soft_delete_for_request(record_id, record, user_key, transaction)
+                return await self._soft_delete_for_request(
+                    record_id, record, user_key, transaction, with_attachments=True
+                )
             return await self._execute_outlook_record_deletion(record_id, record, transaction)
 
         except Exception as e:
@@ -14656,20 +14683,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> dict:
         """Execute Outlook record deletion - deletes email and all attachments."""
         try:
-            # Get attachments (child records with ATTACHMENT relation)
-            attachments_query = f"""
-            FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
-                FILTER edge._from == @record_from
-                    AND edge.relationshipType == 'ATTACHMENT'
-                RETURN PARSE_IDENTIFIER(edge._to).key
-            """
-
-            attachment_ids = await self.http_client.execute_aql(
-                attachments_query,
-                bind_vars={"record_from": f"records/{record_id}"},
-                txn_id=transaction
-            )
-            attachment_ids = attachment_ids if attachment_ids else []
+            attachment_ids = await self._direct_attachment_ids(record_id, transaction)
 
             # Delete all attachments first
             for attachment_id in attachment_ids:
@@ -14972,20 +14986,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             mail_record = await self.get_document(record_id, CollectionNames.MAILS.value)
             file_record = await self.get_document(record_id, CollectionNames.FILES.value) if record.get("recordType") == "FILE" else None
 
-            # Get attachments (child records with ATTACHMENT relation)
-            attachments_query = f"""
-            FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
-                FILTER edge._from == @record_from
-                    AND edge.relationshipType == 'ATTACHMENT'
-                RETURN PARSE_IDENTIFIER(edge._to).key
-            """
-
-            attachment_ids = await self.http_client.execute_aql(
-                attachments_query,
-                bind_vars={"record_from": f"records/{record_id}"},
-                txn_id=transaction
-            )
-            attachment_ids = attachment_ids if attachment_ids else []
+            attachment_ids = await self._direct_attachment_ids(record_id, transaction)
 
             # Delete all attachments first
             for attachment_id in attachment_ids:

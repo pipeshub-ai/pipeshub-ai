@@ -7765,12 +7765,14 @@ class Neo4jProvider(IGraphDBProvider):
 
             if soft_delete:
                 deleter = await self.get_user_by_user_id(user_id)
+                # The record alone: the hard delete below removes only this vertex.
                 result = await self.soft_delete_records(
                     [record_id],
                     record.get("connectorId") or "",
                     delete_source=DeleteSource.USER.value,
                     batch_id=str(uuid.uuid4()),
                     deleted_by_user_id=(deleter or {}).get("id") or (deleter or {}).get("_key"),
+                    follow=(),
                     transaction=transaction,
                 )
                 return soft_delete_request_result(record_id, record, result)
