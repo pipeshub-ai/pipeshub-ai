@@ -4141,6 +4141,57 @@ class TestDeleteRecordsRecursive:
         assert result["success"] is True
         assert result["eventData"] is None
 
+    def _folder_scoped(self, connected_provider, live_keys) -> None:
+        """Inventory sees sub and s1; the committed tree re-read outside the txn holds *live_keys*."""
+        inventory = [{
+            "valid_root_keys": ["sub"],
+            "records_with_type": [
+                {"record": {"_key": "sub", "recordName": "sub"}, "type_target": None},
+                {"record": {"_key": "s1", "recordName": "s1"}, "type_target": None},
+            ],
+            "guard_edges": ["e1", "e2"],
+        }]
+
+        async def execute_query(query, bind_vars=None, transaction=None) -> list | None:
+            if "valid_root" in query:
+                return inventory
+            if "deleteGuard" in query:
+                return []
+            assert transaction is None, "the moved-in check must read the committed tree"
+            return live_keys
+
+        connected_provider._get_all_edge_collections = AsyncMock(return_value=["recordRelations"])
+        connected_provider.execute_query = AsyncMock(side_effect=execute_query)
+        connected_provider._delete_edges_by_node_ids = AsyncMock(return_value=(0, []))
+        connected_provider._delete_nodes_by_keys = AsyncMock(return_value=(2, 0))
+
+    async def test_folder_scoped_delete_stops_when_a_record_was_moved_in(self, connected_provider) -> None:
+        self._folder_scoped(connected_provider, ["sub", "s1", "moved_in"])
+        result = await connected_provider.delete_records_recursive(
+            ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
+        )
+        assert result["success"] is False
+        assert "moved into this folder" in result["reason"]
+        connected_provider._delete_edges_by_node_ids.assert_not_called()
+        connected_provider._delete_nodes_by_keys.assert_not_called()
+
+    async def test_folder_scoped_delete_proceeds_when_the_tree_is_unchanged(self, connected_provider) -> None:
+        self._folder_scoped(connected_provider, ["sub", "s1"])
+        result = await connected_provider.delete_records_recursive(
+            ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
+        )
+        assert result["success"] is True
+        assert {r["record_id"] for r in result["deleted_records"]} == {"sub", "s1"}
+        connected_provider._delete_nodes_by_keys.assert_called_once()
+
+    async def test_folder_scoped_delete_fails_when_the_recheck_cannot_read(self, connected_provider) -> None:
+        self._folder_scoped(connected_provider, None)
+        result = await connected_provider.delete_records_recursive(
+            ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
+        )
+        assert result["success"] is False
+        connected_provider._delete_nodes_by_keys.assert_not_called()
+
 
 # ===================================================================
 # delete_single_record  (lines 12095-12195)

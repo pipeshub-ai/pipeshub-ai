@@ -7,7 +7,9 @@ guarantees are pinned here, on both backends:
   through containment edges (PARENT_CHILD / ATTACHMENT). A record in a sibling
   folder is kept even when a RELATED or DERIVED_FROM edge links it to the folder's
   contents, and a record moved out of the folder is kept. The check runs in the
-  delete's own query, so there is no window between checking and deleting.
+  delete's own query, so there is no window between checking and deleting. A
+  record moved into the subtree mid-delete is never left under a deleted parent:
+  Neo4j deletes and reports it, ArangoDB stops the delete.
 * A cascade follows containment edges only. On ArangoDB it used to filter on the
   last edge of each path, so it walked through a RELATED edge and deleted the
   target's children.
@@ -270,3 +272,5 @@ async def test_what_is_reported_deleted_is_exactly_what_was_deleted(tree: _Tree)
     reported = {r["record_id"] for r in result.get("deleted_records", [])}
     gone = {tree.ids[n] for n in ("sub", "s1", "b1") if not await tree.exists(n)}
     assert reported == gone, f"reported deleted {reported}, actually gone {gone}"
+    if await tree.exists("b1"):
+        assert await tree.exists("sub"), f"b1 was moved into sub and kept, but sub was deleted: {result}"

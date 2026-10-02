@@ -12601,6 +12601,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 valid_root_keys = inventory.get("valid_root_keys", [])
                 records_with_type = inventory.get("records_with_type", [])
                 record_keys = [rt["record"]["_key"] for rt in records_with_type]
+                if within_folder_id and valid_root_keys:
+                    await self._abort_if_records_moved_in(valid_root_keys, record_keys, traversal_types)
                 type_targets = [rt["type_target"] for rt in records_with_type if rt.get("type_target")]
                 failed_records = [
                     {"record_id": rid, "reason": "Validation failed"}
@@ -12702,6 +12704,44 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to delete records recursively: {str(e)}")
             return {"success": False, "reason": str(e), "code": 500, "eventData": None}
+
+    async def _abort_if_records_moved_in(
+        self, root_keys: list[str], inventory_keys: list[str], traversal_types: str,
+    ) -> None:
+        """Raise when the committed subtree under *root_keys* holds records the inventory missed.
+
+        The edge lock catches a record moved out, but a record moved in arrives on a
+        new edge it cannot lock, and the transaction's snapshot never shows it. Left
+        alone it would survive under a deleted parent. This read runs outside the
+        transaction to see the committed tree, and before any delete, so a caller
+        that commits after a failed result has nothing half-deleted to commit.
+        """
+        live_keys = await self.execute_query(
+            """
+            FOR root_key IN @root_keys
+                FOR v, e, p IN 0..""" + str(CONTAINMENT_MAX_DEPTH) + """ OUTBOUND CONCAT(@records, "/", root_key) @@record_relations
+                    PRUNE e != null AND e.relationshipType NOT IN """ + traversal_types + """
+                    FILTER p.edges[*].relationshipType ALL IN """ + traversal_types + """
+                    RETURN DISTINCT v._key
+            """,
+            bind_vars={
+                "root_keys": root_keys,
+                "records": CollectionNames.RECORDS.value,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+            },
+        )
+        if live_keys is None:
+            raise RuntimeError("Could not re-read the folder before deleting from it")
+        moved_in = set(live_keys) - set(inventory_keys)
+        if moved_in:
+            self.logger.warning(
+                "Folder delete stopped: %d record(s) were moved into the folder while it was being deleted",
+                len(moved_in),
+            )
+            raise RuntimeError(
+                "Records were moved into this folder while it was being deleted, so nothing was deleted. "
+                "Try the delete again."
+            )
 
 
     async def delete_single_record(
