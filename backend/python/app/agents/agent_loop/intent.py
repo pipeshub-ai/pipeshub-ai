@@ -355,6 +355,7 @@ async def parse_intent_and_route(
 
     prior_messages = await build_prior_routing_messages(
         query_info, blob_store=blob_store, org_id=org_id, is_multimodal_llm=is_multimodal_llm,
+        user_id=user_id, graph_provider=graph_provider, is_service_account=is_service_account,
     )
 
     human_content: Any = f"user query : {user_query}"

@@ -36,6 +36,9 @@ class DedupDecision:
 
     virtual_record_id: str | None = None
     skip_indexing: bool = False
+    rebuild_shared_vrid: bool = False
+    """This record already holds a shared VRID whose stored content is gone;
+    re-index under that VRID so every record sharing it is repaired."""
 
 
 @dataclass(frozen=True)

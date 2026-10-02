@@ -796,6 +796,40 @@ class TestStoreInitialConfig:
         assert result["success"] is True
         config_service.set_config.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_new_oauth_app_is_created_with_the_connector_scope(self) -> None:
+        body = _base_body(
+            authType="OAUTH",
+            scope="team",
+            config={"auth": {"clientId": "cid", "clientSecret": "secret"}},
+        )
+        registry = _default_registry()
+        config_service = AsyncMock()
+        req = _mock_request(
+            body=body,
+            is_admin=True,
+            connector_registry=registry,
+            config_service=config_service,
+        )
+        gp = _default_graph_provider()
+
+        with _common_patches(), patch(
+            f"{_ROUTER}.resolve_config_service", return_value=config_service
+        ), patch(
+            f"{_ROUTER}._validate_admin_oauth_config_before_creation", new_callable=AsyncMock
+        ), patch(
+            f"{_ROUTER}._handle_oauth_config_creation",
+            new_callable=AsyncMock,
+            return_value="oauth-new",
+        ) as mock_handle, patch(
+            f"{_ROUTER}._prepare_connector_config",
+            new_callable=AsyncMock,
+            return_value={"auth": {"oauthConfigId": "oauth-new"}},
+        ):
+            await create_connector_instance(req, gp)
+
+        assert mock_handle.call_args.kwargs["connector_scope"] == "team"
+
 
 class TestSuccessResponse:
     """Lines 2490-2503: verify the shape of the success response."""

@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import quote
 
+import aiohttp
 import pytest
 
 from app.config.constants.arangodb import Connectors, OriginTypes, RecordRelations
@@ -586,13 +587,24 @@ class TestGenerateTextFragmentUrl:
         result = generate_text_fragment_url(url, snippet)
         assert result.startswith(f"https://example.com/page{TEXT_FRAGMENT_DIRECTIVE_PREFIX}")
 
-    def test_url_with_existing_hash_is_stripped(self):
+    def test_url_with_existing_hash_keeps_it(self):
+        """The directive is appended: a conforming browser still hands the page `#section1`."""
         url = "https://example.com/page#section1"
         snippet = "some text to search for and find in the page content here"
         result = generate_text_fragment_url(url, snippet)
-        # The old hash should be removed
-        assert "#section1" not in result
-        assert TEXT_FRAGMENT_DIRECTIVE_PREFIX in result
+        assert result.startswith("https://example.com/page#section1:~:text=")
+
+    def test_gmail_message_anchor_survives(self):
+        """Stripping `#all/<id>` left attachment citations pointing at the inbox."""
+        url = "https://mail.google.com/mail?authuser=a@b.com#all/m1"
+        result = generate_text_fragment_url(url, "Junior Process Engineer with experience")
+        assert result.startswith(f"{url}:~:text=")
+
+    def test_url_with_anchor_and_directive_is_left_alone(self):
+        """A second `:~:` would make the directive unparseable."""
+        url = "https://example.com/page#section1:~:text=already%20set"
+        result = generate_text_fragment_url(url, "chunk text that must not be appended")
+        assert result == url
 
     def test_no_alphanumeric_snippet_returns_base_url(self):
         url = "https://example.com/page"
@@ -2680,6 +2692,32 @@ class TestGetFlattenedResults:
         assert results[0]["block_type"] == BlockType.TEXT.value
 
     @pytest.mark.asyncio
+    async def test_one_unreadable_record_does_not_fail_the_rest(self):
+        """A storage 404 for one hit must drop that record, not the whole search."""
+        good = _make_record_blob()
+        good["block_containers"]["blocks"] = [_make_text_block(index=0, data="still here")]
+
+        async def fetch(virtual_record_id, **_kwargs):
+            if virtual_record_id == "vr-missing":
+                raise aiohttp.ClientError("Failed to retrieve record from storage")
+            return good
+
+        blob_store = self._make_blob_store()
+        blob_store.get_record_from_storage = AsyncMock(side_effect=fetch)
+        vr_map: dict = {}
+        result_set = [
+            {"content": "gone", "score": 0.9,
+             "metadata": {"virtualRecordId": "vr-missing", "blockIndex": 0, "isBlockGroup": False}},
+            {"content": "still here", "score": 0.8,
+             "metadata": {"virtualRecordId": "vr-ok", "blockIndex": 0, "isBlockGroup": False}},
+        ]
+
+        results = await get_flattened_results(result_set, blob_store, "org-1", False, vr_map)
+
+        assert vr_map["vr-missing"] is None
+        assert [r["virtual_record_id"] for r in results] == ["vr-ok"]
+
+    @pytest.mark.asyncio
     async def test_image_block_multimodal(self):
         img_block = _make_image_block(index=0, uri="data:image/png;base64,abc")
         record = _make_record_blob()
@@ -4460,13 +4498,12 @@ class TestGenerateTextFragmentUrlHash:
     """Cover hash-stripping branch in generate_text_fragment_url."""
 
     def test_url_with_existing_hash(self):
-        """Line 1652-1653: URL with existing hash is stripped."""
+        """The existing anchor is preserved and the directive appended after it."""
         url = generate_text_fragment_url(
             "https://example.com/page#section",
             "Some important text content here with multiple words"
         )
-        assert "#section" not in url
-        assert "#:~:text=" in url
+        assert url.startswith("https://example.com/page#section:~:text=")
 
     def test_empty_snippet_after_strip(self):
         """Lines 1639-1640: Whitespace-only snippet returns base_url."""
