@@ -54,16 +54,6 @@ def _mock_os_getenv(data_store="arangodb"):
     return _getenv
 
 
-def _patch_kb_entities_processor():
-    mock_proc = MagicMock()
-    mock_proc.initialize = AsyncMock()
-    return patch(
-        "app.connectors_main.DataSourceEntitiesProcessor",
-        return_value=mock_proc,
-        create=True,
-    )
-
-
 # ---------------------------------------------------------------------------
 # get_initialized_container
 # ---------------------------------------------------------------------------
@@ -723,7 +713,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock) as mock_shutdown,
             patch("os.getenv", side_effect=_mock_os_getenv("arangodb")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -765,7 +754,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -805,7 +793,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -844,7 +831,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, side_effect=RuntimeError("kafka fail")),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -880,7 +866,6 @@ class TestLifespan:
             patch("app.connectors_main.startup_service.initialize", new_callable=AsyncMock),
             patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock, side_effect=RuntimeError("producer fail")),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -920,7 +905,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -959,7 +943,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock, side_effect=RuntimeError("shutdown fail")),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),

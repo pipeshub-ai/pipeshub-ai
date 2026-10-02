@@ -1902,6 +1902,67 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_record_path(
+        self,
+        record_id: str,
+        transaction: str | None = None
+    ) -> str | None:
+        pass
+
+    @abstractmethod
+    async def get_record_path_segments(
+        self,
+        record_id: str,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[str]:
+        """Return individual record names from root ancestor to the given record.
+
+        Unlike ``get_record_path`` (which joins names with ``/``), this
+        returns each name as a separate list element so names that
+        themselves contain ``/`` are preserved correctly. The chain is chosen
+        by ``select_canonical_chain_names`` so every backend returns the same one.
+
+        Returns an empty list when the record is not found. On a query failure
+        returns an empty list, or raises when *raise_on_error* — callers that
+        build storage paths must not mistake a failure for "no ancestors".
+        """
+        pass
+
+    @abstractmethod
+    async def get_descendant_virtual_record_ids(
+        self,
+        record_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return the distinct virtualRecordIds of every record below *record_id*
+        along the canonical parent chain used by ``get_record_path_segments`` —
+        i.e. the content stored under this record's storage path.
+
+        Raises on a query failure: an empty list means "owns no content", which
+        a storage move acts on.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_group_path(
+        self,
+        record_group_id: str,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[str]:
+        """Return record group names from root ancestor to the given group (inclusive).
+
+        Walks BELONGS_TO edges from the group through parent record groups;
+        with several parents the chain is chosen by ``select_canonical_chain_names``.
+        Returns an empty list when the group is not found. On a query failure
+        returns an empty list, or raises when *raise_on_error*.
+        """
+        pass
+
+    @abstractmethod
     async def get_file_record_by_id(
         self,
         record_id: str,
@@ -2360,6 +2421,25 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_folder_depth(
+        self,
+        folder_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Nesting depth of a folder through PARENT_CHILD edges (1 = no parent folder)."""
+        pass
+
+    @abstractmethod
+    async def get_folder_subtree_height(
+        self,
+        folder_id: str,
+        folder_mime_types: list[str],
+        transaction: str | None = None,
+    ) -> int:
+        """Levels of sub-folders below a folder through PARENT_CHILD edges (0 = none)."""
+        pass
+
+    @abstractmethod
     async def delete_parent_child_edge_to_record(
         self,
         record_id: str,
@@ -2555,6 +2635,137 @@ class IGraphDBProvider(ABC):
 
         Returns:
             None
+        """
+        pass
+
+    @abstractmethod
+    async def get_person_by_email(
+        self,
+        email: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> Optional['Person']:
+        """
+        Get a person by (org_id, email) — Person's business key, same as User's.
+
+        Args:
+            email (str): Email address; matched case-insensitively
+            org_id (str): Owning org; required, same as any other org-scoped lookup
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Optional[Person]: The person, or None
+        """
+        pass
+
+    @abstractmethod
+    async def upsert_person_by_email(
+        self,
+        person: Person,
+        transaction: str | None = None,
+    ) -> str | None:
+        """
+        Upsert a Person keyed on (org_id, email), returning the id of the surviving node.
+
+        Callers must use the returned id rather than ``person.id``: on a match the
+        existing node wins and its id is what every edge must point at. Never updates
+        an existing node, so a caller that knows only an email cannot blank names or
+        phone numbers written by a richer source.
+
+        Args:
+            person (Person): The person to insert if no match exists; carries its own
+                org_id
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Optional[str]: Surviving person id, or None on failure
+        """
+        pass
+
+    @abstractmethod
+    async def ensure_app_membership(
+        self,
+        principal_id: str,
+        principal_collection: str,
+        connector_id: str,
+        *,
+        is_external: bool,
+        source_user_id: str | None = None,
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Ensure a principal (user or person) has a membership edge to an app.
+
+        Create-only: an existing edge is left untouched, so this can never downgrade a
+        real member to an external collaborator.
+
+        Args:
+            principal_id (str): User or person key
+            principal_collection (str): CollectionNames.USERS or CollectionNames.PEOPLE
+            connector_id (str): Target app id
+            is_external (bool): True when the principal reached this app only through a
+                share rather than app membership
+            source_user_id (Optional[str]): Source-system user id, when known
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            None
+        """
+        pass
+
+    @abstractmethod
+    async def migrate_person_to_user(
+        self,
+        email: str,
+        user_key: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> str | None:
+        """
+        Promote a Person to a User by moving its collaborator edges onto that User.
+
+        A Person carrying any CRM edge (lead/contact/memberOf) splits rather than merges:
+        the collaborator edges move but the Person node survives holding its CRM edges,
+        because a Salesforce contact is a separate thing from a platform identity that
+        happens to share an address. A Person with no CRM edge is deleted once emptied.
+
+        Must be idempotent: a second run finds nothing left to move.
+
+        Args:
+            email (str): Email identifying the Person; matched against the normalised form
+            user_key (str): Key of the already-existing User to move the edges onto
+            org_id (str): Owning org of the Person being migrated; required, same as
+                get_person_by_email
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Optional[str]: PersonMigrationMode.MIGRATED or .SPLIT, or None when no Person
+                exists for the email - the ordinary case, not an error.
+        """
+        pass
+
+    @abstractmethod
+    async def reap_stale_external_app_relations(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """
+        Drop `isExternalUser` membership edges whose underlying grant is gone, plus any
+        Person the removal left with no edges at all.
+
+        The "still has a grant" test must mirror the candidate collection used by browse
+        hoisting, including the group/role/team hop - otherwise this reaps collaborators
+        whose access is real and their records vanish from the tree.
+
+        Only flagged edges are considered, so a real app member is never at risk.
+
+        Args:
+            connector_id (str): App whose membership edges to sweep
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            int: Number of orphaned Person nodes removed
         """
         pass
 
@@ -2983,6 +3194,26 @@ class IGraphDBProvider(ABC):
             transaction (Optional[Any]): Optional transaction context
         """
         pass
+
+    async def get_virtual_record_ids_shared_outside_connector(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """VRIDs of this connector's records that a live record elsewhere also holds.
+
+        Deduplicated content is stored once, under whichever connector indexed
+        it first, and every other record with that VRID reads the same storage
+        documents. Before a connector's storage is deleted, these are the VRIDs
+        whose documents must survive.
+
+        Same liveness rule as ``get_records_by_virtual_record_id``: soft-deleted
+        records do not count, and the lookup is not scoped by connector type.
+
+        Raises on failure rather than returning an empty list — an empty answer
+        tells the caller it may delete shared storage.
+        """
+        raise NotImplementedError
 
     @abstractmethod
     async def get_records_by_virtual_record_id(
@@ -4040,6 +4271,7 @@ class IGraphDBProvider(ABC):
         org_id: str | None = None,
         user_id: str | None = None,
         transaction: str | None = None,
+        exclude_connector_id: str | None = None,
     ) -> bool:
         """
         Check if a connector instance name already exists for the given scope.
@@ -4051,6 +4283,7 @@ class IGraphDBProvider(ABC):
             org_id: Organization ID (required for team scope)
             user_id: User ID (required for personal scope)
             transaction: Optional transaction ID
+            exclude_connector_id: Connector being renamed; never counts as a clash with itself
 
         Returns:
             bool: True if name exists, False if available
@@ -4522,17 +4755,25 @@ class IGraphDBProvider(ABC):
     async def get_knowledge_hub_breadcrumbs(
         self,
         node_id: str,
+        user_key: str,
+        org_id: str,
         transaction: str | None = None
     ) -> list[dict[str, Any]]:
         """
-        Get breadcrumb trail for a node.
+        Get breadcrumb trail for a node, filtered to what the caller can see.
+
+        Ancestors without a permission role are omitted and the walk continues past
+        them, so a node renders under its nearest visible ancestor -- matching where
+        browse shows it. Returns [] when the node itself is not visible.
 
         Args:
             node_id: Node ID to get breadcrumbs for
+            user_key: Graph user key; required, not optional
+            org_id: Organization ID for org scoping
             transaction: Optional transaction context
 
         Returns:
-            List of breadcrumb items from root to current node
+            List of visible breadcrumb items from root to current node
         """
         pass
 
