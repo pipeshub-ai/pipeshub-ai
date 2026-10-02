@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-import app.edition_config  # noqa: F401  (must load before the route modules)
+from app import edition_config  # must load before the route modules
 from app.api.routes import health
 
 
@@ -21,7 +21,7 @@ def _request() -> MagicMock:
 
 async def _gate(is_admin: bool) -> AsyncMock:
     check = AsyncMock(return_value=is_admin)
-    with patch("app.edition_config.check_user_is_admin", new=check):
+    with patch.object(edition_config, "check_user_is_admin", new=check):
         await health.require_admin_caller(_request())
     return check
 
@@ -42,7 +42,7 @@ class TestRequireAdminCaller:
         request = _request()
         request.state.user = None
 
-        with patch("app.edition_config.check_user_is_admin", new=AsyncMock(return_value=False)):
+        with patch.object(edition_config, "check_user_is_admin", new=AsyncMock(return_value=False)):
             with pytest.raises(HTTPException) as exc:
                 await health.require_admin_caller(request)
 
