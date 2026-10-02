@@ -13175,55 +13175,8 @@ class Neo4jProvider(IGraphDBProvider):
                 folder_match = " AND folder.id = $folder_id"
                 params["folder_id"] = folder_id
 
-            # Main query - get all records from folders AND KB root
-            # Uses UNION to combine folder-based records and root-level records
-            main_query = f"""
-            // Part 1: Records in folders
-            MATCH (kb:App {{id: $kb_id, type: "KB"}})
-            MATCH (folder:Record)-[:BELONGS_TO]->(kb)
-            WHERE folder.mimeType = "application/vnd.folder"{folder_match}
-            MATCH (folder)-[rel:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(record:Record)
-            WHERE record.isDeleted <> true
-            AND record.orgId = $org_id
-            AND NOT record.mimeType = "application/vnd.folder"
-            {record_filter}
-            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
-
-            WITH folder, record, file, $user_permission AS user_permission, $kb_id AS kb_id
-
-            RETURN {{
-                id: record.id,
-                externalRecordId: record.externalRecordId,
-                externalRevisionId: record.externalRevisionId,
-                recordName: record.recordName,
-                recordType: record.recordType,
-                origin: record.origin,
-                connectorName: COALESCE(record.connectorName, "KNOWLEDGE_BASE"),
-                indexingStatus: record.indexingStatus,
-                createdAtTimestamp: record.createdAtTimestamp,
-                updatedAtTimestamp: record.updatedAtTimestamp,
-                sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
-                sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp,
-                orgId: record.orgId,
-                version: record.version,
-                isDeleted: record.isDeleted,
-                deletedByUserId: record.deletedByUserId,
-                isLatestVersion: COALESCE(record.isLatestVersion, true),
-                webUrl: record.webUrl,
-                fileRecord: CASE WHEN file IS NOT NULL THEN {{
-                    id: file.id,
-                    name: file.name,
-                    extension: file.extension,
-                    mimeType: file.mimeType,
-                    sizeInBytes: file.sizeInBytes,
-                    isFile: file.isFile,
-                    webUrl: file.webUrl
-                }} ELSE null END,
-                permission: {{role: user_permission, type: "USER"}},
-                kb_id: kb_id,
-                folder: {{id: folder.id, name: folder.recordName}}
-            }} AS result
-
+            # A folder filter lists that folder's children only, so the KB-root arm runs without one.
+            root_arm = "" if folder_id else f"""
             UNION
 
             // Part 2: Records at KB root (no parent folder)
@@ -13273,41 +13226,76 @@ class Neo4jProvider(IGraphDBProvider):
                 folder: null
             }} AS result
 
+            """
+            records_union = f"""
+            // Part 1: Records in folders
+            MATCH (kb:App {{id: $kb_id, type: "KB"}})
+            MATCH (folder:Record)-[:BELONGS_TO]->(kb)
+            WHERE folder.mimeType = "application/vnd.folder"{folder_match}
+            MATCH (folder)-[rel:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(record:Record)
+            WHERE record.isDeleted <> true
+            AND record.orgId = $org_id
+            AND NOT record.mimeType = "application/vnd.folder"
+            {record_filter}
+            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
+
+            WITH folder, record, file, $user_permission AS user_permission, $kb_id AS kb_id
+
+            RETURN {{
+                id: record.id,
+                externalRecordId: record.externalRecordId,
+                externalRevisionId: record.externalRevisionId,
+                recordName: record.recordName,
+                recordType: record.recordType,
+                origin: record.origin,
+                connectorName: COALESCE(record.connectorName, "KNOWLEDGE_BASE"),
+                indexingStatus: record.indexingStatus,
+                createdAtTimestamp: record.createdAtTimestamp,
+                updatedAtTimestamp: record.updatedAtTimestamp,
+                sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
+                sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp,
+                orgId: record.orgId,
+                version: record.version,
+                isDeleted: record.isDeleted,
+                deletedByUserId: record.deletedByUserId,
+                isLatestVersion: COALESCE(record.isLatestVersion, true),
+                webUrl: record.webUrl,
+                fileRecord: CASE WHEN file IS NOT NULL THEN {{
+                    id: file.id,
+                    name: file.name,
+                    extension: file.extension,
+                    mimeType: file.mimeType,
+                    sizeInBytes: file.sizeInBytes,
+                    isFile: file.isFile,
+                    webUrl: file.webUrl
+                }} ELSE null END,
+                permission: {{role: user_permission, type: "USER"}},
+                kb_id: kb_id,
+                folder: {{id: folder.id, name: folder.recordName}}
+            }} AS result
+
+            {root_arm}
+            """
+            main_query = f"""
+            CALL {{
+            {records_union}
+            }}
+            WITH result
             ORDER BY result.{sort_by} {sort_order.upper()}
             SKIP $skip
             LIMIT $limit
+            RETURN result
             """
 
             results = await self.client.execute_query(main_query, parameters=params, txn_id=transaction)
             records = [r["result"] for r in results if r.get("result")]
 
-            # Count query - includes both folder-based and root-level records
-            count_params = {k: v for k, v in params.items() if k not in ["skip", "limit", "user_permission"]}
+            count_params = {k: v for k, v in params.items() if k not in ["skip", "limit"]}
             count_query = f"""
-            // Count records in folders
-            MATCH (kb:App {{id: $kb_id, type: "KB"}})
-            OPTIONAL MATCH (folder:Record)-[:BELONGS_TO]->(kb)
-            WHERE folder.mimeType = "application/vnd.folder"{folder_match}
-            OPTIONAL MATCH (folder)-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(folderRecord:Record)
-            WHERE folderRecord.isDeleted <> true
-            AND folderRecord.orgId = $org_id
-            AND NOT folderRecord.mimeType = "application/vnd.folder"
-            {record_filter.replace('record.', 'folderRecord.')}
-
-            // Count records at KB root
-            OPTIONAL MATCH (rootRecord:Record)-[:BELONGS_TO]->(kb)
-            WHERE rootRecord.isDeleted <> true
-            AND rootRecord.orgId = $org_id
-            AND NOT rootRecord.mimeType = "application/vnd.folder"
-            AND NOT EXISTS {{
-                MATCH (parentFolder:Record)-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(rootRecord)
+            CALL {{
+            {records_union}
             }}
-            {record_filter.replace('record.', 'rootRecord.')}
-
-            WITH collect(DISTINCT folderRecord) + collect(DISTINCT rootRecord) AS allRecords
-            UNWIND allRecords AS record
-            WITH DISTINCT record WHERE record IS NOT NULL
-            RETURN count(record) AS total
+            RETURN count(result) AS total
             """
 
             count_results = await self.client.execute_query(count_query, parameters=count_params, txn_id=transaction)

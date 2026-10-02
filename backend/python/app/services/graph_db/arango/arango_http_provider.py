@@ -14198,6 +14198,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 filter_bind["folder_id"] = folder_id
             sort_field = sort_by if sort_by in ("recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus") else "recordName"
             sort_direction = "DESC" if (sort_order or "").lower() == "desc" else "ASC"
+            # A folder filter lists that folder's children only, so the KB-root arm runs without one.
+            root_records = "[]" if folder_id else f"""(
+                FOR belongsEdge IN @@belongs_to_kb
+                    FILTER belongsEdge._to == kb._id
+                    LET record = DOCUMENT(belongsEdge._from)
+                    FILTER record != null
+                    FILTER record.isDeleted != true
+                    FILTER record.orgId == @org_id
+                    FILTER record.mimeType != "application/vnd.folder"
+                    FILTER LENGTH(FOR parentEdge IN @@record_relations FILTER parentEdge._to == record._id AND parentEdge.relationshipType == "PARENT_CHILD" LIMIT 1 RETURN 1) == 0
+                    {record_filter}
+                    RETURN {{ record: record, folder_id: null, folder_name: null, permission: {{ role: @user_permission, type: "USER" }}, kb_id: @kb_id }}
+            )"""
             main_query = f"""
             LET kb = DOCUMENT("apps", @kb_id)
             FILTER kb != null AND kb.type == "KB"
@@ -14211,7 +14224,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN {{ folder: folder_record, folder_id: folder_record._key, folder_name: folder_record.recordName }}
             )
             LET folder_ids = kbFolders[*].folder._id
-            LET all_records_data = (
+            LET folder_records = (
                 FOR relEdge IN @@record_relations
                     FILTER relEdge._from IN folder_ids
                     FILTER relEdge.relationshipType == "PARENT_CHILD"
@@ -14219,11 +14232,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER record != null
                     FILTER record.isDeleted != true
                     FILTER record.orgId == @org_id
-                    FILTER record.isFile != false
+                    FILTER record.mimeType != "application/vnd.folder"
                     {record_filter}
                     LET folder_info = FIRST(FOR f IN kbFolders FILTER f.folder._id == relEdge._from RETURN f)
                     RETURN {{ record: record, folder_id: folder_info.folder_id, folder_name: folder_info.folder_name, permission: {{ role: @user_permission, type: "USER" }}, kb_id: @kb_id }}
             )
+            LET all_records_data = APPEND(folder_records, {root_records})
             LET record_ids = all_records_data[*].record._id
             LET all_files = (FOR fileEdge IN @@is_of_type FILTER fileEdge._from IN record_ids LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ record_id: fileEdge._from, file: {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }} }})
             LET page = (
@@ -14232,7 +14246,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 LET fileRecord = FIRST(FOR f IN all_files FILTER f.record_id == record._id RETURN f.file)
                 SORT record.{sort_field} {sort_direction}
                 LIMIT @skip, @limit
-                RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb_id: item.kb_id, folder: {{ id: item.folder_id, name: item.folder_name }} }}
+                RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb_id: item.kb_id, folder: item.folder_id != null ? {{ id: item.folder_id, name: item.folder_name }} : null }}
             )
             RETURN {{ records: page, total: LENGTH(all_records_data) }}
             """

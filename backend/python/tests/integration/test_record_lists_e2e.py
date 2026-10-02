@@ -298,13 +298,18 @@ async def test_all_records_paginates_and_filters(world: _World) -> None:
 async def test_kb_records_lists_the_folder_contents(world: _World) -> None:
     g = world.graph
     records, total, available = await g.list_kb_records(**_kb_args(world))
-    got = {r["id"] for r in records}
-    assert world.ids["kb_file"] in got
+    assert sorted(r["id"] for r in records) == sorted([world.ids["kb_root"], world.ids["kb_file"]])
     assert total == len(records)
     assert world.ids["kb_folder"] in {f["id"] for f in available["folders"]}
+    assert {r["id"]: r["folder"] for r in records}[world.ids["kb_root"]] is None
+
+    first, first_total, _ = await g.list_kb_records(**_kb_args(world, limit=1))
+    second, _, _ = await g.list_kb_records(**_kb_args(world, skip=1, limit=1))
+    assert len(first) == 1 and len(second) == 1 and first_total == total
+    assert [r["id"] for r in first + second] == [r["id"] for r in records]
 
     in_folder, folder_total, _ = await g.list_kb_records(**_kb_args(world, folder_id=world.ids["kb_folder"]))
-    assert world.ids["kb_file"] in {r["id"] for r in in_folder}
+    assert [r["id"] for r in in_folder] == [world.ids["kb_file"]]
     assert folder_total == len(in_folder)
 
     found, found_total, _ = await g.list_kb_records(**_kb_args(world, search="kb_file"))
