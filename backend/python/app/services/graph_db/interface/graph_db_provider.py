@@ -4135,7 +4135,7 @@ class IGraphDBProvider(ABC):
         ``("ATTACHMENT",)`` to leave PARENT_CHILD children alone, ``()`` for the
         roots only. A descendant already in the trash keeps its own batch.
 
-        Returns ``success``, ``soft_deleted_records`` ({record_id, name}),
+        Returns ``success``, ``soft_deleted_records`` ({record_id, name, virtual_record_id}),
         ``failed_records`` (roots that were missing, trashed or out of scope),
         ``total_requested``, ``successfully_deleted`` (roots),
         ``failed_count``, ``virtual_record_ids`` (distinct, for vector cleanup),

@@ -979,6 +979,24 @@ class TestDeleteFolder:
         assert result["vectorCleanupFailedRecordIds"] == ["f1"]
 
     @pytest.mark.asyncio
+    async def test_a_pending_cleanup_without_record_ids_is_still_a_success(self, service) -> None:
+        """The folder is gone once the cascade returns; a missing id list must not turn that into a 500."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.processor_for_kb.return_value.on_records_deleted_cascade = AsyncMock(return_value={
+            "success": True,
+            "softDeleted": True,
+            "vectorCleanupPending": True,
+            "vectorCleanupFailedVirtualRecordIds": ["v1"],
+        })
+
+        result = await service.delete_folder("kb1", "f1", "user1")
+        assert result["success"] is True and result["code"] == 200
+        assert result["vectorCleanupPending"] is True
+        assert result["vectorCleanupFailedRecordIds"] == []
+
+    @pytest.mark.asyncio
     async def test_cascade_failure_is_not_reported_as_success(self, service):
         """If the recursive delete itself failed (not just the cleanup-event
         publish), delete_folder must not paper over it with a hardcoded

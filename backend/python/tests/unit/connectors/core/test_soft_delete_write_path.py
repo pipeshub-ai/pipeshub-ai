@@ -51,7 +51,7 @@ def _with_store(proc: DataSourceEntitiesProcessor, store: MagicMock) -> MagicMoc
 def _soft_result(marked: list[tuple[str, str | None]], batch_id: str = "b-1") -> dict:
     return {
         "success": True,
-        "soft_deleted_records": [{"record_id": rid, "name": rid} for rid, _ in marked],
+        "soft_deleted_records": [{"record_id": rid, "name": rid, "virtual_record_id": v} for rid, v in marked],
         "failed_records": [],
         "total_requested": 1,
         "successfully_deleted": 1,
@@ -187,6 +187,15 @@ class TestFlagOn:
             result = await proc.on_records_deleted_cascade(["r1"], "c1")
         assert result["vectorCleanupPending"] is True
         assert result["vectorCleanupFailedVirtualRecordIds"] == ["v1"]
+
+    async def test_an_unpublished_cleanup_names_the_records_like_the_hard_path(self) -> None:
+        """KB folder delete reads vectorCleanupFailedRecordIds; the soft path must set it too."""
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([("r1", "v1"), ("r2", "v2"), ("r3", None)]))
+        with flag(True), patch.object(proc, "_publish_soft_delete_events", AsyncMock(return_value=["v2"])):
+            result = await proc.on_records_deleted_cascade(["r1"], "c1")
+        assert result["vectorCleanupFailedRecordIds"] == ["r2"]
 
     async def test_a_failed_mark_raises(self) -> None:
         """Nothing was marked, so nothing may be reported as deleted."""

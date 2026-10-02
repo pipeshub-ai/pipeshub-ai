@@ -217,7 +217,10 @@ def soft_delete_result(
     org_ids = {m.get("orgId") for m in marked if m.get("orgId")}
     return {
         "success": True,
-        "soft_deleted_records": [{"record_id": m["id"], "name": m.get("name") or "Unknown"} for m in marked],
+        "soft_deleted_records": [
+            {"record_id": m["id"], "name": m.get("name") or "Unknown", "virtual_record_id": m.get("vrid")}
+            for m in marked
+        ],
         "failed_records": failed,
         "total_requested": len(requested),
         "successfully_deleted": len(roots),

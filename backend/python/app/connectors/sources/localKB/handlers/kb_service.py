@@ -1228,7 +1228,7 @@ class KnowledgeBaseService:
                 # failed after retries. Report the deletion as what it is
                 # (successful) while flagging that embeddings need reconciliation.
                 response["vectorCleanupPending"] = True
-                response["vectorCleanupFailedRecordIds"] = cascade_result["vectorCleanupFailedRecordIds"]
+                response["vectorCleanupFailedRecordIds"] = cascade_result.get("vectorCleanupFailedRecordIds", [])
             return response
 
         except Exception as e:

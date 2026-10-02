@@ -2421,7 +2421,12 @@ class DataSourceEntitiesProcessor:
             delete_source=DeleteSource(delete_source).value,
         )
         if unpublished:
+            # The hard path's key, so callers read one shape whichever path ran.
+            failed = set(unpublished)
             result["vectorCleanupPending"] = True
+            result["vectorCleanupFailedRecordIds"] = [
+                r["record_id"] for r in result["deleted_records"] if r.get("virtual_record_id") in failed
+            ]
             result["vectorCleanupFailedVirtualRecordIds"] = unpublished
         return result
 
