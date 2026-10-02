@@ -944,14 +944,20 @@ export class UserAccountController {
 
     try {
       // Mongoose builds indexes in the background; without the unique index
-      // both inserts would succeed, so a link could be used twice. Cached
-      // after the first call.
+      // both inserts would succeed, so a link could be used twice.
       await UsedPasswordResetLink.init();
-    } catch (error) {
-      this.logger.error('The used reset link index could not be built', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw new ServiceUnavailableError(RESET_LINK_NOT_CHECKED);
+    } catch (initError) {
+      // init() keeps its first rejection for the life of the process, so a
+      // failed build is retried here rather than refusing every later reset.
+      try {
+        await UsedPasswordResetLink.ensureIndexes();
+      } catch (error) {
+        this.logger.error('The used reset link index could not be built', {
+          error: error instanceof Error ? error.message : String(error),
+          firstError: initError instanceof Error ? initError.message : String(initError),
+        });
+        throw new ServiceUnavailableError(RESET_LINK_NOT_CHECKED);
+      }
     }
 
     try {

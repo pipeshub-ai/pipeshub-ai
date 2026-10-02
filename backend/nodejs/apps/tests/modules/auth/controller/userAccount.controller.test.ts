@@ -2427,6 +2427,7 @@ describe('UserAccountController', () => {
 
     it('refuses the reset, changing nothing, when the one-use index cannot be built', async () => {
       sinon.stub(UsedPasswordResetLink, 'init').rejects(new Error('index options conflict'));
+      sinon.stub(UsedPasswordResetLink, 'ensureIndexes').rejects(new Error('index options conflict'));
       const create = sinon.stub(UsedPasswordResetLink, 'create').resolves({} as any);
 
       await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
@@ -2437,6 +2438,18 @@ describe('UserAccountController', () => {
       expect(create.called).to.be.false;
       expect(mockIamService.getUserById.called).to.be.false;
       expect((UserActivities.create as sinon.SinonStub).called).to.be.false;
+    });
+
+    it('builds the one-use index again after an earlier build failed', async () => {
+      const used = fakeUsedResetLinks();
+      (UsedPasswordResetLink.init as sinon.SinonStub).rejects(new Error('mongo was briefly down'));
+      const rebuild = sinon.stub(UsedPasswordResetLink, 'ensureIndexes').resolves();
+
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+
+      expect(rebuild.calledOnce).to.be.true;
+      expect(next.called).to.be.false;
+      expect(used.size).to.equal(1);
     });
 
     it('refuses a link that was already used', async () => {
