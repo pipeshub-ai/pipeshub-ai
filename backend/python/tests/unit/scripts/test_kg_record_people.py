@@ -35,6 +35,7 @@ def _graph(pages: list[list[str]], failing: frozenset[str] = frozenset()) -> Mag
     graph.get_typed_records_batch = AsyncMock(side_effect=_records)
     graph.get_user_by_email = AsyncMock(side_effect=lambda email: SimpleNamespace(id=email.split("@")[0]))
     graph.get_user_by_source_id = AsyncMock(return_value=None)
+    graph.update_node = AsyncMock(return_value=True)
     return graph
 
 
@@ -49,6 +50,7 @@ async def test_a_dry_run_counts_edges_and_writes_nothing() -> None:
     assert code == 0
     assert _lines(out)[-1]["total"] == {"records": 2, "edges": 4, "skipped": 0, "failed_pages": 0}
     data_store.execute_idempotent_in_transaction.assert_not_awaited()
+    graph.update_node.assert_not_awaited()
 
 
 async def test_apply_writes_each_page_in_one_retried_transaction() -> None:
@@ -70,6 +72,33 @@ async def test_apply_writes_each_page_in_one_retried_transaction() -> None:
     pages = [c.kwargs["after_key"] for c in graph.page_record_ids_by_type.await_args_list]
     assert pages == [None, "m1", "m2"]
     assert graph.page_record_ids_by_type.await_args.args[1] == LINKED_TYPES
+
+
+async def test_apply_has_the_entity_index_project_the_orgs_people_again() -> None:
+    """The org pass may have run before the backfill; without a re-run the
+    people it linked would wait for their records to be re-indexed."""
+    from app.modules.indexing.entity_index_rebuild import EntityIndexState
+
+    graph, data_store = _graph([["m1"]]), MagicMock()
+    tx_store = MagicMock(
+        get_user_by_email=graph.get_user_by_email, get_user_by_source_id=graph.get_user_by_source_id,
+        delete_edges_from=AsyncMock(), batch_create_entity_relations=AsyncMock(),
+    )
+
+    async def _run(fn: object) -> int:
+        return await fn(tx_store)
+
+    data_store.execute_idempotent_in_transaction = AsyncMock(side_effect=_run)
+    await backfill(graph, data_store, "org-1", apply=True, logger=logging.getLogger("t"), out=io.StringIO())
+    graph.update_node.assert_awaited_once_with(
+        "org-1", "organizations", {EntityIndexState.STATE: None, EntityIndexState.TARGET: None},
+    )
+
+    graph, out = _graph([["m1"]]), io.StringIO()
+    graph.update_node = AsyncMock(side_effect=RuntimeError("document not found"))
+    code = await backfill(graph, data_store, "org-1", apply=True, logger=logging.getLogger("t"), out=out)
+    assert code == 1
+    assert _lines(out)[-1]["entity_index_rerun"] is False
 
 
 async def test_a_failed_page_is_reported_and_the_run_carries_on() -> None:

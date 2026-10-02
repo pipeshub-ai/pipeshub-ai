@@ -301,6 +301,23 @@ class TestSyncRecordGroupEntity:
         orch.graph_provider.get_record_people.assert_awaited_once_with("rec-001", "org-1")
 
     @pytest.mark.asyncio
+    async def test_a_person_is_named_as_the_rebuild_names_them(self) -> None:
+        """Blank names fall back to the email, and a member with neither gets
+        no point (the rebuild skips them too), never their id."""
+        orch = self._make_orchestrator_with_evs()
+        orch.graph_provider.get_record_people = AsyncMock(return_value=[
+            {"id": "u-ann", "name": " ", "email": "ann@acme.com"},
+            {"id": "u-nobody", "name": "", "email": None},
+        ])
+        ctx = self._make_ctx_with_group(record_group_id="rg-1")
+
+        await orch._sync_record_identity_entities(ctx)
+
+        calls = orch.entity_vector_store.upsert_entities_batch.await_args_list
+        people = next(c for c in calls if c.args[0][0].entity_type == EntityType.PERSON)
+        assert [(e.entity_id, e.name) for e in people.args[0]] == [("u-ann", "ann@acme.com")]
+
+    @pytest.mark.asyncio
     async def test_a_failed_people_lookup_still_writes_the_title(self) -> None:
         orch = self._make_orchestrator_with_evs(group_doc={"groupName": "Engineering"})
         orch.graph_provider.get_record_people = AsyncMock(side_effect=RuntimeError("down"))
@@ -481,6 +498,30 @@ class TestSyncEntitiesForDuplicate:
 
         orch.graph_provider.get_taxonomy_entities_for_record.assert_not_called()
         orch.entity_vector_store.upsert_entities_batch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_people_a_duplicate_names_get_points(self) -> None:
+        """A person named only on deduplicated records is still indexed; a
+        failed write keeps the reconcile pending so it is retried."""
+        store = AsyncMock()
+        store.upsert_entities_batch = AsyncMock(return_value=MagicMock(failed=0))
+        orch = self._make_orchestrator(entity_vector_store=store)
+        orch.graph_provider.get_record_people = AsyncMock(return_value=[
+            {"id": "u-ann", "name": "Ann Lee", "email": "ann@acme.com"},
+        ])
+
+        assert await orch.sync_entities_for_duplicate(self._RECORD_DOC) is True
+
+        orch.graph_provider.get_record_people.assert_awaited_once_with("rec-dup-1", "org-9")
+        people = next(
+            c for c in store.upsert_entities_batch.await_args_list
+            if c.args[0][0].entity_type == EntityType.PERSON
+        )
+        assert people.kwargs["merge_membership"] is True
+        assert (people.args[0][0].connector_ids, people.args[0][0].record_group_ids) == (["conn-b"], ["rg-2"])
+
+        store.upsert_entities_batch = AsyncMock(return_value=MagicMock(failed=1))
+        assert await orch.sync_entities_for_duplicate(self._RECORD_DOC) is False
 
     @pytest.mark.asyncio
     async def test_taxonomy_rows_carry_duplicates_membership(self):
