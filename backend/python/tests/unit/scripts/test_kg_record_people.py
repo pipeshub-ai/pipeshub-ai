@@ -47,7 +47,7 @@ async def test_a_dry_run_counts_edges_and_writes_nothing() -> None:
     data_store.execute_idempotent_in_transaction = AsyncMock()
     code = await backfill(graph, data_store, "org-1", apply=False, logger=logging.getLogger("t"), out=out)
     assert code == 0
-    assert _lines(out)[-1]["total"] == {"records": 2, "edges": 4, "failed_pages": 0}
+    assert _lines(out)[-1]["total"] == {"records": 2, "edges": 4, "skipped": 0, "failed_pages": 0}
     data_store.execute_idempotent_in_transaction.assert_not_awaited()
 
 
@@ -78,8 +78,21 @@ async def test_a_failed_page_is_reported_and_the_run_carries_on() -> None:
     lines = _lines(out)
     assert code == 1
     assert lines[0] == {"after": "m1", "error": "RuntimeError"}
-    assert lines[-1]["total"] == {"records": 1, "edges": 2, "failed_pages": 1}
+    assert lines[-1]["total"] == {"records": 1, "edges": 2, "skipped": 0, "failed_pages": 1}
 
 
 def test_apply_is_off_by_default() -> None:
     assert build_parser().parse_args(["backfill", "--org", "o"]).apply is False
+
+
+def test_every_type_stored_as_a_linked_record_is_backfilled() -> None:
+    """Salesforce CASE and TASK are tickets too."""
+    assert {"CASE", "TASK", "TICKET", "GROUP_MAIL", "INLINE_COMMENT", "PULL_REQUEST", "DEAL", "PROJECT"} <= set(LINKED_TYPES)
+
+
+async def test_records_that_could_not_be_read_are_reported() -> None:
+    graph, out = _graph([["m1", "m2"]]), io.StringIO()
+    graph.get_typed_records_batch = AsyncMock(return_value={"m1": _mail("m1")})
+    await backfill(graph, MagicMock(), "org-1", apply=False, logger=logging.getLogger("t"), out=out)
+    assert _lines(out)[0]["skipped"] == 1
+    assert _lines(out)[-1]["total"]["skipped"] == 1

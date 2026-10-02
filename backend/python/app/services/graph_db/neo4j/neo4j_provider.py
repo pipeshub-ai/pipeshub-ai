@@ -9276,12 +9276,15 @@ class Neo4jProvider(IGraphDBProvider):
             return []
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
+        # Two forms rather than "$after_key IS NULL OR ...": the OR keeps the
+        # planner from seeking the id range, and each page would sort the org.
+        cursor = "AND record.id > $after_key" if after_key is not None else ""
         rows = await self.client.execute_query(
-            """
+            f"""
             MATCH (record:Record)
             WHERE record.orgId = $org_id AND record.recordType IN $types
               AND coalesce(record.isDeleted, false) = false
-              AND ($after_key IS NULL OR record.id > $after_key)
+              {cursor}
             RETURN record.id AS id
             ORDER BY record.id
             LIMIT $limit
