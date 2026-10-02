@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_SIGNED_URL_TTL_SECONDS } from '../constants/constants';
 
 // Common Schema Components
 export const Headers = z.object({
@@ -52,9 +53,14 @@ export const DocumentIdParamsWithVersion = z.object({
     expirationTimeInSeconds: z.string()
       .optional()
       .transform((val) => (val ? Number(val) : undefined))
-      .refine((num) => num === undefined || num > 0, {
-        message: "expirationTimeInSeconds must be greater than zero",
-      }),
+      .refine(
+        (num) =>
+          num === undefined ||
+          (num > 0 && num <= MAX_SIGNED_URL_TTL_SECONDS),
+        {
+          message: `expirationTimeInSeconds must be between 1 and ${MAX_SIGNED_URL_TTL_SECONDS} (7 days)`,
+        },
+      ),
   }),
 });
 
