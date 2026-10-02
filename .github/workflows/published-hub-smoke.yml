@@ -57,7 +57,7 @@ jobs:
       PUBLISHED_HUB_SMOKE_DIAG: ${{ github.workspace }}/published-hub-smoke-diag
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -66,7 +66,7 @@ jobs:
 
       - name: Upload diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: published-hub-smoke-slim
           path: published-hub-smoke-diag/
@@ -88,7 +88,7 @@ jobs:
       PUBLISHED_HUB_SMOKE_DIAG: ${{ github.workspace }}/published-hub-smoke-diag
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
 
@@ -97,7 +97,7 @@ jobs:
 
       - name: Upload diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: published-hub-smoke-full
           path: published-hub-smoke-diag/
@@ -117,7 +117,7 @@ jobs:
       PUBLISHED_HUB_SMOKE_DIAG: ${{ github.workspace }}/published-hub-smoke-diag
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -126,7 +126,7 @@ jobs:
 
       - name: Upload diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: published-hub-smoke-eval
           path: published-hub-smoke-diag/
@@ -147,7 +147,7 @@ jobs:
       PUBLISHED_HUB_SMOKE_DIAG: ${{ github.workspace }}/published-hub-smoke-diag
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
 
@@ -156,7 +156,7 @@ jobs:
 
       - name: Upload diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: published-hub-smoke-arango
           path: published-hub-smoke-diag/

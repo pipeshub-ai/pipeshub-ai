@@ -28,9 +28,11 @@ from app.agents.actions.storage_search.storage_search import (
     _ALLOWED_BINARIES,
     _MAX_OUTPUT_CHARS,
     _build_date_filtered_command,
+    _force_xargs_null_delimited,
     _kill_tree,
     _resolve_mount_root,
     _run_subprocess,
+    _sanitize_xargs_input,
     _truncate,
     _validate_command,
     is_local_storage,
@@ -206,10 +208,28 @@ class TestCommandAllowlist:
         assert not valid, f"Expected '{cmd}' to be rejected"
         assert "is not allowed with 'find'" in err
 
-    def test_blocked_xargs_deprecated_alias_value_flag_smuggle(self):
-        # -i is the deprecated alias for -I; must be treated as value-
-        # consuming too (erring toward the safe/over-skipping direction).
-        cmd = 'xargs -0 -i cat find . -exec sh -c "id" {} +'
+    def test_deprecated_alias_i_does_not_consume_following_token(self):
+        # -i is the deprecated alias for -I but takes only an OPTIONAL ATTACHED
+        # value (GNU findutils 4.9.0: `xargs -i cmd` runs cmd, it does not read
+        # the next token as -i's value). So the real sub-command sits directly
+        # after -i: here that is find, whose -exec must still be rejected.
+        cmd = 'xargs -0 -i find . -exec sh -c "id" {} +'
+        valid, err = _validate_command(cmd)
+        assert not valid, f"Expected '{cmd}' to be rejected"
+        assert "is not allowed with 'find'" in err
+
+    def test_deprecated_alias_i_leaves_the_real_subcommand_as_the_next_token(self):
+        # The flip side: `xargs -0 -i grep ...` runs grep (safe), so it must
+        # validate -- the old over-skip wrongly treated grep as -i's value and
+        # looked at the token after it instead.
+        cmd = 'grep -rlZ "x" . | xargs -0 -i grep -i "term"'
+        valid, err = _validate_command(cmd)
+        assert valid, f"Expected valid but got: {err}"
+
+    def test_required_value_flag_d_still_consumes_its_delimiter(self):
+        # -d requires a separate delimiter value; the token after it is that
+        # value, not the sub-command, so find's -exec is still reached.
+        cmd = 'xargs -0 -d , find . -exec sh -c "id" {} +'
         valid, err = _validate_command(cmd)
         assert not valid, f"Expected '{cmd}' to be rejected"
         assert "is not allowed with 'find'" in err
@@ -1585,6 +1605,114 @@ class TestNoUnauthorizedRecordLeaves:
 
         assert hidden_hit == no_hit == content_only
         assert "raw_output_lines" not in hidden_hit
+
+
+class TestXargsArgInjection:
+    """F4: content piped into xargs becomes argv for the sub-command, which the
+    static command validator never sees. Only safe, in-scope, relative record
+    paths may reach an xargs sub-command; flags, absolute paths, traversal, and
+    out-of-scope paths are stripped, and xargs is forced NUL-delimited.
+    """
+
+    @staticmethod
+    def _scope_with_secret(tmp_path):
+        """A scope dir holding one record whose text names an out-of-scope file."""
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOPSECRET_LEAK")
+        scope = tmp_path / "scope"
+        scope.mkdir()
+        (scope / "record_aaaa.json").write_text(f'{{"note":"see {secret} now"}}')
+        return scope
+
+    @pytest.mark.asyncio
+    async def test_xargs_cat_cannot_read_absolute_path_from_record_text(self, tmp_path):
+        scope = self._scope_with_secret(tmp_path)
+        # Passes validation (slash pattern is sanctioned via -e), yet without the
+        # fix xargs would cat the absolute path grep -o pulled from the record.
+        cmd = "grep -roh -e '/[^ ]*secret[^ ]*' . | xargs cat"
+        assert _validate_command(cmd)[0], "exploit must pass static validation"
+        success, output = await _run_subprocess(cmd, cwd=str(scope))
+        assert "TOPSECRET_LEAK" not in output
+
+    @pytest.mark.asyncio
+    async def test_xargs_head_cannot_read_absolute_path_from_record_text(self, tmp_path):
+        scope = self._scope_with_secret(tmp_path)
+        cmd = "grep -roh -e '/[^ ]*secret[^ ]*' . | xargs head -5"
+        assert _validate_command(cmd)[0]
+        success, output = await _run_subprocess(cmd, cwd=str(scope))
+        assert "TOPSECRET_LEAK" not in output
+
+    @pytest.mark.asyncio
+    async def test_xargs_find_exec_tokens_from_record_text_do_not_execute(self, tmp_path):
+        # A record whose text is the words GNU find's -exec expects. Without the
+        # fix these become find's runtime argv and run a command; the canary
+        # file proves nothing executed.
+        scope = tmp_path / "scope"
+        scope.mkdir()
+        canary = scope / "PWNED"
+        (scope / "record_aaaa.json").write_text(". -exec touch PWNED {} +")
+        cmd = "grep -roh -e '[-A-Za-z{}+./]*' . | xargs find"
+        assert _validate_command(cmd)[0]
+        await _run_subprocess(cmd, cwd=str(scope))
+        assert not canary.exists()
+        assert not (tmp_path / "PWNED").exists()
+
+    @pytest.mark.asyncio
+    async def test_legit_multi_stage_pipeline_still_finds_the_record(self, tmp_path):
+        scope = tmp_path / "scope"
+        scope.mkdir()
+        (scope / "record_aaaa.json").write_text('{"data":"asana quarterly revenue"}')
+        cmd = 'grep -rilZ "asana" . | xargs -0 grep -il "revenue"'
+        success, output = await _run_subprocess(cmd, cwd=str(scope))
+        assert success is True
+        assert "record_aaaa.json" in output
+
+    def test_sanitize_keeps_only_in_scope_real_relative_paths(self, tmp_path):
+        (tmp_path / "record_aaaa.json").write_text("{}")
+        (tmp_path / "secret.txt").write_text("x")  # exists but not what we feed
+        data = b"\n".join([
+            b"record_aaaa.json",      # kept: real, relative, in-scope
+            b"/etc/passwd",           # dropped: absolute
+            b"../secret.txt",         # dropped: traversal escaping scope
+            b"-exec",                 # dropped: flag
+            b"nonexistent.json",      # dropped: not a real file
+            b"",                      # dropped: empty
+        ])
+        out = _sanitize_xargs_input(data, str(tmp_path))
+        assert out == b"record_aaaa.json"
+
+    def test_sanitize_handles_null_delimited_input(self, tmp_path):
+        (tmp_path / "a.json").write_text("{}")
+        (tmp_path / "b.json").write_text("{}")
+        data = b"./a.json\x00/etc/passwd\x00./b.json\x00"
+        out = _sanitize_xargs_input(data, str(tmp_path))
+        assert out == b"./a.json\x00./b.json"
+
+    def test_sanitize_drops_symlink_escaping_scope(self, tmp_path):
+        scope = tmp_path / "scope"
+        scope.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret")
+        link = scope / "link.json"
+        try:
+            os.symlink(outside, link)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unsupported here")
+        # realpath of the symlink resolves outside the scope → dropped.
+        assert _sanitize_xargs_input(b"link.json", str(scope)) == b""
+
+    def test_force_null_inserts_zero_before_subcommand(self):
+        assert _force_xargs_null_delimited(["xargs", "cat"]) == ["xargs", "-0", "cat"]
+
+    def test_force_null_noop_when_already_null_delimited(self):
+        assert _force_xargs_null_delimited(["xargs", "-0", "cat"]) == ["xargs", "-0", "cat"]
+        assert _force_xargs_null_delimited(["xargs", "--null", "cat"]) == ["xargs", "--null", "cat"]
+
+    def test_force_null_keeps_replace_str_value(self):
+        # -0 must land after -I's replace-str value, before the sub-command.
+        assert _force_xargs_null_delimited(["xargs", "-I", "{}", "grep", "x", "{}"]) == [
+            "xargs", "-I", "{}", "-0", "grep", "x", "{}",
+        ]
 
 
 class TestRankingIsBounded:

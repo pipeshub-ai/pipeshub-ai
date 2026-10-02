@@ -1007,8 +1007,10 @@ class TestStreamRecord:
             mock_stream.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_regular_file_pdf_conversion(self, connector):
+    @pytest.mark.parametrize("file_name", ["file.docx", "../../file.docx", "/etc/file.docx"])
+    async def test_regular_file_pdf_conversion(self, connector, file_name):
         record = _make_record()
+        record.record_name = file_name
         connector._get_file_metadata_from_drive = AsyncMock(
             return_value={"mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
         )
@@ -1044,6 +1046,9 @@ class TestStreamRecord:
                 fileId=record.external_record_id,
                 supportsAllDrives=True,
             )
+            path, temp_dir = connector._convert_to_pdf.await_args.args
+            assert temp_dir == "/tmp/test_dir"
+            assert os.path.dirname(path) == temp_dir
 
     @pytest.mark.asyncio
     async def test_regular_file_download(self, connector):

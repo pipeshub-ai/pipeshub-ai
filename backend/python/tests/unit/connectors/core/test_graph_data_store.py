@@ -686,7 +686,14 @@ class TestGraphTransactionStore:
         """Transaction store forwards recursive deletes to the graph provider."""
         await tx_store.delete_records_recursive(["r1", "r2"], "kb-1")
         mock_graph_provider.delete_records_recursive.assert_awaited_once_with(
-            ["r1", "r2"], "kb-1", transaction="txn-123", cascade_children=True
+            ["r1", "r2"], "kb-1", transaction="txn-123", cascade_children=True, within_folder_id=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_graph_data_store_forwards_the_folder_scope(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.delete_records_recursive(["r1"], "kb-1", within_folder_id="f1")
+        mock_graph_provider.delete_records_recursive.assert_awaited_once_with(
+            ["r1"], "kb-1", transaction="txn-123", cascade_children=True, within_folder_id="f1"
         )
 
     @pytest.mark.asyncio

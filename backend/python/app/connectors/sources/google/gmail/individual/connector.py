@@ -89,6 +89,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient, configure_google_http_timeout
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
+from app.utils.filename_utils import temp_path_for
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -1218,7 +1219,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             if convertTo == MimeTypes.PDF.value:
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_file_path = os.path.join(temp_dir, file_name)
+                    temp_file_path = temp_path_for(temp_dir, file_name)
 
                     # Download from Drive to temp file
                     with open(temp_file_path, "wb") as f:
@@ -1505,7 +1506,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             if convertTo == MimeTypes.PDF.value:
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_file_path = os.path.join(temp_dir, file_name)
+                    temp_file_path = temp_path_for(temp_dir, file_name)
 
                     # Write attachment data to temp file
                     with open(temp_file_path, "wb") as f:

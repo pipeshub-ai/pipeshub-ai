@@ -78,7 +78,6 @@ from app.connectors.api.router import (
     get_record_by_id,
     get_records,
     get_validated_connector_instance,
-    handle_record_deletion,
     reindex_record_group,
     reindex_single_record,
     require_connector_not_locked,
@@ -289,6 +288,7 @@ class TestDeleteRecordGaps:
         """When result has no eventData, no kafka publish but still returns success."""
         req = _mock_request()
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={"success": True, "connector": "c1", "timestamp": 123})
         kafka = AsyncMock()
 
@@ -301,6 +301,7 @@ class TestDeleteRecordGaps:
         """eventData present but no payload key -- skip publish."""
         req = _mock_request()
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(
             return_value={"success": True, "eventData": {"eventType": "x"}, "connector": "c1"}
         )
@@ -314,6 +315,7 @@ class TestDeleteRecordGaps:
         """Non-HTTP exception becomes a 500."""
         req = _mock_request()
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(side_effect=RuntimeError("db down"))
         kafka = AsyncMock()
 
@@ -326,6 +328,7 @@ class TestDeleteRecordGaps:
         """Kafka publish failure is logged but doesn't raise."""
         req = _mock_request()
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {"eventType": "deleted", "payload": {"id": "rec-1"}, "topic": "t"},
@@ -830,7 +833,7 @@ class TestGetConnectorInstanceConfigGaps:
         registry = AsyncMock()
         registry.get_connector_instance = AsyncMock(return_value={
             "type": "GOOGLE_DRIVE", "name": "My Drive", "scope": "personal",
-            "createdBy": "u1", "authType": "OAUTH",
+            "createdBy": "user-1", "authType": "OAUTH",
         })
         config_service = MagicMock()
         config_service.get_config = AsyncMock(side_effect=RuntimeError("not found"))
@@ -852,7 +855,7 @@ class TestGetConnectorInstanceConfigGaps:
         registry = AsyncMock()
         registry.get_connector_instance = AsyncMock(return_value={
             "type": "GOOGLE_DRIVE", "name": "My Drive", "scope": "personal",
-            "createdBy": "u1", "authType": "OAUTH",
+            "createdBy": "user-1", "authType": "OAUTH",
         })
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value={
@@ -2078,45 +2081,6 @@ class TestGetRecordsGaps:
 
 
 # ============================================================================
-# handle_record_deletion — record not found (line 466-469)
-# ============================================================================
-
-
-class TestHandleRecordDeletionGaps:
-    @pytest.mark.asyncio
-    async def test_record_not_found_raises_404(self):
-        gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
-        gp.delete_records_and_relations = AsyncMock(return_value=None)
-        req = _mock_request(graph_provider=gp)
-
-        with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", request=req, graph_provider=gp)
-        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
-
-    @pytest.mark.asyncio
-    async def test_generic_exception_raises_500(self):
-        gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
-        gp.delete_records_and_relations = AsyncMock(side_effect=RuntimeError("boom"))
-        req = _mock_request(graph_provider=gp)
-
-        with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", request=req, graph_provider=gp)
-        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-
-    @pytest.mark.asyncio
-    async def test_success_returns_response(self):
-        gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
-        gp.delete_records_and_relations = AsyncMock(return_value={"deleted": True})
-        req = _mock_request(graph_provider=gp)
-
-        result = await handle_record_deletion("rec-1", request=req, graph_provider=gp)
-        assert result["status"] == "success"
-
-
-# ============================================================================
 # _parse_filter_response — unknown connector
 # ============================================================================
 
@@ -2820,35 +2784,6 @@ class TestGetRecordsAdditional:
 
 
 # ============================================================================
-# handle_record_deletion — success with event data
-# ============================================================================
-
-
-class TestHandleRecordDeletionSuccess:
-    @pytest.mark.asyncio
-    async def test_success_returns_response(self):
-        gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
-        gp.delete_records_and_relations = AsyncMock(return_value={"deleted": True})
-        req = _mock_request(graph_provider=gp)
-
-        result = await handle_record_deletion("rec-1", request=req, graph_provider=gp)
-        assert result["status"] == "success"
-
-    @pytest.mark.asyncio
-    async def test_http_exception_re_raised(self):
-        gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
-        gp.delete_records_and_relations = AsyncMock(
-            side_effect=HTTPException(status_code=403, detail="Forbidden")
-        )
-        req = _mock_request(graph_provider=gp)
-        with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", request=req, graph_provider=gp)
-        assert exc_info.value.status_code == 403
-
-
-# ============================================================================
 # delete_record — success with event data published
 # ============================================================================
 
@@ -2858,6 +2793,7 @@ class TestDeleteRecordEventPublish:
     async def test_success_with_event_data_published(self):
         req = _mock_request()
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {"eventType": "deleted", "payload": {"id": "rec-1"}, "topic": "t"},
@@ -2875,6 +2811,7 @@ class TestDeleteRecordEventPublish:
     async def test_failure_result_raises_http_exception(self):
         req = _mock_request()
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": False, "reason": "not found", "code": 404,
         })

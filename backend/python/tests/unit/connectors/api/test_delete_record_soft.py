@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.config.constants.arangodb import EventTypes
+from app.config.constants.arangodb import EventTypes, OriginTypes
 from tests.unit.connectors.api.test_router_part1 import _mock_request
 
 ROUTER = "app.connectors.api.router"
@@ -12,7 +12,10 @@ ROUTER = "app.connectors.api.router"
 
 def _graph(result: dict) -> AsyncMock:
     graph = AsyncMock()
-    graph.check_record_access_with_details = AsyncMock(return_value={"record": {}})
+    # The route deletes KB uploads only; a synced record is refused before this point.
+    graph.check_record_access_with_details = AsyncMock(
+        return_value={"record": {"origin": OriginTypes.UPLOAD.value}}
+    )
     graph.delete_record = AsyncMock(return_value=result)
     return graph
 

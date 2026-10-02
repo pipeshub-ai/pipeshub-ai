@@ -54,6 +54,10 @@ from app.services.cache.invalidation_hooks import (
 from app.connectors.services.vector_cleanup_events import build_soft_delete_events
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
+from app.services.graph_db.interface.graph_db_provider import (
+    FOLDER_CHANGED_DURING_DELETE_MESSAGE,
+    FolderChangedDuringDelete,
+)
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
 from app.services.messaging.utils import MessagingUtils
@@ -2379,6 +2383,7 @@ class DataSourceEntitiesProcessor:
     async def on_records_deleted_cascade(
         self, record_ids: list[str], connector_id: str,
         cascade_children: bool = True,
+        within_folder_id: str | None = None,
         *,
         delete_source: DeleteSource = DeleteSource.CONNECTOR,
         deleted_by_user_id: str | None = None,
@@ -2395,6 +2400,10 @@ class DataSourceEntitiesProcessor:
 
         When *cascade_children* is False, only ATTACHMENT edges are traversed —
         PARENT_CHILD children (e.g. stories under a deleted epic) are left intact.
+
+        With *within_folder_id*, only roots contained in that folder are deleted;
+        the check runs in the delete's own transaction, so a record moved out in
+        the meantime is kept.
 
         With ``ENABLE_SOFT_DELETE`` on, the same set goes to the trash instead
         (``on_records_soft_deleted``); ``delete_source`` and
@@ -2416,11 +2425,17 @@ class DataSourceEntitiesProcessor:
                 delete_source=delete_source,
                 deleted_by_user_id=deleted_by_user_id,
                 follow=("PARENT_CHILD", "ATTACHMENT") if cascade_children else ("ATTACHMENT",),
+                within_folder_id=within_folder_id,
             )
-        async with self.data_store_provider.transaction() as tx_store:
-            result = await tx_store.delete_records_recursive(
-                record_ids, connector_id, cascade_children=cascade_children,
-            )
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                result = await tx_store.delete_records_recursive(
+                    record_ids, connector_id, cascade_children=cascade_children,
+                    within_folder_id=within_folder_id,
+                )
+        except FolderChangedDuringDelete:
+            # The transaction rolled back, so nothing was deleted.
+            return {"success": False, "code": 409, "reason": FOLDER_CHANGED_DURING_DELETE_MESSAGE, "eventData": None}
         if (result or {}).get("successfully_deleted"):
             # Before publishing: the transaction has committed, so the records are
             # already gone, and _publish_delete_events can fail. Invalidating
@@ -2449,6 +2464,7 @@ class DataSourceEntitiesProcessor:
         delete_source: DeleteSource,
         deleted_by_user_id: str | None = None,
         follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
+        within_folder_id: str | None = None,
     ) -> dict:
         """Move records and their subtree to the trash, as one batch.
 
@@ -2466,6 +2482,7 @@ class DataSourceEntitiesProcessor:
                 batch_id=batch_id,
                 deleted_by_user_id=deleted_by_user_id,
                 follow=follow,
+                within_folder_id=within_folder_id,
             )
         result = dict(result)
         result["deleted_records"] = result.get("soft_deleted_records", [])

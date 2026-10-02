@@ -91,6 +91,7 @@ from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
+    CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
     SOFT_DELETE_CHUNK,
     SOFT_DELETE_MAX_DEPTH,
@@ -11304,6 +11305,7 @@ class Neo4jProvider(IGraphDBProvider):
         connector_id: str,
         transaction: str | None = None,
         cascade_children: bool = True,
+        within_folder_id: str | None = None,
     ) -> dict:
         """Delete records and their owned descendants, scoped by connector_id.
 
@@ -11346,13 +11348,21 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (rec:Record {id: rid})
                 WITH collect(DISTINCT CASE
                         WHEN rec IS NOT NULL AND (rec.isDeleted IS NULL OR rec.isDeleted <> true) AND rec.connectorId = $connector_id
+                             AND ($folder_id IS NULL OR EXISTS {
+                                 MATCH (:Record {id: $folder_id})
+                                       (()-[c:RECORD_RELATION WHERE c.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->()){1,""" + str(CONTAINMENT_MAX_DEPTH) + """}
+                                       (rec)
+                             })
                         THEN rec ELSE null END) AS roots_raw
                 WITH [r IN roots_raw WHERE r IS NOT NULL] AS valid_roots
                 WITH valid_roots, [r IN valid_roots | r.id] AS valid_root_keys
                 // 2. Containment subtree, depth-0 inclusive
                 UNWIND (CASE WHEN size(valid_roots) = 0 THEN [null] ELSE valid_roots END) AS root
-                OPTIONAL MATCH path = (root)-[:RECORD_RELATION*0..20]->(v:Record)
-                WHERE root IS NOT NULL AND all(rel IN relationships(path) WHERE rel.relationshipType IN """ + traversal_types + """)
+                // A quantified path stops expanding at the first non-containment edge.
+                OPTIONAL MATCH (root)
+                      (()-[c:RECORD_RELATION WHERE c.relationshipType IN """ + traversal_types + """]->()){0,""" + str(CONTAINMENT_MAX_DEPTH) + """}
+                      (v:Record)
+                WHERE root IS NOT NULL
                 WITH valid_root_keys, collect(DISTINCT v) AS all_vertices
                 // 3. Attach each record's isOfType type doc (any label)
                 UNWIND (CASE WHEN size(all_vertices) = 0 THEN [null] ELSE all_vertices END) AS vert
@@ -11366,7 +11376,11 @@ class Neo4jProvider(IGraphDBProvider):
                 """
                 inv_results = await self.client.execute_query(
                     inventory_query,
-                    parameters={"record_ids": record_ids, "connector_id": connector_id},
+                    parameters={
+                        "record_ids": record_ids,
+                        "connector_id": connector_id,
+                        "folder_id": within_folder_id,
+                    },
                     txn_id=txn_id,
                 )
                 inventory = inv_results[0]["inventory"] if inv_results else {}
@@ -11409,7 +11423,50 @@ class Neo4jProvider(IGraphDBProvider):
                             txn_id=txn_id,
                         )
 
-                if record_keys:
+                if within_folder_id and record_keys:
+                    # The client auto-commits each query unless explicit transactions
+                    # are on, so a check made by the inventory above would not hold
+                    # until a separate delete ran. One statement re-checks containment
+                    # and deletes, and reports what it actually removed.
+                    rows = await self.client.execute_query(
+                        """
+                        UNWIND $root_ids AS rid
+                        MATCH (root:Record {id: rid, connectorId: $connector_id})
+                        WHERE coalesce(root.isDeleted, false) = false
+                          AND EXISTS {
+                              MATCH (:Record {id: $folder_id})
+                                    (()-[c:RECORD_RELATION WHERE c.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->()){1,""" + str(CONTAINMENT_MAX_DEPTH) + """}
+                                    (root)
+                          }
+                        MATCH (root)
+                              (()-[c:RECORD_RELATION WHERE c.relationshipType IN """ + traversal_types + """]->()){0,""" + str(CONTAINMENT_MAX_DEPTH) + """}
+                              (v:Record)
+                        WITH collect(DISTINCT root.id) AS root_ids, collect(DISTINCT v) AS vertices
+                        UNWIND vertices AS v
+                        OPTIONAL MATCH (v)-[:IS_OF_TYPE]->(t)
+                        WITH root_ids, v, properties(v) AS record, collect(t) AS types,
+                             collect(properties(t)) AS type_docs
+                        FOREACH (t IN types | DETACH DELETE t)
+                        DETACH DELETE v
+                        RETURN root_ids, collect({record: record, type_doc: head(type_docs)}) AS deleted
+                        """,
+                        parameters={
+                            "root_ids": valid_root_keys,
+                            "connector_id": connector_id,
+                            "folder_id": within_folder_id,
+                        },
+                        txn_id=txn_id,
+                    )
+                    row = rows[0] if rows else {}
+                    kept_roots = [r for r in valid_root_keys if r not in set(row.get("root_ids") or [])]
+                    # What the statement deleted, which may differ from the inventory
+                    # above: the tree can change in between. Events follow the delete.
+                    records_with_type = list(row.get("deleted") or [])
+                    failed_records += [
+                        {"record_id": rid, "reason": "No longer in this folder"} for rid in kept_roots
+                    ]
+                    valid_root_keys = [r for r in valid_root_keys if r not in kept_roots]
+                elif record_keys:
                     # Delete the isOfType type docs (any label) via the record, then the
                     # records themselves; DETACH DELETE removes every relationship on each
                     # node (the dynamic edge sweep — inheritPermissions/permissions/etc.).
@@ -11475,6 +11532,7 @@ class Neo4jProvider(IGraphDBProvider):
         deleted_by_user_id: str | None = None,
         follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
         transaction: str | None = None,
+        within_folder_id: str | None = None,
     ) -> dict:
         """See ``IGraphDBProvider.soft_delete_records``."""
         if not record_ids:
@@ -11489,6 +11547,11 @@ class Neo4jProvider(IGraphDBProvider):
                 UNWIND $record_ids AS rid
                 OPTIONAL MATCH (rec:Record {{id: rid}})
                 WHERE {cypher_live_record("rec")} AND rec.connectorId = $connector_id
+                  AND ($folder_id IS NULL OR EXISTS {{
+                      MATCH (:Record {{id: $folder_id}})
+                            (()-[c:RECORD_RELATION WHERE c.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->()){{1,{CONTAINMENT_MAX_DEPTH}}}
+                            (rec)
+                  }})
                 WITH collect(DISTINCT rec) AS roots
                 UNWIND CASE WHEN size(roots) = 0 THEN [null] ELSE roots END AS root
                 OPTIONAL MATCH path = (root)-[:RECORD_RELATION*0..{max_depth}]->(v:Record)
@@ -11497,7 +11560,12 @@ class Neo4jProvider(IGraphDBProvider):
                   AND {cypher_live_record("v")}
                 RETURN [r IN roots | r.id] AS root_keys, collect(DISTINCT v.id) AS keys
                 """,
-                parameters={"record_ids": record_ids, "connector_id": connector_id, "follow": list(follow)},
+                parameters={
+                    "record_ids": record_ids,
+                    "connector_id": connector_id,
+                    "follow": list(follow),
+                    "folder_id": within_folder_id,
+                },
                 txn_id=txn_id,
             )
             found = inventory[0] if inventory else {"root_keys": [], "keys": []}

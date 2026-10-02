@@ -21,6 +21,8 @@ file that was already in the trash. A second file sits outside the folder.
 - A move onto an external id a trashed record holds keeps the trash entry: it
   gives the id up (kept in ``trashedExternalRecordId``) and no ``deleteRecord``
   is published.
+- A folder-scoped delete (the folder-records route) takes only ids inside the
+  folder, soft or hard.
 - With the flag off, the same cascade still removes the records.
 
 Arango enforces the records schema strictly, so its run also proves the write
@@ -526,6 +528,32 @@ async def test_an_outlook_sync_delete_takes_what_the_hard_delete_takes(
         world.mail_connector_id, f"ext-{world.ids['outlook_mail']}", world.user_id,
     )
     assert len(world.producer.of_type(EventTypes.SOFT_DELETE_RECORDS.value)) == 1
+
+
+@pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
+async def test_a_folder_scoped_delete_takes_only_what_is_inside_the_folder(
+    world: _World, monkeypatch: pytest.MonkeyPatch, soft: bool,
+) -> None:
+    """The folder-records route names a folder; an id outside it is kept and reported."""
+    _flag(monkeypatch, soft)
+    names = ("folder", "file_a", "file_b", "attachment", "outside")
+    before = await _visible(world, names)
+    result = await world.processor.on_records_deleted_cascade(
+        [world.ids["file_b"], world.ids["outside"]], world.kb_id, within_folder_id=world.ids["folder"],
+        delete_source=DeleteSource.USER, deleted_by_user_id=world.user_key,
+    )
+    assert result["successfully_deleted"] == 1, result
+    assert {f["record_id"] for f in result["failed_records"]} == {world.ids["outside"]}
+    assert before - await _visible(world, names) == {"file_b", "attachment"}
+    if soft:
+        assert (await world.stored("file_b"))["isDeleted"] is True
+
+    only_outside = await world.processor.on_records_deleted_cascade(
+        [world.ids["outside"]], world.kb_id, within_folder_id=world.ids["folder"],
+        delete_source=DeleteSource.USER, deleted_by_user_id=world.user_key,
+    )
+    assert only_outside["successfully_deleted"] == 0
+    assert "outside" in await _visible(world, names)
 
 
 async def test_with_the_flag_off_a_cascade_still_removes_the_records(

@@ -92,15 +92,6 @@ async def authorize_connector_stats(
         )
 
 
-async def assert_hard_delete_record_org(
-    request: Request,
-    graph_provider: Any,
-    record_id: str,
-) -> None:
-    """OSS: no extra tenant gate on hard delete."""
-    del request, graph_provider, record_id
-
-
 def strip_redacted_fields(data: dict[str, Any]) -> dict[str, Any]:
     """OSS: no redaction — return a shallow copy."""
     return dict(data)
@@ -224,8 +215,10 @@ def annotate_oauth_inheritance(
     shared_oauth_config: dict[str, Any],
     org_id: str,
 ) -> None:
-    """OSS: no inheritance tracking needed."""
-    del auth_dict, shared_oauth_config, org_id
+    """OSS: no inheritance, so an owning org already stored on the connector is never valid."""
+    del shared_oauth_config, org_id
+    auth_dict.pop("inheritedFromOrgId", None)
+    auth_dict.pop("orgId", None)
 
 
 def filter_oauth_configs_for_list(

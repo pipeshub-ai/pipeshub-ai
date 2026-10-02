@@ -17,6 +17,15 @@ from app.config.constants.arangodb import DeleteSource
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
+FOLDER_CHANGED_DURING_DELETE_MESSAGE = (
+    "Records were moved into this folder while it was being deleted, so nothing was deleted. "
+    "Try the delete again."
+)
+
+
+class FolderChangedDuringDelete(RuntimeError):
+    """Records were moved into a folder while it was being deleted; nothing was deleted."""
+
 
 @dataclass(frozen=True)
 class AccessibleContainers:
@@ -4112,8 +4121,13 @@ class IGraphDBProvider(ABC):
         connector_id: str,
         transaction: str | None = None,
         cascade_children: bool = True,
+        within_folder_id: str | None = None,
     ) -> dict:
         """Delete records and their owned descendants, scoped by connector_id.
+
+        With *within_folder_id*, a root is deleted only if it sits under that
+        folder through PARENT_CHILD / ATTACHMENT edges, checked in the same query
+        as the delete; any other root is reported as failed and kept.
 
         When *cascade_children* is True (default), traverses both PARENT_CHILD and
         ATTACHMENT edges — deleting an entire containment subtree (folders, nested
@@ -4139,6 +4153,7 @@ class IGraphDBProvider(ABC):
         deleted_by_user_id: str | None = None,
         follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
         transaction: str | None = None,
+        within_folder_id: str | None = None,
     ) -> dict:
         """Move live records, and their live descendants, to the trash.
 
@@ -4152,6 +4167,9 @@ class IGraphDBProvider(ABC):
         ``relationshipType`` is in ``follow``: both kinds for a folder subtree,
         ``("ATTACHMENT",)`` to leave PARENT_CHILD children alone, ``()`` for the
         roots only. A descendant already in the trash keeps its own batch.
+        With *within_folder_id*, a root is taken only if that folder reaches it
+        through PARENT_CHILD / ATTACHMENT edges, as ``delete_records_recursive``
+        checks it.
 
         Returns ``success``, ``soft_deleted_records`` ({record_id, name, virtual_record_id}),
         ``failed_records`` (roots that were missing, trashed or out of scope),
