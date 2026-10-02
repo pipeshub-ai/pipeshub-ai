@@ -37,6 +37,7 @@ import { rewriteCitationsForSlack, stripTinyRefCitationLinks } from "./utils/cit
 
 import {
   type SlackBotConfig,
+  getCurrentMatchedSlackBot,
 } from "./botRegistry";
 
 import {
@@ -1420,7 +1421,7 @@ app.message(async ({ message, client, context }) => {
     return;
   }
 
-  const resolvedSlackBot = await resolveSlackBotForEvent();
+  const resolvedSlackBot = await resolveSlackBotForEvent(getCurrentMatchedSlackBot);
   const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
     typedClient,
     typedMessage,
@@ -1457,7 +1458,7 @@ app.event("app_mention", async ({ event, client, context }) => {
     return;
   }
 
-  const resolvedSlackBot = await resolveSlackBotForEvent();
+  const resolvedSlackBot = await resolveSlackBotForEvent(getCurrentMatchedSlackBot);
   const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
     typedClient,
     typedMessage,
