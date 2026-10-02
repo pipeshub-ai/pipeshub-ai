@@ -104,3 +104,15 @@ def test_people_are_named_in_the_entity_tool_descriptions() -> None:
     assert "people" in search.short_description and "people" in search.description
     assert "'person'" in params["entity_types"]
     assert "person" in KnowledgeGraph.find_records_by_entity._agent_tool_meta.description
+
+
+def test_organizations_are_named_in_the_entity_tool_descriptions() -> None:
+    from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
+
+    search = KnowledgeGraph.search_entities._agent_tool_meta
+    params = {p.name: p.description for p in search.parameters}
+    assert "organizations" in search.short_description and "organizations" in search.description
+    assert "'organization'" in params["entity_types"]
+    find = KnowledgeGraph.find_records_by_entity._agent_tool_meta
+    assert "organization" in find.description
+    assert "'organization'" in {p.name: p.description for p in find.parameters}["entity_type"]

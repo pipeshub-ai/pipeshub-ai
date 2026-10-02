@@ -301,6 +301,24 @@ class TestSyncRecordGroupEntity:
         orch.graph_provider.get_record_people.assert_awaited_once_with("rec-001", "org-1")
 
     @pytest.mark.asyncio
+    async def test_the_account_a_record_belongs_to_gets_a_point(self) -> None:
+        orch = self._make_orchestrator_with_evs()
+        orch.graph_provider.get_record_people = AsyncMock(return_value=[])
+        orch.graph_provider.get_record_organizations = AsyncMock(return_value=[
+            {"id": "acme", "name": "Acme"}, {"id": "blank", "name": " "},
+        ])
+        ctx = self._make_ctx_with_group(record_group_id="rg-1")
+
+        await orch._sync_record_identity_entities(ctx)
+
+        calls = orch.entity_vector_store.upsert_entities_batch.await_args_list
+        linked = next(c for c in calls if c.args[0][0].entity_type == EntityType.ORGANIZATION)
+        assert linked.kwargs["merge_membership"] is True
+        assert [(e.entity_id, e.name) for e in linked.args[0]] == [("acme", "Acme")]
+        assert linked.args[0][0].connector_ids == ["conn-1"]
+        orch.graph_provider.get_record_organizations.assert_awaited_once_with("rec-001", "org-1")
+
+    @pytest.mark.asyncio
     async def test_a_person_is_named_as_the_rebuild_names_them(self) -> None:
         """Blank names fall back to the email, and a member with neither gets
         no point (the rebuild skips them too), never their id."""

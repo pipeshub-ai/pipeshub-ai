@@ -29,8 +29,9 @@ ENTITY_INDEX_CANDIDATE_COLLECTIONS = frozenset({_APPS, _ORGS})
 class EntityIndexSource:
     """How one projected source is read.
 
-    ``scope_field`` is ``connectorId`` for connector-owned sources and
-    ``orgId`` for taxonomy and people. ``canonical_only`` keeps legacy taxonomy nodes
+    ``scope_field`` is ``connectorId`` for connector-owned sources,
+    ``orgId`` for taxonomy and people, and ``parentOrgId`` for external
+    organisations. ``canonical_only`` keeps legacy taxonomy nodes
     (no ``normalizedName``) and merged-away ones (``mergedInto``) out; ``include_global`` admits nodes without an
     org (departments are seeded globally)."""
 
@@ -43,6 +44,9 @@ class EntityIndexSource:
     list_fields: tuple[str, ...] = ()
     canonical_only: bool = False
     include_global: bool = False
+    # Boolean fields a node must have set to true (``isExternal``: a CRM
+    # account, never the tenant org itself).
+    required_true: tuple[str, ...] = ()
 
 
 def _taxonomy(collection: str) -> EntityIndexSource:
@@ -66,8 +70,11 @@ ENTITY_INDEX_SOURCES: dict[str, EntityIndexSource] = {
         EntityIndexSource(
             CollectionNames.DEPARTMENTS.value, "orgId", "departmentName", include_global=True,
         ),
-        # Named as on the index path (SinkOrchestrator._sync_record_people_entities).
+        # Named as on the index path (SinkOrchestrator._sync_record_linked_entities).
         EntityIndexSource(CollectionNames.USERS.value, "orgId", "fullName", name_fallback="email"),
+        EntityIndexSource(
+            CollectionNames.ORGS.value, "parentOrgId", "name", required_true=("isExternal",),
+        ),
         *(
             _taxonomy(c.value)
             for c in (
@@ -138,6 +145,7 @@ def build_entity_index_source_page_aql(source: str, *, has_after_key: bool) -> s
     filters = [f"FILTER {scope}"]
     if spec.canonical_only:
         filters.append("FILTER n.normalizedName != null AND n.mergedInto == null")
+    filters.extend(f"FILTER n.{f} == true" for f in spec.required_true)
     if has_after_key:
         filters.append("FILTER n._key > @after_key")
     projection = ", ".join(
@@ -171,6 +179,7 @@ def build_entity_index_source_page_cypher(source: str, *, has_after_key: bool) -
     predicates = [scope]
     if spec.canonical_only:
         predicates.append("n.normalizedName IS NOT NULL AND n.mergedInto IS NULL")
+    predicates.extend(f"n.{f} = true" for f in spec.required_true)
     if has_after_key:
         predicates.append("n.id > $after_key")
     projection = ", ".join(
