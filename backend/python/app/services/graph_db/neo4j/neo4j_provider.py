@@ -11219,10 +11219,15 @@ class Neo4jProvider(IGraphDBProvider):
         if under_record_ids is None:
             match = "MATCH (r:Record {connectorId: $connector_id, origin: $upload})"
         else:
+            # The same depth as the delete that follows, filtered while walking, so a file
+            # the cascade reaches is always one this lists.
             match = """
             MATCH (root:Record {connectorId: $connector_id}) WHERE root.id IN $roots
-            MATCH inside = (root)-[:RECORD_RELATION*0..20]->(r:Record {connectorId: $connector_id, origin: $upload})
-            WHERE all(rel IN relationships(inside) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+            MATCH (root)
+                  (()-[c:RECORD_RELATION WHERE c.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->()){0,""" + str(
+                CONTAINMENT_MAX_DEPTH
+            ) + """}
+                  (r:Record {connectorId: $connector_id, origin: $upload})
             """
         rows = await self.client.execute_query(
             match + """

@@ -13043,7 +13043,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR rid IN @roots
                 LET root = DOCUMENT(CONCAT("{CollectionNames.RECORDS.value}/", rid))
                 FILTER root != null AND root.connectorId == @connector_id
-                FOR r, e, p IN 0..20 OUTBOUND root._id @@record_relations
+                FOR r, e, p IN 0..{CONTAINMENT_MAX_DEPTH} OUTBOUND root._id @@record_relations
                     PRUNE e != null AND e.relationshipType NOT IN ['PARENT_CHILD', 'ATTACHMENT']
                     FILTER p.edges[*].relationshipType ALL IN ['PARENT_CHILD', 'ATTACHMENT']
                     FILTER r.connectorId == @connector_id
