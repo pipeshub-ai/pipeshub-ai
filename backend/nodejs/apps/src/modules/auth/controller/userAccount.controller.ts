@@ -54,6 +54,7 @@ import {
   HttpError,
   InternalServerError,
   NotFoundError,
+  ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { inject, injectable } from 'inversify';
@@ -98,6 +99,8 @@ const {
 export const SALT_ROUNDS = 10;
 export const RESET_LINK_ALREADY_USED =
   'This reset link has already been used. Request a new one from the sign-in page.';
+export const RESET_LINK_NOT_CHECKED =
+  "We couldn't reset your password just now, and nothing was changed. Please try again in a moment.";
 // The longest-lived link (a new account's first password) lasts 48 hours.
 const RESET_LINK_FALLBACK_LIFETIME_MS = 48 * 60 * 60 * 1000;
 const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
@@ -941,12 +944,14 @@ export class UserAccountController {
 
     try {
       // Mongoose builds indexes in the background; without the unique index
-      // both inserts would succeed. Cached after the first call.
+      // both inserts would succeed, so a link could be used twice. Cached
+      // after the first call.
       await UsedPasswordResetLink.init();
     } catch (error) {
-      this.logger.warn('The used reset link index could not be built', {
+      this.logger.error('The used reset link index could not be built', {
         error: error instanceof Error ? error.message : String(error),
       });
+      throw new ServiceUnavailableError(RESET_LINK_NOT_CHECKED);
     }
 
     try {

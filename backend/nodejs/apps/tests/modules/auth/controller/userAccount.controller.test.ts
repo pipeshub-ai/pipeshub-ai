@@ -17,6 +17,7 @@ import {
   WRONG_EMAIL_OR_PASSWORD,
   WRONG_SIGN_IN_CODE,
   RESET_LINK_ALREADY_USED,
+  RESET_LINK_NOT_CHECKED,
 } from '../../../../src/modules/auth/controller/userAccount.controller';
 import { UsedPasswordResetLink } from '../../../../src/modules/auth/schema/usedPasswordResetLink.schema';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
@@ -36,6 +37,7 @@ import {
   UnauthorizedError,
   InternalServerError,
   ForbiddenError,
+  ServiceUnavailableError,
 } from '../../../../src/libs/errors/http.errors';
 
 // The account-locked email is sent in the background; this lets it run.
@@ -2421,6 +2423,20 @@ describe('UserAccountController', () => {
       // The refused request stopped before any reset work.
       expect(mockIamService.getUserById.calledOnce).to.be.true;
       expect((UserActivities.create as sinon.SinonStub).calledOnce).to.be.true;
+    });
+
+    it('refuses the reset, changing nothing, when the one-use index cannot be built', async () => {
+      sinon.stub(UsedPasswordResetLink, 'init').rejects(new Error('index options conflict'));
+      const create = sinon.stub(UsedPasswordResetLink, 'create').resolves({} as any);
+
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+
+      const error = next.firstCall.args[0];
+      expect(error).to.be.instanceOf(ServiceUnavailableError);
+      expect(error.message).to.equal(RESET_LINK_NOT_CHECKED);
+      expect(create.called).to.be.false;
+      expect(mockIamService.getUserById.called).to.be.false;
+      expect((UserActivities.create as sinon.SinonStub).called).to.be.false;
     });
 
     it('refuses a link that was already used', async () => {
