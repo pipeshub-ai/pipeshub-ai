@@ -113,7 +113,7 @@ def resolve_record_scoped_entities(
     state: "ChatState", entity_ids: list[str] | None,
 ) -> list[tuple[str, str]]:
     """``(entity_id, entity_type)`` for the ``entity_ids`` that are record
-    groups or subcategories returned by ``search_entities`` in this request.
+    groups, subcategories or people returned by ``search_entities`` in this request.
     They have no name-based graph filter, so they become a permission-checked
     ``virtualRecordId`` allow-list (``resolve_entity_virtual_ids``) passed to
     the retrieval service as ``virtual_record_ids_from_tool``.
@@ -153,7 +153,7 @@ def _entity_notes(
         )
     if filter_dropped:
         scope_left = (
-            " The record group/subcategory scope still applies." if record_scope_applied else ""
+            " The record group/subcategory/person scope still applies." if record_scope_applied else ""
         )
         notes.append(
             "Note: nothing matched inside the requested department/category/topic/"
@@ -161,13 +161,13 @@ def _entity_notes(
         )
     if scope_truncated:
         notes.append(
-            "Note: the requested record group/subcategory has more records than one "
+            "Note: the requested record group/subcategory/person has more records than one "
             "search can cover, so only part of its accessible records were searched."
         )
     if entities_skipped:
         notes.append(
-            f"Note: only the first {SEARCH_SCOPE_MAX_ENTITIES} record group/subcategory "
-            f"entity_ids scoped this search; {entities_skipped} more record group/subcategory "
+            f"Note: only the first {SEARCH_SCOPE_MAX_ENTITIES} record group/subcategory/person "
+            f"entity_ids scoped this search; {entities_skipped} more record group/subcategory/person "
             "entity_ids were not applied. Search them separately. Department, category, "
             "topic and language entity_ids are not limited."
         )

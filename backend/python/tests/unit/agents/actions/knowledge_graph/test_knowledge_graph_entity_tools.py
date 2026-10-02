@@ -93,3 +93,14 @@ class TestKnowledgeGraphFindRecordsByEntityDelegation:
             cursor="40",
         )
         assert result == (True, "Records connected to this department")
+
+
+def test_people_are_named_in_the_entity_tool_descriptions() -> None:
+    """KG-13: the model can only ask for a type it is told exists."""
+    from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
+
+    search = KnowledgeGraph.search_entities._agent_tool_meta
+    params = {p.name: p.description for p in search.parameters}
+    assert "people" in search.short_description and "people" in search.description
+    assert "'person'" in params["entity_types"]
+    assert "person" in KnowledgeGraph.find_records_by_entity._agent_tool_meta.description

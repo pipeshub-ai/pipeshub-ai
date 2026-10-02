@@ -380,6 +380,20 @@ class TestSearchEntitiesForUser:
         assert passes[2].org_wide is True
 
     @pytest.mark.asyncio
+    async def test_a_person_is_kept_only_through_a_record_the_user_can_read(self) -> None:
+        """KG-13: a member is found by the records naming them, never by
+        being a member; a member named only in unreadable records is hidden."""
+        store = _store([_hit("u-ann", "person", 0.9), _hit("u-bob", "person", 0.8)])
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"u-ann": [_row("r1", "conf-1")], "u-bob": [_row("r2", "conf-1")]},
+            permitted={"r1"},
+        )
+
+        hits = await search_entities_for_user(store, graph, _context(), "ann", top_k=5)
+
+        assert [(h.entity_id, h.entity_type) for h in hits] == [("u-ann", "person")]
+
+    @pytest.mark.asyncio
     async def test_stale_app_level_membership_does_not_keep_an_entity(self) -> None:
         stale = _hit("t1", "topic", 0.9, connectorIds=["kb-1"])
         store = _store([stale], [], [])
