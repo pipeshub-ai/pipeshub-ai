@@ -3525,6 +3525,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_groups_with_permission_to_node(
+        self,
+        node_id: str,
+        node_collection: str,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list['AppUserGroup']:
+        """
+        Get the user groups holding a direct permission edge to a node.
+
+        Args:
+            node_id (str): Node ID
+            node_collection (str): Node collection name
+            transaction (Optional[Any]): Optional transaction context
+            raise_on_error: Raise when the read fails, instead of answering an
+                empty list that reads as "no group has access"
+
+        Returns:
+            List[AppUserGroup]: The groups with a permission edge to the node
+        """
+        pass
+
+    @abstractmethod
     async def check_record_access_with_details(
         self,
         user_id: str,

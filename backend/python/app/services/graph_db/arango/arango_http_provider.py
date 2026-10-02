@@ -7180,6 +7180,41 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 raise
             return []
 
+    async def get_groups_with_permission_to_node(
+        self,
+        node_id: str,
+        node_collection: str,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[AppUserGroup]:
+        """Get the user groups with a permission edge to a node."""
+        try:
+            query = """
+            FOR edge IN @@edge_collection
+                FILTER edge._to == @node_key
+                FOR user_group IN @@group_collection
+                    FILTER user_group._id == edge._from AND user_group.externalGroupId != null
+                    RETURN DISTINCT user_group
+            """
+            bind_vars = {
+                "@edge_collection": CollectionNames.PERMISSION.value,
+                "@group_collection": CollectionNames.GROUPS.value,
+                "node_key": f"{node_collection}/{node_id}",
+            }
+
+            results = await self.http_client.execute_aql(query, bind_vars, transaction)
+            return [
+                AppUserGroup.from_arango_base_user_group(self._translate_node_from_arango(result))
+                for result in results
+            ]
+
+        except Exception as e:
+            self.logger.error(f"❌ Get groups with permission to node failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return []
+
     async def get_record_owner_source_user_email(
         self,
         record_id: str,

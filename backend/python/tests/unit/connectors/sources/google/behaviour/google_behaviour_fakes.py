@@ -302,6 +302,7 @@ class FakeEntitiesProcessor:
         self.fail_record_listing = False
         self.fail_owner_lookup = False
         self.fail_permission_lookup = False
+        self.fail_group_permission_lookup = False
 
     def _check_write(self, external_id: Optional[str]) -> None:
         if external_id in self.fail_writes_for:
@@ -395,6 +396,23 @@ class FakeEntitiesProcessor:
             return []
         emails = self.perm_emails(record.external_record_id)
         return [u for u in self.active_users if u.email in emails]
+
+    async def get_groups_with_permission_to_node(
+        self, node_id: str, node_collection: str, *, raise_on_error: bool = False
+    ) -> list[Any]:
+        if self.fail_group_permission_lookup:
+            if raise_on_error:
+                raise RuntimeError("graph unavailable while reading the record's group grants")
+            return []
+        record = self.by_id(node_id)
+        if record is None:
+            return []
+        # A group grant only has an edge when the group was stored, as both stores write them.
+        granted = {
+            p.external_id for p in self.permissions.get(record.external_record_id, [])
+            if p.entity_type == EntityType.GROUP and p.external_id
+        }
+        return [group for key, (group, _) in self.user_groups.items() if key in granted]
 
     # writes
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:

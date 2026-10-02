@@ -466,6 +466,13 @@ class GraphTransactionStore(TransactionStore):
             node_id, node_collection, transaction=self.txn, raise_on_error=raise_on_error
         )
 
+    async def get_groups_with_permission_to_node(
+        self, node_id: str, node_collection: str, *, raise_on_error: bool = False
+    ) -> list[AppUserGroup]:
+        return await self.graph_provider.get_groups_with_permission_to_node(
+            node_id, node_collection, transaction=self.txn, raise_on_error=raise_on_error
+        )
+
     async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[dict]:
         return await self.graph_provider.get_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
 

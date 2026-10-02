@@ -605,6 +605,114 @@ async def test_a_drive_whose_synced_member_joins_through_a_group_still_walks_its
     assert "p1" in ws.records.records, "a group member walks the drive, so one lost share isn't a delete"
 
 
+async def test_a_drive_whose_synced_member_is_in_a_nested_group_still_walks_its_deletes(ws: Workspace) -> None:
+    ws.world.add_group("platform@example.com", [ALICE])
+    ws.world.add_group("eng@example.com", ["platform@example.com"])
+    ws.world.add_drive("sd-4", "Platform", {"eng@example.com": "organizer"})
+    ws.world.add_item("p1", "runbook.txt", parent="sd-4", perms=[{"type": "user", "role": "writer", "emailAddress": BOB}])
+    await ws.sync()
+    assert "p1" in ws.records.records
+
+    ws.world._mutate("p1", lambda: setattr(ws.world.files["p1"], "perms", []))
+    await ws.sync()
+    assert "p1" in ws.records.records, "Alice reaches the drive through a group inside a group"
+    assert ws.records.deleted == []
+
+    ws.world.delete("p1")
+    await ws.sync()
+    assert "p1" not in ws.records.records, "Alice's walk of the drive picks up the real delete"
+
+
+def _file_shared_with_a_group_in_an_unwalked_drive(ws: Workspace, group_members: list[str]) -> None:
+    ws.world.add_group("sales@example.com", group_members)
+    ws.world.add_drive("sd-3", "Contractors", {"ghost@example.com": "organizer"})
+    ws.world.add_item("g1", "brief.txt", parent="sd-3", perms=[
+        {"type": "user", "role": "writer", "emailAddress": BOB},
+        {"type": "group", "role": "reader", "emailAddress": "sales@example.com"},
+    ])
+    # Every reader sees the full sharing list, so nobody's sync stands in a direct edge for Alice.
+    ws.world.files["g1"].perm_access = "all"
+
+
+async def test_a_file_a_synced_user_still_opens_through_a_group_is_kept(ws: Workspace) -> None:
+    _file_shared_with_a_group_in_an_unwalked_drive(ws, [ALICE])
+    await ws.sync()
+    assert ("sales@example.com", "GROUP", "READ") in ws.grants("g1")
+    assert ALICE not in ws.records.perm_emails("g1"), "Alice's only access is the group"
+
+    ws.world.unshare("g1", BOB)
+    await ws.sync()
+
+    assert "g1" in ws.records.records, "Alice can still open it through sales@, so it is not gone"
+    assert ws.records.deleted == []
+
+
+async def test_a_file_a_synced_user_still_opens_through_a_nested_group_is_kept(ws: Workspace) -> None:
+    ws.world.add_user("carol@example.com")
+    ws.world.add_group("emea@example.com", [ALICE])
+    _file_shared_with_a_group_in_an_unwalked_drive(ws, ["carol@example.com", "emea@example.com"])
+    await ws.sync()
+    assert ("sales@example.com", "GROUP", "READ") in ws.grants("g1")
+
+    ws.world.unshare("g1", BOB)
+    await ws.sync()
+
+    assert "g1" in ws.records.records, "Alice is in sales@ through emea@, and can still open it"
+    assert ws.records.deleted == []
+
+
+async def test_a_file_shared_with_a_group_the_directory_wont_list_is_kept(ws: Workspace) -> None:
+    _file_shared_with_a_group_in_an_unwalked_drive(ws, [ALICE])
+    await ws.sync()
+    checkpoint = ws.user_checkpoint(BOB)
+
+    ws.world.unshare("g1", BOB)
+    ws.http.fail("GET", "/admin/directory/v1/groups/sales@example.com/members", 403, "forbidden")
+    await ws.sync()
+
+    assert "g1" in ws.records.records, "members that can't be read are not taken for nobody"
+    assert ws.records.deleted == []
+    assert ws.user_checkpoint(BOB) != checkpoint, "a refusal that won't go away doesn't hold Bob's changes"
+
+
+@pytest.mark.parametrize(("status", "reason"), [(500, "backendError"), (403, "rateLimitExceeded")])
+async def test_a_group_member_read_that_fails_holds_the_removed_change(
+    ws: Workspace, backoff_sleeps: list[float], status: int, reason: str
+) -> None:
+    _file_shared_with_a_group_in_an_unwalked_drive(ws, [ALICE])
+    await ws.sync()
+    checkpoint = ws.user_checkpoint(BOB)
+
+    ws.world.unshare("g1", BOB)
+    ws.http.fail("GET", "/admin/directory/v1/groups/sales@example.com/members", status, reason)
+    await ws.sync()
+    assert "g1" in ws.records.records
+    assert ws.user_checkpoint(BOB) == checkpoint
+
+    ws.http.clear_faults()
+    await ws.sync()
+    assert "g1" in ws.records.records, "Alice can still open it through sales@"
+    assert ws.user_checkpoint(BOB) != checkpoint
+    assert ws.records.deleted == []
+
+
+async def test_a_group_grant_lookup_that_fails_holds_the_removed_change(ws: Workspace) -> None:
+    _file_shared_with_a_group_in_an_unwalked_drive(ws, [ALICE])
+    await ws.sync()
+    checkpoint = ws.user_checkpoint(BOB)
+
+    ws.world.unshare("g1", BOB)
+    ws.records.fail_group_permission_lookup = True
+    await ws.sync()
+    assert "g1" in ws.records.records
+    assert ws.user_checkpoint(BOB) == checkpoint
+
+    ws.records.fail_group_permission_lookup = False
+    await ws.sync()
+    assert "g1" in ws.records.records
+    assert ws.records.deleted == []
+
+
 async def test_a_permission_lookup_that_fails_holds_the_removed_change(ws: Workspace) -> None:
     _file_in_filtered_out_drive(ws)
     await ws.sync()

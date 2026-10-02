@@ -337,6 +337,7 @@ class TestAbstractMethodInventory:
         "get_file_permissions",
         "get_first_user_with_permission_to_node",
         "get_users_with_permission_to_node",
+        "get_groups_with_permission_to_node",
         "check_record_access_with_details",
         "get_record_owner_source_user_email",
         # File/parent operations

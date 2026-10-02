@@ -323,6 +323,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # per-user and lives alongside the user being synced.
         self._synced_drive_ids: set = set()
         self._drive_has_member_cache: dict[str, bool] = {}
+        self._group_members_cache: dict[str, set[str] | None] = {}
         self._deployment_emails: set[str] | None = None
         # Every shared drive in the domain before the DRIVE_IDS filter, to tell a shared
         # drive's records from My Drive ones when that filter is checked.
@@ -473,6 +474,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._folders_probed = set()
             self._synced_drive_ids = set()
             self._drive_has_member_cache = {}
+            self._group_members_cache = {}
             self._deployment_emails = None
             self._external_emails = set()
             if self._folder_seed_ids:
@@ -842,12 +844,13 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(f"Error processing group {group.get('id', 'unknown')}: {e}", exc_info=True)
             raise
 
-    async def _fetch_group_members(self, group_id: str) -> List[Dict]:
+    async def _fetch_group_members(self, group_id: str, *, include_derived: bool = False) -> List[Dict]:
         """
         Fetch all members of a group with pagination.
 
         Args:
             group_id: The group ID or email
+            include_derived: Also list the members of nested groups
 
         Returns:
             List of member dictionaries
@@ -859,6 +862,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             try:
                 result = await self.admin_data_source.members_list(
                     groupKey=group_id,
+                    includeDerivedMembership=True if include_derived else None,
                     pageToken=page_token,
                     maxResults=200  # Maximum allowed by Google Admin API
                 )
@@ -1795,11 +1799,38 @@ class GoogleDriveTeamConnector(BaseConnector):
                 found = (permission.email or "").lower() in synced
             elif permission.entity_type == EntityType.GROUP and permission.external_id:
                 # A group grant keeps the group's email in external_id.
-                members = await self._fetch_group_members(permission.external_id)
-                found = any((m.get("email") or "").lower() in synced for m in members)
+                members = await self._synced_group_members(permission.external_id)
+                # A group the directory won't list may hold a synced user; don't read it as empty.
+                found = members is None or bool(members)
             if found:
                 break
         self._drive_has_member_cache[drive_id] = found
+        return found
+
+    async def _synced_group_members(self, group_email: str) -> set[str] | None:
+        """Emails of the synced users in a group, nested groups included.
+
+        None when the directory refuses or doesn't know the group, so the caller can
+        tell "nobody synced is in it" from "can't say". Read once per run; any other
+        failed read raises.
+        """
+        if group_email in self._group_members_cache:
+            return self._group_members_cache[group_email]
+        try:
+            members = await self._fetch_group_members(group_email, include_derived=True)
+        except HttpError as e:
+            # A quota 403 clears with time, so it is retried rather than read as a refusal.
+            refused = e.resp.status == HttpStatusCode.NOT_FOUND.value or (
+                is_permission_denied_403(e) or is_unrecognised_403(e)
+            )
+            if not refused:
+                raise
+            self.logger.info(f"The directory could not list the members of {group_email}: {e}")
+            found = None
+        else:
+            synced = await self._synced_user_emails()
+            found = {email for m in members if (email := (m.get("email") or "").lower()) in synced}
+        self._group_members_cache[group_email] = found
         return found
 
     async def _synced_user_emails(self) -> set[str]:
@@ -1814,14 +1845,28 @@ class GoogleDriveTeamConnector(BaseConnector):
     ) -> bool:
         """Whether a synced user other than ``removed_for`` can still open the record's file.
 
-        Asks each active synced user the graph holds a permission for. "Not found",
-        a known permission refusal, or the trash count as unable; any other failure
-        raises, so the change is read again next sync.
+        Asks each active synced user the graph holds a permission for, directly or
+        through a group grant. "Not found", a known permission refusal, or the trash
+        count as unable. A group whose members the directory won't list counts as
+        able, so the file is kept; any other failure raises, so the change is read
+        again next sync.
         """
         holders = await self.data_entities_processor.get_users_with_permission_to_node(
             record.id, CollectionNames.RECORDS.value, raise_on_error=True
         )
+        groups = await self.data_entities_processor.get_groups_with_permission_to_node(
+            record.id, CollectionNames.RECORDS.value, raise_on_error=True
+        )
         holder_emails = {(u.email or "").lower() for u in holders} & await self._synced_user_emails()
+        for group in groups:
+            members = await self._synced_group_members(group.source_user_group_id)
+            if members is None:
+                self.logger.info(
+                    f"Keeping {record.record_name}: the members of {group.source_user_group_id}, "
+                    "which can open it, could not be read"
+                )
+                return True
+            holder_emails |= members
         askable = [
             u for u in self.synced_users
             if u.email and u.email.lower() in holder_emails

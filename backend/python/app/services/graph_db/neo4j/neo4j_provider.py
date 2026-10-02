@@ -6707,6 +6707,45 @@ class Neo4jProvider(IGraphDBProvider):
                 raise
             return []
 
+    async def get_groups_with_permission_to_node(
+        self,
+        node_key: str,
+        collection: str = CollectionNames.PERMISSION.value,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[AppUserGroup]:
+        """Get the user groups with a permission edge to a node"""
+        try:
+            query = """
+            MATCH (g:Group)-[r:PERMISSION]->(n)
+            WHERE n.id = $node_key AND g.externalGroupId IS NOT NULL
+            RETURN DISTINCT g
+            """
+
+            _, key = self._parse_arango_id(node_key)
+            if not key:
+                key = node_key
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"node_key": key},
+                txn_id=transaction
+            )
+
+            return [
+                AppUserGroup.from_arango_base_user_group(
+                    self._neo4j_to_arango_node(dict(record["g"]), CollectionNames.GROUPS.value)
+                )
+                for record in results
+            ]
+
+        except Exception as e:
+            self.logger.error(f"❌ Get groups with permission failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return []
+
     async def get_record_owner_source_user_email(
         self,
         record_id: str,

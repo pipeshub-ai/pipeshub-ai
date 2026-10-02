@@ -3090,6 +3090,14 @@ class DataSourceEntitiesProcessor:
             return await tx_store.get_users_with_permission_to_node(
                 node_id, node_collection, raise_on_error=raise_on_error
             )
+
+    async def get_groups_with_permission_to_node(
+        self, node_id: str, node_collection: str, *, raise_on_error: bool = False
+    ) -> list[AppUserGroup]:
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_groups_with_permission_to_node(
+                node_id, node_collection, raise_on_error=raise_on_error
+            )
             
     async def get_user_by_source_id(
         self, source_user_id: str, connector_id: str
