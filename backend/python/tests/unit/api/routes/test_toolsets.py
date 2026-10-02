@@ -7864,6 +7864,7 @@ class TestAgentScopedToolsets:
                 limit=20,
                 include_registry=False,
                 fetch_auth_for_instance=AsyncMock(return_value=None),
+                include_has_credentials=True,
             )
 
         assert result["status"] == "success"
@@ -7872,6 +7873,7 @@ class TestAgentScopedToolsets:
         assert ts["instanceId"] == "i1"
         assert ts["isAuthenticated"] is True
         assert ts["isConfigured"] is True
+        assert ts["hasCredentials"] is False
         assert result["filterCounts"]["authenticated"] == 1
         assert result["filterCounts"]["notAuthenticated"] == 0
 
@@ -8128,6 +8130,26 @@ class TestGetAuthenticatedToolsets:
         assert auth_by_instance["inst_none"]["isAuthenticated"] is True
         assert auth_by_instance["inst_none"]["authType"] == "NONE"
         assert "inst_token_unauthed" not in auth_by_instance
+
+    @pytest.mark.asyncio
+    async def test_get_authenticated_toolsets_missing_or_empty_authtype_fails_closed(self) -> None:
+        """Instances with missing, empty, or None authType must not be treated as NONE or authenticated."""
+        from app.api.routes.toolsets import get_authenticated_toolsets
+
+        config_service = AsyncMock()
+        instances = [
+            {"_id": "inst_no_authtype", "orgId": "o1", "toolsetType": "custom"},
+            {"_id": "inst_empty_authtype", "orgId": "o1", "toolsetType": "custom", "authType": ""},
+            {"_id": "inst_none_val_authtype", "orgId": "o1", "toolsetType": "custom", "authType": None},
+        ]
+
+        config_service.get_config = AsyncMock(side_effect=lambda path, default=None: instances if "toolset-instances" in path else None)
+        registry = MagicMock()
+        registry.get_toolset_metadata.return_value = {"tools": []}
+
+        result, auth_by_instance = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        assert len(result) == 0
+        assert len(auth_by_instance) == 0
 
 
 class TestIsActionsEnabled:
