@@ -6,7 +6,7 @@ import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 from urllib.parse import parse_qs, urlencode
 
 from aiohttp import ClientSession
@@ -71,22 +71,22 @@ class OAuthConfig:
     redirect_uri: str
     authorize_url: str
     token_url: str
-    tenant_id: Optional[str] = None
-    scope: Optional[str] = None
-    state: Optional[str] = None
+    tenant_id: str | None = None
+    scope: str | None = None
+    state: str | None = None
     response_type: str = "code"
     grant_type: GrantType = GrantType.AUTHORIZATION_CODE
-    additional_params: Dict[str, Any] = field(default_factory=dict)
-    token_access_type: Optional[str] = None
+    additional_params: dict[str, Any] = field(default_factory=dict)
+    token_access_type: str | None = None
     scope_parameter_name: str = "scope"  # Parameter name for scopes in authorization URL (e.g., "scope", "user_scope", "resource")
-    token_response_path: Optional[str] = None  # Optional: path to extract token from nested response (e.g., "authed_user" for Slack)
+    token_response_path: str | None = None  # Optional: path to extract token from nested response (e.g., "authed_user" for Slack)
 
     def generate_state(self) -> str:
         """Generate random state for CSRF protection"""
         self.state = secrets.token_urlsafe(32)
         return self.state
 
-    def normalize_token_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+    def normalize_token_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """
         Normalize token response if token_response_path is configured.
         Args:
@@ -133,15 +133,15 @@ class OAuthToken:
     """OAuth Token representation"""
     access_token: str
     token_type: str = "Bearer"
-    expires_in: Optional[int] = None
-    refresh_token: Optional[str] = None
-    refresh_token_expires_in: Optional[int] = None  # used by Microsoft/OneDrive
-    scope: Optional[str] = None
-    id_token: Optional[str] = None
+    expires_in: int | None = None
+    refresh_token: str | None = None
+    refresh_token_expires_in: int | None = None  # used by Microsoft/OneDrive
+    scope: str | None = None
+    id_token: str | None = None
     created_at: datetime = field(default_factory=datetime.now)
-    uid: Optional[str] = None   # used for dropbox
-    account_id: Optional[str] = None
-    team_id: Optional[str] = None
+    uid: str | None = None   # used for dropbox
+    account_id: str | None = None
+    team_id: str | None = None
 
     @property
     def is_expired(self) -> bool:
@@ -152,13 +152,13 @@ class OAuthToken:
         return datetime.now() >= expiry_time
 
     @property
-    def expires_at_epoch(self) -> Optional[int]:
+    def expires_at_epoch(self) -> int | None:
         """Get token expiration time"""
         if not self.expires_in:
             return None
         return int((self.created_at + timedelta(seconds=self.expires_in)).timestamp())
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert token to dictionary"""
         return {
             "access_token": self.access_token,
@@ -175,7 +175,7 @@ class OAuthToken:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'OAuthToken':
+    def from_dict(cls, data: dict[str, Any]) -> 'OAuthToken':
         """Create token from dictionary, filtering out unknown fields"""
         # Make a shallow copy to avoid mutating the caller's dict
         data = dict(data)
@@ -194,10 +194,10 @@ class OAuthToken:
 class OAuthProvider:
     """OAuth Provider for handling OAuth 2.0 flows"""
 
-    def __init__(self, config: OAuthConfig, configuration_service: ConfigurationService, credentials_path: str, connector_name: Optional[str] = None) -> None:
+    def __init__(self, config: OAuthConfig, configuration_service: ConfigurationService, credentials_path: str, connector_name: str | None = None) -> None:
         self.config = config
         self.configuration_service = configuration_service
-        self._session: Optional[ClientSession] = None
+        self._session: ClientSession | None = None
         self.credentials_path = credentials_path
         self.token = None
         self.connector_name = connector_name
@@ -309,7 +309,7 @@ class OAuthProvider:
                 parsed_data = parse_qs(text_response, keep_blank_values=True)
                 token_data = {key: values[0] if values else None for key, values in parsed_data.items()}
                 # Convert string numbers to integers for expires_in if present
-                if 'expires_in' in token_data and token_data['expires_in']:
+                if token_data.get('expires_in'):
                     try:
                         token_data['expires_in'] = int(token_data['expires_in'])
                     except (ValueError, TypeError):
@@ -318,7 +318,7 @@ class OAuthProvider:
             else:
                 return await response.json()
 
-    async def exchange_code_for_token(self, code: str, state: Optional[str] = None, code_verifier: Optional[str] = None) -> OAuthToken:
+    async def exchange_code_for_token(self, code: str, state: str | None = None, code_verifier: str | None = None) -> OAuthToken:
         # Note: State validation is handled in handle_callback, not here
         # This method only exchanges the code for a token
 
@@ -343,7 +343,7 @@ class OAuthProvider:
         token = OAuthToken.from_dict(normalized_data)
         return token
 
-    async def refresh_access_token(self, refresh_token: str) -> OAuthToken:
+    async def refresh_access_token(self, refresh_token: str, persist_credentials: bool = True) -> OAuthToken:
         """Refresh access token using refresh token"""
         data = {
             "grant_type": GrantType.REFRESH_TOKEN.value,
@@ -377,16 +377,21 @@ class OAuthProvider:
         if not token.refresh_token:
             token.refresh_token = refresh_token
 
-        # Update the stored credentials with the new token
-        config = await self.configuration_service.get_config(self.credentials_path)
-        if not isinstance(config, dict):
-            config = {}
+        if persist_credentials:
+            for _ in range(3):
+                config, version = await self.configuration_service.get_config_with_version(self.credentials_path)
+                if not isinstance(config, dict):
+                    config = {}
 
-        # Best effort: callers verify the write and retry it. A copy, because
-        # get_config hands back the cached dict and a failed write must not change it.
-        await self.configuration_service.set_config(
-            self.credentials_path, {**config, 'credentials': token.to_dict()}
-        )
+                updated = {**config, 'credentials': token.to_dict()}
+                success, _ = await self.configuration_service.compare_and_set(
+                    self.credentials_path, version, updated
+                )
+                if success:
+                    break
+                # Best effort for simple callers: if CAS fails, we retry a few times.
+                # If all retries fail, we just return the token (this matches old best-effort set_config behavior,
+                # but respects versions and won't blindly overwrite).
 
         return token
 
@@ -406,12 +411,20 @@ class OAuthProvider:
     async def revoke_token(self) -> bool:
         """Revoke access token"""
         # Default implementation - override in specific providers
-        config = await self.configuration_service.get_config(self.credentials_path)
-        if not isinstance(config, dict):
-            config = {}
-        config['credentials'] = None
-        await self.configuration_service.set_config(self.credentials_path, config)
-        return True
+        for _ in range(3):
+            config, version = await self.configuration_service.get_config_with_version(self.credentials_path)
+            if not isinstance(config, dict):
+                config = {}
+            if config.get('credentials') is None:
+                return True
+            import uuid
+            updated = {**config, 'credentials': None, 'auth_generation': uuid.uuid4().hex}
+            success, _ = await self.configuration_service.compare_and_set(
+                self.credentials_path, version, updated
+            )
+            if success:
+                return True
+        return False
 
 
     def _gen_code_verifier(self, n: int = 64) -> str:
@@ -422,9 +435,9 @@ class OAuthProvider:
         s256 = hashlib.sha256(verifier.encode()).digest()
         return base64.urlsafe_b64encode(s256).decode().rstrip("=")
 
-    async def start_authorization(self, *, return_to: Optional[str] = None, use_pkce: bool = True, **extra) -> str:
+    async def start_authorization(self, *, return_to: str | None = None, use_pkce: bool = True, **extra) -> str:
         state = self.config.generate_state()
-        session_data: Dict[str, Any] = {
+        session_data: dict[str, Any] = {
             "created_at": datetime.utcnow().isoformat(),
             "state": state,
             "used_codes": []  # Start fresh with empty used_codes for new auth flow
@@ -441,87 +454,148 @@ class OAuthProvider:
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256"
             })
-        config = await self.configuration_service.get_config(self.credentials_path)
-        if not isinstance(config, dict):
-            config = {}
-        # Replace entire oauth session data - this clears any old state, codes, etc.
-        # This is important for re-authentication to ensure fresh start
-        config['oauth'] = session_data
 
-        await self.configuration_service.set_config(self.credentials_path, config)
-        return self._get_authorization_url(state=state, **extra)
+        import asyncio
+        import random
+
+        from app.config.configuration_service import ConcurrentModificationError
+
+        for attempt in range(1, 6):
+            config, version = await self.configuration_service.get_config_with_version(self.credentials_path)
+            if config is None:
+                config = {}
+            if not isinstance(config, dict):
+                config = {}
+
+            # Replace entire oauth session data - this clears any old state, codes, etc.
+            # This is important for re-authentication to ensure fresh start
+            config['oauth'] = session_data
+
+            success, _ = await self.configuration_service.compare_and_set(self.credentials_path, version, config)
+            if success:
+                return self._get_authorization_url(state=state, **extra)
+
+            if attempt < 5:
+                await asyncio.sleep(0.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.1))
+
+        raise ConcurrentModificationError("Failed to update OAuth session state after 5 attempts")
 
     async def handle_callback(self, code: str, state: str) -> OAuthToken:
-        config = await self.configuration_service.get_config(self.credentials_path)
+        import asyncio
+        import copy
+        import random
+        import uuid
+
+        from app.config.configuration_service import ConcurrentModificationError
+
+        # 1. First validate state and handle idempotency/duplicates
+        config, version = await self.configuration_service.get_config_with_version(self.credentials_path)
+        if config is None:
+            config = {}
         if not isinstance(config, dict):
             config = {}
 
         oauth_data = config.get('oauth', {}) or {}
         stored_state = oauth_data.get("state")
+        used_codes = oauth_data.get("used_codes", [])
 
-        # Validate state first (must match for security)
+        # Validate state
         if not stored_state or stored_state != state:
-            # Check if this is a duplicate callback (code already used, credentials exist)
-            # This handles browser refreshes or duplicate callback attempts
+            # Check if this is a duplicate callback
             existing_creds = config.get('credentials')
-            used_codes = oauth_data.get("used_codes", [])
-
-            # Only treat as success if:
-            # 1. Credentials exist AND
-            # 2. This specific code was already used (indicates duplicate callback)
             if isinstance(existing_creds, dict) and existing_creds.get('access_token') and code in used_codes:
                 try:
                     token = OAuthToken.from_dict(existing_creds)
                     self.token = token
                     return token
                 except (TypeError, ValueError, KeyError):
-                    # If stored creds are malformed, fall back to error
                     raise ValueError("Invalid or expired state")
-
-            # State mismatch and not a duplicate callback -> genuine error
             raise ValueError("Invalid or expired state")
 
-        # Check if this specific code has already been used (prevent duplicate code usage)
-        used_codes = oauth_data.get("used_codes", [])
+        # Check for duplicate code
         if code in used_codes:
-            # This code was already used - check if we have valid credentials from it
             existing_creds = config.get('credentials')
             if isinstance(existing_creds, dict) and existing_creds.get('access_token'):
-                # Return existing credentials from this code (duplicate callback protection)
                 try:
                     token = OAuthToken.from_dict(existing_creds)
                     self.token = token
                     return token
                 except (TypeError, ValueError, KeyError):
                     pass
-            # Code was used but no valid credentials - treat as error
             raise ValueError("Authorization code has already been used")
+
+        # 2. Atomic callback claim: add code to used_codes BEFORE exchange
+        claimed = False
+        for attempt in range(1, 6):
+            if attempt > 1:
+                config, version = await self.configuration_service.get_config_with_version(self.credentials_path)
+                if config is None or not isinstance(config, dict):
+                    config = {}
+                oauth_data = config.get('oauth', {}) or {}
+                if oauth_data.get('state') != state:
+                    raise ValueError("OAuth session was superseded by a newer authorization")
+                used_codes = oauth_data.get("used_codes", [])
+                if code in used_codes:
+                    raise ValueError("Authorization code has already been used concurrently")
+
+            new_config = copy.deepcopy(config)
+            new_oauth = new_config.setdefault('oauth', {})
+            new_used_codes = new_oauth.get("used_codes", [])
+            if code not in new_used_codes:
+                new_used_codes.append(code)
+            new_oauth["used_codes"] = new_used_codes
+
+            success, version = await self.configuration_service.compare_and_set(self.credentials_path, version, new_config)
+            if success:
+                claimed = True
+                config = new_config
+                oauth_data = new_oauth
+                break
+
+            if attempt < 5:
+                await asyncio.sleep(0.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.1))
+
+        if not claimed:
+            raise ConcurrentModificationError("Failed to claim OAuth callback after 5 attempts")
+
+        # 3. Exchange code for token
         try:
             token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))
+
+            # 4. Success Persistence
+            persisted = False
+            for attempt in range(1, 6):
+                if attempt > 1:
+                    config, version = await self.configuration_service.get_config_with_version(self.credentials_path)
+                    if config is None or not isinstance(config, dict):
+                        config = {}
+                    oauth_data = config.get('oauth', {}) or {}
+                    if oauth_data.get('state') != state:
+                        # Another authorization has superseded us.
+                        # We must stop without changing its state, PKCE verifier, credentials, or code history.
+                        raise ValueError("OAuth state was superseded during token persistence")
+
+                new_config = copy.deepcopy(config)
+                new_config['credentials'] = token.to_dict()
+                new_config['auth_generation'] = uuid.uuid4().hex
+
+                success, _ = await self.configuration_service.compare_and_set(self.credentials_path, version, new_config)
+                if success:
+                    persisted = True
+                    break
+
+                if attempt < 5:
+                    await asyncio.sleep(0.5 * (2 ** (attempt - 1)) + random.uniform(0, 0.1))
+
+            if not persisted:
+                raise ConcurrentModificationError("Failed to persist token after 5 attempts")
+
+            # Assign self.token only after durable persistence succeeds
             self.token = token
-
-            # Mark this code as used
-            used_codes.append(code)
-            oauth_data["used_codes"] = used_codes
-
-            # Store the new token FIRST before clearing OAuth state
-            # This ensures credentials are updated even if something fails during cleanup
-            config['credentials'] = token.to_dict()
-
-            # Clean up OAuth transient state after successful exchange
-            # Clear state and code_verifier, but keep used_codes temporarily
-            # to prevent duplicate callback with same code
-            config['oauth'] = {
-                "used_codes": used_codes  # Keep used codes to prevent replay attacks
-            }
-
-            await self.configuration_service.set_config(self.credentials_path, config)
-
             return token
+
         except Exception:
-            # If token exchange fails, still mark the code as used to prevent retry loops
-            used_codes.append(code)
-            oauth_data["used_codes"] = used_codes
-            config['oauth'] = oauth_data
-            await self.configuration_service.set_config(self.credentials_path, config)
+            # Token exchange failed. The code is already marked as used in the claim phase.
+            # We don't need to mark it again, but if there's any other cleanup needed, it would go here.
+            # We also ensure we don't accidentally swallow the error.
             raise

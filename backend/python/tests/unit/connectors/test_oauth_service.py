@@ -400,10 +400,12 @@ def _make_oauth_config(**overrides):
 
 @pytest.fixture
 def mock_config_service():
-    """Mock ConfigurationService with async get_config/set_config."""
+    """Mock ConfigurationService with async get_config_with_version/compare_and_set."""
     svc = MagicMock()
     svc.get_config = AsyncMock(return_value={})
     svc.set_config = AsyncMock()
+    svc.get_config_with_version = AsyncMock(return_value=({}, 1))
+    svc.compare_and_set = AsyncMock(return_value=(True, ({}, 2)))
     return svc
 
 
@@ -911,6 +913,8 @@ class TestRefreshAccessToken:
     async def test_basic_refresh(self, mock_config_service):
         """Basic refresh returns new token and updates config."""
         config = _make_oauth_config()
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({}, 1))
+        mock_config_service.compare_and_set = AsyncMock(return_value=(True, ({}, 2)))
         provider = OAuthProvider(config, mock_config_service, "/path")
 
         provider._make_token_request = AsyncMock(return_value={
@@ -924,7 +928,7 @@ class TestRefreshAccessToken:
         assert token.refresh_token == "new-refresh"
 
         # Should have updated config
-        mock_config_service.set_config.assert_awaited_once()
+        mock_config_service.compare_and_set.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_refresh_preserves_old_refresh_token(self, mock_config_service):
@@ -1048,7 +1052,8 @@ class TestRefreshAccessToken:
     async def test_refresh_updates_credentials_in_config(self, mock_config_service):
         """refresh_access_token stores new token in config service."""
         config = _make_oauth_config()
-        mock_config_service.get_config = AsyncMock(return_value={"existing": "data"})
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({"existing": "data"}, 1))
+        mock_config_service.compare_and_set = AsyncMock(return_value=(True, ({"existing": "data"}, 2)))
         provider = OAuthProvider(config, mock_config_service, "/path")
 
         provider._make_token_request = AsyncMock(return_value={
@@ -1058,16 +1063,17 @@ class TestRefreshAccessToken:
 
         token = await provider.refresh_access_token("old-ref")
 
-        # Verify set_config was called with credentials
-        set_call = mock_config_service.set_config.call_args
-        stored_config = set_call[0][1]
+        # Verify compare_and_set was called with credentials
+        set_call = mock_config_service.compare_and_set.call_args
+        stored_config = set_call[0][2]
         assert stored_config["credentials"]["access_token"] == "refreshed"
 
     @pytest.mark.asyncio
     async def test_refresh_config_not_dict_creates_new(self, mock_config_service):
         """When get_config returns non-dict, a new dict is created."""
         config = _make_oauth_config()
-        mock_config_service.get_config = AsyncMock(return_value="not a dict")
+        mock_config_service.get_config_with_version = AsyncMock(return_value=("not a dict", 1))
+        mock_config_service.compare_and_set = AsyncMock(return_value=(True, ({}, 2)))
         provider = OAuthProvider(config, mock_config_service, "/path")
 
         provider._make_token_request = AsyncMock(return_value={
@@ -1076,8 +1082,8 @@ class TestRefreshAccessToken:
 
         token = await provider.refresh_access_token("ref-tok")
 
-        set_call = mock_config_service.set_config.call_args
-        stored_config = set_call[0][1]
+        set_call = mock_config_service.compare_and_set.call_args
+        stored_config = set_call[0][2]
         assert "credentials" in stored_config
 
     @pytest.mark.asyncio
@@ -1176,19 +1182,21 @@ class TestRevokeToken:
     @pytest.mark.asyncio
     async def test_revoke_clears_credentials(self, oauth_provider, mock_config_service):
         """revoke_token clears credentials in config."""
-        mock_config_service.get_config = AsyncMock(return_value={"credentials": {"access_token": "tok"}})
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({"credentials": {"access_token": "tok"}}, 1))
+        mock_config_service.compare_and_set = AsyncMock(return_value=(True, ({"credentials": None}, 2)))
 
         result = await oauth_provider.revoke_token()
         assert result is True
 
-        set_call = mock_config_service.set_config.call_args
-        stored = set_call[0][1]
+        mock_config_service.compare_and_set.assert_awaited_once()
+        set_call = mock_config_service.compare_and_set.call_args
+        stored = set_call[0][2]
         assert stored["credentials"] is None
 
     @pytest.mark.asyncio
     async def test_revoke_with_non_dict_config(self, oauth_provider, mock_config_service):
         """revoke_token handles non-dict config gracefully."""
-        mock_config_service.get_config = AsyncMock(return_value=None)
+        mock_config_service.get_config_with_version = AsyncMock(return_value=(None, 1))
 
         result = await oauth_provider.revoke_token()
         assert result is True
@@ -1235,8 +1243,6 @@ class TestStartAuthorization:
     @pytest.mark.asyncio
     async def test_start_authorization_with_pkce(self, oauth_provider, mock_config_service):
         """start_authorization with PKCE stores verifier and returns URL with challenge."""
-        mock_config_service.get_config = AsyncMock(return_value={})
-
         url = await oauth_provider.start_authorization(return_to="/dashboard")
 
         # URL should contain code_challenge params
@@ -1245,9 +1251,9 @@ class TestStartAuthorization:
         assert params["code_challenge_method"] == ["S256"]
         assert "state" in params
 
-        # Config should have been updated with oauth session data
-        set_call = mock_config_service.set_config.call_args
-        stored = set_call[0][1]
+        # Config should have been updated with oauth session data via compare_and_set
+        cas_call = mock_config_service.compare_and_set.call_args
+        stored = cas_call[0][2]  # compare_and_set(path, version, new_config)
         assert "oauth" in stored
         assert "state" in stored["oauth"]
         assert "code_verifier" in stored["oauth"]
@@ -1258,22 +1264,20 @@ class TestStartAuthorization:
     @pytest.mark.asyncio
     async def test_start_authorization_without_pkce(self, oauth_provider, mock_config_service):
         """start_authorization without PKCE doesn't include challenge params."""
-        mock_config_service.get_config = AsyncMock(return_value={})
-
         url = await oauth_provider.start_authorization(use_pkce=False)
 
         params = parse_qs(urlparse(url).query)
         assert "code_challenge" not in params
         assert "code_challenge_method" not in params
 
-        set_call = mock_config_service.set_config.call_args
-        stored = set_call[0][1]
+        cas_call = mock_config_service.compare_and_set.call_args
+        stored = cas_call[0][2]  # compare_and_set(path, version, new_config)
         assert "code_verifier" not in stored["oauth"]
 
     @pytest.mark.asyncio
     async def test_start_authorization_non_dict_config(self, oauth_provider, mock_config_service):
-        """start_authorization handles non-dict config from get_config."""
-        mock_config_service.get_config = AsyncMock(return_value="not a dict")
+        """start_authorization handles non-dict config from get_config_with_version."""
+        mock_config_service.get_config_with_version = AsyncMock(return_value=("not a dict", 1))
 
         url = await oauth_provider.start_authorization()
         assert "state" in url
@@ -1281,7 +1285,7 @@ class TestStartAuthorization:
     @pytest.mark.asyncio
     async def test_start_authorization_extra_params(self, oauth_provider, mock_config_service):
         """Extra kwargs are passed through to URL."""
-        mock_config_service.get_config = AsyncMock(return_value={})
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({}, 1))
 
         url = await oauth_provider.start_authorization(login_hint="user@example.com")
         params = parse_qs(urlparse(url).query)
@@ -1299,13 +1303,13 @@ class TestHandleCallback:
     @pytest.mark.asyncio
     async def test_successful_callback(self, oauth_provider, mock_config_service):
         """Successful callback exchanges code for token and stores credentials."""
-        mock_config_service.get_config = AsyncMock(return_value={
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({
             "oauth": {
                 "state": "valid-state",
                 "code_verifier": "my-verifier",
                 "used_codes": [],
             }
-        })
+        }, 1))
 
         new_token = OAuthToken(access_token="new-tok", expires_in=3600)
         oauth_provider.exchange_code_for_token = AsyncMock(return_value=new_token)
@@ -1320,21 +1324,21 @@ class TestHandleCallback:
             code="auth-code", state="valid-state", code_verifier="my-verifier"
         )
 
-        # Verify config was updated
-        set_call = mock_config_service.set_config.call_args
-        stored = set_call[0][1]
+        # Verify config was updated via compare_and_set
+        cas_call = mock_config_service.compare_and_set.call_args
+        stored = cas_call[0][2]  # compare_and_set(path, version, new_config)
         assert stored["credentials"]["access_token"] == "new-tok"
         assert "auth-code" in stored["oauth"]["used_codes"]
 
     @pytest.mark.asyncio
     async def test_callback_state_mismatch_raises(self, oauth_provider, mock_config_service):
         """State mismatch raises ValueError."""
-        mock_config_service.get_config = AsyncMock(return_value={
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({
             "oauth": {
                 "state": "stored-state",
                 "used_codes": [],
             }
-        })
+        }, 1))
 
         with pytest.raises(ValueError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="wrong-state")
@@ -1342,9 +1346,10 @@ class TestHandleCallback:
     @pytest.mark.asyncio
     async def test_callback_no_stored_state_raises(self, oauth_provider, mock_config_service):
         """No stored state raises ValueError."""
-        mock_config_service.get_config = AsyncMock(return_value={
-            "oauth": {"used_codes": []},
-        })
+        mock_config_service.get_config_with_version = AsyncMock(return_value=(
+            {"oauth": {"used_codes": []}},
+            1,
+        ))
 
         with pytest.raises(ValueError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="any-state")
@@ -1352,7 +1357,7 @@ class TestHandleCallback:
     @pytest.mark.asyncio
     async def test_callback_state_mismatch_duplicate_with_valid_creds(self, oauth_provider, mock_config_service):
         """State mismatch but code already used with valid creds returns existing token."""
-        mock_config_service.get_config = AsyncMock(return_value={
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({
             "oauth": {
                 "state": "old-state",
                 "used_codes": ["auth-code"],
@@ -1361,7 +1366,7 @@ class TestHandleCallback:
                 "access_token": "existing-tok",
                 "token_type": "Bearer",
             }
-        })
+        }, 1))
 
         token = await oauth_provider.handle_callback(code="auth-code", state="different-state")
         assert token.access_token == "existing-tok"
@@ -1369,7 +1374,7 @@ class TestHandleCallback:
     @pytest.mark.asyncio
     async def test_callback_state_mismatch_duplicate_malformed_creds(self, oauth_provider, mock_config_service):
         """State mismatch, code used, but creds are malformed raises ValueError."""
-        mock_config_service.get_config = AsyncMock(return_value={
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({
             "oauth": {
                 "state": "old-state",
                 "used_codes": ["auth-code"],
@@ -1378,7 +1383,7 @@ class TestHandleCallback:
                 "access_token": "tok",
                 # Will cause OAuthToken.from_dict to fail with TypeError by passing bad created_at
             }
-        })
+        }, 1))
 
         # We need to make from_dict raise. Patch it.
         with patch.object(OAuthToken, "from_dict", side_effect=TypeError("bad data")):
@@ -1388,7 +1393,7 @@ class TestHandleCallback:
     @pytest.mark.asyncio
     async def test_callback_code_already_used_with_valid_creds(self, oauth_provider, mock_config_service):
         """State matches, but code was already used with valid creds returns existing token."""
-        mock_config_service.get_config = AsyncMock(return_value={
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({
             "oauth": {
                 "state": "valid-state",
                 "used_codes": ["auth-code"],
@@ -1397,7 +1402,7 @@ class TestHandleCallback:
                 "access_token": "existing-tok",
                 "token_type": "Bearer",
             }
-        })
+        }, 1))
 
         token = await oauth_provider.handle_callback(code="auth-code", state="valid-state")
         assert token.access_token == "existing-tok"
@@ -1405,13 +1410,13 @@ class TestHandleCallback:
     @pytest.mark.asyncio
     async def test_callback_code_already_used_no_valid_creds(self, oauth_provider, mock_config_service):
         """State matches, code used, but no valid credentials raises error."""
-        mock_config_service.get_config = AsyncMock(return_value={
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({
             "oauth": {
                 "state": "valid-state",
                 "used_codes": ["auth-code"],
             },
             "credentials": None,
-        })
+        }, 1))
 
         with pytest.raises(ValueError, match="Authorization code has already been used"):
             await oauth_provider.handle_callback(code="auth-code", state="valid-state")
@@ -1419,7 +1424,7 @@ class TestHandleCallback:
     @pytest.mark.asyncio
     async def test_callback_code_already_used_malformed_creds(self, oauth_provider, mock_config_service):
         """State matches, code used, creds exist but from_dict fails."""
-        mock_config_service.get_config = AsyncMock(return_value={
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({
             "oauth": {
                 "state": "valid-state",
                 "used_codes": ["auth-code"],
@@ -1427,7 +1432,7 @@ class TestHandleCallback:
             "credentials": {
                 "access_token": "tok",
             }
-        })
+        }, 1))
 
         with patch.object(OAuthToken, "from_dict", side_effect=TypeError("bad")):
             with pytest.raises(ValueError, match="Authorization code has already been used"):
@@ -1436,12 +1441,12 @@ class TestHandleCallback:
     @pytest.mark.asyncio
     async def test_callback_exchange_failure_marks_code_used(self, oauth_provider, mock_config_service):
         """When exchange_code_for_token fails, code is still marked as used."""
-        mock_config_service.get_config = AsyncMock(return_value={
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({
             "oauth": {
                 "state": "valid-state",
                 "used_codes": [],
             }
-        })
+        }, 1))
 
         oauth_provider.exchange_code_for_token = AsyncMock(
             side_effect=Exception("exchange failed")
@@ -1450,15 +1455,15 @@ class TestHandleCallback:
         with pytest.raises(Exception, match="exchange failed"):
             await oauth_provider.handle_callback(code="auth-code", state="valid-state")
 
-        # Config should have been updated with used_codes
-        set_call = mock_config_service.set_config.call_args
-        stored = set_call[0][1]
+        # Config should have been updated with used_codes via compare_and_set
+        cas_call = mock_config_service.compare_and_set.call_args
+        stored = cas_call[0][2]  # compare_and_set(path, version, new_config)
         assert "auth-code" in stored["oauth"]["used_codes"]
 
     @pytest.mark.asyncio
     async def test_callback_non_dict_config(self, oauth_provider, mock_config_service):
-        """handle_callback with non-dict config from get_config raises due to no state."""
-        mock_config_service.get_config = AsyncMock(return_value="not a dict")
+        """handle_callback with non-dict config from get_config_with_version raises due to no state."""
+        mock_config_service.get_config_with_version = AsyncMock(return_value=("not a dict", 1))
 
         with pytest.raises(ValueError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="state")
@@ -1466,9 +1471,9 @@ class TestHandleCallback:
     @pytest.mark.asyncio
     async def test_callback_none_oauth_data(self, oauth_provider, mock_config_service):
         """handle_callback with None oauth data uses empty dict fallback."""
-        mock_config_service.get_config = AsyncMock(return_value={
+        mock_config_service.get_config_with_version = AsyncMock(return_value=({
             "oauth": None,
-        })
+        }, 1))
 
         with pytest.raises(ValueError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="state")
@@ -1505,6 +1510,6 @@ class TestSlackTokenEndpoint:
 
         new_access, new_refresh = slack.issued[0]
         assert (token.access_token, token.refresh_token) == (new_access, new_refresh)
-        mock_config_service.set_config.assert_awaited_once()
-        saved = mock_config_service.set_config.await_args.args[1]["credentials"]
+        mock_config_service.compare_and_set.assert_awaited_once()
+        saved = mock_config_service.compare_and_set.await_args.args[2]["credentials"]
         assert (saved["access_token"], saved["refresh_token"], saved["expires_in"]) == (new_access, new_refresh, 43200)

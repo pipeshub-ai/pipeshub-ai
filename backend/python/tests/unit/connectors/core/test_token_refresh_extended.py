@@ -38,20 +38,25 @@ class TestPerformTokenRefresh:
     async def test_full_flow(self):
         svc, config_service, _ = _make_service()
 
+        _auth = {
+            "oauthConfigId": "oauth123",
+            "connectorScope": "team",
+            "clientId": "cid",
+            "clientSecret": "csecret",
+            "authorizeUrl": "https://example.com/auth",
+            "tokenUrl": "https://example.com/token",
+            "redirectUri": "http://localhost/callback",
+            "scopes": ["scope1"],
+        }
         config_service.get_config = AsyncMock(return_value={
-            "auth": {
-                "oauthConfigId": "oauth123",
-                "connectorScope": "team",
-                "clientId": "cid",
-                "clientSecret": "csecret",
-                "authorizeUrl": "https://example.com/auth",
-                "tokenUrl": "https://example.com/token",
-                "redirectUri": "http://localhost/callback",
-                "scopes": ["scope1"],
-            },
+            "auth": _auth,
             "credentials": {"refresh_token": "rt"},
         })
-        config_service.set_config = AsyncMock(return_value=True)
+        # _persist_refreshed_credentials uses get_config_with_version + compare_and_set
+        config_service.get_config_with_version = AsyncMock(return_value=(
+            {"auth": _auth, "credentials": {"refresh_token": "rt"}}, "v1"
+        ))
+        config_service.compare_and_set = AsyncMock(return_value=(True, ({}, "v2")))
 
         mock_token = MagicMock()
         mock_token.to_dict.return_value = {
@@ -74,8 +79,9 @@ class TestPerformTokenRefresh:
             ):
                 result = await svc._perform_token_refresh("conn1", "Calendar", "old_rt")
                 assert result == mock_token
-                config_service.set_config.assert_awaited_once()
+                config_service.compare_and_set.assert_awaited_once()
                 mock_provider.close.assert_awaited_once()
+
 
     @pytest.mark.asyncio
     async def test_no_config_raises(self):
@@ -385,7 +391,7 @@ class TestConcurrentRefreshRace:
         """Config service whose stored credentials rotate on every set_config."""
         cs = MagicMock()
 
-        async def _get(key, **_kwargs):
+        async def _get_config_only(key, **_kwargs):
             return {
                 "auth": {
                     "oauthConfigId": "oauth123",
@@ -400,12 +406,28 @@ class TestConcurrentRefreshRace:
                 "credentials": dict(store["credentials"]),
             }
 
-        async def _set(key, value, **_kwargs):
-            store["credentials"] = dict(value["credentials"])
-            return True
+        async def _get(key, **_kwargs):
+            return {
+                "auth": {
+                    "oauthConfigId": "oauth123",
+                    "connectorScope": "team",
+                    "clientId": "cid",
+                    "clientSecret": "csecret",
+                    "authorizeUrl": "https://example.com/auth",
+                    "tokenUrl": "https://example.com/token",
+                    "redirectUri": "http://localhost/callback",
+                    "scopes": ["scope1"],
+                },
+                "credentials": dict(store["credentials"]),
+            }, 1
 
-        cs.get_config = AsyncMock(side_effect=_get)
-        cs.set_config = AsyncMock(side_effect=_set)
+        async def _set(key, expected_version, value, **_kwargs):
+            store["credentials"] = dict(value["credentials"])
+            return True, (value, 2)
+
+        cs.get_config = AsyncMock(side_effect=_get_config_only)
+        cs.get_config_with_version = AsyncMock(side_effect=_get)
+        cs.compare_and_set = AsyncMock(side_effect=_set)
         return cs
 
     @pytest.mark.asyncio
@@ -455,8 +477,9 @@ class TestConcurrentRefreshRace:
     @pytest.mark.asyncio
     async def test_superseded_rejection_does_not_deactivate(self):
         svc, cs, _ = _make_service()
-        cs.get_config = AsyncMock(
-            return_value={"credentials": {"refresh_token": "rotated"}}
+        cs.get_config = AsyncMock(return_value={"credentials": {"refresh_token": "rotated"}})
+        cs.get_config_with_version = AsyncMock(
+            return_value=({"credentials": {"refresh_token": "rotated"}}, 1)
         )
         svc._mark_connector_unauthenticated = AsyncMock()
 
@@ -473,8 +496,8 @@ class TestConcurrentRefreshRace:
     @pytest.mark.asyncio
     async def test_genuinely_dead_token_still_deactivates(self):
         svc, cs, _ = _make_service()
-        cs.get_config = AsyncMock(
-            return_value={"credentials": {"refresh_token": "current"}}
+        cs.get_config_with_version = AsyncMock(
+            return_value=({"credentials": {"refresh_token": "current"}}, 1)
         )
         svc._mark_connector_unauthenticated = AsyncMock()
 

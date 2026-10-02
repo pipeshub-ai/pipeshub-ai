@@ -60,16 +60,17 @@ class FakeRedisConnectionProvider(IRedisConnectionProvider):
         self.publish_calls: list[tuple[str, str]] = []
         self.closed = False
 
-    def _new_client(self) -> FakeClusterRedis:
-        return FakeClusterRedis(server=self._shared_client.server)
+    def _new_client(self, decode_responses: bool = True) -> FakeClusterRedis:
+        return FakeClusterRedis(server=self._shared_client.server, decode_responses=decode_responses)
 
     def get_client(self) -> FakeClusterRedis:
         self.get_client_calls += 1
         return self._shared_client
 
-    def create_client(self, options: "ClientOptions | None" = None) -> FakeClusterRedis:  # noqa: ARG002
+    def create_client(self, options: "ClientOptions | None" = None) -> FakeClusterRedis:
         self.create_client_calls += 1
-        client = self._new_client()
+        decode_responses = options.decode_responses if options is not None and options.decode_responses is not None else True
+        client = self._new_client(decode_responses=decode_responses)
         self.created_clients.append(client)
         return client
 

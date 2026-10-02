@@ -1,9 +1,11 @@
 import asyncio
+import hashlib
 import json
 import random
 import threading
 import uuid
-from typing import TYPE_CHECKING, Callable, Generic, List, Optional, TypeVar
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Generic, Optional, TypeVar
 
 from app.config.key_value_store import KeyValueStore
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
@@ -11,7 +13,10 @@ from app.services.redis.connection_provider_factory import get_redis_provider
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
-    from app.services.redis.connection_provider import IRedisConnectionProvider, RedisClient
+    from app.services.redis.connection_provider import (
+        IRedisConnectionProvider,
+        RedisClient,
+    )
 
 logger = create_logger("redis_store")
 
@@ -42,7 +47,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         deserializer: Callable[[bytes], T],
         host: str,
         port: int,
-        password: Optional[str] = None,
+        password: str | None = None,
         db: int = 0,
         key_prefix: str = "pipeshub:kv:",
         connect_timeout: float = 10.0,
@@ -71,10 +76,10 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         self.deserializer = deserializer
         self.key_prefix = key_prefix
         self._pubsub = None
-        self._pubsub_task: Optional[asyncio.Task] = None
-        self._pubsub_callback: Optional[Callable[[str], None]] = None
+        self._pubsub_task: asyncio.Task | None = None
+        self._pubsub_callback: Callable[[str], None] | None = None
         self._watch_tasks: dict[str, asyncio.Task] = {}
-        self._watchers: dict[str, List[tuple[Callable[[Optional[T]], None], str]]] = {}
+        self._watchers: dict[str, list[tuple[Callable[[T | None], None], str]]] = {}
         self._is_closing = False
 
         # Store connection parameters for reconnection and lazy client creation
@@ -104,7 +109,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         # Per-thread Redis clients dict: thread_id → (client, event_loop_ref)
         # The event_loop_ref lets us detect stale clients bound to a closed
         # event loop (e.g. after asyncio.run() finishes in a thread pool).
-        self._clients: dict[int, tuple["RedisClient", Optional[asyncio.AbstractEventLoop]]] = {}
+        self._clients: dict[int, tuple["RedisClient", asyncio.AbstractEventLoop | None]] = {}
         self._clients_lock = threading.Lock()
 
         logger.debug("Redis store initialized with lazy client creation")
@@ -224,7 +229,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         return False
 
     async def create_key(
-        self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None
+        self, key: str, value: T, overwrite: bool = True, ttl: int | None = None
     ) -> bool:
         """Create a new key in Redis."""
         full_key = self._build_key(key)
@@ -233,15 +238,18 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         try:
             serialized_value = self.serializer(value)
 
+            new_rev = str(uuid.uuid4())
+            value_to_store = f"REV:{new_rev}:".encode('utf-8') + serialized_value
+
             if overwrite:
                 if ttl:
-                    await self._get_client().set(full_key, serialized_value, ex=ttl)
+                    await self._get_client().set(full_key, value_to_store, ex=ttl)
                 else:
-                    await self._get_client().set(full_key, serialized_value)
+                    await self._get_client().set(full_key, value_to_store)
             else:
                 # Use nx=True for atomic "set if not exists"
                 was_set = await self._get_client().set(
-                    full_key, serialized_value, ex=ttl, nx=True
+                    full_key, value_to_store, ex=ttl, nx=True
                 )
                 if not was_set:
                     logger.debug(
@@ -261,7 +269,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             raise ConnectionError(f"Failed to create key: {str(e)}")
 
     async def update_value(
-        self, key: str, value: T, ttl: Optional[int] = None
+        self, key: str, value: T, ttl: int | None = None
     ) -> None:
         """Update the value for an existing key."""
         full_key = self._build_key(key)
@@ -270,9 +278,12 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         try:
             serialized_value = self.serializer(value)
 
+            new_rev = str(uuid.uuid4())
+            value_to_store = f"REV:{new_rev}:".encode('utf-8') + serialized_value
+
             # Use xx=True for atomic "set if exists"
             result = await self._get_client().set(
-                full_key, serialized_value, ex=ttl, xx=True
+                full_key, value_to_store, ex=ttl, xx=True
             )
 
             if not result:
@@ -289,7 +300,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.error("Failed to update key %s: %s", key, str(e))
             raise ConnectionError(f"Failed to update key: {str(e)}")
 
-    async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
+    async def get_key(self, key: str, *, raise_on_error: bool = False) -> T | None:
         """Get value for key from Redis."""
         full_key = self._build_key(key)
         logger.debug("Getting key from Redis: %s (original: %s)", full_key, key)
@@ -301,8 +312,18 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 logger.debug("No value found for key")
                 return None
 
+            if value_bytes.startswith(b"REV:") and len(value_bytes) >= 42 and value_bytes[40:41] == b":":
+                version_str = value_bytes[4:40].decode('utf-8')
+                try:
+                    uuid.UUID(version_str)
+                    actual_bytes = value_bytes[41:]
+                except ValueError:
+                    actual_bytes = value_bytes
+            else:
+                actual_bytes = value_bytes
+
             try:
-                deserialized = self.deserializer(value_bytes)
+                deserialized = self.deserializer(actual_bytes)
                 # Present bytes that deserialize to nothing could not be read:
                 # the factory deserializer answers None for bytes that are not
                 # valid UTF-8 instead of raising, so the decode handler below
@@ -324,6 +345,137 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.error("Failed to get key %s: %s", key, str(e))
             raise ConnectionError(f"Failed to get key: {str(e)}")
 
+    async def get_key_with_version(self, key: str, *, raise_on_error: bool = False) -> tuple[T | None, Any]:
+        """Get value and its SHA-1 version from Redis."""
+        full_key = self._build_key(key)
+        logger.debug("Getting key with version from Redis: %s (original: %s)", full_key, key)
+
+        try:
+            value_bytes = await self._get_client().get(full_key)
+
+            if value_bytes is None:
+                logger.debug("No value found for key")
+                return None, None
+
+            if value_bytes.startswith(b"REV:") and len(value_bytes) >= 42 and value_bytes[40:41] == b":":
+                version_str = value_bytes[4:40].decode('utf-8')
+                try:
+                    uuid.UUID(version_str)
+                    version = version_str
+                    actual_bytes = value_bytes[41:]
+                except ValueError:
+                    version = hashlib.sha1(value_bytes, usedforsecurity=False).hexdigest()
+                    actual_bytes = value_bytes
+            else:
+                version = hashlib.sha1(value_bytes, usedforsecurity=False).hexdigest()
+                actual_bytes = value_bytes
+
+            try:
+                deserialized = self.deserializer(actual_bytes)
+                if deserialized is None and value_bytes and raise_on_error:
+                    raise ValueError("Stored value could not be decoded")
+                return deserialized, version
+            except json.JSONDecodeError as e:
+                logger.error("Failed to deserialize value: %s", str(e))
+                if raise_on_error:
+                    raise
+                return None, version
+
+        except Exception as e:
+            logger.error("Failed to get key with version %s: %s", key, str(e))
+            raise ConnectionError(f"Failed to get key with version: {str(e)}")
+
+    async def compare_and_set(self, key: str, expected_version: Any, new_value: T, ttl: int | None = None) -> tuple[bool, tuple[T | None, Any]]:
+        """Conditionally update a key in Redis using a Lua script."""
+        full_key = self._build_key(key)
+        logger.debug("Compare and set key in Redis: %s (original: %s)", full_key, key)
+
+        try:
+            serialized_value = self.serializer(new_value)
+
+            new_rev = str(uuid.uuid4())
+            value_to_store = f"REV:{new_rev}:".encode('utf-8') + serialized_value
+
+            script = """
+            local current = redis.call("GET", KEYS[1])
+            local current_rev = ""
+            
+            if current then
+                if string.sub(current, 1, 4) == "REV:" and string.len(current) >= 42 and string.sub(current, 41, 41) == ":" then
+                    local candidate = string.sub(current, 5, 40)
+                    if string.match(candidate, "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$") then
+                        current_rev = candidate
+                    else
+                        current_rev = redis.sha1hex(current)
+                    end
+                else
+                    current_rev = redis.sha1hex(current)
+                end
+            end
+
+            if (ARGV[1] == "" and not current) or (current_rev == ARGV[1]) then
+                if ARGV[3] ~= "" and ARGV[3] ~= "KEEPTTL" then
+                    redis.call("SET", KEYS[1], ARGV[2], "EX", ARGV[3])
+                else
+                    redis.call("SET", KEYS[1], ARGV[2])
+                end
+                return {1, ARGV[4], ""}
+            end
+            return {0, current, current_rev}
+            """
+
+            # Using "" to denote None since Lua script ARGV are strings
+            exp_version_str = expected_version if expected_version is not None else ""
+            ttl_str = "" if ttl is None else str(ttl)
+
+            # We use eval rather than evalsha for simplicity, though evalsha could be optimized later
+            result = await self._get_client().eval(
+                script,
+                1,
+                full_key,
+                exp_version_str,
+                value_to_store,
+                ttl_str,
+                new_rev
+            )
+
+            success = bool(result[0])
+
+            if success:
+                new_version = result[1].decode('utf-8') if isinstance(result[1], bytes) else result[1]
+                # Publish cache invalidation
+                await self._notify_watchers(key, new_value)
+                return True, (new_value, new_version)
+            else:
+                # Conflict
+                current_bytes = result[1]
+                current_version = result[2]
+
+                if not current_bytes:
+                    return False, (None, None)
+
+                # Deserialize current_bytes exactly like get_key_with_version
+                if current_bytes.startswith(b"REV:") and len(current_bytes) >= 42 and current_bytes[40:41] == b":":
+                    version_str = current_bytes[4:40].decode('utf-8')
+                    try:
+                        uuid.UUID(version_str)
+                        actual_bytes = current_bytes[41:]
+                    except ValueError:
+                        actual_bytes = current_bytes
+                else:
+                    actual_bytes = current_bytes
+
+                try:
+                    deserialized = self.deserializer(actual_bytes)
+                except json.JSONDecodeError:
+                    deserialized = None
+
+                return False, (deserialized, current_version.decode('utf-8') if isinstance(current_version, bytes) else current_version)
+
+        except Exception as e:
+            logger.error("Failed to compare and set key %s: %s", key, str(e))
+            raise ConnectionError(f"Failed to compare and set key: {str(e)}")
+
     async def delete_key(self, key: str) -> bool:
         """Delete a key from Redis."""
         full_key = self._build_key(key)
@@ -342,7 +494,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.error("Failed to delete key %s: %s", key, str(e))
             raise ConnectionError(f"Failed to delete key: {str(e)}")
 
-    async def get_all_keys(self) -> List[str]:
+    async def get_all_keys(self) -> list[str]:
         """Get all keys from Redis with the configured prefix."""
         logger.debug("Getting all keys from Redis")
 
@@ -363,7 +515,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.error("Failed to get all keys: %s", str(e))
             raise ConnectionError(f"Failed to get all keys: {str(e)}")
 
-    async def _notify_watchers(self, key: str, value: Optional[T]) -> None:
+    async def _notify_watchers(self, key: str, value: T | None) -> None:
         """Notify all watchers of a key about value changes."""
         if key in self._watchers:
             for callback, watch_id in self._watchers[key]:
@@ -375,9 +527,9 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
     async def watch_key(
         self,
         key: str,
-        callback: Callable[[Optional[T]], None],
-        error_callback: Optional[Callable[[Exception], None]] = None,
-        watch_id: Optional[str] = None,
+        callback: Callable[[T | None], None],
+        error_callback: Callable[[Exception], None] | None = None,
+        watch_id: str | None = None,
     ) -> str:
         """
         Watch a key for changes and execute callbacks when changes occur.
@@ -418,7 +570,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 del self._watchers[key]
             logger.debug("Watch canceled successfully")
 
-    async def list_keys_in_directory(self, directory: str) -> List[str]:
+    async def list_keys_in_directory(self, directory: str) -> list[str]:
         """List all keys under a specific directory prefix."""
         # Ensure directory ends with appropriate separator
         prefix = directory if directory.endswith("/") else f"{directory}/"

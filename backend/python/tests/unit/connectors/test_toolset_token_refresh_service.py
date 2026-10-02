@@ -92,14 +92,18 @@ class TestSlackToolsetRotation:
         async def get_config(_path: str, *_: object, **__: object) -> dict:
             return deepcopy(store)
 
-        async def set_config(_path: str, value: dict) -> bool:
+        async def get_config_with_version(_path: str, **__: object) -> tuple:
+            return deepcopy(store), 1
+
+        async def compare_and_set(_path: str, _v: int, value: dict) -> tuple:
             store.clear()
             store.update(deepcopy(value))
-            return True
+            return True, (deepcopy(value), 2)
 
         config_service = MagicMock()
         config_service.get_config = AsyncMock(side_effect=get_config)
-        config_service.set_config = AsyncMock(side_effect=set_config)
+        config_service.get_config_with_version = AsyncMock(side_effect=get_config_with_version)
+        config_service.compare_and_set = AsyncMock(side_effect=compare_and_set)
         service = ToolsetTokenRefreshService(config_service)
         monkeypatch.setattr(service, "_build_complete_oauth_config", AsyncMock(return_value={
             "clientId": "client-1",

@@ -17,6 +17,7 @@ here once and run against all of them rather than per-store where a new backend
 can quietly skip them.
 """
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -44,6 +45,19 @@ class _FakeInnerStore:
             return False
         self._data[key] = value
         return True
+
+    async def get_key_with_version(self, key: str, *, raise_on_error: bool = False):
+        if key not in self._data:
+            return None, None
+        return self._data[key], hash(str(self._data[key]))
+
+    async def compare_and_set(self, key: str, expected_version: Any, new_value: Any, ttl=None):
+        import copy
+        current_val, current_version = await self.get_key_with_version(key)
+        if current_version == expected_version:
+            self._data[key] = copy.deepcopy(new_value)
+            return True, (copy.deepcopy(new_value), hash(str(self._data[key])))
+        return False, (current_val, current_version)
 
 
 class _IdentityEncryption:
@@ -124,3 +138,26 @@ class TestCreateKeyContract:
 
         assert await store.create_key("/d", payload, overwrite=False) is True
         assert (await store.get_key("/d")) == payload
+
+    async def test_cas_mutation_isolation(self, make_store) -> None:
+        """Mutating the write argument or the returned object must not corrupt the store's copy."""
+        store = make_store()
+        payload = {"state": "init"}
+        await store.create_key("/cas", payload)
+
+        _, version = await store.get_key_with_version("/cas")
+
+        new_payload = {"state": "updated"}
+        success, (returned_val, new_version) = await store.compare_and_set("/cas", version, new_payload)
+        assert success is True
+
+        # Mutate the argument that was written
+        new_payload["state"] = "corrupted_arg"
+
+        # Mutate the returned object
+        if isinstance(returned_val, dict):
+            returned_val["state"] = "corrupted_returned"
+
+        # The store should still have the uncorrupted state
+        stored, _ = await store.get_key_with_version("/cas")
+        assert stored == {"state": "updated"}
