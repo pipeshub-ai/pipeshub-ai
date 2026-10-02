@@ -1149,7 +1149,7 @@ class TestRemovalFromSource:
             return json_response(listing([content("p2")] if "id in (p2)" in cql else []))
 
         atlassian_api.on("GET", f"{API}/content/search", by_id)
-        held = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
+        held = self._hold(checkpoints)
 
         for attempt in range(1, 5):
             await connector.run_sync()
@@ -1264,6 +1264,36 @@ class TestRemovalFromSource:
 
         assert "10" in records_db.record_groups
         assert {"p1", "p2", "p3"} <= set(records_db.records), "a space Confluence listed is not treated as gone"
+
+    async def test_a_space_with_no_records_left_is_removed_with_no_type_docs_behind(
+        self, atlassian_api, records_db, checkpoints, search
+    ) -> None:
+        connector = await self._synced(atlassian_api, records_db, checkpoints, search)
+        eng_ids = {r.id for r in records_db.records.values()}
+        stub_spaces(atlassian_api, space_page([space("ENG", 10), space("HR", 20)]))
+        await connector.run_sync()
+        assert "20" in records_db.record_groups
+
+        stub_spaces(atlassian_api, space_page([space("HR", 20)]))
+        await connector.run_sync()
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        await connector.run_sync()
+
+        assert "20" not in records_db.record_groups, "HR never had a record, and is removed all the same"
+        assert eng_ids and not eng_ids & records_db.type_docs, "ENG's records went with their type docs"
+
+    async def test_a_listed_space_without_an_id_keeps_the_stored_spaces(
+        self, atlassian_api, records_db, checkpoints, search
+    ) -> None:
+        connector = await self._synced(atlassian_api, records_db, checkpoints, search)
+        eng_without_id = {k: v for k, v in space("ENG", 10).items() if k != "id"}
+        stub_spaces(atlassian_api, space_page([eng_without_id, space("HR", 20)]))
+        checkpoints.sync_points.clear()
+
+        await connector.run_sync()
+
+        assert "10" in records_db.record_groups
+        assert {"p1", "p2", "p3"} <= set(records_db.records), "a space listed without its id is not treated as gone"
 
     @pytest.mark.parametrize("answer", [
         pytest.param(json_response({"message": "busy"}, status=503), id="failed"),
