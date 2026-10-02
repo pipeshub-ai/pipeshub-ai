@@ -1454,6 +1454,9 @@ class TicketRecord(Record):
             creator_source_timestamp=ticket_doc.get("creatorSourceTimestamp"),
             reporter_source_timestamp=ticket_doc.get("reporterSourceTimestamp"),
             labels=ticket_doc.get("labels"),
+            is_email_hidden=bool(ticket_doc.get("is_email_hidden", False)),
+            assignee_source_id=ticket_doc.get("assignee_source_id") or [],
+            reporter_source_id=ticket_doc.get("reporter_source_id"),
             **Record.delete_state_from_arango(record_doc),
         )
 

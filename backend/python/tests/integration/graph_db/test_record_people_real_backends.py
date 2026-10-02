@@ -18,7 +18,7 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames, Connectors, OriginTypes
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
-from app.models.entities import MailRecord, RecordType
+from app.models.entities import MailRecord, RecordType, TicketRecord
 from app.scripts.kg_record_people import backfill
 from tests.integration.graph_db.test_record_graph_write_concurrency import (
     _open_arango,
@@ -58,7 +58,7 @@ async def _cleanup(provider: Neo4jProvider | ArangoHTTPProvider, org: str) -> No
     aql = provider.http_client.execute_aql
     for edges in (CollectionNames.ENTITY_RELATIONS.value, CollectionNames.IS_OF_TYPE.value):
         await aql(f"FOR e IN {edges} FILTER CONTAINS(e._from, @org) REMOVE e IN {edges}", {"org": org})
-    for docs in (CollectionNames.RECORDS.value, CollectionNames.MAILS.value, CollectionNames.USERS.value):
+    for docs in (CollectionNames.RECORDS.value, CollectionNames.MAILS.value, CollectionNames.TICKETS.value, CollectionNames.USERS.value):
         await aql(f"FOR d IN {docs} FILTER d.orgId == @org REMOVE d IN {docs}", {"org": org})
 
 
@@ -73,8 +73,13 @@ async def _seed(provider: Neo4jProvider | ArangoHTTPProvider, org: str) -> str:
         id=mail_id, org_id=org, external_record_id=mail_id, record_name="Quarterly plan",
         origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_MAIL, connector_id=f"{org}-conn",
         record_type=RecordType.MAIL, version=1, source_created_at=1000, source_updated_at=1000,
-        from_email=f"Ann <ann@{org}.test>", to_emails=[f"bob@{org}.test", "stranger@else.test"],
+        from_email=f"Ann <ann@{org}.test>", to_emails=['"Lee', f'Bob" <bob@{org}.test>', "stranger@else.test"],
         bcc_emails=[f"ann@{org}.test"],
+    ), TicketRecord(
+        id=f"{org}-case", org_id=org, external_record_id=f"{org}-case", record_name="Case 1",
+        origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_MAIL, connector_id=f"{org}-conn",
+        record_type=RecordType.CASE, version=1, source_created_at=1000, source_updated_at=1000,
+        assignee_email=f"bob@{org}.test",
     )])
     return mail_id
 
@@ -104,9 +109,11 @@ async def test_backfill_links_member_sender_and_recipients_once(backend) -> None
     dry = io.StringIO()
     await backfill(provider, store, org, apply=False, logger=logger, out=dry)
     assert await _edges(provider, mail_id) == []
-    assert '"edges": 2' in dry.getvalue()
+    assert '"edges": 3' in dry.getvalue()
 
     for _ in range(2):
         code = await backfill(provider, store, org, apply=True, logger=logger, out=io.StringIO())
         assert code == 0
         assert await _edges(provider, mail_id) == [(f"{org}-ann", "AUTHORED_BY"), (f"{org}-bob", "ADDRESSED_TO")]
+        # A Salesforce CASE is a ticket too.
+        assert await _edges(provider, f"{org}-case") == [(f"{org}-bob", "ASSIGNED_TO")]
