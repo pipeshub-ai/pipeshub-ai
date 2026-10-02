@@ -2485,7 +2485,7 @@ class TestPrepareConnectorConfig:
         }
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value=[
-            {"_id": "oc-1", "orgId": "org-1"}
+            {"_id": "oc-1", "orgId": "org-1", "config": {"instanceUrl": "https://gitlab.mycompany.com"}}
         ])
         logger = MagicMock()
 

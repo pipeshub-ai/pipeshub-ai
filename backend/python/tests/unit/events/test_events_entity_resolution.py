@@ -21,7 +21,7 @@ def _metadata() -> SemanticMetadata:
 
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
-async def test_resolution_runs_before_summary_blob_and_enrich() -> None:
+async def test_resolution_runs_before_summary_enrich_and_blob() -> None:
     order: list[str] = []
     parsing_client = MagicMock()
     parsing_client.circuit_open = False
@@ -49,7 +49,8 @@ async def test_resolution_runs_before_summary_blob_and_enrich() -> None:
     async for _event in ep.on_event(_make_event_data()):
         pass
 
-    assert order == ["resolve", "summary", "blob", "enrich"]
+    # The blob rewrite follows enrichment so the stored record carries its output.
+    assert order == ["resolve", "summary", "enrich", "blob"]
     ctx = sink.resolve_entities.await_args.args[0]
     assert ctx.record.semantic_metadata is extraction_client.classify.return_value
 
