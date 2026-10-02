@@ -128,11 +128,6 @@ async def test_trashed_files_are_not_synced_on_full_sync(drive: Harness) -> None
     assert drive.names() == {"keep.txt"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Full sync stops at the first empty files.list page even when Drive sent a nextPageToken, "
-    "then saves the checkpoint, so the files on later pages are never synced.",
-)
 async def test_an_empty_page_with_a_next_token_does_not_end_the_full_sync(drive: Harness) -> None:
     for n in range(4):
         my_file(drive.world, f"f{n}", f"doc-{n}.txt")
@@ -928,3 +923,217 @@ async def test_folders_are_recorded_as_folders(drive: Harness) -> None:
     assert drive.records.records["d"].is_file is False
     assert drive.records.records["f"].parent_external_record_id == "d"
     assert drive.records.records["f"].extension == "txt"
+
+
+# --- shared drives, shortcuts, export and cleanup ----------------------------
+
+
+async def test_the_connecting_account_is_registered_from_about(drive: Harness) -> None:
+    my_file(drive.world, "f1", "one.txt")
+
+    await drive.sync()
+
+    assert drive.records.linked_authenticators == [
+        (CONNECTOR_ID, "user-1", ME, drive.world.users[ME].permission_id)
+    ]
+
+
+async def test_a_file_shared_out_by_the_user_stays_indexed_when_shared_indexing_is_off(drive: Harness) -> None:
+    drive.config["filters"] = {
+        "indexing": {"values": {"shared": {"operator": "is", "type": "boolean", "value": False}}}
+    }
+    my_file(
+        drive.world,
+        "mine",
+        "mine.txt",
+        perms=[{"type": "user", "role": "reader", "emailAddress": "other@example.com"}],
+    )
+    drive.world.add_user("owner@example.com")
+    drive.world.add_item(
+        "theirs",
+        "theirs.txt",
+        parent="root-owner",
+        owner="owner@example.com",
+        perms=[{"type": "user", "role": "reader", "emailAddress": ME}],
+    )
+
+    await drive.sync()
+
+    assert drive.records.records["mine"].indexing_status != "AUTO_INDEX_OFF"
+    assert [p.type for p in drive.records.permissions["mine"]] == [PermissionType.OWNER]
+    assert drive.records.records["theirs"].indexing_status == "AUTO_INDEX_OFF"
+    assert [p.type for p in drive.records.permissions["theirs"]] == [PermissionType.READ]
+
+
+async def test_a_member_shared_drive_syncs_as_its_own_group_and_leaves_when_membership_ends(drive: Harness) -> None:
+    drive.world.add_drive("sd-1", "Engineering", {ME: "writer"})
+    drive.world.add_item("spec", "spec.txt", parent="sd-1")
+
+    await drive.sync()
+
+    assert drive.records.record_groups["sd-1"].name == "Engineering"
+    assert [p.type for p in drive.records.record_group_permissions["sd-1"]] == [PermissionType.WRITE]
+    assert "spec.txt" in drive.names()
+    assert [p.type for p in drive.records.permissions["spec"]] == [PermissionType.WRITE]
+
+    drive.world.add_item("later", "later.txt", parent="sd-1")
+    await drive.sync()
+    assert "later.txt" in drive.names()
+
+    drive.world.drives["sd-1"]["members"].pop(ME)
+    await drive.sync()
+
+    assert "sd-1" not in drive.records.record_groups
+    assert "spec.txt" not in drive.names()
+    assert "later.txt" not in drive.names()
+
+
+async def test_a_google_doc_named_like_source_code_is_stored_as_docx(drive: Harness) -> None:
+    drive.world.add_item("doc", "script.py", parent=ROOT, owner=ME, mime=GDOC, content=b"doc body")
+
+    await drive.sync()
+
+    assert drive.records.records["doc"].extension == "docx"
+    assert drive.records.records["doc"].indexing_status != "AUTO_INDEX_OFF"
+    connector = await drive.connector_()
+    export = await connector.stream_record(drive.records.records["doc"])
+    assert await _body(export) == b"exported:doc body"
+
+
+async def test_a_form_stays_visible_and_cannot_be_exported(drive: Harness) -> None:
+    from fastapi import HTTPException
+
+    drive.world.add_item(
+        "form",
+        "Survey",
+        parent=ROOT,
+        owner=ME,
+        mime="application/vnd.google-apps.form",
+        content=b"",
+    )
+
+    await drive.sync()
+
+    assert drive.records.records["form"].indexing_status == "AUTO_INDEX_OFF"
+    connector = await drive.connector_()
+    with pytest.raises(HTTPException) as raised:
+        await connector.stream_record(drive.records.records["form"])
+    assert raised.value.status_code == 415
+
+
+async def test_a_shortcut_target_is_synced_once_and_a_folder_shortcut_cycle_ends(drive: Harness) -> None:
+    my_file(drive.world, "target", "Target.txt", content=b"target-bytes")
+    drive.world.add_shortcut("sc", "Link", parent=ROOT, owner=ME, target_id="target")
+    drive.world.folder("folder-a", "A", parent=ROOT, owner=ME)
+    drive.world.add_shortcut("sc-folder", "Into A", parent=ROOT, owner=ME, target_id="folder-a")
+    drive.world.add_shortcut("sc-back", "Back", parent="folder-a", owner=ME, target_id="sc-folder")
+    my_file(drive.world, "inside", "inside.txt", parent="folder-a")
+
+    await drive.sync()
+
+    assert "Link" not in drive.names()
+    assert "Into A" not in drive.names()
+    assert "Back" not in drive.names()
+    assert {"Target.txt", "A", "inside.txt"} <= drive.names()
+    assert [batch for batch in drive.records.new_record_batches if "target" in batch].count(["target"]) <= 1
+    written = [ext for batch in drive.records.new_record_batches for ext in batch]
+    assert written.count("target") == 1
+    assert "sc" not in written
+
+
+async def test_a_doc_over_the_export_limit_streams_through_export_links(drive: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    drive.world.add_item("big", "Big notes", parent=ROOT, owner=ME, mime=GDOC, content=b"huge")
+    drive.world.files["big"].export_too_large = True
+    await drive.sync()
+    seen: dict[str, str] = {}
+
+    class _Content:
+        async def iter_chunked(self, _size: int):
+            yield b"via-export-link"
+
+    class _Response:
+        status = 200
+        headers: dict[str, str] = {}
+        closed = False
+        content = _Content()
+
+        async def release(self) -> None:
+            self.closed = True
+
+    class _Session:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> "_Session":
+            return self
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+        async def get(self, url: str, headers: dict[str, str] | None = None, allow_redirects: bool = True) -> _Response:
+            seen["url"] = url
+            seen["auth"] = (headers or {}).get("Authorization", "")
+            assert allow_redirects is False
+            return _Response()
+
+    monkeypatch.setattr(
+        "app.connectors.sources.google.drive.utils.drive_export.aiohttp.ClientSession",
+        _Session,
+    )
+    connector = await drive.connector_()
+    body = await _body(await connector.stream_record(drive.records.records["big"]))
+
+    assert body == b"via-export-link"
+    assert seen["url"].startswith("https://docs.google.com/")
+    assert seen["auth"].startswith("Bearer ")
+
+
+async def test_a_full_resync_drops_files_deleted_in_drive(drive: Harness) -> None:
+    for n in range(3):
+        my_file(drive.world, f"f{n}", f"f{n}.txt")
+    await drive.sync()
+    drive.world.delete("f0")
+    drive.sync_points.sync_points.clear()
+
+    await drive.sync()
+
+    assert drive.names() == {"f1.txt", "f2.txt"}
+
+
+async def test_stale_cleanup_refuses_to_delete_more_than_half_the_records(drive: Harness) -> None:
+    my_file(drive.world, "keep", "keep.txt")
+    my_file(drive.world, "also", "also.txt")
+    await drive.sync()
+    template = drive.records.records["keep"]
+    for n in range(3):
+        drive.records.records[f"ghost-{n}"] = template.model_copy(update={
+            "id": f"ghost-{n}",
+            "external_record_id": f"ghost-{n}",
+            "record_name": f"ghost-{n}.txt",
+        })
+    drive.sync_points.sync_points.clear()
+
+    await drive.sync()
+
+    assert all(f"ghost-{n}" in drive.records.records for n in range(3))
+    assert {"keep.txt", "also.txt"} <= drive.names()
+
+
+async def test_an_incomplete_listing_does_not_delete_records_it_did_not_see(drive: Harness) -> None:
+    my_file(drive.world, "keep", "keep.txt")
+    my_file(drive.world, "also", "also.txt")
+    await drive.sync()
+    template = drive.records.records["keep"]
+    drive.records.records["ghost-1"] = template.model_copy(update={
+        "id": "ghost-1",
+        "external_record_id": "ghost-1",
+        "record_name": "ghost.txt",
+    })
+    drive.sync_points.sync_points.clear()
+    drive.world.incomplete_search = True
+
+    await drive.sync()
+
+    assert "ghost-1" in drive.records.records
+    assert {"keep.txt", "also.txt"} <= drive.names()
+

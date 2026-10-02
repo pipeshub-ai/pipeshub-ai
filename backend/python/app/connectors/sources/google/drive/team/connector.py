@@ -2,9 +2,9 @@ import asyncio
 import io
 import logging
 import os
+import shutil
 import tempfile
 import uuid
-from datetime import datetime
 from logging import Logger
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -67,6 +67,36 @@ from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
 )
+from app.connectors.sources.google.drive.utils.drive_export import (
+    GoogleExportStreamer,
+    drive_http_reasons,
+    stream_media_request,
+)
+from app.connectors.sources.google.drive.utils.drive_filters import (
+    parse_drive_datetime,
+    passes_date_filters,
+    passes_extension_filter,
+)
+from app.connectors.sources.google.drive.utils.drive_full_sync_reconciler import (
+    FullSyncLedger,
+    reconcile_unseen_records,
+)
+from app.connectors.sources.google.drive.utils.drive_mime import (
+    download_filename,
+    drive_content_changed,
+    export_extension_for,
+    export_mime_for,
+    is_not_exportable,
+    resolve_extension,
+)
+from app.connectors.sources.google.drive.utils.drive_shortcuts import (
+    is_shortcut_mime,
+    materialize_drive_shortcuts,
+    shortcut_target,
+)
+from app.connectors.sources.google.common.connector_google_exceptions import (
+    GoogleDriveError,
+)
 from app.connectors.sources.google.common.impersonation import (
     get_impersonation_candidates,
     is_delegation_error,
@@ -111,6 +141,7 @@ from app.connectors.core.base.error.stream_errors import (
     not_downloadable,
     to_stream_error,
 )
+from app.utils.pdf_stream_conversion import libreoffice_to_pdf, safe_conversion_input
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
@@ -293,6 +324,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         # Batch processing configuration
         self.batch_size = 100
+        self._sync_ledger = FullSyncLedger()
+        self._shortcut_cache: dict[str, dict] = {}
         self.max_concurrent_batches = 1 # set to 1 for now to avoid write write conflicts for small number of records
 
         self.sync_filters: FilterCollection = FilterCollection()
@@ -444,6 +477,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         """
         try:
             self.logger.info("Starting Google Drive enterprise connector sync")
+            self._sync_ledger = FullSyncLedger()
+            self._shortcut_cache = {}
 
             # Load sync and indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -493,6 +528,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info("Processing user drives in batches...")
             # Use users synced in Step 1
             await self._process_users_in_batches(self.synced_users)
+            await reconcile_unseen_records(
+                self.data_entities_processor,
+                self.connector_id,
+                self._sync_ledger,
+                self.logger,
+            )
 
             # Step 6: Grant external collaborators app membership. Runs last because it
             # resolves principals rather than creating them, so every permission edge
@@ -961,8 +1002,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 result = await data_source.permissions_list(**params)
 
                 permissions_data = result.get("permissions", [])
-                if not permissions_data:
-                    break
+                if result.get("incompleteSearch") is True:
+                    self._sync_ledger.note_incomplete()
 
                 # Process each permission
                 for perm_data in permissions_data:
@@ -1188,8 +1229,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                     )
 
                     drives_data = result.get("drives", [])
-                    if not drives_data:
-                        break
+                    if result.get("incompleteSearch") is True:
+                        self._sync_ledger.note_incomplete()
 
                     all_drives.extend(drives_data)
 
@@ -1469,161 +1510,15 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     def _parse_datetime(self, dt_obj) -> Optional[int]:
         """Parse datetime object or string to epoch timestamp in milliseconds."""
-        if not dt_obj:
-            return None
-        try:
-            if isinstance(dt_obj, str):
-                dt = datetime.fromisoformat(dt_obj.replace('Z', '+00:00'))
-            else:
-                dt = dt_obj
-            return int(dt.timestamp() * 1000)
-        except Exception:
-            return None
+        return parse_drive_datetime(dt_obj)
 
     def _pass_date_filters(self, metadata: dict) -> bool:
-        """
-        Checks if the Google Drive file passes the configured CREATED and MODIFIED date filters.
-        Relies on client-side filtering since Google Drive API does not support date filtering.
-        """
-        # 1. ALWAYS Allow Folders
-        # We must sync folders regardless of date to ensure the directory structure
-        # exists for any new files that might be inside them.
-        mime_type = metadata.get("mimeType", "")
-        if mime_type == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
-            return True
-
-        # 2. Check Created Date Filter
-        created_filter = self.sync_filters.get(SyncFilterKey.CREATED)
-        if created_filter:
-            created_after_iso, created_before_iso = created_filter.get_datetime_iso()
-
-            # Use _parse_datetime to get millisecond timestamps for easy comparison
-            created_time = metadata.get("createdTime")
-            item_ts = self._parse_datetime(created_time) if created_time else None
-            start_ts = self._parse_datetime(created_after_iso)
-            end_ts = self._parse_datetime(created_before_iso)
-
-            if item_ts is not None:
-                if start_ts and item_ts < start_ts:
-                    return False
-                if end_ts and item_ts > end_ts:
-                    return False
-
-        # 3. Check Modified Date Filter
-        modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
-        if modified_filter:
-            modified_after_iso, modified_before_iso = modified_filter.get_datetime_iso()
-
-            # Use _parse_datetime to get millisecond timestamps
-            modified_time = metadata.get("modifiedTime")
-            item_ts = self._parse_datetime(modified_time) if modified_time else None
-            start_ts = self._parse_datetime(modified_after_iso)
-            end_ts = self._parse_datetime(modified_before_iso)
-
-            if item_ts is not None:
-                if start_ts and item_ts < start_ts:
-                    return False
-                if end_ts and item_ts > end_ts:
-                    return False
-
-        return True
+        """Checks if the Google Drive file passes the configured date filters."""
+        return passes_date_filters(metadata, self.sync_filters)
 
     def _pass_extension_filter(self, metadata: dict) -> bool:
-        """
-        Checks if the Google Drive file passes the configured file extensions filter.
-
-        For MULTISELECT filters:
-        - Operator IN: Only allow files with extensions in the selected list
-        - Operator NOT_IN: Allow files with extensions NOT in the selected list
-
-        Google-specific docs (Docs, Sheets, Slides) are filtered by mimeType,
-        while other files are filtered by file extension.
-
-        Folders always pass this filter to maintain directory structure.
-        """
-        # 1. ALWAYS Allow Folders
-        mime_type = metadata.get("mimeType", "")
-        if mime_type == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
-            return True
-
-        # 2. Get the extensions filter
-        extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
-
-        # If no filter configured or filter is empty, allow all files
-        if extensions_filter is None or extensions_filter.is_empty():
-            return True
-
-        # 3. Get the list of allowed values from the filter
-        allowed_values = extensions_filter.value
-        if not isinstance(allowed_values, list):
-            return True  # Invalid filter value, allow the file
-
-        # 4. Check if this is a Google-specific doc (Docs, Sheets, Slides)
-        google_doc_mime_types = [
-            MimeTypes.GOOGLE_DOCS.value,
-            MimeTypes.GOOGLE_SHEETS.value,
-            MimeTypes.GOOGLE_SLIDES.value,
-        ]
-
-        if mime_type in google_doc_mime_types:
-            # Filter Google docs by mimeType
-            operator = extensions_filter.get_operator()
-            operator_str = operator.value if hasattr(operator, 'value') else str(operator)
-
-            if operator_str == FilterOperator.IN:
-                # Only allow if mimeType is in the allowed list
-                return mime_type in allowed_values
-            elif operator_str == FilterOperator.NOT_IN:
-                # Allow if mimeType is NOT in the excluded list
-                return mime_type not in allowed_values
-            return True
-
-        # 5. For non-Google docs, filter by file extension
-        # Get the file extension from the metadata
-        # Try fileExtension field first, then extract from name
-        file_extension = metadata.get("fileExtension", None)
-        if not file_extension:
-            file_name = metadata.get("name", "")
-            if "." in file_name:
-                file_extension = file_name.rsplit(".", 1)[-1].lower()
-            else:
-                file_extension = None
-
-        # Files without extensions: behavior depends on operator
-        # If using IN operator and file has no extension, it won't match any allowed extensions
-        # If using NOT_IN operator and file has no extension, it passes (not in excluded list)
-        if file_extension is None:
-            operator = extensions_filter.get_operator()
-            operator_str = operator.value if hasattr(operator, 'value') else str(operator)
-            if operator_str == FilterOperator.NOT_IN:
-                return True
-            return False
-
-        # Normalize extension (lowercase, without dots)
-        file_extension = file_extension.lower().lstrip(".")
-
-        # Normalize extensions (lowercase, without dots) - only for extension values
-        # The allowed_values list contains both mimeType values and extension values
-        # We need to check extensions separately
-        normalized_extensions = [
-            ext.lower().lstrip(".")
-            for ext in allowed_values
-            if not ext.startswith("application/vnd.google-apps")
-        ]
-
-        # 6. Apply the filter based on operator
-        operator = extensions_filter.get_operator()
-        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
-
-        if operator_str == FilterOperator.IN:
-            # Only allow files with extensions in the list
-            return file_extension in normalized_extensions
-        elif operator_str == FilterOperator.NOT_IN:
-            # Allow files with extensions NOT in the list
-            return file_extension not in normalized_extensions
-
-        # Unknown operator, default to allowing the file
-        return True
+        """Checks if the Google Drive file passes the configured extension filter."""
+        return passes_extension_filter(metadata, self.sync_filters)
 
     async def _apply_folder_scope_to_change(
         self,
@@ -1862,8 +1757,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     metadata_changed = True
                     is_updated = True
 
-                external_revision_id = metadata.get("headRevisionId") or metadata.get("version")
-                if existing_record.external_revision_id != external_revision_id:
+                if drive_content_changed(existing_record, metadata):
                     content_changed = True
                     is_updated = True
 
@@ -1896,12 +1790,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             source_created_at = int(parse_timestamp(created_time)) if created_time else timestamp_ms
             source_updated_at = int(parse_timestamp(modified_time)) if modified_time else timestamp_ms
 
-            # Get file extension
-            file_extension = metadata.get("fileExtension", None)
-            if not file_extension:
-                file_name = metadata.get("name", "")
-                if "." in file_name:
-                    file_extension = file_name.rsplit(".", 1)[-1].lower()
+            file_extension = resolve_extension(metadata)
 
             parent_external_record_id = (metadata.get("parents") or [None])[0]
 
@@ -1917,7 +1806,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 external_revision_id=metadata.get("headRevisionId") or metadata.get("version", None),
                 parent_external_record_id=parent_external_record_id if parent_external_record_id != drive_id else None,
                 parent_record_type=RecordType.FILE if parent_external_record_id != drive_id else None,
-                version=0 if is_new else (existing_record.version + 1 if existing_record else 0),
+                version=0 if is_new else existing_record.version + (1 if content_changed else 0),
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
@@ -2023,6 +1912,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         except Exception as ex:
             self.logger.error(f"Error processing Google Drive file {metadata.get('id', 'unknown')}: {ex}", exc_info=True)
+            self._sync_ledger.fail_item()
             return None
 
     async def _process_drive_items_generator(
@@ -2054,6 +1944,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             force_shared_with_me: Forwarded to `_process_drive_item`; set by the
                 shared-with-me paths.
         """
+        files = await self._materialize_shortcuts(files, drive_data_source)
         for file_metadata in files:
             try:
                 record_update = await self._process_drive_item(
@@ -2068,10 +1959,16 @@ class GoogleDriveTeamConnector(BaseConnector):
                     force_shared_with_me=force_shared_with_me,
                 )
                 if record_update and record_update.record:
+                    self._sync_ledger.see(record_update.record.external_record_id)
                     files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
                     shared_disabled = record_update.record.is_shared and not record_update.record.shared_with_me_record_group_ids and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
                     shared_with_me_disabled = record_update.record.shared_with_me_record_group_ids and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED_WITH_ME, default=True)
-                    if files_disabled or shared_disabled or shared_with_me_disabled:
+                    if (
+                        files_disabled
+                        or shared_disabled
+                        or shared_with_me_disabled
+                        or is_not_exportable(record_update.record.mime_type)
+                    ):
                         record_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                     yield (record_update.record, record_update.new_permissions or [], record_update)
@@ -2487,6 +2384,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         # 6. If pageToken doesn't exist (full sync)
         if not page_token:
+            self._sync_ledger.note_full_listing()
             self.logger.info(f"🆕 Starting full sync for user {user.email}")
 
             # Get start page token for future incremental syncs
@@ -2501,15 +2399,22 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             # Fetch all files with pagination using files_list
             current_page_token = None
+            seen_page_tokens: set[str] = set()
             total_files = 0
 
             while True:
                 # Prepare files_list parameters
                 list_params = {
+                    "pageSize": 1000,
                     "fields": DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
                 }
 
                 if current_page_token:
+                    if current_page_token in seen_page_tokens:
+                        raise GoogleDriveError(
+                            "Google Drive repeated a page token while listing a user's files"
+                        )
+                    seen_page_tokens.add(current_page_token)
                     list_params["pageToken"] = current_page_token
 
                 # Fetch files
@@ -2517,10 +2422,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                 files_response = await user_drive_data_source.files_list(**list_params)
 
                 files = files_response.get("files", [])
-
-                if not files:
-                    self.logger.info("No more files to process")
-                    break
+                if files_response.get("incompleteSearch") is True:
+                    self.logger.warning(
+                        "Google Drive reported incompleteSearch while listing files for %s",
+                        user.email,
+                    )
+                    self._sync_ledger.note_incomplete()
 
                 # Process files using common helper method
                 batch_records, batch_count, total_files = await self._process_drive_files_batch(
@@ -2576,6 +2483,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         # 7. If pageToken exists (incremental sync)
         else:
+            self._sync_ledger.note_incremental()
             self.logger.info(f"🔄 Starting incremental sync for user {user.email}")
 
             current_page_token = page_token
@@ -2996,8 +2904,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
 
             drives_data = drives_response.get("drives", [])
-            if not drives_data:
-                break
+            if drives_response.get("incompleteSearch") is True:
+                self._sync_ledger.note_incomplete()
 
             all_user_drives.extend(drives_data)
 
@@ -3074,6 +2982,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                         # If pageToken doesn't exist (full sync)
                         if not page_token:
+                            self._sync_ledger.note_full_listing()
                             self.logger.info(f"🆕 Starting full sync for shared drive '{drive_name}' for user {user.email}")
 
                             # Get start page token for future incremental syncs (with driveId)
@@ -3091,6 +3000,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                             # Fetch all files with pagination using files_list
                             current_page_token = None
+                            seen_page_tokens: set[str] = set()
                             total_files = 0
 
                             while True:
@@ -3100,11 +3010,18 @@ class GoogleDriveTeamConnector(BaseConnector):
                                         "driveId": drive_id,
                                         "corpora": "drive",
                                         "supportsAllDrives": True,
-                                        "includeItemsFromAllDrives": True,  # Required when driveId is specified
+                                        "includeItemsFromAllDrives": True,
+                                        "q": "trashed=false",
+                                        "pageSize": 1000,
                                         "fields": DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
                                     }
 
                                     if current_page_token:
+                                        if current_page_token in seen_page_tokens:
+                                            raise GoogleDriveError(
+                                                "Google Drive repeated a page token while listing a shared drive"
+                                            )
+                                        seen_page_tokens.add(current_page_token)
                                         list_params["pageToken"] = current_page_token
 
                                     # Fetch files from shared drive
@@ -3115,10 +3032,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                                     files_response = await user_drive_data_source.files_list(**list_params)
 
                                     files = files_response.get("files", [])
-
-                                    if not files:
-                                        self.logger.info(f"No more files to process from drive '{drive_name}'")
-                                        break
+                                    if files_response.get("incompleteSearch") is True:
+                                        self.logger.warning(
+                                            "Google Drive reported incompleteSearch while listing shared drive %s",
+                                            drive_name,
+                                        )
+                                        self._sync_ledger.note_incomplete()
 
                                     # Process files using common helper method
                                     batch_records, batch_count, total_files = await self._process_drive_files_batch(
@@ -3163,6 +3082,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                         # If pageToken exists (incremental sync)
                         else:
+                            self._sync_ledger.note_incremental()
                             self.logger.info(f"🔄 Starting incremental sync for shared drive '{drive_name}' for user {user.email}")
 
                             current_page_token = page_token
@@ -3408,115 +3328,70 @@ class GoogleDriveTeamConnector(BaseConnector):
         error_context: str = "download",
         drive_data_source: Optional[GoogleDriveDataSource] = None,
     ) -> AsyncGenerator[bytes, None]:
-        """
-        Helper function to stream data from a Google API request.
-
-        Args:
-            request: Google API request object (from files().get_media() or files().export_media())
-            error_context: Context string for error messages (e.g., "PDF export", "file export")
-        Yields:
-            bytes: File content from the request
-        """
-        drive_data_source = drive_data_source or self.drive_data_source
-        if not drive_data_source:
+        """Stream a Drive media request. ``MediaIoBaseDownload`` stays in this module so tests can patch it."""
+        source = drive_data_source or self.drive_data_source
+        if not source:
             raise connector_not_ready(self.display_name)
-        buffer = io.BytesIO()
-        try:
-            downloader = MediaIoBaseDownload(buffer, request, chunksize=_DRIVE_DOWNLOAD_CHUNK_SIZE)
-            done = False
-
-            while not done:
-                try:
-                    # next_chunk() performs the HTTP range request synchronously, so
-                    # calling it here would freeze the event loop for the whole
-                    # round-trip and stall every other request in the process.
-                    _, done = await drive_data_source.execute(
-                        downloader.next_chunk
-                    )
-                except HttpError as http_error:
-                    self.logger.error(f"HTTP error during {error_context}: {str(http_error)}")
-                    # HttpError carries Drive's own status on .resp.status —
-                    # mapping it is what tells a revoked token from a deleted file.
-                    raise map_source_status(
-                        http_error.resp.status, connector=self.display_name
-                    ) from http_error
-                except Exception as chunk_error:
-                    self.logger.error(f"Error during {error_context}: {str(chunk_error)}")
-                    raise to_stream_error(
-                        chunk_error, connector=self.display_name
-                    ) from chunk_error
-
-                buffer.seek(0)
-                content = buffer.read()
-                if content:
-                    yield content
-
-                # Clear buffer for next chunk
-                buffer.seek(0)
-                buffer.truncate(0)
-        except HTTPException:
-            raise
-        except Exception as stream_error:
-            self.logger.error(f"Error in {error_context} stream: {str(stream_error)}")
-            raise to_stream_error(
-                stream_error, connector=self.display_name
-            ) from stream_error
-        finally:
-            buffer.close()
+        async for chunk in stream_media_request(
+            source.execute,
+            request,
+            downloader_cls=MediaIoBaseDownload,
+            chunk_size=_DRIVE_DOWNLOAD_CHUNK_SIZE,
+            logger=self.logger,
+            connector_name=self.display_name,
+            error_context=error_context,
+        ):
+            yield chunk
 
     async def _convert_to_pdf(self, file_path: str, temp_dir: str) -> str:
-        """Helper function to convert file to PDF"""
-        pdf_path = os.path.join(temp_dir, f"{Path(file_path).stem}.pdf")
+        """Convert a file to PDF. The source path must already be a safe name."""
+        return await libreoffice_to_pdf(file_path, temp_dir)
 
-        try:
-            conversion_cmd = [
-                "soffice",
-                "--headless",
-                "--convert-to",
-                "pdf",
-                "--outdir",
-                temp_dir,
-                file_path,
-            ]
-            process = await asyncio.create_subprocess_exec(
-                *conversion_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+    async def _materialize_shortcuts(
+        self, files: List[dict], drive_data_source: Optional[GoogleDriveDataSource]
+    ) -> List[dict]:
+        if not any(is_shortcut_mime(item.get("mimeType")) for item in files):
+            return files
+        source = drive_data_source or self.drive_data_source
 
-            # Add timeout to communicate
+        async def get_metadata(file_id: str) -> Optional[dict]:
             try:
-                conversion_output, conversion_error = await asyncio.wait_for(
-                    process.communicate(), timeout=30.0
+                return await source.files_get(
+                    fileId=file_id,
+                    supportsAllDrives=True,
+                    fields=DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS,
                 )
-            except asyncio.TimeoutError:
-                # Make sure to terminate the process if it times out
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    process.kill()  # Force kill if termination takes too long
-                self.logger.error("LibreOffice conversion timed out after 30 seconds")
-                raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion timed out")
+            except HttpError as error:
+                if error.resp.status in (
+                    HttpStatusCode.NOT_FOUND.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    return None
+                raise
 
-            if process.returncode != 0:
-                error_msg = f"LibreOffice conversion failed: {conversion_error.decode('utf-8', errors='replace')}"
-                self.logger.error(error_msg)
-                raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to convert file to PDF")
+        async def list_children(folder_id: str, seen_ids: set) -> List[dict]:
+            found: List[dict] = []
 
-            if os.path.exists(pdf_path):
-                return pdf_path
-            else:
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion failed - output file not found"
-                )
-        except asyncio.TimeoutError:
-            # This catch is for any other timeout that might occur
-            self.logger.error("Timeout during PDF conversion")
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion timed out")
-        except Exception as conv_error:
-            self.logger.error(f"Error during conversion: {str(conv_error)}")
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error converting file to PDF")
+            async def provider() -> GoogleDriveDataSource:
+                return source
+
+            async for batch in fetch_folder_children(
+                folder_id,
+                seen_ids,
+                provider,
+                fields=DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
+            ):
+                found.extend(batch)
+            return found
+
+        return await materialize_drive_shortcuts(
+            files,
+            get_metadata=get_metadata,
+            list_children=list_children,
+            seen=set(),
+            cache=self._shortcut_cache,
+            logger=self.logger,
+        )
 
     async def _get_file_metadata_from_drive(
         self,
@@ -3715,127 +3590,105 @@ class GoogleDriveTeamConnector(BaseConnector):
                 )
 
             mime_type = file_metadata.get("mimeType", "application/octet-stream")
+            if is_shortcut_mime(mime_type):
+                target_id, _target_mime = shortcut_target(file_metadata)
+                if not target_id:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
+                        detail="This Google Drive shortcut has no target",
+                    )
+                file_id = target_id
+                file_metadata = await self._get_file_metadata_from_drive(
+                    file_id, drive_service, drive_data_source
+                )
+                mime_type = file_metadata.get("mimeType", "application/octet-stream")
 
-            google_workspace_export_formats = {
-                "application/vnd.google-apps.spreadsheet": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "application/vnd.google-apps.document": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "application/vnd.google-apps.presentation": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            }
+            if is_not_exportable(mime_type):
+                raise HTTPException(
+                    status_code=HttpStatusCode.UNSUPPORTED_MEDIA_TYPE.value,
+                    detail="This Google Drive file type cannot be exported",
+                )
 
-            # PDF conversion for Google Workspace files
-            if convertTo == MimeTypes.PDF.value and mime_type in google_workspace_export_formats:
-                self.logger.info(f"Exporting Google Workspace file ({mime_type}) directly to PDF")
+            wants_pdf = convertTo == MimeTypes.PDF.value
+            export_mime = export_mime_for(mime_type, pdf=wants_pdf)
+            if export_mime:
+                extension = export_extension_for(mime_type, pdf=wants_pdf)
 
-                request = drive_service.files().export_media(
-                    fileId=file_id,
-                    mimeType="application/pdf"
-                    # Note: export_media doesn't need supportsAllDrives
+                async def _token() -> str:
+                    credentials = getattr(getattr(drive_service, "_http", None), "credentials", None)
+                    token = getattr(credentials, "token", None)
+                    if not token:
+                        raise connector_not_ready(self.display_name)
+                    return token
+
+                streamer = GoogleExportStreamer(
+                    drive_service=drive_service,
+                    execute=drive_data_source.execute,
+                    get_access_token=_token,
+                    downloader_cls=MediaIoBaseDownload,
+                    logger=self.logger,
+                    connector_name=self.display_name,
+                    chunk_size=_DRIVE_DOWNLOAD_CHUNK_SIZE,
                 )
                 return create_stream_record_response(
-                    self._stream_google_api_request(
-                        request,
-                        error_context="PDF export",
-                        drive_data_source=drive_data_source,
-                    ),
-                    filename=file_name,
+                    streamer.iter_export(file_id, export_mime),
+                    filename=download_filename(file_name, extension),
+                    mime_type=export_mime,
+                    fallback_filename=f"record_{record.id}",
+                )
+
+            if wants_pdf:
+                self.logger.info(f"Converting file to PDF: {file_name}")
+                directory = tempfile.mkdtemp()
+                try:
+                    input_path = safe_conversion_input(directory, resolve_extension(file_metadata) or "bin")
+                    try:
+                        with open(input_path, "wb") as handle:
+                            request = drive_service.files().get_media(
+                                fileId=file_id,
+                                supportsAllDrives=True,
+                            )
+                            downloader = MediaIoBaseDownload(
+                                handle, request, chunksize=_DRIVE_DOWNLOAD_CHUNK_SIZE
+                            )
+                            done = False
+                            while not done:
+                                _status, done = await drive_data_source.execute(downloader.next_chunk)
+                    except HttpError as http_error:
+                        if (
+                            http_error.resp.status == HttpStatusCode.FORBIDDEN.value
+                            and "fileNotDownloadable" in drive_http_reasons(http_error)
+                        ):
+                            raise not_downloadable(
+                                "Google Workspace files (Sheets, Docs, Slides) cannot be "
+                                "converted to PDF using direct download. Please use the "
+                                "file's native export functionality.",
+                                connector=self.display_name,
+                            )
+                        raise
+                    pdf_path = await self._convert_to_pdf(input_path, directory)
+                except Exception:
+                    shutil.rmtree(directory, ignore_errors=True)
+                    raise
+
+                async def file_iterator() -> AsyncGenerator[bytes, None]:
+                    try:
+                        with open(pdf_path, "rb") as pdf_file:
+                            while chunk := await asyncio.to_thread(pdf_file.read, 1024 * 1024):
+                                yield chunk
+                    finally:
+                        shutil.rmtree(directory, ignore_errors=True)
+
+                return create_stream_record_response(
+                    file_iterator(),
+                    filename=download_filename(file_name, "pdf"),
                     mime_type="application/pdf",
                     fallback_filename=f"record_{record.id}",
                 )
 
-
-            # Regular export for Google Workspace files
-            if mime_type in google_workspace_export_formats:
-                export_mime_type = google_workspace_export_formats[mime_type]
-                self.logger.info(f"Exporting Google Workspace file ({mime_type}) to {export_mime_type}")
-
-                request = drive_service.files().export_media(
-                    fileId=file_id,
-                    mimeType=export_mime_type
-                )
-
-                export_media_types = {
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"),
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx"),
-                    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ("application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx"),
-                }
-
-                response_media_type, file_ext = export_media_types.get(export_mime_type, (export_mime_type, ""))
-                file_name_with_ext = file_name if file_name.endswith(file_ext) else f"{file_name}{file_ext}"
-
-                return create_stream_record_response(
-                    self._stream_google_api_request(
-                        request,
-                        error_context="Google Workspace file export",
-                        drive_data_source=drive_data_source,
-                    ),
-                    filename=file_name_with_ext,
-                    mime_type=response_media_type,
-                    fallback_filename=f"record_{record.id}",
-                )
-
-
-            # PDF conversion for regular files
-            if convertTo == MimeTypes.PDF.value:
-                self.logger.info(f"Converting file to PDF: {file_name}")
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_file_path = os.path.join(temp_dir, file_name)
-
-                    try:
-                        with open(temp_file_path, "wb") as f:
-                            request = drive_service.files().get_media(
-                                fileId=file_id,
-                                supportsAllDrives=True  # ADDED
-                            )
-                            downloader = MediaIoBaseDownload(f, request, chunksize=_DRIVE_DOWNLOAD_CHUNK_SIZE)
-
-                            done = False
-                            while not done:
-                                status, done = await drive_data_source.execute(
-                                    downloader.next_chunk
-                                )
-                                self.logger.info(f"Download {int(status.progress() * 100)}%.")
-                    except HttpError as http_error:
-                        if http_error.resp.status == HttpStatusCode.FORBIDDEN.value:
-                            error_details = http_error.error_details if hasattr(http_error, 'error_details') else []
-                            for detail in error_details:
-                                if detail.get('reason') == 'fileNotDownloadable':
-                                    self.logger.error(
-                                        f"Google Workspace file cannot be downloaded for PDF conversion: {str(http_error)}"
-                                    )
-                                    raise not_downloadable(
-                                        "Google Workspace files (Sheets, Docs, Slides) cannot be "
-                                        "converted to PDF using direct download. Please use the "
-                                        "file's native export functionality.",
-                                        connector=self.display_name,
-                                    )
-                        raise
-
-                    pdf_path = await self._convert_to_pdf(temp_file_path, temp_dir)
-                    self.logger.info(f"PDF file converted: {pdf_path}")
-
-                    async def file_iterator() -> AsyncGenerator[bytes, None]:
-                        try:
-                            with open(pdf_path, "rb") as pdf_file:
-                                yield await asyncio.to_thread(pdf_file.read)
-                        except Exception as e:
-                            self.logger.error(f"Error reading PDF file: {str(e)}")
-                            raise HTTPException(
-                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                detail="Error reading converted PDF file",
-                            )
-
-                    return create_stream_record_response(
-                        file_iterator(),
-                        filename=file_name,
-                        mime_type="application/pdf",
-                        fallback_filename=f"record_{record.id}",
-                    )
-
-
-            # Regular file download - WITH supportsAllDrives
             request = drive_service.files().get_media(
                 fileId=file_id,
-                supportsAllDrives=True  # ADDED - This is the key fix!
+                supportsAllDrives=True,
             )
             return create_stream_record_response(
                 self._stream_google_api_request(
@@ -3843,11 +3696,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                     error_context="file download",
                     drive_data_source=drive_data_source,
                 ),
-                filename=file_name,
+                filename=download_filename(file_name, resolve_extension(file_metadata)),
                 mime_type=mime_type,
                 fallback_filename=f"record_{record.id}",
             )
-
         except HTTPException:
             raise
         except Exception as e:

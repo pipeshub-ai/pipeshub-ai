@@ -534,11 +534,6 @@ async def test_a_database_failure_on_a_change_keeps_the_users_checkpoint(ws: Wor
     assert ws.user_checkpoint(ALICE) == checkpoint
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Full sync of a user's My Drive stops at the first empty page even when Drive sent a "
-    "nextPageToken, then saves the checkpoint, so later pages are never synced.",
-)
 async def test_an_empty_page_with_a_next_token_does_not_end_a_users_full_sync(ws: Workspace) -> None:
     for n in range(4):
         ws.world.add_item(f"a{n}", f"a{n}.txt", parent="root-alice", owner=ALICE)

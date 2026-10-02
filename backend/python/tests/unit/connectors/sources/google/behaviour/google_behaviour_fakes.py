@@ -298,6 +298,8 @@ class FakeEntitiesProcessor:
         self.relations: list[tuple[str, str, str]] = []
         self.new_record_batches: list[list[str]] = []
         self.fail_writes_for: set[str] = set()
+        self.linked_authenticators: list[tuple[str, str, str, str]] = []
+        self.deleted_groups: list[str] = []
 
     def _check_write(self, external_id: Optional[str]) -> None:
         if external_id in self.fail_writes_for:
@@ -324,6 +326,53 @@ class FakeEntitiesProcessor:
             and (record_type is None or str(getattr(r.record_type, "value", r.record_type)) == str(getattr(record_type, "value", record_type)))
         ]
 
+    async def get_records_by_status(
+        self,
+        connector_id: str,
+        status_filters: list[str] | None,
+        limit: int | None = None,
+        offset: int = 0,
+        record_group_id: str | None = None,
+        is_placeholder: bool | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
+    ) -> list[Any]:
+        rows = [
+            record for record in self.records.values()
+            if getattr(record, "connector_id", None) == connector_id
+        ]
+        if is_placeholder is not None:
+            rows = [record for record in rows if bool(record.is_placeholder) is is_placeholder]
+        if record_group_id is not None:
+            rows = [record for record in rows if record.record_group_id == record_group_id]
+        if status_filters:
+            rows = [record for record in rows if record.indexing_status in status_filters]
+        rows.sort(key=lambda record: record.id)
+        if after_key:
+            rows = [record for record in rows if record.id > after_key]
+        if offset:
+            rows = rows[offset:]
+        if limit is not None:
+            rows = rows[:limit]
+        return rows
+
+    async def get_record_group_by_external_id(self, connector_id: str, external_group_id: str) -> Optional[Any]:
+        group = self.record_groups.get(external_group_id)
+        if group is not None and getattr(group, "connector_id", None) not in (None, connector_id):
+            return None
+        return group
+
+    async def on_record_group_deleted(self, external_group_id: str, connector_id: str) -> bool:
+        self.record_groups.pop(external_group_id, None)
+        self.record_group_permissions.pop(external_group_id, None)
+        self.deleted_groups.append(external_group_id)
+        return True
+
+    async def link_authenticator_to_source_user(
+        self, connector_id: str, created_by: str, email: str, source_user_id: str, app_name: object
+    ) -> None:
+        self.linked_authenticators.append((connector_id, created_by, email, source_user_id))
+
     async def get_placeholder_records(self, connector_id: str, *_: object, **__: object) -> list[Any]:
         return [r for r in self.records.values() if getattr(r, "is_placeholder", False)]
 
@@ -346,6 +395,9 @@ class FakeEntitiesProcessor:
             self._check_write(record.external_record_id)
         self.new_record_batches.append([r.external_record_id for r, _ in records_with_permissions])
         for record, permissions in records_with_permissions:
+            group = self.record_groups.get(record.external_record_group_id)
+            if group is not None and not record.record_group_id:
+                record.record_group_id = group.id
             self.records[record.external_record_id] = record
             self._upsert_permissions(record.external_record_id, permissions)
             self._ensure_parent(record)
@@ -423,10 +475,13 @@ class FakeEntitiesProcessor:
             del self.records[record.external_record_id]
             self.permissions.pop(record.external_record_id, None)
         self.deleted.extend(deleted)
-        return {"deleted_records": deleted}
+        return {"deleted_records": deleted, "successfully_deleted": len(deleted)}
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, permissions in groups:
+            existing = self.record_groups.get(group.external_group_id)
+            if existing is not None:
+                group.id = existing.id
             self.record_groups[group.external_group_id] = group
             self.record_group_permissions[group.external_group_id] = list(permissions)
 
