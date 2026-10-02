@@ -27,6 +27,12 @@ TAXONOMY_COLLECTIONS: frozenset[str] = frozenset(
     }
 )
 
+# Spellings kept per taxonomy node. A spelling past the cap is never stored,
+# so every later record that uses it asks the merge model again; 20 was hit
+# by popular nodes. Aliases are payload and alias nodes only, never shown to
+# a user (KG-17) or embedded, so a larger cap costs little.
+MAX_TAXONOMY_ALIASES = 200
+
 # Set on a node merged into another (app.modules.entity_resolution.consolidation);
 # lookups skip it and the resolver follows it to the winner.
 MERGED_INTO_FIELD = "mergedInto"

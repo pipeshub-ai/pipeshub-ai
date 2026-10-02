@@ -38,6 +38,7 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _T = TypeVar("_T")
@@ -929,7 +930,7 @@ class GraphTransactionStore(TransactionStore):
         normalized_aliases: list[str],
         *,
         org_id: str,
-        max_aliases: int = 20,
+        max_aliases: int = MAX_TAXONOMY_ALIASES,
     ) -> None:
         await self.graph_provider.add_taxonomy_aliases(
             collection, key, aliases, normalized_aliases,
