@@ -509,6 +509,12 @@ describe('TelemetryService', () => {
       // The config blob is raw JSON, so a hand-edited or older blob can hold a
       // boolean. Calling trim() on it would abort initialization before the
       // pusher ever starts.
+      // startMetricsPush sleeps START_DELAY_MS before it creates the interval;
+      // flushAsync() does not cover that, so without the stub the interval
+      // would be created after this test's cleanup.
+      sandbox
+        .stub(TelemetryService.prototype as any, 'startMetricsPush')
+        .resolves();
       for (const [stored, expected] of [
         [false, false],
         [true, true],
