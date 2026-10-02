@@ -26,6 +26,7 @@ from app.connectors.sources.atlassian.confluence_datacenter import (
     connector as team_connector_module,
 )
 from app.connectors.sources.atlassian.confluence_datacenter.connector import (
+    CONTENT_LIST_LIMIT,
     ConfluenceDataCenterConnector,
 )
 from app.models.entities import Record, RecordType
@@ -1383,6 +1384,37 @@ class TestRemovalFromSource:
         await connector.run_sync()
 
         assert "p1" in db.records
+
+    async def test_a_400_past_the_first_archived_page_removes_nothing(self, atlassian_api, db, store, search) -> None:
+        """Only a first-page 400 means "this server has no archived pages"."""
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        search.existing["page"] = [content("p2"), child_of("p3", "p2")]
+        # A full first archived page, then a 400 where p1 would have been listed.
+        search.archived = [content(f"a{i}") for i in range(CONTENT_LIST_LIMIT)] + [content("p1")]
+        served = search.database
+
+        def archived_fails_past_the_first_page(request: httpx.Request) -> httpx.Response:
+            q = AtlassianApiStub.query(request)
+            if q.get("status") == "archived" and int(q.get("start", 0)) > 0:
+                return json_response({"message": "bad request"}, status=400)
+            return served(request)
+
+        atlassian_api.on("GET", f"{API}/content", archived_fails_past_the_first_page)
+
+        await connector.run_sync()
+
+        assert "p1" in db.records, "an archived page past a failed listing page is not treated as gone"
+
+    async def test_a_server_without_archived_pages_still_removes_a_deleted_page(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        search.existing["page"] = [content("p2"), child_of("p3", "p2")]
+        search.archived = json_response({"message": "unknown status"}, status=400)
+
+        await connector.run_sync()
+
+        assert "p1" not in db.records
 
     @pytest.mark.parametrize("answer", [
         pytest.param(json_response({"message": "busy"}, status=503), id="server-error"),
