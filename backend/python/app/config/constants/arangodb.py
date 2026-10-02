@@ -653,6 +653,11 @@ class EntityRelations(Enum):
     RELATED_TO_PERSON = "RELATED_TO_PERSON"
     MENTIONED_IN = "MENTIONED_IN"  # User mentioned in a message/record
     INVOLVED_IN = "INVOLVED_IN"
+    # Record -> member edges written by record_people (KG-13)
+    AUTHORED_BY = "AUTHORED_BY"
+    ADDRESSED_TO = "ADDRESSED_TO"
+    REVIEWED_BY = "REVIEWED_BY"
+    OWNED_BY = "OWNED_BY"
 
 
 class EventTypes(Enum):

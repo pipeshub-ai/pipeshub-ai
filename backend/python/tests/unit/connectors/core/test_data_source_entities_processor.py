@@ -2821,7 +2821,7 @@ class TestMigrateGroupToUserByExternalId:
 class TestProcessRecordTicket:
     @pytest.mark.asyncio
     async def test_ticket_record_calls_related_and_user_edges(self):
-        """TicketRecord triggers _handle_related_external_records and _handle_ticket_user_edges."""
+        """TicketRecord triggers _handle_related_external_records and the person edges."""
         proc = _make_processor()
         tx_store = _make_tx_store()
 
@@ -2844,7 +2844,7 @@ class TestProcessRecordTicket:
         assert result is not None
         # Should have called delete_edges_by_relationship_types (from _handle_related_external_records)
         tx_store.delete_edges_by_relationship_types.assert_awaited()
-        # Should have called delete_edges_from (from _handle_ticket_user_edges)
+        # Should have called delete_edges_from (from the person edges)
         tx_store.delete_edges_from.assert_awaited()
 
 
@@ -3676,292 +3676,6 @@ class TestLinkRecordToGroupEdgeCases:
         await proc._link_record_to_group(record, "grp-1", tx_store)
 
         tx_store.create_inherit_permissions_relation_record_group.assert_awaited_with("rec-1", "grp-1")
-
-
-# ===========================================================================
-# _prepare_ticket_user_edge (lines 448-483)
-# ===========================================================================
-
-
-class TestPrepareTicketUserEdge:
-    @pytest.mark.asyncio
-    async def test_returns_none_when_no_email(self):
-        """Returns None when user_email is None."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-
-        ticket = TicketRecord(
-            org_id="org-1", external_record_id="t-1", record_name="Ticket",
-            origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
-            connector_id="conn-1", record_type=RecordType.TICKET, version=1,
-            mime_type="text/plain", source_created_at=1000, source_updated_at=2000,
-        )
-        ticket.id = "ticket-1"
-
-        result = await proc._prepare_ticket_user_edge(
-            ticket, None, EntityRelations.ASSIGNED_TO,
-            "assignee_source_timestamp", "source_updated_at", tx_store, "ASSIGNED_TO"
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_user_not_found(self):
-        """Returns None when user is not found by email."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-        tx_store.get_user_by_email.return_value = None
-
-        ticket = TicketRecord(
-            org_id="org-1", external_record_id="t-1", record_name="Ticket",
-            origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
-            connector_id="conn-1", record_type=RecordType.TICKET, version=1,
-            mime_type="text/plain", source_created_at=1000, source_updated_at=2000,
-        )
-        ticket.id = "ticket-1"
-
-        result = await proc._prepare_ticket_user_edge(
-            ticket, "user@example.com", EntityRelations.ASSIGNED_TO,
-            "assignee_source_timestamp", "source_updated_at", tx_store, "ASSIGNED_TO"
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_edge_with_source_timestamp(self):
-        """Returns edge dict with source timestamp from primary attribute."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-
-        user_mock = MagicMock()
-        user_mock.id = "user-1"
-        tx_store.get_user_by_email.return_value = user_mock
-
-        ticket = TicketRecord(
-            org_id="org-1", external_record_id="t-1", record_name="Ticket",
-            origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
-            connector_id="conn-1", record_type=RecordType.TICKET, version=1,
-            mime_type="text/plain", source_created_at=1000, source_updated_at=2000,
-            assignee_source_timestamp=5000,
-        )
-        ticket.id = "ticket-1"
-
-        result = await proc._prepare_ticket_user_edge(
-            ticket, "user@example.com", EntityRelations.ASSIGNED_TO,
-            "assignee_source_timestamp", "source_updated_at", tx_store, "ASSIGNED_TO"
-        )
-
-        assert result is not None
-        assert result["edgeType"] == EntityRelations.ASSIGNED_TO.value
-        assert result["sourceTimestamp"] == 5000
-        assert "ticket-1" in result["_from"]
-        assert "user-1" in result["_to"]
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_fallback_timestamp(self):
-        """Uses fallback timestamp when primary is None."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-
-        user_mock = MagicMock()
-        user_mock.id = "user-1"
-        tx_store.get_user_by_email.return_value = user_mock
-
-        ticket = TicketRecord(
-            org_id="org-1", external_record_id="t-1", record_name="Ticket",
-            origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
-            connector_id="conn-1", record_type=RecordType.TICKET, version=1,
-            mime_type="text/plain", source_created_at=1000, source_updated_at=2000,
-        )
-        ticket.id = "ticket-1"
-
-        result = await proc._prepare_ticket_user_edge(
-            ticket, "user@example.com", EntityRelations.ASSIGNED_TO,
-            "assignee_source_timestamp", "source_updated_at", tx_store, "ASSIGNED_TO"
-        )
-
-        assert result is not None
-        assert result["sourceTimestamp"] == 2000
-
-    @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
-        """Returns None and logs warning on exception."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-        tx_store.get_user_by_email.side_effect = RuntimeError("db error")
-
-        ticket = TicketRecord(
-            org_id="org-1", external_record_id="t-1", record_name="Ticket",
-            origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
-            connector_id="conn-1", record_type=RecordType.TICKET, version=1,
-            mime_type="text/plain", source_created_at=1000, source_updated_at=2000,
-        )
-        ticket.id = "ticket-1"
-
-        result = await proc._prepare_ticket_user_edge(
-            ticket, "user@example.com", EntityRelations.ASSIGNED_TO,
-            "assignee_source_timestamp", "source_updated_at", tx_store, "ASSIGNED_TO"
-        )
-
-        assert result is None
-        proc.logger.warning.assert_called()
-
-
-# ===========================================================================
-# _handle_ticket_user_edges (lines 485-546)
-# ===========================================================================
-
-
-class TestHandleTicketUserEdges:
-    @pytest.mark.asyncio
-    async def test_creates_all_three_edge_types(self):
-        """Creates ASSIGNED_TO, CREATED_BY, REPORTED_BY edges when users exist."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-
-        user_mock = MagicMock()
-        user_mock.id = "user-1"
-        tx_store.get_user_by_email.return_value = user_mock
-
-        ticket = TicketRecord(
-            org_id="org-1", external_record_id="t-1", record_name="Ticket",
-            origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
-            connector_id="conn-1", record_type=RecordType.TICKET, version=1,
-            mime_type="text/plain", source_created_at=1000, source_updated_at=2000,
-            assignee_email="a@test.com", creator_email="c@test.com", reporter_email="r@test.com",
-        )
-        ticket.id = "ticket-1"
-
-        await proc._handle_ticket_user_edges(ticket, tx_store)
-
-        tx_store.batch_create_entity_relations.assert_awaited_once()
-        edges = tx_store.batch_create_entity_relations.call_args[0][0]
-        assert len(edges) == 3
-
-    @pytest.mark.asyncio
-    async def test_delete_edges_exception_logged(self):
-        """Logs warning when deleting existing edges fails."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-        tx_store.delete_edges_from.side_effect = RuntimeError("db fail")
-
-        ticket = TicketRecord(
-            org_id="org-1", external_record_id="t-1", record_name="Ticket",
-            origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
-            connector_id="conn-1", record_type=RecordType.TICKET, version=1,
-            mime_type="text/plain", source_created_at=1000, source_updated_at=2000,
-        )
-        ticket.id = "ticket-1"
-
-        await proc._handle_ticket_user_edges(ticket, tx_store)
-
-        proc.logger.warning.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_no_edges_when_no_emails(self):
-        """Does not create edges when no emails are set."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-
-        ticket = TicketRecord(
-            org_id="org-1", external_record_id="t-1", record_name="Ticket",
-            origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
-            connector_id="conn-1", record_type=RecordType.TICKET, version=1,
-            mime_type="text/plain", source_created_at=1000, source_updated_at=2000,
-        )
-        ticket.id = "ticket-1"
-
-        await proc._handle_ticket_user_edges(ticket, tx_store)
-
-        tx_store.batch_create_entity_relations.assert_not_awaited()
-
-
-# ===========================================================================
-# _handle_project_lead_edge (lines 548-594)
-# ===========================================================================
-
-
-class TestHandleProjectLeadEdge:
-    @pytest.mark.asyncio
-    async def test_creates_lead_by_edge(self):
-        """Creates LEAD_BY edge when lead_email exists and user found."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-
-        user_mock = MagicMock()
-        user_mock.id = "user-1"
-        tx_store.get_user_by_email.return_value = user_mock
-
-        project = ProjectRecord(
-            org_id="org-1", external_record_id="p-1", record_name="Project",
-            origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
-            connector_id="conn-1", record_type=RecordType.PROJECT, version=1,
-            mime_type="text/plain", source_created_at=1000, source_updated_at=2000,
-            lead_email="lead@test.com",
-        )
-        project.id = "project-1"
-
-        await proc._handle_project_lead_edge(project, tx_store)
-
-        tx_store.batch_create_entity_relations.assert_awaited_once()
-        edge = tx_store.batch_create_entity_relations.call_args[0][0][0]
-        assert edge["edgeType"] == EntityRelations.LEAD_BY.value
-
-    @pytest.mark.asyncio
-    async def test_no_lead_email_returns_early(self):
-        """Returns early when lead_email is not set."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-
-        project = ProjectRecord(
-            org_id="org-1", external_record_id="p-1", record_name="Project",
-            origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
-            connector_id="conn-1", record_type=RecordType.PROJECT, version=1,
-            mime_type="text/plain", source_created_at=1000, source_updated_at=2000,
-        )
-        project.id = "project-1"
-
-        await proc._handle_project_lead_edge(project, tx_store)
-
-        tx_store.batch_create_entity_relations.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_user_not_found_returns_early(self):
-        """Returns early when user not found by email."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-        tx_store.get_user_by_email.return_value = None
-
-        project = ProjectRecord(
-            org_id="org-1", external_record_id="p-1", record_name="Project",
-            origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
-            connector_id="conn-1", record_type=RecordType.PROJECT, version=1,
-            mime_type="text/plain", source_created_at=1000, source_updated_at=2000,
-            lead_email="lead@test.com",
-        )
-        project.id = "project-1"
-
-        await proc._handle_project_lead_edge(project, tx_store)
-
-        tx_store.batch_create_entity_relations.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_exception_logs_warning(self):
-        """Logs warning on exception."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-        tx_store.delete_edges_from.side_effect = RuntimeError("db fail")
-
-        project = ProjectRecord(
-            org_id="org-1", external_record_id="p-1", record_name="Project",
-            origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
-            connector_id="conn-1", record_type=RecordType.PROJECT, version=1,
-            mime_type="text/plain", source_created_at=1000, source_updated_at=2000,
-            lead_email="lead@test.com",
-        )
-        project.id = "project-1"
-
-        await proc._handle_project_lead_edge(project, tx_store)
-
-        proc.logger.warning.assert_called()
 
 
 # ===========================================================================
@@ -4924,7 +4638,7 @@ class TestProcessRecordRevisionMatch:
 
     @pytest.mark.asyncio
     async def test_project_record_triggers_lead_edge(self):
-        """ProjectRecord triggers _handle_project_lead_edge."""
+        """ProjectRecord triggers the person edges (LEAD_BY)."""
         proc = _make_processor()
         tx_store = _make_tx_store()
 
@@ -4938,8 +4652,36 @@ class TestProcessRecordRevisionMatch:
         result, _ = await proc._process_record(project, [], tx_store)
 
         assert result is not None
-        # delete_edges_from is called by _handle_project_lead_edge
+        # delete_edges_from is called by the person edges
         tx_store.delete_edges_from.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_mail_record_links_its_sender_and_recipients(self):
+        """KG-13: a mail's member sender and recipients become person edges."""
+        from types import SimpleNamespace
+
+        from app.models.entities import MailRecord
+
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_user_by_email = AsyncMock(
+            side_effect=lambda email: SimpleNamespace(id=f"u-{email.split('@')[0]}"),
+        )
+        tx_store.batch_create_entity_relations = AsyncMock()
+        mail = MailRecord(
+            org_id="org-1", external_record_id="m-1", record_name="Mail",
+            origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
+            connector_id="conn-1", record_type=RecordType.MAIL, version=1,
+            mime_type="text/plain", source_created_at=1000, source_updated_at=2000,
+            from_email="ann@acme.com", to_emails=["bob@acme.com"],
+        )
+
+        await proc._process_record(mail, [], tx_store)
+
+        edges = tx_store.batch_create_entity_relations.await_args.args[0]
+        assert {(e["_to"], e["edgeType"]) for e in edges} == {
+            ("users/u-ann", "AUTHORED_BY"), ("users/u-bob", "ADDRESSED_TO"),
+        }
 
     @pytest.mark.asyncio
     async def test_record_group_links_when_shared(self):

@@ -8,12 +8,14 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     EntityRelations,
+    EventTypes,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
     RecordRelations,
-    EventTypes,
 )
+from app.connectors.core.base.data_processor.record_people import link_record_people
+from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
@@ -44,7 +46,6 @@ from app.models.entities import (
     User,
     WebpageRecord,
 )
-from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.cache.invalidation_hooks import (
     notify_connector_sync_completed,
@@ -718,181 +719,10 @@ class DataSourceEntitiesProcessor:
 
         return moved
 
-    async def _prepare_ticket_user_edge(
-        self,
-        ticket: TicketRecord,
-        user_email: str | None,
-        edge_type: EntityRelations,
-        timestamp_attr_name: str,
-        fallback_timestamp_attr: str,
-        tx_store: TransactionStore,
-        edge_type_name: str
-    ) -> dict[str, Any] | None:
-        """
-        Helper method to prepare a ticket-user edge data dictionary.
-
-        Args:
-            ticket: The TicketRecord to create edge for
-            user_email: Email of the user to link to
-            edge_type: The type of edge (ASSIGNED_TO, CREATED_BY, REPORTED_BY)
-            timestamp_attr_name: Name of the connector-provided timestamp attribute
-            fallback_timestamp_attr: Name of the fallback timestamp attribute
-            tx_store: The transaction store
-            edge_type_name: Human-readable name for logging
-
-        Returns:
-            Edge data dictionary if user is found, None otherwise
-        """
-        if not user_email:
-            return None
-
-        try:
-            # Only get existing user by email - do not create if not found
-            user = await tx_store.get_user_by_email(user_email)
-
-            if not user:
-                return None
-
-            # Use connector-provided timestamp if available, otherwise fallback
-            source_timestamp = None
-            # Try primary timestamp first
-            if hasattr(ticket, timestamp_attr_name):
-                timestamp_value = getattr(ticket, timestamp_attr_name, None)
-                if timestamp_value is not None:
-                    source_timestamp = timestamp_value
-
-            # If primary is None or not set, try fallback
-            if source_timestamp is None and hasattr(ticket, fallback_timestamp_attr):
-                fallback_value = getattr(ticket, fallback_timestamp_attr, None)
-                if fallback_value is not None:
-                    # Use fallback timestamp even if 0 (it's the best we have)
-                    source_timestamp = fallback_value
-
-            edge_data = {
-                "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
-                "_to": f"{CollectionNames.USERS.value}/{user.id}",
-                "edgeType": edge_type.value,
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            }
-            if source_timestamp is not None:
-                edge_data["sourceTimestamp"] = source_timestamp
-
-            return edge_data
-        except Exception as e:
-            self.logger.warning(f"Failed to create {edge_type_name} edge for ticket {ticket.id}: {str(e)}")
-            return None
-
-    async def _handle_ticket_user_edges(self, ticket: TicketRecord, tx_store: TransactionStore) -> None:
-        """
-        Create entity relationship edges for tickets (ASSIGNED_TO, CREATED_BY, REPORTED_BY).
-
-        This method creates edges in the entityRelations collection linking tickets to users.
-        It first deletes existing edges for this ticket to avoid duplicates, then creates new ones.
-
-        Args:
-            ticket: The TicketRecord to create edges for
-            tx_store: The transaction store
-        """
-        # First, delete existing ticket-user edges for this ticket to avoid duplicates
-        try:
-            await tx_store.delete_edges_from(ticket.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value)
-        except Exception as e:
-            self.logger.warning(f"Failed to delete existing ticket-user edges for ticket {ticket.id}: {str(e)}")
-
-        edges_to_create = []
-
-        # Create ASSIGNED_TO edge if assignee exists and user is found
-        assignee_edge = await self._prepare_ticket_user_edge(
-            ticket=ticket,
-            user_email=ticket.assignee_email,
-            edge_type=EntityRelations.ASSIGNED_TO,
-            timestamp_attr_name="assignee_source_timestamp",
-            fallback_timestamp_attr="source_updated_at",
-            tx_store=tx_store,
-            edge_type_name="ASSIGNED_TO"
-        )
-        if assignee_edge:
-            edges_to_create.append(assignee_edge)
-
-        # Create CREATED_BY edge if creator exists and user is found
-        creator_edge = await self._prepare_ticket_user_edge(
-            ticket=ticket,
-            user_email=ticket.creator_email,
-            edge_type=EntityRelations.CREATED_BY,
-            timestamp_attr_name="creator_source_timestamp",
-            fallback_timestamp_attr="source_created_at",
-            tx_store=tx_store,
-            edge_type_name="CREATED_BY"
-        )
-        if creator_edge:
-            edges_to_create.append(creator_edge)
-
-        # Create REPORTED_BY edge if reporter exists and user is found
-        reporter_edge = await self._prepare_ticket_user_edge(
-            ticket=ticket,
-            user_email=ticket.reporter_email,
-            edge_type=EntityRelations.REPORTED_BY,
-            timestamp_attr_name="reporter_source_timestamp",
-            fallback_timestamp_attr="source_created_at",
-            tx_store=tx_store,
-            edge_type_name="REPORTED_BY"
-        )
-        if reporter_edge:
-            edges_to_create.append(reporter_edge)
-
-        # Batch create all edges using specialized method that includes edgeType in UPSERT match
-        if edges_to_create:
-            await tx_store.batch_create_entity_relations(edges_to_create)
-            self.logger.debug(f"Created {len(edges_to_create)} entity relation edges for ticket {ticket.id}")
-
-    async def _handle_project_lead_edge(self, project: ProjectRecord, tx_store: TransactionStore) -> None:
-        """
-        Create entity relationship edge for project lead (LEAD_BY).
-
-        This method creates an edge in the entityRelations collection linking project to lead user.
-        It first deletes existing entity relation edges for this project to avoid duplicates, then creates a new one.
-
-        Args:
-            project: The ProjectRecord to create edge for
-            tx_store: The transaction store
-        """
-        # First, delete existing entity relation edges for this project to avoid duplicates
-        # Note: Projects currently only have LEAD_BY edges, but we delete all to be safe
-        try:
-            await tx_store.delete_edges_from(project.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value)
-        except Exception as e:
-            self.logger.warning(f"Failed to delete existing entity relation edges for project {project.id}: {str(e)}")
-
-        # Create LEAD_BY edge if lead exists and user is found
-        if not project.lead_email:
-            return
-
-        try:
-            # Only get existing user by email - do not create if not found
-            user = await tx_store.get_user_by_email(project.lead_email)
-
-            if not user:
-                return
-
-            # Use source_updated_at if available, otherwise source_created_at
-            source_timestamp = project.source_updated_at or project.source_created_at
-
-            edge_data = {
-                "_from": f"{CollectionNames.RECORDS.value}/{project.id}",
-                "_to": f"{CollectionNames.USERS.value}/{user.id}",
-                "edgeType": EntityRelations.LEAD_BY.value,
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            }
-            if source_timestamp is not None:
-                edge_data["sourceTimestamp"] = source_timestamp
-
-            # Create the edge using specialized method that includes edgeType in UPSERT match
-            await tx_store.batch_create_entity_relations([edge_data])
-            self.logger.debug(f"Created LEAD_BY entity relation edge for project {project.id} -> user {user.id}")
-        except Exception as e:
-            self.logger.warning(f"Failed to create LEAD_BY edge for project {project.id}: {str(e)}")
+    async def _handle_record_people(self, record: Record, tx_store: TransactionStore) -> None:
+        """Link the record to the members it names (assignee, sender,
+        reviewer...); see ``record_people``."""
+        await link_record_people(record, tx_store, self.logger)
 
     async def _handle_message_entity_edges(self, message: MessageRecord, tx_store: TransactionStore) -> None:
         """
@@ -1538,13 +1368,9 @@ class DataSourceEntitiesProcessor:
         if isinstance(record, (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord)):
             await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
 
-        # Create ticket-user relationship edges (ASSIGNED_TO, CREATED_BY, REPORTED_BY) if record is a TicketRecord
-        if isinstance(record, TicketRecord):
-            await self._handle_ticket_user_edges(record, tx_store)
-
-        # Create project-lead relationship edge (LEAD_BY) if record is a ProjectRecord
-        if isinstance(record, ProjectRecord):
-            await self._handle_project_lead_edge(record, tx_store)
+        # Edges to the members a ticket, project, mail, comment, pull request
+        # or deal names (ASSIGNED_TO, AUTHORED_BY, ADDRESSED_TO, ...).
+        await self._handle_record_people(record, tx_store)
 
         # Create message entity relation edges (MENTIONED_IN, INVOLVED_IN) if record is a MessageRecord
         if isinstance(record, MessageRecord):

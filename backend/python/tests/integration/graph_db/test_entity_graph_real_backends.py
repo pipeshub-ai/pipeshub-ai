@@ -828,3 +828,43 @@ class TestNeo4jLegacyAliasHeal:
         await provider.client.execute_query(
             "MATCH (a:TaxonomyAlias {orgId: $org}) DETACH DELETE a", parameters={"org": org_id},
         )
+
+
+class TestRecordPeopleEdges:
+    """KG-13: the new person edge types pass the ArangoDB collection schema
+    (strict, enum of edge types) and are written once per type on both."""
+
+    async def test_neo4j(self, neo4j) -> None:
+        provider, org_id = neo4j
+        await provider.client.execute_query(
+            "CREATE (:Record {id: $rec, orgId: $org}) CREATE (:User {id: $user, orgId: $org})",
+            parameters={"rec": f"{org_id}-rec", "user": f"{org_id}-user", "org": org_id},
+        )
+        edges = [
+            {"_from": f"records/{org_id}-rec", "_to": f"users/{org_id}-user", "edgeType": t, "createdAtTimestamp": 1}
+            for t in ("AUTHORED_BY", "ADDRESSED_TO", "AUTHORED_BY")
+        ]
+        await provider.batch_create_entity_relations(edges)
+        rows = await provider.client.execute_query(
+            "MATCH (:Record {id: $rec})-[r]->(:User {id: $user}) RETURN r.edgeType AS t ORDER BY t",
+            parameters={"rec": f"{org_id}-rec", "user": f"{org_id}-user"},
+        )
+        assert [r["t"] for r in rows] == ["ADDRESSED_TO", "AUTHORED_BY"]
+
+    async def test_arango(self, arango) -> None:
+        provider, org_id = arango
+        edges = [
+            {"_from": f"records/{org_id}-rec", "_to": f"users/{org_id}-user", "edgeType": t,
+             "createdAtTimestamp": 1, "itOrg": org_id}
+            for t in ("AUTHORED_BY", "ADDRESSED_TO", "REVIEWED_BY", "OWNED_BY", "AUTHORED_BY")
+        ]
+        try:
+            await provider.batch_create_entity_relations(edges)
+            rows = await provider.http_client.execute_aql(
+                "FOR e IN entityRelations FILTER e.itOrg == @org SORT e.edgeType RETURN e.edgeType", {"org": org_id},
+            )
+            assert rows == ["ADDRESSED_TO", "AUTHORED_BY", "OWNED_BY", "REVIEWED_BY"]
+        finally:
+            await provider.http_client.execute_aql(
+                "FOR e IN entityRelations FILTER e.itOrg == @org REMOVE e IN entityRelations", {"org": org_id},
+            )

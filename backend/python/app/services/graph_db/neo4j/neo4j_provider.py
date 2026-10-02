@@ -9263,6 +9263,33 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to retrieve record for id {record_id}: {str(e)}")
             return None
 
+    async def page_record_ids_by_type(
+        self,
+        org_id: str,
+        record_types: list[str],
+        *,
+        after_key: str | None = None,
+        limit: int = 500,
+    ) -> list[str]:
+        """See :meth:`IGraphDBProvider.page_record_ids_by_type`."""
+        if not org_id or not record_types:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        rows = await self.client.execute_query(
+            """
+            MATCH (record:Record)
+            WHERE record.orgId = $org_id AND record.recordType IN $types
+              AND coalesce(record.isDeleted, false) = false
+              AND ($after_key IS NULL OR record.id > $after_key)
+            RETURN record.id AS id
+            ORDER BY record.id
+            LIMIT $limit
+            """,
+            parameters={"org_id": org_id, "types": list(record_types), "after_key": after_key, "limit": max(1, limit)},
+        )
+        return [str(row["id"]) for row in rows or [] if row.get("id")]
+
     async def get_typed_records_batch(
         self,
         record_ids: list[str],
