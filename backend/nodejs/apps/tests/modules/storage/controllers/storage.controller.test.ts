@@ -1557,6 +1557,84 @@ describe('StorageController.moveTree collision handling', () => {
     expect(res.body).to.deep.equal({ moved: 1 })
   })
 
+  describe('folder moves (virtualRecordIds)', () => {
+    // Folders "a/b" and "a_b" sanitize to the same "a_b" prefix; moving one
+    // must leave the other's content where its graph path says it is.
+    const setup = (docs: Array<Record<string, unknown>>) => {
+      const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
+      const controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any)
+      sinon.stub(DocumentModel, 'find').returns({
+        select: () => ({ lean: () => Promise.resolve(docs) }),
+      } as any)
+      sinon.stub(controller, 'initializeStorageAdapter').resolves({} as any)
+      sinon.stub(controller as any, 'getConfiguredStorageType').resolves('local')
+      return {
+        controller,
+        moveRemote: sinon.stub(controller as any, 'moveTreeRemote').resolves({ failedIds: [] }),
+        moveLocal: sinon.stub(controller as any, 'moveTreeLocal').resolves(),
+      }
+    }
+
+    it('moves only the listed vrids when another folder\'s content shares the prefix', async () => {
+      const orgId = makeOrgId()
+      const base = `${orgId}/PipesHub/records/kb/a_b`
+      const ownRecord = { _id: new mongoose.Types.ObjectId(), documentPath: `${base}/slash-file`, documentName: 'record_v1' }
+      const ownMeta = { _id: new mongoose.Types.ObjectId(), documentPath: `${base}/slash-file`, documentName: 'metadata_v1' }
+      const sibling = { _id: new mongoose.Types.ObjectId(), documentPath: `${base}/under-file`, documentName: 'record_v2' }
+      const { controller, moveRemote, moveLocal } = setup([ownRecord, ownMeta, sibling])
+      const res = makeRes()
+      const next = sinon.stub()
+
+      await controller.moveTree(
+        makeReq({ orgId, body: { oldPath: 'records/kb/a_b', newPath: 'records/kb/HR/a_b', virtualRecordIds: ['v1'] } }),
+        res,
+        next,
+      )
+
+      expect(next.called).to.be.false
+      expect(moveLocal.called).to.be.false
+      expect(moveRemote.firstCall.args[4]).to.deep.equal([ownRecord, ownMeta])
+      expect(res.body).to.deep.equal({ moved: 2, collision: true })
+    })
+
+    it('keeps the whole-tree move when every document belongs to the folder', async () => {
+      const orgId = makeOrgId()
+      const base = `${orgId}/PipesHub/records/kb/Folder`
+      const doc = { _id: new mongoose.Types.ObjectId(), documentPath: `${base}/file`, documentName: 'record_v1' }
+      const { controller, moveRemote, moveLocal } = setup([doc])
+      const res = makeRes()
+
+      await controller.moveTree(
+        makeReq({ orgId, body: { oldPath: 'records/kb/Folder', newPath: 'records/kb/Moved', virtualRecordIds: ['v1'] } }),
+        res,
+        sinon.stub(),
+      )
+
+      expect(moveRemote.called).to.be.false
+      expect(moveLocal.calledOnce).to.be.true
+      expect(res.body).to.deep.equal({ moved: 1, collision: false })
+    })
+
+    it('moves nothing for an empty folder that shares its prefix with another', async () => {
+      const orgId = makeOrgId()
+      const sibling = {
+        _id: new mongoose.Types.ObjectId(), documentPath: `${orgId}/PipesHub/records/kb/a_b/under-file`, documentName: 'record_v2',
+      }
+      const { controller, moveRemote, moveLocal } = setup([sibling])
+      const res = makeRes()
+
+      await controller.moveTree(
+        makeReq({ orgId, body: { oldPath: 'records/kb/a_b', newPath: 'records/kb/HR/a_b', virtualRecordIds: [] } }),
+        res,
+        sinon.stub(),
+      )
+
+      expect(moveRemote.called).to.be.false
+      expect(moveLocal.called).to.be.false
+      expect(res.body).to.deep.equal({ moved: 0, collision: true })
+    })
+  })
+
   it('allows folder names containing ".." but rejects a ".." segment', async () => {
     const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
     const controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any)

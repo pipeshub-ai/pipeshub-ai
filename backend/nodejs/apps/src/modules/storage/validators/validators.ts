@@ -30,6 +30,7 @@ export const MoveTreeSchema = z.object({
       oldPath: treePath,
       newPath: treePath,
       virtualRecordId: z.string().min(1).optional(),
+      virtualRecordIds: z.array(z.string().min(1)).optional(),
     })
     .refine(({ oldPath, newPath }) => !newPath.startsWith(`${oldPath}/`), {
       message: 'newPath must not be a descendant of oldPath',

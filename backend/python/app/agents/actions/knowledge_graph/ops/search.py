@@ -35,6 +35,7 @@ from app.utils.chat_helpers import (
     get_record_id_shortener_if_enabled,
 )
 from app.utils.pattern_match import (
+    await_pattern_match,
     cancel_task_if_running,
     merge_pattern_match_results,
     render_pattern_match_hint,
@@ -242,13 +243,6 @@ async def execute_search(
         graph_provider = state.get("graph_provider")
         config_service = state.get("config_service")
 
-        disable_semantic = bool(state.get("disable_semantic", False))
-        disable_pattern_match = bool(state.get("disable_pattern_match", False))
-        logger_instance.debug(
-            "disable_semantic=%s, disable_pattern_match=%s",
-            disable_semantic, disable_pattern_match,
-        )
-
         if not retrieval_service or not graph_provider:
             return json.dumps({"status": "error", "message": "Retrieval services not available"})
 
@@ -370,7 +364,7 @@ async def execute_search(
         # Grep knows nothing of entity scope, so an entity-scoped search would
         # be widened by its hits; it runs only for unscoped-by-entity searches.
         entity_scoped = bool(entity_filter_groups or record_scoped_entities)
-        if config_service is not None and not disable_pattern_match and not entity_scoped:
+        if config_service is not None and not entity_scoped:
             pattern_match_task = asyncio.create_task(
                 run_pattern_match_with_llm_grep(
                     query=query,
@@ -495,52 +489,40 @@ async def execute_search(
             return results.get("searchResults", []), results.get("virtual_to_record_map", {}), None
 
         entity_filter_dropped = False
-        if disable_semantic:
-            logger_instance.info("Semantic search disabled via flag")
-            search_results: list[dict[str, Any]] = []
-            virtual_to_record_map: dict[str, Any] = {}
-            per_source_fan_out = False
-        else:
-            search_results, virtual_to_record_map, error_json = await _attempt(
-                entity_filter_groups, virtual_record_ids_from_tool,
-            )
-            if error_json is not None:
-                await cancel_task_if_running(pattern_match_task)
-                return error_json
+        search_results, virtual_to_record_map, error_json = await _attempt(
+            entity_filter_groups, virtual_record_ids_from_tool,
+        )
+        if error_json is not None:
+            await cancel_task_if_running(pattern_match_task)
+            return error_json
 
-            # Entity filters are a hard AND constraint at the graph layer — if no
-            # accessible record has a belongsTo* edge to the entity (e.g. an
-            # extraction/linking gap), the candidate set is empty even though
-            # content-matching documents exist. Retry once without them, and say
-            # so in the result so the model does not treat it as entity-scoped.
-            if not search_results and entity_filter_groups:
-                logger_instance.info(
-                    "knowledgegraph__search: entity-filtered search returned zero "
-                    "results for query=%r filters=%r — retrying without entity filters",
-                    query[:100], entity_filter_groups,
-                )
-                # Only the name-based filter is dropped — record-scoped entities
-                # are already permission-checked record membership, so an empty
-                # one must still report "no results" instead of broadening.
-                fallback_results, fallback_map, fallback_error = await _attempt(
-                    {}, virtual_record_ids_from_tool,
-                )
-                if fallback_error is not None:
-                    await cancel_task_if_running(pattern_match_task)
-                    return fallback_error
-                if fallback_results:
-                    search_results, virtual_to_record_map = fallback_results, fallback_map
-                    entity_filter_dropped = True
+        # Entity filters are a hard AND constraint at the graph layer — if no
+        # accessible record has a belongsTo* edge to the entity (e.g. an
+        # extraction/linking gap), the candidate set is empty even though
+        # content-matching documents exist. Retry once without them, and say
+        # so in the result so the model does not treat it as entity-scoped.
+        if not search_results and entity_filter_groups:
+            logger_instance.info(
+                "knowledgegraph__search: entity-filtered search returned zero "
+                "results for query=%r filters=%r — retrying without entity filters",
+                query[:100], entity_filter_groups,
+            )
+            # Only the name-based filter is dropped — record-scoped entities
+            # are already permission-checked record membership, so an empty
+            # one must still report "no results" instead of broadening.
+            fallback_results, fallback_map, fallback_error = await _attempt(
+                {}, virtual_record_ids_from_tool,
+            )
+            if fallback_error is not None:
+                await cancel_task_if_running(pattern_match_task)
+                return fallback_error
+            if fallback_results:
+                search_results, virtual_to_record_map = fallback_results, fallback_map
+                entity_filter_dropped = True
 
         raw_pattern_records: list[dict[str, Any]] = []
         if pattern_match_task is not None:
-            try:
-                raw_pattern_records = await pattern_match_task
-            except Exception as exc:
-                logger_instance.warning(
-                    "Pattern match failed, continuing with semantic results only: %s", exc,
-                )
-                raw_pattern_records = []
+            raw_pattern_records = await await_pattern_match(pattern_match_task, logger_instance)
             if raw_pattern_records:
                 logger_instance.info(
                     "Pattern match: %d raw record(s)", len(raw_pattern_records),
@@ -730,10 +712,15 @@ async def execute_search(
                 f"{entity_notes}"
             )
         from app.agents.actions.retrieval.retrieval import compose_result_tail
-        pm_hint = render_pattern_match_hint(
-            pm_record_entries, virtual_record_id_to_result,
-            has_semantic_blocks=has_semantic_blocks,
-        )
+        try:
+            pm_hint = render_pattern_match_hint(
+                pm_record_entries, virtual_record_id_to_result,
+                has_semantic_blocks=has_semantic_blocks,
+            )
+        except Exception as exc:
+            # The semantic answer above is complete without the hint.
+            logger_instance.warning("Pattern match hint failed, omitting it: %s", exc)
+            pm_hint = ""
         return summary + "\n".join(formatted_records) + compose_result_tail(
             virtual_record_id_to_result, candidate_suffix,
         ) + pm_hint

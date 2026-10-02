@@ -299,6 +299,7 @@ class StorageCleanupHelper:
         new_path: str,
         *,
         virtual_record_id: str | None = None,
+        virtual_record_ids: list[str] | None = None,
     ) -> dict:
         """Relocate a record's own content (if any) and every descendant
         currently stored under old_path, in one call to Node's move-tree
@@ -310,8 +311,13 @@ class StorageCleanupHelper:
         ``metadata_<vrid>``) instead of the whole prefix tree, preventing
         sibling records' blobs from being swept up.
 
+        *virtual_record_ids* is the folder form: every vrid stored beneath
+        the moved record (possibly none). When old_path also holds documents
+        of other vrids — a sibling folder whose name sanitizes the same — the
+        endpoint moves only the listed ones.
+
         Returns the JSON response from Node (always contains ``moved``
-        count and, when *virtual_record_id* was given, a ``collision`` flag).
+        count and, when either vrid argument was given, a ``collision`` flag).
 
         Safe to call with old_path == new_path -- becomes a no-op with no
         network call, since there would be nothing to move.
@@ -324,6 +330,8 @@ class StorageCleanupHelper:
         body: dict = {"oldPath": old_path, "newPath": new_path}
         if virtual_record_id:
             body["virtualRecordId"] = virtual_record_id
+        elif virtual_record_ids is not None:
+            body["virtualRecordIds"] = virtual_record_ids
 
         session = await self._get_session()
         async with session.post(move_url, json=body, headers=headers) as resp:

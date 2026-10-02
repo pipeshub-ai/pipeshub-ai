@@ -67,6 +67,7 @@ export async function deleteTestKb(
 export async function uploadFileByApi(
   kbId: string,
   file: { name: string; mimeType: string; buffer: Buffer },
+  folderId?: string,
 ): Promise<string> {
   // Not the shared apiContext: its default JSON Content-Type overrides the multipart one.
   const uploader = await request.newContext({
@@ -75,7 +76,8 @@ export async function uploadFileByApi(
   });
   let body: string;
   try {
-    const response = await uploader.post(`/api/v1/knowledgeBase/${kbId}/upload`, { multipart: { files: file } });
+    const query = folderId ? `?folderId=${encodeURIComponent(folderId)}` : '';
+    const response = await uploader.post(`/api/v1/knowledgeBase/${kbId}/upload${query}`, { multipart: { files: file } });
     body = await response.text();
     if (!response.ok()) throw new Error(`uploading ${file.name} failed [${response.status()}]: ${body}`);
   } finally {

@@ -566,10 +566,11 @@ export class StorageController {
   ): Promise<void> {
     try {
       const orgId = extractOrgId(req);
-      const { oldPath, newPath, virtualRecordId } = req.body as {
+      const { oldPath, newPath, virtualRecordId, virtualRecordIds } = req.body as {
         oldPath: string;
         newPath: string;
         virtualRecordId?: string;
+        virtualRecordIds?: string[];
       };
 
       if (!oldPath) {
@@ -647,11 +648,25 @@ export class StorageController {
             (d) => d.documentPath !== oldFullPath || isMyDoc(d),
           );
         }
+      } else if (virtualRecordIds) {
+        // A folder: the caller lists every vrid stored beneath it. A sibling
+        // whose name sanitizes the same ("a/b" vs "a_b") shares this prefix,
+        // so anything not listed is its content and must stay put.
+        const owned = new Set(virtualRecordIds);
+        const isOwnedDoc = (d: MatchedTreeDocument) => {
+          const name = d.documentName ?? '';
+          return owned.has(name.slice(name.indexOf('_') + 1));
+        };
+        if (matched.some((d) => !isOwnedDoc(d))) {
+          collision = true;
+          docsToMove = matched.filter(isOwnedDoc);
+        }
       }
+      const reportsCollision = Boolean(virtualRecordId) || virtualRecordIds !== undefined;
 
       if (docsToMove.length === 0) {
         const resp: { moved: number; collision?: boolean } = { moved: 0 };
-        if (virtualRecordId) resp.collision = collision;
+        if (reportsCollision) resp.collision = collision;
         res.status(HTTP_STATUS.OK).json(resp);
         return;
       }
@@ -694,7 +709,7 @@ export class StorageController {
       if (failedIds.length > 0) {
         response.failed = failedIds;
       }
-      if (virtualRecordId) {
+      if (reportsCollision) {
         response.collision = collision;
       }
       res.status(HTTP_STATUS.OK).json(response);

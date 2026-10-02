@@ -104,6 +104,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       - WEB_CONNECTOR_ALLOWED_HOSTS=${WEB_CONNECTOR_ALLOWED_HOSTS:-}
+      - PIPESHUB_BLOCK_PRIVATE_ADDRESSES=${PIPESHUB_BLOCK_PRIVATE_ADDRESSES:-}
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
@@ -304,6 +305,11 @@ services:
 
       # Code sandbox
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+      # Generated code gets no network unless set to true; even then private,
+      # link-local and cloud-metadata addresses are firewalled. CIDRs in
+      # SANDBOX_EGRESS_ALLOW_CIDRS (comma-separated, e.g. a pip mirror) are exempt.
+      - SANDBOX_ALLOW_NETWORK=${SANDBOX_ALLOW_NETWORK:-false}
+      - SANDBOX_EGRESS_ALLOW_CIDRS=${SANDBOX_EGRESS_ALLOW_CIDRS:-}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
       # Eval deploy type skips the Slack bot process inside the app container.
       - PIPESHUB_SKIP_SLACKBOT=${PIPESHUB_SKIP_SLACKBOT:-false}

@@ -284,6 +284,19 @@ class TestMoveRecordTree:
             }
             assert result["collision"] is False
 
+    # [] is "this folder owns nothing here", not "no list": Node must not
+    # sweep up a same-named sibling's content when an empty folder moves.
+    @pytest.mark.parametrize("vrids", [["v1", "v2"], []])
+    async def test_passes_folder_vrids_even_when_empty(self, helper, mock_config_service, vrids):
+        session = _mock_session(post_resp=_resp(200, json_value={"moved": 0, "collision": True}))
+        with patch(
+            "app.connectors.core.base.data_processor.storage_cleanup.aiohttp.ClientSession",
+            return_value=session,
+        ):
+            await helper.move_record_tree("org1", "a/b", "a/c", virtual_record_ids=vrids)
+            _, kwargs = session.post.call_args
+            assert kwargs["json"] == {"oldPath": "a/b", "newPath": "a/c", "virtualRecordIds": vrids}
+
     async def test_returns_collision_true_from_endpoint(self, helper, mock_config_service):
         session = _mock_session(post_resp=_resp(200, json_value={"moved": 1, "collision": True}))
         with patch(

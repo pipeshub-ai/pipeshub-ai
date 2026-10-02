@@ -367,6 +367,49 @@ def _get_toolset_metadata(registry: ToolsetRegistry, toolset_type: str) -> dict[
     return metadata
 
 
+def _declared_auth_fields(request: Request, instance: dict[str, Any]) -> set[str]:
+    """Names of the credential fields the toolset declares for the instance's auth type."""
+    auth_meta = _get_toolset_metadata(_get_registry(request), instance.get("toolsetType", "")).get("config", {}).get("auth", {})
+    schema = (auth_meta.get("schemas") or {}).get((instance.get("authType") or "").upper()) or auth_meta.get("schema") or {}
+    return {field["name"] for field in schema.get("fields", []) if isinstance(field, dict) and field.get("name")}
+
+
+def _credential_text(value: object) -> str:
+    """A credential value as trimmed text; anything that is not a string counts as missing."""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _refuse_undeclared_auth_fields(request: Request, instance: dict[str, Any], auth: object) -> None:
+    """Refuse credential fields the toolset does not declare, so a save cannot add
+    settings (endpoints, client credentials) the instance never asked for.
+    """
+    if not isinstance(auth, dict):
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="auth must be an object.")
+    unexpected = sorted(set(auth) - _declared_auth_fields(request, instance))
+    if unexpected:
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail=f"Unexpected credential fields for this toolset: {', '.join(unexpected)}",
+        )
+
+
+async def _instance_for_credential_update(
+    instance_id: str, org_id: str, config_service: ConfigurationService
+) -> dict[str, Any]:
+    """The instance a stored credential belongs to. OAuth instances are refused: their
+    tokens come from the OAuth flow, not from a saved field."""
+    instances = await _load_toolset_instances(org_id, config_service)
+    instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
+    if not instance:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
+    if (instance.get("authType") or "").upper() == "OAUTH":
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="OAuth toolsets sign in through the OAuth flow. Use reauthenticate to start a new one.",
+        )
+    return instance
+
+
 # ============================================================================
 # Storage Path Helpers
 # ============================================================================
@@ -755,6 +798,7 @@ async def _create_or_update_toolset_oauth_config(
                             continue  # Keep existing clientSecret if not provided / redacted
                         cfg["config"][k] = v
                     cfg["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
+                    cfg["updatedBy"] = user_id
                     oauth_configs[idx] = cfg
                     path = _get_toolset_oauth_config_path(toolset_type)
                     await config_service.set_config(path, oauth_configs)
@@ -768,6 +812,10 @@ async def _create_or_update_toolset_oauth_config(
         )
         # Store all fields dynamically (except type)
         config_data = {k: v for k, v in enriched.items() if k != "type"}
+        # Imported here: edition_config imports this module before it binds this hook.
+        from app.edition_config import oauth_create_extra_fields
+
+        now = get_epoch_timestamp_in_ms()
         new_cfg = {
             "_id": _generate_oauth_config_id(),
             "oauthInstanceName": instance_name,
@@ -775,8 +823,11 @@ async def _create_or_update_toolset_oauth_config(
             "userId": user_id,
             "orgId": org_id,
             "config": config_data,
-            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            "createdAtTimestamp": now,
+            "updatedAtTimestamp": now,
+            "createdBy": user_id,
+            "updatedBy": user_id,
+            **oauth_create_extra_fields(connector_scope=None, oauth_instance_name=instance_name),
         }
         oauth_configs.append(new_cfg)
         path = _get_toolset_oauth_config_path(toolset_type)
@@ -1949,7 +2000,7 @@ async def authenticate_toolset_instance(
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
-    auth_type = instance.get("authType", "")
+    auth_type = (instance.get("authType") or "").upper()
     if auth_type == "OAUTH":
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,
@@ -1962,15 +2013,16 @@ async def authenticate_toolset_instance(
 
     if not auth:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Credentials are required.")
+    _refuse_undeclared_auth_fields(request, instance, auth)
 
     # Validate required fields based on auth type
     if auth_type == "API_TOKEN":
-        token = auth.get("apiToken").strip()
+        token = _credential_text(auth.get("apiToken"))
         if not token:
             raise InvalidAuthConfigError("apiToken is required for API_TOKEN auth type")
     elif auth_type == "BASIC_AUTH":
-        username = auth.get("username").strip()
-        password = auth.get("password").strip()
+        username = _credential_text(auth.get("username"))
+        password = _credential_text(auth.get("password"))
         if not username or not password:
             raise InvalidAuthConfigError("username and password are required for BASIC_AUTH auth type")
 
@@ -2016,6 +2068,8 @@ async def update_toolset_credentials(
 
     if not auth:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Credentials are required.")
+    instance = await _instance_for_credential_update(instance_id, user_context["org_id"], config_service)
+    _refuse_undeclared_auth_fields(request, instance, auth)
 
     auth_path = _get_user_auth_path(instance_id, user_id)
 
@@ -3167,13 +3221,14 @@ async def authenticate_agent_toolset(
 
     if not auth:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Credentials are required.")
+    _refuse_undeclared_auth_fields(request, instance, auth)
 
     # Validate required fields per auth type — mirrors the user authenticate endpoint
     if auth_type.upper() == "API_TOKEN":
-        if not (auth.get("apiToken") or "").strip():
+        if not _credential_text(auth.get("apiToken")):
             raise InvalidAuthConfigError("apiToken is required for API_TOKEN auth type")
     elif auth_type.upper() == "BASIC_AUTH" and (
-        not (auth.get("username") or "").strip() or not (auth.get("password") or "").strip()
+        not _credential_text(auth.get("username")) or not _credential_text(auth.get("password"))
     ):
         raise InvalidAuthConfigError("username and password are required for BASIC_AUTH auth type")
 
@@ -3216,6 +3271,10 @@ async def update_agent_toolset_credentials(
 
     if not auth:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Credentials are required.")
+    instance = await _instance_for_credential_update(
+        instance_id, _get_user_context(request)["org_id"], config_service
+    )
+    _refuse_undeclared_auth_fields(request, instance, auth)
 
     auth_path = _get_agent_auth_path(instance_id, agent_key)
     try:

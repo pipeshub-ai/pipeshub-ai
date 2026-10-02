@@ -179,6 +179,11 @@ services:
       # Production (docker-compose.prod.yml) pulls pipeshubai/pipeshub-sandbox:${IMAGE_TAG}
       # from the registry instead; build/push from deployment/sandbox alongside pipeshub-ai.
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+      # Generated code gets no network unless set to true; even then private,
+      # link-local and cloud-metadata addresses are firewalled. CIDRs in
+      # SANDBOX_EGRESS_ALLOW_CIDRS (comma-separated, e.g. a pip mirror) are exempt.
+      - SANDBOX_ALLOW_NETWORK=${SANDBOX_ALLOW_NETWORK:-false}
+      - SANDBOX_EGRESS_ALLOW_CIDRS=${SANDBOX_EGRESS_ALLOW_CIDRS:-}
 
       # Set to "true" to route indexing through the standalone parsing/extraction services
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}

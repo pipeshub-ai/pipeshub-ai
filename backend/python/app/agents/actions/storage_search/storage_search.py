@@ -203,17 +203,19 @@ def _option_value(arg: str) -> str | None:
     return None
 
 
-# GNU xargs flags that consume a SEPARATE value token immediately after
+# GNU xargs options that consume a SEPARATE value token immediately after
 # them (e.g. `-I replace-str`, `-n max-args`). That value token can itself
 # fail to start with "-" (e.g. `-I cat`), so it must never be mistaken for
 # xargs's actual sub-command -- that mistake is exactly what let a
 # disallowed sub-command hide a few tokens further down the argument list.
-# Includes the deprecated single-letter aliases (-i, -l, -e); GNU xargs
-# documents these as taking an optional value, but treating them as always
-# value-consuming is the safe direction here (under-skipping is what
-# caused the bug, not over-skipping).
+# Only the required-value forms belong here. The deprecated lowercase aliases
+# `-i`/`-l`/`-e` take an OPTIONAL value that GNU xargs accepts only ATTACHED
+# (`-i{}`, never `-i {}`); verified against findutils 4.9.0. Listing them would
+# wrongly swallow the following token -- the real sub-command -- which both
+# mis-validates and makes _force_xargs_null_delimited splice `-0` after the
+# sub-command (so it is passed to the sub-command, not to xargs).
 _XARGS_VALUE_FLAGS: frozenset[str] = frozenset({
-    "-I", "-i", "-L", "-l", "-n", "-P", "-s", "-a", "-d", "-E", "-e",
+    "-I", "-L", "-n", "-P", "-s", "-a", "-d", "-E",
 })
 
 
@@ -809,6 +811,71 @@ def _trim_to_last_record(data: bytes) -> bytes:
     return data[: cut + 1] if cut >= 0 else b""
 
 
+def _sanitize_xargs_input(data: bytes, cwd: str) -> bytes:
+    """Confine the stdin feeding an ``xargs`` stage to safe in-scope file paths.
+
+    ``xargs`` is the only allowlisted binary that turns its stdin into
+    *arguments* for another program; every other binary treats piped stdin as
+    data. The static command validation therefore never sees those runtime
+    tokens, so a prior stage (e.g. ``grep -o`` over a user-uploaded record)
+    could otherwise hand ``xargs`` an absolute path (``cat /proc/self/environ``),
+    a traversal path, or a ``-exec`` flag (``find`` code execution).
+
+    Every surviving token is a real, existing path that stays inside *cwd* and
+    is neither a flag nor absolute nor contains ``..`` — i.e. exactly the record
+    files a legitimate ``grep -l`` / ``find`` stage emits. Anything else is
+    dropped, so the xargs sub-command can only ever act on in-scope records.
+    """
+    if not data:
+        return b""
+    # grep -Z / find -print0 emit NUL-delimited paths; grep -l / find -print
+    # (and ls) emit newline-delimited. Split on whichever the stream uses; a
+    # path may legitimately contain spaces, so never split on whitespace.
+    sep = b"\0" if b"\0" in data else b"\n"
+    real_cwd = os.path.realpath(cwd)
+    prefix = real_cwd + os.sep
+    kept: list[bytes] = []
+    for raw in data.split(sep):
+        token = raw[:-1] if raw.endswith(b"\r") else raw
+        if not token:
+            continue
+        try:
+            item = token.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        # A leading '-' would be read as a flag; an absolute path or a '..'
+        # segment escapes the scope regardless of cwd.
+        if item.startswith(("-", "/")) or os.path.isabs(item):
+            continue
+        if _TRAVERSAL_RE.search(item):
+            continue
+        full = os.path.realpath(os.path.join(cwd, item))
+        if full != real_cwd and not full.startswith(prefix):
+            continue
+        if not os.path.exists(full):
+            continue
+        kept.append(item.encode("utf-8"))
+    return b"\0".join(kept)
+
+
+def _force_xargs_null_delimited(tokens: list[str]) -> list[str]:
+    """Ensure an ``xargs`` stage reads its items NUL-delimited.
+
+    ``_sanitize_xargs_input`` re-emits the surviving paths NUL-separated;
+    forcing ``-0`` makes xargs consume them verbatim, with none of its default
+    whitespace splitting or quote/backslash processing (which could otherwise
+    reconstruct a flag or path from crafted content, e.g. a literal ``"-exec"``
+    token the quote stripping would unwrap). The ``-0`` is inserted just before
+    the sub-command so it wins over any earlier ``-d`` the caller supplied.
+    """
+    own = _own_args(tokens, 0)
+    if "-0" in own or "--null" in own or any(a.split("=", 1)[0] == "--null" for a in own):
+        return tokens
+    sub_index = _find_xargs_sub_binary(tokens, 0)
+    insert_at = sub_index if sub_index is not None else len(tokens)
+    return tokens[:insert_at] + ["-0"] + tokens[insert_at:]
+
+
 async def _run_subprocess(
     command: str,
     *,
@@ -854,8 +921,16 @@ async def _run_subprocess(
 
     try:
         for i, tokens in enumerate(stage_tokens):
+            # xargs is the only binary that turns its stdin into argv; confine
+            # the piped items to in-scope record paths and force NUL framing so
+            # crafted record text cannot become a flag or an out-of-scope path.
+            stage_argv = tokens
+            if tokens and tokens[0] == "xargs":
+                if i > 0:
+                    stdin_data = _sanitize_xargs_input(stdin_data or b"", cwd)
+                stage_argv = _force_xargs_null_delimited(tokens)
             proc = await asyncio.create_subprocess_exec(
-                *tokens,
+                *stage_argv,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

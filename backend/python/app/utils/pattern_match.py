@@ -1166,6 +1166,30 @@ async def run_pattern_match(
     return all_records
 
 
+async def await_pattern_match(
+    task: asyncio.Task, logger_instance: logging.Logger,
+) -> list[dict[str, Any]]:
+    """Result of a pattern-match task started beside semantic search; any
+    failure is ``[]`` so semantic results are always returned.
+
+    A CancelledError from inside the task is a pattern-match failure too
+    (``except Exception`` misses it); only cancellation of the caller itself
+    is re-raised.
+    """
+    try:
+        return await task or []
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise
+        logger_instance.warning("Pattern match was cancelled, continuing with semantic results only")
+    except Exception as exc:
+        logger_instance.warning(
+            "Pattern match failed, continuing with semantic results only: %s", exc,
+        )
+    return []
+
+
 async def cancel_task_if_running(task: asyncio.Task | None) -> None:
     """Cancel an asyncio task if it hasn't finished yet and suppress errors."""
     if task is not None and not task.done():

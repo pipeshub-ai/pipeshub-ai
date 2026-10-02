@@ -287,6 +287,136 @@ class TestSnapshotOldPaths:
 # ===========================================================================
 
 
+def _make_folder():
+    folder = _make_record(virtual_record_id=None, record_name="a_b")
+    folder.is_file = False
+    return folder
+
+
+class TestFolderMoveOwnership:
+    """A folder has no vrid of its own, so its move names the vrids stored
+    beneath it; a same-named sibling's content (e.g. "a/b" vs "a_b") is then
+    left in place by the move-tree endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_flush_sends_each_owner_kind_to_the_endpoint(self):
+        proc = _make_processor()
+        await proc._flush_pending_blob_moves([
+            ("org-1", "records/kb/a_b", "records/kb/HR/a_b", ("v1", "v2")),
+            ("org-1", "records/kb/empty", "records/kb/HR/empty", ()),
+            ("org-1", "records/kb/file", "records/kb/HR/file", "v9"),
+            ("org-1", "records/kb/legacy", "records/kb/HR/legacy", None),
+        ])
+        kwargs_by_old = {
+            c.args[1]: c.kwargs for c in proc._storage_cleanup.move_record_tree.call_args_list
+        }
+        assert kwargs_by_old == {
+            "records/kb/a_b": {"virtual_record_ids": ["v1", "v2"]},
+            "records/kb/empty": {"virtual_record_ids": []},
+            "records/kb/file": {"virtual_record_id": "v9"},
+            "records/kb/legacy": {},
+        }
+
+    @pytest.mark.asyncio
+    async def test_same_batch_child_moves_follow_a_collision_safe_folder_move(self):
+        # One sync moved folder "a/b" into HR and renamed a file inside it; the
+        # twin "a_b" (same storage dir) also has a pending move of its own.
+        proc = _make_processor()
+        calls = []
+
+        async def move(org_id, old_path, new_path, **kwargs):
+            calls.append((old_path, new_path))
+            return {"moved": 2, "collision": "virtual_record_ids" in kwargs}
+
+        proc._storage_cleanup.move_record_tree = move
+        await proc._flush_pending_blob_moves([
+            ("org-1", "records/kb/a_b", "records/kb/HR/a_b", ("v1", "v2")),
+            ("org-1", "records/kb/a_b/Docs/old.txt", "records/kb/HR/a_b/Docs/new.txt", "v2"),
+            ("org-1", "records/kb/a_b/under.txt", "records/kb/a_b/under-renamed.txt", "v9"),
+        ])
+
+        assert calls[0] == ("records/kb/a_b", "records/kb/HR/a_b")
+        assert set(calls[1:]) == {
+            # the folder's own file is looked up where the folder move put it
+            ("records/kb/HR/a_b/Docs/old.txt", "records/kb/HR/a_b/Docs/new.txt"),
+            # the twin's file never moved, so its move is left untouched
+            ("records/kb/a_b/under.txt", "records/kb/a_b/under-renamed.txt"),
+        }
+
+    @pytest.mark.asyncio
+    async def test_folder_too_large_for_one_request_falls_back(self):
+        proc = _make_processor()
+        cleanup = MagicMock()
+        cleanup.graph_provider.get_descendant_virtual_record_ids = AsyncMock(
+            return_value=[f"v{i}" for i in range(100_001)]
+        )
+        folder = _make_folder()
+
+        assert await proc._blob_move_owner(folder, folder, cleanup) is None
+
+    @pytest.mark.asyncio
+    async def test_owner_is_the_vrid_for_a_record_with_content_and_no_children(self):
+        proc = _make_processor()
+        cleanup = MagicMock()
+        cleanup.graph_provider.get_descendant_virtual_record_ids = AsyncMock(return_value=[])
+        record = _make_record(virtual_record_id="v1")
+
+        assert await proc._blob_move_owner(record, record, cleanup) == "v1"
+
+    @pytest.mark.asyncio
+    async def test_a_page_with_children_names_itself_and_its_children(self):
+        # "Q1: Plan" and "Q1_ Plan" share a prefix; the single-vrid guard would
+        # still sweep up the twin page's child pages stored beneath it.
+        proc = _make_processor()
+        cleanup = MagicMock()
+        cleanup.graph_provider.get_descendant_virtual_record_ids = AsyncMock(return_value=["c1", "c2"])
+        page = _make_record(virtual_record_id="v1")
+
+        assert await proc._blob_move_owner(page, page, cleanup) == ("v1", "c1", "c2")
+
+    @pytest.mark.asyncio
+    async def test_failed_lookup_keeps_the_single_vrid_move_for_content(self):
+        proc = _make_processor()
+        cleanup = MagicMock()
+        cleanup.graph_provider.get_descendant_virtual_record_ids = AsyncMock(side_effect=RuntimeError("db down"))
+        record = _make_record(virtual_record_id="v1")
+
+        assert await proc._blob_move_owner(record, record, cleanup) == "v1"
+
+    @pytest.mark.asyncio
+    async def test_owner_is_the_content_beneath_a_folder(self):
+        proc = _make_processor()
+        cleanup = MagicMock()
+        cleanup.graph_provider.get_descendant_virtual_record_ids = AsyncMock(return_value=["v1", "v2"])
+        folder = _make_folder()
+
+        owner = await proc._blob_move_owner(folder, folder, cleanup, transaction="txn-1")
+
+        assert owner == ("v1", "v2")
+        cleanup.graph_provider.get_descendant_virtual_record_ids.assert_awaited_once_with(
+            folder.id, transaction="txn-1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_file_without_a_vrid_keeps_the_plain_move(self):
+        proc = _make_processor()
+        cleanup = MagicMock()
+        cleanup.graph_provider.get_descendant_virtual_record_ids = AsyncMock()
+        unindexed = _make_record(virtual_record_id=None)
+
+        assert await proc._blob_move_owner(unindexed, unindexed, cleanup) is None
+        cleanup.graph_provider.get_descendant_virtual_record_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_lookup_falls_back_to_the_whole_prefix_move(self):
+        proc = _make_processor()
+        cleanup = MagicMock()
+        cleanup.graph_provider.get_descendant_virtual_record_ids = AsyncMock(side_effect=RuntimeError("db down"))
+        folder = _make_folder()
+
+        assert await proc._blob_move_owner(folder, folder, cleanup) is None
+
+
 class TestFlushPendingBlobMoves:
     @pytest.mark.asyncio
     async def test_parent_moves_before_child(self):

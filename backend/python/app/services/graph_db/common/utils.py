@@ -56,6 +56,10 @@ CANONICAL_PARENT_RELATION_TYPES = (
 # size; it is not a tuning knob.
 PATH_MAX_CANDIDATES = 64
 
+# Deepest a knowledge-base folder may sit; a folder directly in the collection is
+# depth 1. Enforced on folder create, upload and move.
+KB_MAX_FOLDER_DEPTH = 20
+
 
 def select_canonical_chain_names(
     rows: list[Any] | None,

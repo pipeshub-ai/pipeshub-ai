@@ -59,10 +59,23 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 if TYPE_CHECKING:
     from app.services.messaging.interface.producer import IMessagingProducer
 
-# (org_id, old_path, new_path, virtual_record_id | None)
-PendingMove = tuple[str, str, str, str | None]
+# (org_id, old_path, new_path, owner): owner is the record's virtual_record_id,
+# or for a record with no content of its own (a folder) the tuple of vrids
+# stored beneath it, or None when neither is known.
+PendingMove = tuple[str, str, str, str | tuple[str, ...] | None]
 
 _NO_OLD_PATH = object()  # sentinel: "no pre-computed old_path supplied"
+
+# ~39 bytes per vrid in the move-tree JSON body; Node accepts 10 MB.
+_MAX_FOLDER_MOVE_VRIDS = 100_000
+
+
+def _owner_within(owner: str | tuple[str, ...] | None, vrids: set[str]) -> bool:
+    """True when a PendingMove's content is all among *vrids* (an owner that
+    names no content is never claimed)."""
+    if isinstance(owner, str):
+        return owner in vrids
+    return bool(owner) and set(owner) <= vrids
 
 ARANGO_NODE_ID_PARTS = 2 # ArangoDB node IDs are in format "collection/id"
 
@@ -170,9 +183,9 @@ class DataSourceEntitiesProcessor:
         if not storage_cleanup:
             return
 
-        moves: list[list[str | None]] = [
-            [org, old, new, vrid]
-            for org, old, new, vrid in pending_moves
+        moves: list[list] = [
+            [org, old, new, owner]
+            for org, old, new, owner in pending_moves
             if old != new
         ]
         if not moves:
@@ -180,13 +193,16 @@ class DataSourceEntitiesProcessor:
 
         moves.sort(key=lambda m: len(m[1]))
 
-        for i, (org_id, old_path, new_path, vrid) in enumerate(moves):
+        for i, (org_id, old_path, new_path, owner) in enumerate(moves):
             if old_path == new_path:
                 continue
 
             move_kwargs: dict = {}
-            if vrid:
-                move_kwargs["virtual_record_id"] = vrid
+            if isinstance(owner, str):
+                if owner:
+                    move_kwargs["virtual_record_id"] = owner
+            elif owner is not None:
+                move_kwargs["virtual_record_ids"] = list(owner)
             try:
                 result = await storage_cleanup.move_record_tree(
                     org_id, old_path, new_path, **move_kwargs,
@@ -227,13 +243,20 @@ class DataSourceEntitiesProcessor:
             # record's documents at the exact path — no descendants were
             # relocated.  Skip child-path rewriting so sibling records'
             # pending moves still point at the correct (unmoved) location.
+            # A folder's collision-safe move did relocate its whole subtree, so
+            # its own descendants' moves are still rewritten; the twin's are not.
+            moved_vrids: set[str] | None = None
             if result.get("collision"):
-                continue
+                if not isinstance(owner, tuple):
+                    continue
+                moved_vrids = set(owner)
 
             prefix = old_path + "/"
             partial = bool(result.get("failed"))
             left_behind: list[list[str | None]] = []
             for j in range(i + 1, len(moves)):
+                if moved_vrids is not None and not _owner_within(moves[j][3], moved_vrids):
+                    continue
                 j_old = moves[j][1]
                 j_new = moves[j][2]
                 if j_new == old_path or j_new.startswith(prefix):
@@ -1030,12 +1053,54 @@ class DataSourceEntitiesProcessor:
         if new_path is None:
             return pending_moves
 
+        owner = await self._blob_move_owner(
+            record, existing_record, storage_cleanup, transaction=tx_store.txn,
+        )
+        pending_moves.append((self.org_id, old_path, new_path, owner))
+        return pending_moves
+
+    async def _blob_move_owner(
+        self,
+        record: Record,
+        old_record: Record,
+        storage_cleanup: StorageCleanupHelper,
+        transaction: str | None = None,
+    ) -> str | tuple[str, ...] | None:
+        """The ``owner`` of a PendingMove for *record* (see PendingMove)."""
         vrid = (
             getattr(record, "virtual_record_id", None)
-            or getattr(existing_record, "virtual_record_id", None)
+            or getattr(old_record, "virtual_record_id", None)
         )
-        pending_moves.append((self.org_id, old_path, new_path, vrid))
-        return pending_moves
+        if not vrid and not (isinstance(record, FileRecord) and record.is_file is False):
+            return None
+        # A sanitized name can equal a sibling's ("a/b" vs "a_b", "Q1: Plan" vs
+        # "Q1_ Plan", two "Reports"), so both share one prefix. The single-vrid
+        # guard only protects the record's own documents; naming everything it
+        # stores beneath it keeps the move from sweeping up the twin's children.
+        try:
+            descendants = list(
+                await storage_cleanup.graph_provider.get_descendant_virtual_record_ids(
+                    record.id, transaction=transaction,
+                )
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not list content under record %s; moving its whole storage prefix: %s",
+                record.id, str(e),
+            )
+            return vrid or None
+        if vrid and not descendants:
+            return vrid
+        owned = ([vrid] if vrid else []) + [v for v in descendants if v != vrid]
+        if len(owned) > _MAX_FOLDER_MOVE_VRIDS:
+            # Keeps the move-tree request well under Node's 10 MB JSON limit;
+            # a request that large would fail the move outright.
+            self.logger.warning(
+                "Record %s holds %d records; moving its whole storage prefix",
+                record.id, len(owned),
+            )
+            return vrid or None
+        return tuple(owned)
 
     async def _handle_record_permissions(self, record: Record, permissions: list[Permission], tx_store: TransactionStore) -> None:
         record_permissions = []
@@ -1049,22 +1114,10 @@ class DataSourceEntitiesProcessor:
                 from_collection = None
 
                 if permission.entity_type == EntityType.USER.value:
-                    user = None
                     if permission.email:
-                        user = await tx_store.get_user_by_email(permission.email)
-
-                        # If user doesn't exist (external user), use PEOPLE collection
-                        if not user and permission.email:
-                            self.logger.warning(f"Skipping user/person creation for external user {permission.email}")
-                            # TODO : Handle extenal user/person creation
-                            # person_id = await self._upsert_external_person(permission.email, tx_store)
-                            # if person_id:
-                            #     from_id = person_id
-                            #     from_collection = CollectionNames.PEOPLE.value
-
-                    if user:
-                        from_id = user.id
-                        from_collection = CollectionNames.USERS.value
+                        resolved = await self._resolve_principal(permission.email, tx_store)
+                        if resolved:
+                            from_id, from_collection = resolved
 
                 elif permission.entity_type == EntityType.GROUP.value:
                     user_group = None
@@ -1119,28 +1172,57 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
 
-    async def _upsert_external_person(self, email: str, tx_store) -> str | None:
+    async def _resolve_principal(
+        self, email: str, tx_store: TransactionStore, create_if_missing: bool = True
+    ) -> tuple[str, str] | None:
         """
-        Upsert person record for external email address.
-        Uses deterministic UUID based on email to ensure only one Person record per email.
-        Returns person_id for creating permission edge.
+        Resolve an email to the graph principal a permission edge can originate from,
+        returning ``(id, collection)``.
+
+        A platform user wins over a Person; an email belonging to neither is an external
+        collaborator and, when ``create_if_missing`` is true, gets a Person created for
+        it, so that grants made to people outside the workspace are represented rather
+        than dropped.
+
+        ``create_if_missing=False`` is for callers that must not create anything —
+        e.g. ``on_external_app_users``, whose contract is to grant a membership edge to
+        a principal some other write already established, not to originate one. Passing
+        false there turns an unresolved email into a no-op instead of a Person with no
+        permission edge behind it.
+
+        The returned id is whatever survived the upsert, never the optimistic uuid4 on
+        the local Person — a concurrent sync may have created the node first.
+
+        Deliberately not memoized. A Person becomes a User the moment its owner signs up
+        or joins the workspace, so any cache keyed on email is wrong from that instant
+        until it is cleared, and permission edges written in between land on the stale
+        Person while the real User node gets none. The lookup this replaces was already
+        one query per user permission per record, so resolving every time costs no more
+        than before for members, and at most two extra queries for an external
+        collaborator — which is the only case that reaches past the first branch.
         """
         try:
-            # Use deterministic UUID based on email to ensure consistent ID for same email
-            # This ensures upsert works correctly and only one Person record exists per email
-            person_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, email.lower()))
-            person = Person(email=email.lower(), id=person_id)
+            user = await tx_store.get_user_by_email(email)
+            if user:
+                return (user.id, CollectionNames.USERS.value)
 
-            # Upsert to PEOPLE collection (handles both create and update)
-            await tx_store.batch_upsert_people([person])
+            person = await tx_store.get_person_by_email(email, self.org_id)
+            if person:
+                return (person.id, CollectionNames.PEOPLE.value)
 
-            self.logger.debug(f"Upserted person record for external email: {email}")
+            if not create_if_missing:
+                return None
 
-            # Return the person ID for permission edge
-            return person.id
+            person_id = await tx_store.upsert_person_by_email(
+                Person(email=email.lower(), org_id=self.org_id)
+            )
+            if person_id:
+                self.logger.debug("Created person for external email: %s", email)
+                return (person_id, CollectionNames.PEOPLE.value)
 
+            return None
         except Exception as e:
-            self.logger.error(f"Error upserting person for {email}: {e}")
+            self.logger.error(f"Failed to resolve principal for {email}: {e}")
             return None
 
     @retry_on_deadlock()
@@ -2049,8 +2131,7 @@ class DataSourceEntitiesProcessor:
                         continue
                     pending_moves.append((
                         self.org_id, old_path, new_path,
-                        getattr(new_record, "virtual_record_id", None)
-                        or getattr(old_record, "virtual_record_id", None),
+                        await self._blob_move_owner(new_record, old_record, storage_cleanup),
                     ))
 
             # Attempt the storage move BEFORE publishing -- a downstream consumer
@@ -2532,15 +2613,14 @@ class DataSourceEntitiesProcessor:
                         from_collection = None
 
                         if permission.entity_type == EntityType.USER:
-                            user = None
+                            resolved = None
                             if permission.email:
-                                user = await tx_store.get_user_by_email(permission.email)
+                                resolved = await self._resolve_principal(permission.email, tx_store)
 
-                            if user:
-                                from_id = user.id
-                                from_collection = CollectionNames.USERS.value
+                            if resolved:
+                                from_id, from_collection = resolved
                             else:
-                                self.logger.warning(f"Could not find user with email {permission.email} for RecordGroup permission.")
+                                self.logger.warning(f"Could not resolve principal for email {permission.email} for RecordGroup permission.")
 
                         elif permission.entity_type == EntityType.GROUP:
                             user_group = None
@@ -2732,6 +2812,85 @@ class DataSourceEntitiesProcessor:
             await notify_connector_sync_completed(connector_id, self.org_id)
 
     @retry_on_deadlock()
+    async def on_external_app_users(self, emails: list[str], connector_id: str) -> None:
+        """
+        Give external collaborators a flagged membership edge on an app.
+
+        An external collaborator holds a grant on individual records but is not a member
+        of the app, so browse — which walks down from the app — cannot reach them. The
+        flagged edge is what makes the app visible and marks the principal as one whose
+        records need hoisting to app level.
+
+        Principals are resolved, never created: a caller supplies emails it has already
+        seen on permissions, so _handle_record_permissions (or on_new_user_groups, for
+        group members) has created any Person that should exist. Resolution therefore
+        runs with create_if_missing=False — an email nothing else has already written a
+        Person or User for has no grant behind it, and gets no edge instead of a Person
+        this method would have to originate and the reaper would just delete next run.
+
+        Membership creation is create-only, so a collaborator who is also a real app user
+        keeps their unflagged edge.
+        """
+        if not emails:
+            return
+
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                for email in emails:
+                    resolved = await self._resolve_principal(email, tx_store, create_if_missing=False)
+                    if not resolved:
+                        self.logger.debug(
+                            "No principal for external email %s; skipping app membership",
+                            email,
+                        )
+                        continue
+
+                    principal_id, principal_collection = resolved
+                    await tx_store.ensure_app_membership(
+                        principal_id,
+                        principal_collection,
+                        connector_id,
+                        is_external=True,
+                    )
+
+            self.logger.info(
+                "Ensured external app membership for %d collaborator(s) on connector %s",
+                len(emails),
+                connector_id,
+            )
+        except Exception as e:
+            self.logger.error(f"Transaction on_external_app_users failed: {str(e)}")
+            raise e
+
+    @retry_on_deadlock()
+    async def reap_external_app_users(self, connector_id: str) -> int:
+        """
+        Drop external membership for collaborators whose shares no longer exist.
+
+        The counterpart to on_external_app_users: that grants membership when a share
+        appears, this withdraws it once every share behind it is gone. Without it the
+        membership edge outlives its justification and the collaborator keeps seeing an
+        app with nothing in it.
+
+        Connectors call this at the end of a sync, once every permission the run touched
+        is committed - judging an edge against half-written permissions would reap
+        someone whose share is merely still being processed.
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                reaped = await tx_store.reap_stale_external_app_relations(connector_id)
+            if reaped:
+                self.logger.info(
+                    "Removed %d orphaned person node(s) while reaping connector %s",
+                    reaped,
+                    connector_id,
+                )
+            return reaped
+        except Exception as e:
+            self.logger.error(f"Transaction reap_external_app_users failed: {str(e)}")
+            raise e
+
+    @retry_on_deadlock()
     async def on_new_user_groups(self, user_groups: list[tuple[AppUserGroup, list[AppUser]]]) -> None:
         """
         Processes new user groups, upserts them, and creates permission edges.
@@ -2788,13 +2947,12 @@ class DataSourceEntitiesProcessor:
                     to_collection = CollectionNames.GROUPS.value
 
                     for member in members:
-                        user = None
+                        resolved = None
                         if member.email:
-                            # Find the user's internal DB ID
-                            user = await tx_store.get_user_by_email(member.email)
+                            resolved = await self._resolve_principal(member.email, tx_store)
 
-                        if not user:
-                            self.logger.warning(f"Could not find user with email {member.email} for UserGroup permission.")
+                        if not resolved:
+                            self.logger.warning(f"Could not resolve principal for email {member.email} for UserGroup permission.")
                             continue
 
                         permission = Permission(
@@ -2803,8 +2961,7 @@ class DataSourceEntitiesProcessor:
                             type=PermissionType.READ,
                             entity_type=EntityType.USER
                         )
-                        from_id = user.id
-                        from_collection = CollectionNames.USERS.value
+                        from_id, from_collection = resolved
 
                         user_group_permissions.append(
                             permission.to_arango_permission(from_id, from_collection, to_id, to_collection)

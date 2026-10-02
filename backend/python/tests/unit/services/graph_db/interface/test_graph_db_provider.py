@@ -248,6 +248,7 @@ class TestAbstractMethodInventory:
         "get_record_group_path",
         "get_record_path",
         "get_record_path_segments",
+        "get_descendant_virtual_record_ids",
         "get_file_record_by_id",
         # Knowledge-graph taxonomy entities
         "get_taxonomy_entities_for_record",
@@ -283,6 +284,8 @@ class TestAbstractMethodInventory:
         "is_record_folder",
         "get_record_parent_info",
         "is_record_descendant_of",
+        "get_folder_depth",
+        "get_folder_subtree_height",
         "delete_parent_child_edge_to_record",
         "get_kb_permissions",
         "update_kb_permission",
@@ -302,6 +305,11 @@ class TestAbstractMethodInventory:
         "get_user_group_by_external_id",
         "get_user_groups",
         "batch_upsert_people",
+        "get_person_by_email",
+        "upsert_person_by_email",
+        "ensure_app_membership",
+        "migrate_person_to_user",
+        "reap_stale_external_app_relations",
         "get_app_role_by_external_id",
         "get_app_creator_user",
         # Organization operations

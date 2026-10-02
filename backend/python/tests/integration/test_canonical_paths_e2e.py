@@ -85,11 +85,14 @@ class _Env:
         parent: str | None = None,
         parent_by_id: bool = False,
         external_of: str | None = None,
+        content: bool = True,
+        vrid_of: str | None = None,
     ) -> str:
         """A record named *name*; *parent* names the record its externalParentId points at.
 
         *external_of* reuses another record's externalRecordId: the graph anomaly
-        that gives a child two canonical parents.
+        that gives a child two canonical parents. ``content=False`` leaves out the
+        virtualRecordId (a folder); *vrid_of* reuses another record's (deduplicated content).
         """
         now = get_epoch_timestamp_in_ms()
         doc = {
@@ -102,11 +105,12 @@ class _Env:
             "connectorName": "JIRA",
             "connectorId": self.connector_id,
             "version": 0,
-            "virtualRecordId": f"vr-{self.key(name)}",
             "indexingStatus": ProgressStatus.COMPLETED.value,
             "createdAtTimestamp": now,
             "updatedAtTimestamp": now,
         }
+        if content:
+            doc["virtualRecordId"] = f"vr-{self.key(vrid_of or name)}"
         if parent is not None:
             doc["externalParentId"] = self.key(parent) if parent_by_id else f"ext-{self.key(parent)}"
         return await self._node(RECORDS, doc)
@@ -303,6 +307,210 @@ async def test_second_parent_that_is_not_canonical_is_not_followed(env: _Env) ->
     await env.child_of(d2, leaf)
 
     assert await env.graph.get_record_path_segments(leaf) == ["R1", "D1", "f.txt"]
+
+
+async def test_descendant_vrids_are_the_content_stored_under_the_record(env: _Env) -> None:
+    """What a folder move must carry: folders "a:b" and "a_b" share one storage
+    prefix, so each one's move names only the content stored beneath it.
+    ("a:b" stands in for "a/b": both sanitize to "a_b"; "/" is not a valid Arango key.)"""
+    slash = await env.record("a:b")
+    under = await env.record("a_b")
+    docs = await env.record("Docs", parent="a:b")
+    leaf = await env.record("f.txt", parent="Docs")
+    other = await env.record("g.txt", parent="a_b")
+    elsewhere = await env.record("Elsewhere")
+    shared = await env.record("shared.txt", parent="Elsewhere")
+    linked = await env.record("Linked", parent="Elsewhere")
+    await env.child_of(slash, docs)
+    await env.child_of(docs, leaf)
+    await env.child_of(under, other)
+    await env.child_of(elsewhere, shared)
+    await env.child_of(slash, shared)  # second parent: stored under Elsewhere
+    await env.child_of(elsewhere, linked)
+    await env.child_of(docs, linked, relation="LINKED_TO")
+
+    assert sorted(await env.graph.get_descendant_virtual_record_ids(slash)) == sorted(
+        [f"vr-{docs}", f"vr-{leaf}"]
+    )
+    assert await env.graph.get_descendant_virtual_record_ids(under) == [f"vr-{other}"]
+    assert await env.graph.get_descendant_virtual_record_ids(leaf) == []
+
+
+async def test_descendants_survive_duplicate_parent_edges_and_cycles(env: _Env) -> None:
+    """Each record is listed once however many duplicate edges lead to it; a
+    path walk would enumerate 2^depth paths through such a chain."""
+    root = await env.record("Root")
+    chain = [root]
+    for i in range(12):
+        node = await env.record(f"L{i}", parent="Root" if i == 0 else f"L{i - 1}")
+        await env.child_of(chain[-1], node)
+        await env.duplicate_child_of(chain[-1], node)
+        chain.append(node)
+    await env.child_of(chain[-1], root)  # cycle back to the top: not canonical for Root
+
+    got = await env.graph.get_descendant_virtual_record_ids(root)
+    assert sorted(got) == sorted(f"vr-{n}" for n in chain[1:])
+
+
+def _vr(*record_ids: str) -> list[str]:
+    return sorted(f"vr-{r}" for r in record_ids)
+
+
+async def test_descendants_of_a_missing_record_are_empty(env: _Env) -> None:
+    assert await env.graph.get_descendant_virtual_record_ids(env.key("no-such-record")) == []
+
+
+async def test_descendants_of_a_record_without_children_are_empty(env: _Env) -> None:
+    lonely = await env.record("lonely.txt")
+    assert await env.graph.get_descendant_virtual_record_ids(lonely) == []
+
+
+async def test_folders_without_content_are_walked_through_but_not_listed(env: _Env) -> None:
+    """A folder has no vrid; the walk must still reach the files inside nested folders."""
+    folder = await env.record("Folder", content=False)
+    sub = await env.record("Sub", parent="Folder", content=False)
+    deeper = await env.record("Deeper", parent="Sub", content=False)
+    a = await env.record("a.txt", parent="Folder")
+    b = await env.record("b.txt", parent="Deeper")
+    await env.child_of(folder, sub)
+    await env.child_of(sub, deeper)
+    await env.child_of(folder, a)
+    await env.child_of(deeper, b)
+
+    assert sorted(await env.graph.get_descendant_virtual_record_ids(folder)) == _vr(a, b)
+    assert await env.graph.get_descendant_virtual_record_ids(sub) == _vr(b)
+
+
+async def test_attachments_are_content_beneath_their_record(env: _Env) -> None:
+    """An email (or a page) has content of its own and attachments stored beneath it."""
+    folder = await env.record("Inbox", content=False)
+    mail = await env.record("Mail", parent="Inbox")
+    pdf = await env.record("invoice.pdf", parent="Mail")
+    png = await env.record("logo.png", parent="Mail")
+    await env.child_of(folder, mail)
+    await env.child_of(mail, pdf, relation="ATTACHMENT")
+    await env.child_of(mail, png, relation="ATTACHMENT")
+
+    assert sorted(await env.graph.get_descendant_virtual_record_ids(mail)) == _vr(pdf, png)
+    assert sorted(await env.graph.get_descendant_virtual_record_ids(folder)) == _vr(mail, pdf, png)
+
+
+async def test_a_page_with_child_pages_lists_its_whole_subtree(env: _Env) -> None:
+    # Arango keys cannot contain spaces; the helper builds keys from names.
+    page = await env.record("Q1:Plan")
+    child = await env.record("Colon-Child", parent="Q1:Plan")
+    grandchild = await env.record("Notes", parent="Colon-Child")
+    att = await env.record("README.md", parent="Q1:Plan")
+    await env.child_of(page, child)
+    await env.child_of(child, grandchild)
+    await env.child_of(page, att, relation="ATTACHMENT")
+
+    assert sorted(await env.graph.get_descendant_virtual_record_ids(page)) == _vr(child, grandchild, att)
+
+
+async def test_parent_matched_by_record_id_counts(env: _Env) -> None:
+    """Connectors may point externalParentId at the parent's record id instead of its external id."""
+    folder = await env.record("Folder", content=False)
+    by_id = await env.record("by-id.txt", parent="Folder", parent_by_id=True)
+    await env.child_of(folder, by_id)
+
+    assert await env.graph.get_descendant_virtual_record_ids(folder) == _vr(by_id)
+
+
+async def test_a_link_edge_is_not_a_parent_even_when_the_parent_id_matches(env: _Env) -> None:
+    """Only PARENT_CHILD / ATTACHMENT edges place content under a record."""
+    folder = await env.record("Folder", content=False)
+    linked = await env.record("linked.txt", parent="Folder")
+    await env.child_of(folder, linked, relation="LINKED_TO")
+
+    assert await env.graph.get_descendant_virtual_record_ids(folder) == []
+
+
+async def test_only_the_queried_subtree_is_listed(env: _Env) -> None:
+    """Not the record's ancestors, not its siblings' subtrees — e.g. folders "a/b" and "a_b"."""
+    root = await env.record("Root", content=False)
+    a = await env.record("a:b", parent="Root", content=False)
+    b = await env.record("a_b", parent="Root", content=False)
+    a1 = await env.record("a1.txt", parent="a:b")
+    b1 = await env.record("b1.txt", parent="a_b")
+    for parent, child in ((root, a), (root, b), (a, a1), (b, b1)):
+        await env.child_of(parent, child)
+
+    assert await env.graph.get_descendant_virtual_record_ids(a) == _vr(a1)
+    assert await env.graph.get_descendant_virtual_record_ids(b) == _vr(b1)
+    assert await env.graph.get_descendant_virtual_record_ids(a1) == []
+
+
+async def test_records_sharing_a_vrid_are_listed_once(env: _Env) -> None:
+    """Deduplicated content: two records, one stored copy, one vrid in the list."""
+    folder = await env.record("Folder", content=False)
+    first = await env.record("report.pdf", parent="Folder")
+    await env.record("report-copy.pdf", parent="Folder", vrid_of="report.pdf")
+    await env.child_of(folder, first)
+    await env.child_of(folder, env.key("report-copy.pdf"))
+
+    assert await env.graph.get_descendant_virtual_record_ids(folder) == _vr(first)
+
+
+async def test_a_wide_folder_lists_every_child(env: _Env) -> None:
+    folder = await env.record("Wide", content=False)
+    children = []
+    for i in range(250):
+        children.append(await env.record(f"w{i:03d}.txt", parent="Wide"))
+        await env.child_of(folder, children[-1])
+
+    got = await env.graph.get_descendant_virtual_record_ids(folder)
+    assert len(got) == len(set(got)) == 250
+    assert sorted(got) == _vr(*children)
+
+
+async def test_depth_is_bounded_like_the_path_walk(env: _Env) -> None:
+    """Both backends stop at 100 levels, the same bound get_record_path_segments uses."""
+    chain = [await env.record("L000", content=False)]
+    for i in range(1, 106):
+        node = await env.record(f"L{i:03d}", parent=f"L{i - 1:03d}")
+        await env.child_of(chain[-1], node)
+        chain.append(node)
+
+    got = await env.graph.get_descendant_virtual_record_ids(chain[0])
+    assert sorted(got) == _vr(*chain[1:101])
+
+
+async def test_two_records_with_one_external_id_both_own_the_shared_child(env: _Env) -> None:
+    """The anomaly that gives a child two canonical parents: it is beneath both."""
+    p1 = await env.record("P1", content=False)
+    p2 = await env.record("P2", external_of="P1", content=False)
+    child = await env.record("c.txt", parent="P1")
+    await env.child_of(p1, child)
+    await env.child_of(p2, child)
+
+    assert await env.graph.get_descendant_virtual_record_ids(p1) == _vr(child)
+    assert await env.graph.get_descendant_virtual_record_ids(p2) == _vr(child)
+
+
+async def test_a_cycle_back_to_the_queried_record_does_not_list_it(env: _Env) -> None:
+    """"Beneath the record" never includes the record itself, on either backend."""
+    top = await env.record("Top", parent="Mid")
+    mid = await env.record("Mid", parent="Top")
+    await env.child_of(top, mid)
+    await env.child_of(mid, top)  # canonical for Top too: Top.externalParentId names Mid
+
+    assert await env.graph.get_descendant_virtual_record_ids(top) == _vr(mid)
+
+
+async def test_descendants_see_uncommitted_edges_inside_a_transaction(env: _Env) -> None:
+    """Moves are queued inside the sync transaction, before commit."""
+    folder = await env.record("Folder", content=False)
+    leaf = await env.record("f.txt", parent="Folder")
+    txn = await env.graph.begin_transaction(
+        read=[RECORDS, CollectionNames.RECORD_RELATIONS.value],
+        write=[RECORDS, CollectionNames.RECORD_RELATIONS.value],
+    )
+    try:
+        await env.child_of(folder, leaf, transaction=txn)
+        assert await env.graph.get_descendant_virtual_record_ids(folder, transaction=txn) == _vr(leaf)
+    finally:
+        await env.graph.rollback_transaction(txn)
 
 
 async def test_walk_stops_at_a_non_canonical_relation(env: _Env) -> None:

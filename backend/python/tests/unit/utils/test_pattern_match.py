@@ -23,6 +23,7 @@ from app.utils.pattern_match import (
     _get_frontend_url,
     _record_in_time_range,
     _scope_grep_to_paths,
+    await_pattern_match,
     build_grep_command_from_query,
     cancel_task_if_running,
     cap_pattern_match_blocks,
@@ -1063,6 +1064,55 @@ class TestCancelTaskIfRunning:
         task = asyncio.ensure_future(_boom())
         await cancel_task_if_running(task)
         assert task.cancelled()
+
+
+class TestAwaitPatternMatch:
+    """Semantic results must survive whatever happens inside pattern match."""
+
+    @pytest.mark.asyncio
+    async def test_records_are_returned(self):
+        async def _ok():
+            return [{"_key": "r1"}]
+
+        assert await await_pattern_match(asyncio.ensure_future(_ok()), MagicMock()) == [{"_key": "r1"}]
+
+    @pytest.mark.asyncio
+    async def test_none_is_no_records(self):
+        async def _none():
+            return None
+
+        assert await await_pattern_match(asyncio.ensure_future(_none()), MagicMock()) == []
+
+    @pytest.mark.asyncio
+    async def test_an_error_is_no_records(self):
+        async def _boom():
+            raise RuntimeError("grep blew up")
+
+        assert await await_pattern_match(asyncio.ensure_future(_boom()), MagicMock()) == []
+
+    @pytest.mark.asyncio
+    async def test_a_cancellation_inside_pattern_match_is_no_records(self):
+        async def _cancelled():
+            raise asyncio.CancelledError()
+
+        assert await await_pattern_match(asyncio.ensure_future(_cancelled()), MagicMock()) == []
+
+    @pytest.mark.asyncio
+    async def test_cancelling_the_caller_still_cancels_it(self):
+        started = asyncio.Event()
+
+        async def _slow():
+            started.set()
+            await asyncio.sleep(100)
+
+        async def _caller():
+            return await await_pattern_match(asyncio.ensure_future(_slow()), MagicMock())
+
+        caller = asyncio.ensure_future(_caller())
+        await started.wait()
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
 
 
 # ===========================================================================
