@@ -10,7 +10,10 @@ from urllib.parse import urlparse
 
 import pytest
 
-from app.connectors.sources.demo.harness.answer_judge import AnswerJudge, AnthropicJudgeClient
+from app.connectors.sources.demo.harness.answer_judge import (
+    AnswerJudge,
+    AnthropicJudgeClient,
+)
 from tests.evals import chat_models
 from tests.evals.chat_models import (
     JudgeConfigError,
