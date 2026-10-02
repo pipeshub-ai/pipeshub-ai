@@ -1738,7 +1738,9 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"on_records_moved failed: {e}", exc_info=True)
             raise
 
-    async def _publish_delete_events(self, event_data: dict | None) -> list[str]:
+    async def _publish_delete_events(
+        self, event_data: dict | None
+    ) -> dict[str, list[str]]:
         """Publish deleteRecord events (Qdrant vector cleanup) for a delete result.
 
         Called AFTER the DB transaction commits so the graph vertex is gone before
@@ -1754,9 +1756,14 @@ class DataSourceEntitiesProcessor:
         what still needs cleanup.
         """
         if not event_data:
-            return []
+            return {
+                "vectorCleanupFailedRecordIds": [],
+                "storageCleanupFailedVirtualRecordIds": [],
+            }
 
         unpublished_record_ids: list[str] = []
+        storage_prefixes_by_org: dict[str, list[str]] = {}
+        storage_virtual_ids_by_org: dict[str, list[str]] = {}
         for payload in event_data.get("payloads", []):
             record_id = payload.get("recordId") if isinstance(payload, dict) else None
             if not record_id:
@@ -1789,21 +1796,52 @@ class DataSourceEntitiesProcessor:
                 )
                 unpublished_record_ids.append(record_id)
 
-            # Clean up Blob Storage files & MongoDB storage documents for this record
+            # Retain storage prefixes for one batched cleanup after publishing.
             org_id = (payload.get("orgId") if isinstance(payload, dict) else None) or self.org_id
             virtual_record_id = payload.get("virtualRecordId") if isinstance(payload, dict) else None
             if org_id and virtual_record_id:
                 path_prefix = f"{org_id}/PipesHub/records/{virtual_record_id}"
+                storage_prefixes_by_org.setdefault(str(org_id), []).append(path_prefix)
+                storage_virtual_ids_by_org.setdefault(str(org_id), []).append(
+                    str(virtual_record_id)
+                )
+
+        storage_cleanup_failed_ids: list[str] = []
+        if storage_prefixes_by_org:
+            from app.utils.storage_cleanup import (
+                cleanup_storage_and_mongo_for_prefixes,
+                get_unreferenced_virtual_record_ids,
+            )
+
+            for org_id, path_prefixes in storage_prefixes_by_org.items():
                 try:
-                    from app.utils.storage_cleanup import cleanup_storage_and_mongo_for_prefix
-                    await cleanup_storage_and_mongo_for_prefix(
-                        path_prefix, org_id=org_id, config_service=self.config_service
+                    unreferenced_ids = await get_unreferenced_virtual_record_ids(
+                        storage_virtual_ids_by_org[org_id], self.data_store_provider
                     )
+                    if unreferenced_ids:
+                        unreferenced_prefixes = [
+                            f"{org_id}/PipesHub/records/{virtual_record_id}"
+                            for virtual_record_id in unreferenced_ids
+                        ]
+                        await cleanup_storage_and_mongo_for_prefixes(
+                            unreferenced_prefixes,
+                            org_id=org_id,
+                            config_service=self.config_service,
+                        )
                 except Exception as cleanup_err:
-                    self.logger.warning(
-                        f"Storage and Mongo cleanup failed for {path_prefix}: {cleanup_err}"
+                    storage_cleanup_failed_ids.extend(
+                        storage_virtual_ids_by_org[org_id]
                     )
-        return unpublished_record_ids
+                    self.logger.warning(
+                        "Storage and Mongo cleanup failed for %d record(s) in org %s: %s",
+                        len(path_prefixes),
+                        org_id,
+                        cleanup_err,
+                    )
+        return {
+            "vectorCleanupFailedRecordIds": unpublished_record_ids,
+            "storageCleanupFailedVirtualRecordIds": storage_cleanup_failed_ids,
+        }
 
     @retry_on_deadlock()
     async def on_record_deleted(self, record_id: str) -> None:
@@ -1871,11 +1909,19 @@ class DataSourceEntitiesProcessor:
             # No-ops unless connector_id is a KB; connectors invalidate on sync
             # completion instead, so a mid-sync delete does not thrash the cache.
             await notify_kb_records_changed(connector_id)
-        unpublished_record_ids = await self._publish_delete_events((result or {}).get("eventData"))
+        cleanup_result = await self._publish_delete_events((result or {}).get("eventData"))
+        unpublished_record_ids = cleanup_result["vectorCleanupFailedRecordIds"]
         if unpublished_record_ids:
             result = dict(result or {})
             result["vectorCleanupPending"] = True
             result["vectorCleanupFailedRecordIds"] = unpublished_record_ids
+        storage_cleanup_failed_ids = cleanup_result[
+            "storageCleanupFailedVirtualRecordIds"
+        ]
+        if storage_cleanup_failed_ids:
+            result = dict(result or {})
+            result["storageCleanupPending"] = True
+            result["storageCleanupFailedVirtualRecordIds"] = storage_cleanup_failed_ids
         return result
 
 

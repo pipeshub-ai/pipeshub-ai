@@ -835,6 +835,35 @@ class EventService:
                     f"for connector {connector_id}"
                 )
 
+            virtual_record_ids = result.get("virtual_record_ids", [])
+            if virtual_record_ids:
+                from app.utils.storage_cleanup import (
+                    cleanup_storage_and_mongo_for_prefixes,
+                    get_unreferenced_virtual_record_ids,
+                )
+
+                config_service = self.app_container.config_service()
+                try:
+                    unreferenced_ids = await get_unreferenced_virtual_record_ids(
+                        virtual_record_ids, self.graph_provider
+                    )
+                    if unreferenced_ids:
+                        path_prefixes = [
+                            f"{org_id}/PipesHub/records/{virtual_record_id}"
+                            for virtual_record_id in unreferenced_ids
+                        ]
+                        await cleanup_storage_and_mongo_for_prefixes(
+                            path_prefixes,
+                            org_id=org_id,
+                            config_service=config_service,
+                        )
+                except Exception as cleanup_err:
+                    self.logger.error(
+                        "Storage and Mongo cleanup failed for connector %s: %s",
+                        connector_id,
+                        cleanup_err,
+                    )
+
             # Delete connector credentials from etcd/config store
             try:
                 config_service = self.app_container.config_service()

@@ -363,10 +363,21 @@ export class StorageController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const { pathPrefix } = req.body || req.query;
-      if (!pathPrefix || typeof pathPrefix !== 'string') {
+      const { pathPrefix, pathPrefixes } = req.body || req.query;
+      const prefixes = Array.isArray(pathPrefixes)
+        ? pathPrefixes.filter(
+            (prefix): prefix is string =>
+              typeof prefix === 'string' && prefix.length > 0,
+          )
+        : typeof pathPrefix === 'string' && pathPrefix.length > 0
+          ? [pathPrefix]
+          : [];
+      if (prefixes.length === 0) {
         res.status(HTTP_STATUS.OK).json({ success: true, count: 0 });
         return;
+      }
+      if (prefixes.length > 500) {
+        throw new BadRequestError('At most 500 path prefixes may be deleted at once');
       }
 
       const orgId = extractOrgId(req);
@@ -374,9 +385,11 @@ export class StorageController {
         throw new BadRequestError('Invalid organization ID');
       }
 
-      const escapedPrefix = pathPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const query: Record<string, any> = {
-        documentPath: { $regex: `^${escapedPrefix}(?:/|$)` },
+        $or: prefixes.map((prefix) => {
+          const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          return { documentPath: { $regex: `^${escapedPrefix}(?:/|$)` } };
+        }),
       };
       query.orgId = new mongoose.Types.ObjectId(orgId);
       const documents = await DocumentModel.find(query);

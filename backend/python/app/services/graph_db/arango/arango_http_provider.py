@@ -8520,11 +8520,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "error": f"Connector instance {connector_id} not found"
                 }
 
-            # Whether the vector cleanup will need an explicit VRID list at all.
-            # Membership-based cleanup finds the points itself, so on that path
-            # the list is never read and collecting it is pure cost — which is
-            # the whole point on a connector with millions of records.
-            needs_virtual_record_ids = not can_use_membership_cleanup(connector)
+            # Storage documents are keyed by record virtual ID, independently of
+            # whether vector cleanup can use connector membership.
+            needs_virtual_record_ids = True
 
             # Step 2: Collect all entities for this connector
             collected = await self._collect_connector_entities(

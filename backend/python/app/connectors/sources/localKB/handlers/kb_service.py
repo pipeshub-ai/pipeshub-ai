@@ -743,28 +743,46 @@ class KnowledgeBaseService:
                     f"event(s) for KB {kb_id}; some embeddings were not cleaned up"
                 )
 
-                if org_id:
-                    from app.utils.storage_cleanup import cleanup_storage_and_mongo_for_prefix
-                    for vrid in virtual_record_ids:
-                        if vrid:
-                            path_prefix = f"{org_id}/PipesHub/records/{vrid}"
-                            try:
-                                await cleanup_storage_and_mongo_for_prefix(
-                                    path_prefix,
-                                    org_id=org_id,
-                                    config_service=self.config_service,
-                                )
-                            except Exception as cleanup_err:
-                                self.logger.warning(
-                                    f"Storage and Mongo cleanup failed for {path_prefix}: {cleanup_err}"
-                                )
+            storage_cleanup_failed_ids = []
+            if org_id:
+                from app.utils.storage_cleanup import (
+                    cleanup_storage_and_mongo_for_prefixes,
+                    get_unreferenced_virtual_record_ids,
+                )
+
+                valid_virtual_record_ids = [vrid for vrid in virtual_record_ids if vrid]
+                try:
+                    unreferenced_ids = await get_unreferenced_virtual_record_ids(
+                        valid_virtual_record_ids, self.graph_provider
+                    )
+                    if unreferenced_ids:
+                        path_prefixes = [
+                            f"{org_id}/PipesHub/records/{vrid}"
+                            for vrid in unreferenced_ids
+                        ]
+                        await cleanup_storage_and_mongo_for_prefixes(
+                            path_prefixes,
+                            org_id=org_id,
+                            config_service=self.config_service,
+                        )
+                except Exception as cleanup_err:
+                    storage_cleanup_failed_ids = valid_virtual_record_ids
+                    self.logger.warning(
+                        "Storage and Mongo cleanup failed for KB %s: %s",
+                        kb_id,
+                        cleanup_err,
+                    )
 
             self.logger.info(f"✅ Knowledge base {kb_id} deleted successfully by user_key={user_key}")
-            return {
+            response = {
                 "success": True,
                 "reason": "Knowledge base and all contents deleted successfully",
                 "code": 200,
             }
+            if storage_cleanup_failed_ids:
+                response["storageCleanupPending"] = True
+                response["storageCleanupFailedVirtualRecordIds"] = storage_cleanup_failed_ids
+            return response
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete knowledge base {kb_id}: {str(e)}")
@@ -1133,6 +1151,11 @@ class KnowledgeBaseService:
                 # (successful) while flagging that embeddings need reconciliation.
                 response["vectorCleanupPending"] = True
                 response["vectorCleanupFailedRecordIds"] = cascade_result["vectorCleanupFailedRecordIds"]
+            if (cascade_result or {}).get("storageCleanupPending"):
+                response["storageCleanupPending"] = True
+                response["storageCleanupFailedVirtualRecordIds"] = cascade_result[
+                    "storageCleanupFailedVirtualRecordIds"
+                ]
             return response
 
         except Exception as e:

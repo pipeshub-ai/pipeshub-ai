@@ -639,20 +639,30 @@ class RecordEventHandler(BaseEventService):
                 )
                 org_id = payload.get("orgId", "")
                 if org_id and virtual_record_ids:
-                    from app.utils.storage_cleanup import cleanup_storage_and_mongo_for_prefix
-                    for vrid in virtual_record_ids:
-                        if vrid:
-                            path_prefix = f"{org_id}/PipesHub/records/{vrid}"
-                            try:
-                                await cleanup_storage_and_mongo_for_prefix(
-                                    path_prefix,
-                                    org_id=org_id,
-                                    config_service=self.config_service,
-                                )
-                            except Exception as cleanup_err:
-                                self.logger.warning(
-                                    f"Storage and Mongo cleanup failed for {path_prefix}: {cleanup_err}"
-                                )
+                    from app.utils.storage_cleanup import (
+                        cleanup_storage_and_mongo_for_prefixes,
+                        get_unreferenced_virtual_record_ids,
+                    )
+
+                    try:
+                        unreferenced_ids = await get_unreferenced_virtual_record_ids(
+                            virtual_record_ids, self.event_processor.graph_provider
+                        )
+                        if unreferenced_ids:
+                            path_prefixes = [
+                                f"{org_id}/PipesHub/records/{vrid}"
+                                for vrid in unreferenced_ids
+                            ]
+                            await cleanup_storage_and_mongo_for_prefixes(
+                                path_prefixes,
+                                org_id=org_id,
+                                config_service=self.config_service,
+                            )
+                    except Exception as cleanup_err:
+                        self.logger.warning(
+                            "Storage and Mongo cleanup failed for bulk delete: %s",
+                            cleanup_err,
+                        )
 
                 # `bulk_delete_embeddings` reports success=False when it refused
                 # to proceed — no managed collection resolved, so nothing was
@@ -728,12 +738,19 @@ class RecordEventHandler(BaseEventService):
                 if virtual_record_id and org_id:
                     path_prefix = f"{org_id}/PipesHub/records/{virtual_record_id}"
                     try:
-                        from app.utils.storage_cleanup import cleanup_storage_and_mongo_for_prefix
-                        await cleanup_storage_and_mongo_for_prefix(
-                            path_prefix,
-                            org_id=org_id,
-                            config_service=self.config_service,
+                        from app.utils.storage_cleanup import (
+                            cleanup_storage_and_mongo_for_prefix,
+                            get_unreferenced_virtual_record_ids,
                         )
+                        unreferenced_ids = await get_unreferenced_virtual_record_ids(
+                            [virtual_record_id], self.event_processor.graph_provider
+                        )
+                        if unreferenced_ids:
+                            await cleanup_storage_and_mongo_for_prefix(
+                                path_prefix,
+                                org_id=org_id,
+                                config_service=self.config_service,
+                            )
                     except Exception as cleanup_err:
                         self.logger.warning(
                             f"Storage and Mongo cleanup failed for {path_prefix}: {cleanup_err}"
