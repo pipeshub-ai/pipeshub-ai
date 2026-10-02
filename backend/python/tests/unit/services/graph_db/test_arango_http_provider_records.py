@@ -4197,6 +4197,7 @@ class TestDeleteRecordsRecursive:
             await connected_provider.delete_records_recursive(
                 ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
             )
+        connected_provider._delete_nodes_by_keys.assert_called_once()
 
     async def test_a_move_committed_during_the_deletes_rolls_back_its_own_transaction(
         self, connected_provider
