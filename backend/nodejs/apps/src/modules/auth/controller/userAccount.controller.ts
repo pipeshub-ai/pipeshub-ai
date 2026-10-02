@@ -383,15 +383,19 @@ export class UserAccountController {
     // even when two requests race with the same code.
     const claimed = await UserCredentials.findOneAndUpdate(
       { userId, orgId, isDeleted: false, hashedOTP: attempt.hashedOTP },
-      {
-        $set: { wrongCredentialCount: 0 },
-        $unset: { hashedOTP: '', otpValidity: '' },
-      },
+      { $unset: { hashedOTP: '', otpValidity: '' } },
       { new: true },
     );
     if (!claimed) {
       throw new UnauthorizedError(OTP_ALREADY_USED);
     }
+    // After the claim, and separate from it: tying the claim to the counter
+    // would let another request's reservation stop a correct code being used.
+    await this.releaseCredentialAttempt(
+      userId,
+      orgId,
+      attempt.wrongCredentialCount,
+    );
 
     return { statusCode: 200 };
   }
@@ -413,6 +417,27 @@ export class UserAccountController {
       },
       { $inc: { wrongCredentialCount: 1 } },
       { new: true },
+    );
+  }
+
+  // Resets the counter after a successful sign-in, but only while it still
+  // reads what this request's reservation left it at and the account is not
+  // locked. Otherwise a success would wipe out attempts that other requests
+  // reserved in the meantime.
+  async releaseCredentialAttempt(
+    userId: string,
+    orgId: string,
+    reservedCount: number,
+  ) {
+    await UserCredentials.updateOne(
+      {
+        userId,
+        orgId,
+        isDeleted: false,
+        isBlocked: { $ne: true },
+        wrongCredentialCount: reservedCount,
+      },
+      { $set: { wrongCredentialCount: 0 } },
     );
   }
 
@@ -1334,11 +1359,10 @@ export class UserAccountController {
       }
       throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
     }
-    // A plain write: the record read above still holds the count from before
-    // the attempt was reserved, so saving it could leave the attempt counted.
-    await UserCredentials.updateOne(
-      { userId, orgId, isDeleted: false },
-      { $set: { wrongCredentialCount: 0 } },
+    await this.releaseCredentialAttempt(
+      userId,
+      orgId,
+      attempt.wrongCredentialCount,
     );
 
     await UserActivities.create({

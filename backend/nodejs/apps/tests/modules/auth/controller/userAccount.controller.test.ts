@@ -296,6 +296,7 @@ describe('UserAccountController', () => {
         save: saveStub,
       } as any);
       sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({} as unknown as ClaimedCredentials);
 
       const result = await controller.verifyOTP('u1', 'o1', otp, 'test@test.com', '127.0.0.1');
@@ -348,12 +349,15 @@ describe('UserAccountController', () => {
         save: sinon.stub().resolves(),
       } as any);
       sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      const release = sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       const claim = sinon
         .stub(UserCredentials, 'findOneAndUpdate')
-        .resolves({ wrongCredentialCount: 0 } as unknown as ClaimedCredentials);
+        .resolves({ wrongCredentialCount: 1 } as unknown as ClaimedCredentials);
 
       const result = await controller.verifyOTP('u1', 'o1', otp, 'test@test.com', '127.0.0.1');
       expect(result.statusCode).to.equal(200);
+      // The claim matches on the code alone, so a concurrent reservation
+      // cannot stop a correct code being used.
       expect(claim.firstCall.args[0]).to.deep.equal({
         userId: 'u1',
         orgId: 'o1',
@@ -361,9 +365,20 @@ describe('UserAccountController', () => {
         hashedOTP,
       });
       expect(claim.firstCall.args[1]).to.deep.equal({
-        $set: { wrongCredentialCount: 0 },
         $unset: { hashedOTP: '', otpValidity: '' },
       });
+      // The counter is reset afterwards, and only if nothing else was counted.
+      expect(release.calledAfter(claim)).to.be.true;
+      expect(release.firstCall.args).to.deep.equal([
+        {
+          userId: 'u1',
+          orgId: 'o1',
+          isDeleted: false,
+          isBlocked: { $ne: true },
+          wrongCredentialCount: 1,
+        },
+        { $set: { wrongCredentialCount: 0 } },
+      ]);
     });
 
     it('should refuse a matching OTP that another request has already used', async () => {
@@ -377,6 +392,7 @@ describe('UserAccountController', () => {
         save: sinon.stub().resolves(),
       } as unknown as ClaimedCredentials);
       sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      const release = sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(null);
 
       try {
@@ -386,6 +402,7 @@ describe('UserAccountController', () => {
         expect(error).to.be.instanceOf(UnauthorizedError);
         expect((error as Error).message).to.equal(OTP_ALREADY_USED);
       }
+      expect(release.called).to.be.false;
     });
 
     it('should throw UnauthorizedError when OTP does not match', async () => {
@@ -461,6 +478,25 @@ describe('UserAccountController', () => {
         expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
       }
       expect(compare.getCalls().some((c) => c.args[1] === hashedOTP)).to.be.false;
+    });
+  });
+
+  describe('releaseCredentialAttempt', () => {
+    it('resets the counter only while it still reads what this request reserved and the account is unlocked', async () => {
+      const update = sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+
+      await controller.releaseCredentialAttempt('u1', 'o1', 3);
+
+      expect(update.firstCall.args).to.deep.equal([
+        {
+          userId: 'u1',
+          orgId: 'o1',
+          isDeleted: false,
+          isBlocked: { $ne: true },
+          wrongCredentialCount: 3,
+        },
+        { $set: { wrongCredentialCount: 0 } },
+      ]);
     });
   });
 
@@ -1947,9 +1983,16 @@ describe('UserAccountController', () => {
       const result = await controller.authenticateWithPassword(user, password, '127.0.0.1');
 
       expect(result.statusCode).to.equal(200);
-      // The reserved attempt is given back by a write of its own.
+      // The reserved attempt is given back only while nothing else was counted
+      // since and the account is not locked.
       expect(reset.firstCall.args).to.deep.equal([
-        { userId: 'u1', orgId: 'o1', isDeleted: false },
+        {
+          userId: 'u1',
+          orgId: 'o1',
+          isDeleted: false,
+          isBlocked: { $ne: true },
+          wrongCredentialCount: 1,
+        },
         { $set: { wrongCredentialCount: 0 } },
       ]);
     });
@@ -2062,6 +2105,7 @@ describe('UserAccountController', () => {
         save: sinon.stub().resolves(),
       } as any);
       sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({} as unknown as ClaimedCredentials);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 
@@ -3100,6 +3144,7 @@ describe('UserAccountController', () => {
         save: sinon.stub().resolves(),
       } as any);
       sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({} as unknown as ClaimedCredentials);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 

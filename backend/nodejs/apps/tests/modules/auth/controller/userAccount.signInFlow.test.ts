@@ -330,11 +330,20 @@ describe('UserAccountController sign-in flow', () => {
       return Promise.resolve(doc);
     }) as unknown as typeof UserCredentials.findOneAndUpdate);
     sinon.stub(UserCredentials, 'updateOne').callsFake(((
-      filter: { userId: string },
+      filter: {
+        userId: string;
+        isBlocked?: { $ne: boolean };
+        wrongCredentialCount?: number;
+      },
       update: { $set?: Record<string, unknown> },
     ) => {
       const doc = credentialsByUser[String(filter.userId)];
-      if (doc) {
+      const matches =
+        doc &&
+        !(filter.isBlocked && doc.isBlocked === true) &&
+        (filter.wrongCredentialCount === undefined ||
+          doc.wrongCredentialCount === filter.wrongCredentialCount);
+      if (matches) {
         Object.assign(doc, update.$set ?? {});
       }
       return Promise.resolve({});
