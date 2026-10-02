@@ -2763,7 +2763,9 @@ class TestReconcilePromotedDuplicates:
         and ran none of its own."""
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
-        gp.get_records_by_virtual_record_id = AsyncMock(return_value=["r1", "early", "own"])
+        gp.get_records_by_virtual_record_id = AsyncMock(
+            return_value=["r1", "early", "own", "attaching"]
+        )
         gp.copy_document_relationships = AsyncMock(return_value=True)
         gp.update_node = AsyncMock(return_value=True)
         docs = {
@@ -2772,6 +2774,10 @@ class TestReconcilePromotedDuplicates:
                       "extractionStatus": "NOT_STARTED"},
             "own": {"_key": "own", "orgId": "org-1", "indexingStatus": "COMPLETED",
                     "extractionStatus": "FAILED"},
+            # Holds the VRID but has not finished attaching: its own attach
+            # writes its status.
+            "attaching": {"_key": "attaching", "orgId": "org-1", "indexingStatus": "IN_PROGRESS",
+                          "extractionStatus": "NOT_STARTED"},
         }
         gp.get_document = AsyncMock(side_effect=lambda key, _coll: docs[key])
         handler.event_processor.sync_vector_membership = AsyncMock()
@@ -2788,9 +2794,15 @@ class TestReconcilePromotedDuplicates:
         )
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("source_extraction", ["NOT_STARTED", "IN_PROGRESS", None])
+    @pytest.mark.parametrize("source", [
+        {"extractionStatus": "NOT_STARTED"},
+        {"extractionStatus": "IN_PROGRESS"},
+        {"extractionStatus": None},
+        # Re-indexed: the status is the previous run's, older than the vectors.
+        {"extractionStatus": "COMPLETED", "lastIndexTimestamp": 200, "lastExtractionTimestamp": 100},
+    ], ids=["not-started", "in-progress", "missing", "reindexed-stale-status"])
     async def test_extraction_status_is_left_alone_until_this_record_has_one(
-        self, source_extraction
+        self, source
     ):
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
@@ -2798,7 +2810,7 @@ class TestReconcilePromotedDuplicates:
         gp.copy_document_relationships = AsyncMock(return_value=True)
         gp.update_node = AsyncMock(return_value=True)
         docs = {
-            "r1": {"_key": "r1", "orgId": "org-1", "extractionStatus": source_extraction},
+            "r1": {"_key": "r1", "orgId": "org-1", **source},
             "early": {"_key": "early", "orgId": "org-1", "indexingStatus": "COMPLETED",
                       "extractionStatus": "NOT_STARTED"},
         }

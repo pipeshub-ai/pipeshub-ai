@@ -36,6 +36,24 @@ EXTRACTION_FINISHED = (
 )
 
 
+def extraction_finished(record: Mapping[str, Any]) -> bool:
+    """Whether a COMPLETED record's taxonomy edges are final.
+
+    The status alone is not enough: a re-index keeps the previous run's
+    extractionStatus until the new extraction ends, so a re-indexed record
+    reads finished for the whole of it. Indexing stamps lastIndexTimestamp
+    when the vectors land and extraction stamps lastExtractionTimestamp when
+    the edges do, so an extraction older than the index is the previous one.
+    """
+    if record.get("extractionStatus") not in EXTRACTION_FINISHED:
+        return False
+    indexed = record.get("lastIndexTimestamp")
+    extracted = record.get("lastExtractionTimestamp")
+    if isinstance(indexed, (int, float)) and isinstance(extracted, (int, float)):
+        return extracted >= indexed
+    return True
+
+
 @dataclass(frozen=True)
 class DedupDecision:
     """Result of an MD5-duplicate check.
@@ -72,6 +90,16 @@ def _is_processed(record: Mapping[str, Any]) -> bool:
         # reusing it means this record is empty too, not that it was indexed.
         return True
     return bool(record.get("virtualRecordId")) and status == ProgressStatus.COMPLETED.value
+
+
+def _is_settled(record: Mapping[str, Any]) -> bool:
+    """Processed, and nothing about it is still going to change."""
+    if not _is_processed(record):
+        return False
+    return (
+        record.get("indexingStatus") == ProgressStatus.EMPTY.value
+        or extraction_finished(record)
+    )
 
 
 def _is_in_progress(record: Mapping[str, Any]) -> bool:
@@ -123,9 +151,14 @@ def select_duplicate(
         target.append(record)
 
     for pool, same_collection in ((same, True), (other, False)):
-        for predicate, is_processed in ((_is_processed, True), (_is_in_progress, False)):
+        for predicate, is_processed in (
+            (_is_settled, True), (_is_processed, True), (_is_in_progress, False),
+        ):
             # Within a pool, finished beats in-flight; across pools, same
             # collection beats other. Hence pool first, status second.
+            # Among finished ones, a record whose extraction is done comes
+            # first: its taxonomy edges exist, while a copy that attached to
+            # it a moment ago may still be waiting for them.
             match = next((r for r in pool if predicate(r)), None)
             if match is not None:
                 return DuplicateMatch(

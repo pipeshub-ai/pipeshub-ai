@@ -2507,7 +2507,8 @@ class TestDuplicateAndSyncOperations:
     ):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1", "sizeInBytes": 12}}],
+                [{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1", "sizeInBytes": 12,
+                             "extractionStatus": "COMPLETED"}}],
                 [{"record": {"id": "rec-2"}}, {"record": {"id": "rec-3"}}],
             ]
         )
@@ -2537,9 +2538,11 @@ class TestDuplicateAndSyncOperations:
         assert neo4j_provider.batch_update_nodes.await_args.args[2] == "txn-upd"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("extraction", ["FAILED", "NOT_STARTED"])
+    @pytest.mark.parametrize("extraction, promoted", [
+        ("FAILED", "FAILED"), ("NOT_STARTED", "NOT_STARTED"), (None, "NOT_STARTED"),
+    ])
     async def test_promoted_duplicates_take_the_reference_records_extraction_status(
-        self, neo4j_provider: Neo4jProvider, extraction
+        self, neo4j_provider: Neo4jProvider, extraction, promoted
     ):
         """They ran no extraction of their own; COMPLETED was a claim nothing
         backed when the reference record's had failed or been deferred."""
@@ -2553,10 +2556,25 @@ class TestDuplicateAndSyncOperations:
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "rec-2"})  # type: ignore[method-assign]
         neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
-        await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED", virtual_record_id="v-1")
+        with patch("app.services.graph_db.neo4j.neo4j_provider.get_epoch_timestamp_in_ms", return_value=101):
+            await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED", virtual_record_id="v-1")
 
         payload = neo4j_provider.batch_update_nodes.await_args.args[0]
-        assert payload[0]["extractionStatus"] == extraction
+        assert payload[0]["extractionStatus"] == promoted
+        # As fresh as its index, or the copy would read as still extracting.
+        assert payload[0]["lastExtractionTimestamp"] == payload[0]["lastIndexTimestamp"] == 101
+
+    @pytest.mark.asyncio
+    async def test_find_duplicate_records_raises_only_when_asked(self, neo4j_provider: Neo4jProvider):
+        """[] has to keep meaning "no duplicates" for a caller that would
+        otherwise act on a read that never answered."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("dup fail"))
+
+        assert await neo4j_provider.find_duplicate_records("rec-1", "md5-1", org_id="org-9") == []
+        with pytest.raises(RuntimeError, match="dup fail"):
+            await neo4j_provider.find_duplicate_records(
+                "rec-1", "md5-1", org_id="org-9", raise_on_error=True
+            )
 
     @pytest.mark.asyncio
     async def test_update_queued_duplicates_status_maps_failed_and_empty(self, neo4j_provider: Neo4jProvider):

@@ -23,7 +23,7 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
-from app.events.dedup import EXTRACTION_FINISHED, EXTRACTION_NOT_FINISHED
+from app.events.dedup import EXTRACTION_NOT_FINISHED, extraction_finished
 from app.events.events import EventProcessor
 from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
@@ -396,25 +396,31 @@ class RecordEventHandler(BaseEventService):
                 # A sibling that attached before this record's extraction
                 # finished copied its status as it was then. It ran no
                 # extraction of its own, so this record's result is its result.
-                final_extraction = source_doc.get("extractionStatus")
                 if (
-                    final_extraction in EXTRACTION_FINISHED
+                    extraction_finished(source_doc)
                     and sibling_doc.get("indexingStatus") == ProgressStatus.COMPLETED.value
                     and sibling_doc.get("extractionStatus") in EXTRACTION_NOT_FINISHED
-                    and not await graph_provider.update_node(
+                ):
+                    final_extraction = source_doc.get("extractionStatus")
+                    if await graph_provider.update_node(
                         sibling_key,
                         CollectionNames.RECORDS.value,
                         {
                             "extractionStatus": final_extraction,
                             "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
                         },
-                    )
-                ):
-                    self.logger.warning(
-                        "Could not set the extraction status of duplicate %s of record %s",
-                        sibling_key, record_id,
-                    )
-                    complete = False
+                    ):
+                        self.logger.info(
+                            "Duplicate %s attached before record %s finished extracting; "
+                            "its extraction status is now %s",
+                            sibling_key, record_id, final_extraction,
+                        )
+                    else:
+                        self.logger.warning(
+                            "Could not set the extraction status of duplicate %s of record %s",
+                            sibling_key, record_id,
+                        )
+                        complete = False
 
             await self.event_processor.sync_vector_membership(virtual_record_id)
             return complete

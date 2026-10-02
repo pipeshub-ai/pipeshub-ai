@@ -4307,9 +4307,11 @@ class TestUpdateQueuedDuplicatesStatus:
             assert result == 1
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("extraction", ["FAILED", "NOT_STARTED"])
+    @pytest.mark.parametrize("extraction, promoted", [
+        ("FAILED", "FAILED"), ("NOT_STARTED", "NOT_STARTED"), (None, "NOT_STARTED"),
+    ])
     async def test_promoted_duplicates_take_the_reference_records_extraction_status(
-        self, connected_provider, extraction
+        self, connected_provider, extraction, promoted
     ):
         """They ran no extraction of their own; COMPLETED was a claim nothing
         backed when the reference record's had failed or been deferred."""
@@ -4323,7 +4325,22 @@ class TestUpdateQueuedDuplicatesStatus:
             new_callable=AsyncMock, return_value=True
         ) as mock_update:
             await connected_provider.update_queued_duplicates_status("r1", "COMPLETED")
-            assert mock_update.call_args[0][0][0]["extractionStatus"] == extraction
+            promoted_copy = mock_update.call_args[0][0][0]
+            assert promoted_copy["extractionStatus"] == promoted
+            # As fresh as its index, or the copy would read as still extracting.
+            assert promoted_copy["lastExtractionTimestamp"] == promoted_copy["lastIndexTimestamp"]
+
+    @pytest.mark.asyncio
+    async def test_find_duplicate_records_raises_only_when_asked(self, connected_provider):
+        """[] has to keep meaning "no duplicates" for a caller that would
+        otherwise act on a read that never answered."""
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("dup fail"))
+
+        assert await connected_provider.find_duplicate_records("r1", "abc", org_id="org-1") == []
+        with pytest.raises(Exception, match="dup fail"):
+            await connected_provider.find_duplicate_records(
+                "r1", "abc", org_id="org-1", raise_on_error=True
+            )
 
     @pytest.mark.asyncio
     async def test_empty_status_mapping(self, connected_provider):
