@@ -433,3 +433,28 @@ async def test_a_refusal_counts_as_a_miss_only_when_asked(monkeypatch) -> None:
 
     run = _search_run(monkeypatch, [_Resp(404)])
     await run.wait_search("q", "vr-1", expect=False, as_user=owner, denial_is_miss=True, timeout=5)  # type: ignore[arg-type]
+
+
+async def test_github_adapter_searches_as_the_admin_and_commits_as_the_org(monkeypatch) -> None:
+    """The org login drives commits; ``owner`` stays None so searches run as the admin."""
+    import connectors.github_teams.github_scenario_adapter as gh
+
+    commits: list[str] = []
+
+    async def fake_commit(rest, owner, repo, branch, changes, message, **kwargs) -> None:
+        commits.append(owner)
+
+    monkeypatch.setattr(gh, "commit_changes", fake_commit)
+    adapter = gh.GitHubCodeAdapter(
+        rest=object(), repo_owner="acme", repo="repo", branch="main",
+        client=None, graph=None, connector_id=CONNECTOR,  # type: ignore[arg-type]
+    )
+    assert adapter.owner is None
+    await adapter.create_item(Role.CONTENT, "text", "tok")
+    assert commits == ["acme"]
+
+    searched: list[str] = []
+    monkeypatch.setattr(sm, "search_connector_as_admin", lambda *a: searched.append("admin"))
+    monkeypatch.setattr(sm, "search_connector_as", lambda *a: searched.append("user"))
+    MatrixRun(adapter, unsupported={}, vector=None)._search("q", adapter.owner)  # type: ignore[arg-type]
+    assert searched == ["admin"]
