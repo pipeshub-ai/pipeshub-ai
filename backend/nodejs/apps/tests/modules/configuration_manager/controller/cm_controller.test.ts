@@ -14,6 +14,7 @@ import {
   createSmtpConfig,
   getSmtpConfig,
   getSlackBotConfigs,
+  getInternalSlackBotConfigs,
   createSlackBotConfig,
   updateSlackBotConfig,
   deleteSlackBotConfig,
@@ -562,6 +563,90 @@ describe('ConfigurationManager Controller', () => {
       const response = res.json.firstCall.args[0]
       expect(response.status).to.equal('success')
       expect(response.configs).to.be.an('array').that.is.empty
+    })
+
+    it('should mask the credentials in the admin response', async () => {
+      const stored = {
+        configs: [
+          {
+            id: 'cfg-1',
+            name: 'MyBot',
+            botToken: 'xoxb-real-token',
+            signingSecret: 'real-signing-secret',
+          },
+        ],
+      }
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(mockEncService.encrypt(JSON.stringify(stored))),
+      })
+      const handler = getSlackBotConfigs(kvs)
+      const res = createMockResponse()
+
+      await handler(createMockRequest(), res, createMockNext())
+
+      const config = res.json.firstCall.args[0].configs[0]
+      expect(config.botToken).to.not.equal('xoxb-real-token')
+      expect(config.signingSecret).to.not.equal('real-signing-secret')
+    })
+  })
+
+  describe('getInternalSlackBotConfigs', () => {
+    const storedConfig = {
+      id: 'cfg-1',
+      name: 'MyBot',
+      agentId: 'agent-1',
+      botToken: 'xoxb-real-token',
+      signingSecret: 'real-signing-secret',
+      createdAt: 1700000000000,
+      updatedAt: 1700000000001,
+    }
+
+    function handlerForStoredConfig() {
+      const kvs = createMockKeyValueStore({
+        get: sinon
+          .stub()
+          .resolves(mockEncService.encrypt(JSON.stringify({ configs: [storedConfig] }))),
+      })
+      return getInternalSlackBotConfigs(kvs)
+    }
+
+    // The bot verifies signatures and acts as the bot, so unlike the admin
+    // route it needs the real credentials.
+    it('should return the unmasked credentials the bot needs', async () => {
+      const res = createMockResponse()
+
+      await handlerForStoredConfig()(createMockRequest(), res, createMockNext())
+
+      const config = res.json.firstCall.args[0].configs[0]
+      expect(config.botToken).to.equal('xoxb-real-token')
+      expect(config.signingSecret).to.equal('real-signing-secret')
+      expect(config.id).to.equal('cfg-1')
+      expect(config.agentId).to.equal('agent-1')
+    })
+
+    it('should not return fields verification does not need', async () => {
+      const res = createMockResponse()
+
+      await handlerForStoredConfig()(createMockRequest(), res, createMockNext())
+
+      const config = res.json.firstCall.args[0].configs[0]
+      expect(Object.keys(config)).to.have.members([
+        'id',
+        'agentId',
+        'botToken',
+        'signingSecret',
+      ])
+    })
+
+    it('should call next when the store read fails', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().rejects(new Error('store down')),
+      })
+      const next = createMockNext()
+
+      await getInternalSlackBotConfigs(kvs)(createMockRequest(), createMockResponse(), next)
+
+      expect(next.calledOnce).to.be.true
     })
   })
 

@@ -40871,6 +40871,7 @@ paths:
       summary: Get Slack bot configurations
       description: |
         Retrieve all Slack bot configurations for the organization.
+        Bot tokens and signing secrets are masked in this response.
       operationId: getSlackBotConfigs
       security:
         - bearerAuth: []

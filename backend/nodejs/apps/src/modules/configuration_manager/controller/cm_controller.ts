@@ -80,6 +80,8 @@ import {
   mergeAiModelCredentials,
   maskWebSearchProvider,
   mergeWebSearchProviderPlaceholders,
+  maskSlackBotConfig,
+  mergeSlackBotConfigPlaceholders,
 } from '../utils/maskConfigSecrets';
 import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
 import {
@@ -642,12 +644,24 @@ const updateSlackBotStoreWithCAS = async <T>(
   throw new Error('Failed to update Slack bot config.');
 };
 
-const slackBotConfig = (config: SlackBotConfigEntry) => ({
+/** Admin-facing shape. Credentials are masked; an edit re-submitting the
+ * placeholder is restored from storage by mergeSlackBotConfigPlaceholders. */
+const slackBotConfig = (config: SlackBotConfigEntry) =>
+  maskSlackBotConfig({
+    id: config.id,
+    name: config.name,
+    agentId: config.agentId ?? null,
+    createdAt: config.createdAt,
+    updatedAt: config.updatedAt,
+    botToken: config.botToken,
+    signingSecret: config.signingSecret,
+  });
+
+/** Everything the bot process needs to verify a signature and act as the bot,
+ * and nothing else. Served only to SLACK_BOT_VERIFY holders. */
+const slackBotInternalConfig = (config: SlackBotConfigEntry) => ({
   id: config.id,
-  name: config.name,
   agentId: config.agentId ?? null,
-  createdAt: config.createdAt,
-  updatedAt: config.updatedAt,
   botToken: config.botToken,
   signingSecret: config.signingSecret,
 });
@@ -666,6 +680,28 @@ export const getSlackBotConfigs =
         .end();
     } catch (error: any) {
       logger.error('Error getting slack bot configs', { error });
+      next(error);
+    }
+  };
+
+export const getInternalSlackBotConfigs =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (
+    _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const store = await getSlackBotStore(keyValueStoreService);
+      res
+        .status(HTTP_STATUS.OK)
+        .json({
+          status: 'success',
+          configs: store.configs.map(slackBotInternalConfig),
+        })
+        .end();
+    } catch (error: any) {
+      logger.error('Error getting internal slack bot configs', { error });
       next(error);
     }
   };
@@ -757,11 +793,15 @@ export const updateSlackBotConfig =
           if (!previousConfig) {
             throw new Error("Config not found");
           }
+          const credentials = mergeSlackBotConfigPlaceholders(
+            { botToken, signingSecret },
+            previousConfig,
+          );
           const nextConfig: SlackBotConfigEntry = {
             ...previousConfig,
             name,
-            botToken,
-            signingSecret,
+            botToken: credentials.botToken,
+            signingSecret: credentials.signingSecret,
             agentId: normalizedAgentId,
             updatedAt: new Date().toISOString(),
           };
