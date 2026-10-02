@@ -512,13 +512,16 @@ describe('TelemetryService', () => {
       // startMetricsPush sleeps START_DELAY_MS before it creates the interval;
       // flushAsync() does not cover that, so without the stub the interval
       // would be created after this test's cleanup.
-      sandbox
+      const startMetricsPush = sandbox
         .stub(TelemetryService.prototype as any, 'startMetricsPush')
         .resolves();
       for (const [stored, expected] of [
         [false, false],
         [true, true],
       ] as const) {
+        // The flag alone would still pass if initialization never reached
+        // startOrStopMetricCollection; assert the value was actually acted on.
+        startMetricsPush.resetHistory();
         delete process.env[ENV_KEY];
         (TelemetryService as any).instance = undefined;
         const raw = JSON.stringify({
@@ -536,6 +539,10 @@ describe('TelemetryService', () => {
           (svc as any).enableMetricCollection,
           `stored=${String(stored)}`,
         ).to.equal(expected);
+        expect(
+          startMetricsPush.calledOnce,
+          `stored=${String(stored)}`,
+        ).to.equal(stored);
         (svc as any).stopMetricsPush();
       }
     });
