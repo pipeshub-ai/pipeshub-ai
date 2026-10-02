@@ -14,6 +14,7 @@ import {
   EMAIL_MISMATCH,
   OAUTH_SIGN_IN_FAILED,
   PROVIDER_SHARED_NO_EMAIL,
+  ACCOUNT_NO_LONGER_ACTIVE,
   SESSION_NO_LONGER_VALID,
   OTP_SEND_FAILED,
   SIGN_IN_ACCOUNT_CHANGED,
@@ -862,16 +863,122 @@ describe('UserAccountController sign-in flow', () => {
       expect(logger.error.calledWithMatch('Failed to fetch session-invalidating activity on refresh')).to.be.true;
     });
 
-    it('refuses to refresh for a user who has since been deleted', async () => {
-      stubLatestInvalidation(null);
-      iamService.getUserById.resolves({ statusCode: 404, data: null });
+    it('refuses a refresh token issued before the account was deleted, without a lookup', async () => {
+      stubLatestInvalidation({ createdAt: new Date(), activityType: 'ACCOUNT DELETED' });
       const res = makeRes();
       const next = sinon.stub();
 
       await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
 
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
-      expect(next.firstCall.args[0].message).to.equal(SESSION_NO_LONGER_VALID);
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+      expect(iamService.getUserById.called).to.be.false;
+    });
+
+    it('refuses a refresh token issued in the same second the account was deleted', async () => {
+      stubLatestInvalidation({ createdAt: new Date(issuedAt * 1000 + 500), activityType: 'ACCOUNT DELETED' });
+      const res = makeRes();
+      const next = sinon.stub();
+
+      await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+    });
+
+    it('mints no token when the account is deleted while the refresh is running', async () => {
+      // The first check sees nothing; the deletion lands before the token is minted.
+      let checks = 0;
+      stubLatestInvalidation(async () => {
+        checks += 1;
+        return checks === 1 ? null : { createdAt: new Date(), activityType: 'ACCOUNT DELETED' };
+      });
+      iamService.getUserById.resolves({ statusCode: 200, data: { ...alice } });
+      credentialsByUser[alice._id] = credentialsDoc({ userId: alice._id, orgId });
+      const res = makeRes();
+      const next = sinon.stub();
+
+      await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+      expect(checks).to.equal(2);
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+      expect(res.body).to.be.undefined;
+    });
+
+    it('keeps the one-second allowance for a sign-out in the second the token was issued', async () => {
+      stubLatestInvalidation({ createdAt: new Date(issuedAt * 1000 + 500), activityType: 'LOGOUT' });
+      iamService.getUserById.resolves({ statusCode: 200, data: { ...alice } });
+      credentialsByUser[alice._id] = credentialsDoc({ userId: alice._id, orgId });
+      const res = makeRes();
+      const next = sinon.stub();
+
+      await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+      expect(next.called).to.be.false;
+      expect(res.body?.accessToken).to.be.a('string');
+    });
+
+    // The lookup goes through the real IAM client, so a deleted account reaches
+    // the controller the way production sees it: an axios error for the 404.
+    describe('when the account lookup is the real IAM client', () => {
+      beforeEach(() => {
+        const realIam = new IamService(
+          ...([{ iamBackend: IAM_BACKEND }, logger] as unknown as ConstructorParameters<typeof IamService>),
+        );
+        iamService.getUserById.callsFake((id: string, token: string) =>
+          realIam.getUserById(id, token),
+        );
+        stubLatestInvalidation(null);
+      });
+
+      afterEach(() => {
+        nock.cleanAll();
+      });
+
+      it('answers a deleted account with 401 and a plain message, not a server error', async () => {
+        nock(IAM_BACKEND)
+          .get(`/api/v1/users/internal/${alice._id}`)
+          .reply(404, { error: { message: 'User not found' } });
+        const res = makeRes();
+        const next = sinon.stub();
+
+        await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+        const error = next.firstCall.args[0];
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect(error.message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+        expect(res.body).to.be.undefined;
+      });
+
+      it('answers a disabled account with the same 401', async () => {
+        nock(IAM_BACKEND)
+          .get(`/api/v1/users/internal/${alice._id}`)
+          .reply(200, { ...alice, isDisabled: true });
+        const res = makeRes();
+        const next = sinon.stub();
+
+        await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+        expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+        expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+      });
+
+      it('turns an unreachable users service into a handled error', async () => {
+        nock(IAM_BACKEND)
+          .get(`/api/v1/users/internal/${alice._id}`)
+          .replyWithError('connect ECONNREFUSED');
+        const res = makeRes();
+        const next = sinon.stub();
+
+        await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+        const error = next.firstCall.args[0];
+        expect(error).to.be.instanceOf(InternalServerError);
+        expect(error.message).to.include('refresh your session');
+        expect(error.message).to.not.include('ECONNREFUSED');
+        expect(logger.error.calledWithMatch('Looking up the account to refresh a session failed')).to.be.true;
+      });
     });
   });
 
