@@ -4,7 +4,7 @@ import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
 import LocalStorageAdapter from '../../../../src/modules/storage/providers/local-storage.provider'
-import { StorageNotFoundError } from '../../../../src/libs/errors/storage.errors'
+import { StorageNotFoundError, StorageValidationError } from '../../../../src/libs/errors/storage.errors'
 
 describe('LocalStorageAdapter.deleteObject', () => {
   let mount: string
@@ -76,5 +76,41 @@ describe('LocalStorageAdapter.deleteObject', () => {
     }
     expect(await fs.readFile(victim, 'utf8')).to.equal('keep')
     await fs.rm(outside, { recursive: true, force: true })
+  })
+
+  it('never deletes outside the mount through a linked folder inside it', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'outside-mount-'))
+    const victim = path.join(outside, 'keep.txt')
+    await fs.writeFile(victim, 'keep')
+    await fs.mkdir(path.join(mount, 'org'), { recursive: true })
+    await fs.symlink(outside, path.join(mount, 'org', 'linked'))
+    try {
+      await adapter.deleteObject({
+        documentName: 'x',
+        isVersionedFile: false,
+        local: { url: `file://${path.join(mount, 'org', 'linked', 'keep.txt')}` },
+      } as any)
+      expect.fail('should have refused')
+    } catch (error) {
+      expect(error).to.be.instanceOf(StorageValidationError)
+    }
+    expect(await fs.readFile(victim, 'utf8')).to.equal('keep')
+    expect(await fs.readdir(outside)).to.deep.equal(['keep.txt'])
+    await fs.rm(outside, { recursive: true, force: true })
+  })
+
+  it('still removes files when the mount itself is reached through a link', async () => {
+    const link = `${mount}-link`
+    await fs.symlink(mount, link)
+    Object.defineProperty(adapter, 'mountPath', { value: link, writable: true })
+    try {
+      const document = await store('org/PipesHub/records/vr-1/doc-1/current/notes.txt')
+
+      await adapter.deleteObject(document)
+
+      expect(await fs.readdir(mount)).to.deep.equal([])
+    } finally {
+      await fs.rm(link, { force: true })
+    }
   })
 })

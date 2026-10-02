@@ -165,19 +165,51 @@ class LocalStorageAdapter implements StorageServiceInterface {
     const fullPath = this.assertInsideMount(
       path.join(this.mountPath, localPath),
     );
+    const located = await this.locateInsideRealMount(fullPath);
+    if (located === null) {
+      return;
+    }
     try {
-      await fs.unlink(fullPath);
+      await fs.unlink(located.target);
     } catch (error) {
       if ((error as { code?: string }).code !== 'ENOENT') {
         throw error;
       }
     }
-    await this.removeEmptyFoldersAbove(fullPath);
+    await this.removeEmptyFoldersAbove(located.target, located.mountRoot);
   }
 
-  private async removeEmptyFoldersAbove(filePath: string): Promise<void> {
+  /**
+   * Where a file really is once symlinked folders are followed, which must still
+   * be inside the mount (itself followed, since the mount may be reached through
+   * a link). Null when its folder is already gone.
+   */
+  private async locateInsideRealMount(
+    fullPath: string,
+  ): Promise<{ target: string; mountRoot: string } | null> {
+    let folder: string;
+    try {
+      folder = await fs.realpath(path.dirname(fullPath));
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOENT') {
+        return null;
+      }
+      throw error;
+    }
+    const mountRoot = await fs.realpath(this.mountPath);
+    const target = path.join(folder, path.basename(fullPath));
+    if (!target.startsWith(mountRoot + path.sep)) {
+      throw new StorageValidationError('Invalid document path');
+    }
+    return { target, mountRoot };
+  }
+
+  private async removeEmptyFoldersAbove(
+    filePath: string,
+    mountRoot: string,
+  ): Promise<void> {
     let folder = path.dirname(filePath);
-    while (folder.startsWith(this.mountPath + path.sep)) {
+    while (folder.startsWith(mountRoot + path.sep)) {
       try {
         await fs.rmdir(folder);
       } catch {
