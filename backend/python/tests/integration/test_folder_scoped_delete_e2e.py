@@ -166,6 +166,17 @@ async def tree(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) 
         yield t
 
 
+async def test_a_delete_without_children_keeps_a_childs_attachments(tree: _Tree) -> None:
+    """cascade_children=False follows ATTACHMENT edges only: a child page and its own
+    attachment both stay (ArangoDB used to reach the attachment through the child)."""
+    result = await tree.delete(["folder_a"], cascade_children=False)
+
+    assert result["success"] is True, result
+    assert not await tree.exists("folder_a")
+    for name in ("a1", "attached", "sub", "s1"):
+        assert await tree.exists(name), f"{name} was deleted by a delete that keeps children: {result}"
+
+
 async def test_only_records_inside_the_folder_are_deleted(tree: _Tree) -> None:
     result = await tree.delete(["a1", "s1", "b1", "root_file"], within_folder_id=tree.ids["folder_a"])
 
