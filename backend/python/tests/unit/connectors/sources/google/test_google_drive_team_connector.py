@@ -727,8 +727,10 @@ class TestProcessGroup:
             "members": [{"type": "USER", "id": "u1", "email": ""}],
         })
         await conn._process_group(group)
-        # No user members with email -> on_new_user_groups not called
-        conn.data_entities_processor.on_new_user_groups.assert_not_called()
+        # Stored all the same, with no direct user members.
+        conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = conn.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
     @pytest.mark.asyncio
     async def test_process_group_member_found_in_synced_users(self):
@@ -795,7 +797,10 @@ class TestProcessGroup:
             ],
         })
         await conn._process_group(group)
-        conn.data_entities_processor.on_new_user_groups.assert_not_called()
+        # Stored all the same, with no direct user members.
+        conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = conn.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
     @pytest.mark.asyncio
     async def test_process_group_error_propagates(self):

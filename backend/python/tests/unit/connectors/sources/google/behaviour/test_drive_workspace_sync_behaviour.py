@@ -178,11 +178,6 @@ async def test_a_failed_group_member_read_leaves_the_stored_group_alone(ws: Work
     assert {m.email for m in ws.records.user_groups["eng@example.com"][1]} == {ALICE, BOB}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A group whose last member was removed is skipped instead of being saved empty, so the "
-    "people who left it keep the group's access to every file shared with it.",
-)
 async def test_removing_the_last_member_of_a_group_removes_their_group_access(ws: Workspace) -> None:
     ws.world.add_group("eng@example.com", [BOB])
     await ws.sync()
@@ -648,11 +643,12 @@ async def test_a_file_a_synced_user_still_opens_through_a_group_is_kept(ws: Work
 
 
 async def test_a_file_a_synced_user_still_opens_through_a_nested_group_is_kept(ws: Workspace) -> None:
-    ws.world.add_user("carol@example.com")
     ws.world.add_group("emea@example.com", [ALICE])
-    _file_shared_with_a_group_in_an_unwalked_drive(ws, ["carol@example.com", "emea@example.com"])
+    _file_shared_with_a_group_in_an_unwalked_drive(ws, ["emea@example.com"])
     await ws.sync()
+    assert ws.records.user_groups["sales@example.com"][1] == [], "sales@ has no direct user members"
     assert ("sales@example.com", "GROUP", "READ") in ws.grants("g1")
+    assert ALICE not in ws.records.perm_emails("g1"), "Alice's only access is sales@ through emea@"
 
     ws.world.unshare("g1", BOB)
     await ws.sync()

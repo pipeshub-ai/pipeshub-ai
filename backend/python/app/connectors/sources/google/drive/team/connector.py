@@ -834,12 +834,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                     self.logger.error(f"Error processing group member {member.get('id', 'unknown')}: {e}", exc_info=True)
                     continue
 
-            # Send to processor
-            if app_users:
-                await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
-                self.logger.debug(f"Processed group '{group_name}' with {len(app_users)} members")
-            else:
-                self.logger.debug(f"Group '{group_name}' has no user members, skipping")
+            # Stored even with no direct user members: a group of groups still needs its
+            # node, or a file shared with it gets no grant edge and a synced user who
+            # reaches it through a nested group is never asked before a delete.
+            await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
+            self.logger.debug(f"Processed group '{group_name}' with {len(app_users)} direct user members")
 
         except Exception as e:
             self.logger.error(f"Error processing group {group.get('id', 'unknown')}: {e}", exc_info=True)
