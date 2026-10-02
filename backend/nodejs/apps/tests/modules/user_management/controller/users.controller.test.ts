@@ -2935,6 +2935,50 @@ describe('UserController', () => {
       }
     });
 
+    it('records the restore before bringing a deleted account back', async () => {
+      req.body = { emails: ['deleted@test.com'], groupIds: [] };
+      stubActorAsOrgAdmin();
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      const deletedUser = { _id: 'du1', email: 'deleted@test.com', isDeleted: true };
+      sinon.stub(Users, 'find')
+        .onFirstCall().resolves([deletedUser] as any)
+        .onSecondCall().resolves([{ ...deletedUser, isDeleted: false }] as any);
+      const order: string[] = [];
+      const record = sinon.stub(UserActivities, 'insertMany').callsFake((async () => {
+        order.push('restore recorded');
+        return [];
+      }) as any);
+      sinon.stub(Users, 'updateMany').callsFake((async () => {
+        order.push('account restored');
+        return {};
+      }) as any);
+      sinon.stub(Users, 'create').resolves([] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(order).to.deep.equal(['restore recorded', 'account restored']);
+      const [docs] = record.firstCall.args as any[];
+      expect(docs).to.have.lengthOf(1);
+      expect(docs[0]).to.include({ userId: 'du1', activityType: 'ACCOUNT RESTORED' });
+    });
+
+    it('restores nothing when the restore cannot be recorded', async () => {
+      req.body = { emails: ['deleted@test.com'], groupIds: [] };
+      stubActorAsOrgAdmin();
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      sinon.stub(Users, 'find').resolves([{ _id: 'du1', email: 'deleted@test.com', isDeleted: true }] as any);
+      sinon.stub(UserActivities, 'insertMany').rejects(new Error('mongo timeout'));
+      const restore = sinon.stub(Users, 'updateMany').resolves({} as any);
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(restore.called).to.be.false;
+      expect(next.called).to.be.true;
+    });
+
     it('should return error message when all emails already have active accounts', async () => {
       req.body = {
         emails: ['existing@test.com'],
@@ -3084,6 +3128,8 @@ describe('UserController', () => {
 
   describe('addManyUsers - promote restored/pending to admin', () => {
     it('should set role admin on restored and pending users when inviteRole is admin', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       const deletedId = new mongoose.Types.ObjectId();
       const pendingId = new mongoose.Types.ObjectId();
 
@@ -3149,6 +3195,8 @@ describe('UserController', () => {
     });
 
     it('should not promote users to admin when inviteRole is member', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       const deletedId = new mongoose.Types.ObjectId();
 
       req.body = {
@@ -5542,6 +5590,8 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('addManyUsers - restored accounts mail error branches', () => {
     it('should return the specific error code when mail fails for restored users with password enabled', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
@@ -5582,6 +5632,8 @@ describe('UserController', () => {
     });
 
     it('should return the specific error code when mail fails for restored users with password disabled', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
@@ -5622,6 +5674,8 @@ describe('UserController', () => {
     });
 
     it('should skip restored user without email', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['valid@test.com'],
         groupIds: ['g1'],
@@ -5781,6 +5835,8 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('addManyUsers - restored user missing userId throws', () => {
     it('should throw when restored user has no _id', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
@@ -5823,6 +5879,8 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('addManyUsers - auth method fetch error for restored users', () => {
     it('should throw when passwordMethodEnabled returns non-200 for restored users', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],

@@ -2269,6 +2269,18 @@ export class UserController {
 
     let restoredUsers: User[] = [];
     if (deletedUsers.length > 0) {
+      // Recorded before the accounts come back, and nothing is restored without it:
+      // it ends every token issued before the restore, including any minted while
+      // the deletion was still running.
+      await UserActivities.insertMany(
+        deletedUsers.map((user) => ({
+          orgId,
+          userId: user._id,
+          email: user.email,
+          activityType: userActivitiesType.ACCOUNT_RESTORED,
+          ipAddress: 'system',
+        })),
+      );
       await Users.updateMany(
         { email: { $in: deletedEmails }, isDeleted: true, orgId },
         { $set: { isDeleted: false } },
