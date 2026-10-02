@@ -67,6 +67,11 @@ LLM_ROLE = "indexing"
 # every unresolved name of the record a new node for good.
 MERGE_CALL_TIMEOUT_SECONDS = 60.0
 
+# Existing nodes offered to the model per unresolved name. Measured on the
+# resolution eval: the right node is first 90% of the time and within the
+# top 3 every time (tests/evals/entity_resolution, KG-12).
+MERGE_CANDIDATES = 3
+
 
 class EntityResolver:
     """Resolves one record's taxonomy names. Safe to share across records.
@@ -175,9 +180,9 @@ class EntityResolver:
             entity = self._existing_entity(resolution, name.kind, node, decision="exact")
             self._attach(resolution, name, entity)
 
-        winners = await self._tier1(org_id, unresolved, stats)
-        decisions = await self._tier2(metadata, unresolved, winners, stats)
-        await self._apply_decisions(org_id, resolution, unresolved, winners, decisions)
+        candidates = await self._tier1(org_id, unresolved, stats)
+        decisions = await self._tier2(metadata, unresolved, candidates, stats)
+        await self._apply_decisions(org_id, resolution, unresolved, candidates, decisions)
         await self._follow_merge_redirects(org_id, resolution, names)
 
         self._record_outcomes(resolution)
@@ -360,10 +365,12 @@ class EntityResolver:
 
     async def _tier1(
         self, org_id: str, unresolved: list[ExtractedName], stats: ResolutionStats
-    ) -> dict[int, WinnerCandidate | None]:
-        winners: dict[int, WinnerCandidate | None] = {n.index: None for n in unresolved}
+    ) -> dict[int, tuple[WinnerCandidate, ...]]:
+        """Up to ``MERGE_CANDIDATES`` live nodes per unresolved name, best
+        first. The right node is often second (KG-12), so one is not enough."""
+        offered: dict[int, tuple[WinnerCandidate, ...]] = {n.index: () for n in unresolved}
         if self.entity_vector_store is None or not unresolved:
-            return winners
+            return offered
 
         groups: dict[tuple[str, str | None], list[ExtractedName]] = {}
         for name in unresolved:
@@ -371,8 +378,8 @@ class EntityResolver:
 
         for (entity_type, level), group in groups.items():
             try:
-                matches = await self.entity_vector_store.find_best_matches(
-                    [n.display for n in group], org_id, entity_type, level=level,
+                matches = await self.entity_vector_store.find_candidates(
+                    [n.display for n in group], org_id, entity_type, level=level, k=MERGE_CANDIDATES,
                 )
             except Exception:
                 stats.vector_failures += 1
@@ -382,25 +389,27 @@ class EntityResolver:
                     "names as new", entity_type, level, len(group), exc_info=True,
                 )
                 continue
-            candidates: dict[int, WinnerCandidate] = {}
-            for name, match in zip(group, matches):
-                winner = self._winner_from_match(match, entity_type, level)
-                if winner is not None:
-                    candidates[name.index] = winner
-            if not candidates:
+            found: dict[int, list[WinnerCandidate]] = {}
+            for name, name_matches in zip(group, matches):
+                for match in name_matches or []:
+                    winner = self._winner_from_match(match, entity_type, level)
+                    if winner is not None:
+                        found.setdefault(name.index, []).append(winner)
+            if not found:
                 continue
             live = await self._live_node_ids(
-                org_id, group[0].kind.collection, {w.entity_id for w in candidates.values()},
+                org_id, group[0].kind.collection,
+                {w.entity_id for winners in found.values() for w in winners},
             )
             if live is None:
                 continue
-            for index, winner in candidates.items():
-                if winner.entity_id in live:
+            for index, winners in found.items():
+                kept = tuple(w for w in winners if w.entity_id in live)
+                stats.stale_winners += len(winners) - len(kept)
+                if kept:
                     stats.winners_offered += 1
-                    winners[index] = winner
-                else:
-                    stats.stale_winners += 1
-        return winners
+                    offered[index] = kept
+        return offered
 
     async def _live_node_ids(
         self, org_id: str, collection: str, ids: set[str],
@@ -461,9 +470,9 @@ class EntityResolver:
     # ---- tier 2 ------------------------------------------------------
 
     def _needs_model(
-        self, unresolved: list[ExtractedName], winners: dict[int, WinnerCandidate | None]
+        self, unresolved: list[ExtractedName], candidates: dict[int, tuple[WinnerCandidate, ...]]
     ) -> bool:
-        if any(winners.get(n.index) is not None for n in unresolved):
+        if any(candidates.get(n.index) for n in unresolved):
             return True
         per_kind: dict[str, int] = {}
         for name in unresolved:
@@ -474,13 +483,13 @@ class EntityResolver:
         self,
         metadata: SemanticMetadata,
         unresolved: list[ExtractedName],
-        winners: dict[int, WinnerCandidate | None],
+        candidates: dict[int, tuple[WinnerCandidate, ...]],
         stats: ResolutionStats,
     ) -> dict[int, MergeDecision]:
-        if not unresolved or not self._needs_model(unresolved, winners):
+        if not unresolved or not self._needs_model(unresolved, candidates):
             return {}
         stats.model_calls += 1
-        prompt = build_prompt(metadata.summary, unresolved, winners)
+        prompt = build_prompt(metadata.summary, unresolved, candidates)
         try:
             llm = await self._get_llm()
             response = await invoke_with_structured_output_and_reflection(
@@ -530,7 +539,7 @@ class EntityResolver:
         org_id: str,
         resolution: EntityResolution,
         unresolved: list[ExtractedName],
-        winners: dict[int, WinnerCandidate | None],
+        candidates: dict[int, tuple[WinnerCandidate, ...]],
         decisions: dict[int, MergeDecision],
     ) -> None:
         stats = resolution.stats
@@ -561,8 +570,10 @@ class EntityResolver:
                 continue
             # The offered node is the stronger answer: an item pointer only
             # groups names that still need a node.
-            winner = winners.get(name.index)
-            if winner is not None and decision.target == winner.entity_id:
+            winner = next(
+                (c for c in candidates.get(name.index, ()) if c.entity_id == decision.target), None,
+            )
+            if winner is not None:
                 merged_to_winner[name.index] = winner
                 continue
             if decision.same_as_item >= 0:

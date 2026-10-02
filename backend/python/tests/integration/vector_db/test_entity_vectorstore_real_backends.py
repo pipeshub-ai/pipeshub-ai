@@ -266,6 +266,25 @@ class TestMatchesAndSearch:
         }
         assert level_three is None
 
+    async def test_several_candidates_per_name_best_first(self, store: EntityVectorStore) -> None:
+        """KG-12: the resolver offers the top candidates, so each must be a
+        distinct entity of the asked org and type, the exact name first."""
+        org, other = f"org-{uuid.uuid4().hex[:6]}", f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([
+            _entity("checklist", org=org, name="Release checklist", connectors=["c1"]),
+            _entity("notes", org=org, name="Release notes", connectors=["c1"]),
+            _entity("plan", org=org, name="Release plan", connectors=["c1"]),
+            _entity("elsewhere", org=other, name="Release checklist", connectors=["c1"]),
+            _entity("legal", EntityType.CATEGORY, org=org, name="Release checklist", connectors=["c1"]),
+        ])
+        await _publish_writes(store)
+
+        (candidates,) = await store.find_candidates(["Release checklist"], org, "topic", k=3)
+
+        ids = [c["entityId"] for c in candidates]
+        assert ids[0] == "checklist"
+        assert sorted(ids) == ["checklist", "notes", "plan"]
+
     async def test_search_is_scoped_by_org_and_membership(self, store: EntityVectorStore) -> None:
         org, other = f"org-{uuid.uuid4().hex[:6]}", f"org-{uuid.uuid4().hex[:6]}"
         await store.upsert_entities_batch([

@@ -69,7 +69,7 @@ class TestFindBestMatches:
         }
         requests = service.query_nearest_points.await_args.kwargs["requests"]
         assert [r.text_query for r in requests] == ["Integration Testing", "Other"]
-        assert all(r.limit == 1 and r.fusion_method is FusionMethod.RRF for r in requests)
+        assert all(r.limit == 2 and r.fusion_method is FusionMethod.RRF for r in requests)
         assert results[0] == {
             "entityId": "k1", "entityType": "subcategory", "name": "Manual Testing",
             "aliases": [], "level": "2", "score": 0.9,
@@ -130,6 +130,41 @@ class TestFindBestMatches:
         service.query_nearest_points = AsyncMock(return_value=[[_hit("k1", "Legal", org_id="org-2")]])
         store = _make_store(service)
         assert await store.find_best_matches(["Legal"], "org-1", "topic") == [None]
+
+
+class TestFindCandidates:
+    """KG-12: up to k candidates per name, so a right node ranked second is
+    still offered to the model."""
+
+    async def test_k_candidates_in_rank_order_skipping_invalid_hits(self) -> None:
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock(return_value=[[
+            _hit("k1", "Release checklist"),
+            _hit("k2", "Release notes", org_id="org-2"),
+            _hit("k3", "Release plan"),
+            _hit("k1", "Release checklist"),
+            _hit("k4", "Release train"),
+        ]])
+        store = _make_store(service)
+        (candidates,) = await store.find_candidates(["Release checklists"], "org-1", "topic", k=3)
+        assert [c["entityId"] for c in candidates] == ["k1", "k3", "k4"]
+        request = service.query_nearest_points.await_args.kwargs["requests"][0]
+        # Over-fetched: hits from another org or repeats are skipped, not counted.
+        assert request.limit > 3
+
+    async def test_best_match_is_the_first_candidate(self) -> None:
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock(return_value=[[_hit("k1", "a"), _hit("k2", "b")]])
+        store = _make_store(service)
+        (best,) = await store.find_best_matches(["a"], "org-1", "topic")
+        assert best["entityId"] == "k1"
+
+    async def test_blank_names_get_no_candidates(self) -> None:
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock()
+        store = _make_store(service)
+        assert await store.find_candidates(["", " "], "org-1", "topic", k=3) == [[], []]
+        service.query_nearest_points.assert_not_awaited()
 
 
 class TestLevelIndex:
