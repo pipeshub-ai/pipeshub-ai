@@ -279,8 +279,8 @@ async def test_search_does_not_return_the_widely_shared_file_to_the_colleague(en
     )
 
 
-async def test_an_anyone_document_still_grants_search_access_until_3691(env: _Env) -> None:
-    """Pins the leak pipeshub-ai#3691 closes: an "anyone" document makes a file searchable org-wide."""
+async def test_an_anyone_document_grants_no_search_access(env: _Env) -> None:
+    """An "anyone" document, even one written today by the permission writer, makes nothing searchable."""
     widely_shared, named_share = await _sync_the_two_files(env)
     # The production writer of the shape search reads: {file_key, organization, active}.
     await env.graph.process_file_permissions(
@@ -293,9 +293,6 @@ async def test_an_anyone_document_still_grants_search_access_until_3691(env: _En
     )
 
     assert reachable.get(f"vr-{named_share.id}") == named_share.id, f"control not visible: {reachable}"
-    # Pins today's known leak: search still honours an anyone document. pipeshub-ai#3691
-    # closes it; whoever merges #3691 must flip this to `not in`.
-    assert f"vr-{widely_shared.id}" in reachable, (
-        "Search no longer returns the anyone-seeded file. That is the fix pipeshub-ai#3691 "
-        "makes: flip this assertion to `not in` (and rename the test) as part of that change."
+    assert f"vr-{widely_shared.id}" not in reachable, (
+        "Search returns a file to a colleague only because an \"anyone\" document exists for it."
     )
