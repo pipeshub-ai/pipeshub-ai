@@ -287,7 +287,7 @@ async def test_a_move_committed_during_the_deletes_deletes_nothing(tree: _Tree) 
     original = tree.graph.execute_query
     moved = False
 
-    async def move_in_after_the_first_reread(query, *args, **kwargs):
+    async def move_in_after_the_first_reread(query, *args, **kwargs) -> object:
         nonlocal moved
         result = await original(query, *args, **kwargs)
         if not moved and "@root_keys" in query:
