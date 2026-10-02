@@ -35,6 +35,8 @@ hooks`, see `control_plane.py`) for the specific roles that want them.
 
 __all__ = [
     "check_not_cancelled",
+    "install_denial_breaker",
+    "install_doom_loop_detection",
     "install_stall_detection",
     "install_supervisor_confidence_gate",
     "install_turn_guards",
@@ -44,6 +46,8 @@ __all__ = [
 _INSTALLED_MARKER = "_agent_turn_guards_installed"
 _SUPERVISOR_GATE_MARKER = "_agent_supervisor_confidence_gate_installed"
 _STALL_DETECTION_MARKER = "_agent_stall_detection_installed"
+_DOOM_LOOP_MARKER = "_agent_doom_loop_detection_installed"
+_DENIAL_BREAKER_MARKER = "_agent_denial_breaker_installed"
 
 
 def check_not_cancelled(cancellation_token: object):
@@ -159,3 +163,36 @@ def install_stall_detection(kernel, **kwargs: object) -> None:
     post_turn_mw, pre_model_mw = stall_detection(**kwargs)
     kernel.on(HookEvent.POST_TURN).use(post_turn_mw)
     kernel.on(HookEvent.PRE_MODEL).use(pre_model_mw)
+
+
+def install_doom_loop_detection(kernel, **kwargs: object) -> None:
+    """Opt-in installer for `doom_loop_detection()` (identical tool calls with
+    identical results, turn after turn): one "step back" nudge, then the run
+    is stopped. Idempotent per kernel."""
+    if getattr(kernel, _DOOM_LOOP_MARKER, False):
+        return
+    setattr(kernel, _DOOM_LOOP_MARKER, True)
+
+    from app.agent_loop_lib.hooks.middleware.builtin.stall_detection import (
+        doom_loop_detection,
+    )
+    post_turn_mw, pre_model_mw, pre_turn_mw = doom_loop_detection(**kwargs)
+    kernel.on(HookEvent.POST_TURN).use(post_turn_mw)
+    kernel.on(HookEvent.PRE_MODEL).use(pre_model_mw)
+    kernel.on(HookEvent.PRE_TURN).use(pre_turn_mw)
+
+
+def install_denial_breaker(kernel, **kwargs: object) -> None:
+    """Opt-in installer for `denial_breaker()`. Must run before any other
+    PRE_TOOL_USE middleware is registered on `kernel`, so its counter wraps
+    every middleware that can deny. Idempotent per kernel."""
+    if getattr(kernel, _DENIAL_BREAKER_MARKER, False):
+        return
+    setattr(kernel, _DENIAL_BREAKER_MARKER, True)
+
+    from app.agent_loop_lib.hooks.middleware.builtin.denial_breaker import (
+        denial_breaker,
+    )
+    pre_tool_mw, pre_turn_mw = denial_breaker(**kwargs)
+    kernel.on(HookEvent.PRE_TOOL_USE).use(pre_tool_mw)
+    kernel.on(HookEvent.PRE_TURN).use(pre_turn_mw)

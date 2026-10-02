@@ -492,3 +492,24 @@ class TestSearchEndpoint:
         assert call_kwargs["limit"] == 7
         assert call_kwargs["knowledge_search"] is True
         assert call_kwargs["filter_groups"] == {"type": ["file"]}
+
+
+class TestSearchLogsNoQueryText:
+    @pytest.mark.asyncio
+    async def test_rewritten_and_expanded_queries_are_not_logged(self):
+        request = TestSearchEndpoint()._build_request()
+        logger = request.app.container.logger.return_value
+        retrieval = MagicMock()
+        retrieval.llm = MagicMock()
+        retrieval.search_with_filters = AsyncMock(return_value={"searchResults": [], "status_code": 200})
+        chain = TestSearchEndpoint()._make_chain
+
+        with patch("app.api.routes.search.setup_query_transformation") as setup:
+            setup.return_value = (chain("rewritten nightjar merger"), chain("nightjar terms\nnightjar price"))
+            await search(
+                request=request, body=SearchQuery(query="nightjar merger", filters={}),
+                retrieval_service=retrieval, graph_provider=MagicMock(),
+            )
+
+        logged = " ".join(str(c) for c in logger.mock_calls)
+        assert "nightjar" not in logged

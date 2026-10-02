@@ -20,13 +20,20 @@ Thresholds (configurable via `stall_detection()`):
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 
 from app.agent_loop_lib.core.messages import UserMessage
 from app.agent_loop_lib.core.scope import StateSlot
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext, TurnContext
 
-__all__ = ["stall_detection"]
+__all__ = ["STALL_STOP_MARKER", "STEP_BACK_MARKER", "doom_loop_detection", "stall_detection"]
+
+#: Prefix of the run's error when doom-loop detection stops it; matched by
+#: `app/agents/agent_loop/error_classification.py` to pick the user message.
+STALL_STOP_MARKER = "[agent_loop_stopped:repeated_calls]"
+STEP_BACK_MARKER = "[System: Step back"
 
 
 @dataclass(frozen=False)
@@ -132,3 +139,108 @@ def stall_detection(
         return _inner()
 
     return _post_turn, _pre_model
+
+
+@dataclass
+class _DoomLoopState:
+    last_signature: str | None = None
+    repeats: int = 0
+    stepped_back: bool = False
+    pending_step_back: bool = False
+    stop_reason: str | None = None
+
+
+_DOOM_LOOP_SLOT: StateSlot[_DoomLoopState] = StateSlot(
+    key="doom_loop_detection.state",
+    default_factory=_DoomLoopState,
+)
+
+
+def _turn_signature(turn) -> str | None:
+    """Identity of a turn's tool activity: every call (name + arguments) and
+    what it returned. A call repeated with a different result (polling,
+    paging) is progress, not a loop, so results are part of the key."""
+    if turn is None or not turn.tool_calls:
+        return None
+    results = {tr.tool_call_id: tr for tr in turn.tool_results}
+    entries = []
+    for call in turn.tool_calls:
+        tr = results.get(call.id)
+        content = "" if tr is None else str(tr.content)
+        entries.append([
+            call.name,
+            json.dumps(call.arguments, sort_keys=True, default=str),
+            None if tr is None else tr.is_error,
+            hashlib.sha256(content.encode()).hexdigest(),
+        ])
+    return json.dumps(sorted(entries))
+
+
+def doom_loop_detection(*, repeat_threshold: int = 3):
+    """Returns `(post_turn_mw, pre_model_mw, pre_turn_mw)`.
+
+    After `repeat_threshold` consecutive turns with identical tool calls and
+    identical results, the next model call gets one "step back" message. If
+    the agent repeats the loop again after that, the next turn is denied, so
+    the run ends with an error starting with `STALL_STOP_MARKER` instead of
+    burning the remaining turns.
+    """
+
+    def _post_turn(ctx: TurnContext, next_fn):
+        async def _inner():
+            state = _get_doom_state(ctx.scope)
+            if state is not None and ctx.turn is not None:
+                signature = _turn_signature(ctx.turn)
+                if signature is not None and signature == state.last_signature:
+                    state.repeats += 1
+                else:
+                    state.repeats = 1 if signature is not None else 0
+                state.last_signature = signature
+                if state.repeats >= repeat_threshold:
+                    if not state.stepped_back:
+                        state.stepped_back = True
+                        state.pending_step_back = True
+                    else:
+                        names = sorted({c.name for c in ctx.turn.tool_calls})
+                        state.stop_reason = (
+                            f"{STALL_STOP_MARKER} repeated the same tool call(s) "
+                            f"{', '.join(names)} {state.repeats} turns in a row after being asked to step back"
+                        )
+            await next_fn()
+
+        return _inner()
+
+    def _pre_model(ctx: ModelCallContext, next_fn):
+        async def _inner():
+            state = _get_doom_state(ctx.scope)
+            if state is not None and state.pending_step_back:
+                state.pending_step_back = False
+                ctx.messages.append(UserMessage(content=(
+                    f"{STEP_BACK_MARKER} — your last {state.repeats} turns made the exact same "
+                    "tool call(s) and got the exact same result(s). Repeating them again will not "
+                    "change anything. Use what those results already told you: either answer now "
+                    "with what you have, or try a genuinely different tool or different arguments. "
+                    "If you repeat the same call again, the run will be stopped.]"
+                )))
+            await next_fn()
+
+        return _inner()
+
+    def _pre_turn(ctx: TurnContext, next_fn):
+        async def _inner():
+            state = _get_doom_state(ctx.scope)
+            if state is not None and state.stop_reason:
+                ctx.deny(state.stop_reason)
+                return
+            await next_fn()
+
+        return _inner()
+
+    return _post_turn, _pre_model, _pre_turn
+
+
+def _get_doom_state(scope) -> _DoomLoopState | None:
+    if scope is None:
+        return None
+    run = getattr(scope, "run", scope)
+    return run.get(_DOOM_LOOP_SLOT)

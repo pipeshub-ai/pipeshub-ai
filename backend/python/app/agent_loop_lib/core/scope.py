@@ -141,6 +141,9 @@ class RunScope:
 
     todos: "list[Todo]" = field(default_factory=list)
     visible_tools: set[str] | None = None
+    # Order the model has seen tools in this run: core tools sorted, later
+    # disclosures appended, so tool growth never reorders the cached prefix.
+    tool_order: list[str] = field(default_factory=list)
     extra_prompt_sections: dict[str, str] = field(default_factory=dict)
     turns: "list[AgentTurn]" = field(default_factory=list)
     resume_turn_index: int = 0

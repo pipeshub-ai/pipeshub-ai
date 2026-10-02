@@ -302,6 +302,16 @@ class MCPClientManager:
         self._session_stderr_path = stderr_path
         return client
 
+    async def list_tools_in_session(self) -> list[Any]:
+        """Lists tools on the session `open()` established, so discovery and the
+        request's tool calls share one connection.
+
+        Raises MCPConnectionError if no session is open.
+        """
+        if self._session_client is None:
+            raise MCPConnectionError(f"MCP session for {self.config.id} ({self.config.name}) is not open")
+        return await self._session_client.list_tools()
+
     async def call_tool_in_session(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         """Calls a tool on the session `open()` established.
 

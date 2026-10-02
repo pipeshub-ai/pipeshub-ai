@@ -10,7 +10,9 @@ Two profiles, one assembly path (`_build_manager`):
 - `build_runtime_skill_manager` — the agent-loop profile: full visibility
   (no creator scope; an agent's own `ScopedSkillManager` layer, not this
   factory, narrows the catalog to an assignment — see `scoped_manager.py`),
-  plus the learning-loop `LLMSkillExtractor` and builtin-pack seeding.
+  plus the learning-loop `LLMSkillExtractor`. Builtin packs are seeded at
+  service startup (`reconcile_builtin_skills_for_orgs`); a request only
+  schedules a background reconcile for an org that startup missed.
 - `build_management_skill_manager` — the REST profile: creator-scoped
   reads (management endpoints only ever act on the caller's own skills;
   builtins stay visible), no extractor (`learn_from_execution` is a
@@ -29,6 +31,7 @@ one deliberate difference (visibility scope) above.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import TYPE_CHECKING, Any
@@ -59,6 +62,10 @@ __all__ = [
     "build_governor",
     "get_builtin_seeder",
     "sync_builtin_skills",
+    "reconcile_builtin_skills",
+    "reconcile_builtin_skills_for_orgs",
+    "schedule_builtin_skill_reconcile",
+    "reset_builtin_reconcile_state",
     "build_runtime_skill_manager",
     "build_management_skill_manager",
 ]
@@ -71,6 +78,10 @@ _BUILTIN_PACKS_ROOT = os.path.join(
 
 _builtin_seeder: BuiltinSkillSeeder | None = None
 _builtin_seeder_load_failed = False
+
+# org_id -> pack-versions key this process last reconciled that org at.
+_reconciled_orgs: dict[str, tuple[tuple[str, str], ...]] = {}
+_reconcile_tasks: dict[str, asyncio.Task] = {}
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -124,21 +135,27 @@ def get_builtin_seeder() -> BuiltinSkillSeeder | None:
     return _builtin_seeder
 
 
-async def sync_builtin_skills(
-    graph_provider: "IGraphDBProvider", org_id: str, manager: SkillManager,
-) -> None:
-    """Seeds/upgrades this org's per-org copies of the in-repo builtin
-    skill packs, gated by a cheap version check so a fully up-to-date org
-    never pays for a sync round-trip. Failures are swallowed (logged) —
-    builtin seeding is an enhancement, never a hard dependency for skills
-    to work at all this turn."""
+def _versions_key(seeder: BuiltinSkillSeeder) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted(seeder.pack_versions.items()))
+
+
+def _is_reconciled(org_id: str, seeder: BuiltinSkillSeeder) -> bool:
+    return _reconciled_orgs.get(org_id) == _versions_key(seeder)
+
+
+def reset_builtin_reconcile_state() -> None:
+    """Test hook: forget which orgs this process has reconciled."""
+    _reconciled_orgs.clear()
+    _reconcile_tasks.clear()
+
+
+async def reconcile_builtin_skills(graph_provider: "IGraphDBProvider", org_id: str) -> None:
+    """Seeds/upgrades this org's copies of the in-repo builtin packs, at most
+    once per (org, pack versions) per process. Idempotent (the seeder upserts),
+    so concurrent workers converge; never raises — a failure is logged and
+    retried on the next call."""
     seeder = get_builtin_seeder()
-    if seeder is None:
-        return
-    current = {
-        m.name: m.pack_version for m in manager.catalog_snapshot() if m.source == SkillSource.BUILTIN
-    }
-    if current == seeder.pack_versions:
+    if seeder is None or _is_reconciled(org_id, seeder):
         return
     seed_store = GraphSkillStore(graph_provider, org_id, SEED_IDENTITY)
     try:
@@ -146,7 +163,50 @@ async def sync_builtin_skills(
     except Exception:
         logger.exception("skills: builtin skill seeding failed for org %s", org_id)
         return
-    await manager.refresh()
+    _reconciled_orgs[org_id] = _versions_key(seeder)
+
+
+async def reconcile_builtin_skills_for_orgs(
+    graph_provider: "IGraphDBProvider", orgs: list[dict[str, Any]],
+) -> None:
+    """Service-startup reconcile for every existing org (sequential: this is
+    background work and should not compete with request traffic)."""
+    for org in orgs:
+        org_id = org.get("_key") or org.get("id")
+        if org_id:
+            await reconcile_builtin_skills(graph_provider, org_id)
+
+
+def schedule_builtin_skill_reconcile(graph_provider: "IGraphDBProvider", org_id: str) -> None:
+    """Request-path hook for orgs the startup reconcile did not cover (created
+    since, or startup failed): starts one background reconcile per org and
+    returns immediately."""
+    seeder = get_builtin_seeder()
+    if seeder is None or _is_reconciled(org_id, seeder) or org_id in _reconcile_tasks:
+        return
+    task = asyncio.get_running_loop().create_task(reconcile_builtin_skills(graph_provider, org_id))
+    _reconcile_tasks[org_id] = task
+    task.add_done_callback(lambda _t: _reconcile_tasks.pop(org_id, None))
+
+
+async def sync_builtin_skills(
+    graph_provider: "IGraphDBProvider", org_id: str, manager: SkillManager,
+) -> None:
+    """Awaited variant for `GET /api/v1/skills`, so a fresh org sees builtin
+    skills in the UI immediately; refreshes `manager` after a sync. Free once
+    the org is reconciled for the current pack versions."""
+    seeder = get_builtin_seeder()
+    if seeder is None or _is_reconciled(org_id, seeder):
+        return
+    current = {
+        m.name: m.pack_version for m in manager.catalog_snapshot() if m.source == SkillSource.BUILTIN
+    }
+    if current == seeder.pack_versions:
+        _reconciled_orgs[org_id] = _versions_key(seeder)
+        return
+    await reconcile_builtin_skills(graph_provider, org_id)
+    if _is_reconciled(org_id, seeder):
+        await manager.refresh()
 
 
 async def _build_manager(
@@ -200,7 +260,7 @@ async def build_runtime_skill_manager(
         extractor_transport=transport_registry,
         visibility_scope=None,
     )
-    await sync_builtin_skills(context.graph_provider, context.org_id, manager)
+    schedule_builtin_skill_reconcile(context.graph_provider, context.org_id)
     return manager
 
 

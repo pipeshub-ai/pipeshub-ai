@@ -4,8 +4,8 @@ Mirrors `ToolInstanceCreator`'s `_client_cache` (`instance_creator.py`): one ope
 `MCPClientManager` session per instance is cached on `context.tool_state` so every
 `MCPToolAdapter` execution against the same instance within a single chat turn reuses ONE
 connection (`MCPClientManager.open()`/`call_tool_in_session()`) instead of reconnecting per
-tool call. Phase 1's one-shot discovery (`discovery.discover_tools()`) is unaffected — it
-still uses `MCPClientManager.connect()`'s short-lived, per-call contract.
+tool call. Discovery (`list_tools`) runs over that same session, so a request whose tool
+schemas are not cached opens one connection per instance, not two.
 
 On a failed call whose error looks like an expired/invalid OAuth token, this refreshes the
 credential once (`app.agents.mcp.token_refresh.refresh_credential_record`), rebuilds the
@@ -20,12 +20,14 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from app.agents.mcp.client import MCPClientManager
-from app.agents.mcp.discovery import build_auth_env_and_headers
-from app.agents.mcp.models import MCPAuthMode
+from app.agents.mcp.discovery import build_auth_env_and_headers, tool_infos_from_raw
+from app.agents.mcp.models import MCPAuthMode, MCPToolInfo
 from app.agents.mcp.service import credentials_to_discovery_dict, instance_config_from_dict
 from app.agents.mcp.token_refresh import refresh_credential_record
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from app.agents.agent_loop.context import AgentContext
     from app.agents.agent_loop.mcp_access import ResolvedMCPServer
 
@@ -63,9 +65,26 @@ class MCPSessionManager:
         self._locks: dict[str, asyncio.Lock] = state["_mcp_client_locks"]
 
     async def call(self, server: "ResolvedMCPServer", tool_name: str, arguments: dict[str, Any]) -> Any:
+        return await self._with_session(
+            server, lambda manager: manager.call_tool_in_session(tool_name, arguments),
+        )
+
+    async def list_tools(self, server: "ResolvedMCPServer", *, timeout_seconds: float) -> list[MCPToolInfo]:
+        """Discovers tools over the same cached session later tool calls reuse,
+        instead of a separate one-shot connection."""
+        config = instance_config_from_dict(server.instance)
+        raw_tools = await self._with_session(
+            server,
+            lambda manager: asyncio.wait_for(manager.list_tools_in_session(), timeout=timeout_seconds),
+        )
+        return tool_infos_from_raw(config, raw_tools)
+
+    async def _with_session(
+        self, server: "ResolvedMCPServer", op: "Callable[[MCPClientManager], Awaitable[Any]]",
+    ) -> Any:  # noqa: ANN401 - whatever `op` returns
         manager = await self._get_or_open(server)
         try:
-            return await manager.call_tool_in_session(tool_name, arguments)
+            return await op(manager)
         except Exception as exc:
             auth_mode = server.instance.get("authMode")
             if auth_mode != MCPAuthMode.OAUTH.value or not _looks_like_expired_token(exc):
@@ -75,7 +94,7 @@ class MCPSessionManager:
                 "refreshing once and retrying", server.instance_id,
             )
             manager = await self._refresh_and_reopen_locked(server, stale_manager=manager)
-            return await manager.call_tool_in_session(tool_name, arguments)
+            return await op(manager)
 
     async def aclose_all(self) -> None:
         """Tears down every session opened this request — called from

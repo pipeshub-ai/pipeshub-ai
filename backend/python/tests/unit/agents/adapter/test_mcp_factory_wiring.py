@@ -67,9 +67,21 @@ async def _fake_discover_tools(config: Any, credentials: dict, timeout_seconds: 
     )]
 
 
+
+def _patch_discovery(monkeypatch: pytest.MonkeyPatch, discover: Any) -> None:
+    """Route `MCPSessionManager.list_tools` (the loader's live-discovery seam)
+    to a `(config, credentials, timeout_seconds)` fake."""
+    from app.agents.agent_loop.mcp_session import MCPSessionManager
+    from app.agents.mcp.service import instance_config_from_dict
+
+    async def _list_tools(self: Any, server: Any, *, timeout_seconds: float) -> Any:
+        return await discover(instance_config_from_dict(server.instance), server.auth, timeout_seconds)
+
+    monkeypatch.setattr(MCPSessionManager, "list_tools", _list_tools)
+
 class TestMcpServerWiring:
     async def test_mcp_tool_registered_and_grouped_under_mcp_parent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("app.agents.agent_loop.mcp_tool_loader.discover_tools", _fake_discover_tools)
+        _patch_discovery(monkeypatch, _fake_discover_tools)
         context = _mcp_context()
         factory = PipesHubAgentFactory()
 
@@ -85,7 +97,7 @@ class TestMcpServerWiring:
     async def test_mcp_group_never_nested_under_connectors(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PIPESHUB_ENABLE_LAZY_TOOLS", "true")
         monkeypatch.setenv("PIPESHUB_LAZY_TOOLS_THRESHOLD", "0")
-        monkeypatch.setattr("app.agents.agent_loop.mcp_tool_loader.discover_tools", _fake_discover_tools)
+        _patch_discovery(monkeypatch, _fake_discover_tools)
         context = _mcp_context()
         factory = PipesHubAgentFactory()
 
@@ -113,7 +125,7 @@ class TestMcpServerWiring:
         async def _boom(*_args: Any, **_kwargs: Any) -> list[MCPToolInfo]:
             raise RuntimeError("connection refused")
 
-        monkeypatch.setattr("app.agents.agent_loop.mcp_tool_loader.discover_tools", _boom)
+        _patch_discovery(monkeypatch, _boom)
         context = _mcp_context(mcp_servers=[{
             "instanceId": "inst-1", "name": "JiraMCP", "displayName": "Jira MCP", "typeId": "jira_mcp",
             "tools": [{"name": "search", "fullName": "mcp_jira_mcp_search", "description": "Search Jira"}],
@@ -134,7 +146,7 @@ class TestMcpServerWiring:
         async def _boom(*_args: Any, **_kwargs: Any) -> list[MCPToolInfo]:
             raise RuntimeError("connection refused")
 
-        monkeypatch.setattr("app.agents.agent_loop.mcp_tool_loader.discover_tools", _boom)
+        _patch_discovery(monkeypatch, _boom)
         context = _mcp_context()
         factory = PipesHubAgentFactory()
 

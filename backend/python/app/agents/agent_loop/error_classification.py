@@ -31,6 +31,13 @@ import json
 import re
 from http import HTTPStatus
 
+from app.agent_loop_lib.hooks.middleware.builtin.denial_breaker import (
+    DENIAL_STOP_MARKER,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.stall_detection import (
+    STALL_STOP_MARKER,
+)
+
 # Provider content-moderation rejections (Azure `content_filter` /
 # `ResponsibleAIPolicyViolation`, OpenAI `content_policy_violation`, ...).
 # Checked FIRST: these bodies routinely also contain words that match the
@@ -82,6 +89,14 @@ _SERVER_ERROR_HINTS = (
 _TIMEOUT_HINTS = ("timeout", "timed out")
 
 _USER_MESSAGES: dict[str, str] = {
+    "agent_stalled": (
+        "I stopped because I kept repeating the same step without getting anything "
+        "new from it. Try rephrasing the question or narrowing it down."
+    ),
+    "tool_denied": (
+        "I stopped because the tools I tried to use were blocked repeatedly. "
+        "Try a different request, or ask a workspace admin whether those tools are allowed."
+    ),
     "content_filter": (
         "The AI provider's content filter blocked this request. This is often a "
         "false positive triggered by something in the conversation or in retrieved "
@@ -180,12 +195,18 @@ def classify_error(error_msg: str) -> tuple[str, str]:
 
     `error_code` is one of `content_filter` / `request_too_large` /
     `quota_exceeded` / `rate_limit` / `auth_error` / `invalid_request` / `server_error` /
-    `timeout` / `unknown` — checked in this priority order since a single
+    `timeout` / `unknown`, or `agent_stalled` / `tool_denied` when a loop
+    guard stopped the run (matched by marker, before any hint) — checked in this priority order since a single
     message can contain multiple hints (e.g. a Groq 413 body that also
     mentions "rate_limit_exceeded"; the request-too-large classification
     must win because "try again in a moment" is wrong advice for a
     permanently oversized request).
     """
+    if STALL_STOP_MARKER in error_msg:
+        return "agent_stalled", _USER_MESSAGES["agent_stalled"]
+    if DENIAL_STOP_MARKER in error_msg:
+        return "tool_denied", _USER_MESSAGES["tool_denied"]
+
     lower = error_msg.lower()
 
     if any(hint in lower for hint in _CONTENT_FILTER_HINTS):

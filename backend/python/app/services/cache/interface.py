@@ -110,3 +110,40 @@ class NoopSignedUrlCache(ISignedUrlCache):
 
     async def close(self) -> None:
         return None
+
+
+class IMCPToolSchemaCache(ABC):
+    """Cache of one MCP instance's discovered tool schemas.
+
+    ``variant`` identifies everything the tool list can depend on besides the
+    instance id (instance config version, calling principal, credential
+    version); callers derive it, the cache treats it as opaque.
+    """
+
+    @abstractmethod
+    async def get(self, instance_id: str, variant: str) -> list[dict] | None: ...
+
+    @abstractmethod
+    async def set(self, instance_id: str, variant: str, tools: list[dict]) -> None: ...
+
+    @abstractmethod
+    async def invalidate_instance(self, instance_id: str) -> None: ...
+
+    @abstractmethod
+    async def close(self) -> None: ...
+
+
+class NoopMCPToolSchemaCache(IMCPToolSchemaCache):
+    """Every read misses, so discovery runs live as it did before the cache."""
+
+    async def get(self, instance_id: str, variant: str) -> list[dict] | None:
+        return None
+
+    async def set(self, instance_id: str, variant: str, tools: list[dict]) -> None:
+        return None
+
+    async def invalidate_instance(self, instance_id: str) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None

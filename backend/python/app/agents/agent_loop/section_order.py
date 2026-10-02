@@ -12,8 +12,9 @@ the first turn-volatile byte:
   Band B (CONV)        — stable within a conversation; grows on `fetch_tools`
                          or when `dynamic_fetch_full_record` is first granted,
                          but is otherwise unchanged across turns.
-  Band C (TURN)        — changes per turn (time, follow-up context, attachments,
-                         hook-injected extra sections).
+  Band C (TURN)        — changes per turn or per user message (goal brief,
+                         time, follow-up context, attachments, preloaded
+                         skills/tools, hook-injected extra sections).
 
 `build()` renders all three bands joined by double-newlines.  `build_blocks()`
 returns `(stable_block, volatile_block)` where:
@@ -48,7 +49,6 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # Org-level "Custom Instructions" (workspace settings), mode-resolved by
     # `chat_modes.bridge` — Chat Assistant only, never set for Agent Builder.
     ("custom_instructions",        Volatility.STATIC),
-    ("goal_brief",                 Volatility.STATIC),
     ("operating_rules",            Volatility.STATIC),
     ("response_format",            Volatility.STATIC),
     ("base_system_prompt",         Volatility.STATIC),
@@ -83,6 +83,10 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # has to `skills_overview` — written by the `tool_preloading` middleware.
     ("preloaded_tools",            Volatility.TURN),
     ("time_context",               Volatility.TURN),
+    # Rewritten per user message (requirements / success criteria / gaps),
+    # so it must sit after every cached byte — in Band A it invalidated the
+    # static rules behind it on each follow-up.
+    ("goal_brief",                 Volatility.TURN),
     ("request_context",            Volatility.TURN),
     ("attachments",                Volatility.TURN),
     ("extra_sections",             Volatility.TURN),

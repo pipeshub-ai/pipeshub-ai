@@ -31,11 +31,15 @@ class PromptTemplate:
     a developer override) can set/replace one without touching the rest.
     """
 
+    # Stable sections first, per-goal / per-turn ones last, so the rendered
+    # prefix stays byte-identical (prompt-cache friendly) while only the goal,
+    # todos or preloaded content change.
     DEFAULT_ORDER: tuple[str, ...] = (
-        "identity", "goal_brief",
-        "toolset_overview", "preloaded_tools",
-        "skills_overview", "preloaded_skills",
-        "todos", "mode", "style",
+        "identity",
+        "toolset_overview", "skills_overview",
+        "mode", "style",
+        "preloaded_tools", "preloaded_skills",
+        "goal_brief", "todos",
     )
 
     sections: dict[str, str] = field(default_factory=dict)

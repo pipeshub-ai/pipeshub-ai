@@ -6,8 +6,9 @@ Parallel to `PipesHubToolLoader` (`tool_loader.py`) for connector toolsets: one
 ("mcp") from the moment it's registered (never top-level `parent=None` — see that
 constant's docstring for why).
 
-Discovery-first, no schema-less fallback: the ONLY source of truth is a LIVE
-`discovery.discover_tools()` call against the instance (accurate, current schemas). When
+Discovery-first, no schema-less fallback: the ONLY source of truth is the server's own
+`list_tools` result (live over the request's MCP session, or that same result cached in
+`MCPToolSchemaCache` per instance version and principal). When
 `attached_tools` is set (graph selection or chat-time filter), the discovered list is
 narrowed to those namespaced names before registration. If discovery times out or the
 connection fails, NOTHING is registered for that instance — this used to fall back to the
@@ -27,27 +28,55 @@ before this ever runs (see `api/routes/agent.py`'s "LOAD MCP SERVER CONFIGS" blo
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from typing import TYPE_CHECKING
+
+from pydantic import ValidationError
 
 from app.agent_loop_lib.tools.errors import DuplicateToolNameError, DuplicateToolPathError
 from app.agents.agent_loop.lazy_tools_wiring import MCP_PARENT
 from app.agents.agent_loop.mcp_access import MCPAccessResolver, ResolvedMCPServer
 from app.agents.agent_loop.mcp_session import MCPSessionManager
 from app.agents.agent_loop.mcp_tool_adapter import MCPToolAdapter
-from app.agents.mcp.discovery import build_namespaced_tool_name, discover_tools
-from app.agents.mcp.models import MCPToolInfo
-from app.agents.mcp.service import credentials_to_discovery_dict, instance_config_from_dict
+from app.agents.mcp.discovery import build_namespaced_tool_name
+from app.agents.mcp.models import MCPAuthMode, MCPToolInfo
+from app.services.cache.mcp_tool_schema_cache import get_mcp_tool_schema_cache
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.tools.registry import ToolRegistry
     from app.agents.agent_loop.context import AgentContext
+    from app.services.cache.interface import IMCPToolSchemaCache
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_DISCOVERY_TIMEOUT_SECONDS = 30.0
 
-__all__ = ["MCPToolProvider", "DEFAULT_DISCOVERY_TIMEOUT_SECONDS"]
+__all__ = ["MCPToolProvider", "DEFAULT_DISCOVERY_TIMEOUT_SECONDS", "schema_cache_variant"]
+
+_SHARED_ADMIN_AUTH_MODES = (MCPAuthMode.API_TOKEN.value, MCPAuthMode.HEADERS.value)
+
+
+def schema_cache_variant(server: "ResolvedMCPServer") -> str:
+    """Opaque cache field for this server's tool list: changes whenever the
+    instance record (config, `updatedAt`), the credential it is discovered with,
+    or that credential's version changes. Hashed so no principal id or config
+    value is stored in Redis."""
+    instance = server.instance
+    auth_mode = instance.get("authMode") or ""
+    if auth_mode == MCPAuthMode.NONE.value:
+        principal = ""
+    elif instance.get("useAdminAuth") and auth_mode in _SHARED_ADMIN_AUTH_MODES:
+        principal = f"admin:{instance.get('createdBy')}"
+    else:
+        principal = f"owner:{server.owner_id}"
+    credential_version = str((server.auth or {}).get("updatedAt") or "") if principal else ""
+    material = json.dumps(
+        {"instance": instance, "principal": principal, "credential": credential_version},
+        sort_keys=True, default=str,
+    )
+    return hashlib.sha256(material.encode()).hexdigest()
 
 
 def _mcp_group_name(server: "ResolvedMCPServer") -> str:
@@ -62,7 +91,13 @@ def _mcp_group_name(server: "ResolvedMCPServer") -> str:
 
 
 class MCPToolProvider:
-    """`load_into(registry, context)` — the MCP analog of `PipesHubToolLoader.load()`."""
+    """`load_into(registry, context)` — the MCP analog of `PipesHubToolLoader.load()`.
+
+    Tool schemas are read through `IMCPToolSchemaCache`; on a hit no connection
+    is opened until a tool is actually called."""
+
+    def __init__(self, schema_cache: "IMCPToolSchemaCache | None" = None) -> None:
+        self._schema_cache = schema_cache or get_mcp_tool_schema_cache()
 
     async def load_into(self, registry: "ToolRegistry", context: "AgentContext") -> None:
         resolved_servers = MCPAccessResolver.resolve(context)
@@ -106,7 +141,7 @@ class MCPToolProvider:
         `context.mcp_tool_load_failures` and results in `False`."""
         state_logger = context.logger or logger
 
-        tool_infos, failure_reason = await self._discover_or_fallback(server, timeout_seconds)
+        tool_infos, failure_reason = await self._discover_or_fallback(server, session_manager, timeout_seconds)
         if not tool_infos:
             context.mcp_tool_load_failures.append({
                 "instanceId": server.instance_id, "name": server.name, "reason": failure_reason or "error",
@@ -142,12 +177,10 @@ class MCPToolProvider:
         return True
 
     async def _discover_or_fallback(
-        self, server: "ResolvedMCPServer", timeout_seconds: float,
+        self, server: "ResolvedMCPServer", session_manager: "MCPSessionManager", timeout_seconds: float,
     ) -> tuple[list[MCPToolInfo] | None, str | None]:
         try:
-            config = instance_config_from_dict(server.instance)
-            credentials = credentials_to_discovery_dict(server.instance.get("authMode", ""), server.auth)
-            tool_infos = await discover_tools(config, credentials, timeout_seconds=timeout_seconds)
+            tool_infos = await self._cached_or_live_tools(server, session_manager, timeout_seconds)
             return self._filter_by_attached(server, tool_infos), None
         except Exception as exc:
             logger.warning(
@@ -155,6 +188,22 @@ class MCPToolProvider:
                 server.instance_id, server.name, exc,
             )
             return None, "discovery_failed"
+
+    async def _cached_or_live_tools(
+        self, server: "ResolvedMCPServer", session_manager: "MCPSessionManager", timeout_seconds: float,
+    ) -> list[MCPToolInfo]:
+        variant = schema_cache_variant(server)
+        cached = await self._schema_cache.get(server.instance_id, variant)
+        if cached is not None:
+            try:
+                return [MCPToolInfo.model_validate(tool) for tool in cached]
+            except ValidationError:
+                logger.debug("MCPToolProvider: ignoring malformed cached tools for %s", server.instance_id)
+        tool_infos = await session_manager.list_tools(server, timeout_seconds=timeout_seconds)
+        await self._schema_cache.set(
+            server.instance_id, variant, [t.model_dump(by_alias=True) for t in tool_infos],
+        )
+        return tool_infos
 
     @staticmethod
     def _attached_full_names(server: "ResolvedMCPServer") -> set[str] | None:
