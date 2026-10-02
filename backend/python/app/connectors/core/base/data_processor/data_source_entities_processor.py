@@ -53,7 +53,7 @@ from app.services.cache.invalidation_hooks import (
 )
 from app.connectors.services.vector_cleanup_events import build_soft_delete_events
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
-from app.services.graph_db.common.record_visibility import is_live_record
+from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
 from app.services.messaging.utils import MessagingUtils
@@ -3410,6 +3410,7 @@ class DataSourceEntitiesProcessor:
         is_placeholder: bool | None = None,
         after_key: str | None = None,
         exclude_statuses: list[str] | None = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Get records by indexing status, scoped to the current org.
 
@@ -3427,6 +3428,7 @@ class DataSourceEntitiesProcessor:
                 is_placeholder=is_placeholder,
                 after_key=after_key,
                 exclude_statuses=exclude_statuses,
+                visibility=visibility,
             )
 
     async def get_placeholder_records(
@@ -4210,6 +4212,7 @@ class DataSourceEntitiesProcessor:
         is_placeholder: bool | None = None,
         after_key: str | None = None,
         exclude_statuses: list[str] | None = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_records_by_status(
@@ -4222,6 +4225,7 @@ class DataSourceEntitiesProcessor:
                 is_placeholder=is_placeholder,
                 after_key=after_key,
                 exclude_statuses=exclude_statuses,
+                visibility=visibility,
             )
 
     async def get_record_by_external_revision_id(

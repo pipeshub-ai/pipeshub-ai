@@ -169,6 +169,7 @@ class GraphTransactionStore(TransactionStore):
         is_placeholder: Optional[bool] = None,
         after_key: Optional[str] = None,
         exclude_statuses: Optional[list[str]] = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Get records by status. Returns properly typed Record instances.
 
@@ -186,6 +187,7 @@ class GraphTransactionStore(TransactionStore):
             is_placeholder=is_placeholder,
             after_key=after_key,
             exclude_statuses=exclude_statuses,
+            visibility=visibility,
         )
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
