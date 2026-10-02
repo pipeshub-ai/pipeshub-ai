@@ -1641,7 +1641,9 @@ class TicketRecord(Record):
             reporter_source_timestamp=ticket_doc.get("reporterSourceTimestamp"),
             labels=ticket_doc.get("labels"),
             # With it lost, the email fields (then the source's user ids) read as emails.
-            is_email_hidden=bool(ticket_doc.get("is_email_hidden")),
+            is_email_hidden=bool(ticket_doc.get("is_email_hidden", False)),
+            assignee_source_id=ticket_doc.get("assignee_source_id") or [],
+            reporter_source_id=ticket_doc.get("reporter_source_id"),
             resolved_at=ticket_doc.get("resolvedAtTimestamp"),
             due_date=ticket_doc.get("dueDateTimestamp"),
             access_rule=read_access_rule(record_doc),

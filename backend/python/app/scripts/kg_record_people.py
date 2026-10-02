@@ -18,8 +18,11 @@ import json
 import sys
 from typing import TYPE_CHECKING, TextIO
 
+from app.config.constants.arangodb import (
+    RECORD_TYPE_COLLECTION_MAPPING,
+    CollectionNames,
+)
 from app.connectors.core.base.data_processor.record_people import link_record_people
-from app.models.entities import RecordType
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -28,10 +31,13 @@ if TYPE_CHECKING:
     from app.models.entities import User
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
-LINKED_TYPES = [
-    RecordType.TICKET.value, RecordType.PROJECT.value, RecordType.MAIL.value, RecordType.GROUP_MAIL.value,
-    RecordType.COMMENT.value, RecordType.INLINE_COMMENT.value, RecordType.PULL_REQUEST.value, RecordType.DEAL.value,
-]
+# Every record type stored in a type collection whose records record_people
+# links, so a new ticket-like type (Salesforce CASE, TASK) is not missed.
+_LINKED_COLLECTIONS = {
+    CollectionNames.TICKETS.value, CollectionNames.PROJECTS.value, CollectionNames.MAILS.value,
+    CollectionNames.COMMENTS.value, CollectionNames.PULLREQUESTS.value, CollectionNames.DEALS.value,
+}
+LINKED_TYPES = sorted(t for t, c in RECORD_TYPE_COLLECTION_MAPPING.items() if c in _LINKED_COLLECTIONS)
 PAGE_SIZE = 200
 EXIT_PARTIAL = 1
 EXIT_INVALID = 2
@@ -70,7 +76,7 @@ async def backfill(
     """Link every person-naming record of ``org_id``; returns the exit code.
     A failed page is reported and skipped, so a re-run finishes it."""
     after: str | None = None
-    totals = {"records": 0, "edges": 0, "failed_pages": 0}
+    totals = {"records": 0, "edges": 0, "skipped": 0, "failed_pages": 0}
     while True:
         ids = await graph.page_record_ids_by_type(org_id, LINKED_TYPES, after_key=after, limit=page_size)
         if not ids:
@@ -92,11 +98,17 @@ async def backfill(
             totals["failed_pages"] += 1
             out.write(json.dumps({"after": after, "error": type(exc).__name__}) + "\n")
             continue
+        # The typed read drops records it cannot rebuild; count them so a
+        # partial page is not reported as complete.
+        skipped = len(ids) - len(records)
         totals["records"] += len(records)
         totals["edges"] += edges
-        out.write(json.dumps({"after": after, "records": len(records), "edges": edges, "applied": apply}) + "\n")
+        totals["skipped"] += skipped
+        out.write(json.dumps({
+            "after": after, "records": len(records), "skipped": skipped, "edges": edges, "applied": apply,
+        }) + "\n")
     out.write(json.dumps({"org": org_id, "total": totals, "applied": apply}) + "\n")
-    return EXIT_PARTIAL if totals["failed_pages"] else 0
+    return EXIT_PARTIAL if totals["failed_pages"] or totals["skipped"] else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -117,9 +129,11 @@ async def _main(argv: list[str]) -> int:
     logger = container.logger()
     graph = await container.graph_provider()
     try:
-        # The new edge types are rejected by ArangoDB's strict edge schema
-        # until the current schema is applied.
-        await graph.ensure_schema()
+        if args.apply:
+            # The new edge types are rejected by ArangoDB's strict edge
+            # schema until the current schema is applied; a dry run writes
+            # nothing, schema included.
+            await graph.ensure_schema()
         return await backfill(
             graph, GraphDataStore(logger, graph), args.org, apply=args.apply, logger=logger, out=sys.stdout,
         )

@@ -13,7 +13,7 @@ never linked, since they are hidden from the other recipients.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from email.utils import parseaddr
+from email.utils import getaddresses, parseaddr
 from typing import TYPE_CHECKING, Protocol
 
 from app.config.constants.arangodb import CollectionNames, EntityRelations
@@ -35,6 +35,19 @@ if TYPE_CHECKING:
 # Edges per record. A mail to an all-hands list would otherwise write one
 # edge per member; past this the record links the first ones only.
 MAX_LINKED_PEOPLE = 100
+# Distinct people looked up per record. Each lookup is a query inside the
+# record's sync transaction, and most recipients of a large mail are not
+# members, so the edge cap alone does not bound the work.
+MAX_PERSON_LOOKUPS = 200
+
+# Edge types added with this module. During a rolling deploy an older pod can
+# restore an ArangoDB schema whose edge-type enum lacks them; these edges are
+# derived data that a later sync or the backfill repairs, so a rejected write
+# of them is logged, not raised, and never fails the record's sync.
+_NEW_EDGE_TYPES = frozenset({
+    EntityRelations.AUTHORED_BY.value, EntityRelations.ADDRESSED_TO.value,
+    EntityRelations.REVIEWED_BY.value, EntityRelations.OWNED_BY.value,
+})
 
 LINKED_RECORD_TYPES = (TicketRecord, ProjectRecord, MailRecord, CommentRecord, PullRequestRecord, DealRecord)
 
@@ -62,6 +75,14 @@ def _address(raw: str | None) -> str | None:
         return None
     address = parseaddr(raw)[1].strip().lower()
     return address if "@" in address else None
+
+
+def _addresses(raw: list[str]) -> list[str]:
+    """Bare addresses from a recipient list. Parsed as one header, since a
+    connector that split the header on every comma leaves a display name
+    with a comma ("Doe, John" <j@x.com>) in two pieces."""
+    found = getaddresses([", ".join(r for r in raw if r)])
+    return [a.strip().lower() for _, a in found if "@" in a]
 
 
 def _first(*values: int | None) -> int | None:
@@ -104,7 +125,7 @@ def person_links(record: Record) -> list[PersonLink]:
         return [
             PersonLink(EntityRelations.AUTHORED_BY, email=record.from_email, source_timestamp=sent),
             *(PersonLink(EntityRelations.ADDRESSED_TO, email=a, source_timestamp=sent)
-              for a in [*(record.to_emails or []), *(record.cc_emails or [])]),
+              for a in _addresses([*(record.to_emails or []), *(record.cc_emails or [])])),
         ]
     if isinstance(record, CommentRecord):
         return [PersonLink(EntityRelations.AUTHORED_BY, source_id=record.author_source_id,
@@ -153,6 +174,9 @@ async def link_record_people(record: Record, store: PeopleStore, logger: Logger)
         if not identity[1]:
             continue
         if identity not in users_by_identity:
+            if len(users_by_identity) >= MAX_PERSON_LOOKUPS:
+                logger.info("Record %s names more than %d people; looked up the first", record.id, MAX_PERSON_LOOKUPS)
+                break
             try:
                 users_by_identity[identity] = (
                     await store.get_user_by_email(identity[1]) if identity[0] == "email"
@@ -163,6 +187,11 @@ async def link_record_people(record: Record, store: PeopleStore, logger: Logger)
                 users_by_identity[identity] = None
         user = users_by_identity[identity]
         if user is None or not user.id or (user.id, link.edge_type.value) in seen:
+            continue
+        user_org = getattr(user, "org_id", None)
+        if user_org is not None and user_org != record.org_id:
+            # Email lookups are not org-scoped; another tenant's member
+            # sharing an address is not this record's person.
             continue
         seen.add((user.id, link.edge_type.value))
         edge = {
@@ -178,6 +207,14 @@ async def link_record_people(record: Record, store: PeopleStore, logger: Logger)
 
     if failed:
         logger.warning("Record %s: %d person lookups failed", record.id, failed)
-    if edges:
-        await store.batch_create_entity_relations(edges)
+    established = [e for e in edges if e["edgeType"] not in _NEW_EDGE_TYPES]
+    added = [e for e in edges if e["edgeType"] in _NEW_EDGE_TYPES]
+    if established:
+        await store.batch_create_entity_relations(established)
+    if added:
+        try:
+            await store.batch_create_entity_relations(added)
+        except Exception as exc:  # see _NEW_EDGE_TYPES
+            logger.warning("Record %s: %d person edges not written: %s", record.id, len(added), type(exc).__name__)
+            return len(established)
     return len(edges)

@@ -45,10 +45,13 @@ def _store() -> MagicMock:
     return store
 
 
+def _written(store: MagicMock) -> list[dict]:
+    """Every edge written, across the record's write batches."""
+    return [e for call in store.batch_create_entity_relations.await_args_list for e in call.args[0]]
+
+
 def _edges(store: MagicMock) -> set[tuple[str, str]]:
-    if not store.batch_create_entity_relations.await_args:
-        return set()
-    return {(e["_to"], e["edgeType"]) for e in store.batch_create_entity_relations.await_args.args[0]}
+    return {(e["_to"], e["edgeType"]) for e in _written(store)}
 
 
 def _mail(**kw: object) -> MailRecord:
@@ -67,7 +70,7 @@ class TestMail:
             ("users/u-ann", "AUTHORED_BY"), ("users/u-bob", "ADDRESSED_TO"), ("users/u-cat", "ADDRESSED_TO"),
         }
         assert written == 3
-        assert all(e["sourceTimestamp"] == 1000 for e in store.batch_create_entity_relations.await_args.args[0])
+        assert all(e["sourceTimestamp"] == 1000 for e in _written(store))
 
     async def test_a_non_member_gets_no_edge_and_no_node(self) -> None:
         store = _store()
@@ -104,7 +107,7 @@ class TestOtherRecordTypes:
             reporter_email="cat@acme.com", assignee_source_timestamp=5, **BASE,
         )
         await link_record_people(ticket, store, logging.getLogger("t"))
-        edges = store.batch_create_entity_relations.await_args.args[0]
+        edges = _written(store)
         assert {(e["_to"], e["edgeType"]) for e in edges} == {
             ("users/u-ann", "ASSIGNED_TO"), ("users/u-bob", "CREATED_BY"), ("users/u-cat", "REPORTED_BY"),
         }
@@ -174,4 +177,68 @@ class TestWriteBehaviour:
         await link_record_people(
             _mail(from_email="ann@acme.com", to_emails=["bob@acme.com", "cat@acme.com"]), store, logging.getLogger("t"),
         )
-        assert len(store.batch_create_entity_relations.await_args.args[0]) == 2
+        assert len(_written(store)) == 2
+
+
+class TestReviewFixes:
+    async def test_a_display_name_with_a_comma_keeps_the_address(self) -> None:
+        """Gmail splits the header on every comma: '"Doe, John" <j@x.com>'
+        reaches us as two fragments."""
+        store = _store()
+        mail = _mail(from_email="ann@acme.com", to_emails=['"Doe', 'John" <bob@acme.com>', "cat@acme.com, ann@acme.com"])
+        await link_record_people(mail, store, logging.getLogger("t"))
+        assert ("users/u-bob", "ADDRESSED_TO") in _edges(store)
+        assert ("users/u-cat", "ADDRESSED_TO") in _edges(store)
+
+    async def test_a_user_of_another_org_is_never_linked(self) -> None:
+        store = _store()
+        store.get_user_by_email.side_effect = lambda email: SimpleNamespace(id="u-x", org_id="org-2")
+        await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
+        store.batch_create_entity_relations.assert_not_awaited()
+
+    async def test_lookups_are_capped_not_only_edges(self, monkeypatch) -> None:
+        monkeypatch.setattr(record_people, "MAX_PERSON_LOOKUPS", 3)
+        store = _store()
+        mail = _mail(from_email="ann@acme.com", to_emails=[f"x{i}@else.com" for i in range(50)])
+        await link_record_people(mail, store, logging.getLogger("t"))
+        assert store.get_user_by_email.await_count == 3
+
+    async def test_a_rejected_new_edge_type_does_not_fail_the_record(self, caplog) -> None:
+        """During a rolling deploy an old pod can restore an edge-type enum
+        without the new types; those edges are derived data and must not
+        abort the record's sync. Long-standing types still raise."""
+        store = _store()
+
+        async def _create(edges: list) -> None:
+            if any(e["edgeType"] == "ADDRESSED_TO" for e in edges):
+                raise RuntimeError("Document does not match the entity relations schema")
+
+        store.batch_create_entity_relations = AsyncMock(side_effect=_create)
+        with caplog.at_level(logging.WARNING, logger="t"):
+            await link_record_people(
+                TicketRecord(record_type=RecordType.TICKET, assignee_email="ann@acme.com", **BASE),
+                store, logging.getLogger("t"),
+            )
+            await link_record_people(_mail(from_email="ann@acme.com", to_emails=["bob@acme.com"]), store, logging.getLogger("t"))
+        assert "rec-1" in caplog.text
+
+    async def test_long_standing_edge_types_still_raise(self) -> None:
+        import pytest
+
+        store = _store()
+        store.batch_create_entity_relations = AsyncMock(side_effect=RuntimeError("db down"))
+        with pytest.raises(RuntimeError):
+            await link_record_people(
+                TicketRecord(record_type=RecordType.TICKET, assignee_email="ann@acme.com", **BASE),
+                store, logging.getLogger("t"),
+            )
+
+
+def test_hidden_email_ticket_fields_survive_a_graph_round_trip() -> None:
+    ticket = TicketRecord(
+        record_type=RecordType.TICKET, is_email_hidden=True, assignee_source_id=["src-ann"],
+        reporter_source_id="src-dan", **BASE,
+    )
+    record_doc = {**ticket.to_arango_base_record(), "_key": ticket.id}
+    again = TicketRecord.from_arango_record(ticket.to_arango_record(), record_doc)
+    assert (again.is_email_hidden, again.assignee_source_id, again.reporter_source_id) == (True, ["src-ann"], "src-dan")
