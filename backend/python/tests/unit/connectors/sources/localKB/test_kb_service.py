@@ -28,9 +28,14 @@ import pytest
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.utils.user_messages import action_failed
 from app.config.constants.service import DefaultEndpoints
-from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.connectors.sources.localKB.handlers.kb_service import (
+    FOLDER_DEPTH_LIMIT_REASON,
+    KnowledgeBaseService,
+    folder_levels_in_path,
+)
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import FileRecord
+from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH
 
 
 # Fixtures live in conftest.py (service, mock_graph_provider, mock_processor, …)
@@ -566,6 +571,109 @@ class TestDeleteKnowledgeBase:
 
         assert result["success"] is True
         service.logger.error.assert_called()
+
+
+class TestDeleteKBStorageCleanup:
+    """Tests for the background blob-storage cleanup on KB delete."""
+
+    @pytest.mark.asyncio
+    async def test_cleanup_task_is_spawned(self, service, mock_config_service):
+        """delete_knowledge_base must schedule _cleanup_kb_storage as a background task."""
+        _setup_kb_owner_resolve(service)
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [],
+        })
+
+        with patch("app.connectors.sources.localKB.handlers.kb_service.asyncio") as mock_asyncio:
+            mock_asyncio.create_task = MagicMock()
+            result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert result["success"] is True
+        mock_asyncio.create_task.assert_called_once()
+        coro = mock_asyncio.create_task.call_args[0][0]
+        coro.close()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_deletes_blob_storage_then_repairs_shared_records(
+        self, service, mock_config_service,
+    ):
+        helper = AsyncMock()
+        helper.delete_connector_storage = AsyncMock(return_value=5)
+
+        await service._cleanup_kb_storage(helper, "org1", "kb1", ["v-shared"])
+
+        helper.delete_connector_storage.assert_awaited_once_with("org1", "kb1")
+        helper.repair_shared_records.assert_awaited_once_with(
+            "org1", ["v-shared"], service.kafka_service.publish_event
+        )
+
+    @pytest.mark.asyncio
+    async def test_blob_failure_logs_error_and_still_repairs(self, service, mock_config_service):
+        helper = AsyncMock()
+        helper.delete_connector_storage = AsyncMock(side_effect=RuntimeError("storage unreachable"))
+
+        await service._cleanup_kb_storage(helper, "org1", "kb1", ["v-shared"])
+
+        service.logger.error.assert_called()
+        helper.repair_shared_records.assert_awaited_once()
+        helper.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_nothing_shared_still_deletes_storage(self, service, mock_config_service):
+        helper = AsyncMock()
+        helper.repair_shared_records = AsyncMock(return_value=0)
+
+        await service._cleanup_kb_storage(helper, "org1", "kb1", [])
+
+        helper.delete_connector_storage.assert_awaited_once_with("org1", "kb1")
+
+    @pytest.mark.asyncio
+    async def test_unknown_shared_content_keeps_storage(self, service, mock_config_service):
+        helper = AsyncMock()
+
+        await service._cleanup_kb_storage(helper, "org1", "kb1", None)
+
+        helper.delete_connector_storage.assert_not_awaited()
+        helper.repair_shared_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_shared_vrids_are_read_before_the_kb_records_are_deleted(
+        self, service, mock_config_service,
+    ):
+        _setup_kb_owner_resolve(service)
+        calls = []
+        service.graph_provider.get_virtual_record_ids_shared_outside_connector = AsyncMock(
+            side_effect=lambda cid: calls.append("shared") or ["v1"]
+        )
+        service.graph_provider.delete_connector_instance = AsyncMock(
+            side_effect=lambda **kw: calls.append("delete") or {"success": True}
+        )
+
+        with patch("app.connectors.sources.localKB.handlers.kb_service.asyncio") as mock_asyncio:
+            mock_asyncio.create_task = MagicMock()
+            await service.delete_knowledge_base("kb1", "user1", "org1")
+            mock_asyncio.create_task.call_args[0][0].close()
+
+        assert calls == ["shared", "delete"]
+
+    @pytest.mark.asyncio
+    async def test_delete_response_not_blocked_by_cleanup(self, service, mock_config_service):
+        """The API returns success immediately; cleanup runs asynchronously."""
+        _setup_kb_owner_resolve(service)
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": ["v1"],
+        })
+
+        with patch("app.connectors.sources.localKB.handlers.kb_service.asyncio") as mock_asyncio:
+            mock_asyncio.create_task = MagicMock()
+            result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert result["success"] is True
+        assert result["code"] == 200
+        mock_asyncio.create_task.assert_called_once()
+        assert mock_asyncio.create_task.call_args[1]["name"] == "kb-cleanup-kb1"
+        coro = mock_asyncio.create_task.call_args[0][0]
+        coro.close()
 
 
 class TestCreateFolderInKb:
@@ -2680,3 +2788,71 @@ class TestUploadRecordsPipeline:
         result = await service._upload_records("kb1", "user1", "org1", [], parent_folder_id=None)
         assert result["success"] is False
         assert result["code"] == 500
+
+
+# ===========================================================================
+# Folder nesting limit (KB_MAX_FOLDER_DEPTH)
+# ===========================================================================
+
+
+def _nested_path(levels: int) -> str:
+    return "/".join([f"L{i}" for i in range(levels)] + ["f.txt"])
+
+
+class TestFolderDepthLimit:
+    @pytest.mark.parametrize("path, levels", [
+        ("a.txt", 0), ("top/a.txt", 1), ("top/sub/a.txt", 2), ("/top//a.txt", 1), ("", 0),
+    ])
+    def test_folder_levels_in_path(self, path, levels):
+        assert folder_levels_in_path(path) == levels
+
+    @pytest.mark.asyncio
+    async def test_create_nested_folder_at_the_limit_succeeds(self, service):
+        service.graph_provider._validate_folder_creation = AsyncMock(return_value={"valid": True})
+        service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
+        service.graph_provider.get_folder_depth = AsyncMock(return_value=KB_MAX_FOLDER_DEPTH - 1)
+
+        result = await service.create_nested_folder("kb1", "parent1", "Sub", "user1", "org1")
+
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_create_nested_folder_past_the_limit_is_rejected(self, service):
+        service.graph_provider._validate_folder_creation = AsyncMock(return_value={"valid": True})
+        service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_folder_depth = AsyncMock(return_value=KB_MAX_FOLDER_DEPTH)
+
+        result = await service.create_nested_folder("kb1", "parent1", "Sub", "user1", "org1")
+
+        assert result["code"] == 400
+        assert result["reason"] == FOLDER_DEPTH_LIMIT_REASON
+        service.processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_upload_past_the_limit_creates_nothing(self, service):
+        service.graph_provider._validate_upload_context = AsyncMock(return_value={"valid": True})
+        service.graph_provider.get_folder_depth = AsyncMock(return_value=KB_MAX_FOLDER_DEPTH - 2)
+
+        result = await service._upload_records(
+            "kb1", "user1", "org1", [{"filePath": _nested_path(3)}], parent_folder_id="deep"
+        )
+
+        assert result["code"] == 400
+        service.processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_move_folder_whose_subtree_would_pass_the_limit_is_rejected(self, service):
+        _setup_writer(service)
+        service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
+        service.graph_provider.get_record_parent_info = AsyncMock(return_value={"id": "old-parent"})
+        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.is_record_folder = AsyncMock(return_value=True)
+        service.graph_provider.is_record_descendant_of = AsyncMock(return_value=False)
+        service.graph_provider.get_folder_depth = AsyncMock(return_value=KB_MAX_FOLDER_DEPTH - 5)
+        service.graph_provider.get_folder_subtree_height = AsyncMock(return_value=5)
+
+        result = await service.move_record("kb1", "folder1", "new-parent", "user1")
+
+        assert result["code"] == 400
+        assert result["reason"] == FOLDER_DEPTH_LIMIT_REASON

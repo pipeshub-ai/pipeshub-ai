@@ -14,7 +14,11 @@ def mock_logger():
 
 @pytest.fixture
 def mock_graph_provider():
-    return AsyncMock()
+    provider = AsyncMock()
+    # The folder-depth checks compare these with a number; a bare mock can't be compared.
+    provider.get_folder_depth = AsyncMock(return_value=1)
+    provider.get_folder_subtree_height = AsyncMock(return_value=0)
+    return provider
 
 
 @pytest.fixture
