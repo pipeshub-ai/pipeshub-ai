@@ -113,7 +113,6 @@ class EntityHit:
     score: float
     records: list[dict[str, Any]]
     more_records: bool
-    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -425,7 +424,6 @@ async def search_entities_for_user(
                 or not probe.exhausted
                 or probe.capped
             ),
-            aliases=tuple(str(a) for a in (probe.hit.get("aliases") or []) if a),
         )
         for probe in probes
         if _is_kept(context, probe)
