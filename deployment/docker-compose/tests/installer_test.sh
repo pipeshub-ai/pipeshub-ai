@@ -48,6 +48,14 @@ check() { # check "desc" actual expected_substring
   if [[ "$2" == *"$3"* ]]; then pass "$1"; else
     fail "$1"; printf "         expected to contain: %s\n         got: %s\n" "$3" "$2"; fi
 }
+# For assertions about a helper's exact return value. Substring matching makes
+# an empty expectation vacuously true, and lets a commented-out line satisfy a
+# check meant to catch one -- so anything asserting `optional_env_line` /
+# `get_existing_val` output must use this instead of `check`.
+check_exact() { # check_exact "desc" actual expected
+  if [[ "$2" == "$3" ]]; then pass "$1"; else
+    fail "$1"; printf "         expected: %s\n         got: %s\n" "$3" "$2"; fi
+}
 
 # Extract a top-level function definition (closing brace in column 0) from a
 # script so the real implementation can be exercised in isolation.
@@ -364,6 +372,82 @@ if [[ "$envtmpl" == *$'\nMAX_PENDING_INDEXING_TASKS=28\n'* ]]; then
 else
   pass "env.template does not pin pending indexing tasks 28"
 fi
+
+echo "== Indexing dead-letter backstop is operator-tunable =="
+# REDIS_MAX_DELIVERIES counts every delivery, including the consumer's own
+# hold/release re-reads, so a throttled indexer dead-letters healthy records
+# unless the operator can raise it. Compose forwards only what it enumerates.
+compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
+check "compose forwards REDIS_MAX_DELIVERIES" "$compose" 'REDIS_MAX_DELIVERIES=${REDIS_MAX_DELIVERIES:-}'
+if grep -E "^[[:space:]]+- REDIS_MAX_DELIVERIES=\\\$\\{REDIS_MAX_DELIVERIES:-[0-9]+\\}[[:space:]]*$" <<<"$compose" >/dev/null; then
+  fail "REDIS_MAX_DELIVERIES must not pin a numeric Compose default (overrides the in-tree default)"
+else
+  pass "REDIS_MAX_DELIVERIES is not numeric-defaulted"
+fi
+check "env.template documents REDIS_MAX_DELIVERIES" "$envtmpl" "REDIS_MAX_DELIVERIES"
+check "installer .env documents REDIS_MAX_DELIVERIES" "$inner" "REDIS_MAX_DELIVERIES"
+
+helm_values="$(cat "$REPO_ROOT/deployment/helm/pipeshub-ai/values.yaml")"
+check "helm values expose redisMaxDeliveries" "$helm_values" "redisMaxDeliveries"
+helm_tpl="$(cat "$REPO_ROOT/deployment/helm/pipeshub-ai/templates/deployment.yaml")"
+check "helm deployment wires REDIS_MAX_DELIVERIES" "$helm_tpl" "REDIS_MAX_DELIVERIES"
+
+echo "== Telemetry can be opted out of before boot =="
+# Compose forwards only what it enumerates, so the opt-out needs listing (#3299).
+compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
+check "compose forwards ENABLE_METRIC_COLLECTION" "$compose" 'ENABLE_METRIC_COLLECTION=${ENABLE_METRIC_COLLECTION:-}'
+# A default here would override the stored setting for everyone.
+if grep -E "^[[:space:]]+- ENABLE_METRIC_COLLECTION=\\\$\\{ENABLE_METRIC_COLLECTION:-[^}]+\\}[[:space:]]*$" <<<"$compose" >/dev/null; then
+  fail "ENABLE_METRIC_COLLECTION must not pin a Compose default (it would override the stored setting)"
+else
+  pass "ENABLE_METRIC_COLLECTION is not defaulted"
+fi
+check "env.template documents ENABLE_METRIC_COLLECTION" "$envtmpl" "ENABLE_METRIC_COLLECTION"
+check "installer .env documents ENABLE_METRIC_COLLECTION" "$inner" "ENABLE_METRIC_COLLECTION"
+check "helm values expose enableMetricCollection" "$helm_values" "enableMetricCollection"
+check "helm deployment wires ENABLE_METRIC_COLLECTION" "$helm_tpl" "ENABLE_METRIC_COLLECTION"
+
+echo "== Both knobs survive --reconfigure =="
+# The wizard rewrites .env in full, so a knob it does not read back is dropped.
+# Losing the telemetry opt-out re-enables collection; losing the delivery cap
+# silently reverts a throttled operator to the in-tree default of 10.
+check "reconfigure reads back ENABLE_METRIC_COLLECTION" "$inner" 'get_existing_val ENABLE_METRIC_COLLECTION'
+check "reconfigure reads back REDIS_MAX_DELIVERIES" "$inner" 'get_existing_val REDIS_MAX_DELIVERIES'
+if grep -E '^# ENABLE_METRIC_COLLECTION=false$' <<<"$inner" >/dev/null; then
+  fail "installer .env must render ENABLE_METRIC_COLLECTION through optional_env_line"
+else
+  pass "installer .env renders ENABLE_METRIC_COLLECTION through optional_env_line"
+fi
+if grep -E '^# REDIS_MAX_DELIVERIES=10$' <<<"$inner" >/dev/null; then
+  fail "installer .env must render REDIS_MAX_DELIVERIES through optional_env_line"
+else
+  pass "installer .env renders REDIS_MAX_DELIVERIES through optional_env_line"
+fi
+
+# Exercise the real helpers: a value an operator set must come back verbatim,
+# and an unset knob must stay a comment rather than becoming `KEY=`.
+eval "$(extract_fn optional_env_line "$INNER_INSTALLER")"
+check_exact "optional_env_line keeps a set value" \
+  "$(optional_env_line ENABLE_METRIC_COLLECTION "false" "false")" \
+  "ENABLE_METRIC_COLLECTION=false"
+check_exact "optional_env_line keeps a raised cap" \
+  "$(optional_env_line REDIS_MAX_DELIVERIES "100000" "10")" \
+  "REDIS_MAX_DELIVERIES=100000"
+check_exact "optional_env_line comments out an unset knob" \
+  "$(optional_env_line REDIS_MAX_DELIVERIES "" "10")" \
+  "# REDIS_MAX_DELIVERIES=10"
+(
+  # Defined later in this file; pull it in here rather than depend on order.
+  eval "$(extract_fn get_existing_val "$INNER_INSTALLER")"
+  ENV_FILE="$TMP_ROOT/env_reconfigure"
+  printf 'ENABLE_METRIC_COLLECTION=false\nREDIS_MAX_DELIVERIES=100000\n' >"$ENV_FILE"
+  check_exact "reads back a stored opt-out" "$(get_existing_val ENABLE_METRIC_COLLECTION "")" "false"
+  check_exact "reads back a stored delivery cap" "$(get_existing_val REDIS_MAX_DELIVERIES "")" "100000"
+  # Absent keys must yield the empty default, so the placeholder is emitted.
+  # Exact match matters here: substring matching against "" always passes.
+  : >"$ENV_FILE"
+  check_exact "missing opt-out yields empty" "$(get_existing_val ENABLE_METRIC_COLLECTION "")" ""
+)
 
 echo "== OAuth device / DCR launch defaults =="
 envtmpl="$(cat "$COMPOSE_DIR/env.template")"

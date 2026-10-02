@@ -386,6 +386,9 @@ config:
   # connectorPublicBackend: "https://pipeshub-connector.example.com"
   frontendPublicUrl: "" # Fill
   # frontendPublicUrl: "https://pipeshub.dyn.example.com"
+  # "false" opts out of telemetry before the first push (#3299). Empty leaves
+  # the in-app toggle in charge. Not the `telemetry` block above (OpenTelemetry).
+  enableMetricCollection: ""
 
   # SAML SP Entity ID (Issuer) — must match the Audience URI configured in your IdP.
   # Enter this value in your IdP (e.g. Okta → "Audience URI (SP Entity ID)").
@@ -641,6 +644,15 @@ etcd:
 messageBroker:
   type: redis
   redisStreamsMaxLen: "500000"
+  # Delivery-count backstop for the indexing dead-letter path. `times_delivered`
+  # counts actual deliveries — the first read, a claim after a restart, and an
+  # idle-drain recovery pass. The consumer's own hold/release refresh uses
+  # XCLAIM JUSTID, which resets idle time without incrementing the counter, so
+  # it does not consume this budget. Raise it above the delivery-counting reads
+  # and recovery passes a record can see before it is processed (#3298).
+  # Values below MAX_DELIVERY_ATTEMPTS + 1 are floored to that. Empty keeps the
+  # in-tree default. Read by both brokers despite the name.
+  redisMaxDeliveries: ""
 
 # Celery (backend/python/app/core/celery_app.py) has no Redis Cluster
 # transport. Required when redis.mode is not "standalone" -- the app fails

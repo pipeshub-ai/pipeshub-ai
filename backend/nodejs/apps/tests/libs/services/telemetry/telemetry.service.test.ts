@@ -412,4 +412,174 @@ describe('TelemetryService', () => {
       expect((svc as any).pushInterval).to.be.null;
     });
   });
+
+  // The stored config is only reachable from the UI, and the first push has
+  // already gone out by the time anyone opens that screen (#3299).
+  describe('ENABLE_METRIC_COLLECTION pre-boot opt-out', () => {
+    const ENV_KEY = 'ENABLE_METRIC_COLLECTION';
+    let savedEnv: string | undefined;
+
+    beforeEach(() => {
+      savedEnv = process.env[ENV_KEY];
+    });
+
+    afterEach(() => {
+      if (savedEnv === undefined) {
+        delete process.env[ENV_KEY];
+      } else {
+        process.env[ENV_KEY] = savedEnv;
+      }
+    });
+
+    it('should keep the pusher off when the env var is false, even though the stored config says true', async () => {
+      process.env[ENV_KEY] = 'false';
+      const kv = mockKvStore(storedConfig({ enableMetricCollection: 'true' }));
+      const svc = new TelemetryService(kv as any);
+      await flushAsync();
+
+      expect((svc as any).enableMetricCollection).to.be.false;
+      expect((svc as any).pushInterval).to.be.null;
+    });
+
+    it('should accept every truthy spelling the Python pusher accepts', async () => {
+      // A spelling one service reads as enabled and the other as disabled
+      // would leave telemetry on in half the stack.
+      for (const value of ['1', 'true', 'yes', 'on', ' TRUE ', 'Yes']) {
+        process.env[ENV_KEY] = value;
+        (TelemetryService as any).instance = undefined;
+        const svc = new TelemetryService(
+          mockKvStore(storedConfig({ enableMetricCollection: 'false' })) as any,
+        );
+        await flushAsync();
+
+        expect(
+          (svc as any).enableMetricCollection,
+          `value="${value}"`,
+        ).to.equal(true);
+        (svc as any).stopMetricsPush();
+      }
+    });
+
+    it('should accept the other falsy spellings', async () => {
+      for (const value of ['0', 'off', 'no', 'FALSE', ' false ']) {
+        process.env[ENV_KEY] = value;
+        (TelemetryService as any).instance = undefined;
+        const svc = new TelemetryService(
+          mockKvStore(storedConfig({ enableMetricCollection: 'true' })) as any,
+        );
+        await flushAsync();
+
+        expect(
+          (svc as any).enableMetricCollection,
+          `value="${value}"`,
+        ).to.equal(false);
+        (svc as any).stopMetricsPush();
+      }
+    });
+
+    it('should let the env var turn collection on over a stored false', async () => {
+      process.env[ENV_KEY] = 'true';
+      const svc = new TelemetryService(
+        mockKvStore(storedConfig({ enableMetricCollection: 'false' })) as any,
+      );
+      await flushAsync();
+
+      expect((svc as any).enableMetricCollection).to.be.true;
+      (svc as any).stopMetricsPush();
+    });
+
+    it('should leave the stored config in charge when the env var is blank', async () => {
+      for (const value of ['', '   ']) {
+        process.env[ENV_KEY] = value;
+        (TelemetryService as any).instance = undefined;
+        const svc = new TelemetryService(
+          mockKvStore(storedConfig({ enableMetricCollection: 'false' })) as any,
+        );
+        await flushAsync();
+
+        expect(
+          (svc as any).enableMetricCollection,
+          `value="${value}"`,
+        ).to.equal(false);
+        (svc as any).stopMetricsPush();
+      }
+    });
+
+    it('should read a stored boolean without throwing', async () => {
+      // The config blob is raw JSON, so a hand-edited or older blob can hold a
+      // boolean. Calling trim() on it would abort initialization before the
+      // pusher ever starts.
+      // startMetricsPush sleeps START_DELAY_MS before it creates the interval;
+      // flushAsync() does not cover that, so without the stub the interval
+      // would be created after this test's cleanup.
+      const startMetricsPush = sandbox
+        .stub(TelemetryService.prototype as any, 'startMetricsPush')
+        .resolves();
+      for (const [stored, expected] of [
+        [false, false],
+        [true, true],
+      ] as const) {
+        // The flag alone would still pass if initialization never reached
+        // startOrStopMetricCollection; assert the value was actually acted on.
+        startMetricsPush.resetHistory();
+        delete process.env[ENV_KEY];
+        (TelemetryService as any).instance = undefined;
+        const raw = JSON.stringify({
+          serverUrl: VALID_URL,
+          apiKey: 'test-api-key',
+          installId: 'install-1234',
+          appVersion: '9.9.9',
+          pushIntervalMs: '60000',
+          enableMetricCollection: stored,
+        });
+        const svc = new TelemetryService(mockKvStore(raw) as any);
+        await flushAsync();
+
+        expect(
+          (svc as any).enableMetricCollection,
+          `stored=${String(stored)}`,
+        ).to.equal(expected);
+        expect(
+          startMetricsPush.calledOnce,
+          `stored=${String(stored)}`,
+        ).to.equal(stored);
+        (svc as any).stopMetricsPush();
+      }
+    });
+
+    it('should seed the stored default from the env var rather than hardcoding true', async () => {
+      sandbox
+        .stub(TelemetryService.prototype as any, 'startMetricsPush')
+        .resolves();
+      process.env[ENV_KEY] = 'false';
+      const kv = mockKvStore(null);
+      const svc = new TelemetryService(kv as any);
+      await flushAsync();
+
+      // The stored blob is encrypted, so read it back the way the service does.
+      const stored = JSON.parse(
+        (svc as any).getEncryptionService().decrypt(kv.set.firstCall.args[1]),
+      ) as Record<string, string>;
+      expect(stored.enableMetricCollection).to.equal('false');
+    });
+
+    it('should seed the shipped default when the env var is whitespace-only', async () => {
+      // Persisting the raw whitespace would make the stored value read as false
+      // on the next resolve, turning "no override" into an opt-out.
+      sandbox
+        .stub(TelemetryService.prototype as any, 'startMetricsPush')
+        .resolves();
+      process.env[ENV_KEY] = '   ';
+      const kv = mockKvStore(null);
+      const svc = new TelemetryService(kv as any);
+      await flushAsync();
+
+      const stored = JSON.parse(
+        (svc as any).getEncryptionService().decrypt(kv.set.firstCall.args[1]),
+      ) as Record<string, string>;
+      expect(stored.enableMetricCollection).to.equal('true');
+      expect((svc as any).enableMetricCollection).to.be.true;
+      (svc as any).stopMetricsPush();
+    });
+  });
 });

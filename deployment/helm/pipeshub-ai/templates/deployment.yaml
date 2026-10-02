@@ -173,6 +173,13 @@ spec:
               value: {{ .Values.config.connectorPublicBackend | quote }}
             - name: FRONTEND_PUBLIC_URL
               value: {{ .Values.config.frontendPublicUrl | quote }}
+            # Telemetry opt-out before the first push (#3299).
+            # No `default` filter: sprig treats boolean false as empty, which
+            # would turn `--set config.enableMetricCollection=false` into a blank
+            # value and hand control back to the in-app toggle. values.yaml
+            # already supplies the empty default.
+            - name: ENABLE_METRIC_COLLECTION
+              value: {{ .Values.config.enableMetricCollection | quote }}
             
             # Internal service URLs
             - name: QUERY_BACKEND
@@ -232,6 +239,11 @@ spec:
               value: {{ .Values.messageBroker.type | default "redis" | quote }}
             - name: REDIS_STREAMS_MAXLEN
               value: {{ .Values.messageBroker.redisStreamsMaxLen | default "500000" | quote }}
+            # No `default` filter: Helm treats numeric 0 as empty, which would
+            # turn an explicit REDIS_MAX_DELIVERIES=0 into a blank value and fall
+            # back to the in-tree default. values.yaml supplies the empty default.
+            - name: REDIS_MAX_DELIVERIES
+              value: {{ .Values.messageBroker.redisMaxDeliveries | quote }}
 
             {{- if eq .Values.messageBroker.type "kafka" }}
             # Kafka config

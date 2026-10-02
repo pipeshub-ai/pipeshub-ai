@@ -15,7 +15,6 @@ import { setInstallInfo } from './modules/install-metrics';
 import { createHash, randomUUID } from 'crypto';
 const SCHEMA_VERSION = 1;
 const METRICS_VERSION = '2';
-import { parseBoolean } from '../../../modules/storage/utils/utils';
 import { configPaths } from '../../../modules/configuration_manager/paths/paths';
 import { EncryptionService } from '../../encryptor/encryptor';
 import { loadConfigurationManagerConfig } from '../../../modules/configuration_manager/config/config';
@@ -38,6 +37,33 @@ const firstNonEmpty = (...values: (string | undefined)[]): string => {
     }
   }
   return '';
+};
+
+// The Python services parse the same variable (backend/python/app/telemetry/pusher.py,
+// `_as_bool`) and accept these spellings. Anything else -- including 'false',
+// 'no', and '0' -- is false. Keeping the two lists identical matters: a value
+// this service read as disabled but the pusher read as enabled would leave
+// telemetry on in half the stack.
+const TRUE_SPELLINGS = new Set(['1', 'true', 'yes', 'on']);
+
+const envFlag = (value: string): boolean =>
+  TRUE_SPELLINGS.has(value.trim().toLowerCase());
+
+// Reads the stored setting. The config blob is raw JSON, so this arrives as
+// either a string (what the UI writes) or a boolean (a hand-edited or older
+// blob); a boolean is a real value, not something to trim. Blank or absent
+// falls back to the shipped default rather than parsing as false.
+const storedFlag = (
+  value: boolean | string | undefined,
+  fallback: boolean,
+): boolean => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (value == null || value.trim() === '') {
+    return fallback;
+  }
+  return TRUE_SPELLINGS.has(value.trim().toLowerCase());
 };
 
 interface MetricsConfig {
@@ -111,9 +137,7 @@ export class TelemetryService implements ITelemetryService {
         Number.isFinite(parsedInterval) && parsedInterval > 0
           ? parsedInterval
           : DEFAULTS.PUSH_INTERVAL;
-      this.enableMetricCollection = parseBoolean(
-        firstNonEmpty(config[keyValues.ENABLE_METRIC_COLLECTION], 'true'),
-      );
+      this.enableMetricCollection = this.resolveEnableMetricCollection(config);
 
       this.logConfig();
       await this.startOrStopMetricCollection();
@@ -131,6 +155,23 @@ export class TelemetryService implements ITelemetryService {
     }
   }
 
+  // Env wins over the stored config: that one is only reachable from the UI,
+  // which nobody can reach before the pusher's first interval fires (#3299).
+  // Blank = no override.
+  private resolveEnableMetricCollection(config: MetricsConfig): boolean {
+    const fromEnv = process.env.ENABLE_METRIC_COLLECTION;
+    if (fromEnv != null && fromEnv.trim() !== '') {
+      return envFlag(fromEnv);
+    }
+    // The declared type understates this: the blob is raw JSON, so a boolean
+    // is possible at runtime.
+    const stored = config[keyValues.ENABLE_METRIC_COLLECTION] as
+      | string
+      | boolean
+      | undefined;
+    return storedFlag(stored, true);
+  }
+
   private async persistMissingDefaults(config: MetricsConfig): Promise<void> {
     const defaults: [string, () => string][] = [
       [
@@ -141,12 +182,29 @@ export class TelemetryService implements ITelemetryService {
       [keyValues.INSTALL_ID, () => this.generateInstallId()],
       [keyValues.APP_VERSION, () => DEFAULTS.APP_VERSION],
       [keyValues.PUSH_INTERVAL, () => String(DEFAULTS.PUSH_INTERVAL)],
-      [keyValues.ENABLE_METRIC_COLLECTION, () => 'true'],
+      [
+        keyValues.ENABLE_METRIC_COLLECTION,
+        // Normalize before persisting. Storing the raw env value would persist
+        // a whitespace-only string, which `storedFlag` then reads as false --
+        // turning "blank env = no override" into an opt-out.
+        () => {
+          const fromEnv = process.env.ENABLE_METRIC_COLLECTION;
+          if (fromEnv == null || fromEnv.trim() === '') {
+            return 'true';
+          }
+          return envFlag(fromEnv) ? 'true' : 'false';
+        },
+      ],
     ];
     let changed = false;
     for (const [key, makeDefault] of defaults) {
-      const stored = config[key];
-      if (stored == null || stored.trim() === '') {
+      // A stored boolean is a real value; calling trim() on it would throw and
+      // abort initialization before startOrStopMetricCollection runs.
+      const stored = config[key] as string | boolean | undefined;
+      const unset =
+        stored == null ||
+        (typeof stored === 'string' && stored.trim() === '');
+      if (unset) {
         config[key] = makeDefault();
         changed = true;
       }

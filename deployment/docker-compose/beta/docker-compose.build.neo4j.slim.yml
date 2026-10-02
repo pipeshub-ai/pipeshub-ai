@@ -49,6 +49,8 @@ services:
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3001}
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
+      # Telemetry opt-out before the first push (#3299).
+      - ENABLE_METRIC_COLLECTION=${ENABLE_METRIC_COLLECTION:-}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       # Security settings - allow override with custom secret
       - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
@@ -78,6 +80,8 @@ services:
       # Message broker config
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
+      # Indexing dead-letter backstop (#3298). Read by both brokers.
+      - REDIS_MAX_DELIVERIES=${REDIS_MAX_DELIVERIES:-}
 
       # Redis config — general instance (KV, BullMQ/Celery, Streams)
       # DB 0: KV persistent config  DB 1: BullMQ/Celery  DB 2: Streams

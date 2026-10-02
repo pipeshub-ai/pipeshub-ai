@@ -61,6 +61,14 @@ def _as_bool(value: object, default: bool = True) -> bool:
     return default
 
 
+def _enable_metric_collection(raw_value: object) -> bool:
+    """Env overrides the stored config; blank leaves it in charge (#3299)."""
+    override = (os.getenv("ENABLE_METRIC_COLLECTION") or "").strip()
+    if override:
+        return _as_bool(override)
+    return _as_bool(raw_value)
+
+
 def _interval_s(raw_value: object) -> float:
     try:
         ms = float(str(raw_value).strip())
@@ -150,7 +158,7 @@ class MetricsPusher:
             "url": raw["serverUrl"],
             "token": raw["apiKey"],
             "interval_s": _interval_s(raw["pushIntervalMs"]),
-            "enabled": _as_bool(raw["enableMetricCollection"]),
+            "enabled": _enable_metric_collection(raw["enableMetricCollection"]),
             "install_id": raw["installId"],
             # Node owns appVersion; every service reports the same value.
             "version": raw["appVersion"],

@@ -411,6 +411,67 @@ the table says.
 
 ---
 
+## Telemetry
+
+| Variable | Values | Default |
+|----------|--------|---------|
+| `ENABLE_METRIC_COLLECTION` | `true` \| `false` | unset (the in-app toggle decides) |
+
+Metric collection is on by default. The pusher starts shortly after boot, but the
+Node service does not send its first push until `PUSH_INTERVAL` has elapsed (five
+minutes by default), so the in-app toggle under **Settings → Data collection** cannot
+be reached in time. Setting `ENABLE_METRIC_COLLECTION=false` in `.env` stops
+collection before that first push. It is read by both the Node service and the Python
+services, and it wins over the stored setting; leave it unset to keep using the in-app
+toggle. `true` is accepted too, but is only useful to re-enable collection on a host
+whose stored setting was turned off.
+
+A value set here survives `./install.sh --reconfigure`, which rewrites `.env` in
+full; the installer reads the key back before regenerating the file.
+
+This is separate from the `telemetry` block in the Helm chart, which configures
+OpenTelemetry tracing, not the metrics collector. On Helm, set
+`config.enableMetricCollection` — a bare `false` is passed through, so
+`--set config.enableMetricCollection=false` opts out.
+
+---
+
+## Indexing dead-letter backstop
+
+| Variable | Values | Default |
+|----------|--------|---------|
+| `REDIS_MAX_DELIVERIES` | integer | `10` |
+
+Every Redis Streams consumer (and the Kafka indexing consumer, which shares the same
+counter) dead-letters an indexing message once it has been delivered this many times.
+The counter is Redis's own `times_delivered`. It counts actual deliveries — the first
+read, a claim after a restart, and an idle-drain recovery pass (`XAUTOCLAIM`). The
+consumer's own hold/release refresh uses `XCLAIM JUSTID`, which resets idle time
+without incrementing `times_delivered`, so waiting does not consume this budget.
+
+The trap is the counting paths. A queue that is long relative to throughput — a
+throttled indexer, a slow parser, a large corpus on a small host — accumulates
+recovery passes, and a record can cross the backstop and be marked `FAILED` at the
+moment it is finally processed, with no processing failure behind it:
+
+```text
+Released 50 entry(ies) held longer than 900s back to the pending list; they will be re-read rather than held past Redis's idle-claim window
+Dead-lettered 1759...-0 (recordId=..., tracking id ...): delivered 10 times (backstop 10); likely crashing the consumer before the failure counter is written
+```
+
+Set it above the number of delivery-counting reads and recovery passes a record can see
+before it is processed. Values below `MAX_DELIVERY_ATTEMPTS + 1` (4 by default) are
+floored to that, so `0` does not disable the backstop. A value set here survives
+`./install.sh --reconfigure`; the installer reads the key back before regenerating
+`.env`, so a raised cap is not silently reverted to the shipped default. Setting it to
+`100000` disables the backstop in practice; the app-tracked failure
+counter is unaffected either way, so genuine processing failures are still caught after
+`MAX_DELIVERY_ATTEMPTS` attempts. Note that `MAX_DELIVERY_ATTEMPTS` is documented in
+`env.template` but is **not** forwarded by the compose files — only `.env` keys the
+compose file enumerates reach the container.
+
+---
+
 ## Container outbound connectivity
 
 PipesHub starts and indexes documents **without** outbound internet when models are

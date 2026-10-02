@@ -1,6 +1,7 @@
 """Unit tests for app.telemetry.pusher — the metrics push loop."""
 
 import asyncio
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.telemetry.event_buffer import event_buffer
@@ -10,6 +11,7 @@ from app.telemetry.pusher import (
     MetricsPusher,
     _as_bool,
     _as_dict,
+    _enable_metric_collection,
 )
 
 
@@ -157,6 +159,58 @@ class TestLoadConfig:
         pusher._config_service.get_config.assert_called_once_with(
             METRICS_CONFIG_KEY, default={}
         )
+
+
+class TestEnableMetricCollectionOverride:
+    """ENABLE_METRIC_COLLECTION opts out before the config store can be edited.
+
+    The stored value is only reachable from the UI, and the first push has
+    already gone out by then (#3299).
+    """
+
+    def test_env_false_overrides_a_stored_true(self):
+        with patch.dict(os.environ, {"ENABLE_METRIC_COLLECTION": "false"}):
+            assert _enable_metric_collection("true") is False
+
+    def test_env_accepts_the_other_falsy_spellings(self):
+        for value in ("0", "off", "no", "FALSE", " False "):
+            with patch.dict(os.environ, {"ENABLE_METRIC_COLLECTION": value}):
+                assert _enable_metric_collection("true") is False, value
+
+    def test_env_true_overrides_a_stored_false(self):
+        with patch.dict(os.environ, {"ENABLE_METRIC_COLLECTION": "true"}):
+            assert _enable_metric_collection("false") is True
+
+    def test_blank_env_leaves_the_stored_value_in_charge(self):
+        for value in ("", "   "):
+            with patch.dict(os.environ, {"ENABLE_METRIC_COLLECTION": value}):
+                assert _enable_metric_collection("false") is False, value
+                assert _enable_metric_collection("true") is True, value
+
+    def test_unset_env_leaves_the_stored_value_in_charge(self):
+        env = {k: v for k, v in os.environ.items() if k != "ENABLE_METRIC_COLLECTION"}
+        with patch.dict(os.environ, env, clear=True):
+            assert _enable_metric_collection("false") is False
+            assert _enable_metric_collection("true") is True
+
+    async def test_load_config_reports_the_override(self):
+        pusher = make_pusher(node_config(enableMetricCollection="true"))
+
+        with patch.dict(os.environ, {"ENABLE_METRIC_COLLECTION": "false"}):
+            cfg = await pusher._load_config()
+
+        assert cfg is not None
+        assert cfg["enabled"] is False
+
+    async def test_load_config_still_honours_the_ui_toggle(self):
+        pusher = make_pusher(node_config(enableMetricCollection="false"))
+
+        env = {k: v for k, v in os.environ.items() if k != "ENABLE_METRIC_COLLECTION"}
+        with patch.dict(os.environ, env, clear=True):
+            cfg = await pusher._load_config()
+
+        assert cfg is not None
+        assert cfg["enabled"] is False
 
 
 class TestConfigDeferral:
