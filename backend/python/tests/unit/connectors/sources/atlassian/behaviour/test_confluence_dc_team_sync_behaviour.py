@@ -22,6 +22,9 @@ from atlassian_behaviour_fakes import (
 )
 from fastapi import HTTPException
 
+from app.connectors.sources.atlassian.confluence_datacenter import (
+    connector as team_connector_module,
+)
 from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     ConfluenceDataCenterConnector,
 )
@@ -44,6 +47,9 @@ class TeamDb(FakeRecordsDb):
         super().__init__()
         self.migrations: list[dict[str, Any]] = []
         self.fail_delete_for = set()
+        # Record ids with an isOfType doc; only a cascade delete removes it.
+        self.type_docs: set[str] = set()
+        self.fail_group_read = False
 
     async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> object:
         return next((u for u in reversed(self.app_users) if u.source_user_id == source_user_id), None)
@@ -91,10 +97,26 @@ class TeamDb(FakeRecordsDb):
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> object:
         return self.record_groups.get(external_id)
 
+    async def get_nodes_by_filters(
+        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Record group nodes; like both graph providers, a failed read answers [] instead of raising."""
+        assert collection == "recordGroups", collection
+        if self.fail_group_read:
+            return []
+        nodes = [{**g.to_arango_base_record_group(), "id": g.id} for g in self.record_groups.values()]
+        matching = [n for n in nodes if all(n.get(k) == v for k, v in filters.items())]
+        return [{f: n.get(f) for f in return_fields} if return_fields else n for n in matching]
+
+    async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
+        await super().on_new_records(records_with_permissions)
+        self.type_docs.update(record.id for record, _ in records_with_permissions)
+
     async def on_record_group_deleted(self, external_group_id: str, connector_id: str) -> bool:
         return self.record_groups.pop(external_group_id, None) is not None
 
     async def on_record_deleted(self, record_id: str, **_: object) -> None:
+        """Like the real one: the record and its parent link go, its isOfType doc stays behind."""
         record = self._by_id(record_id)
         if record is not None and record.external_record_id in self.fail_delete_for:
             raise RuntimeError(f"delete of {record_id} failed")
@@ -106,11 +128,13 @@ class TeamDb(FakeRecordsDb):
         self, record_ids: list[str], connector_id: str, cascade_children: bool = True
     ) -> dict[str, Any]:
         """Like ``delete_records_recursive``: files under a record are ATTACHMENT edges, everything
-        else PARENT_CHILD, which only a full cascade follows; a survivor's parent link is cleared."""
+        else PARENT_CHILD, which only a full cascade follows; a survivor's parent link is cleared.
+        A root that no longer exists is a failed root, and type docs go with their records."""
         from app.models.entities import RecordType as RT
 
         containers = {RT.CONFLUENCE_PAGE, RT.CONFLUENCE_BLOGPOST, RT.COMMENT, RT.INLINE_COMMENT}
         doomed: list[Any] = []
+        failed = [{"record_id": i, "reason": "Validation failed"} for i in record_ids if self._by_id(i) is None]
         pending = [r for r in (self._by_id(i) for i in record_ids) if r is not None]
         while pending:
             record = pending.pop()
@@ -128,11 +152,15 @@ class TeamDb(FakeRecordsDb):
         roots = {r.external_record_id for r in doomed if r.id in record_ids}
         for record in doomed:
             del self.records[record.external_record_id]
+            self.type_docs.discard(record.id)
             self.deleted.append(record.id)
         for survivor in self.records.values():
             if survivor.parent_external_record_id in roots:
                 survivor.parent_external_record_id = None
-        return {"success": True, "failed_count": 0, "deleted_records": [r.id for r in doomed]}
+        return {
+            "success": True, "failed_records": failed, "failed_count": len(failed),
+            "deleted_records": [{"record_id": r.id} for r in doomed],
+        }
 
     def members_of(self, group_name: str) -> Optional[list[str]]:
         for group, members in reversed(self.user_groups):
@@ -1450,6 +1478,67 @@ class TestRemovalFromSource:
         assert "10" not in db.record_groups
         assert not {"p1", "p2", "p3"} & set(db.records)
         assert store.values_for("confluence_pages/ENG")["last_sync_time"] == ""
+
+    async def test_a_removed_space_leaves_no_type_docs_behind(self, atlassian_api, db, store, search) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        eng_ids = {r.id for r in db.records.values() if r.external_record_group_id == "10"}
+        assert eng_ids and eng_ids <= db.type_docs
+        atlassian_api.on("GET", f"{API}/space", {"results": [space("HR", 20)], "_links": {"base": BASE}})
+
+        await connector.run_sync()
+
+        assert "10" not in db.record_groups
+        assert not eng_ids & db.type_docs, "a record's isOfType doc goes with it"
+
+    async def test_a_space_with_no_records_left_is_removed_when_it_leaves(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        atlassian_api.on("GET", f"{API}/space", {"results": [space("ENG", 10), space("HR", 20)], "_links": {"base": BASE}})
+        await connector.run_sync()
+        assert "20" in db.record_groups
+        assert not any(r.external_record_group_id == "20" for r in db.records.values())
+
+        atlassian_api.on("GET", f"{API}/space", {"results": [space("ENG", 10)], "_links": {"base": BASE}})
+        await connector.run_sync()
+
+        assert "20" not in db.record_groups
+        assert "10" in db.record_groups
+
+    async def test_a_failed_read_of_the_stored_spaces_removes_none_and_the_next_sync_does(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        atlassian_api.on("GET", f"{API}/space", {"results": [space("ENG", 10), space("HR", 20)], "_links": {"base": BASE}})
+        await connector.run_sync()
+        atlassian_api.on("GET", f"{API}/space", {"results": [space("ENG", 10)], "_links": {"base": BASE}})
+        db.fail_group_read = True
+
+        await connector.run_sync()
+        assert "20" in db.record_groups
+
+        db.fail_group_read = False
+        await connector.run_sync()
+        assert "20" not in db.record_groups
+
+    async def test_a_space_removed_in_several_deletes_does_not_trip_over_records_already_taken(
+        self, atlassian_api, db, store, search, monkeypatch
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        monkeypatch.setattr(team_connector_module, "RECORD_DELETE_CHUNK", 1)
+        scan = db.get_records_by_status
+
+        async def pages_first(*args: object, **kwargs: object) -> list[Record]:
+            # A page ahead of its files and comments, which its cascade takes with it.
+            return sorted(await scan(*args, **kwargs), key=lambda r: r.record_type != RecordType.CONFLUENCE_PAGE)
+
+        monkeypatch.setattr(db, "get_records_by_status", pages_first)
+        atlassian_api.on("GET", f"{API}/space", {"results": [space("HR", 20)], "_links": {"base": BASE}})
+
+        await connector.run_sync()
+
+        assert "10" not in db.record_groups
+        assert not any(r.external_record_group_id == "10" for r in db.records.values())
 
     async def test_a_listed_space_that_fails_to_process_keeps_its_records(
         self, atlassian_api, db, store, search, monkeypatch

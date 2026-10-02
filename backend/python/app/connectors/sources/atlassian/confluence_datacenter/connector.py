@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -101,6 +102,7 @@ FILTER_REMOVAL_MARGIN = timedelta(hours=2 * TIME_OFFSET_HOURS)
 CONTENT_LIST_LIMIT = 100
 RECORD_SCAN_PAGE_SIZE = 500
 ID_SYNC_CHUNK = 50
+RECORD_DELETE_CHUNK = 200
 
 def _extract_item_last_modified_when(item_data: dict[str, Any]) -> Optional[str]:
     """Extract last modified timestamp from Confluence item data.
@@ -1707,9 +1709,14 @@ class ConfluenceDataCenterConnector(BaseConnector):
             return
 
         wanted = set(in_scope)
-        by_space: dict[str, list[Record]] = {}
         after_key: str | None = None
         try:
+            stored_spaces = await self._stored_space_ids()
+            if not wanted <= stored_spaces:
+                # Every listed space was just saved, so a read that misses one failed (the stores answer [] on error).
+                raise RuntimeError("the stored spaces read back without the spaces just saved")
+            # From the stored spaces too: one whose last record already went has nothing in the scan below.
+            by_space: dict[str, list[Record]] = {space_id: [] for space_id in stored_spaces - wanted}
             while True:
                 page = await self.data_entities_processor.get_records_by_status(
                     self.connector_id, None, limit=RECORD_SCAN_PAGE_SIZE, after_key=after_key,
@@ -1738,6 +1745,14 @@ class ConfluenceDataCenterConnector(BaseConnector):
             key, {"pending": unfinished} if unfinished else {"space_ids": in_scope, "pending": []}
         )
 
+    async def _stored_space_ids(self) -> set[str]:
+        groups = await self.data_entities_processor.get_nodes_by_filters(
+            collection=CollectionNames.RECORD_GROUPS.value,
+            filters={"connectorId": self.connector_id, "groupType": RecordGroupType.CONFLUENCE_SPACES.value},
+            return_fields=["externalGroupId"],
+        )
+        return {str(g["externalGroupId"]) for g in groups or [] if isinstance(g, dict) and g.get("externalGroupId")}
+
     async def _remove_space(self, space_id: str, records: list[Record]) -> bool:
         """Delete one space's records, clear its checkpoints, then drop the space; True if all of it worked."""
         self.logger.info(f"Removing space {space_id} and its {len(records)} records: this sync no longer lists it")
@@ -1746,16 +1761,23 @@ class ConfluenceDataCenterConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Could not read space {space_id}; not removed: {e}")
             return False
-        failed = 0
-        for record in records:
-            try:
-                await self.data_entities_processor.on_record_deleted(record.id)
-            except Exception as e:
-                failed += 1
-                self.logger.warning(f"Could not delete {record.external_record_id}: {e}")
-        if failed:
-            self.logger.warning(f"{failed} records of space {space_id} could not be deleted; retrying next sync")
-            return False
+        deleted: set[str] = set()
+        ids = [r.id for r in records]
+        for start in range(0, len(ids), RECORD_DELETE_CHUNK):
+            # An id a full cascade already took counts as a failed root if passed again.
+            chunk = [i for i in ids[start:start + RECORD_DELETE_CHUNK] if i not in deleted]
+            if not chunk:
+                continue
+            result = await self.data_entities_processor.on_records_deleted_cascade(
+                chunk, self.connector_id, cascade_children=True
+            )
+            if not self._cascade_succeeded(result):
+                self.logger.warning(f"Could not delete the records of space {space_id}; retrying next sync: {result}")
+                return False
+            deleted.update(
+                str(d["record_id"]) for d in result.get("deleted_records") or []
+                if isinstance(d, dict) and d.get("record_id")
+            )
         if group is not None and group.short_name:
             # An empty checkpoint reads as none, so the space is read in full if it is listed again.
             for content_type in ("pages", "blogposts"):
