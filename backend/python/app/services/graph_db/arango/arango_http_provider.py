@@ -158,6 +158,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     STRICT_SCOPE_FILTER_KEY,
+    FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     AccessibleContainers,
     FolderChangedDuringDelete,
     IGraphDBProvider,
@@ -13286,7 +13287,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if transaction is not None and writes_started:
                 raise
             if isinstance(e, FolderChangedDuringDelete):
-                return {"success": False, "reason": str(e), "code": 409, "eventData": None}
+                return {
+                    "success": False, "reason": FOLDER_CHANGED_DURING_DELETE_MESSAGE, "code": 409, "eventData": None,
+                }
             return {"success": False, "reason": str(e), "code": 500, "eventData": None}
 
     async def _abort_if_records_moved_in(
@@ -13322,10 +13325,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "Folder delete stopped: %d record(s) were moved into the folder while it was being deleted",
                 len(moved_in),
             )
-            raise FolderChangedDuringDelete(
-                "Records were moved into this folder while it was being deleted, so nothing was deleted. "
-                "Try the delete again."
-            )
+            raise FolderChangedDuringDelete(FOLDER_CHANGED_DURING_DELETE_MESSAGE)
 
 
     async def delete_single_record(

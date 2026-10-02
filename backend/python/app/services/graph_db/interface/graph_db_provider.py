@@ -15,6 +15,11 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from app.models.entities import Person
 
+FOLDER_CHANGED_DURING_DELETE_MESSAGE = (
+    "Records were moved into this folder while it was being deleted, so nothing was deleted. "
+    "Try the delete again."
+)
+
 
 class FolderChangedDuringDelete(RuntimeError):
     """Records were moved into a folder while it was being deleted; nothing was deleted."""

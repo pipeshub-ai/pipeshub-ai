@@ -50,7 +50,10 @@ from app.services.cache.invalidation_hooks import (
     notify_connector_sync_completed,
     notify_kb_records_changed,
 )
-from app.services.graph_db.interface.graph_db_provider import FolderChangedDuringDelete
+from app.services.graph_db.interface.graph_db_provider import (
+    FOLDER_CHANGED_DURING_DELETE_MESSAGE,
+    FolderChangedDuringDelete,
+)
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.vector_db.membership import record_group_id_from_edge
@@ -2315,9 +2318,9 @@ class DataSourceEntitiesProcessor:
                     record_ids, connector_id, cascade_children=cascade_children,
                     within_folder_id=within_folder_id,
                 )
-        except FolderChangedDuringDelete as e:
+        except FolderChangedDuringDelete:
             # The transaction rolled back, so nothing was deleted.
-            return {"success": False, "code": 409, "reason": str(e), "eventData": None}
+            return {"success": False, "code": 409, "reason": FOLDER_CHANGED_DURING_DELETE_MESSAGE, "eventData": None}
         if (result or {}).get("successfully_deleted"):
             # Before publishing: the transaction has committed, so the records are
             # already gone, and _publish_delete_events can fail. Invalidating
