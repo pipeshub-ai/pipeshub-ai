@@ -3203,16 +3203,20 @@ async def _fetch_connector_sync_block(
     connector_id: str,
     config_service: Any,
     logger: Any,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, bool]:
     """
-    Fetch one connector's persisted config and return its `sync` block,
-    or None if the config is missing / malformed / fails to load. Errors
-    are swallowed (with a warning) so a single broken connector cannot
-    abort the cross-org enumeration.
+    Fetch one connector's persisted config.
+
+    Returns ``(sync, read_failed)``. A missing or malformed config is
+    ``(None, False)`` and can be omitted. A thrown read is ``(None, True)``
+    so the page can say it is incomplete instead of looking like that
+    connector is not scheduled.
     """
     config_path = _get_config_path_for_instance(connector_id)
     try:
-        config = await config_service.get_config(config_path)
+        # Without raise_on_error the store answers None for an unreadable value,
+        # which would look like a connector with no config.
+        config = await config_service.get_config(config_path, raise_on_error=True)
     except Exception as cfg_err:
         logger.warning(
             "Failed to read config for connector %s (path=%s): %s",
@@ -3220,7 +3224,7 @@ async def _fetch_connector_sync_block(
             config_path,
             cfg_err,
         )
-        return None
+        return None, True
     if not isinstance(config, dict):
         logger.debug(
             "Connector %s has no config at path=%s (got %s)",
@@ -3228,7 +3232,7 @@ async def _fetch_connector_sync_block(
             config_path,
             type(config).__name__,
         )
-        return None
+        return None, False
     sync = config.get("sync") or {}
     if not isinstance(sync, dict):
         logger.debug(
@@ -3236,9 +3240,9 @@ async def _fetch_connector_sync_block(
             connector_id,
             type(sync).__name__,
         )
-        return None
+        return None, False
     logger.debug("Connector %s sync block: %s", connector_id, sync)
-    return sync
+    return sync, False
 
 
 @router.get(
@@ -3280,7 +3284,8 @@ async def get_all_scheduled_connector_instances_internal(
                 },
                 ...
             ],
-            "hasMore": bool
+            "hasMore": bool,
+            "partial": bool  # true when a config read failed and items is incomplete
         }
     """
     container = request.app.container
@@ -3296,7 +3301,8 @@ async def get_all_scheduled_connector_instances_internal(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail="No organisations found",
             )
-        organisation_id = organisation[0].get("_key") or organisation[0].get("id")
+        # Only for app docs written before orgId was stored on them.
+        fallback_org_id = organisation[0].get("_key") or organisation[0].get("id")
 
         # Convert 1-based page to 0-based DB offset.
         skip = (page - 1) * limit
@@ -3307,11 +3313,15 @@ async def get_all_scheduled_connector_instances_internal(
         # determine whether a subsequent page exists without a separate COUNT
         # query.
         probe_limit = limit + 1
+        # raise_on_error: an empty page would tell the schedule sweep that every
+        # schedule is an orphan. Stable sort keeps offset paging from skipping rows.
         page_docs = await graph_provider.get_documents_paginated(
             CollectionNames.APPS.value,
             skip=skip,
             limit=probe_limit,
             filters={"isActive": True},
+            sort_field="_key",
+            raise_on_error=True,
         )
         has_more = len(page_docs) == probe_limit
         page_docs = page_docs[:limit]
@@ -3325,13 +3335,14 @@ async def get_all_scheduled_connector_instances_internal(
             candidates.append({
                 "connectorId": connector_id,
                 "connectorType": connector_type,
-                "orgId": organisation_id,
+                "orgId": doc.get("orgId") or fallback_org_id,
                 "createdBy": doc.get("createdBy"),
             })
 
         # Fan out config_service calls for the current page only, in bounded
         # batches to avoid opening hundreds of simultaneous KV-store requests.
         items: list[dict[str, Any]] = []
+        partial = False
         config_batch_size = _INTERNAL_ALL_SCHEDULED_BATCH_SIZE
         for batch_start in range(0, len(candidates), config_batch_size):
             batch = candidates[batch_start:batch_start + config_batch_size]
@@ -3343,8 +3354,11 @@ async def get_all_scheduled_connector_instances_internal(
                     for c in batch
                 ),
             )
-            for candidate, sync in zip(batch, sync_blocks):
+            for candidate, (sync, read_failed) in zip(batch, sync_blocks):
                 cid = candidate["connectorId"]
+                if read_failed:
+                    partial = True
+                    continue
                 if sync is None:
                     logger.debug(
                         "Skip connector %s: no config found at expected path", cid
@@ -3369,18 +3383,20 @@ async def get_all_scheduled_connector_instances_internal(
 
         logger.info(
             "Internal all-scheduled page: page=%d limit=%d page_candidates=%d "
-            "scheduled_in_page=%d has_more=%s",
+            "scheduled_in_page=%d has_more=%s partial=%s",
             page,
             limit,
             len(candidates),
             len(items),
             has_more,
+            partial,
         )
         logger.debug("Items: %s", items)
         return {
             "success": True,
             "items": items,
             "hasMore": has_more,
+            "partial": partial,
         }
     except HTTPException:
         raise

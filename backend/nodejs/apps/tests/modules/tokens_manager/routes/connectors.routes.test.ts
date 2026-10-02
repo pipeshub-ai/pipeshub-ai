@@ -43,6 +43,8 @@ describe('Connector Routes', () => {
       scheduleJob: sinon.stub().resolves(),
       removeJob: sinon.stub().resolves(),
       getJobStatus: sinon.stub().resolves(null),
+      upsertRepeatingSchedule: sinon.stub().resolves('scheduled'),
+      removeConnectorSchedules: sinon.stub().resolves(false),
     }
 
     mockCrawlingContainer = {
@@ -1052,6 +1054,8 @@ describe('Connector Routes - handler coverage', () => {
       scheduleJob: sinon.stub().resolves(),
       removeJob: sinon.stub().resolves(),
       getJobStatus: sinon.stub().resolves(null),
+      upsertRepeatingSchedule: sinon.stub().resolves('scheduled'),
+      removeConnectorSchedules: sinon.stub().resolves(false),
     }
 
     const mockCrawlingContainer = {

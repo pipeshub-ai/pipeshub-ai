@@ -41932,6 +41932,12 @@ paths:
                     type: boolean
                     description: True if more pages remain; false when this is the last page
                     example: false
+                  partial:
+                    type: boolean
+                    description: |
+                      True when a config read failed and `items` omits those connectors.
+                      Callers must not treat a partial page as the complete set.
+                    example: false
         '401':
           description: Unauthorized — missing or invalid JWT
         '404':

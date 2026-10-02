@@ -30,6 +30,7 @@ import {
 } from '../utils/connector.utils';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 import {
+  RECONCILE_LOG_MESSAGE,
   reconcileConnectorSchedule,
   ScheduleReconcileInput,
 } from '../../crawling_manager/services/connector_schedule_orchestrator';
@@ -170,6 +171,20 @@ interface ConnectorSnapshot {
   sync: ConnectorSyncBlock | null;
 }
 
+// The schedule is left as it was until the next toggle or schedule sweep.
+const logSnapshotFailure = (
+  connectorId: string,
+  reason: string,
+  extra: Record<string, unknown> = {},
+): void => {
+  logger.error(RECONCILE_LOG_MESSAGE, {
+    connectorId,
+    outcome: 'snapshot_failed',
+    reason,
+    ...extra,
+  });
+};
+
 /**
  * Pull the post-mutation snapshot of a connector instance from the Python
  * backend so we can read `isActive`, `type`, and `config.sync` after a
@@ -198,20 +213,25 @@ const fetchConnectorSnapshot = async (
       HttpMethod.GET,
       headers,
     );
-    if (!resp || resp.statusCode < 200 || resp.statusCode >= 300) return null;
-
-    const data = resp.data as Record<string, any> | null;
-    if (!data) return null;
+    if (!resp || resp.statusCode < 200 || resp.statusCode >= 300) {
+      logSnapshotFailure(connectorId, 'non-2xx response', {
+        statusCode: resp?.statusCode ?? null,
+      });
+      return null;
+    }
 
     // Response envelope: { success, config: <envelope> }
     // Envelope fields:   { type, isActive, createdBy, config: { sync, auth, filters } }
-    const envelope = data.config as Record<string, any> | undefined;
-    if (!envelope || typeof envelope !== 'object') return null;
+    const data = resp.data as Record<string, any> | null;
+    const envelope = data?.config as Record<string, any> | undefined;
+    if (!envelope || typeof envelope !== 'object') {
+      logSnapshotFailure(connectorId, 'response has no config envelope');
+      return null;
+    }
 
     const type = String(envelope.type ?? '');
     if (!type) {
-      logger.warn('Connector snapshot missing type field; skipping schedule reconcile', {
-        connectorId,
+      logSnapshotFailure(connectorId, 'response has no connector type', {
         responseKeys: Object.keys(envelope),
       });
       return null;
@@ -228,9 +248,9 @@ const fetchConnectorSnapshot = async (
       sync,
     };
   } catch (error) {
-    logger.warn('Failed to fetch connector snapshot for schedule reconcile', {
-      connectorId,
+    logSnapshotFailure(connectorId, 'request failed', {
       error: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined,
     });
     return null;
   }
@@ -268,17 +288,14 @@ const fireConnectorScheduleReconcile = (
       ]);
 
       if (result === SNAPSHOT_TIMEOUT) {
-        logger.warn('Connector snapshot fetch timed out; skipping schedule reconcile', {
-          connectorId,
+        logSnapshotFailure(connectorId, 'timed out', {
           timeoutMs: RECONCILE_SNAPSHOT_TIMEOUT_MS,
         });
         return;
       }
 
-      // result is ConnectorSnapshot | null here (fetch completed, may have failed)
       const snapshot = result;
       if (!snapshot) {
-        // fetchConnectorSnapshot already logged the reason (4xx, network error, etc.)
         return;
       }
 
@@ -302,6 +319,7 @@ const fireConnectorScheduleReconcile = (
       logger.error('Background schedule reconcile failed', {
         connectorId,
         error: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
       });
     }
   });
