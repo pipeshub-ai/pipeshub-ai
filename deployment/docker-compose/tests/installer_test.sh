@@ -48,6 +48,14 @@ check() { # check "desc" actual expected_substring
   if [[ "$2" == *"$3"* ]]; then pass "$1"; else
     fail "$1"; printf "         expected to contain: %s\n         got: %s\n" "$3" "$2"; fi
 }
+# For assertions about a helper's exact return value. Substring matching makes
+# an empty expectation vacuously true, and lets a commented-out line satisfy a
+# check meant to catch one -- so anything asserting `optional_env_line` /
+# `get_existing_val` output must use this instead of `check`.
+check_exact() { # check_exact "desc" actual expected
+  if [[ "$2" == "$3" ]]; then pass "$1"; else
+    fail "$1"; printf "         expected: %s\n         got: %s\n" "$3" "$2"; fi
+}
 
 # Extract a top-level function definition (closing brace in column 0) from a
 # script so the real implementation can be exercised in isolation.
@@ -419,13 +427,13 @@ fi
 # Exercise the real helpers: a value an operator set must come back verbatim,
 # and an unset knob must stay a comment rather than becoming `KEY=`.
 eval "$(extract_fn optional_env_line "$INNER_INSTALLER")"
-check "optional_env_line keeps a set value" \
+check_exact "optional_env_line keeps a set value" \
   "$(optional_env_line ENABLE_METRIC_COLLECTION "false" "false")" \
   "ENABLE_METRIC_COLLECTION=false"
-check "optional_env_line keeps a raised cap" \
+check_exact "optional_env_line keeps a raised cap" \
   "$(optional_env_line REDIS_MAX_DELIVERIES "100000" "10")" \
   "REDIS_MAX_DELIVERIES=100000"
-check "optional_env_line comments out an unset knob" \
+check_exact "optional_env_line comments out an unset knob" \
   "$(optional_env_line REDIS_MAX_DELIVERIES "" "10")" \
   "# REDIS_MAX_DELIVERIES=10"
 (
@@ -433,11 +441,12 @@ check "optional_env_line comments out an unset knob" \
   eval "$(extract_fn get_existing_val "$INNER_INSTALLER")"
   ENV_FILE="$TMP_ROOT/env_reconfigure"
   printf 'ENABLE_METRIC_COLLECTION=false\nREDIS_MAX_DELIVERIES=100000\n' >"$ENV_FILE"
-  check "reads back a stored opt-out" "$(get_existing_val ENABLE_METRIC_COLLECTION "")" "false"
-  check "reads back a stored delivery cap" "$(get_existing_val REDIS_MAX_DELIVERIES "")" "100000"
+  check_exact "reads back a stored opt-out" "$(get_existing_val ENABLE_METRIC_COLLECTION "")" "false"
+  check_exact "reads back a stored delivery cap" "$(get_existing_val REDIS_MAX_DELIVERIES "")" "100000"
   # Absent keys must yield the empty default, so the placeholder is emitted.
+  # Exact match matters here: substring matching against "" always passes.
   : >"$ENV_FILE"
-  check "missing opt-out yields empty" "$(get_existing_val ENABLE_METRIC_COLLECTION "")" ""
+  check_exact "missing opt-out yields empty" "$(get_existing_val ENABLE_METRIC_COLLECTION "")" ""
 )
 
 echo "== OAuth device / DCR launch defaults =="
