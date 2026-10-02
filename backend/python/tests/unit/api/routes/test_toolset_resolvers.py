@@ -275,7 +275,10 @@ class TestResolveInheritedFromOrgId:
 
 class TestMaskOauthSecrets:
     def test_client_secret_is_redacted_and_the_rest_kept(self) -> None:
-        from app.api.routes.toolset_resolvers import REDACTED_PLACEHOLDER, mask_oauth_secrets
+        from app.api.routes.toolset_resolvers import (
+            REDACTED_PLACEHOLDER,
+            mask_oauth_secrets,
+        )
 
         cfg = {"clientId": "id", "clientSecret": "secret", "client_secret": "s2", "tenantId": "t"}
         result = mask_oauth_secrets(cfg, is_inherited=False)
@@ -302,7 +305,10 @@ class TestMaskOauthSecrets:
 
 class TestIsRedactedPlaceholder:
     def test_recognises_the_placeholder(self) -> None:
-        from app.api.routes.toolset_resolvers import REDACTED_PLACEHOLDER, is_redacted_placeholder
+        from app.api.routes.toolset_resolvers import (
+            REDACTED_PLACEHOLDER,
+            is_redacted_placeholder,
+        )
 
         assert is_redacted_placeholder(REDACTED_PLACEHOLDER) is True
 
