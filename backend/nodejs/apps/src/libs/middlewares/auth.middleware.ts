@@ -8,6 +8,7 @@ import { AuthTokenService } from '../services/authtoken.service';
 import { inject, injectable } from 'inversify';
 import { IUserActivity, UserActivities } from '../../modules/auth/schema/userActivities.schema';
 import {
+  activityEndsSession,
   SESSION_INVALIDATING_ACTIVITIES,
   userActivitiesType,
 } from '../utils/userActivities.utils';
@@ -23,7 +24,6 @@ export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
 const { PASSWORD_CHANGED } = userActivitiesType;
 // Delay in milliseconds between password change activity and token generation
-const PASSWORD_CHANGE_TOKEN_DELAY_MS = 1000;
 
 function hasValidJwtRole(role: unknown): role is 'admin' | 'member' {
   return role === 'admin' || role === 'member';
@@ -120,7 +120,7 @@ export class AuthMiddleware {
     }
 
     if (userId && orgId) {
-      let userActivity: Pick<IUserActivity, 'createdAt'> | null = null;
+      let userActivity: Pick<IUserActivity, 'createdAt' | 'activityType'> | null = null;
       try {
         userActivity = await UserActivities.findOne({
           userId: userId,
@@ -136,12 +136,8 @@ export class AuthMiddleware {
         this.logger.error('Failed to fetch user activity', activityError);
       }
 
-      if (userActivity) {
-        const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
-        const activityTimestamp = userActivity.createdAt?.getTime() || 0;
-        if (activityTimestamp > tokenIssuedAt + PASSWORD_CHANGE_TOKEN_DELAY_MS) {
-          throw new UnauthorizedError('Session expired, please login again');
-        }
+      if (userActivity && activityEndsSession(userActivity, decoded.iat)) {
+        throw new UnauthorizedError('Session expired, please login again');
       }
     }
 

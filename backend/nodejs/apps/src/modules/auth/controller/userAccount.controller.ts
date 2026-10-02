@@ -1,3 +1,4 @@
+import axios from 'axios';
 import bcrypt from 'bcryptjs';
 import { randomBytes } from 'crypto';
 import jwt from 'jsonwebtoken';
@@ -25,6 +26,7 @@ import {
   hashResetLink,
 } from '../schema/usedPasswordResetLink.schema';
 import {
+  activityEndsSession,
   SESSION_INVALIDATING_ACTIVITIES,
   userActivitiesType,
 } from '../../../libs/utils/userActivities.utils';
@@ -57,6 +59,11 @@ import {
   ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
+import { BaseError } from '../../../libs/errors/base.error';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { inject, injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { generateAuthToken } from '../utils/generateAuthToken';
@@ -95,17 +102,23 @@ const {
   REFRESH_TOKEN,
   PASSWORD_CHANGED,
   ACCOUNT_BLOCKED,
+  ACCOUNT_DELETED,
 } = userActivitiesType;
 export const SALT_ROUNDS = 10;
+export const ACCOUNT_NO_LONGER_ACTIVE =
+  'Your account is no longer active. Contact your admin.';
+
+// The users service answers with a JSON user document; anything else means no account.
+const isAccountRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
 export const RESET_LINK_ALREADY_USED =
   'This reset link has already been used. Request a new one from the sign-in page.';
 export const RESET_LINK_NOT_CHECKED =
   "We couldn't reset your password just now, and nothing was changed. Please try again in a moment.";
 // The longest-lived link (a new account's first password) lasts 48 hours.
 const RESET_LINK_FALLBACK_LIFETIME_MS = 48 * 60 * 60 * 1000;
-const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
 const MAX_WRONG_CREDENTIAL_ATTEMPTS = 5;
-const SESSION_INVALIDATE_TOKEN_DELAY_MS = 1000;
 
 export const SIGN_IN_SESSION_EXPIRED =
   'Your sign-in session expired. Start again from the sign-in page.';
@@ -1272,43 +1285,7 @@ export class UserAccountController {
       const orgId = req.tokenPayload?.orgId;
       const userId = req.tokenPayload?.userId;
 
-      // Reject refresh if logout / password change / role change happened after
-      // this refresh token was issued (same rule as access-token auth middleware).
-      if (userId && orgId) {
-        try {
-          const invalidatingActivity = await UserActivities.findOne({
-            userId,
-            orgId,
-            isDeleted: false,
-            activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
-          })
-            .sort({ createdAt: -1 })
-            .lean()
-            .exec();
-
-          if (invalidatingActivity) {
-            const tokenIssuedAt = req.tokenPayload?.iat
-              ? req.tokenPayload.iat * 1000
-              : 0;
-            const activityTimestamp =
-              invalidatingActivity.createdAt?.getTime() || 0;
-            if (
-              activityTimestamp >
-              tokenIssuedAt + SESSION_INVALIDATE_TOKEN_DELAY_MS
-            ) {
-              throw new UnauthorizedError('Session expired, please login again');
-            }
-          }
-        } catch (activityError) {
-          if (activityError instanceof UnauthorizedError) {
-            throw activityError;
-          }
-          this.logger.error(
-            'Failed to fetch session-invalidating activity on refresh',
-            activityError,
-          );
-        }
-      }
+      await this.refuseIfSessionEnded(userId, orgId, req.tokenPayload?.iat);
 
       await UserActivities.create({
         orgId,
@@ -1317,19 +1294,7 @@ export class UserAccountController {
         ipAddress: req.ip,
       });
 
-      const result = await this.iamService.getUserById(
-        userId,
-        iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
-      );
-      if (result.statusCode !== 200) {
-        throw new NotFoundError(SESSION_NO_LONGER_VALID);
-      }
-
-      const user = result.data;
-
-      if (!user) {
-        throw new NotFoundError(SESSION_NO_LONGER_VALID);
-      }
+      const user = await this.activeAccountForRefresh(userId, orgId);
 
       const userCredential = await UserCredentials.findOneAndUpdate({
         userId: userId,
@@ -1355,6 +1320,9 @@ export class UserAccountController {
         );
       }
 
+      // Again, right before minting: a deletion recorded while this refresh ran
+      // would otherwise get a token newer than the deletion.
+      await this.refuseIfSessionEnded(userId, orgId, req.tokenPayload?.iat);
       const accessToken = await generateAuthToken(user, this.config.jwtSecret);
 
       res.status(200).json({ user: user, accessToken: accessToken });
@@ -1362,6 +1330,87 @@ export class UserAccountController {
     } catch (error) {
       next(error);
     }
+  }
+
+  /**
+   * Refuses a refresh token issued before a sign-out, password change, role
+   * change, lock or deletion (the same rule as the access-token middleware).
+   */
+  private async refuseIfSessionEnded(
+    userId: string | undefined,
+    orgId: string | undefined,
+    issuedAtSeconds: number | undefined,
+  ): Promise<void> {
+    if (!userId || !orgId) {
+      return;
+    }
+    let activity: { activityType?: string; createdAt?: Date } | null = null;
+    try {
+      activity = await UserActivities.findOne({
+        userId,
+        orgId,
+        isDeleted: false,
+        activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
+      })
+        .sort({ createdAt: -1 })
+        .lean()
+        .exec();
+    } catch (activityError) {
+      this.logger.error(
+        'Failed to fetch session-invalidating activity on refresh',
+        activityError,
+      );
+      return;
+    }
+    if (activity && activityEndsSession(activity, issuedAtSeconds)) {
+      throw new UnauthorizedError(
+        activity.activityType === ACCOUNT_DELETED
+          ? ACCOUNT_NO_LONGER_ACTIVE
+          : 'Session expired, please login again',
+      );
+    }
+  }
+
+  /**
+   * The account a refresh token belongs to, refused when it has been deleted
+   * or disabled. The IAM lookup answers a deleted account with an HTTP 404,
+   * which arrives here as an axios error rather than as one of ours.
+   */
+  private async activeAccountForRefresh(
+    userId: string,
+    orgId: string,
+  ): Promise<Record<string, unknown>> {
+    let result: { statusCode: number; data?: unknown };
+    try {
+      result = await this.iamService.getUserById(
+        userId,
+        iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
+      );
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
+        throw new UnauthorizedError(ACCOUNT_NO_LONGER_ACTIVE);
+      }
+      if (error instanceof BaseError) {
+        throw error;
+      }
+      this.logger.error('Looking up the account to refresh a session failed', {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('refresh your session')),
+      );
+    }
+
+    const user = result.data;
+    if (
+      result.statusCode !== 200 ||
+      !isAccountRecord(user) ||
+      user.isDisabled === true
+    ) {
+      throw new UnauthorizedError(ACCOUNT_NO_LONGER_ACTIVE);
+    }
+    return user;
   }
 
   async logoutSession(
