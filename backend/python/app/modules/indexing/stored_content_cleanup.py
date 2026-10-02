@@ -10,9 +10,11 @@ its own (a soft delete, for instance, may run only the first):
 
 Two kinds of stored content:
 
-* The processed record ("envelope") under ``records/{virtualRecordId}``. Records
-  with identical content share a virtual record id, so the envelope may go only
-  once no record uses it. Callers decide that, and this module checks the graph
+* The processed record ("envelope"): the ``record_{virtualRecordId}`` and
+  ``metadata_{virtualRecordId}`` documents, under the record's folder path (or
+  ``records/{virtualRecordId}`` for older records). Records with identical
+  content share a virtual record id, so the envelope may go only once no record
+  uses it. Callers decide that, and this module checks the graph
   again right before purging, because the purge cannot be undone. The mapping
   row is dropped only after storage confirms the purge, so a failed purge keeps
   the row and the orphan sweeper (``indexing_main``) retries it.

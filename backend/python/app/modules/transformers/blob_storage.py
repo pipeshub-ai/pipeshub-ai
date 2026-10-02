@@ -2778,7 +2778,7 @@ class BlobStorage(Transformer):
         )
 
     async def purge_virtual_record_documents(self, org_id: str, virtual_record_id: str) -> int:
-        """Remove every storage document filed under ``records/{virtual_record_id}``.
+        """Remove a virtual record's ``record_``/``metadata_`` storage documents, wherever filed.
 
         Only for a virtual record no record uses any more: records with identical
         content share it.

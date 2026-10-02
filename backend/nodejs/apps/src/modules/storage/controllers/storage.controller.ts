@@ -441,10 +441,11 @@ export class StorageController {
   }
 
   /**
-   * Removes every document filed under a virtual record's path
-   * (`records/{virtualRecordId}`), where indexing keeps the processed record.
-   * Several records can share one virtual record; the caller purges only once
-   * none of them is left.
+   * Removes a virtual record's stored documents, `record_{id}` and
+   * `metadata_{id}`, wherever they are filed: under the record's folder path
+   * now, or under the flat `records/{id}` path older records used. Several
+   * records can share one virtual record; the caller purges only once none of
+   * them is left.
    */
   async purgeVirtualRecordDocuments(
     req: AuthenticatedServiceRequest,
@@ -454,11 +455,18 @@ export class StorageController {
     try {
       const orgIdText = extractOrgId(req);
       const orgId = new mongoose.Types.ObjectId(orgIdText);
-      const documentPath = getFullDocumentPath(
-        orgIdText,
-        `records/${String(req.params.virtualRecordId)}`,
-      );
-      const documents = await DocumentModel.find({ orgId, documentPath });
+      const virtualRecordId = String(req.params.virtualRecordId);
+      const documents = await DocumentModel.find({
+        orgId,
+        $or: [
+          { documentPath: getFullDocumentPath(orgIdText, `records/${virtualRecordId}`) },
+          {
+            documentName: {
+              $in: [`record_${virtualRecordId}`, `metadata_${virtualRecordId}`],
+            },
+          },
+        ],
+      });
       await this.purgeDocuments(documents, orgId, req);
       res.status(HTTP_STATUS.OK).json({ purged: documents.length });
     } catch (error) {

@@ -23420,11 +23420,12 @@ paths:
         - Internal Storage
       summary: Remove a processed record's documents and stored files (service-to-service)
       description: |
-        Removes every document filed at the exact org-scoped path
-        `records/{virtualRecordId}`, where indexing keeps a record's processed
-        content, together with their stored files. Records with identical
-        content share one virtual record id, so the caller purges only once no
-        record uses it. Safe to repeat.
+        Removes the virtual record's processed-content documents
+        (`record_{virtualRecordId}` and `metadata_{virtualRecordId}`) wherever
+        they are filed in the organisation, plus anything at the older flat
+        path `records/{virtualRecordId}`, together with their stored files.
+        Records with identical content share one virtual record id, so the
+        caller purges only once no record uses it. Safe to repeat.
       operationId: internalPurgeVirtualRecordDocuments
       security:
         - scopedToken: []

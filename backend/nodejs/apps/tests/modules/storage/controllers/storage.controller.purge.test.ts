@@ -13,8 +13,15 @@ import { ServiceUnavailableError } from '../../../../src/libs/errors/http.errors
 type Row = Record<string, any>
 type Filter = Record<string, unknown>
 
-const matches = (row: Row, filter: Filter) =>
-  Object.entries(filter).every(([key, want]) => String(row[key]) === String(want))
+// Enough of Mongo's filter language for these queries: equality, $or and $in.
+const matches = (row: Row, filter: Filter): boolean =>
+  Object.entries(filter).every(([key, want]) => {
+    if (key === '$or') return (want as Filter[]).some((branch) => matches(row, branch))
+    if (want !== null && typeof want === 'object' && '$in' in want) {
+      return (want as { $in: unknown[] }).$in.map(String).includes(String(row[key]))
+    }
+    return String(row[key]) === String(want)
+  })
 
 function makeRes(): any {
   const res: any = {
@@ -130,7 +137,7 @@ describe('StorageController purge', () => {
   })
 
   describe('purgeVirtualRecordDocuments', () => {
-    it("removes every document at the record's exact path and nothing else", async () => {
+    it("removes every document at the record's flat path and nothing else", async () => {
       row()
       row({ s3: { url: 'https://bucket/second' }, versionHistory: [] })
       const neighbour = row({ documentPath: `${orgId}/PipesHub/records/vr-10`, s3: { url: 'https://bucket/n' } })
@@ -141,6 +148,24 @@ describe('StorageController purge', () => {
 
       expect(res.body).to.deep.equal({ purged: 2 })
       expect(rows).to.deep.equal([neighbour, elsewhere])
+    })
+
+    it("removes the record's documents filed under its folder path, not its neighbours'", async () => {
+      const folder = `${orgId}/PipesHub/records/kb-1/Team/Reports`
+      row({ documentName: 'record_vr-1', documentPath: folder })
+      row({ documentName: 'metadata_vr-1', documentPath: folder, s3: { url: 'https://bucket/meta' }, versionHistory: [] })
+      const sibling = row({ documentName: 'record_vr-2', documentPath: folder, s3: { url: 'https://bucket/s' } })
+      const otherOrgsTwin = row({
+        orgId: otherOrg,
+        documentName: 'record_vr-1',
+        documentPath: `${otherOrg}/PipesHub/records/kb-9`,
+      })
+      const res = makeRes()
+
+      await controller.purgeVirtualRecordDocuments(request({ virtualRecordId: 'vr-1' }), res, sinon.stub())
+
+      expect(res.body).to.deep.equal({ purged: 2 })
+      expect(rows).to.deep.equal([sibling, otherOrgsTwin])
     })
 
     it('answers purged 0 when nothing is filed there', async () => {
