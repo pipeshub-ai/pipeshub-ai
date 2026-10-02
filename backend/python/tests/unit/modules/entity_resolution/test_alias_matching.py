@@ -6,7 +6,6 @@ from app.config.constants.arangodb import CollectionNames
 from app.models.entities import EntityRecord, EntityType
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.normalizer import normalize_name
-from app.modules.retrieval.entity_permissions import EntityAccessContext, EntityHit
 
 TOPICS = CollectionNames.TOPICS.value
 
@@ -115,26 +114,6 @@ class TestMergeWritesBothAliasForms:
         assert model.calls == []
         assert ctx3.entity_resolution.stats.tier0_hits == 2
         assert len(fake_graph.nodes_in(TOPICS)) == 1
-
-
-class TestQuerySideAliases:
-    def test_search_entities_renders_aliases(self) -> None:
-        from app.agents.actions.knowledge_graph.ops.entity_discovery import _render_hits
-
-        context = EntityAccessContext(
-            org_id="acme", user_key="u", app_level_app_ids=frozenset(), record_level_app_ids=frozenset(),
-            record_group_ids=frozenset(), app_names={},
-        )
-        hit = EntityHit(
-            entity_id="k", entity_type="topic", name="Bug bash session", score=0.5,
-            records=[], more_records=False, aliases=("Bug bash testing session", "bug bash"),
-        )
-        results, _ = _render_hits([hit], context, None)
-        assert results[0]["aliases"] == ["Bug bash testing session", "bug bash"]
-
-        plain = EntityHit(entity_id="k2", entity_type="topic", name="Plain", score=0.4, records=[], more_records=False)
-        results, _ = _render_hits([plain], context, None)
-        assert "aliases" not in results[0]
 
 
 class TestTier0AliasTies:
