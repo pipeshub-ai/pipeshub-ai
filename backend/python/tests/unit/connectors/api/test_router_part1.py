@@ -980,44 +980,6 @@ class TestGetValidatedConnectorInstance:
 
 
 # ============================================================================
-# handle_record_deletion
-# ============================================================================
-
-
-class TestHandleRecordDeletion:
-    """Tests for handle_record_deletion route handler."""
-
-    async def test_successful_deletion(self):
-        from app.connectors.api.router import handle_record_deletion
-
-        gp = AsyncMock()
-        gp.delete_records_and_relations = AsyncMock(return_value={"deleted": True})
-
-        result = await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
-        assert result["status"] == "success"
-
-    async def test_not_found_raises_404(self):
-        from app.connectors.api.router import handle_record_deletion
-
-        gp = AsyncMock()
-        gp.delete_records_and_relations = AsyncMock(return_value=None)
-
-        with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-missing", request=MagicMock(), graph_provider=gp)
-        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
-
-    async def test_unexpected_error_raises_500(self):
-        from app.connectors.api.router import handle_record_deletion
-
-        gp = AsyncMock()
-        gp.delete_records_and_relations = AsyncMock(side_effect=RuntimeError("boom"))
-
-        with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
-        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-
-
-# ============================================================================
 # get_signed_url
 # ============================================================================
 
@@ -1321,6 +1283,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {
@@ -1348,6 +1311,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": False,
             "code": 404,
@@ -1367,6 +1331,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {
@@ -1398,6 +1363,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {"payload": {"recordId": "rec-1"}},  # missing eventType/topic
@@ -1420,6 +1386,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {
