@@ -11,8 +11,9 @@ from pydantic import BaseModel, Field
 from app.config.constants.arangodb import CollectionNames
 from app.models.entities import EntityType
 from app.modules.entity_resolution.normalizer import normalize_name
+from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 
-MAX_ALIASES_PER_NODE = 20
+MAX_ALIASES_PER_NODE = MAX_TAXONOMY_ALIASES
 
 
 class ResolutionMode(str, Enum):

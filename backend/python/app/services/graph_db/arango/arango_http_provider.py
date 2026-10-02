@@ -204,6 +204,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
+    MAX_TAXONOMY_ALIASES,
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
@@ -19206,7 +19207,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         normalized_aliases: list[str],
         *,
         org_id: str,
-        max_aliases: int = 20,
+        max_aliases: int = MAX_TAXONOMY_ALIASES,
         transaction: str | None = None,
     ) -> None:
         """See :meth:`IGraphDBProvider.add_taxonomy_aliases`."""
