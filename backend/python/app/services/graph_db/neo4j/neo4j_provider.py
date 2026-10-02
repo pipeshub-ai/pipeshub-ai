@@ -14846,12 +14846,15 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         connector_id: str,
         external_revision_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> Record | None:
         """Get record by external revision ID."""
         try:
-            query = """
-            MATCH (r:Record {connectorId: $connector_id, externalRevisionId: $external_revision_id})
+            query = f"""
+            MATCH (r:Record {{connectorId: $connector_id, externalRevisionId: $external_revision_id}})
+            WHERE {cypher_record_visibility("r", visibility)}
             RETURN r
             LIMIT 1
             """

@@ -1371,6 +1371,16 @@ class DataSourceEntitiesProcessor:
         self.logger.debug(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
+        if existing_record is None:
+            # A rename can arrive under a new external id but reuse the id of the
+            # record it renames; if that record is in the trash, upserting would
+            # bring it back live.
+            same_id = await tx_store.get_record_by_key(record.id, raise_on_error=True)
+            if same_id is not None and not is_live_record(same_id):
+                self.logger.info(
+                    "Skipping %s (%s): its id belongs to a record in the trash", record.record_name, record.id
+                )
+                return None, []
         if existing_record is not None and not is_live_record(existing_record):
             # A user's delete holds until the purge even though the source still
             # has the item. A connector-trashed item seen again is restored by the
@@ -2280,7 +2290,9 @@ class DataSourceEntitiesProcessor:
     async def on_record_deleted(self, record_id: str) -> None:
         if await is_soft_delete_enabled(self.config_service):
             async with self.data_store_provider.transaction() as tx_store:
-                existing = await tx_store.get_record_by_key(record_id)
+                # A failed read must raise: None would read as "already gone"
+                # and the caller does not deliver this delete again.
+                existing = await tx_store.get_record_by_key(record_id, raise_on_error=True)
             # The store returns the stored document, though it is annotated as a Record.
             connector_id = (
                 existing.get("connectorId") if isinstance(existing, dict)

@@ -147,7 +147,7 @@ class FakeGraph:
         node["normalizedAliases"] = current_normalized[:max_aliases]
 
     # ---- transaction-store level (GraphDBTransformer) ----
-    async def get_record_by_key(self, key) -> dict[str, Any] | None:
+    async def get_record_by_key(self, key, *, raise_on_error: bool = False) -> dict[str, Any] | None:
         return self.records.get(key)
 
     async def get_nodes_by_filters(self, collection, filters, return_fields=None) -> list[dict[str, Any]]:

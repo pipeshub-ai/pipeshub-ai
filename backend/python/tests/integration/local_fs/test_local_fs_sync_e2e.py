@@ -159,7 +159,7 @@ class _GraphProviderView:
     def __init__(self, store) -> None:
         self._s = store
 
-    async def get_document(self, document_key, collection, transaction=None) -> dict | None:
+    async def get_document(self, document_key, collection, transaction=None, *, raise_on_error=False) -> dict | None:
         return self._s.get_node(collection, document_key)
 
     async def get_documents_paginated(

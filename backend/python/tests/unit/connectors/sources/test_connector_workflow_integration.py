@@ -262,7 +262,7 @@ class MockTransactionStore:
                 return self._doc_to_record(doc)
         return None
 
-    async def get_record_by_key(self, key: str) -> Optional[Dict]:
+    async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Optional[Dict]:
         doc = self._s.get_node(CollectionNames.RECORDS.value, key)
         if doc:
             return self._doc_to_record(doc)

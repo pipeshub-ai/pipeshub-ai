@@ -114,6 +114,28 @@ class TestFlagOff:
 
 
 class TestFlagOn:
+    async def test_a_failed_read_raises_rather_than_dropping_the_delete(self) -> None:
+        """Like the real stores, the read answers None on a failure unless asked to raise."""
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+
+        async def read(key: str, *, raise_on_error: bool = False) -> None:
+            if raise_on_error:
+                raise RuntimeError("graph busy")
+
+        store.get_record_by_key = AsyncMock(side_effect=read)
+        with flag(True), pytest.raises(RuntimeError, match="graph busy"):
+            await proc.on_record_deleted("r1")
+        store.soft_delete_records.assert_not_called()
+
+    async def test_a_record_that_is_already_gone_is_left_alone(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.get_record_by_key = AsyncMock(return_value=None)
+        with flag(True):
+            await proc.on_record_deleted("r1")
+        store.soft_delete_records.assert_not_called()
+
     async def test_a_connector_delete_marks_only_the_record(self) -> None:
         proc = _processor()
         store = _with_store(proc, AsyncMock())

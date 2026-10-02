@@ -376,6 +376,45 @@ async def test_an_api_delete_by_the_owner_goes_to_the_trash(world: _World) -> No
     assert again["success"] is False and again["code"] == 404
 
 
+async def _trash_drive_file_with_revision(world: _World, revision: str) -> None:
+    await world.graph.update_node(
+        world.ids["drive_file"], CollectionNames.RECORDS.value, {"externalRevisionId": revision}
+    )
+    await world.processor.on_records_deleted_cascade(
+        [world.ids["drive_file"]], world.connector_id, delete_source=DeleteSource.USER,
+        deleted_by_user_id=world.user_key,
+    )
+    world.producer.events.clear()
+
+
+async def test_rename_detection_does_not_match_a_trashed_record(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Object stores find a rename by revision; after a hard delete there would be nothing to find."""
+    _flag(monkeypatch, True)
+    await _trash_drive_file_with_revision(world, "rev-1")
+    assert await world.processor.get_record_by_external_revision_id(world.connector_id, "rev-1") is None
+
+
+async def test_an_upsert_reusing_a_trashed_records_id_leaves_it_in_the_trash(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _flag(monkeypatch, True)
+    await _trash_drive_file_with_revision(world, "rev-1")
+
+    renamed = _file(world, "drive_file", kb=False)
+    renamed.external_record_id = f"renamed-{world.ids['drive_file']}"
+    renamed.record_name = "renamed.pdf"
+    renamed.external_revision_id = "rev-1"
+    await world.processor.on_new_records([(renamed, [])])
+
+    doc = await world.stored("drive_file")
+    assert (doc["isDeleted"], doc["externalRecordId"], doc["recordName"]) == (
+        True, f"ext-{world.ids['drive_file']}", "drive_file.pdf",
+    )
+    assert world.producer.of_type(EventTypes.NEW_RECORD.value) == []
+
+
 async def _visible(w: _World, names: tuple[str, ...]) -> set[str]:
     return {n for n in names if (doc := await w.stored(n)) is not None and doc.get("isDeleted") is not True}
 

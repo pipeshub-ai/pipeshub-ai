@@ -82,7 +82,8 @@ class BaseDataStore(ABC):
     """Base class for all data stores"""
 
     @abstractmethod
-    async def get_record_by_key(self, key: str) -> Optional[Record]:
+    async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Optional[Record]:
+        """None when no record has this key; a failed read raises only with ``raise_on_error``."""
         pass
 
     @abstractmethod

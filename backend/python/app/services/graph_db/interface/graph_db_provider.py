@@ -1353,7 +1353,9 @@ class IGraphDBProvider(ABC):
         self,
         connector_id: str,
         external_revision_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> Optional['Record']:
         """
         Get a record by its external revision ID (e.g., etag for S3).
@@ -1362,6 +1364,9 @@ class IGraphDBProvider(ABC):
             connector_id (str): Connector ID
             external_revision_id (str): External revision ID (e.g., etag)
             transaction (Optional[Any]): Optional transaction context
+            visibility: LIVE by default. Rename detection must not match a
+                record in the trash: after a hard delete there would be no
+                record to match, so the renamed item is a new record.
 
         Returns:
             Optional[Record]: Record data if found, None otherwise

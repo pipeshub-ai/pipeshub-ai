@@ -402,6 +402,18 @@ async def _by_virtual_record_id(w: _World, visibility: RecordVisibility) -> set[
 
 
 # method -> (probe, live names, trashed names) for the same seed
+async def _by_revision(w: _World, visibility: RecordVisibility) -> set[str]:
+    found = set()
+    for name in ("live", "trashed"):
+        await w.graph.update_node(w.ids[name], CollectionNames.RECORDS.value, {"externalRevisionId": f"rev-{name}"})
+        record = await w.graph.get_record_by_external_revision_id(
+            w.connector_id, f"rev-{name}", visibility=visibility
+        )
+        if record is not None:
+            found.add(record.id)
+    return found
+
+
 PARAM_PROBES = {
     "get_record_by_external_id": (_by_external_id, {"live"}, {"trashed"}),
     "get_records_by_status": (_by_status, {"live_failed"}, {"trashed_failed"}),
@@ -412,6 +424,7 @@ PARAM_PROBES = {
     ),
     "get_records_by_record_ids": (_by_record_ids, {"live"}, {"trashed"}),
     "get_records_by_virtual_record_id": (_by_virtual_record_id, {"live_shared"}, {"trashed_shared"}),
+    "get_record_by_external_revision_id": (_by_revision, {"live"}, {"trashed"}),
 }
 
 

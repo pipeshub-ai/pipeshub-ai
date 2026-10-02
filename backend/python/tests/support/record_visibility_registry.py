@@ -44,6 +44,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.PARAM,
         "LIVE decides whether a VRID's vectors may be deleted; the orphan sweeper asks DELETED",
     ),
+    "get_record_by_external_revision_id": (
+        Rule.PARAM,
+        "rename detection asks LIVE: after a hard delete there is no old record, so the item is new",
+    ),
     # Gates: a trashed record must never pass.
     "check_record_access_with_details": (Rule.LIVE, "the access check: trashed means no access"),
     "get_accessible_virtual_record_ids": (Rule.LIVE, "the search permission map"),
@@ -79,7 +83,6 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_typed_records_batch": (Rule.ALL, _BY_KEY),
     "get_file_record_by_id": (Rule.ALL, _BY_KEY),
     "get_record_by_path": (Rule.ALL, _SYNC_LOOKUP),
-    "get_record_by_external_revision_id": (Rule.ALL, _SYNC_LOOKUP),
     "get_record_key_by_external_id": (Rule.ALL, _SYNC_LOOKUP),
     "get_record_by_conversation_index": (Rule.ALL, _SYNC_LOOKUP),
     "get_record_by_issue_key": (Rule.ALL, _SYNC_LOOKUP),

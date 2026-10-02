@@ -3695,13 +3695,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         external_revision_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> Record | None:
         """Get record by external revision ID (e.g., etag)"""
         query = f"""
         FOR doc IN {CollectionNames.RECORDS.value}
             FILTER doc.externalRevisionId == @external_revision_id
             AND doc.connectorId == @connector_id
+            AND {aql_record_visibility("doc", visibility)}
             LIMIT 1
             RETURN doc
         """
