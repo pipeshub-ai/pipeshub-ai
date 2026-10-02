@@ -373,6 +373,8 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
 
         self.pages_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self._space_listing_complete = False
+        # Spaces this sync wrote to the graph, which the space sweep expects to read back.
+        self._saved_space_ids: set[str] = set()
         # Items the by-id syncs of the current space listing failed to save; counted in failedPages.
         self._id_sync_failed_items: list[tuple[str, str, str]] = []
 
@@ -612,6 +614,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             base_url = None  # Extract from first response
             record_groups = []
             self._space_listing_complete = False
+            self._saved_space_ids = set()
             # A listed space that couldn't be processed would look like one that left.
             skipped_a_space = False
 
@@ -698,6 +701,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 # Save batch to database
                 if batch_groups_with_permissions:
                     await self.data_entities_processor.on_new_record_groups(batch_groups_with_permissions)
+                    self._saved_space_ids.update(str(g.external_group_id) for g, _ in batch_groups_with_permissions)
                     self.logger.info(f"Synced batch of {len(batch_groups_with_permissions)} spaces")
 
                 # Next page: prefer _links.next (cursor or start), else bump start by batch size
