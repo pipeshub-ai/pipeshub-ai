@@ -191,3 +191,13 @@ class TestStrictAndExcludedScope:
         assert json.loads(text)["results"] == []
         graph.get_entity_access_context.assert_not_called()
         store.search_entities.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_aliases_are_not_shown(patched) -> None:
+    """KG-17: an alias is a spelling from some record, possibly one the user
+    cannot read; it stays a matching aid and never reaches the tool output."""
+    patched[1].return_value = [_hit("t1", "topic", records=[_row("r1")])]
+    ok, text = await execute_search_entities(_state(), "legal")
+    assert ok is True
+    assert all("aliases" not in r for r in json.loads(text)["results"])
