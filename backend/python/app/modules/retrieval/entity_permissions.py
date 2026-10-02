@@ -50,6 +50,8 @@ logger = logging.getLogger(__name__)
 
 RECORD_ENTITY_TYPE = "record"
 RECORD_GROUP_ENTITY_TYPE = "record_group"
+# A member of the org, reached through the records that name them (KG-13).
+PERSON_ENTITY_TYPE = "person"
 TAXONOMY_ENTITY_TYPES: frozenset[str] = frozenset(
     {"department", "category", "subcategory", "topic", "language"}
 )
@@ -57,6 +59,7 @@ SEARCHABLE_ENTITY_TYPES: frozenset[str] = TAXONOMY_ENTITY_TYPES | {
     RECORD_ENTITY_TYPE,
     RECORD_GROUP_ENTITY_TYPE,
     "named_entity",
+    PERSON_ENTITY_TYPE,
 }
 # Named by the records extracted into them; departments are the org's list.
 EXTRACTED_ENTITY_TYPES: frozenset[str] = TAXONOMY_ENTITY_TYPES - {"department"}
