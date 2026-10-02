@@ -190,6 +190,30 @@ def _entity_metadata(payload: dict[str, Any] | None) -> dict[str, Any]:
     return meta
 
 
+def _type_groups(
+    entity_types: list[str] | None,
+) -> list[tuple[str | list[str] | None, str | None]]:
+    """``(must entityType, must_not entityType)`` per request of a pass:
+    record titles apart from everything else when both are wanted."""
+    from app.models.entities import EntityType
+
+    record = EntityType.RECORD.value
+    if entity_types is None:
+        return [(None, record), (record, None)]
+    others = [t for t in entity_types if t != record]
+    if record in entity_types and others:
+        return [(others, None), (record, None)]
+    return [(list(entity_types), None)]
+
+
+def _interleave(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Alternate the groups' hits, first group first, each in its own order."""
+    merged: list[dict[str, Any]] = []
+    for rank in range(max((len(g) for g in groups), default=0)):
+        merged.extend(g[rank] for g in groups if rank < len(g))
+    return merged
+
+
 class EntityVectorStore:
     """Manages embedding and retrieval of knowledge-graph entities in the
     dedicated ``entities`` vector collection.
@@ -1190,6 +1214,12 @@ class EntityVectorStore:
         There is no ``min_should_match``, since KB records have no record group
         by design and are reachable only via ``connectorIds``.
 
+        Record titles outnumber the other entities by orders of magnitude, and
+        in one pool a word shared by many titles pushed the taxonomy entities
+        out (KG-14). So when both are asked for, a pass is two requests with
+        ``top_k`` each, titles apart, merged alternately with the other types
+        first; a pass can therefore return up to ``2 * top_k`` hits.
+
         Each hit is ``{entityId, entityType, name, canonicalName, aliases,
         score, connectorIds, recordGroupIds}``.
 
@@ -1212,9 +1242,7 @@ class EntityVectorStore:
         from app.services.vector_db.models import FusionMethod, HybridSearchRequest
 
         dense_vec, sparse_vec = await self._query_vectors(query)
-        must: dict[str, Any] = {"metadata.orgId": org_id}
-        if entity_types:
-            must["metadata.entityType"] = entity_types  # list → "any of" filter
+        groups = _type_groups(entity_types)
         requests = []
         for index in searchable:
             scope = passes[index]
@@ -1223,15 +1251,22 @@ class EntityVectorStore:
                 should[RECORD_GROUP_IDS_FIELD] = sorted(scope.record_group_ids)
             if scope.connector_ids:
                 should[CONNECTOR_IDS_FIELD] = sorted(scope.connector_ids)
-            requests.append(HybridSearchRequest(
-                dense_query=dense_vec,
-                sparse_query=sparse_vec,
-                text_query=query,
-                filter=await self.vector_db_service.filter_collection(must=must, should=should),
-                limit=top_k,
-                fusion_method=FusionMethod.RRF,
-                with_payload=True,
-            ))
+            for must_types, must_not_types in groups:
+                must: dict[str, Any] = {"metadata.orgId": org_id}
+                if must_types is not None:
+                    must["metadata.entityType"] = must_types  # list → "any of" filter
+                filter_kwargs: dict[str, Any] = {"must": must, "should": should}
+                if must_not_types is not None:
+                    filter_kwargs["must_not"] = {"metadata.entityType": must_not_types}
+                requests.append(HybridSearchRequest(
+                    dense_query=dense_vec,
+                    sparse_query=sparse_vec,
+                    text_query=query,
+                    filter=await self.vector_db_service.filter_collection(**filter_kwargs),
+                    limit=top_k,
+                    fusion_method=FusionMethod.RRF,
+                    with_payload=True,
+                ))
         try:
             batch = await self.vector_db_service.query_nearest_points(
                 collection_name=self.collection_name, requests=requests,
@@ -1243,10 +1278,13 @@ class EntityVectorStore:
             )
             await self._reset_if_collection_changed()
             raise
-        for index, hits in zip(searchable, batch or []):
-            results[index] = [
-                self._search_hit(hit) for hit in hits if hit.score >= score_threshold
+        batch = list(batch or [])
+        for position, index in enumerate(searchable):
+            per_group = [
+                [self._search_hit(hit) for hit in hits if hit.score >= score_threshold]
+                for hits in batch[position * len(groups):(position + 1) * len(groups)]
             ]
+            results[index] = _interleave(per_group)
         return results
 
     @staticmethod

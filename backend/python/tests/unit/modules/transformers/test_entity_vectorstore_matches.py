@@ -517,7 +517,9 @@ class TestSearchPassesAreOneRequest:
         service = MagicMock()
         service.query_nearest_points = AsyncMock(return_value=[
             [SearchResult(id="p1", score=0.9, payload={"metadata": {"entityId": "a", "entityType": "topic"}})],
+            [],
             [SearchResult(id="p2", score=0.8, payload={"metadata": {"entityId": "b", "entityType": "topic"}})],
+            [],
         ])
         store = _make_store(service)
 
@@ -525,13 +527,14 @@ class TestSearchPassesAreOneRequest:
             EntitySearchPass(frozenset({"g1"}), frozenset({"c1"})),
             EntitySearchPass(frozenset(), frozenset()),  # no scope, not org-wide: skipped
             EntitySearchPass(org_wide=True),
-        ])
+        ], entity_types=["topic", "record"])
 
         service.query_nearest_points.assert_awaited_once()
         requests = service.query_nearest_points.await_args.kwargs["requests"]
-        assert len(requests) == 2
+        # Two searchable passes, each split into non-title and title requests.
+        assert len(requests) == 4
         assert requests[0].filter["should"] == {"recordGroupIds": ["g1"], "connectorIds": ["c1"]}
-        assert requests[1].filter["should"] == {}
+        assert requests[2].filter["should"] == {}
         assert [[h["entityId"] for h in r] for r in results] == [["a"], [], ["b"]]
 
     async def test_no_searchable_pass_makes_no_request(self) -> None:
@@ -555,3 +558,39 @@ async def test_a_failed_entity_search_logs_no_query_text() -> None:
         await store.search_entities_passes("salary of jane doe", "org-1", [EntitySearchPass(org_wide=True)])
     logged = " ".join(str(a) for c in store.logger.error.call_args_list for a in c.args)
     assert "vector db down" in logged and "jane" not in logged
+
+
+class TestTitlesSearchedApart:
+    """KG-14: record titles and the other entity types are separate requests
+    with their own top_k, merged taxonomy-first."""
+
+    async def test_two_requests_per_pass_merged_alternately(self) -> None:
+        from app.modules.transformers.entity_vectorstore import EntitySearchPass
+        from app.services.vector_db.models import SearchResult
+
+        def _r(entity_id: str, entity_type: str, score: float) -> SearchResult:
+            return SearchResult(id=entity_id, score=score, payload={"metadata": {"entityId": entity_id, "entityType": entity_type}})
+
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock(return_value=[
+            [_r("t1", "topic", 0.03), _r("t2", "topic", 0.02)],
+            [_r("r1", "record", 0.03), _r("r2", "record", 0.02), _r("r3", "record", 0.01)],
+        ])
+        store = _make_store(service)
+
+        (hits,) = await store.search_entities_passes("q", "org-1", [EntitySearchPass(org_wide=True)], top_k=3)
+
+        requests = service.query_nearest_points.await_args.kwargs["requests"]
+        assert len(requests) == 2
+        assert requests[0].filter["must_not"] == {"metadata.entityType": "record"}
+        assert requests[1].filter["must"]["metadata.entityType"] == "record"
+        assert [h["entityId"] for h in hits] == ["t1", "r1", "t2", "r2", "r3"]
+
+    async def test_asking_for_records_only_is_one_request(self) -> None:
+        from app.modules.transformers.entity_vectorstore import EntitySearchPass
+
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock(return_value=[[]])
+        store = _make_store(service)
+        await store.search_entities_passes("q", "org-1", [EntitySearchPass(org_wide=True)], entity_types=["record"])
+        assert len(service.query_nearest_points.await_args.kwargs["requests"]) == 1

@@ -690,3 +690,28 @@ class TestSearchPasses:
         assert {h["entityId"] for h in group_pass} == {"by-group"}
         assert {h["entityId"] for h in connector_pass} == {"by-connector"}
         assert {h["entityId"] for h in wide_pass} == {"by-group", "by-connector", "unscoped"}
+
+    async def test_record_titles_do_not_crowd_out_taxonomy_entities(self, store: EntityVectorStore) -> None:
+        """KG-14: titles outnumber taxonomy nodes by orders of magnitude; with
+        one pool a query word shared by many titles pushed the topics out."""
+        from app.modules.transformers.entity_vectorstore import EntitySearchPass
+
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        titles = [
+            _entity(f"t{i}", EntityType.RECORD, org=org, name=f"Security review notes {i}", connectors=["c1"])
+            for i in range(12)
+        ]
+        await store.upsert_entities_batch([
+            *titles,
+            _entity("sec-topic", org=org, name="Security", connectors=["c1"]),
+            _entity("audit-topic", org=org, name="Security audit", connectors=["c1"]),
+        ])
+        await _publish_writes(store)
+
+        (hits,) = await store.search_entities_passes(
+            "security review", org, [EntitySearchPass(org_wide=True)], top_k=4,
+        )
+
+        types = [h["entityType"] for h in hits]
+        assert {"sec-topic", "audit-topic"} <= {h["entityId"] for h in hits}
+        assert types.count("record") == 4
