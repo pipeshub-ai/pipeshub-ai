@@ -1,9 +1,29 @@
-"""LLM-only providers: xAI, Groq, MiniMax, Fireworks, Mistral (LLM side)."""
+"""LLM-only providers: xAI, Groq, MiniMax, Fireworks, Mistral (LLM side), Atlas Cloud."""
 
 from app.config.ai_models.registry import AIModelProviderBuilder
 from app.config.ai_models.types import ModelCapability
 
 from .common_fields import API_KEY, LLM_COMMON_TAIL, model_field
+
+
+# ---------------------------------------------------------------------------
+# Atlas Cloud
+# ---------------------------------------------------------------------------
+
+@AIModelProviderBuilder("Atlas Cloud", "atlascloud") \
+    .with_description("100+ models via a single OpenAI-compatible API gateway") \
+    .with_capabilities([ModelCapability.TEXT_GENERATION]) \
+    .with_icon("/icons/ai-models/atlascloud.svg") \
+    .with_color("#6366F1") \
+    .add_field(API_KEY) \
+    .add_field(model_field("e.g., openai/gpt-4.1-mini, anthropic/claude-sonnet-4.6")) \
+    .add_field(LLM_COMMON_TAIL[0]) \
+    .add_field(LLM_COMMON_TAIL[1]) \
+    .add_field(LLM_COMMON_TAIL[2]) \
+    .add_field(LLM_COMMON_TAIL[3]) \
+    .build_decorator()
+class AtlasCloudProvider:
+    pass
 
 
 # ---------------------------------------------------------------------------

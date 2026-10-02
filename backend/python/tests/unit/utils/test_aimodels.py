@@ -1161,6 +1161,18 @@ class TestGetGeneratorModel:
         assert result is mock_cls.return_value
 
     @patch("langchain_openai.ChatOpenAI")
+    def test_atlascloud(self, mock_cls):
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("openai/gpt-4.1-mini")
+        result = get_generator_model(LLMProvider.ATLASCLOUD.value, config)
+        mock_cls.assert_called_once()
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["model"] == "openai/gpt-4.1-mini"
+        assert call_kwargs["base_url"] == "https://api.atlascloud.ai/v1"
+        assert call_kwargs["stream_usage"] is True
+        assert result is mock_cls.return_value
+
+    @patch("langchain_openai.ChatOpenAI")
     def test_minimax_temperature_clamping(self, mock_cls):
         mock_cls.return_value = MagicMock()
         config = self._base_config("MiniMax-M3")
