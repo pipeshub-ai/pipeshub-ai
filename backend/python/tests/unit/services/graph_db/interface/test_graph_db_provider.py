@@ -185,6 +185,7 @@ class TestAbstractMethodInventory:
         "get_document",
         "get_record_by_id",
         "get_typed_records_batch",
+        "page_record_ids_by_type",
         "get_node_depths_batch",
         "get_all_documents",
         "get_documents_paginated",
