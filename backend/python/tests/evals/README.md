@@ -254,9 +254,9 @@ model that wrote the answer. `chat_models.judge_model_from_env()` picks it:
 
 | Setting | What it is | In CI, set from |
 | --- | --- | --- |
-| `JUDGE_PROVIDER` | `anthropic_foundry`, `azure_openai`, `openai` or `anthropic` | `anthropic_foundry` whenever the `AZURE_JUDGE_API_KEY` secret exists |
-| `JUDGE_MODEL` | the model name; for Foundry, the deployment name | the `AZURE_JUDGE_MODEL` secret (`claude-sonnet-5.5`) |
-| `JUDGE_API_KEY` | the judge's own key | the `AZURE_JUDGE_API_KEY` secret |
+| `JUDGE_PROVIDER` | `anthropic`, `anthropic_foundry`, `azure_openai` or `openai` | `anthropic` when the `ANTHROPIC_JUDGE_API_KEY` secret exists, else `anthropic_foundry` when `AZURE_JUDGE_API_KEY` does |
+| `JUDGE_MODEL` | the model name; for Foundry, the deployment name | for `anthropic`, the optional `ANTHROPIC_JUDGE_MODEL` variable, else `claude-sonnet-5-5`; for Foundry, the `AZURE_JUDGE_MODEL` secret |
+| `JUDGE_API_KEY` | the judge's own key | the `ANTHROPIC_JUDGE_API_KEY` secret, else `AZURE_JUDGE_API_KEY` |
 | `JUDGE_AZURE_ENDPOINT` | Azure and Foundry. For Foundry, either a Target URI (`https://<resource>.services.ai.azure.com/anthropic/v1/messages`, used up to `/anthropic`) or an endpoint whose host gives the resource name | the optional `AZURE_JUDGE_ENDPOINT` secret, else the same endpoint as `TEST_AZURE_OPENAI_ENDPOINT` |
 | `JUDGE_FOUNDRY_RESOURCE` | Foundry only, optional; the resource name, when the endpoint doesn't give it | not set |
 | `JUDGE_AZURE_DEPLOYMENT` | Azure OpenAI; Foundry uses it when `JUDGE_MODEL` is empty | the `AZURE_JUDGE_MODEL` secret |
@@ -265,6 +265,8 @@ model that wrote the answer. `chat_models.judge_model_from_env()` picks it:
 `AZURE_JUDGE_ENDPOINT` is optional: the Claude deployment's Target URI from
 the Foundry portal. Set it when the deployment isn't on the same resource as
 `TEST_AZURE_OPENAI_ENDPOINT`.
+
+`anthropic` is Claude through Anthropic's own API (`api.anthropic.com`), with the official SDK's `Anthropic` client and the same request as Foundry below; LangChain is not used for it, because it sends a temperature.
 
 `anthropic_foundry` is Claude deployed on Azure AI Foundry. It uses the
 Anthropic Messages API through the official SDK's `AnthropicFoundry` client,

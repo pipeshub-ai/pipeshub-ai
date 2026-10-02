@@ -131,12 +131,12 @@ jobs:
           TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
           EVAL_PROVIDER: azure_openai
           # A separate judge model, when configured; see tests/evals/README.md.
-          # Claude on Azure AI Foundry, on the same resource, through the Anthropic Messages API.
-          JUDGE_PROVIDER: ${{ secrets.AZURE_JUDGE_API_KEY && 'anthropic_foundry' || '' }}
-          JUDGE_MODEL: ${{ secrets.AZURE_JUDGE_MODEL }}
+          # Claude through Anthropic's API when ANTHROPIC_JUDGE_API_KEY is set, else on Azure AI Foundry.
+          JUDGE_PROVIDER: ${{ secrets.ANTHROPIC_JUDGE_API_KEY && 'anthropic' || secrets.AZURE_JUDGE_API_KEY && 'anthropic_foundry' || '' }}
+          JUDGE_MODEL: ${{ secrets.ANTHROPIC_JUDGE_API_KEY && (vars.ANTHROPIC_JUDGE_MODEL || 'claude-sonnet-5-5') || secrets.AZURE_JUDGE_MODEL }}
           JUDGE_AZURE_ENDPOINT: ${{ secrets.AZURE_JUDGE_ENDPOINT || secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
           JUDGE_AZURE_DEPLOYMENT: ${{ secrets.AZURE_JUDGE_MODEL }}
-          JUDGE_API_KEY: ${{ secrets.AZURE_JUDGE_API_KEY }}
+          JUDGE_API_KEY: ${{ secrets.ANTHROPIC_JUDGE_API_KEY || secrets.AZURE_JUDGE_API_KEY }}
         run: |
           source .venv/bin/activate
           python -m tests.evals.run_judge_calibration \

@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import pytest
 
-from app.connectors.sources.demo.harness.answer_judge import AnswerJudge
+from app.connectors.sources.demo.harness.answer_judge import AnswerJudge, AnthropicJudgeClient
 from tests.evals import chat_models
 from tests.evals.chat_models import (
     JudgeConfigError,
@@ -260,3 +260,31 @@ def test_a_foundry_resource_name_is_accepted_in_any_case(monkeypatch: pytest.Mon
     _set(monkeypatch, FOUNDRY_JUDGE | {"JUDGE_FOUNDRY_RESOURCE": " Claude-Res2 "})
     judge_model_from_env()
     assert built[0]["resource"] == "claude-res2"
+
+
+ANTHROPIC_JUDGE = {"JUDGE_PROVIDER": "anthropic", "JUDGE_MODEL": "claude-sonnet-5-5", "JUDGE_API_KEY": "judge-key"}
+
+
+def test_an_anthropic_judge_uses_the_messages_client(monkeypatch: pytest.MonkeyPatch, built: list[dict]) -> None:
+    _set(monkeypatch, ANTHROPIC_JUDGE)
+
+    judge = chat_models.judge_model_from_env()
+
+    assert judge.dedicated and (judge.provider, judge.model) == ("anthropic", "claude-sonnet-5-5")
+    assert isinstance(judge.client, AnthropicJudgeClient)
+    assert built == [], "the LangChain builder sends a temperature, which newer Claude models refuse"
+
+
+@pytest.mark.parametrize("missing", ["JUDGE_API_KEY", "JUDGE_MODEL"])
+def test_an_anthropic_judge_missing_a_setting_names_it(
+    monkeypatch: pytest.MonkeyPatch, built: list[dict], missing: str
+) -> None:
+    _set(monkeypatch, {k: v for k, v in ANTHROPIC_JUDGE.items() if k != missing})
+
+    with pytest.raises(JudgeConfigError, match=missing):
+        chat_models.judge_model_from_env()
+
+
+def test_the_real_anthropic_builder_talks_to_anthropic() -> None:
+    client = chat_models.build_anthropic_judge_client("not-a-real-key", "claude-sonnet-5-5")
+    assert urlparse(str(client._sdk.base_url)).hostname == "api.anthropic.com"
