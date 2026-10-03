@@ -149,6 +149,7 @@ class FakeRecordsDb:
         self.permission_updates: list[tuple[Any, list[Any]]] = []
         self.reindexed: list[Any] = []
         self.fail_lookup_for: set[str] = set()
+        self.fail_delete_for: set[str] = set()
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[SimpleNamespace]:
         if not self.creator_email:
@@ -164,9 +165,9 @@ class FakeRecordsDb:
     async def get_records_by_parent(
         self, connector_id: str, parent_external_record_id: str, record_type: Optional[str] = None
     ) -> list[Record]:
-        """Copies, as a real read would return: changing them does not change what is stored."""
+        """Base-record copies, as the stores return: changing them does not change what is stored."""
         return [
-            r.model_copy() for r in self.records.values()
+            as_base_record(r) for r in self.records.values()
             if r.parent_external_record_id == parent_external_record_id and record_type in (None, r.record_type)
             and is_live_record(r)
         ]
@@ -189,7 +190,13 @@ class FakeRecordsDb:
         self.user_groups.extend(groups)
 
     async def on_record_deleted(self, record_id: str, **_: object) -> None:
+        if record_id in self.fail_delete_for:
+            self.fail_delete_for.discard(record_id)
+            raise RuntimeError(f"delete of {record_id} failed")
         self.deleted.append(record_id)
+        for external_id, record in list(self.records.items()):
+            if record.id == record_id:
+                del self.records[external_id]
 
     async def on_record_content_update(self, record: Record) -> None:
         self.content_updates.append(record)

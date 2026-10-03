@@ -43,7 +43,9 @@ def _provider(
         **kind,
     }
 
-    async def get_document(key: str, collection: str, transaction: str | None = None) -> dict | None:
+    async def get_document(
+        key: str, collection: str, transaction: str | None = None, *, raise_on_error: bool = False
+    ) -> dict | None:
         return dict(record) if collection == CollectionNames.RECORDS.value else None
 
     provider = Neo4jProvider(MagicMock(), MagicMock())

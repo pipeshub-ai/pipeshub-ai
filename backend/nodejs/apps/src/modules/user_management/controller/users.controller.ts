@@ -53,6 +53,7 @@ import {
 } from '../services/user-admin.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
+import { escapeRegExp } from '../../../utils/escape-regexp';
 import { AuthService } from '../services/auth.service';
 import { Org } from '../schema/org.schema';
 import { UserCredentials } from '../../auth/schema/userCredentials.schema';
@@ -237,7 +238,7 @@ export class UserController {
     }
 
     if (search) {
-      const searchRegex = { $regex: String(search), $options: 'i' };
+      const searchRegex = { $regex: escapeRegExp(String(search)), $options: 'i' };
       filter.$or = [{ fullName: searchRegex }, { email: searchRegex }];
     }
 

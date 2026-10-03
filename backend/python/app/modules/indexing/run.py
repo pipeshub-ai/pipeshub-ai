@@ -9,6 +9,7 @@ from app.exceptions.indexing_exceptions import (
     MetadataProcessingError,
     VectorStoreError,
 )
+from app.modules.indexing.stored_content_cleanup import StoredContentCleanup
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -82,6 +83,7 @@ class IndexingPipeline:
         graph_provider,
         collection_registry: CollectionRegistry,
         vector_db_service: IVectorDBService,
+        stored_content: StoredContentCleanup | None = None,
     ) -> None:
         """Initialize the indexing pipeline with necessary configurations.
 
@@ -91,10 +93,13 @@ class IndexingPipeline:
             graph_provider: Arango service
             collection_registry: Resolves/manages collections per the active strategy
             vector_db_service: Vector DB service
+            stored_content: Removes a released virtual record's blob files and
+                storage documents. Without it only the mapping row is dropped.
         """
         self.logger = logger
         self.config_service = config_service
         self.graph_provider = graph_provider
+        self.stored_content = stored_content
 
         try:
             self.vector_db_service = vector_db_service
@@ -178,6 +183,7 @@ class IndexingPipeline:
             self.graph_provider,
             virtual_record_id,
             self.logger,
+            release_mapping=self._forget_virtual_record_mappings,
         )
 
     async def purge_connector(
@@ -270,7 +276,7 @@ class IndexingPipeline:
         reclaimable = await self._vrids_without_surviving_points(
             collections, exclusive.ids
         )
-        await self._forget_virtual_record_mappings(reclaimable)
+        await self._forget_virtual_record_mappings(reclaimable, org_id=ctx.org_id)
 
         rewritten, orphans, complete = await self._strip_connector_from_shared_points(
             collections, ctx.connector_id, dead_group_ids
@@ -347,7 +353,7 @@ class IndexingPipeline:
             )
         for name in scope.collection_names:
             await self.collection_registry.delete_collection(name)
-        await self._forget_virtual_record_mappings(scan.ids)
+        await self._forget_virtual_record_mappings(scan.ids, org_id=ctx.org_id)
         self.logger.info(
             "Dropped collection(s) %s for connector %s",
             scope.collection_names,
@@ -931,7 +937,7 @@ class IndexingPipeline:
                     )
             for name in scope.collection_names:
                 await self.collection_registry.delete_collection(name)
-            await self._forget_virtual_record_mappings(virtual_record_ids or [])
+            await self._forget_virtual_record_mappings(virtual_record_ids or [], org_id=ctx.org_id)
             self.logger.info(
                 "Purged connector %s by dropping collection(s): %s",
                 ctx.connector_id,
@@ -959,7 +965,7 @@ class IndexingPipeline:
             )
             return {"action": "noop", "collections": scope.collection_names}
 
-        result = await self.bulk_delete_embeddings(virtual_record_ids)
+        result = await self.bulk_delete_embeddings(virtual_record_ids, org_id=ctx.org_id or None)
         # The scope names the connector's *own* collection(s); the delete itself
         # is keyed on virtualRecordId across every managed one, because a VRID
         # whose last record just went away must not be left behind in a
@@ -1035,9 +1041,28 @@ class IndexingPipeline:
                 )
         return ScanResult(found, complete)
 
-    async def _forget_virtual_record_mappings(self, virtual_record_ids: List[str]) -> None:
+    async def _forget_virtual_record_mappings(
+        self, virtual_record_ids: List[str], *, org_id: str | None = None
+    ) -> List[str]:
+        """Let go of virtual records whose points are gone: stored content first, mapping row last.
+
+        Returns the ids whose stored content could not be removed. Their mapping
+        rows stay, so the orphan sweeper finds them and tries again.
+        """
         if not virtual_record_ids:
-            return
+            return []
+        if self.stored_content is not None:
+            failed = await self.stored_content.release_virtual_records(
+                virtual_record_ids, org_id=org_id or None
+            )
+            if failed:
+                self.logger.warning(
+                    "Stored content of %d virtual record(s) is still in storage; "
+                    "the orphan sweeper will retry: %s",
+                    len(failed),
+                    failed[:20],
+                )
+            return failed
         try:
             await self.graph_provider.delete_nodes(
                 keys=virtual_record_ids,
@@ -1049,10 +1074,27 @@ class IndexingPipeline:
                 len(virtual_record_ids),
                 e,
             )
+        return []
+
+    async def purge_stored_documents(self, org_id: str, document_ids: List[str]) -> List[str]:
+        """Remove deleted records' own storage documents (their original uploads).
+
+        Returns the ids still in storage, so the caller can retry.
+        """
+        if not document_ids:
+            return []
+        if self.stored_content is None:
+            self.logger.error(
+                "No storage cleanup is configured; %d uploaded file(s) stay in storage",
+                len(document_ids),
+            )
+            return list(document_ids)
+        return await self.stored_content.purge_documents(org_id, document_ids)
 
     async def bulk_delete_embeddings(
         self,
         virtual_record_ids: List[str],
+        org_id: str | None = None,
         *,
         keep_mapping: bool = False,
     ) -> Dict[str, Any]:
@@ -1260,22 +1302,14 @@ class IndexingPipeline:
                     # Continue with next batch even if one fails
                     continue
 
-            # Mapping last: it is how an orphaned point set is found again, so it
-            # must outlive the deletes it describes.
-            if deleted_virtual_record_ids and not keep_mapping:
-                try:
-                    await self.graph_provider.delete_nodes(
-                        keys=deleted_virtual_record_ids,
-                        collection=CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-                    )
-                    self.logger.info(
-                        f"✅ Deleted {len(deleted_virtual_record_ids)} entries from virtualRecordToDocIdMapping"
-                    )
-                except Exception as e:
-                    self.logger.error(
-                        f"❌ Failed to delete from virtualRecordToDocIdMapping: {e}. "
-                        f"This may lead to orphaned entries in the graph."
-                    )
+            # Mapping last: it is how an orphaned point set (and its stored
+            # content) is found again, so it must outlive the deletes it describes.
+            # A soft delete keeps both until the purge.
+            storage_pending: list[str] = []
+            if not keep_mapping:
+                storage_pending = await self._forget_virtual_record_mappings(
+                    deleted_virtual_record_ids, org_id=org_id
+                )
 
             safe_virtual_record_ids = deleted_virtual_record_ids
 
@@ -1287,6 +1321,7 @@ class IndexingPipeline:
                 "virtual_record_ids_deleted": len(safe_virtual_record_ids),
                 "virtual_record_ids_rewritten": len(rewritten_virtual_record_ids),
                 "virtual_record_ids_processed": len(safe_virtual_record_ids) + len(rewritten_virtual_record_ids),
+                "stored_content_pending": len(storage_pending),
                 "success": True
             }
 

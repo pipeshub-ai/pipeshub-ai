@@ -247,6 +247,48 @@ class VectorStoreProbe:
             ],
         )
 
+    async def content_texts(self, virtual_record_id: str, limit: int = 256) -> list[str]:
+        """The text of the document's own chunks, so a test can tell old content from new.
+
+        A count cannot: an edit that re-indexes to the same number of chunks, or
+        leaves the old chunks behind next to the new ones, looks the same. The
+        summary vector is left out for the reason ``count_content_chunks`` gives.
+        """
+        client = await self._conn()
+        condition = qmodels.Filter(
+            must=[qmodels.FieldCondition(
+                key="metadata.virtualRecordId",
+                match=qmodels.MatchValue(value=virtual_record_id),
+            )],
+            must_not=[qmodels.FieldCondition(
+                key="metadata.isRecordSummary",
+                match=qmodels.MatchValue(value=True),
+            )],
+        )
+        texts: list[str] = []
+        for name in await self.collections():
+            offset = None
+            while len(texts) < limit:
+                try:
+                    points, offset = await client.scroll(
+                        collection_name=name,
+                        scroll_filter=condition,
+                        limit=min(64, limit - len(texts)),
+                        offset=offset,
+                        with_payload=True,
+                        with_vectors=False,
+                    )
+                except Exception as exc:
+                    if _is_missing_collection(exc):
+                        break
+                    raise VectorProbeUnavailable(
+                        f"Could not read points in collection {name!r}: {exc}"
+                    ) from exc
+                texts.extend(str((p.payload or {}).get("page_content") or "") for p in points)
+                if offset is None:
+                    break
+        return texts
+
     async def count_for_connector(self, connector_id: str) -> int:
         return await self._count_matching(
             qmodels.FieldCondition(

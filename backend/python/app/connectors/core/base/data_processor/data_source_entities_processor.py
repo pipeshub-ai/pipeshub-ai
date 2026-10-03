@@ -2303,11 +2303,7 @@ class DataSourceEntitiesProcessor:
                 # A failed read must raise: None would read as "already gone"
                 # and the caller does not deliver this delete again.
                 existing = await tx_store.get_record_by_key(record_id, raise_on_error=True)
-            # The store returns the stored document, though it is annotated as a Record.
-            connector_id = (
-                existing.get("connectorId") if isinstance(existing, dict)
-                else getattr(existing, "connector_id", None)
-            )
+            connector_id = (existing or {}).get("connectorId")
             if connector_id:
                 # The record alone, as the hard delete removes only its vertex.
                 await self.on_records_soft_deleted(
@@ -2320,21 +2316,41 @@ class DataSourceEntitiesProcessor:
         # vertex is gone so indexing can strip/delete embeddings.
         event_payload = None
         async with self.data_store_provider.transaction() as tx_store:
-            existing = await tx_store.get_record_by_key(record_id)
+            # The stored document, not a Record: reading Record attributes off it
+            # found no virtualRecordId, so no delete ever published its cleanup.
+            existing = await tx_store.get_record_by_key(record_id) or {}
             await tx_store.delete_parent_child_edge_to_record(record_id)
             await tx_store.delete_record_by_key(record_id)
-            vrid = getattr(existing, "virtual_record_id", None) if existing is not None else None
+            vrid = existing.get("virtualRecordId")
             if isinstance(vrid, str) and vrid:
                 event_payload = {
-                    "orgId": getattr(existing, "org_id", self.org_id),
-                    "recordId": getattr(existing, "id", None) or record_id,
-                    "version": getattr(existing, "version", 1),
+                    "orgId": existing.get("orgId") or self.org_id,
+                    "recordId": existing.get("_key") or existing.get("id") or record_id,
+                    "version": existing.get("version", 1),
                     "virtualRecordId": vrid,
-                    "connectorId": getattr(existing, "connector_id", None),
+                    "connectorId": existing.get("connectorId"),
                 }
         await self._publish_delete_events(
             {"payloads": [event_payload]} if event_payload else None
         )
+
+    @retry_on_deadlock()
+    async def on_records_detached_from_parent(self, record_ids: list[str]) -> None:
+        """Clear the parent link of records whose parent is being deleted without them.
+
+        Browse lists a record at its group's root only when it has no parent, so a
+        survivor still pointing at a deleted parent would vanish from it until the
+        source rewrote the record. Raises when any record was not updated.
+        """
+        if not record_ids:
+            return
+        async with self.data_store_provider.transaction() as tx_store:
+            updated = await tx_store.batch_update_nodes(
+                [{"id": record_id, "externalParentId": None} for record_id in record_ids],
+                CollectionNames.RECORDS.value,
+            )
+        if updated is False:
+            raise RuntimeError(f"Could not detach {len(record_ids)} records from their deleted parent")
 
     @retry_on_deadlock()
     async def on_records_deleted_cascade(
@@ -2345,6 +2361,7 @@ class DataSourceEntitiesProcessor:
         delete_source: DeleteSource = DeleteSource.CONNECTOR,
         deleted_by_user_id: str | None = None,
         include_trashed_roots: bool = False,
+        soft_delete: bool | None = None,
     ) -> dict:
         """Recursively delete records — the single delete path for files, folders and
         multi-record deletes, generic across KB and connectors.
@@ -2370,6 +2387,8 @@ class DataSourceEntitiesProcessor:
         (``on_records_soft_deleted``); ``delete_source`` and
         ``deleted_by_user_id`` say who sent it there. A root already in the
         trash stays there for the purge, and is reported in ``failed_records``.
+        A caller that has already read the flag passes it as *soft_delete*, so
+        both act on the same answer.
         """
         if not record_ids:
             return {
@@ -2381,7 +2400,9 @@ class DataSourceEntitiesProcessor:
                 "failed_count": 0,
             }
         try:
-            if await is_soft_delete_enabled(self.config_service):
+            if soft_delete is None:
+                soft_delete = await is_soft_delete_enabled(self.config_service)
+            if soft_delete:
                 return await self.on_records_soft_deleted(
                     record_ids,
                     connector_id,
@@ -4286,7 +4307,18 @@ class DataSourceEntitiesProcessor:
             )
             return
         async with self.data_store_provider.transaction() as tx_store:
-            await tx_store.delete_record_by_external_id(connector_id, external_id, user_id)
+            result = await tx_store.delete_record_by_external_id(connector_id, external_id, user_id)
+        # After the commit, as the other delete paths do: the provider returns the
+        # cleanup event for its caller to publish, and dropping it here left the
+        # deleted record's vectors in place.
+        event_data = (result or {}).get("eventData") if isinstance(result, dict) else None
+        event_data = event_data or {}
+        payloads = [
+            p for p in event_data.get("payloads") or [event_data.get("payload")]
+            if isinstance(p, dict) and p.get("virtualRecordId")
+        ]
+        if payloads:
+            await self._publish_delete_events({"payloads": payloads})
 
     async def delete_records_and_relations(
         self, record_key: str, hard_delete: bool = False

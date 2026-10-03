@@ -118,6 +118,24 @@ jobs:
             --baseline "tests/evals/baselines/$CASE_SET_INPUT.json" \
             --fail-on-regression
 
+      # The demo acceptance test's answer judge, checked against hand-labelled
+      # hard cases (tests/evals/answer_judge_calibration.yaml). Its own step so
+      # a judge that drifts fails here, not as unexplained demo failures.
+      - name: Calibrate the demo answer judge
+        if: ${{ !cancelled() }}
+        working-directory: backend/python
+        env:
+          TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
+          TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+          TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
+          TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
+          EVAL_PROVIDER: azure_openai
+        run: |
+          source .venv/bin/activate
+          python -m tests.evals.run_judge_calibration \
+            --output reports/evals/judge-calibration.json \
+            --summary reports/evals/summary.md
+
       - name: Write job summary
         if: ${{ !cancelled() }}
         run: |

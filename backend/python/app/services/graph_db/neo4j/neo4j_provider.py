@@ -104,12 +104,19 @@ from app.services.graph_db.common.utils import (
     PATH_MAX_CANDIDATES,
     ROOT_SCOPED_CONNECTOR_TYPES,
     TRASHED_EXTERNAL_ID_PREFIX,
+    EntityCandidateRows,
     build_connector_stats_response,
     dedupe_agents_by_id,
     empty_soft_delete_result,
     select_canonical_chain_names,
     soft_delete_request_result,
     soft_delete_result,
+    uploaded_document_id,
+)
+from app.services.graph_db.entity_index_queries import (
+    build_entity_index_candidate_cypher,
+    build_entity_index_source_page_cypher,
+    entity_index_source,
 )
 from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
@@ -2057,7 +2064,9 @@ class Neo4jProvider(IGraphDBProvider):
         field_name: str,
         field_values: list[Any],
         return_fields: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """Get nodes where field value is in list"""
         try:
@@ -2092,6 +2101,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get nodes by field in failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def remove_nodes_by_field(
@@ -2637,6 +2648,53 @@ class Neo4jProvider(IGraphDBProvider):
             typed_records.append(typed_record)
 
         return typed_records
+
+    async def get_entity_index_candidate(
+        self,
+        collection: str,
+        marker: str,
+        *,
+        sweep_before: int | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """See :meth:`IGraphDBProvider.get_entity_index_candidate`."""
+        query = build_entity_index_candidate_cypher(
+            collection, with_sweep=sweep_before is not None,
+        )
+        parameters: dict = {"marker": marker}
+        if sweep_before is not None:
+            parameters["sweep_before"] = sweep_before
+        results = await self.client.execute_query(
+            query, parameters=parameters, txn_id=transaction,
+        )
+        if not results:
+            return None
+        node = results[0].get("n")
+        if node is None:
+            return None
+        return self._neo4j_to_arango_node(dict(node), collection)
+
+    async def page_entity_index_source(
+        self,
+        source: str,
+        scope_id: str,
+        after_key: str | None,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """See :meth:`IGraphDBProvider.page_entity_index_source`."""
+        # Validated first, so an unknown source raises whatever the scope.
+        entity_index_source(source)
+        if not scope_id:
+            return []
+        query = build_entity_index_source_page_cypher(source, has_after_key=bool(after_key))
+        parameters: dict = {"scope_id": scope_id, "limit": max(1, int(limit))}
+        if after_key:
+            parameters["after_key"] = after_key
+        results = await self.client.execute_query(
+            query, parameters=parameters, txn_id=transaction,
+        )
+        return [dict(row) for row in results or []]
 
     async def get_app_needing_vector_membership_backfill(
         self,
@@ -5026,9 +5084,10 @@ class Neo4jProvider(IGraphDBProvider):
 
             CALL {{
                 WITH userDoc
-                // Path 3: User -> Group (PERMISSION) -> Records
-                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(g:Group)-[:PERMISSION]->(r:Record)
-                WHERE r.connectorId = $connectorId
+                // Path 3: User -> Group/Role (PERMISSION) -> Records
+                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(g)-[:PERMISSION]->(r:Record)
+                WHERE (g:Group OR g:Role)
+                  AND r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                     AND {live_record}
                   {metadata_filter_clause}{time_range_filter_clause}
@@ -11374,6 +11433,48 @@ class Neo4jProvider(IGraphDBProvider):
             return None
 
 
+    async def get_uploaded_document_ids(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+        *,
+        under_record_ids: list[str] | None = None,
+        among: list[str] | None = None,
+    ) -> list[str]:
+        if under_record_ids is None:
+            match = "MATCH (r:Record {connectorId: $connector_id, origin: $upload})"
+        else:
+            # The same depth as the delete that follows, filtered while walking, so a file
+            # the cascade reaches is always one this lists.
+            match = """
+            MATCH (root:Record {connectorId: $connector_id}) WHERE root.id IN $roots
+            MATCH (root)
+                  (()-[c:RECORD_RELATION WHERE c.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->()){0,""" + str(
+                CONTAINMENT_MAX_DEPTH
+            ) + """}
+                  (r:Record {connectorId: $connector_id, origin: $upload})
+            """
+        rows = await self.client.execute_query(
+            match + """
+            WITH DISTINCT r
+            WHERE $among IS NULL OR r.externalRecordId IN $among
+            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
+            RETURN r.origin AS origin, r.externalRecordId AS externalRecordId, t.isFile AS isFile
+            """,
+            parameters={
+                "connector_id": connector_id,
+                "upload": OriginTypes.UPLOAD.value,
+                "roots": under_record_ids or [],
+                "among": among,
+            },
+            txn_id=transaction,
+        )
+        ids = (
+            uploaded_document_id(row, {"isFile": row.get("isFile")})
+            for row in rows or []
+        )
+        return list(dict.fromkeys(i for i in ids if i))
+
     async def delete_records_recursive(
         self,
         record_ids: list[str],
@@ -16647,12 +16748,18 @@ class Neo4jProvider(IGraphDBProvider):
                 AND ($record_types IS NULL OR rec.recordType IN $record_types)
               WITH DISTINCT rec
               LIMIT $scan_cap
-              WITH rec
-              ORDER BY coalesce(rec.sourceLastModifiedTimestamp, rec.updatedAtTimestamp, 0) DESC, rec.id ASC
-              SKIP $offset LIMIT $limit
-              RETURN collect({projection}) AS rows
+              WITH collect(rec) AS scanned
+              CALL {{
+                WITH scanned
+                UNWIND scanned AS rec
+                WITH rec
+                ORDER BY coalesce(rec.sourceLastModifiedTimestamp, rec.updatedAtTimestamp, 0) DESC, rec.id ASC
+                SKIP $offset LIMIT $limit
+                RETURN collect({projection}) AS rows
+              }}
+              RETURN rows, size(scanned) >= $scan_cap AS capped
             }}
-            RETURN ref.id AS id, rows
+            RETURN ref.id AS id, rows, capped
             """
 
     async def get_entity_candidate_records(
@@ -16664,7 +16771,7 @@ class Neo4jProvider(IGraphDBProvider):
         limit_per_entity: int = 20,
         offset: int = 0,
         transaction: str | None = None,
-    ) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    ) -> dict[tuple[str, str], EntityCandidateRows]:
         """See :meth:`IGraphDBProvider.get_entity_candidate_records`."""
         if not refs or not org_id:
             return {}
@@ -16689,7 +16796,7 @@ class Neo4jProvider(IGraphDBProvider):
                 {"id": str(ref_id), "connectorIds": list(ref.get("connectorIds") or [])}
             )
 
-        results: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        results: dict[tuple[str, str], EntityCandidateRows] = {}
         for entity_type, typed_refs in refs_by_type.items():
             rows = await self.client.execute_query(
                 self._entity_candidate_records_cypher(entity_type),
@@ -16707,12 +16814,13 @@ class Neo4jProvider(IGraphDBProvider):
                 txn_id=transaction,
             )
             for typed_ref in typed_refs:
-                results.setdefault((entity_type, typed_ref["id"]), [])
+                results.setdefault((entity_type, typed_ref["id"]), EntityCandidateRows())
             for row in rows or []:
                 if row.get("id"):
-                    results[(entity_type, str(row["id"]))] = [
-                        dict(rec) for rec in row.get("rows") or []
-                    ]
+                    results[(entity_type, str(row["id"]))] = EntityCandidateRows(
+                        (dict(rec) for rec in row.get("rows") or []),
+                        capped=bool(row.get("capped")),
+                    )
         return results
 
     # ------------------------------------------------------------------
@@ -17597,7 +17705,7 @@ class Neo4jProvider(IGraphDBProvider):
                 reason: record.reason,
                 createdAt: coalesce(record.createdAtTimestamp, 0),
                 updatedAt: coalesce(record.updatedAtTimestamp, 0),
-                sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
+                sizeInBytes: coalesce(record.sizeInBytes, file_info.sizeInBytes),
                 mimeType: record.mimeType,
                 extension: file_info.extension,
                 webUrl: record.webUrl,
@@ -17735,7 +17843,7 @@ class Neo4jProvider(IGraphDBProvider):
                 reason: orphan_record.reason,
                 createdAt: coalesce(orphan_record.sourceCreatedAtTimestamp, orphan_record.createdAtTimestamp, 0),
                 updatedAt: coalesce(orphan_record.sourceLastModifiedTimestamp, orphan_record.updatedAtTimestamp, 0),
-                sizeInBytes: coalesce(orphan_record.sizeInBytes, file_info.fileSizeInBytes),
+                sizeInBytes: coalesce(orphan_record.sizeInBytes, file_info.sizeInBytes),
                 mimeType: orphan_record.mimeType,
                 extension: file_info.extension,
                 webUrl: orphan_record.webUrl,
@@ -17903,7 +18011,7 @@ class Neo4jProvider(IGraphDBProvider):
                 updatedAt: CASE WHEN record.connectorName = 'KB'
                     THEN coalesce(record.updatedAtTimestamp, 0)
                     ELSE coalesce(record.sourceLastModifiedTimestamp, record.updatedAtTimestamp, 0) END,
-                sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
+                sizeInBytes: coalesce(record.sizeInBytes, file_info.sizeInBytes),
                 mimeType: record.mimeType,
                 extension: file_info.extension,
                 webUrl: record.webUrl,
@@ -18070,7 +18178,7 @@ class Neo4jProvider(IGraphDBProvider):
                 updatedAt: CASE WHEN record.connectorName = 'KB'
                     THEN coalesce(record.updatedAtTimestamp, 0)
                     ELSE coalesce(record.sourceLastModifiedTimestamp, record.updatedAtTimestamp, 0) END,
-                sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
+                sizeInBytes: coalesce(record.sizeInBytes, file_info.sizeInBytes),
                 mimeType: record.mimeType,
                 extension: file_info.extension,
                 webUrl: record.webUrl,
@@ -18165,7 +18273,7 @@ class Neo4jProvider(IGraphDBProvider):
             updatedAt: CASE WHEN record.connectorName = 'KB'
                 THEN coalesce(record.updatedAtTimestamp, 0)
                 ELSE coalesce(record.sourceLastModifiedTimestamp, record.updatedAtTimestamp, 0) END,
-            sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
+            sizeInBytes: coalesce(record.sizeInBytes, file_info.sizeInBytes),
             mimeType: record.mimeType,
             extension: file_info.extension,
             webUrl: record.webUrl,

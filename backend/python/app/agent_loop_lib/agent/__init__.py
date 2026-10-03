@@ -626,7 +626,7 @@ class Agent:
 
     # ---- the step primitive ----
 
-    async def step(self, goal: Goal, turn_index: int) -> StepOutcome:
+    async def step(self, goal: Goal, turn_index: int, *, final_answer_only: bool = False) -> StepOutcome:
         """One turn: PRE_TURN guards -> context shaping -> guarded model
         call -> tool dispatch -> POST_TURN. The one fixed unit every
         `LoopStrategy` calls, any number of times, in any order. Hooks
@@ -634,6 +634,13 @@ class Agent:
         this is what keeps deterministic control (budget, cancellation,
         guardrails, truncation recovery) middleware-owned regardless of
         loop shape.
+
+        `final_answer_only=True` is the wrap-up turn after `max_turns` (see
+        `loops.py::_finish_after_max_turns`): only calls to tools that end
+        the run are executed (see `_drop_non_terminal_tool_calls`), so the
+        reply's text or a terminal call is the answer. A failed model call
+        or a reply with no answer returns `continue` instead of failing the
+        run, so the caller can fall back to what it already has.
         """
         spec, runtime, context = self._spec, self._runtime, self._context
 
@@ -826,11 +833,19 @@ class Agent:
                 summary=f"Input guardrail blocked turn {turn_index}: {e}",
             ))
         except Exception as e:
+            if final_answer_only:
+                await obs.append_timeline(
+                    self, "final_answer_turn_failed", f"Final-answer LLM call failed: {e}",
+                    "calling_llm", {"turn_index": turn_index, "error": str(e)},
+                )
+                return StepOutcome("continue")
             return StepOutcome("stop", result=await self.fail(
                 goal, f"LLM call failed: {e}", event="llm_call_failed", summary=f"LLM call failed: {e}",
             ))
 
         response_msg = response.message
+        if final_answer_only:
+            response_msg = await self._drop_non_terminal_tool_calls(response_msg, turn_index)
         self._usage.add(response.usage)
         if runtime.budget is not None:
             await runtime.budget.record_turn(
@@ -900,6 +915,8 @@ class Agent:
             # Joined as-is: the model resumes exactly where it was cut off,
             # often mid-word, so any separator would corrupt the text.
             output = "".join(cut_off_parts) + self.extract_text(response_msg)
+            if final_answer_only and not output.strip():
+                return StepOutcome("continue")
             try:
                 await hooks.dispatch_guardrail_output(self._hooks, output or "", scope=turn_scope)
             except HookBlocked as e:
@@ -1094,6 +1111,30 @@ class Agent:
         if isinstance(msg, AssistantMessage) and msg.tool_calls:
             return list(msg.tool_calls)
         return []
+
+    async def _drop_non_terminal_tool_calls(self, msg: Message, turn_index: int) -> Message:
+        """The final-answer turn still sends the tool list (providers reject
+        tool history without tool definitions), so the model may call a
+        tool anyway. Only calls that end the run (`TAG_LIFECYCLE_TERMINAL`,
+        e.g. `final_answer`, `task_complete`) are kept. The rest are removed
+        before the reply is recorded: history never holds a call without a
+        result, and text streamed beside a removed call becomes the answer
+        rather than being replaced by older narration."""
+        registry = self._runtime.tool_registry
+        kept: list[ToolCall] = []
+        dropped: list[ToolCall] = []
+        for call in self._extract_tool_calls(msg):
+            terminal = registry is not None and TAG_LIFECYCLE_TERMINAL in registry.tags_for_name(call.name)
+            (kept if terminal else dropped).append(call)
+        if not dropped:
+            return msg
+        await obs.append_timeline(
+            self, "final_answer_turn_tool_calls_ignored",
+            f"Final-answer turn requested {len(dropped)} tool call(s); not executed",
+            "calling_llm",
+            {"turn_index": turn_index, "tools": [c.name for c in dropped]},
+        )
+        return msg.model_copy(update={"tool_calls": kept or None})
 
     def stream(self, goal: Goal, **run_kwargs):
         """Streaming turn loop: run this goal while yielding `AgentEvent`s

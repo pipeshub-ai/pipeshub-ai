@@ -486,3 +486,32 @@ class TestMoveOntoAnIdHeldInTheTrash:
         assert store.docs["trashed-1"].external_record_id == "src/new.py"
         assert store.docs["trashed-1"].trashed_external_record_id is None
         assert _published(proc, EventTypes.DELETE_RECORD.value) == []
+
+
+class TestCascadeTakesTheCallersReadOfTheFlag:
+    """A caller that already acted on the flag (the KB deletes schedule file removal on it) passes its answer."""
+
+    async def test_soft_delete_true_trashes_without_reading_the_flag(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([("f1", "v1")]))
+        with flag(False) as read:
+            result = await proc.on_records_deleted_cascade(
+                ["f1"], "kb1", delete_source=DeleteSource.USER, soft_delete=True
+            )
+        read.assert_not_awaited()
+        assert result["softDeleted"] is True
+        store.delete_records_recursive.assert_not_called()
+        assert EventTypes.DELETE_RECORD.value not in _event_types(proc)
+
+    async def test_soft_delete_false_hard_deletes_without_reading_the_flag(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.delete_records_recursive = AsyncMock(return_value={"success": True, "successfully_deleted": 1})
+        with flag(True) as read:
+            await proc.on_records_deleted_cascade(
+                ["f1"], "kb1", delete_source=DeleteSource.USER, soft_delete=False
+            )
+        read.assert_not_awaited()
+        store.delete_records_recursive.assert_awaited_once()
+        store.soft_delete_records.assert_not_called()

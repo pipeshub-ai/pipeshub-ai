@@ -1,4 +1,6 @@
 import asyncio
+import os
+import time
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
@@ -72,6 +74,27 @@ from app.utils.user_errors import (
 
 RECONCILE_ATTEMPTS = 2
 RECONCILE_RETRY_DELAY_SECONDS = 1.0
+
+
+def _seconds_from_env(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+def stored_documents_retry_delay_seconds(reschedules: int) -> float:
+    """Delay before a rescheduled deleteStoredDocuments is picked up again: 15s doubling to 5 min."""
+    base = _seconds_from_env("STORED_DOCUMENTS_RETRY_DELAY_SECONDS", 15.0)
+    return min(300.0, base * (2 ** min(reschedules, 10)))
+
+
+def stored_documents_give_up_seconds() -> float:
+    """How long after the delete was scheduled a file a record still lists keeps being retried.
+
+    Files storage could not remove are retried without a limit.
+    """
+    return _seconds_from_env("STORED_DOCUMENTS_GIVE_UP_SECONDS", 24 * 3600.0)
 
 
 class RecordEventHandler(BaseEventService):
@@ -465,6 +488,69 @@ class RecordEventHandler(BaseEventService):
             return False
         return bool(containers.get("blocks") or containers.get("block_groups"))
 
+    async def _still_listed(
+        self, connector_id: str, document_ids: list[str]
+    ) -> tuple[set[str], set[str]]:
+        """(files a record still lists, files the graph could not be asked about).
+
+        The event is published before the graph delete, so the first set is often
+        all of them.
+        """
+        try:
+            listed = await self.event_processor.graph_provider.get_uploaded_document_ids(
+                connector_id, among=list(document_ids)
+            )
+            return set(listed), set()
+        except Exception as exc:
+            self.logger.warning(
+                "Could not check which files of %s records still list; trying later: %s",
+                connector_id, exc,
+            )
+            return set(), set(document_ids)
+
+    async def _reschedule_stored_documents(
+        self, payload: dict, still_listed: set[str], not_removed: set[str]
+    ) -> None:
+        """Put the event back for files not yet removed, without spending a delivery attempt.
+
+        Two reasons a file stays: a record still lists it (the event is published
+        before the graph delete, which may be slow), or storage could not remove
+        it. Raising would spend the few, short delivery attempts, after which the
+        event is discarded, and with it the ids, the only handle on the files.
+        Waiting here would hold an index permit and let another consumer claim
+        the idle entry. A fresh event carries ``_retry_not_before``, which both
+        consumers honour before taking a permit, until a day after the delete
+        was scheduled.
+        """
+        now = get_epoch_timestamp_in_ms()
+        scheduled_at = int(payload.get("scheduledAt") or now)
+        reschedules = int(payload.get("reschedules") or 0)
+        if still_listed and now - scheduled_at >= stored_documents_give_up_seconds() * 1000:
+            # A file still listed a day on belongs to a record that was never deleted.
+            self.logger.error(
+                "Keeping %d file(s) of %s that records still list a day after their delete "
+                "was scheduled: %s",
+                len(still_listed), payload.get("connectorId"), sorted(still_listed),
+            )
+            still_listed = set()
+        if not still_listed and not not_removed:
+            return
+        # Files storage could not remove are never given up: nothing else holds their ids.
+        if not self.producer:
+            raise IndexingError("No messaging producer configured; cannot reschedule stored-file removal")
+        await self.producer.send_event(
+            topic=Topic.RECORD_EVENTS.value,
+            event_type=EventTypes.DELETE_STORED_DOCUMENTS.value,
+            payload={
+                **{k: v for k, v in payload.items() if k != "_retry_tracking_id"},
+                "documentIds": sorted(still_listed | not_removed),
+                "scheduledAt": scheduled_at,
+                "reschedules": reschedules + 1,
+                "_retry_not_before": time.time() + stored_documents_retry_delay_seconds(reschedules),
+            },
+            key=str(payload.get("connectorId")),
+        )
+
     async def _delete_vector_collection(self, payload: dict | None = None) -> AsyncGenerator[PipelineEvent, None]:
         # The cleanup job polls for a phase and otherwise waits out its whole
         # deadline, so every exit from here must publish one — a failure
@@ -769,7 +855,9 @@ class RecordEventHandler(BaseEventService):
                         delete_ctx, virtual_record_ids
                     )
                 else:
-                    result = await indexing_pipeline.bulk_delete_embeddings(virtual_record_ids)
+                    result = await indexing_pipeline.bulk_delete_embeddings(
+                        virtual_record_ids, org_id=payload.get("orgId") or None
+                    )
 
                 self.logger.info(
                     f"✅ Bulk deletion complete: {result}"
@@ -830,6 +918,30 @@ class RecordEventHandler(BaseEventService):
                     yield event
                 return
 
+            if event_type == EventTypes.DELETE_STORED_DOCUMENTS.value:
+                org_id = payload.get("orgId")
+                document_ids = payload.get("documentIds") or []
+                if not org_id:
+                    raise ProcessingError(
+                        "deleteStoredDocuments carries no orgId",
+                        details={"payload_keys": sorted(payload.keys())},
+                    )
+                still_listed: set[str] = set()
+                unread: set[str] = set()
+                connector_id = payload.get("connectorId")
+                if connector_id:
+                    still_listed, unread = await self._still_listed(connector_id, document_ids)
+                to_purge = [d for d in document_ids if d not in still_listed and d not in unread]
+                pipeline = self.event_processor.processor.indexing_pipeline
+                not_removed = set(await pipeline.purge_stored_documents(org_id, to_purge)) if to_purge else set()
+                # Neither a failed read nor a failed purge says the delete never happened,
+                # so only files a record was seen to list can be given up on.
+                if still_listed or not_removed or unread:
+                    await self._reschedule_stored_documents(payload, still_listed, not_removed | unread)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="stored_documents", count=len(document_ids)))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="stored_documents", count=len(document_ids)))
+                return
+
             # For all other event types, require record_id
             record_id = payload.get("recordId")
             extension = payload.get("extension", "unknown")
@@ -856,7 +968,9 @@ class RecordEventHandler(BaseEventService):
 
             # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
-                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([ virtual_record_id])
+                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
+                    [virtual_record_id], org_id=payload.get("orgId") or None
+                )
                 entity_store = self._entity_vector_store()
                 if entity_store is not None:
                     # delete_entity filters on orgId, so an empty one would

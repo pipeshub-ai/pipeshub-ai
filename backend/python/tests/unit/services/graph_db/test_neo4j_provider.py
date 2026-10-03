@@ -2897,6 +2897,21 @@ class TestVirtualAccessAndRecordLookup:
         assert kwargs["parameters"]["topicNames"] == ["AI"]
 
     @pytest.mark.asyncio
+    async def test_get_virtual_ids_for_connector_follows_a_role_to_a_record(
+        self, neo4j_provider: Neo4jProvider
+    ) -> None:
+        # BookStack shares a page with a role as Role -> Record. The real-graph check
+        # is tests/integration/graph_db/test_connector_search_access.py.
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+
+        await neo4j_provider._get_virtual_ids_for_connector("user-1", "org-1", "conn-1")
+
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "(userDoc)-[:PERMISSION]->(g:Group)-[:PERMISSION]->(r:Record)" not in query
+        assert "(userDoc)-[:PERMISSION]->(g)-[:PERMISSION]->(r:Record)" in query
+        assert "WHERE (g:Group OR g:Role)" in query
+
+    @pytest.mark.asyncio
     async def test_get_virtual_ids_for_connector_returns_empty_on_exception(
         self, neo4j_provider: Neo4jProvider
     ):

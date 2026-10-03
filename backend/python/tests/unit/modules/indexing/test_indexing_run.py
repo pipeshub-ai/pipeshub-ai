@@ -233,6 +233,24 @@ class TestIndexingPipelineBulkDelete:
         assert pipeline.graph_provider.delete_nodes.await_count == (0 if keep_mapping else 1)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("keep_mapping", [False, True])
+    async def test_a_soft_delete_keeps_the_stored_content(self, keep_mapping) -> None:
+        """With storage cleanup wired, keep_mapping must skip it too, not just the row delete."""
+        pipeline = _make_indexing_pipeline()
+        pipeline.stored_content = AsyncMock()
+        pipeline.stored_content.release_virtual_records = AsyncMock(return_value=[])
+        pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=[])
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value={})
+        pipeline.vector_db_service.delete_points = AsyncMock()
+
+        result = await pipeline.bulk_delete_embeddings(["vr-1"], "org-1", keep_mapping=keep_mapping)
+
+        assert result["success"] is True
+        assert result["stored_content_pending"] == 0
+        pipeline.vector_db_service.delete_points.assert_awaited_once()
+        assert pipeline.stored_content.release_virtual_records.await_count == (0 if keep_mapping else 1)
+
+    @pytest.mark.asyncio
     async def test_an_unreadable_graph_skips_instead_of_deleting(self):
         """The connector purge keeps its own copy of the candidate read, so
         the raise inside rewrite_or_delete does not reach it. An unreadable
@@ -592,7 +610,7 @@ class TestPurgeConnectorByMembership:
             side_effect=lambda **kw: order.append("delete")
         )
         pipeline._forget_virtual_record_mappings = AsyncMock(
-            side_effect=lambda ids: order.append("forget")
+            side_effect=lambda ids, **_: order.append("forget")
         )
         _scroll_pages(pipeline, [[]], scan_points=[_point("vr-only", ["conn-1"])])
 
@@ -1244,7 +1262,7 @@ class TestPurgeConnector:
         ctx = DeleteContext(org_id="org-1", connector_id="conn-1")
         result = await pipeline.purge_connector_by_virtual_record_ids(ctx, ["vr-1", "vr-2"])
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr-1", "vr-2"])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr-1", "vr-2"], org_id="org-1")
         pipeline.vector_db_service.delete_points.assert_not_awaited()
         assert result["action"] == "filtered_delete"
         assert result["virtual_record_ids_processed"] == 2
@@ -1321,7 +1339,7 @@ class TestPurgeConnector:
         ctx = DeleteContext(org_id="org-1", connector_id="conn-1")
         result = await pipeline.purge_connector_by_virtual_record_ids(ctx, [])
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr-1"])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr-1"], org_id="org-1")
         pipeline.vector_db_service.delete_points.assert_not_awaited()
         assert result["action"] == "filtered_delete"
 
