@@ -4671,11 +4671,7 @@ async def stop_connector_sync(
                 "message": "Connector is being deleted; nothing to stop.",
             }
 
-        repair_status = (
-            app_doc.get("status")
-            if app_doc.get("status") == "DELETING"
-            else AppStatus.IDLE.value
-        )
+        repair_status = AppStatus.IDLE.value
         repaired = await write_app_status(
             graph_provider, logger, connector_id, repair_status, is_locked=False
         )
