@@ -4224,6 +4224,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR r IN {CollectionNames.RECORDS.value}
                 FILTER r.duplicateReconcilePending == true
                 FILTER NOT_NULL(r.duplicateReconcileDueAt, 0) < @due_before_ms
+                FILTER {aql_live_record("r")}
                 LIMIT @limit
                 RETURN {{
                     _key: r._key,

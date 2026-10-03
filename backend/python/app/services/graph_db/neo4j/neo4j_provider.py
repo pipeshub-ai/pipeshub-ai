@@ -2729,10 +2729,11 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> list[dict]:
         """See :meth:`IGraphDBProvider.get_records_pending_duplicate_reconcile`."""
         rows = await self.client.execute_query(
-            """
+            f"""
             MATCH (r:Record)
             WHERE r.duplicateReconcilePending = true
               AND coalesce(r.duplicateReconcileDueAt, 0) < $due_before_ms
+              AND {cypher_live_record("r")}
             RETURN r.id AS _key,
                    r.duplicateReconcileAttempts AS duplicateReconcileAttempts,
                    r.duplicateReconcileDueAt AS duplicateReconcileDueAt
