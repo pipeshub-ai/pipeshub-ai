@@ -37,6 +37,7 @@ import { rewriteCitationsForSlack, stripTinyRefCitationLinks } from "./utils/cit
 
 import {
   type SlackBotConfig,
+  getCurrentMatchedSlackBot,
 } from "./botRegistry";
 
 import {
@@ -311,7 +312,6 @@ async function processSlackMessage(
   // instead of falling back to the server clock.
   const userTimezone = lookupResult.user.tz || undefined;
   const configService = ConfigService.getInstance();
-  const accessToken = slackJwtGenerator(email, await configService.getScopedJwtSecret());
 
   const currentAgentId = resolvedSlackBot?.agentId || null;
   console.log("currentAgentId", currentAgentId);
@@ -319,6 +319,13 @@ async function processSlackMessage(
   if (!currentBotId) {
     throw new Error("Unable to resolve Slack bot id for conversation persistence.");
   }
+
+  const accessToken = slackJwtGenerator(
+    email,
+    await configService.getScopedJwtSecret(),
+    undefined,
+    { configId: currentBotId },
+  );
 
   const conversation = await getFromDatabase(
     threadId,
@@ -1414,7 +1421,7 @@ app.message(async ({ message, client, context }) => {
     return;
   }
 
-  const resolvedSlackBot = await resolveSlackBotForEvent();
+  const resolvedSlackBot = await resolveSlackBotForEvent(getCurrentMatchedSlackBot);
   const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
     typedClient,
     typedMessage,
@@ -1451,7 +1458,7 @@ app.event("app_mention", async ({ event, client, context }) => {
     return;
   }
 
-  const resolvedSlackBot = await resolveSlackBotForEvent();
+  const resolvedSlackBot = await resolveSlackBotForEvent(getCurrentMatchedSlackBot);
   const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
     typedClient,
     typedMessage,

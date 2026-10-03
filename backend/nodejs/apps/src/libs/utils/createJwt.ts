@@ -192,12 +192,29 @@ export const iamJwtGenerator = (email: string, scopedJwtSecret: string) => {
   );
 };
 
-export const slackJwtGenerator = (email: string, scopedJwtSecret: string,scopes?: TokenScopes[]) => {
-  return jwt.sign(
-    { email: email, scopes: scopes || [TokenScopes.CONVERSATION_CREATE] },
-    scopedJwtSecret,
-    { expiresIn: '1h' },
-  );
+export interface SlackTokenClaims {
+  /**
+   * Id of the Slack bot configuration that received the event. The gateway
+   * resolves the org from this against its own encrypted config store, so the
+   * bot process does not get to choose which tenant it is talking to.
+   */
+  configId?: string;
+}
+
+export const slackJwtGenerator = (
+  email: string,
+  scopedJwtSecret: string,
+  scopes?: TokenScopes[],
+  claims?: SlackTokenClaims,
+) => {
+  const payload: Record<string, unknown> = {
+    email: email,
+    scopes: scopes || [TokenScopes.CONVERSATION_CREATE],
+  };
+  if (claims?.configId) {
+    payload.configId = claims.configId;
+  }
+  return jwt.sign(payload, scopedJwtSecret, { expiresIn: '1h' });
 };
 
 
