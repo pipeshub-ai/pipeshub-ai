@@ -7,6 +7,7 @@ from typing import Any
 
 from dependency_injector import providers
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppStatus,
     CollectionNames,
@@ -131,6 +132,10 @@ class EventService:
         """Build a graph data store"""
         return GraphDataStore(self.logger, self.graph_provider)
 
+    def _config_service_for(self, org_id: str | None) -> ConfigurationService:
+        """Config service for an event's org"""
+        return self.app_container.config_service()
+
     async def _ensure_connector(self, connector_name: str, connector_id: str) -> BaseConnector | None:
         """
         Get connector from memory, or auto-initialize it if missing.
@@ -177,13 +182,13 @@ class EventService:
                     f"Connector {connector_id} is not active in database — skipping initialization"
                 )
                 return None
-            config_service = self.app_container.config_service()
 
             # Extract scope, createdBy and org from connector document
             scope = connector_doc.get("scope", "personal")
             created_by = connector_doc.get("createdBy", "")
             last_synced_by = connector_doc.get("lastSyncedBy", "") or None
             org_id = connector_doc.get("orgId") or self._resolve_org_id()
+            config_service = self._config_service_for(org_id)
             data_store_provider = self._build_data_store(org_id)
 
             connector = await ConnectorFactory.initialize_connector(
@@ -275,7 +280,7 @@ class EventService:
                 return False
 
             self.logger.info(f"Initializing {connector_name} init sync service for org_id: {org_id} and connector_id: {connector_id}")
-            config_service = self.app_container.config_service()
+            config_service = self._config_service_for(org_id)
             # Create data_store manually using already-resolved graph_provider (arango_service) to avoid coroutine reuse
             data_store_provider = self._build_data_store(org_id)
             
@@ -872,7 +877,7 @@ class EventService:
 
             # Delete connector credentials from etcd/config store
             try:
-                config_service = self.app_container.config_service()
+                config_service = self._config_service_for(org_id)
                 config_path = f"/services/connectors/{connector_id}/config"
                 await config_service.delete_config(config_path)
                 self.logger.info(f"✅ Deleted etcd config for connector {connector_id}")

@@ -245,7 +245,7 @@ docker compose -p pipeshub-ai exec -T pipeshub-ai bash
 | `graph-neo4j` | Neo4j | `DATA_STORE=neo4j` |
 | `kv-etcd` | etcd | `KV_STORE_TYPE=etcd` |
 | `broker-kafka` | Kafka + Zookeeper | `MESSAGE_BROKER=kafka` |
-| `sandbox` | coding-sandbox image pull | slim/full; **eval omits this** |
+| `sandbox` | coding-sandbox image pull + `docker-socket-proxy` (the only container with the Docker socket) | slim/full; **eval omits this** |
 
 Always-on services (no profile needed): `redis`, `mongodb`, `qdrant`.
 

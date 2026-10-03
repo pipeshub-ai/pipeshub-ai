@@ -14,6 +14,7 @@ from app.models.blocks import BlockType, GroupType
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+    DeleteSource,
     MimeTypes,
     OriginTypes,
     PermissionModel,
@@ -281,6 +282,15 @@ class Record(BaseModel):
     # Processing flags
     is_vlm_ocr_processed: bool | None = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
 
+    # Soft delete
+    is_deleted: bool = Field(default=False, description="True while the record is in the trash")
+    deleted_at: int | None = Field(default=None, description="Epoch ms the record entered the trash; the purge ages on it")
+    deleted_by_user_id: str | None = Field(default=None, description="User who deleted the record; None for connector or system deletes")
+    delete_source: DeleteSource | None = Field(default=None, description="Who deleted the record")
+    delete_batch_id: str | None = Field(default=None, description="Shared by every record one delete action trashed, so a restore brings back the same set")
+    purge_attempts: int | None = Field(default=None, description="Failed purge attempts")
+    purge_last_error: str | None = Field(default=None, description="Last purge error, shortened")
+
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
     semantic_metadata: SemanticMetadata | None = None
@@ -378,9 +388,9 @@ class Record(BaseModel):
             "indexingStatus": self.indexing_status,
             "extractionStatus": self.extraction_status,
             "reason": self.reason,
-            "isDeleted": False,
+            "isDeleted": self.is_deleted,
             "isArchived": False,
-            "deletedByUserId": None,
+            "deletedByUserId": self.deleted_by_user_id,
             "previewRenderable": self.preview_renderable,
             "isShared": self.is_shared,
             "isVLMOcrProcessed": self.is_vlm_ocr_processed,
@@ -397,7 +407,35 @@ class Record(BaseModel):
         # key deletes the stored value, and most writers never set this field.
         if self.queued_at is not None:
             base["queuedAtTimestamp"] = self.queued_at
+        # Only written once set: a pod still on the old strict Arango schema
+        # rejects these keys, even as null, during a rolling upgrade.
+        delete_state = {
+            "deletedAtTimestamp": self.deleted_at,
+            "deleteSource": self.delete_source.value if self.delete_source else None,
+            "deleteBatchId": self.delete_batch_id,
+            "purgeAttempts": self.purge_attempts,
+            "purgeLastError": self.purge_last_error,
+        }
+        base.update({k: v for k, v in delete_state.items() if v is not None})
         return base
+
+    @staticmethod
+    def delete_state_from_arango(record_doc: dict) -> dict[str, Any]:
+        """Constructor kwargs for the soft-delete fields of a stored record."""
+        delete_source = record_doc.get("deleteSource")
+        try:
+            delete_source = DeleteSource(delete_source) if delete_source else None
+        except ValueError:
+            delete_source = None
+        return {
+            "is_deleted": record_doc.get("isDeleted") is True,
+            "deleted_at": record_doc.get("deletedAtTimestamp"),
+            "deleted_by_user_id": record_doc.get("deletedByUserId"),
+            "delete_source": delete_source,
+            "delete_batch_id": record_doc.get("deleteBatchId"),
+            "purge_attempts": record_doc.get("purgeAttempts"),
+            "purge_last_error": record_doc.get("purgeLastError"),
+        }
 
     @staticmethod
     def from_arango_base_record(arango_base_record: dict) -> "Record":
@@ -451,6 +489,7 @@ class Record(BaseModel):
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
             storage_document_id=arango_base_record.get("storageDocumentId"),
+            **Record.delete_state_from_arango(arango_base_record),
         )
 
     def to_kafka_record(self) -> dict:
@@ -690,6 +729,7 @@ class FileRecord(Record):
             sha1_hash=arango_base_file_record.get("sha1Hash"),
             sha256_hash=arango_base_file_record.get("sha256Hash"),
             storage_document_id=arango_base_record.get("storageDocumentId"),
+            **Record.delete_state_from_arango(arango_base_record),
         )
 
     def to_kafka_record(self) -> dict:
@@ -844,6 +884,7 @@ class MessageRecord(Record):
             start_ts=message_doc.get("startTs"),
             end_ts=message_doc.get("endTs"),
             involved_user_source_ids=message_doc.get("involvedUserSourceIds", []),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict[str, Any]:
@@ -971,6 +1012,7 @@ class MailRecord(Record):
             internet_message_id=mail_doc.get("messageIdHeader"),
             conversation_index=mail_doc.get("conversationIndex"),
             label_ids=mail_doc.get("labelIds", []),
+            **Record.delete_state_from_arango(record_doc),
         )
 
 class WebpageRecord(Record):
@@ -1032,6 +1074,7 @@ class WebpageRecord(Record):
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
+            **Record.delete_state_from_arango(record_doc),
         )
 
 class LinkRecord(Record):
@@ -1138,6 +1181,7 @@ class LinkRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
 class CommentRecord(Record):
@@ -1228,6 +1272,7 @@ class CommentRecord(Record):
             author_source_id=comment_doc.get("authorSourceId") or comment_doc.get("authorId") or "unknown",
             resolution_status=comment_doc.get("resolutionStatus"),
             comment_selection=comment_doc.get("commentSelection"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
 class TicketRecord(Record):
@@ -1406,6 +1451,7 @@ class TicketRecord(Record):
             creator_source_timestamp=ticket_doc.get("creatorSourceTimestamp"),
             reporter_source_timestamp=ticket_doc.get("reporterSourceTimestamp"),
             labels=ticket_doc.get("labels"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1506,6 +1552,7 @@ class ProjectRecord(Record):
             lead_id=project_doc.get("leadId"),
             lead_name=project_doc.get("leadName"),
             lead_email=project_doc.get("leadEmail"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1587,6 +1634,7 @@ class ProductRecord(Record):
             is_active=product_doc.get("isActive"),
             sku=product_doc.get("sku"),
             list_price=product_doc.get("listPrice"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1910,6 +1958,7 @@ class DealRecord(Record):
             is_closed=deal_doc.get("isClosed"),
             created_date=deal_doc.get("createdDate"),
             close_date=deal_doc.get("closeDate"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -2103,6 +2152,7 @@ class SQLViewRecord(Record):
             source_tables=view_doc.get("sourceTables") or [],
             is_secure=view_doc.get("isSecure", False),
             comment=view_doc.get("comment"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -2202,6 +2252,7 @@ class SQLTableRecord(Record):
             primary_keys=table_doc.get("primaryKeys") or [],
             foreign_keys=table_doc.get("foreignKeys") or [],
             comment=table_doc.get("comment"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -2319,6 +2370,7 @@ class PullRequestRecord(Record):
             merged_by=pr_doc.get("mergedBy"),
             labels=pr_doc.get("labels"),
             last_commit_sha=pr_doc.get("lastCommitSha"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
 class LifecycleStatus(str, Enum):
@@ -2515,6 +2567,7 @@ class ArtifactRecord(Record):
             content_hash=artifact_doc.get("contentHash"),
             result_schema=artifact_doc.get("resultSchema"),
             versions=deserialize_artifact_versions(artifact_doc.get("versions")),
+            **Record.delete_state_from_arango(record_doc),
         )
 
         
@@ -2706,6 +2759,7 @@ class CodeFileRecord(Record):
             extension=extension,
             language=arango_base_code_file_record.get("language"),
             file_role=arango_base_code_file_record.get("fileRole"),
+            **Record.delete_state_from_arango(arango_base_record),
         )
 
 
@@ -3235,6 +3289,7 @@ class MeetingRecord(Record):
             end_time=meeting_doc.get("endTime"),
             timezone=meeting_doc.get("timezone"),
             recording_url=meeting_doc.get("recordingUrl"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -3338,6 +3393,39 @@ class EntityRecord(BaseModel):
         alias; the name alone keeps the vector stable and targeted.
         """
         return self.name.strip()
+
+    @classmethod
+    def for_record(
+        cls, record_id: str, name: str, org_id: str, connector_id: str | None,
+        record_group_id: str | None,
+    ) -> "EntityRecord":
+        """A record's title point. Its membership is exactly its own connector
+        and group, so it is written with ``merge_membership=False``."""
+        return cls(
+            entity_id=record_id,
+            entity_type=EntityType.RECORD,
+            name=name,
+            org_id=org_id,
+            connector_ids=[connector_id] if connector_id else [],
+            record_group_ids=[record_group_id] if record_group_id else [],
+            type_category=EntityTypeCategory.PREDEFINED,
+        )
+
+    @classmethod
+    def for_record_group(
+        cls, group_id: str, name: str, org_id: str, connector_id: str | None,
+    ) -> "EntityRecord":
+        """A record group's point. It lists itself as a record group so users
+        with group-level (not connector-level) access can reach it."""
+        return cls(
+            entity_id=group_id,
+            entity_type=EntityType.RECORD_GROUP,
+            name=name,
+            org_id=org_id,
+            connector_ids=[connector_id] if connector_id else [],
+            record_group_ids=[group_id],
+            type_category=EntityTypeCategory.PREDEFINED,
+        )
 
     def to_vector_payload(self) -> dict:
         """Serialise to the flat metadata dict stored on each vector point.

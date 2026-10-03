@@ -888,7 +888,9 @@ class ArangoHTTPClient:
         self,
         collection_name: str,
         fields: List[str],
-        unique: bool = False,
+        unique: bool = False,  # noqa: FBT001, FBT002 - positional, as callers have always passed it
+        *,
+        sparse: bool = False,
     ) -> bool:
         """
         Create a persistent index on a collection (idempotent).
@@ -896,6 +898,8 @@ class ArangoHTTPClient:
         Args:
             collection_name: Collection to index
             fields: List of field names for the compound index
+            sparse: Leave out documents where any indexed field is null or
+                missing, so an index over a rarely-set field stays small
             unique: Enforce uniqueness. Creation fails outright if the collection
                 already holds duplicates, so callers must tolerate a False return.
 
@@ -903,11 +907,13 @@ class ArangoHTTPClient:
             bool: True if index exists or was created
         """
         url = f"{self.base_url}/_db/{self.database}/_api/index?collection={collection_name}"
-        payload = {
+        payload: dict[str, Any] = {
             "type": "persistent",
             "fields": fields,
             "unique": unique,
         }
+        if sparse:
+            payload["sparse"] = True
         try:
             session = await self._get_session()
             async with session.post(url, json=payload) as resp:

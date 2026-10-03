@@ -6,8 +6,9 @@ sign-in settings, AI models or service tokens. Here each route in
 ``helper/admin_route_table.py`` is called twice:
 
 * as a throwaway member, who must be refused with the product's own answer:
-  400 "Admin access required" from Node's ``userAdminCheck``, or 403 from the
-  Python services (passed through by the gateway);
+  403 "You need admin access to do this" from Node's ``userAdminCheck`` and
+  ``adminValidator``, or 403 from the Python services (passed through by the
+  gateway);
 * as the admin, who must get past the check. The admin request is shaped so
   that whatever comes after the check (a validator, a lookup of an id that does
   not exist) stops it before anything is written.
@@ -31,6 +32,8 @@ from helper.admin_route_table import (
     ADMIN_BODIES,
     INVALID_ID,
     NODE_ADMIN_ROUTES,
+    NODE_REFUSAL_MESSAGE,
+    OLD_NODE_REFUSAL_MESSAGE,
     PYTHON_ADMIN_ROUTES,
     AdminRoute,
 )
@@ -144,7 +147,12 @@ class TestTheAdminGetsThrough:
         )
         if route.handler.startswith("api/routes/mcp_servers.py") and _MCP_DISABLED in text:
             pytest.skip("MCP is switched off on this stack, so its admin check is never reached")
-        refused = status in (401, 403) or "admin access required" in text.lower()
+        lowered = text.lower()
+        refused = (
+            status in (401, 403)
+            or NODE_REFUSAL_MESSAGE.lower() in lowered
+            or OLD_NODE_REFUSAL_MESSAGE.lower() in lowered
+        )
         assert not refused, (
             f"The admin was refused on {route.id}: HTTP {status}. " + _error_excerpt(status, text)
         )

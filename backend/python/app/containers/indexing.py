@@ -52,6 +52,13 @@ class IndexingAppContainer(BaseAppContainer):
         vector_db_service=vector_db_service,
     )
 
+    blob_storage = providers.Resource(
+        container_utils.create_blob_storage,
+        logger=logger,
+        config_service=config_service,
+        graph_provider=graph_provider,
+    )
+
     indexing_pipeline = providers.Resource(
         container_utils.create_indexing_pipeline,
         logger=logger,
@@ -59,6 +66,7 @@ class IndexingAppContainer(BaseAppContainer):
         graph_provider=graph_provider,
         vector_db_service=vector_db_service,
         collection_registry=collection_registry,
+        blob_storage=blob_storage,
     )
 
     document_extractor = providers.Resource(
@@ -66,13 +74,6 @@ class IndexingAppContainer(BaseAppContainer):
         logger=logger,
         graph_provider=graph_provider,
         config_service=config_service,
-    )
-
-    blob_storage = providers.Resource(
-        container_utils.create_blob_storage,
-        logger=logger,
-        config_service=config_service,
-        graph_provider=graph_provider,
     )
 
     graphdb = providers.Resource(
@@ -96,6 +97,9 @@ class IndexingAppContainer(BaseAppContainer):
         config_service=config_service,
         vector_db_service=vector_db_service,
         collection_name=VECTOR_DB_ENTITIES_COLLECTION_NAME,
+        # Indexing runs the entity index rebuild, which refills a recreated
+        # collection; query and connectors keep raising until it does.
+        recreate_on_dimension_mismatch=True,
     )
 
     # Canonicalises extracted taxonomy names before graph/vector writes —
@@ -150,6 +154,7 @@ class IndexingAppContainer(BaseAppContainer):
 
     extraction_client = providers.Resource(
         container_utils.create_extraction_client,
+        config_service=config_service,
     )
 
     event_processor = providers.Resource(

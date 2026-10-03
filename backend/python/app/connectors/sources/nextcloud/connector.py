@@ -78,6 +78,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.sources.client.nextcloud.nextcloud import (
     NextcloudClient,
@@ -1214,8 +1215,10 @@ class NextcloudConnector(BaseConnector):
         after_key: str | None = None
         try:
             while True:
+                # Trash included: a trashed record the drive no longer has is removed too.
                 page = await self.data_entities_processor.get_records_by_status(
-                    self.connector_id, None, limit=RECORD_SCAN_PAGE_SIZE, after_key=after_key
+                    self.connector_id, None, limit=RECORD_SCAN_PAGE_SIZE, after_key=after_key,
+                    visibility=RecordVisibility.ALL,
                 )
                 stale.extend(r for r in page if r.external_record_id not in listed)
                 if len(page) < RECORD_SCAN_PAGE_SIZE:

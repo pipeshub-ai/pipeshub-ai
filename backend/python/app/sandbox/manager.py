@@ -4,7 +4,8 @@ The mode comes from the ``SANDBOX_MODE`` environment variable and has no
 default:
 - unset / unknown -- no executor; ``get_executor`` raises ``SandboxUnavailableError``
 - ``docker``      -- DockerExecutor (container-based; what compose and Helm set)
-- ``local``       -- LocalExecutor (subprocess in this service; explicit opt-in)
+- ``local``       -- LocalExecutor (subprocess in this service); also needs
+  ``SANDBOX_ALLOW_LOCAL=true``, otherwise refused like an unknown value
 """
 
 from __future__ import annotations

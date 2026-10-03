@@ -420,7 +420,7 @@ describe('User routes: who may do what', () => {
     it("stops a member from reading another user's email", async () => {
       const res = await call('GET', `/${ids.otherMemberA}/email`, sessionFor(ids.memberA));
 
-      expect(res.status).to.equal(400);
+      expect(res.status).to.equal(403);
       expect(JSON.stringify(res.body)).to.not.include('mia@');
     });
 
@@ -451,8 +451,10 @@ describe('User routes: who may do what', () => {
     it('stops a member from deleting anyone', async () => {
       const res = await call('DELETE', `/${ids.otherMemberA}`, sessionFor(ids.memberA));
 
-      expect(res.status).to.equal(400);
-      expect(errorMessage(res)).to.equal('Admin access required');
+      expect(res.status).to.equal(403);
+      expect(errorMessage(res)).to.equal(
+        'You need admin access to do this. Ask an admin in your organisation.',
+      );
       expect(users.get(ids.otherMemberA)!.isDeleted).to.be.false;
     });
 
@@ -476,7 +478,7 @@ describe('User routes: who may do what', () => {
 
       const res = await call('PUT', `/${ids.otherMemberA}/unblock`, sessionFor(ids.memberA));
 
-      expect(res.status).to.equal(400);
+      expect(res.status).to.equal(403);
       expect(credentials.rows[0]?.isBlocked).to.be.true;
     });
 

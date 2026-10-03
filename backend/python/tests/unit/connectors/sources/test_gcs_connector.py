@@ -51,6 +51,8 @@ def mock_data_entities_processor():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
@@ -514,6 +516,8 @@ def mock_data_entities_processor_fullcov():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.initialize = AsyncMock()
@@ -1007,6 +1011,7 @@ class TestSyncBucket95:
         )
         connector.record_sync_point = MagicMock()
         connector.record_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.record_sync_point.update_sync_point = AsyncMock()
         await connector._sync_bucket("bucket")
 
     @pytest.mark.asyncio
@@ -1037,6 +1042,7 @@ class TestSyncBucket95:
         ext_filter = MagicMock()
         ext_filter.is_empty.return_value = False
         ext_filter.value = ["pdf"]
+        ext_filter.operator_value = "in"
         sync_filters = MagicMock()
         sync_filters.get.side_effect = lambda key: ext_filter if key == "file_extensions" else None
         connector.sync_filters = sync_filters
@@ -1135,6 +1141,7 @@ class TestSyncBucket95:
         ext_filter = MagicMock()
         ext_filter.is_empty.return_value = False
         ext_filter.value = ["pdf"]
+        ext_filter.operator_value = "in"
         sync_filters = MagicMock()
         sync_filters.get.side_effect = lambda key: ext_filter if key == "file_extensions" else None
         connector.sync_filters = sync_filters

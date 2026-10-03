@@ -30,6 +30,11 @@ import httplib2
 
 from app.models.entities import Record
 from app.models.permission import EntityType, PermissionType
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+    matches_visibility,
+)
 
 if TYPE_CHECKING:
     import pytest
@@ -329,6 +334,7 @@ class FakeEntitiesProcessor:
             self._plain(r) for r in self.records.values()
             if r.parent_external_record_id == parent_external_record_id
             and (record_type is None or str(getattr(r.record_type, "value", r.record_type)) == str(getattr(record_type, "value", record_type)))
+            and is_live_record(r)
         ]
 
     async def get_records_by_status(
@@ -341,8 +347,9 @@ class FakeEntitiesProcessor:
         is_placeholder: bool | None = None,
         after_key: str | None = None,
         exclude_statuses: list[str] | None = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Any]:
-        """Keyset pages ordered by id, typed as stored, as both graph stores return them."""
+        """Keyset pages ordered by id, typed as stored, live only unless asked, as both graph stores return them."""
         assert record_group_id is None and not offset and not exclude_statuses, "not modelled"
         if self.fail_record_listing:
             raise RuntimeError("graph unavailable while listing records")
@@ -352,6 +359,7 @@ class FakeEntitiesProcessor:
                 if (not status_filters or r.indexing_status in status_filters)
                 and (is_placeholder is None or bool(getattr(r, "is_placeholder", False)) == is_placeholder)
                 and (after_key is None or r.id > after_key)
+                and matches_visibility(r, visibility)
             ),
             key=lambda r: r.id,
         )

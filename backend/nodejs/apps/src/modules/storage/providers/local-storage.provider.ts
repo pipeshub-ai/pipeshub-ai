@@ -152,6 +152,75 @@ class LocalStorageAdapter implements StorageServiceInterface {
   }
 
   /**
+   * Removes the file a document (or one of its versions) points at. A file that
+   * is already gone counts as removed, so a retried purge succeeds.
+   */
+  async deleteObject(document: Document): Promise<void> {
+    const localPath = this.getLocalPathFromUrl(
+      document.local?.localPath ?? document.local?.url,
+    );
+    if (localPath === null || localPath === '') {
+      throw new StorageNotFoundError('Local file path not found');
+    }
+    const fullPath = this.assertInsideMount(
+      path.join(this.mountPath, localPath),
+    );
+    const located = await this.locateInsideRealMount(fullPath);
+    if (located === null) {
+      return;
+    }
+    try {
+      await fs.unlink(located.target);
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'ENOENT') {
+        throw error;
+      }
+    }
+    await this.removeEmptyFoldersAbove(located.target, located.mountRoot);
+  }
+
+  /**
+   * Where a file really is once symlinked folders are followed, which must still
+   * be inside the mount (itself followed, since the mount may be reached through
+   * a link). Null when its folder is already gone.
+   */
+  private async locateInsideRealMount(
+    fullPath: string,
+  ): Promise<{ target: string; mountRoot: string } | null> {
+    let folder: string;
+    try {
+      folder = await fs.realpath(path.dirname(fullPath));
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOENT') {
+        return null;
+      }
+      throw error;
+    }
+    const mountRoot = await fs.realpath(this.mountPath);
+    const target = path.join(folder, path.basename(fullPath));
+    if (!target.startsWith(mountRoot + path.sep)) {
+      throw new StorageValidationError('Invalid document path');
+    }
+    return { target, mountRoot };
+  }
+
+  private async removeEmptyFoldersAbove(
+    filePath: string,
+    mountRoot: string,
+  ): Promise<void> {
+    let folder = path.dirname(filePath);
+    while (folder.startsWith(mountRoot + path.sep)) {
+      try {
+        await fs.rmdir(folder);
+      } catch {
+        // Not empty, or already gone: nothing above it can be empty either.
+        return;
+      }
+      folder = path.dirname(folder);
+    }
+  }
+
+  /**
    * Uploads a document to local storage
    */
   async uploadDocumentToStorageService(

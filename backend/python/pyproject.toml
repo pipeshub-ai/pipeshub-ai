@@ -212,7 +212,9 @@ dependencies = [
     "docx2python==3.5.0",
     "etcd3 @ git+https://github.com/kragniz/python-etcd3.git@e58a899579ba416449c4e225b61f039457c8072a",
     "evernote3>=1.25.14",
-    "fastapi==0.115.6",
+    "fastapi==0.136.3",
+    # Starlette comes in through FastAPI, whose range admits releases with known advisories.
+    "starlette==1.7.0",
     "fastmcp==3.2.0",
     "fastembed==0.5.1",
     "faster-whisper>=1.0.0",

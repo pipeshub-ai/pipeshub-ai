@@ -399,6 +399,48 @@ class TestParsingClientErrorClassification:
         assert result == MessageErrorType.TRANSIENT
 
 
+class TestServiceAuthRefusedClassification:
+    """A refused service token is a deployment fault, so the record is retried;
+    a 401/403 from any other origin stays terminal."""
+
+    @pytest.mark.parametrize("status_code", [401, 403])
+    def test_refused_service_token_is_transient(self, status_code):
+        from app.services.base_client import ServiceAuthRefusedError
+
+        exc = ServiceAuthRefusedError(
+            f"ParsingService parse was refused with status {status_code}",
+            status_code=status_code,
+            service_name="ParsingService",
+        )
+        assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TRANSIENT
+
+    def test_wrapped_refused_service_token_is_transient(self):
+        from app.services.base_client import ServiceAuthRefusedError
+
+        original = ServiceAuthRefusedError("refused", status_code=401)
+        wrapped = Exception(str(original))
+        wrapped.__cause__ = original
+
+        assert MessageErrorClassifier.classify_by_exception(wrapped) == MessageErrorType.TRANSIENT
+
+    @pytest.mark.parametrize("status_code", [401, 403])
+    def test_other_service_call_error_with_auth_status_stays_terminal(self, status_code):
+        from app.services.base_client import ServiceCallError
+
+        exc = ServiceCallError("refused elsewhere", status_code=status_code)
+        assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TERMINAL
+
+    @pytest.mark.parametrize("status_code", [401, 403])
+    def test_auth_status_from_a_connector_source_stays_terminal(self, status_code):
+        class _SourceApiError(Exception):
+            def __init__(self, status_code: int) -> None:
+                super().__init__("source refused the credentials")
+                self.status_code = status_code
+
+        exc = _SourceApiError(status_code)
+        assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TERMINAL
+
+
 class TestOpenAIErrors:
     """Test classification of OpenAI API errors."""
 

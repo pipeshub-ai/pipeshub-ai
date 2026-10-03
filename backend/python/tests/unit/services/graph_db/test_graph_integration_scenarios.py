@@ -24,6 +24,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+    matches_visibility,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -658,12 +664,13 @@ class FakeGraphProvider:
         self,
         record_ids: list[str],
         org_id: str,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[dict[str, object]]:
         records_col = self._ensure_collection(RECORDS)
         results: list[dict[str, object]] = []
         for rid in record_ids:
             rec = records_col.get(rid)
-            if rec and rec.get("orgId") == org_id:
+            if rec and rec.get("orgId") == org_id and matches_visibility(rec, visibility):
                 results.append(rec)
         return results
 
@@ -746,6 +753,8 @@ class FakeGraphProvider:
                 continue
             if size_in_bytes is not None and rec.get("sizeInBytes") != size_in_bytes:
                 continue
+            if not is_live_record(rec):
+                continue
             results.append(rec)
         return results
 
@@ -767,7 +776,7 @@ class FakeGraphProvider:
                 continue
             if org_id and rec.get("orgId") != org_id:
                 continue
-            if rec.get("md5Checksum") == md5 and rec.get("indexingStatus") == "QUEUED":
+            if rec.get("md5Checksum") == md5 and rec.get("indexingStatus") == "QUEUED" and is_live_record(rec):
                 return rec
         return None
 
@@ -789,7 +798,7 @@ class FakeGraphProvider:
         for key, rec in records.items():
             if key == record_id:
                 continue
-            if rec.get("md5Checksum") == md5 and rec.get("indexingStatus") == "QUEUED":
+            if rec.get("md5Checksum") == md5 and rec.get("indexingStatus") == "QUEUED" and is_live_record(rec):
                 rec["indexingStatus"] = new_indexing_status
                 if virtual_record_id:
                     rec["virtualRecordId"] = virtual_record_id

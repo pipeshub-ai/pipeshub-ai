@@ -21,6 +21,7 @@ from app.agent_loop_lib.hooks.middleware.builtin.turn_guards import (
     install_stall_detection,
     install_supervisor_confidence_gate,
     install_turn_guards,
+    warn_before_deadline,
 )
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext, ToolResultContext, TurnContext
 from app.agent_loop_lib.hooks.registry import HookRegistry
@@ -121,3 +122,67 @@ class TestOptInInstallers:
         install_stall_detection(kernel)
         assert len(kernel.on(HookEvent.POST_TURN)._stack) == 1
         assert len(kernel.on(HookEvent.PRE_MODEL)._stack) == 1
+
+
+def _deadline_ctx(
+    *, registered: tuple[str, ...] | None, granted: tuple[str, ...] = (), turn_index: int = 18,
+) -> ModelCallContext:
+    """`registered=None` builds a context with no run scope at all."""
+    scope = None
+    if registered is not None:
+        registry = SimpleNamespace(has=lambda name: name in registered)
+        run = RunScope(
+            identity=SimpleNamespace(), spec=SimpleNamespace(tool_names=list(granted)),
+            runtime=SimpleNamespace(tool_registry=registry), goal=Goal(description="g"),
+        )
+        scope = TurnScope(run=run, turn_index=turn_index)
+    return ModelCallContext(
+        messages=[], budget=ContextBudget(max_tokens=1000), scope=scope,
+        turn_index=turn_index, max_turns=20,
+    )
+
+
+async def _warning(ctx: ModelCallContext) -> str | None:
+    async def _next() -> None:
+        return None
+
+    await warn_before_deadline()(ctx, _next)
+    return str(ctx.messages[-1].content) if ctx.messages else None
+
+
+class TestWarnBeforeDeadline:
+    """Told to call `task_complete` when it has no such tool, the model has
+    answered with a canned refusal; the warning names it only when the run
+    can call it."""
+
+    @pytest.mark.asyncio
+    async def test_names_task_complete_when_it_is_registered_and_granted(self) -> None:
+        warning = await _warning(_deadline_ctx(registered=("task_complete",)))
+        assert warning is not None
+        assert "call task_complete immediately" in warning
+
+    @pytest.mark.asyncio
+    async def test_explicit_grant_must_include_task_complete(self) -> None:
+        granted = await _warning(_deadline_ctx(registered=("task_complete",), granted=("task_complete", "web_search")))
+        not_granted = await _warning(_deadline_ctx(registered=("task_complete",), granted=("web_search",)))
+        assert "task_complete" in granted
+        assert "task_complete" not in not_granted
+
+    @pytest.mark.asyncio
+    async def test_asks_for_a_plain_answer_when_task_complete_is_not_registered(self) -> None:
+        warning = await _warning(_deadline_ctx(registered=("sql__execute_sql_query",)))
+        assert warning is not None
+        assert "task_complete" not in warning
+        assert "Reply with your final answer" in warning
+        assert warning.startswith("[System: You have 2 turns remaining. Stop gathering information now.")
+
+    @pytest.mark.asyncio
+    async def test_without_a_run_scope_it_names_no_tool(self) -> None:
+        warning = await _warning(_deadline_ctx(registered=None))
+        assert warning is not None
+        assert "task_complete" not in warning
+
+    @pytest.mark.asyncio
+    async def test_fires_only_two_turns_before_the_limit(self) -> None:
+        for turn_index in (0, 17, 19, 20):
+            assert await _warning(_deadline_ctx(registered=(), turn_index=turn_index)) is None
