@@ -31,6 +31,11 @@ from app.connectors.sources.atlassian.confluence_datacenter.connector import (
 )
 from app.models.entities import Record, RecordType
 from app.models.permission import EntityType, PermissionType
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+    matches_visibility,
+)
 from app.sources.client.confluence.confluence import ConfluenceRESTClientViaToken
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 
@@ -73,7 +78,8 @@ class TeamDb(FakeRecordsDb):
         return next((r for r in self.records.values() if r.id == record_id), None)
 
     async def get_records_in_record_group(
-        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None
+        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Typed records of one group, keyset-paged by id, as ``get_records_by_status`` returns them."""
         if self.fail_scan:
@@ -81,17 +87,21 @@ class TeamDb(FakeRecordsDb):
         if external_group_id not in self.record_groups:
             return []
         ordered = sorted(
-            (r for r in self.records.values() if r.external_record_group_id == external_group_id), key=lambda r: r.id
+            (
+                r for r in self.records.values()
+                if r.external_record_group_id == external_group_id and matches_visibility(r, visibility)
+            ),
+            key=lambda r: r.id,
         )
         return [r.model_copy() for r in ordered if after_key is None or r.id > after_key][:limit]
 
     async def get_records_by_status(
         self, connector_id: str, status_filters: list[str] | None, limit: int | None = None,
-        after_key: str | None = None, **_: object,
+        after_key: str | None = None, visibility: RecordVisibility = RecordVisibility.LIVE, **_: object,
     ) -> list[Record]:
         if self.fail_scan:
             raise RuntimeError("graph unavailable")
-        ordered = sorted(self.records.values(), key=lambda r: r.id)
+        ordered = sorted((r for r in self.records.values() if matches_visibility(r, visibility)), key=lambda r: r.id)
         page = [r.model_copy() for r in ordered if after_key is None or r.id > after_key]
         return page[:limit] if limit else page
 
@@ -126,17 +136,22 @@ class TeamDb(FakeRecordsDb):
             del self.records[record.external_record_id]
 
     async def on_records_deleted_cascade(
-        self, record_ids: list[str], connector_id: str, cascade_children: bool = True
+        self, record_ids: list[str], connector_id: str, cascade_children: bool = True,
+        *, include_trashed_roots: bool = False,
     ) -> dict[str, Any]:
         """Like ``delete_records_recursive``: files under a record are ATTACHMENT edges, everything
         else PARENT_CHILD, which only a full cascade follows; a survivor's parent link is cleared.
-        A root that no longer exists is a failed root, and type docs go with their records."""
+        A root that no longer exists, or is in the trash without ``include_trashed_roots``, is a
+        failed root, and type docs go with their records."""
         from app.models.entities import RecordType as RT
+
+        def accepted(record: Record | None) -> bool:
+            return record is not None and (include_trashed_roots or is_live_record(record))
 
         containers = {RT.CONFLUENCE_PAGE, RT.CONFLUENCE_BLOGPOST, RT.COMMENT, RT.INLINE_COMMENT}
         doomed: list[Any] = []
-        failed = [{"record_id": i, "reason": "Validation failed"} for i in record_ids if self._by_id(i) is None]
-        pending = [r for r in (self._by_id(i) for i in record_ids) if r is not None]
+        failed = [{"record_id": i, "reason": "Validation failed"} for i in record_ids if not accepted(self._by_id(i))]
+        pending = [r for r in (self._by_id(i) for i in record_ids) if accepted(r)]
         while pending:
             record = pending.pop()
             if record in doomed:
@@ -1317,6 +1332,32 @@ class TestRemovalFromSource:
         assert not {"p2", "a2", "c1"} & set(db.records)
         assert db.records["p3"].parent_external_record_id is None, "the child page moves to the space root"
         assert "p1" in db.records
+
+    async def test_a_trashed_page_and_its_trashed_comment_the_source_no_longer_has_are_removed(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        """The scans list the trash and the delete accepts a trashed root, so nothing stays behind for good."""
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        for external_id in ("p2", "c1"):
+            db.records[external_id].is_deleted = True
+        search.existing["page"] = [content("p1"), child_of("p3", "p1")]
+
+        await connector.run_sync()
+
+        assert not {"p2", "a2", "c1"} & set(db.records)
+        assert {"p1", "p3"} <= set(db.records)
+
+    async def test_a_space_with_a_trashed_page_finishes_its_removal(self, atlassian_api, db, store, search) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        db.records["p2"].is_deleted = True
+        atlassian_api.on("GET", f"{API}/space", {"results": [space("HR", 20)], "_links": {"base": BASE}})
+
+        await connector.run_sync()
+
+        assert "10" not in db.record_groups
+        assert not any(r.external_record_group_id == "10" for r in db.records.values())
+        scope = store.values_for("confluence_space_scope/all")
+        assert (scope["space_ids"], scope["pending"]) == (["20"], []), "the removal finished"
 
     async def test_a_page_the_account_can_no_longer_see_is_removed_and_returns_when_visible_again(
         self, atlassian_api, db, store, search

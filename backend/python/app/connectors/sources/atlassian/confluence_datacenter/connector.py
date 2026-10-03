@@ -81,6 +81,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
@@ -1600,8 +1601,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
         stored: list[Record] = []
         after_key: str | None = None
         while True:
+            # The trash too: a removal scan must reach a trashed page the space no longer lists.
             page = await self.data_entities_processor.get_records_in_record_group(
-                self.connector_id, space_id, RECORD_SCAN_PAGE_SIZE, after_key
+                self.connector_id, space_id, RECORD_SCAN_PAGE_SIZE, after_key,
+                visibility=RecordVisibility.ALL,
             )
             stored.extend(r for r in page if r.record_type == record_type and not r.is_placeholder)
             if len(page) < RECORD_SCAN_PAGE_SIZE:
@@ -1668,22 +1671,22 @@ class ConfluenceDataCenterConnector(BaseConnector):
         failed = 0
         for record in records:
             try:
-                comments = [
-                    c.id for c in await self.data_entities_processor.get_records_by_parent(
-                        self.connector_id, record.external_record_id
-                    )
-                    if c.record_type in comment_types
-                ]
+                children = await self.data_entities_processor.get_records_by_parent(
+                    self.connector_id, record.external_record_id, visibility=RecordVisibility.ALL
+                )
+                comments = [c for c in children if c.record_type in comment_types]
                 if comments:
                     result = await self.data_entities_processor.on_records_deleted_cascade(
-                        comments, self.connector_id, cascade_children=True
+                        [c.id for c in comments], self.connector_id, cascade_children=True,
+                        include_trashed_roots=True,
                     )
-                    if not self._cascade_succeeded(result):
+                    if not self._cascade_succeeded(result, self._trashed_ids(comments)):
                         raise RuntimeError(f"its comments could not all be deleted: {result}")
+                # Removing what the source no longer has, so a root already in the trash goes too.
                 result = await self.data_entities_processor.on_records_deleted_cascade(
-                    [record.id], self.connector_id, cascade_children=False
+                    [record.id], self.connector_id, cascade_children=False, include_trashed_roots=True
                 )
-                if not self._cascade_succeeded(result):
+                if not self._cascade_succeeded(result, self._trashed_ids([record])):
                     raise RuntimeError(f"delete failed: {result}")
             except Exception as e:
                 failed += 1
@@ -1693,8 +1696,19 @@ class ConfluenceDataCenterConnector(BaseConnector):
         return not failed
 
     @staticmethod
-    def _cascade_succeeded(result: object) -> bool:
-        return isinstance(result, dict) and bool(result.get("success", True)) and not result.get("failed_count")
+    def _cascade_succeeded(result: object, already_trashed: frozenset[str] = frozenset()) -> bool:
+        if not isinstance(result, dict) or not result.get("success", True):
+            return False
+        if not result.get("failed_count"):
+            return True
+        # With the trash on, a root already in it stays there for the purge; that is not a failure.
+        return bool(result.get("softDeleted")) and all(
+            isinstance(f, dict) and f.get("record_id") in already_trashed for f in result.get("failed_records") or []
+        )
+
+    @staticmethod
+    def _trashed_ids(records: list[Record]) -> frozenset[str]:
+        return frozenset(r.id for r in records if r.is_deleted)
 
     async def _remove_spaces_out_of_scope(self, spaces: list[RecordGroup]) -> None:
         """Delete the stored spaces this sync no longer lists, with their records and checkpoints.
@@ -1730,6 +1744,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
             while True:
                 page = await self.data_entities_processor.get_records_by_status(
                     self.connector_id, None, limit=RECORD_SCAN_PAGE_SIZE, after_key=after_key,
+                    visibility=RecordVisibility.ALL,
                 )
                 for r in page:
                     if r.external_record_group_id and r.external_record_group_id not in wanted:
@@ -1773,15 +1788,16 @@ class ConfluenceDataCenterConnector(BaseConnector):
             return False
         deleted: set[str] = set()
         ids = [r.id for r in records]
+        trashed = self._trashed_ids(records)
         for start in range(0, len(ids), RECORD_DELETE_CHUNK):
             # An id a full cascade already took counts as a failed root if passed again.
             chunk = [i for i in ids[start:start + RECORD_DELETE_CHUNK] if i not in deleted]
             if not chunk:
                 continue
             result = await self.data_entities_processor.on_records_deleted_cascade(
-                chunk, self.connector_id, cascade_children=True
+                chunk, self.connector_id, cascade_children=True, include_trashed_roots=True
             )
-            if not self._cascade_succeeded(result):
+            if not self._cascade_succeeded(result, trashed):
                 self.logger.warning(f"Could not delete the records of space {space_id}; retrying next sync: {result}")
                 return False
             deleted.update(

@@ -930,7 +930,9 @@ class TestDeleteFolder:
 
         result = await service.delete_folder("kb1", "f1", "user1")
         assert result["success"] is True
-        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(["f1"], "kb1", delete_source=DeleteSource.USER, deleted_by_user_id="uk1")
+        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
+            ["f1"], "kb1", delete_source=DeleteSource.USER, deleted_by_user_id="uk1", soft_delete=False
+        )
 
     @pytest.mark.asyncio
     async def test_not_owner(self, service):
@@ -1221,7 +1223,9 @@ class TestDeleteRecordsInKb:
 
         result = await service.delete_records_in_kb("kb1", ["r1", "r2"], "user1")
         assert result["success"] is True
-        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(["r1", "r2"], "kb1", delete_source=DeleteSource.USER, deleted_by_user_id="uk1")
+        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
+            ["r1", "r2"], "kb1", delete_source=DeleteSource.USER, deleted_by_user_id="uk1", soft_delete=False
+        )
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, service):
@@ -1326,7 +1330,8 @@ class TestDeleteRecordsInFolder:
         result = await service.delete_records_in_folder("kb1", "f1", ["r1"], "user1")
         assert result["success"] is True
         service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
-            ["r1"], "kb1", within_folder_id="f1", delete_source=DeleteSource.USER, deleted_by_user_id="uk1"
+            ["r1"], "kb1", within_folder_id="f1", delete_source=DeleteSource.USER, deleted_by_user_id="uk1",
+            soft_delete=False,
         )
 
     @pytest.mark.asyncio
@@ -1339,7 +1344,7 @@ class TestDeleteRecordsInFolder:
 
         service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
             ["in-f1", "in-f2"], "kb1", within_folder_id="f1", delete_source=DeleteSource.USER,
-            deleted_by_user_id="uk1",
+            deleted_by_user_id="uk1", soft_delete=False,
         )
 
     @pytest.mark.asyncio

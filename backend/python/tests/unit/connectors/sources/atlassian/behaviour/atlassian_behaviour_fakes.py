@@ -19,7 +19,10 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from app.services.graph_db.common.record_visibility import is_live_record
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    matches_visibility,
+)
 
 if TYPE_CHECKING:
     from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -163,13 +166,14 @@ class FakeRecordsDb:
         return None if stored is None else as_base_record(stored)
 
     async def get_records_by_parent(
-        self, connector_id: str, parent_external_record_id: str, record_type: Optional[str] = None
+        self, connector_id: str, parent_external_record_id: str, record_type: Optional[str] = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Base-record copies, as the stores return: changing them does not change what is stored."""
         return [
             as_base_record(r) for r in self.records.values()
             if r.parent_external_record_id == parent_external_record_id and record_type in (None, r.record_type)
-            and is_live_record(r)
+            and matches_visibility(r, visibility)
         ]
 
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:

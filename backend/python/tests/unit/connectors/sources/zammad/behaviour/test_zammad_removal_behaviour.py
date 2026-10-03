@@ -77,6 +77,18 @@ async def test_a_ticket_deleted_in_zammad_is_removed_on_the_next_incremental_syn
     assert world.db.deleted == ["11_1_1", "11"]
 
 
+async def test_a_trashed_ticket_deleted_in_zammad_is_removed_too(world: World) -> None:
+    """The group scan lists the trash, so a ticket already in it does not stay behind for good."""
+    for external_id in ("11", "11_1_1"):
+        world.db.records[external_id].is_deleted = True
+    world.zammad.delete_ticket(11)
+
+    await world.sync()
+
+    assert world.db.external_ids() == {"10", "20"}
+    assert world.db.deleted == ["11_1_1", "11"]
+
+
 async def test_a_ticket_the_search_index_has_not_caught_up_with_is_kept(world: World) -> None:
     world.zammad.unindexed.add(10)
 

@@ -16,6 +16,10 @@ from atlassian_behaviour_fakes import AtlassianApiStub, FakeRecordsDb, json_resp
 if TYPE_CHECKING:
     import pytest
 
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    matches_visibility,
+)
 from app.sources.client.http.http_client import HTTPClient
 
 CLOUD_ID = "cloud-123"
@@ -122,11 +126,15 @@ class CloudRecordsDb(FakeRecordsDb):
         return [r.model_copy() for r in rows if after_key is None or r.id > after_key]
 
     async def get_records_in_record_group(
-        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None
+        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Any]:
         if self.fail_record_scan:
             raise RuntimeError("graph unavailable")
-        rows = [r for r in self._stored_by_id(after_key) if r.external_record_group_id == external_group_id]
+        rows = [
+            r for r in self._stored_by_id(after_key)
+            if r.external_record_group_id == external_group_id and matches_visibility(r, visibility)
+        ]
         return rows[:limit]
 
     async def on_records_detached_from_parent(self, record_ids: list[str]) -> None:
@@ -147,11 +155,11 @@ class CloudRecordsDb(FakeRecordsDb):
 
     async def get_records_by_status(
         self, connector_id: str, status_filters: list[str] | None, limit: int | None = None,
-        after_key: str | None = None, **_: object,
+        after_key: str | None = None, visibility: RecordVisibility = RecordVisibility.LIVE, **_: object,
     ) -> list[Any]:
         if self.fail_record_scan:
             raise RuntimeError("graph unavailable")
-        rows = self._stored_by_id(after_key)
+        rows = [r for r in self._stored_by_id(after_key) if matches_visibility(r, visibility)]
         return rows if limit is None else rows[:limit]
 
     async def batch_upsert_records(self, records: list[Any]) -> None:
