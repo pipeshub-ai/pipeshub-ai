@@ -544,6 +544,10 @@ class EventProcessor:
                     record_doc,
                     {
                         "extractionStatus": ProgressStatus.FAILED.value,
+                        # Stamped like every other end of an extraction, so
+                        # duplicate dedup can tell this run's result from a
+                        # previous run's (see dedup.extraction_finished).
+                        "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
                         "reason": ENRICHMENT_FAILED,
                     },
                 )

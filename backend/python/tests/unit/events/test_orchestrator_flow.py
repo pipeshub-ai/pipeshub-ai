@@ -226,6 +226,11 @@ async def test_enrichment_failure_does_not_block_indexing() -> None:
         update.get("extractionStatus") == "FAILED"
         for update in updates
     )
+    # Stamped like any other end of an extraction: without it a FAILED status
+    # cannot be told from a previous run's, and duplicate dedup reads it as
+    # current while this record is re-indexed.
+    failed = next(u for u in updates if u.get("extractionStatus") == "FAILED")
+    assert isinstance(failed.get("lastExtractionTimestamp"), int)
 
 
 @pytest.mark.asyncio
