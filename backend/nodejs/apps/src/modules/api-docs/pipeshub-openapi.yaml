@@ -35233,6 +35233,8 @@ paths:
                     type: string
         '401':
           description: Unauthorized
+        '403':
+          description: Insufficient scope (connector:sync is required)
         '404':
           description: Connector instance not found or not accessible
   /connectors/{connectorId}/name:
