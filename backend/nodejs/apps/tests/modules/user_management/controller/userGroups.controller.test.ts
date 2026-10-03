@@ -250,6 +250,30 @@ describe('UserGroupController', () => {
       expect(findCall).to.have.property('name');
       expect(findCall.name).to.have.property('$regex', 'admin');
     });
+
+    it('escapes regex metacharacters in the group search query (OT-9)', async () => {
+      sinon.stub(UserGroups, 'find').returns({
+        skip: sinon.stub().returns({
+          limit: sinon.stub().returns({
+            lean: sinon.stub().returns({
+              exec: sinon.stub().resolves([]),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(UserGroups, 'countDocuments').resolves(0);
+
+      req.query = { search: 'a(b).*' };
+      await controller.getAllUserGroups(req, res);
+
+      expect(res.status.calledWith(200)).to.be.true;
+      const findCall = (UserGroups.find as sinon.SinonStub).firstCall.args[0];
+      // Metacharacters are escaped, so the value is matched literally (no 500, no match-all).
+      expect(findCall.name.$regex).to.equal('a\\(b\\)\\.\\*');
+      const re = new RegExp(findCall.name.$regex, findCall.name.$options);
+      expect(re.test('a(b).*')).to.be.true;
+      expect(re.test('aXbYZ')).to.be.false;
+    });
   });
 
   describe('getUserGroupById', () => {

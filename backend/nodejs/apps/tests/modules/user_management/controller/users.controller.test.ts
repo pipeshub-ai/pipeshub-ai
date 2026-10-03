@@ -528,6 +528,34 @@ describe('UserController', () => {
       expect(filter.$and[1].$or).to.be.an('array').with.length(2); // hasLoggedIn + blocked
     });
 
+    it('escapes regex metacharacters in the user search query (OT-9)', async () => {
+      req.query = { search: 'a(b).*' };
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = Users.find.firstCall.args[0];
+      const rx = filter.$or[0].fullName.$regex;
+      // Metacharacters are escaped, so search is matched literally (no 500, no match-all).
+      expect(rx).to.equal('a\\(b\\)\\.\\*');
+      expect(filter.$or[1].email.$regex).to.equal(rx);
+      const re = new RegExp(rx, 'i');
+      expect(re.test('a(b).*')).to.be.true;
+      expect(re.test('anybody')).to.be.false;
+    });
+
     it('should apply groupIds filter and restrict users to group members', async () => {
       const g1 = '507f1f77bcf86cd7994390a1';
       const u1 = '507f1f77bcf86cd7994390b1';
