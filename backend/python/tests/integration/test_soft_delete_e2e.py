@@ -68,6 +68,7 @@ from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.entities import FileRecord, MailRecord, RecordType
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.neo4j import neo4j_provider as neo4j_provider_module
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -563,4 +564,161 @@ async def test_with_the_flag_off_a_cascade_still_removes_the_records(
     await world.processor.on_records_deleted_cascade([world.ids["file_b"]], world.kb_id)
     assert await world.stored("file_b") is None
     assert await world.stored("attachment") is None
+    assert world.producer.of_type(EventTypes.SOFT_DELETE_RECORDS.value) == []
+
+
+async def _add_kb_records(w: _World, names: list[str], *, folder: bool) -> None:
+    for name in names:
+        w.ids[name] = f"{name}-{uuid.uuid4().hex[:12]}"
+    await w.graph.batch_upsert_records([_file(w, name, kb=True, folder=folder) for name in names])
+    for name in names:
+        await w.graph.update_node(w.ids[name], CollectionNames.RECORDS.value, {"virtualRecordId": f"vr-{w.ids[name]}"})
+
+
+async def _link(w: _World, pairs: list[tuple[str, str]]) -> None:
+    now = get_epoch_timestamp_in_ms()
+    records = CollectionNames.RECORDS.value
+    assert await w.graph.batch_create_edges(
+        [{"from_id": w.ids[parent], "from_collection": records, "to_id": w.ids[child], "to_collection": records,
+          "relationshipType": "PARENT_CHILD", "createdAtTimestamp": now, "updatedAtTimestamp": now}
+         for parent, child in pairs],
+        collection=CollectionNames.RECORD_RELATIONS.value,
+    )
+
+
+@pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
+async def test_a_folder_delete_takes_records_deeper_than_twenty_levels(
+    world: _World, monkeypatch: pytest.MonkeyPatch, soft: bool,
+) -> None:
+    """The hard cascade walks the whole containment tree, so the trash takes all of it too."""
+    _flag(monkeypatch, soft)
+    levels = [f"level_{i}" for i in range(25)]
+    await _add_kb_records(world, levels, folder=True)
+    await _add_kb_records(world, ["deep_file"], folder=False)
+    chain = ["folder", *levels, "deep_file"]
+    await _link(world, list(zip(chain, chain[1:])))
+    names = (*KB_NAMES, *levels, "deep_file")
+    before = await _visible(world, names)
+
+    result = await world.processor.on_records_deleted_cascade(
+        [world.ids["folder"]], world.kb_id, delete_source=DeleteSource.USER, deleted_by_user_id=world.user_key,
+    )
+
+    assert result["success"] is True, result
+    assert before - await _visible(world, names) == {"folder", "file_a", "file_b", "attachment", *levels, "deep_file"}
+    if soft:
+        (event,) = world.producer.of_type(EventTypes.SOFT_DELETE_RECORDS.value)
+        assert f"vr-{world.ids['deep_file']}" in event["payload"]["virtualRecordIds"]
+
+
+# Neo4j only, and not collected for Arango at all: the graph jobs fail on any skip,
+# and Arango's mark runs in a real stream transaction.
+@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
+async def test_a_record_that_leaves_the_folder_after_the_check_stays_live(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each Neo4j statement commits on its own, so the mark must re-check containment itself."""
+    _flag(monkeypatch, True)
+    client = world.graph.client
+    original = client.execute_query
+    moved = False
+
+    async def move_out_after_the_check(query, *args, **kwargs) -> object:
+        nonlocal moved
+        result = await original(query, *args, **kwargs)
+        if not moved and "$folder_id" in query:
+            moved = True
+            assert await world.graph.delete_parent_child_edge_to_record(world.ids["file_a"])
+        return result
+
+    monkeypatch.setattr(client, "execute_query", move_out_after_the_check)
+    result = await world.processor.on_records_deleted_cascade(
+        [world.ids["file_a"]], world.kb_id, within_folder_id=world.ids["folder"],
+        delete_source=DeleteSource.USER, deleted_by_user_id=world.user_key,
+    )
+
+    assert moved, "the delete never checked the folder"
+    assert (await world.stored("file_a")).get("isDeleted") is not True, (
+        f"a record that left the folder was still trashed through it: {result}"
+    )
+    assert result["successfully_deleted"] == 0, result
+    assert world.producer.of_type(EventTypes.SOFT_DELETE_RECORDS.value) == []
+
+
+@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
+async def test_a_mark_that_fails_partway_leaves_nothing_in_the_trash(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The graph refuses one record's mark; the records before it must not stay trashed."""
+    _flag(monkeypatch, True)
+    # A mark used to run in chunks, each its own auto-commit; one key per chunk makes
+    # any record marked before the refused one visible here.
+    monkeypatch.setattr(neo4j_provider_module, "SOFT_DELETE_CHUNK", 1, raising=False)
+    client = world.graph.client
+    await client.execute_query(
+        "CREATE CONSTRAINT soft_delete_it_poison IF NOT EXISTS "
+        "FOR (n:SoftDeleteItPoison) REQUIRE n.deleteBatchId IS UNIQUE"
+    )
+    try:
+        # Two records that may not share a batch id: whichever is marked second is refused.
+        await client.execute_query(
+            "MATCH (r:Record) WHERE r.id IN $ids SET r:SoftDeleteItPoison",
+            parameters={"ids": [world.ids["file_a"], world.ids["attachment"]]},
+        )
+        with pytest.raises(Exception):  # noqa: B017 - the driver's constraint error, whatever its class
+            await world.processor.on_records_deleted_cascade(
+                [world.ids["folder"]], world.kb_id, delete_source=DeleteSource.USER,
+                deleted_by_user_id=world.user_key,
+            )
+    finally:
+        await client.execute_query("DROP CONSTRAINT soft_delete_it_poison IF EXISTS")
+
+    trashed = {n for n in ("folder", "file_a", "file_b", "attachment") if (await world.stored(n)).get("isDeleted")}
+    assert trashed == set(), f"a failed mark left part of the folder in the trash: {trashed}"
+    assert world.producer.of_type(EventTypes.SOFT_DELETE_RECORDS.value) == []
+
+
+async def _add_subfolder(w: _World) -> None:
+    await _add_kb_records(w, ["sub"], folder=True)
+    await _add_kb_records(w, ["sub_file"], folder=False)
+    await _link(w, [("folder", "sub"), ("sub", "sub_file")])
+
+
+async def _soft_delete_sub_moving_outside_in(w: _World, monkeypatch: pytest.MonkeyPatch, trigger: str) -> dict:
+    """Delete ``sub`` from ``folder`` while ``outside`` is moved into ``sub`` right after *trigger* runs."""
+    _flag(monkeypatch, True)
+    await _add_subfolder(w)
+    original = w.graph.execute_query
+    moved = False
+
+    async def move_in(query, *args, **kwargs) -> object:
+        nonlocal moved
+        result = await original(query, *args, **kwargs)
+        if not moved and trigger in query:
+            moved = True
+            await _link(w, [("sub", "outside")])
+        return result
+
+    monkeypatch.setattr(w.graph, "execute_query", move_in)
+    result = await w.processor.on_records_deleted_cascade(
+        [w.ids["sub"]], w.kb_id, within_folder_id=w.ids["folder"],
+        delete_source=DeleteSource.USER, deleted_by_user_id=w.user_key,
+    )
+    monkeypatch.setattr(w.graph, "execute_query", original)
+    assert moved, f"the delete never ran a query containing {trigger!r}"
+    return result
+
+
+# ArangoDB only: its mark reads the tree from a transaction snapshot that hides a
+# record moved in, which Neo4j's single statement walks live.
+@pytest.mark.parametrize("world", ["arango"], indirect=True)
+@pytest.mark.parametrize("trigger", ["@folder_id", "@root_keys"], ids=["after-the-check", "during-the-mark"])
+async def test_a_record_moved_into_the_folder_during_the_delete_stops_it(
+    world: _World, monkeypatch: pytest.MonkeyPatch, trigger: str,
+) -> None:
+    result = await _soft_delete_sub_moving_outside_in(world, monkeypatch, trigger)
+
+    assert result["success"] is False and result.get("code") == 409, result
+    for name in ("sub", "sub_file", "outside"):
+        assert (await world.stored(name)).get("isDeleted") is not True, f"{name} was trashed: {result}"
     assert world.producer.of_type(EventTypes.SOFT_DELETE_RECORDS.value) == []

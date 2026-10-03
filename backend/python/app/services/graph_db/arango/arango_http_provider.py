@@ -157,7 +157,6 @@ from app.services.graph_db.common.utils import (
     KB_MAX_FOLDER_DEPTH,
     SOFT_DELETE_CHUNK,
     TRASH_STATE_FIELDS,
-    SOFT_DELETE_MAX_DEPTH,
     empty_soft_delete_result,
     soft_delete_request_result,
     soft_delete_result,
@@ -13202,6 +13201,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     write=edge_collections + node_collections,
                 )
             try:
+                follow_types = ["PARENT_CHILD", "ATTACHMENT"] if cascade_children else ["ATTACHMENT"]
                 traversal_types = "['PARENT_CHILD', 'ATTACHMENT']" if cascade_children else "['ATTACHMENT']"
                 inventory_query = """
                 LET checked = (
@@ -13269,25 +13269,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 inventory = inv_results[0] if inv_results else {}
                 guard_edges = inventory.get("guard_edges") or []
                 if within_folder_id and guard_edges:
-                    # Reads here are not isolated from other writers, so the check above
-                    # holds only if its edges stay put. Writing to them takes their locks
-                    # until commit; an edge a concurrent move already removed is "not
-                    # found", which aborts the delete and keeps every record.
-                    for marker in ("true", "null"):
-                        await self.execute_query(
-                            "FOR k IN @keys UPDATE k WITH { deleteGuard: " + marker + " } "
-                            "IN @@record_relations OPTIONS { keepNull: false }",
-                            bind_vars={
-                                "keys": guard_edges,
-                                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
-                            },
-                            transaction=txn_id,
-                        )
+                    await self._lock_containment_edges(guard_edges, txn_id)
                 valid_root_keys = inventory.get("valid_root_keys", [])
                 records_with_type = inventory.get("records_with_type", [])
                 record_keys = [rt["record"]["_key"] for rt in records_with_type]
                 if within_folder_id and valid_root_keys:
-                    await self._abort_if_records_moved_in(valid_root_keys, record_keys, traversal_types)
+                    await self._abort_if_records_moved_in(valid_root_keys, record_keys, follow_types)
                 type_targets = [rt["type_target"] for rt in records_with_type if rt.get("type_target")]
                 failed_records = [
                     {"record_id": rid, "reason": "Validation failed"}
@@ -13351,7 +13338,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if within_folder_id and valid_root_keys:
                     # Again after the deletes: a move committed while they ran is outside
                     # this transaction's snapshot, so its new edge was left in place.
-                    await self._abort_if_records_moved_in(valid_root_keys, record_keys, traversal_types)
+                    await self._abort_if_records_moved_in(valid_root_keys, record_keys, follow_types)
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)
 
@@ -13402,8 +13389,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
             return {"success": False, "reason": str(e), "code": 500, "eventData": None}
 
+    async def _lock_containment_edges(self, edge_keys: list[str], txn_id: str | None) -> None:
+        """Hold the locks of the edges a folder check walked until *txn_id* ends.
+
+        Reads in a stream transaction are not isolated from other writers, so a
+        containment check holds only if its edges stay put. Writing to them takes
+        their locks until commit; an edge a concurrent move already removed is
+        "not found", which aborts the delete.
+        """
+        for marker in ("true", "null"):
+            await self.execute_query(
+                "FOR k IN @keys UPDATE k WITH { deleteGuard: " + marker + " } "
+                "IN @@record_relations OPTIONS { keepNull: false }",
+                bind_vars={"keys": edge_keys, "@record_relations": CollectionNames.RECORD_RELATIONS.value},
+                transaction=txn_id,
+            )
+
     async def _abort_if_records_moved_in(
-        self, root_keys: list[str], inventory_keys: list[str], traversal_types: str,
+        self, root_keys: list[str], inventory_keys: list[str], follow_types: list[str],
     ) -> None:
         """Raise when the committed subtree under *root_keys* holds records the inventory missed.
 
@@ -13417,12 +13420,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
             FOR root_key IN @root_keys
                 FOR v, e, p IN 0..""" + str(CONTAINMENT_MAX_DEPTH) + """ OUTBOUND CONCAT(@records, "/", root_key) @@record_relations
-                    PRUNE e != null AND e.relationshipType NOT IN """ + traversal_types + """
-                    FILTER p.edges[*].relationshipType ALL IN """ + traversal_types + """
+                    PRUNE e != null AND e.relationshipType NOT IN @follow
+                    FILTER p.edges[*].relationshipType ALL IN @follow
                     RETURN DISTINCT v._key
             """,
             bind_vars={
                 "root_keys": root_keys,
+                "follow": follow_types,
                 "records": CollectionNames.RECORDS.value,
                 "@record_relations": CollectionNames.RECORD_RELATIONS.value,
             },
@@ -13454,50 +13458,68 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if not record_ids:
             return empty_soft_delete_result(batch_id)
         records = CollectionNames.RECORDS.value
+        record_relations = CollectionNames.RECORD_RELATIONS.value
+        follow_types = list(follow)
         txn_id = transaction
         if transaction is None:
-            txn_id = await self.begin_transaction(
-                read=[records, CollectionNames.RECORD_RELATIONS.value], write=[records]
-            )
+            txn_id = await self.begin_transaction(read=[records, record_relations], write=[records, record_relations])
         try:
             inventory = await self.execute_query(
                 f"""
-                LET roots = (
+                LET checked = (
                     FOR rid IN @record_ids
                         LET rec = DOCUMENT(@@records, rid)
                         FILTER rec != null AND {aql_live_record("rec")}
                         FILTER rec.connectorId == @connector_id
-                        FILTER @folder_id == null OR LENGTH(
+                        LET inside = @folder_id == null ? [] : FIRST(
                             FOR anc, edge, path IN 1..{CONTAINMENT_MAX_DEPTH} INBOUND rec._id @@record_relations
                                 PRUNE edge != null AND edge.relationshipType NOT IN ['PARENT_CHILD', 'ATTACHMENT']
                                 FILTER path.edges[*].relationshipType ALL IN ['PARENT_CHILD', 'ATTACHMENT']
                                 FILTER anc._key == @folder_id
                                 LIMIT 1
-                                RETURN 1
-                        ) > 0
-                        RETURN rec
+                                RETURN path.edges[*]._key
+                        )
+                        FILTER inside != null
+                        RETURN {{ rec: rec, inside: inside }}
                 )
-                LET keys = UNIQUE(
-                    FOR root IN roots
-                        FOR v, e, p IN 0..@max_depth OUTBOUND root._id @@record_relations
+                LET tree = (
+                    FOR root IN checked[*].rec
+                        FOR v, e, p IN 0..{CONTAINMENT_MAX_DEPTH} OUTBOUND root._id @@record_relations
+                            PRUNE e != null AND e.relationshipType NOT IN @follow
                             FILTER p.edges[*].relationshipType ALL IN @follow
-                            FILTER IS_SAME_COLLECTION(@@records, v) AND {aql_live_record("v")}
-                            RETURN v._key
+                            RETURN {{
+                                key: v._key,
+                                edge: e._key,
+                                live: IS_SAME_COLLECTION(@@records, v) AND {aql_live_record("v")}
+                            }}
                 )
-                RETURN {{ root_keys: roots[*]._key, keys: keys }}
+                RETURN {{
+                    root_keys: checked[*].rec._key,
+                    tree_keys: UNIQUE(tree[*].key),
+                    keys: UNIQUE(tree[* FILTER CURRENT.live].key),
+                    guard_edges: @folder_id == null ? [] : UNIQUE(APPEND(
+                        FLATTEN(checked[*].inside), tree[* FILTER CURRENT.edge != null].edge
+                    ))
+                }}
                 """,
                 bind_vars={
                     "record_ids": record_ids,
                     "connector_id": connector_id,
-                    "follow": list(follow),
+                    "follow": follow_types,
                     "folder_id": within_folder_id,
-                    "max_depth": SOFT_DELETE_MAX_DEPTH if follow else 0,
                     "@records": records,
-                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "@record_relations": record_relations,
                 },
                 transaction=txn_id,
             )
-            found = inventory[0] if inventory else {"root_keys": [], "keys": []}
+            found = inventory[0] if inventory else {"root_keys": [], "tree_keys": [], "keys": [], "guard_edges": []}
+            # The same guards as delete_records_recursive: a record moved out cannot
+            # leave while its edges are locked, and one moved in aborts the delete.
+            scoped = bool(within_folder_id and found["root_keys"])
+            if scoped and found["guard_edges"]:
+                await self._lock_containment_edges(found["guard_edges"], txn_id)
+            if scoped:
+                await self._abort_if_records_moved_in(found["root_keys"], found["tree_keys"], follow_types)
             marked: list[dict] = []
             now = get_epoch_timestamp_in_ms()
             for start in range(0, len(found["keys"]), SOFT_DELETE_CHUNK):
@@ -13524,6 +13546,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     },
                     transaction=txn_id,
                 ) or []
+            if scoped:
+                await self._abort_if_records_moved_in(found["root_keys"], found["tree_keys"], follow_types)
             if transaction is None:
                 await self.commit_transaction(txn_id)
         except Exception as e:

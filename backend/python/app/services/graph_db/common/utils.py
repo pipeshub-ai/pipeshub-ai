@@ -196,10 +196,9 @@ def build_connector_stats_response(
     }
 
 
-# Soft delete marks a subtree in pages of this many keys, one UPDATE each, and
-# walks at most this deep, matching the hard delete's containment walk.
+# Trash writes go in pages of this many keys, one statement each: the ArangoDB
+# mark (inside one stream transaction) and restores.
 SOFT_DELETE_CHUNK = 1000
-SOFT_DELETE_MAX_DEPTH = 20
 
 # Cleared when a record leaves the trash; ``isDeleted`` is set to false instead.
 TRASH_STATE_FIELDS = (

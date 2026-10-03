@@ -2549,23 +2549,23 @@ class DataSourceEntitiesProcessor:
                 "successfully_deleted": 0,
                 "failed_count": 0,
             }
-        if await is_soft_delete_enabled(self.config_service):
-            return await self.on_records_soft_deleted(
-                record_ids,
-                connector_id,
-                delete_source=delete_source,
-                deleted_by_user_id=deleted_by_user_id,
-                follow=("PARENT_CHILD", "ATTACHMENT") if cascade_children else ("ATTACHMENT",),
-                within_folder_id=within_folder_id,
-            )
         try:
+            if await is_soft_delete_enabled(self.config_service):
+                return await self.on_records_soft_deleted(
+                    record_ids,
+                    connector_id,
+                    delete_source=delete_source,
+                    deleted_by_user_id=deleted_by_user_id,
+                    follow=("PARENT_CHILD", "ATTACHMENT") if cascade_children else ("ATTACHMENT",),
+                    within_folder_id=within_folder_id,
+                )
             async with self.data_store_provider.transaction() as tx_store:
                 result = await tx_store.delete_records_recursive(
                     record_ids, connector_id, cascade_children=cascade_children,
                     within_folder_id=within_folder_id,
                 )
         except FolderChangedDuringDelete:
-            # The transaction rolled back, so nothing was deleted.
+            # The transaction rolled back, so nothing was deleted or trashed.
             return {"success": False, "code": 409, "reason": FOLDER_CHANGED_DURING_DELETE_MESSAGE, "eventData": None}
         if (result or {}).get("successfully_deleted"):
             # Before publishing: the transaction has committed, so the records are
