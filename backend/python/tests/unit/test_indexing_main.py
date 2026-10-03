@@ -1264,6 +1264,36 @@ class TestIndexingHealthCheck:
         body = json.loads(result.body)
         assert body["resource_governor"] == {"ceilings": {"index": 5}}
 
+    async def test_stats_failures_are_not_echoed(self):
+        """Still healthy; the exceptions go to the log and the payload says only that stats are unavailable."""
+        import json
+        from app.indexing_main import health_check
+
+        governor_error = RuntimeError("SENTINEL /sys/fs/cgroup/memory.max")
+        dispatch_error = RuntimeError("SENTINEL redis://:hunter2@10.0.0.5:6379")
+        mock_governor = MagicMock()
+        mock_governor.stats.side_effect = governor_error
+        consumer = MagicMock()
+        consumer.dispatch_stats.side_effect = dispatch_error
+
+        with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890), patch(
+            "app.indexing_main.container"
+        ) as mock_container:
+            mock_container.kafka_consumers = [("record", consumer)]
+            result = await health_check(_make_health_request(governor=mock_governor))
+
+        assert result.status_code == 200
+        assert json.loads(result.body) == {
+            "status": "healthy",
+            "timestamp": 1234567890,
+            "resource_governor": {"error": "unavailable"},
+            "dispatch": {"record": {"error": "unavailable"}},
+        }
+        assert [c.args for c in mock_container.logger.return_value.warning.call_args_list] == [
+            ("Resource governor stats failed: %s", governor_error),
+            ("Dispatch stats failed for %s: %s", "record", dispatch_error),
+        ]
+
     async def test_health_check_general_exception(self):
         """Health check returns 500 when get_epoch_timestamp_in_ms raises on first call."""
         from app.indexing_main import health_check
@@ -1273,6 +1303,25 @@ class TestIndexingHealthCheck:
             result = await health_check(_make_health_request())
 
         assert result.status_code == 500
+
+    async def test_health_check_exception_is_not_echoed(self):
+        """The exception goes to the log; the unauthenticated caller gets fixed text."""
+        import json
+        from app.indexing_main import health_check
+
+        mock_ts = MagicMock(side_effect=[RuntimeError("SENTINEL timestamp error"), 9999999])
+        with patch("app.indexing_main.get_epoch_timestamp_in_ms", mock_ts), patch(
+            "app.indexing_main.container"
+        ) as mock_container:
+            result = await health_check(_make_health_request())
+
+        assert result.status_code == 500
+        assert json.loads(result.body) == {
+            "status": "unhealthy",
+            "error": "Health check failed",
+            "timestamp": 9999999,
+        }
+        mock_container.logger.return_value.exception.assert_called_once_with("Health check failed")
 
 
 # ---------------------------------------------------------------------------

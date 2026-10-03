@@ -390,6 +390,33 @@ class TestHealthCheck:
         assert result.status_code == 200
         assert json.loads(result.body)["resource_governor"] == {"ceilings": {"heavy_parse": 3}}
 
+    async def test_governor_stats_failure_is_not_echoed(self):
+        """Still healthy; the exception goes to the log and the payload says only that stats are unavailable."""
+        from app.docling_main import health_check, app as docling_main_app
+
+        error = RuntimeError("SENTINEL /sys/fs/cgroup/memory.max")
+        mock_governor = MagicMock()
+        mock_governor.stats.side_effect = error
+
+        with (
+            patch.object(docling_main_app.state, "docling_service", _make_docling_service(healthy=True), create=True),
+            patch.object(docling_main_app.state, "governor", mock_governor, create=True),
+            patch("app.docling_main.get_epoch_timestamp_in_ms", return_value=111),
+            patch("app.docling_main.container") as mock_container,
+        ):
+            result = await health_check()
+
+        assert result.status_code == 200
+        assert json.loads(result.body) == {
+            "status": "healthy",
+            "service": "docling",
+            "timestamp": 111,
+            "resource_governor": {"error": "unavailable"},
+        }
+        mock_container.logger.return_value.warning.assert_called_once_with(
+            "Resource governor stats failed: %s", error
+        )
+
     async def test_unhealthy_service(self):
         """DoclingService unhealthy -> 503."""
         from app.docling_main import health_check, app as docling_main_app
@@ -466,6 +493,34 @@ class TestHealthCheck:
             assert result.status_code == 500
         finally:
             docling_main_app.state = original_state
+
+    async def test_health_check_exception_is_not_echoed(self):
+        """The exception goes to the log; the unauthenticated caller gets fixed text."""
+        import json
+
+        from app.docling_main import health_check, app as docling_main_app
+
+        mock_svc = MagicMock()
+        mock_svc.health_check = AsyncMock(side_effect=RuntimeError("SENTINEL health boom"))
+
+        original_state = docling_main_app.state
+
+        class FakeState:
+            docling_service = mock_svc
+
+        docling_main_app.state = FakeState()
+
+        try:
+            with patch("app.docling_main.get_epoch_timestamp_in_ms", return_value=111), patch(
+                "app.docling_main.container"
+            ) as mock_container:
+                result = await health_check()
+        finally:
+            docling_main_app.state = original_state
+
+        assert result.status_code == 500
+        assert json.loads(result.body) == {"status": "fail", "error": "Health check failed", "timestamp": 111}
+        mock_container.logger.return_value.exception.assert_called_once_with("Health check failed")
 
 
 # ===========================================================================

@@ -732,12 +732,13 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
                 status_code=200,
                 content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()},
             )
-        except Exception as e:
+        except Exception:
+            request.app.container.logger().error("ArangoDB health check failed", exc_info=True)
             return JSONResponse(
                 status_code=503,
                 content={
                     "status": "unhealthy",
-                    "error": f"ArangoDB health check failed: {str(e)}",
+                    "error": "ArangoDB health check failed",
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
@@ -760,27 +761,34 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
                 content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()},
             )
         except AuthError as e:
+            request.app.container.logger().error("Neo4j auth failed: %s", e)
             return JSONResponse(
                 status_code=503,
                 content={
                     "status": "unhealthy",
-                    "error": f"Neo4j auth failed: {str(e)}",
+                    "error": "Neo4j auth failed",
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
         except ServiceUnavailable as e:
+            request.app.container.logger().error("Neo4j unavailable: %s", e)
             return JSONResponse(
                 status_code=503,
                 content={
                     "status": "unhealthy",
-                    "error": f"Neo4j unavailable: {str(e)}",
+                    "error": "Neo4j unavailable",
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
-        except Exception as e:
+        except Exception:
+            request.app.container.logger().error("Neo4j health check failed", exc_info=True)
             return JSONResponse(
                 status_code=503,
-                content={"status": "unhealthy", "error": str(e), "timestamp": get_epoch_timestamp_in_ms()},
+                content={
+                    "status": "unhealthy",
+                    "error": "Neo4j health check failed",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
             )
         finally:
             if driver:
@@ -840,16 +848,22 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
                 },
             )
         else:
+            request.app.container.logger().warning(
+                "Vector DB (%s) reported unhealthy: %s", vector_db_type, result.message
+            )
             return JSONResponse(
                 status_code=503,
                 content={
                     "status": "unhealthy",
                     "provider": vector_db_type,
-                    "error": result.message or f"{vector_db_type} health check failed",
+                    "error": f"{vector_db_type} health check failed",
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
-    except Exception as e:
+    except Exception:
+        request.app.container.logger().error(
+            "Vector DB (%s) health check failed", vector_db_type, exc_info=True
+        )
         # Clear cached provider so next call retries connection
         request.app.state._vector_db_health_provider = None
         return JSONResponse(
@@ -857,7 +871,7 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
             content={
                 "status": "unhealthy",
                 "provider": vector_db_type,
-                "error": f"Vector DB ({vector_db_type}) health check failed: {str(e)}",
+                "error": f"Vector DB ({vector_db_type}) health check failed",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )

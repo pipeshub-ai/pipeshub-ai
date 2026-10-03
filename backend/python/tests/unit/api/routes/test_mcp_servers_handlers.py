@@ -710,6 +710,31 @@ class TestDiscoveryHandlers:
                 await get_instance_tools(request, "inst-1")
         assert exc.value.status_code == 502
 
+    @pytest.mark.asyncio
+    async def test_get_instance_tools_connection_error_is_not_echoed(self) -> None:
+        from app.utils.user_messages import action_failed
+
+        request = _admin_request()
+        error = MCPConnectionError("SENTINEL connect to http://10.0.0.7:9000/mcp refused")
+        with (
+            patch("app.api.routes.mcp_servers._get_org_instance", new=AsyncMock(return_value=_api_token_instance())),
+            patch(
+                "app.api.routes.mcp_servers._resolve_effective_user_auth",
+                new=AsyncMock(return_value={"isAuthenticated": True, "credentials": {"apiToken": "t"}}),
+            ),
+            patch("app.api.routes.mcp_servers.discover_tools", new=AsyncMock(side_effect=error)),
+            patch("app.api.routes.mcp_servers.logger") as mock_logger,
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await get_instance_tools(request, "inst-1")
+        assert exc.value.status_code == 502
+        assert exc.value.detail == action_failed("load this MCP server's tools")
+        assert "SENTINEL" not in exc.value.detail
+        assert exc.value.__cause__ is error
+        log_call = mock_logger.warning.call_args
+        assert log_call.kwargs["exc_info"] is True
+        assert error in log_call.args
+
 
 # ---------------------------------------------------------------------------
 # Agent-key routes
