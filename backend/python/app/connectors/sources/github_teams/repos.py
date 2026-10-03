@@ -417,9 +417,24 @@ class ReposSync:
         pruned = [*stale.items(), *stale_trashed.items()]
         ordered_ids = [rec_id for _, rec_id in sorted(pruned, key=lambda item: item[0].count("/"), reverse=True)]
         try:
-            await c.data_entities_processor.on_records_deleted_cascade(ordered_ids, c.connector_id)
+            result = await c.data_entities_processor.on_records_deleted_cascade(
+                ordered_ids, c.connector_id, include_trashed_roots=True
+            )
         except Exception as e:
             self.logger.error("Failed to prune deleted code records in %s: %s", repo.full_name, e, exc_info=True)
+            return
+        # With the trash on, a record already in it stays there for the purge.
+        already_trashed = set(stale_trashed.values()) if (result or {}).get("softDeleted") else set()
+        failed = [
+            f.get("record_id") for f in (result or {}).get("failed_records") or []
+            if f.get("record_id") not in already_trashed
+        ]
+        if not (result or {}).get("success", False) or failed:
+            self.logger.error(
+                "Could not prune %s of %s deleted code record(s) in %s: %s",
+                len(failed) or len(ordered_ids), len(ordered_ids), repo.full_name,
+                failed[:20] or (result or {}).get("reason"),
+            )
 
     async def _list_code_records_by_path(
         self, external_group_id: str, visibility: RecordVisibility = RecordVisibility.LIVE

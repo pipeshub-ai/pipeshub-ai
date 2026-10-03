@@ -323,7 +323,7 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_records_recursive(
         self, record_ids: list[str], connector_id: str, cascade_children: bool = True,
-        within_folder_id: str | None = None,
+        within_folder_id: str | None = None, *, include_trashed_roots: bool = False,
     ) -> dict:
         """Delete records within the active transaction.
 
@@ -333,7 +333,7 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.delete_records_recursive(
             record_ids, connector_id, transaction=self.txn, cascade_children=cascade_children,
-            within_folder_id=within_folder_id,
+            within_folder_id=within_folder_id, include_trashed_roots=include_trashed_roots,
         )
 
     async def soft_delete_records(

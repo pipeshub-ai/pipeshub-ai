@@ -4180,12 +4180,17 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         cascade_children: bool = True,
         within_folder_id: str | None = None,
+        *,
+        include_trashed_roots: bool = False,
     ) -> dict:
         """Delete records and their owned descendants, scoped by connector_id.
 
         With *within_folder_id*, a root is deleted only if it sits under that
         folder through PARENT_CHILD / ATTACHMENT edges, checked in the same query
         as the delete; any other root is reported as failed and kept.
+
+        A root in the trash is refused unless *include_trashed_roots*, which is
+        for removing what the source no longer has.
 
         When *cascade_children* is True (default), traverses both PARENT_CHILD and
         ATTACHMENT edges — deleting an entire containment subtree (folders, nested
