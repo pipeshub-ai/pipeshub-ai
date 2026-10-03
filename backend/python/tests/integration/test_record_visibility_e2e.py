@@ -447,6 +447,7 @@ EXERCISED_HERE: dict[str, str] = {
     "get_record_by_weburl": "test_weburl_lookup",
     "get_entity_candidate_records": "test_entity_candidate_records",
     "get_records_pending_duplicate_reconcile": "test_duplicate_reconcile_sweep",
+    "get_permitted_entity_records": "test_permitted_entity_records",
     "get_records_by_virtual_record_id": "test_vector_delete_authority",
     "get_virtual_record_ids_shared_outside_connector": "test_content_shared_outside_a_deleted_connector",
     "get_knowledge_hub_children": "test_knowledge_hub_browse",
@@ -545,6 +546,18 @@ async def test_entity_candidate_records(world: _World) -> None:
     got = await world.graph.get_entity_candidate_records(refs, world.org_id)
     assert [row["_key"] for row in got[("record", world.ids["live"])]] == [world.ids["live"]]
     assert got[("record", world.ids["trashed"])] == []
+
+
+async def test_permitted_entity_records(world: _World) -> None:
+    refs = [
+        {"id": world.ids[name], "type": "record", "connectorIds": [world.connector_id]}
+        for name in ("live", "trashed")
+    ]
+    got = await world.graph.get_permitted_entity_records(
+        refs, world.org_id, world.user_key, app_level_connector_ids=[world.connector_id],
+    )
+    assert [row["_key"] for row in got[("record", world.ids["live"])]] == [world.ids["live"]]
+    assert list(got[("record", world.ids["trashed"])]) == []
 
 
 async def test_duplicate_reconcile_sweep(world: _World) -> None:

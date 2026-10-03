@@ -60,6 +60,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_record_by_weburl": (Rule.LIVE, "resolves links and agent references"),
     "get_linked_records": (Rule.LIVE, "shown to users"),
     "get_entity_candidate_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
+    "get_permitted_entity_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
     "get_records_pending_duplicate_reconcile": (
         Rule.LIVE, "the reconcile sweep copies taxonomy onto duplicates; a trashed record gets none",
     ),
