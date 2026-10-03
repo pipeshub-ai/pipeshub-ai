@@ -1,0 +1,53 @@
+# MinIO backing service for the load harness.
+#
+# Joins the stack's own network so the connector can reach it at
+# http://lt-minio:9000, while the seeder reaches it from the host on :9100. The
+# host port is deliberately not 9000 to avoid colliding with a MinIO the
+# developer may already be running.
+#
+#   docker compose -f loadtest/compose/minio.yml up -d
+#
+# Sizing note: no memory limit is set on purpose. MinIO is not the system under
+# test, and starving it would show up as connector-service slowness.
+
+services:
+  minio:
+    # minio/minio is no longer published on Docker Hub. This is Bitnami's build
+    # of the same 2025-04-22 release; it keeps its data under /bitnami/minio/data
+    # and serves the console on 9001 without a custom command.
+    image: bitnamilegacy/minio:2025.4.22
+    container_name: lt-minio
+    environment:
+      MINIO_ROOT_USER: ${LT_MINIO_ACCESS_KEY:-loadtest}
+      MINIO_ROOT_PASSWORD: ${LT_MINIO_SECRET_KEY:-loadtest123}
+      # Deterministic corpora are re-uploaded per run; retaining versions would
+      # let one run's deletions inflate the next run's listing cost.
+      MINIO_BROWSER: "off"
+      # Bitnami keeps the first run's root credentials in the volume; without this
+      # a changed LT_MINIO_* pair is shown in the env but never accepted.
+      MINIO_FORCE_NEW_KEYS: "yes"
+    ports:
+      # Loopback only: the default credentials above are public.
+      - "127.0.0.1:${LT_MINIO_HOST_PORT:-9100}:9000"
+      - "127.0.0.1:${LT_MINIO_CONSOLE_PORT:-9101}:9001"
+    volumes:
+      - lt_minio_data:/bitnami/minio/data
+    networks:
+      - pipeshub
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  lt_minio_data:
+    driver: local
+
+networks:
+  pipeshub:
+    external: true
+    # Compose names a project's network <project>_<key>: here "pipeshub" in
+    # project "pipeshub-ai".
+    name: pipeshub-ai_pipeshub

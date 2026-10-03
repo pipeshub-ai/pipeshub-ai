@@ -155,6 +155,44 @@ class GraphTransactionStore(TransactionStore):
         self.graph_provider = graph_provider
         self.txn = txn  # Transaction ID (string) for HTTP provider
         self.logger = graph_provider.logger
+        # Lookups whose answer cannot change for the life of the transaction.
+        # One batch is 100 records from a single connector, so the record group
+        # and the permission users are a handful of objects fetched a hundred
+        # times each: measured at 12 graph calls per record, ~5 of them these
+        # repeats. The transaction is exactly how long the answers are stable,
+        # which makes it the right scope.
+        self._memo: dict[tuple, object] = {}
+
+    def _memo_put(self, key: tuple, value: object) -> None:
+        """Cache positives only. A miss usually means "not created yet", and the
+        caller creates it moments later; caching that would hide it."""
+        if value is not None:
+            self._memo[key] = value
+
+    def _memo_drop(self, key: tuple) -> None:
+        """Deleting inside the transaction must not leave a positive behind, or
+        the next lookup reports something that is gone."""
+        self._memo.pop(key, None)
+
+    def _memo_forget_record(self, record_id: str) -> None:
+        """Drop every cached lookup that resolves to this vertex.
+
+        A move re-upserts the vertex under a new external id, and a delete by key
+        removes it without naming its path; either way its old path must stop
+        answering with it. on_records_moved retires whatever holds a destination
+        path, so a stale hit there deletes a record moved earlier in the batch.
+        """
+        stale = [
+            key for key, value in self._memo.items()
+            if key[0] == "record" and getattr(value, "id", None) == record_id
+        ]
+        for key in stale:
+            del self._memo[key]
+
+    def _memo_forget_all_records(self) -> None:
+        """For deletes whose victims are not known here by id (whole subtrees)."""
+        for key in [key for key in self._memo if key[0] == "record"]:
+            del self._memo[key]
 
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         return await self.graph_provider.batch_upsert_nodes(nodes, collection, transaction=self.txn)
@@ -174,7 +212,15 @@ class GraphTransactionStore(TransactionStore):
         return AppMetadata.from_db_document(doc) if doc else None
 
     async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
-        return await self.graph_provider.get_record_by_external_id(connector_id, external_id, transaction=self.txn)
+        # Every record in a folder asks for the same parent. The first one
+        # creates it, and without this the other ninety-nine each pay a round
+        # trip to rediscover it.
+        key = ("record", connector_id, external_id)
+        if key in self._memo:
+            return self._memo[key]  # type: ignore[return-value]
+        value = await self.graph_provider.get_record_by_external_id(connector_id, external_id, transaction=self.txn)
+        self._memo_put(key, value)
+        return value
 
     async def get_record_by_external_revision_id(self, connector_id: str, external_revision_id: str) -> Optional[Record]:
         return await self.graph_provider.get_record_by_external_revision_id(connector_id, external_revision_id, transaction=self.txn)
@@ -210,7 +256,12 @@ class GraphTransactionStore(TransactionStore):
         )
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
-        return await self.graph_provider.get_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
+        key = ("record_group", connector_id, external_id)
+        if key in self._memo:
+            return self._memo[key]  # type: ignore[return-value]
+        value = await self.graph_provider.get_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
+        self._memo_put(key, value)
+        return value
 
     async def find_slack_burst_record_by_ts(
         self,
@@ -238,7 +289,15 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.create_record_groups_relation(child_id, parent_id, transaction=self.txn)
 
     async def get_user_by_email(self, email: str) -> Optional[User]:
-        return await self.graph_provider.get_user_by_email(email, transaction=self.txn)
+        # Every record in a batch carries the same owner, so this is the same
+        # lookup a hundred times over. Users are not created inside a record
+        # transaction, so the answer cannot go stale within it.
+        key = ("user_email", email)
+        if key in self._memo:
+            return self._memo[key]  # type: ignore[return-value]
+        value = await self.graph_provider.get_user_by_email(email, transaction=self.txn)
+        self._memo_put(key, value)
+        return value
 
     async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> Optional[User]:
         return await self.graph_provider.get_user_by_source_id(source_user_id, connector_id, transaction=self.txn)
@@ -257,22 +316,28 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.get_user_by_user_id(user_id)
 
     async def delete_record_by_key(self, key: str) -> None:
+        self._memo_forget_record(key)
         # Delete the record node from the records collection
         return await self.graph_provider.delete_nodes([key], CollectionNames.RECORDS.value, transaction=self.txn)
 
     async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> dict | None:
+        self._memo_drop(("record", connector_id, external_id))
         return await self.graph_provider.delete_record_by_external_id(connector_id, external_id, user_id, transaction=self.txn)
 
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
         return await self.graph_provider.remove_user_access_to_record(connector_id, external_id, user_id, transaction=self.txn)
 
     async def delete_record_group_by_external_id(self, connector_id: str, external_id: str) -> None:
+        self._memo_drop(("record_group", connector_id, external_id))
         return await self.graph_provider.delete_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
 
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
 
     async def delete_nodes(self, keys: list[str], collection: str) -> None:
+        if collection == CollectionNames.RECORDS.value:
+            for key in keys:
+                self._memo_forget_record(key)
         return await self.graph_provider.delete_nodes(keys, collection, transaction=self.txn)
 
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> None:
@@ -316,6 +381,7 @@ class GraphTransactionStore(TransactionStore):
         ATTACHMENT subtree is deleted.  When False, only ATTACHMENT edges are
         traversed — child records linked via PARENT_CHILD survive.
         """
+        self._memo_forget_all_records()
         return await self.graph_provider.delete_records_recursive(
             record_ids, connector_id, transaction=self.txn, cascade_children=cascade_children,
             within_folder_id=within_folder_id,
@@ -323,6 +389,7 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_single_record(self, record_id: str) -> dict:
         """Single-record delete within the active transaction — no containment walk."""
+        self._memo_forget_record(record_id)
         return await self.graph_provider.delete_single_record(record_id, transaction=self.txn)
 
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str, *, raise_on_error: bool = False) -> Optional[AppUserGroup]:
@@ -554,7 +621,20 @@ class GraphTransactionStore(TransactionStore):
 
         Delegates to graph_provider for the full record upsert logic.
         """
-        return await self.graph_provider.batch_upsert_records(records, transaction=self.txn)
+        result = await self.graph_provider.batch_upsert_records(records, transaction=self.txn)
+        # Forget, never cache, what was just written: the upsert merges into the
+        # stored vertex, so the caller's object is not what a read returns (it
+        # lacks virtualRecordId, which the upsert never writes), and some record
+        # types are skipped by the provider altogether. The next lookup rereads.
+        for record in records:
+            record_id = getattr(record, "id", None)
+            if record_id:
+                self._memo_forget_record(record_id)
+            external_id = getattr(record, "external_record_id", None)
+            connector_id = getattr(record, "connector_id", None)
+            if external_id and connector_id:
+                self._memo_drop(("record", connector_id, external_id))
+        return result
 
     async def batch_upsert_record_groups(self, record_groups: list[RecordGroup]) -> None:
         """
@@ -562,7 +642,13 @@ class GraphTransactionStore(TransactionStore):
 
         Delegates to graph_provider for implementation.
         """
-        return await self.graph_provider.batch_upsert_record_groups(record_groups, transaction=self.txn)
+        result = await self.graph_provider.batch_upsert_record_groups(record_groups, transaction=self.txn)
+        for group in record_groups:
+            external_id = getattr(group, "external_group_id", None)
+            connector_id = getattr(group, "connector_id", None)
+            if external_id and connector_id:
+                self._memo_drop(("record_group", connector_id, external_id))
+        return result
 
     async def batch_upsert_record_permissions(self, record_id: str, permissions: list[Permission]) -> None:
         return await self.graph_provider.batch_upsert_record_permissions(record_id, permissions, transaction=self.txn)
@@ -872,6 +958,7 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_records_and_relations(self, record_key: str, hard_delete: bool = False) -> None:
         """Delete a record and all its relations"""
+        self._memo_forget_record(record_key)
         return await self.graph_provider.delete_records_and_relations(record_key, hard_delete=hard_delete, transaction=self.txn)
 
     async def process_file_permissions(self, org_id: str, file_key: str, permissions: list[dict]) -> None:

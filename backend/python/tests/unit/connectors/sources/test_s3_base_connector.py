@@ -769,6 +769,55 @@ class TestEnsureParentFoldersExist:
         await s3_connector._ensure_parent_folders_exist("mybucket", ["a", "a/b", "a/b/c"])
         assert s3_connector.data_entities_processor.on_new_records.await_count == 3
 
+    @pytest.mark.asyncio
+    async def test_repeat_segments_are_upserted_once_per_run(self, s3_connector):
+        """Every object under a/b/c walks the same segments. Re-upserting them
+        per object is thousands of redundant round-trips on a real bucket."""
+        s3_connector._create_s3_permissions = AsyncMock(return_value=[])
+        for _ in range(5):
+            await s3_connector._ensure_parent_folders_exist(
+                "mybucket", ["a", "a/b", "a/b/c"]
+            )
+        assert s3_connector.data_entities_processor.on_new_records.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_distinct_segments_still_created(self, s3_connector):
+        s3_connector._create_s3_permissions = AsyncMock(return_value=[])
+        await s3_connector._ensure_parent_folders_exist("mybucket", ["a", "a/b"])
+        await s3_connector._ensure_parent_folders_exist("mybucket", ["a", "a/c"])
+        # "a" is shared and skipped the second time; "a/b" and "a/c" are not.
+        assert s3_connector.data_entities_processor.on_new_records.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_same_segment_in_another_bucket_is_not_skipped(self, s3_connector):
+        s3_connector._create_s3_permissions = AsyncMock(return_value=[])
+        await s3_connector._ensure_parent_folders_exist("bucket-a", ["shared"])
+        await s3_connector._ensure_parent_folders_exist("bucket-b", ["shared"])
+        assert s3_connector.data_entities_processor.on_new_records.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_failed_upsert_is_retried_by_the_next_object(self, s3_connector):
+        """The memo is set only after a successful upsert, so a transient
+        failure must not permanently skip that folder for the rest of the run."""
+        s3_connector._create_s3_permissions = AsyncMock(return_value=[])
+        s3_connector.data_entities_processor.on_new_records = AsyncMock(
+            side_effect=[RuntimeError("boom"), None]
+        )
+        with pytest.raises(RuntimeError):
+            await s3_connector._ensure_parent_folders_exist("mybucket", ["a"])
+        await s3_connector._ensure_parent_folders_exist("mybucket", ["a"])
+        assert s3_connector.data_entities_processor.on_new_records.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_memo_is_cleared_between_runs(self, s3_connector):
+        """A folder deleted between syncs must be re-created, so the memo is
+        per-run rather than for the connector's lifetime."""
+        s3_connector._create_s3_permissions = AsyncMock(return_value=[])
+        await s3_connector._ensure_parent_folders_exist("mybucket", ["a"])
+        s3_connector._ensured_folders.clear()  # what run_sync does on entry
+        await s3_connector._ensure_parent_folders_exist("mybucket", ["a"])
+        assert s3_connector.data_entities_processor.on_new_records.await_count == 2
+
 
 # ===========================================================================
 # _sync_bucket
@@ -1139,6 +1188,18 @@ class TestRunIncrementalSync:
         s3_connector._sync_bucket = AsyncMock()
         await s3_connector.run_incremental_sync()
         s3_connector._sync_bucket.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_folder_memo_is_cleared_per_run(self, mock_filters, s3_connector):
+        mock_filters.return_value = (FilterCollection(), FilterCollection())
+        s3_connector.data_source = MagicMock()
+        s3_connector.bucket_name = "mybucket"
+        s3_connector._get_bucket_region = AsyncMock(return_value="us-east-1")
+        s3_connector._sync_bucket = AsyncMock()
+        s3_connector._ensured_folders.add("mybucket/a")
+        await s3_connector.run_incremental_sync()
+        assert not s3_connector._ensured_folders
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)

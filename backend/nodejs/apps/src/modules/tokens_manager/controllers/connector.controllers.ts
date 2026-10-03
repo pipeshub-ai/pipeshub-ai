@@ -1859,13 +1859,27 @@ const validateActiveConnector = async (
 const LOCK_MESSAGES: Record<string, string> = {
   FULL_SYNCING: 'A full sync is in progress. Please wait and try again.',
   SYNCING: 'A sync is already in progress. Please wait and try again.',
+  QUEUED: 'A sync is already queued for this connector and will start shortly.',
+  DELETING: 'This connector is being deleted.',
 };
 
 const assertConnectorNotLocked = (
   instance: ConnectorInstanceSummary | null,
 ): void => {
-  if (!instance?.isLocked) return;
-  const status = instance.status ?? '';
+  // Fast UX feedback only — Python's admission check is the hard guarantee that
+  // a new sync never starts while one is running. isLocked alone is not enough:
+  // it is set only during the brief full-sync prep window, so a duplicate resync
+  // during a normal sync used to sail past.
+  const status = (instance?.status ?? '').toUpperCase();
+  if (
+    !instance?.isLocked &&
+    status !== 'SYNCING' &&
+    status !== 'FULL_SYNCING' &&
+    status !== 'QUEUED' &&
+    status !== 'DELETING'
+  ) {
+    return;
+  }
   const message =
     LOCK_MESSAGES[status] ??
     'Another operation is in progress. Please wait and try again.';
@@ -1873,7 +1887,10 @@ const assertConnectorNotLocked = (
 };
 
 const normalizeAppName = (value: string): string =>
-  value.replace(' ', '').toLowerCase();
+  // Global, matching Python's str.replace. A string pattern replaces only the
+  // first space; downstream normalization masked that for routing, but it left
+  // an embedded space in the value carried on the event payload.
+  value.replace(/ /g, '').toLowerCase();
 
 const proxyVectorStoreJob =
   (appConfig: AppConfig, operation: 'cleanup' | 'reindex') =>
@@ -2018,5 +2035,46 @@ export const resyncConnectorRecords =
       });
       next(handleBackendError(error, 'resync connector'));
       return; // Added return statement
+    }
+  };
+  
+export const stopConnectorSync =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { connectorId } = req.params as { connectorId: string };
+      const { userId, orgId } = req.user || {};
+
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+
+      const headers = buildProxyHeaders(req);
+
+      // Deliberately not guarded by assertConnectorNotLocked — stop has to work
+      // precisely when the connector *is* busy, and also against a lock left
+      // stuck by a crash.
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/sync/stop`,
+        HttpMethod.POST,
+        headers,
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'stopping connector sync',
+        'Failed to stop sync',
+      );
+      logger.info('Connector sync stop requested', { connectorId });
+    } catch (error: any) {
+      logger.error('Error stopping connector sync', {
+        connectorId: req.params.connectorId,
+        error,
+      });
+      next(handleBackendError(error, 'stop connector sync'));
+      return;
     }
   };

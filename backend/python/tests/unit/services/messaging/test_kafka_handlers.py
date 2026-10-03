@@ -481,7 +481,7 @@ class TestEntityEventService:
         })
         svc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
 
-        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as mock_stm:
+        with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
 
             payload = {

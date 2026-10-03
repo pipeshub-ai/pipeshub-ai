@@ -127,6 +127,153 @@ class TestGraphTransactionStore:
         return GraphTransactionStore(mock_graph_provider, "txn-123")
 
     @pytest.mark.asyncio
+    async def test_repeated_group_lookup_hits_the_database_once(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        """One batch is 100 records from one connector sharing one group."""
+        mock_graph_provider.get_record_group_by_external_id = AsyncMock(
+            return_value=MagicMock()
+        )
+
+        for _ in range(5):
+            await tx_store.get_record_group_by_external_id("conn-1", "bucket-1")
+
+        assert mock_graph_provider.get_record_group_by_external_id.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_miss_is_not_cached(self, tx_store, mock_graph_provider) -> None:
+        """The group is created moments later; caching the miss would hide it."""
+        mock_graph_provider.get_record_group_by_external_id = AsyncMock(return_value=None)
+
+        await tx_store.get_record_group_by_external_id("conn-1", "bucket-1")
+        await tx_store.get_record_group_by_external_id("conn-1", "bucket-1")
+
+        assert mock_graph_provider.get_record_group_by_external_id.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_deleting_a_record_drops_it_from_the_cache(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        """A stale positive would report something that is gone."""
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=MagicMock())
+        mock_graph_provider.delete_record_by_external_id = AsyncMock()
+
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+        assert mock_graph_provider.get_record_by_external_id.await_count == 1
+
+        await tx_store.delete_record_by_external_id("conn-1", "ext-1", "user-1")
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        assert mock_graph_provider.get_record_by_external_id.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_moved_record_stops_answering_for_its_old_path(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        """A move re-upserts the vertex under a new path. The old path must go
+        back to the database, which no longer finds it there."""
+        vertex = MagicMock(id="rec-x", connector_id="conn-1", external_record_id="log.1")
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=vertex)
+        mock_graph_provider.batch_upsert_records = AsyncMock()
+        await tx_store.get_record_by_external_id("conn-1", "log.1")
+
+        moved = MagicMock(id="rec-x", connector_id="conn-1", external_record_id="log.2")
+        await tx_store.batch_upsert_records([moved])
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=None)
+
+        assert await tx_store.get_record_by_external_id("conn-1", "log.1") is None
+
+    @pytest.mark.asyncio
+    async def test_an_upserted_record_is_reread_not_served_from_the_callers_object(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        """The upsert merges into the stored vertex and never writes
+        virtualRecordId, so the caller's object is not what the store holds.
+
+        Serving it made a move onto an occupied path retire the occupant without
+        its VRID -- no deleteRecord event, so its vectors were orphaned.
+        """
+        mock_graph_provider.batch_upsert_records = AsyncMock()
+        written = MagicMock(id="rec-x", connector_id="conn-1", external_record_id="z",
+                            virtual_record_id=None)
+        await tx_store.batch_upsert_records([written])
+
+        stored = MagicMock(id="rec-x", connector_id="conn-1", external_record_id="z",
+                           virtual_record_id="vr-x")
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=stored)
+
+        assert await tx_store.get_record_by_external_id("conn-1", "z") is stored
+        assert await tx_store.get_record_by_external_id("conn-1", "z") is stored
+        assert mock_graph_provider.get_record_by_external_id.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_deleting_by_key_drops_it_from_the_cache(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        """Delete by key names no path, so the cache is cleared by vertex id."""
+        vertex = MagicMock(id="rec-dup")
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=vertex)
+        mock_graph_provider.delete_nodes = AsyncMock()
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        await tx_store.delete_record_by_key("rec-dup")
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        assert mock_graph_provider.get_record_by_external_id.await_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("delete", ["delete_nodes", "delete_single_record"])
+    async def test_every_record_delete_drops_it_from_the_cache(
+        self, tx_store, mock_graph_provider, delete
+    ) -> None:
+        vertex = MagicMock(id="rec-1")
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=vertex)
+        mock_graph_provider.delete_nodes = AsyncMock()
+        mock_graph_provider.delete_single_record = AsyncMock(return_value={})
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        if delete == "delete_nodes":
+            await tx_store.delete_nodes(["rec-1"], "records")
+        else:
+            await tx_store.delete_single_record("rec-1")
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        assert mock_graph_provider.get_record_by_external_id.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_deleting_other_nodes_keeps_cached_records(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-1"))
+        mock_graph_provider.delete_nodes = AsyncMock()
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        await tx_store.delete_nodes(["rec-1"], "recordGroups")
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        assert mock_graph_provider.get_record_by_external_id.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_subtree_delete_drops_every_cached_record(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        """The victims of a recursive delete are not known here by id."""
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="child"))
+        mock_graph_provider.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())
+        mock_graph_provider.delete_records_recursive = AsyncMock(return_value={})
+        await tx_store.get_record_by_external_id("conn-1", "child-ext")
+        await tx_store.get_record_group_by_external_id("conn-1", "group-ext")
+
+        await tx_store.delete_records_recursive(["parent"], "conn-1")
+        await tx_store.get_record_by_external_id("conn-1", "child-ext")
+        await tx_store.get_record_group_by_external_id("conn-1", "group-ext")
+
+        assert mock_graph_provider.get_record_by_external_id.await_count == 2
+        # Groups are not records and are not part of the subtree.
+        assert mock_graph_provider.get_record_group_by_external_id.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_commit(self, tx_store, mock_graph_provider) -> None:
         await tx_store.commit()
         mock_graph_provider.commit_transaction.assert_awaited_once_with("txn-123")

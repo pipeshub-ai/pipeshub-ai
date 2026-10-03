@@ -491,6 +491,19 @@ class TestInitializeConnector:
 # ===========================================================================
 
 
+
+def _admitting_coordinator(*, spawn_result="task"):
+    """A coordinator that grants admission and spawns, for the factory tests."""
+    from app.connectors.core.sync.sync_coordinator import Admission, SyncLease
+
+    c = MagicMock()
+    lease = SyncLease("c", "tok", 1)
+    c.begin = AsyncMock(return_value=(Admission.GRANTED, lease))
+    c.spawn = AsyncMock(side_effect=lambda _l, coro: (coro.close(), spawn_result)[1])
+    c.end = AsyncMock()
+    return c
+
+
 class TestCreateAndStartSync:
     """Tests for ConnectorFactory.create_and_start_sync (lines 230-242)."""
 
@@ -514,8 +527,8 @@ class TestCreateAndStartSync:
         assert result is None
 
     @pytest.mark.asyncio
-    @patch("app.connectors.core.factory.connector_factory.sync_task_manager")
-    async def test_start_sync_success(self, mock_stm):
+    @patch("app.connectors.core.factory.connector_factory.get_coordinator")
+    async def test_start_sync_success(self, mock_gc):
         """Connector is created, initialized, and sync started."""
         logger = MagicMock()
         data_store = MagicMock()
@@ -530,7 +543,8 @@ class TestCreateAndStartSync:
         mock_cls.create_connector = AsyncMock(return_value=mock_connector)
         ConnectorFactory.register_connector("test_sync_start", mock_cls)
 
-        mock_stm.start_sync = AsyncMock()
+        coord = _admitting_coordinator()
+        mock_gc.return_value = coord
 
         mock_processor = MagicMock()
         mock_processor.initialize = AsyncMock()
@@ -547,11 +561,11 @@ class TestCreateAndStartSync:
             data_entities_processor_cls=mock_processor_cls,
         )
         assert result is mock_connector
-        mock_stm.start_sync.assert_awaited_once()
+        coord.spawn.assert_awaited_once()
 
     @pytest.mark.asyncio
-    @patch("app.connectors.core.factory.connector_factory.sync_task_manager")
-    async def test_manual_strategy_skips_sync(self, mock_stm):
+    @patch("app.connectors.core.factory.connector_factory.get_coordinator")
+    async def test_manual_strategy_skips_sync(self, mock_gc):
         """Manual sync strategy skips start_sync call."""
         logger = MagicMock()
         data_store = MagicMock()
@@ -565,7 +579,8 @@ class TestCreateAndStartSync:
         mock_cls.create_connector = AsyncMock(return_value=mock_connector)
         ConnectorFactory.register_connector("test_manual_sync", mock_cls)
 
-        mock_stm.start_sync = AsyncMock()
+        coord = _admitting_coordinator()
+        mock_gc.return_value = coord
 
         mock_processor = MagicMock()
         mock_processor.initialize = AsyncMock()
@@ -582,11 +597,11 @@ class TestCreateAndStartSync:
             data_entities_processor_cls=mock_processor_cls,
         )
         assert result is mock_connector
-        mock_stm.start_sync.assert_not_awaited()
+        coord.begin.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("app.connectors.core.factory.connector_factory.sync_task_manager")
-    async def test_sync_exception_returns_none(self, mock_stm):
+    @patch("app.connectors.core.factory.connector_factory.get_coordinator")
+    async def test_sync_exception_returns_none(self, mock_gc):
         """If start_sync raises, returns None."""
         logger = MagicMock()
         data_store = MagicMock()
@@ -601,7 +616,9 @@ class TestCreateAndStartSync:
         mock_cls.create_connector = AsyncMock(return_value=mock_connector)
         ConnectorFactory.register_connector("test_sync_fail", mock_cls)
 
-        mock_stm.start_sync = AsyncMock(side_effect=RuntimeError("sync error"))
+        coord = _admitting_coordinator()
+        coord.spawn = AsyncMock(side_effect=RuntimeError("sync error"))
+        mock_gc.return_value = coord
 
         mock_processor = MagicMock()
         mock_processor.initialize = AsyncMock()
@@ -637,8 +654,9 @@ class TestCreateAndStartSync:
         ConnectorFactory.register_connector("test_config_none", mock_cls)
 
         mock_processor_cls = MagicMock(return_value=MagicMock(initialize=AsyncMock()))
-        with patch("app.connectors.core.factory.connector_factory.sync_task_manager") as mock_stm:
-            mock_stm.start_sync = AsyncMock()
+        with patch("app.connectors.core.factory.connector_factory.get_coordinator") as mock_gc:
+            coord = _admitting_coordinator()
+            mock_gc.return_value = coord
             result = await ConnectorFactory.create_and_start_sync(
                 name="test_config_none",
                 logger=logger,

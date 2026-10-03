@@ -213,6 +213,37 @@ class TestResumeSyncServices:
         assert mock_container.connectors_map["app1"] is mock_connector
         assert mock_container.connectors_map["app2"] is mock_connector
 
+    async def test_connector_owed_a_full_sync_is_published_not_started(self) -> None:
+        """Started here it would sync incrementally; only the event path runs
+        the full sync its pendingFullSync flag asks for."""
+        from app.connectors_main import resume_sync_services
+
+        mock_container = _make_container()
+        mock_container.connectors_map = {}
+        gp = _make_graph_provider()
+        gp.get_all_orgs = AsyncMock(return_value=[{"_key": "org1"}])
+        gp.get_org_apps = AsyncMock(return_value=[
+            {"_key": "owed", "type": "Slack", "pendingFullSync": True},
+            {"_key": "plain", "type": "Slack"},
+        ])
+        gp.get_users = AsyncMock(return_value=[{"_key": "user1"}])
+        ds = _make_data_store(gp)
+
+        with (
+            patch("app.connectors_main.sync_executor_enabled", return_value=False),
+            patch(
+                "app.connectors_main.ConnectorFactory.create_and_start_sync",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as create,
+            patch("app.connectors_main._publish_startup_resync", new_callable=AsyncMock) as publish,
+        ):
+            assert await resume_sync_services(mock_container, ds) is True
+
+        started = {c.kwargs["connector_id"]: c.kwargs["start_sync"] for c in create.await_args_list}
+        assert started == {"owed": False, "plain": True}
+        assert [c.kwargs["connector_id"] for c in publish.await_args_list] == ["owed"]
+
     async def test_connector_none_not_stored(self):
         """If ConnectorFactory returns None, it should not be stored."""
         from app.connectors_main import resume_sync_services
@@ -612,7 +643,7 @@ class TestShutdownContainerResources:
         mock_container.messaging_producer = None
 
         with (
-            patch("app.connectors_main.sync_task_manager.cancel_all", new_callable=AsyncMock),
+            patch("app.connectors_main.get_coordinator", return_value=MagicMock(cancel_all=AsyncMock())),
             patch("app.connectors_main.stop_kafka_consumers", new_callable=AsyncMock) as mock_stop_kafka,
             patch("app.connectors_main.stop_messaging_producer", new_callable=AsyncMock) as mock_stop_producer,
             patch("app.connectors_main.startup_service.shutdown", new_callable=AsyncMock) as mock_startup_shutdown,
@@ -632,7 +663,7 @@ class TestShutdownContainerResources:
         mock_container.messaging_producer = None
 
         with (
-            patch("app.connectors_main.sync_task_manager.cancel_all", new_callable=AsyncMock, side_effect=RuntimeError("cancel fail")),
+            patch("app.connectors_main.get_coordinator", return_value=MagicMock(cancel_all=AsyncMock(side_effect=RuntimeError("cancel fail")))),
             patch("app.connectors_main.stop_kafka_consumers", new_callable=AsyncMock) as mock_stop_kafka,
             patch("app.connectors_main.stop_messaging_producer", new_callable=AsyncMock),
             patch("app.connectors_main.startup_service.shutdown", new_callable=AsyncMock),
@@ -650,7 +681,7 @@ class TestShutdownContainerResources:
         mock_container.messaging_producer = None
 
         with (
-            patch("app.connectors_main.sync_task_manager.cancel_all", new_callable=AsyncMock),
+            patch("app.connectors_main.get_coordinator", return_value=MagicMock(cancel_all=AsyncMock())),
             patch("app.connectors_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.connectors_main.stop_messaging_producer", new_callable=AsyncMock),
             patch("app.connectors_main.startup_service.shutdown", new_callable=AsyncMock, side_effect=RuntimeError("shutdown fail")),
@@ -670,7 +701,7 @@ class TestShutdownContainerResources:
         mock_container.config_service.return_value.close = AsyncMock(side_effect=RuntimeError("close fail"))
 
         with (
-            patch("app.connectors_main.sync_task_manager.cancel_all", new_callable=AsyncMock),
+            patch("app.connectors_main.get_coordinator", return_value=MagicMock(cancel_all=AsyncMock())),
             patch("app.connectors_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.connectors_main.stop_messaging_producer", new_callable=AsyncMock),
             patch("app.connectors_main.startup_service.shutdown", new_callable=AsyncMock),
@@ -1161,6 +1192,19 @@ class TestConnectorHealthCheck:
 
         assert result.status_code == 500
 
+    async def test_a_failed_startup_is_unhealthy(self):
+        """Coordinator init failing in the background startup task used to leave
+        the service answering 200 while it consumed no events at all."""
+        from app.connectors_main import app, health_check
+
+        app.state.startup_error = "sync coordinator init failed: boom"
+        try:
+            result = await health_check()
+        finally:
+            app.state.startup_error = None
+
+        assert result.status_code == 503
+
 
 # ---------------------------------------------------------------------------
 # global_exception_handler
@@ -1223,9 +1267,14 @@ class TestRun:
             workers=4,
         )
 
-    def test_run_defaults_to_connector_uvicorn_workers_env_var(self):
-        """workers=None (the default) reads CONNECTOR_UVICORN_WORKERS."""
+    def test_run_defaults_to_the_edition_worker_count(self):
+        """workers=None asks the edition seam, not the env var directly.
+
+        The open-source build pins to one worker whatever is set, because
+        multi-worker sync needs a cross-process lease it does not have.
+        """
         from app.connectors_main import run
+        from app.edition_services import max_connector_workers
 
         with (
             patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
@@ -1239,7 +1288,7 @@ class TestRun:
             port=8088,
             log_level="info",
             reload=False,
-            workers=3,
+            workers=max_connector_workers(),
         )
 
     def test_run_defaults_to_one_worker_when_env_var_unset(self):

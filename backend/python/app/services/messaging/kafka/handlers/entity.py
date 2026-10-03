@@ -1,17 +1,22 @@
+import asyncio
 import logging
+import time
 from uuid import uuid4
 
 from app.config.constants.arangodb import (
     AccountType,
     AppGroups,
+    AppStatus,
     CollectionNames,
     Connectors,
     ConnectorScopes,
     ProgressStatus,
 )
 from app.connectors.core.base.event_service.event_service import BaseEventService
+from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
+from app.connectors.core.sync.sync_coordinator import get_coordinator, stop_wait_sec
+from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.containers.connector import (
     ConnectorAppContainer,
 )
@@ -68,10 +73,13 @@ class EntityEventService(BaseEventService):
                 'timestamp': get_epoch_timestamp_in_ms()
             }
 
-            # Send the message to sync-events topic using aiokafka
+            # Keyed by connector like Node's sync events: an unkeyed start could
+            # land on another partition than that connector's resyncs and be
+            # consumed out of order with them.
             await self.app_container.messaging_producer.send_message(
                 topic='sync-events',
-                message=message
+                message=message,
+                key=(value or {}).get("connectorId") or None,
             )
 
             self.logger.info(f"Successfully sent sync event: {event_type}")
@@ -460,13 +468,46 @@ class EntityEventService(BaseEventService):
                 app_updates, CollectionNames.APPS.value
             )
 
-            # Cancel any running sync/reindex task so they stop promptly
+            # Stop any running sync/reindex and wait for it to unwind, bounded:
+            # the sweep and the cleanup below must not run while the sync is
+            # still writing records (they would be left QUEUED with nothing to
+            # pick them up), but this is the serial entity consumer, so an
+            # unbounded wait would stall every event behind it.
             try:
-                await sync_task_manager.cancel_sync(connector_id)
-                await reindex_task_manager.cancel_by_prefix(f"reindex:{connector_id}:")
-                self.logger.info(f"✅ Cancelled running sync/reindex for connector {connector_id}")
+                reindex_task_manager.request_stop_by_prefix(f"reindex:{connector_id}:")
+                coordinator = get_coordinator()
+                if coordinator is not None:
+                    await coordinator.request_stop(connector_id)
+                if await self._wait_for_sync_to_stop(connector_id):
+                    self.logger.info(f"✅ Stopped running sync/reindex for connector {connector_id}")
+                else:
+                    self.logger.warning(
+                        f"Sync/reindex for connector {connector_id} still unwinding after "
+                        f"{stop_wait_sec(self.logger)}s; disabling anyway"
+                    )
             except Exception as cancel_err:
-                self.logger.error(f"❌ Failed to cancel sync for connector {connector_id}: {cancel_err}")
+                self.logger.error(f"❌ Failed to stop sync for connector {connector_id}: {cancel_err}")
+
+            # A connector parked at the concurrency limit is owed a sync that must
+            # no longer run: without this it shows QUEUED until re-enabled.
+            try:
+                app_doc = await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value
+                )
+                if app_doc and app_doc.get("status") == AppStatus.QUEUED.value:
+                    await self.graph_provider.update_node(
+                        connector_id,
+                        CollectionNames.APPS.value,
+                        {
+                            "status": AppStatus.IDLE.value,
+                            ConnectorStateKeys.PENDING_RESYNC: False,
+                            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                        },
+                    )
+            except Exception as queue_err:
+                self.logger.error(
+                    f"❌ Failed to clear the queued sync of disabled connector {connector_id}: {queue_err}"
+                )
 
             # Drain the backlog. Records already QUEUED have no event guard to
             # catch them and no processingStartedAt, so stale recovery — which
@@ -530,6 +571,21 @@ class EntityEventService(BaseEventService):
                 f"❌ Failed to adopt existing person for {email}: {str(e)}",
                 exc_info=True,
             )
+
+    async def _wait_for_sync_to_stop(self, connector_id: str) -> bool:
+        """Whether the connector's sync and reindex tasks ended within the wait."""
+        coordinator = get_coordinator()
+        prefix = f"reindex:{connector_id}:"
+        deadline = time.monotonic() + stop_wait_sec(self.logger)
+        while True:
+            busy = (
+                coordinator is not None and await coordinator.is_running(connector_id)
+            ) or any(k.startswith(prefix) for k in reindex_task_manager.active_keys())
+            if not busy:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.25)
 
     def _kb_name_from_user_added_payload(self, payload: dict) -> str:
         """Compute KB display name from userAdded event: fullName's Private or email's Private."""
