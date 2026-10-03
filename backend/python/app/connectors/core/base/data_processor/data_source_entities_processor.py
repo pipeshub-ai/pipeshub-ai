@@ -1,5 +1,4 @@
 import uuid
-from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Iterable, Optional
@@ -55,6 +54,7 @@ from app.services.cache.invalidation_hooks import (
 from app.connectors.services.vector_cleanup_events import build_soft_delete_events
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
+from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
 from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     FolderChangedDuringDelete,
@@ -76,9 +76,6 @@ PendingMove = tuple[str, str, str, str | tuple[str, ...] | None]
 
 _NO_OLD_PATH = object()  # sentinel: "no pre-computed old_path supplied"
 
-# Unique per record and never a source id, so no sync or move can land on it.
-TRASHED_EXTERNAL_ID_PREFIX = "trashed:"
-
 
 class RestoreRefused(Exception):
     """A restore that would break something, so nothing was restored.
@@ -91,6 +88,16 @@ class RestoreRefused(Exception):
         self.code = code
         self.reason = reason
         self.details = details
+
+
+def _same_source_refusal(record_id: str, external_id: str) -> RestoreRefused:
+    return RestoreRefused(
+        409,
+        "Two of the items being restored came from the same source item, so only one of them "
+        "can come back. Restore them one at a time, starting with the one you want to keep.",
+        record_id=record_id,
+        external_id=external_id,
+    )
 
 
 # ~39 bytes per vrid in the move-tree JSON body; Node accepts 10 MB.
@@ -2294,15 +2301,12 @@ class DataSourceEntitiesProcessor:
         tx_store: TransactionStore,
         connector_id: str,
         external_id: str,
-        *,
-        restoring: Collection[str] = (),
     ) -> None:
         """Move every trashed record holding *external_id* off it, keeping the
         original in ``trashedExternalRecordId`` for restore.
 
         Lookups by external id stop at the first match, so a trashed and a live
-        record sharing one id would each be returned at random. A holder that
-        is itself in *restoring* is not released: the restore is refused.
+        record sharing one id would each be returned at random.
         """
         released: set[str] = set()
         while (
@@ -2310,14 +2314,6 @@ class DataSourceEntitiesProcessor:
                 connector_id=connector_id, external_id=external_id, visibility=RecordVisibility.DELETED
             )
         ) is not None:
-            if trashed.id in restoring:
-                raise RestoreRefused(
-                    409,
-                    "Two of the items being restored came from the same source item, so only one of them "
-                    "can come back. Restore them one at a time, starting with the one you want to keep.",
-                    record_id=trashed.id,
-                    external_id=external_id,
-                )
             if trashed.id in released:
                 raise RuntimeError(
                     f"Record {trashed.id} in the trash still holds external id {external_id} after release"
@@ -2364,52 +2360,68 @@ class DataSourceEntitiesProcessor:
             if not external_id:
                 continue
             if external_id in reclaim.values():
-                raise RestoreRefused(
-                    409,
-                    "Two of the items being restored came from the same source item, so only one of them "
-                    "can come back. Restore them one at a time, starting with the one you want to keep.",
-                    record_id=item["id"],
-                    external_id=external_id,
-                )
+                raise _same_source_refusal(item["id"], external_id)
             reclaim[item["id"]] = external_id
+        restores = [
+            {
+                "id": item["id"],
+                "set": dict(item.get("set") or {}),
+                **({"reclaimExternalRecordId": reclaim[item["id"]]} if item["id"] in reclaim else {}),
+            }
+            for item in items
+        ]
 
         async with self.data_store_provider.transaction() as tx_store:
-            restores = []
-            for item in items:
-                fields = dict(item.get("set") or {})
-                external_id = reclaim.get(item["id"])
-                if external_id:
-                    holder = await tx_store.get_record_by_external_id(
-                        connector_id=connector_id, external_id=external_id, visibility=RecordVisibility.LIVE
-                    )
-                    if holder is not None and holder.id != item["id"]:
-                        name = item.get("name") or "This item"
-                        raise RestoreRefused(
-                            409,
-                            f"'{name}' can't be restored because '{holder.record_name}' has taken its place. "
-                            "That usually means the same item was added again after this one was deleted. "
-                            f"To restore this one, delete '{holder.record_name}' first, then try again.",
-                            record_id=item["id"],
-                            conflicting_record_id=holder.id,
-                            conflicting_record_name=holder.record_name,
-                        )
-                    await self._release_external_id_from_trash(
-                        tx_store, connector_id, external_id, restoring=set(ids)
-                    )
-                    fields["externalRecordId"] = external_id
-                restores.append({"id": item["id"], "set": fields})
-            restored = await tx_store.restore_records(restores, batch_id)
+            # Taking an id back from another record in the trash happens in the same
+            # write as the restore: on Neo4j each statement commits on its own, so a
+            # release written first outlived a refused restore.
+            restored = await tx_store.restore_records(restores, batch_id, connector_id=connector_id)
             if set(restored) != set(ids):
                 # Raising rolls the whole batch back, so it is never half restored.
-                raise RestoreRefused(
-                    409,
-                    "Some of these items changed while they were being restored, so nothing was restored. "
-                    "Refresh the page and try again.",
-                    missing=sorted(set(ids) - set(restored)),
-                )
+                raise await self._restore_refusal(tx_store, connector_id, items, reclaim, ids, restored)
         record_restored(DeleteSource(restore_source).value, len(restored))
         await notify_kb_records_changed(connector_id)
         return restored
+
+    @staticmethod
+    async def _restore_refusal(
+        tx_store: TransactionStore,
+        connector_id: str,
+        items: list[dict[str, Any]],
+        reclaim: dict[str, str],
+        ids: list[str],
+        restored: list[str],
+    ) -> RestoreRefused:
+        """Why a restore that wrote nothing was refused, for the person who asked."""
+        for item in items:
+            external_id = reclaim.get(item["id"])
+            if not external_id:
+                continue
+            holder = await tx_store.get_record_by_external_id(
+                connector_id=connector_id, external_id=external_id, visibility=RecordVisibility.LIVE
+            )
+            if holder is not None and holder.id != item["id"]:
+                name = item.get("name") or "This item"
+                return RestoreRefused(
+                    409,
+                    f"'{name}' can't be restored because '{holder.record_name}' has taken its place. "
+                    "That usually means the same item was added again after this one was deleted. "
+                    f"To restore this one, delete '{holder.record_name}' first, then try again.",
+                    record_id=item["id"],
+                    conflicting_record_id=holder.id,
+                    conflicting_record_name=holder.record_name,
+                )
+            trashed = await tx_store.get_record_by_external_id(
+                connector_id=connector_id, external_id=external_id, visibility=RecordVisibility.DELETED
+            )
+            if trashed is not None and trashed.id != item["id"] and trashed.id in ids:
+                return _same_source_refusal(trashed.id, external_id)
+        return RestoreRefused(
+            409,
+            "Some of these items changed while they were being restored, so nothing was restored. "
+            "Refresh the page and try again.",
+            missing=sorted(set(ids) - set(restored)),
+        )
 
     async def _publish_delete_events(self, event_data: dict | None) -> list[str]:
         """Publish deleteRecord events (Qdrant vector cleanup) for a delete result.

@@ -85,12 +85,33 @@ class _Store:
             )
         return True
 
-    async def restore_records(self, restores: list[dict], batch_id: str | None) -> list[str]:
+    async def restore_records(
+        self, restores: list[dict], batch_id: str | None, *, connector_id: str | None = None
+    ) -> list[str]:
+        """All or nothing, with the external ids taken back in the same write, as the providers do."""
+        ids = {r["id"] for r in restores}
+        in_batch = all(
+            (rec := self.records.get(r["id"])) is not None and rec.is_deleted and rec.delete_batch_id == batch_id
+            for r in restores
+        )
+        claims = {r["id"]: r["reclaimExternalRecordId"] for r in restores if r.get("reclaimExternalRecordId")}
+        taken = any(
+            rec.external_record_id == ext and rec.id != rid and (not rec.is_deleted or rec.id in ids)
+            for rid, ext in claims.items()
+            for rec in self.records.values()
+        )
+        if not in_batch or taken:
+            return []
+        for ext in claims.values():
+            for rec in list(self.records.values()):
+                if rec.external_record_id == ext and rec.is_deleted and rec.id not in ids:
+                    await self.batch_update_nodes(
+                        [{"id": rec.id, "externalRecordId": f"{TRASHED_EXTERNAL_ID_PREFIX}{rec.id}",
+                          "trashedExternalRecordId": ext}],
+                        "records",
+                    )
         self.restored.append((restores, batch_id))
-        return [
-            r["id"] for r in restores
-            if (rec := self.records.get(r["id"])) is not None and rec.is_deleted and rec.delete_batch_id == batch_id
-        ]
+        return [r["id"] for r in restores]
 
 
 def _trashed(record_id: str, batch: str = "b-1", **overrides) -> Record:
@@ -121,7 +142,7 @@ class TestRestoreTrashedRecords:
         with patch(f"{MODULE}.notify_kb_records_changed", AsyncMock()):
             await proc.restore_trashed_records("c1", "b-1", [{"id": "r1", "trashedExternalRecordId": "ext-a"}])
         ((restores, _),) = store.restored
-        assert restores == [{"id": "r1", "set": {"externalRecordId": "ext-a"}}]
+        assert restores == [{"id": "r1", "set": {}, "reclaimExternalRecordId": "ext-a"}]
 
     async def test_a_live_record_on_the_id_refuses_the_whole_restore(self) -> None:
         proc = _processor()
@@ -142,7 +163,7 @@ class TestRestoreTrashedRecords:
             "'report.pdf' first, then try again."
         )
         assert refused.value.details["conflicting_record_id"] == "live"
-        assert store.restored == []
+        assert store.restored == [] and store.released == []
 
     async def test_a_trashed_holder_of_the_id_gives_it_up(self) -> None:
         proc = _processor()
@@ -157,7 +178,7 @@ class TestRestoreTrashedRecords:
             "externalRecordId": f"{TRASHED_EXTERNAL_ID_PREFIX}other",
             "trashedExternalRecordId": "ext-a",
         }]
-        assert store.restored[0][0] == [{"id": "r1", "set": {"externalRecordId": "ext-a"}}]
+        assert store.restored[0][0] == [{"id": "r1", "set": {}, "reclaimExternalRecordId": "ext-a"}]
 
     async def test_a_holder_inside_the_batch_is_refused_not_released(self) -> None:
         proc = _processor()
@@ -186,7 +207,7 @@ class TestRestoreTrashedRecords:
         _with_store(proc, _Store([_trashed("r1"), _stored("r2")]))
         with pytest.raises(RestoreRefused) as refused:
             await proc.restore_trashed_records("c1", "b-1", [{"id": "r1"}, {"id": "r2"}])
-        assert refused.value.details["missing"] == ["r2"]
+        assert refused.value.details["missing"] == ["r1", "r2"]
         assert "Refresh the page" in refused.value.reason
 
 

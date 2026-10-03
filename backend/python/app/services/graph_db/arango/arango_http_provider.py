@@ -157,7 +157,9 @@ from app.services.graph_db.common.utils import (
     KB_MAX_FOLDER_DEPTH,
     SOFT_DELETE_CHUNK,
     TRASH_STATE_FIELDS,
+    TRASHED_EXTERNAL_ID_PREFIX,
     empty_soft_delete_result,
+    restore_items,
     soft_delete_request_result,
     soft_delete_result,
     MAX_DIRECT_GRANT_RECORDS,
@@ -13618,30 +13620,67 @@ class ArangoHTTPProvider(IGraphDBProvider):
         restores: list[dict[str, Any]],
         batch_id: str | None,
         transaction: str | None = None,
+        *,
+        connector_id: str | None = None,
     ) -> list[str]:
         """See ``IGraphDBProvider.restore_records``."""
         if not restores:
             return []
-        items = [{"id": item["id"], "set": dict(item.get("set") or {})} for item in restores]
+        items, reclaims = restore_items(restores, connector_id)
         # keepNull false drops the cleared fields instead of storing nulls.
         cleared = {"isDeleted": False, **dict.fromkeys(TRASH_STATE_FIELDS)}
-        # Restores all of the items or none, like Neo4j's single statement: one item
-        # gone from the trash leaves the rest of the batch in it.
-        return await self.execute_query(
-            """
+        # The same checks and writes as Neo4j's single statement, so both backends
+        # refuse the same batches. One UPDATE, releases first: AQL modifies a
+        # collection once per query.
+        rows = await self.execute_query(
+            f"""
             LET found = (
                 FOR item IN @items
                     LET r = DOCUMENT(@@records, item.id)
                     FILTER r != null AND r.isDeleted == true AND r.deleteBatchId == @batch_id
-                    RETURN { r: r, fields: item.set }
+                    RETURN {{ r: r, fields: item.set }}
             )
-            FOR row IN (LENGTH(found) == LENGTH(@items) ? found : [])
-                UPDATE row.r WITH MERGE(@cleared, { updatedAtTimestamp: @now }, row.fields)
-                    IN @@records OPTIONS { keepNull: false }
-                RETURN NEW._key
+            LET taken = FIRST(
+                FOR claim IN @reclaims
+                    FOR t IN @@records
+                        FILTER t.externalRecordId == claim.ext AND t.connectorId == @connector_id
+                        FILTER t._key != claim.id AND ({aql_live_record("t")} OR t._key IN @ids)
+                        LIMIT 1
+                        RETURN true
+            )
+            LET ok = LENGTH(found) == LENGTH(@items) AND taken == null
+            LET releases = ok ? (
+                FOR claim IN @reclaims
+                    FOR h IN @@records
+                        FILTER h.externalRecordId == claim.ext AND h.connectorId == @connector_id
+                        FILTER h.isDeleted == true AND h._key NOT IN @ids
+                        RETURN {{
+                            key: h._key,
+                            patch: {{
+                                externalRecordId: CONCAT(@trashed_prefix, h._key),
+                                trashedExternalRecordId: h.externalRecordId
+                            }},
+                            restored: false
+                        }}
+            ) : []
+            LET restoring = ok ? (
+                FOR row IN found
+                    RETURN {{
+                        key: row.r._key,
+                        patch: MERGE(@cleared, {{ updatedAtTimestamp: @now }}, row.fields),
+                        restored: true
+                    }}
+            ) : []
+            FOR change IN APPEND(releases, restoring)
+                UPDATE change.key WITH change.patch IN @@records OPTIONS {{ keepNull: false }}
+                RETURN change.restored ? NEW._key : null
             """,
             bind_vars={
                 "items": items,
+                "ids": [item["id"] for item in items],
+                "reclaims": reclaims,
+                "connector_id": connector_id,
+                "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
                 "batch_id": batch_id,
                 "cleared": cleared,
                 "now": get_epoch_timestamp_in_ms(),
@@ -13649,6 +13688,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             },
             transaction=transaction,
         ) or []
+        return [key for key in rows if key is not None]
 
     async def delete_single_record(
         self,

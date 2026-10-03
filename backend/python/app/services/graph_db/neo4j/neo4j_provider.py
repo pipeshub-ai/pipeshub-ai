@@ -94,7 +94,9 @@ from app.services.graph_db.common.utils import (
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
     TRASH_STATE_FIELDS,
+    TRASHED_EXTERNAL_ID_PREFIX,
     empty_soft_delete_result,
+    restore_items,
     soft_delete_request_result,
     soft_delete_result,
     MAX_DIRECT_GRANT_RECORDS,
@@ -11645,15 +11647,18 @@ class Neo4jProvider(IGraphDBProvider):
         restores: list[dict[str, Any]],
         batch_id: str | None,
         transaction: str | None = None,
+        *,
+        connector_id: str | None = None,
     ) -> list[str]:
         """See ``IGraphDBProvider.restore_records``."""
         if not restores:
             return []
-        items = [{"id": item["id"], "set": dict(item.get("set") or {})} for item in restores]
+        items, reclaims = restore_items(restores, connector_id)
         cleared = ", ".join(f"r.{name} = null" for name in TRASH_STATE_FIELDS)
         # Each statement commits on its own unless explicit transactions are on, so a
-        # restore split over statements could stop halfway. One statement re-checks
-        # every item and restores all of them or none.
+        # restore split over statements could stop halfway, and an external id given
+        # up before a refused restore stayed given up. One statement re-checks every
+        # item and the ids taken back, releases them and restores: all or nothing.
         rows = await self.client.execute_query(
             f"""
             UNWIND $items AS item
@@ -11662,13 +11667,39 @@ class Neo4jProvider(IGraphDBProvider):
               AND (r.deleteBatchId = $batch_id OR ($batch_id IS NULL AND r.deleteBatchId IS NULL))
             WITH collect(CASE WHEN r IS NULL THEN null ELSE {{r: r, fields: item.set}} END) AS found
             WHERE size(found) = size($items)
+              AND NOT EXISTS {{
+                  UNWIND $reclaims AS claim
+                  MATCH (taken:Record {{externalRecordId: claim.ext, connectorId: $connector_id}})
+                  WHERE taken.id <> claim.id AND ({cypher_live_record("taken")} OR taken.id IN $ids)
+                  RETURN taken
+              }}
+            WITH found, COLLECT {{
+                UNWIND $reclaims AS claim
+                MATCH (holder:Record {{externalRecordId: claim.ext, connectorId: $connector_id}})
+                WHERE holder.isDeleted = true AND NOT holder.id IN $ids
+                RETURN holder
+            }} AS holders
+            FOREACH (holder IN holders |
+                SET holder += {{
+                    trashedExternalRecordId: holder.externalRecordId,
+                    externalRecordId: $trashed_prefix + holder.id
+                }})
+            WITH found
             UNWIND found AS row
             WITH row.r AS r, row.fields AS fields
             SET r.isDeleted = false, {cleared}, r.updatedAtTimestamp = $now
             SET r += fields
             RETURN r.id AS id
             """,
-            parameters={"items": items, "batch_id": batch_id, "now": get_epoch_timestamp_in_ms()},
+            parameters={
+                "items": items,
+                "ids": [item["id"] for item in items],
+                "reclaims": reclaims,
+                "connector_id": connector_id,
+                "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
+                "batch_id": batch_id,
+                "now": get_epoch_timestamp_in_ms(),
+            },
             txn_id=transaction,
         )
         return [row["id"] for row in rows or []]

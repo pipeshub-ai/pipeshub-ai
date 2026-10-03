@@ -18,6 +18,8 @@ provider, with the KB's ``DataSourceEntitiesProcessor`` on a real
 - ``restore_records`` touches only records still in the trash under the batch
   named, and brings back all of the items it is given or none of them, also
   when the graph refuses one of the writes.
+- Taking an external id back from another record in the trash happens in the
+  same write as the restore, so a refused restore leaves that record holding it.
 
 Arango enforces the records schema strictly, so its run also proves restore
 writes only declared fields.
@@ -214,6 +216,8 @@ async def _remove(graph: IGraphDBProvider, w: _World) -> None:
 
 @pytest.fixture(params=["neo4j", "arango"])
 async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_World]:
+    # The default, where each Neo4j statement commits on its own and a rollback undoes nothing.
+    monkeypatch.delenv("NEO4J_EXPLICIT_TRANSACTIONS", raising=False)
     async with contextlib.AsyncExitStack() as cleanup:
         try:
             graph = await (_connect_neo4j(monkeypatch) if request.param == "neo4j" else _connect_arango())
@@ -515,3 +519,111 @@ async def test_a_restore_the_graph_refuses_partway_leaves_the_whole_batch_in_the
     assert restored == set(), f"a refused restore brought part of the folder back: {restored}"
     assert {n: (await world.stored(n)).get("deleteBatchId") for n in subtree} == dict.fromkeys(subtree, batch)
     assert world.reindexed() == set()
+
+
+@contextlib.asynccontextmanager
+async def _refuse_restoring_two_records(world: _World, names: tuple[str, str]) -> AsyncIterator[None]:
+    """Make the graph refuse any write that stamps one update time on both records, as restore does."""
+    client = world.graph.client
+    await client.execute_query(
+        "CREATE CONSTRAINT restore_it_poison IF NOT EXISTS "
+        "FOR (n:RestoreItPoison) REQUIRE n.updatedAtTimestamp IS UNIQUE"
+    )
+    try:
+        await client.execute_query(
+            "UNWIND range(0, size($ids) - 1) AS i MATCH (r:Record {id: $ids[i]}) "
+            "SET r.updatedAtTimestamp = -1 - i, r:RestoreItPoison",
+            parameters={"ids": [world.ids[n] for n in names]},
+        )
+        yield
+    finally:
+        await client.execute_query("DROP CONSTRAINT restore_it_poison IF EXISTS")
+
+
+async def _a_trashed_record_holds_file_as_old_id(world: _World) -> tuple[str, str]:
+    """file_a is in the trash with its id given up, and solo, also in the trash, holds that id now."""
+    old_id = f"ext-{world.ids['file_a']}"
+    await world.trash("folder")
+    await _give_up_external_id(world, "file_a", old_id)
+    await world.graph.update_node(world.ids["solo"], CollectionNames.RECORDS.value, {"externalRecordId": old_id})
+    await world.trash("solo")
+    return old_id, (await world.stored("folder"))["deleteBatchId"]
+
+
+def _restore_item(world: _World, name: str, gave_up: str | None = None) -> dict:
+    return {"id": world.ids[name], "name": f"{name}.pdf", "trashedExternalRecordId": gave_up, "set": {}}
+
+
+async def _assert_nothing_moved(world: _World, old_id: str) -> None:
+    solo = await world.stored("solo")
+    assert (solo["isDeleted"], solo["externalRecordId"], solo.get("trashedExternalRecordId")) == (
+        True, old_id, None,
+    ), "a refused restore took the external id away from the other record in the trash"
+    file_a = await world.stored("file_a")
+    assert (file_a["isDeleted"], file_a["externalRecordId"], file_a["trashedExternalRecordId"]) == (
+        True, f"{TRASHED_EXTERNAL_ID_PREFIX}{world.ids['file_a']}", old_id,
+    )
+    assert await world.live(FOLDER_FILES) == set()
+
+
+async def test_a_restore_refused_by_a_later_item_leaves_the_other_records_external_id_alone(
+    world: _World,
+) -> None:
+    """On Neo4j each statement commits on its own, so an id given up before the refusal stayed given up."""
+    old_id, batch = await _a_trashed_record_holds_file_as_old_id(world)
+    file_b_id = f"ext-{world.ids['file_b']}"
+    await _give_up_external_id(world, "file_b", file_b_id)
+    await world.graph.update_node(world.ids["report"], CollectionNames.RECORDS.value, {"externalRecordId": file_b_id})
+
+    with pytest.raises(processor_module.RestoreRefused) as refused:
+        await world.processor.restore_trashed_records(
+            world.kb_id, batch,
+            [_restore_item(world, "file_a", old_id), _restore_item(world, "file_b", file_b_id)],
+        )
+
+    assert refused.value.code == 409
+    assert refused.value.reason == (
+        "'file_b.pdf' can't be restored because 'report.pdf' has taken its place. That usually means the same "
+        "item was added again after this one was deleted. To restore this one, delete 'report.pdf' first, "
+        "then try again."
+    )
+    assert refused.value.details["conflicting_record_id"] == world.ids["report"]
+    await _assert_nothing_moved(world, old_id)
+
+
+# Neo4j only, as the uniqueness constraint that refuses the write is Neo4j's.
+@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
+async def test_a_restore_the_graph_refuses_leaves_the_other_records_external_id_alone(world: _World) -> None:
+    old_id, batch = await _a_trashed_record_holds_file_as_old_id(world)
+
+    async with _refuse_restoring_two_records(world, ("file_a", "file_b")):
+        with pytest.raises(Exception, match="RestoreItPoison|restore_it_poison|already exists"):
+            await world.processor.restore_trashed_records(
+                world.kb_id, batch, [_restore_item(world, "file_a", old_id), _restore_item(world, "file_b")],
+            )
+
+    await _assert_nothing_moved(world, old_id)
+
+
+async def test_a_restore_takes_its_external_id_back_from_a_record_in_the_trash(world: _World) -> None:
+    old_id, batch = await _a_trashed_record_holds_file_as_old_id(world)
+    file_b_id = f"ext-{world.ids['file_b']}"
+    await _give_up_external_id(world, "file_b", file_b_id)
+
+    restored = await world.processor.restore_trashed_records(
+        world.kb_id, batch,
+        [_restore_item(world, "file_a", old_id), _restore_item(world, "file_b", file_b_id)],
+    )
+
+    assert sorted(restored) == sorted([world.ids["file_a"], world.ids["file_b"]])
+    for name, external_id in (("file_a", old_id), ("file_b", file_b_id)):
+        doc = await world.stored(name)
+        assert (doc["isDeleted"], doc["externalRecordId"], doc.get("trashedExternalRecordId")) == (
+            False, external_id, None,
+        ), name
+    solo = await world.stored("solo")
+    assert (solo["isDeleted"], solo["externalRecordId"], solo["trashedExternalRecordId"]) == (
+        True, f"{TRASHED_EXTERNAL_ID_PREFIX}{world.ids['solo']}", old_id,
+    )
+    holder = await world.graph.get_record_by_external_id(world.kb_id, old_id, visibility=RecordVisibility.ALL)
+    assert holder is not None and holder.id == world.ids["file_a"]

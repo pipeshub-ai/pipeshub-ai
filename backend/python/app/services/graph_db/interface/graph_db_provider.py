@@ -4207,15 +4207,22 @@ class IGraphDBProvider(ABC):
         restores: list[dict[str, Any]],
         batch_id: str | None,
         transaction: str | None = None,
+        *,
+        connector_id: str | None = None,
     ) -> list[str]:
         """Bring records back from the trash; return the ids restored.
 
         Each item is ``{"id": key, "set": {field: value}}``; ``set`` (optional)
-        is written as well, for an external id put back or an indexing status.
+        is written as well, for an indexing status. An item may also carry
+        ``reclaimExternalRecordId``, the external id it gave up, to take back
+        within ``connector_id`` (required then): records in the trash outside
+        this batch that hold it give it up, keeping it in
+        ``trashedExternalRecordId`` behind a ``TRASHED_EXTERNAL_ID_PREFIX`` id.
         All or nothing: every item must still be in the trash under
-        ``batch_id``, or none is restored and the result is empty, so a restore
+        ``batch_id``, and no live record and no other item may hold an id being
+        taken back, or nothing is written and the result is empty, so a restore
         racing a purge or another restore never brings back part of a batch. A
-        write the graph refuses partway also leaves every item in the trash,
+        write the graph refuses partway also leaves every record as it was,
         even where each statement commits on its own (Neo4j by default). The
         delete fields (``isDeleted``, ``deletedAtTimestamp``, ``deleteSource``,
         ``deleteBatchId``, ``deletedByUserId``, the purge counters and

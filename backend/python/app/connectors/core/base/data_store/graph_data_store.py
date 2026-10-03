@@ -329,9 +329,13 @@ class GraphTransactionStore(TransactionStore):
             within_folder_id=within_folder_id,
         )
 
-    async def restore_records(self, restores: list[dict], batch_id: str | None) -> list[str]:
+    async def restore_records(
+        self, restores: list[dict], batch_id: str | None, *, connector_id: str | None = None
+    ) -> list[str]:
         """Bring records back from the trash within the active transaction."""
-        return await self.graph_provider.restore_records(restores, batch_id, transaction=self.txn)
+        return await self.graph_provider.restore_records(
+            restores, batch_id, transaction=self.txn, connector_id=connector_id
+        )
 
     async def delete_single_record(self, record_id: str) -> dict:
         """Single-record delete within the active transaction — no containment walk."""
