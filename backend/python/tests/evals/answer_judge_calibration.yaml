@@ -225,6 +225,15 @@ cases:
       - state: "Background exports launched on 21 April."
         expect: contradicted
 
+  - id: self-contradiction-forbidden-taken-back
+    about: states the forbidden rule, then takes it back; it was still said
+    answer: "Every purchase needs your manager's approval. Actually, purchases up to $250 need no approval at all."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: contradicted
+      - not_state: "Every purchase needs manager approval."
+        expect: supported
+
   - id: consistent-manager-above
     about: the manager's band first, then the fact; no conflict
     answer: "Your manager approves purchases above $250. You can spend up to $250 with no approval."

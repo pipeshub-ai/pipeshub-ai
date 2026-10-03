@@ -73,10 +73,11 @@ def test_answers_that_also_contradict_the_fact_are_labelled_not_supported(cases:
     contradicting = [c for c in cases.cases if c.id.startswith("self-contradiction-")]
     assert len(contradicting) >= 10
     for case in contradicting:
-        for claim in case.claims:
-            assert claim.kind == "must_state" and not claim.should_pass, case.id
+        assert all(not claim.should_pass for claim in case.claims), case.id
     answers = {c.answer.strip() for c in contradicting}
     assert all(a in answers for a in LIVE_SELF_CONTRADICTIONS)
+    # A forbidden claim stated and then taken back is still stated, so it fails too.
+    assert any(c.kind == "must_not_state" and c.expect == ["supported"] for case in contradicting for c in case.claims)
 
 
 def test_consistent_answers_next_to_them_are_labelled_supported(cases: CalibrationSet) -> None:

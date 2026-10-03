@@ -214,24 +214,30 @@ One model call per answer, with every claim in it, at temperature 0 and asking
 for JSON only (checked with Pydantic). For each claim the judge writes a
 sentence or two of reasoning and then a verdict:
 
-- `supported`: the answer plainly says it, with the same meaning, subject and
-  limits;
-- `contradicted`: the answer says something incompatible, including stating
-  the fact and then taking it back;
+- `supported`: some sentence plainly says it, with the same meaning, subject
+  and limits, even if another sentence says something against it;
+- `contradicted`: no sentence says it, but one says something incompatible;
 - `missing`: neither.
 
 Hedged ("I think", "usually"), partial and edge-wrong statements ("under $250"
 for "up to and including $250") are not support. The judge is told to judge
 only what the answer says, not what is true.
 
-The judge also lists, for each claim, every sentence that says something
+Separately, the judge lists for each claim every sentence that says something
 incompatible with it, and is told to check every sentence rather than stop at
-the one that states the claim. A must-state claim with any such sentence is
-`contradicted`, whatever verdict the judge gave: "You can spend up to $250 with
-no approval" does not count when the same answer says "your manager must
-approve it, including the $250 purchase". The conflicting sentences are shown
-in failure messages. A must-not-state claim the judge says is stated still
-fails, however much else the answer says against it.
+the one that states the claim. Stating a claim and contradicting it are kept
+apart because the two kinds of claim need different answers:
+
+- A must-state claim with any conflicting sentence is `contradicted`: "You can
+  spend up to $250 with no approval" does not count when the same answer says
+  "your manager must approve it, including the $250 purchase".
+- A must-not-state claim stated anywhere in the answer fails, even if the
+  answer takes it back later, as it did before the conflict list was added. If
+  the judge calls such an answer `contradicted` but its evidence cites a
+  sentence it did not list as conflicting, that sentence is read as stating the
+  claim, so the forbidden claim fails either way.
+
+The conflicting sentences are shown in failure messages.
 
 **Evidence is a sentence number, not a quote.** Before the call, the answer is
 split into numbered sentences, and each line and bullet counts as one. A full
@@ -253,8 +259,8 @@ decides it, and the number cases in the calibration set measure how well it
 does. Citing a sentence number still stops the judge from inventing evidence,
 with no parsing at all.
 
-A must-state claim passes only when `supported`; a must-not-state claim passes
-when `missing` or `contradicted`. A model error, a timeout or a reply that is
+A must-state claim passes only when `supported` with no conflicting sentence; a
+must-not-state claim passes only when no sentence states it. A model error, a timeout or a reply that is
 not the JSON asked for is a **judge error**, never a pass. Rate limits (429),
 timeouts and server errors are retried twice with backoff first. With no judge
 configured, the facts are **not judged**; that passes locally and fails when
@@ -304,7 +310,7 @@ the `JUDGE_*` settings. The calibration summary and its JSON (`provider`,
 
 ### Calibration
 
-`answer_judge_calibration.yaml` holds 71 hand-labelled hard cases (83 claims):
+`answer_judge_calibration.yaml` holds 72 hand-labelled hard cases (85 claims):
 negation, "under" against "up to and including", the right amount on the
 wrong subject, time phrases ("will sign off on Monday"), hedging, a fact buried
 in a long answer, answers that state a fact and also something incompatible
@@ -339,7 +345,7 @@ good material for more cases.
 
 ### Cost
 
-The judge's instructions are about 620 tokens; with the claims and a typical
+The judge's instructions are about 660 tokens; with the claims and a typical
 answer a call is roughly 1,000 to 1,500 tokens in and 100 to 300 out. On a
 GPT-4o-class model that is about half a cent per call, so the nightly
 calibration (one call per case) costs around 35 cents, and a tenth of that on a

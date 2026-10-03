@@ -268,10 +268,12 @@ def reply_with_conflicts(verdict: str, ids: list[int], conflicts: list[int]) -> 
 CONTRADICTS_ITSELF = "Up to $250, but your manager's approval is required. You can spend up to $250 with no approval."
 
 
-def test_the_prompt_says_a_claim_with_a_conflicting_sentence_is_not_supported() -> None:
+def test_the_prompt_keeps_stating_a_claim_apart_from_conflicting_with_it() -> None:
     prompt = " ".join(aj.SYSTEM_PROMPT.split())
-    assert "no sentence of the answer says anything incompatible with it" in prompt
-    assert "a claim with any conflicting sentence is \"contradicted\", never \"supported\"" in prompt
+    # A stated claim stays "supported", so a forbidden claim taken back still reads as stated.
+    assert 'Give "supported" even when another sentence says something incompatible with the claim' in prompt
+    assert '"contradicted": no sentence asserts the claim' in prompt
+    assert "never \"supported\"" not in prompt
     assert "Check every sentence against every claim" in prompt
     assert '"conflicting_sentence_ids": []' in prompt
 
@@ -310,6 +312,43 @@ def test_an_unverified_claim_names_the_sentence_that_is_not_in_the_answer() -> N
 def test_an_unverified_claim_that_cites_nothing_says_so() -> None:
     judge, _ = judge_with(reply(("supported", [])))
     assert judge.judge(ANSWER, [NO_APPROVAL]).claims[0].render().endswith("(no sentence cited)")
+
+
+FORBIDDEN = "Every purchase needs manager approval."
+STATED_THEN_TAKEN_BACK = "Every purchase needs your manager's approval. Actually, up to $250 needs no approval."
+
+
+def test_a_forbidden_claim_stated_then_taken_back_fails_when_the_judge_calls_it_contradicted() -> None:
+    # Evidence [1] states the claim; [2] is the conflict. The older prompt asked for exactly this.
+    judge, _ = judge_with(reply_with_conflicts("contradicted", [1, 2], [2]))
+    claim = judge.judge(STATED_THEN_TAKEN_BACK, [], [FORBIDDEN]).claims[0]
+    assert claim.verdict == "contradicted"
+    assert claim.stated_ids == [1]
+    assert not claim.passed
+
+
+def test_a_forbidden_claim_stated_then_taken_back_fails_when_the_judge_calls_it_supported() -> None:
+    judge, _ = judge_with(reply_with_conflicts("supported", [1], [2]))
+    claim = judge.judge(STATED_THEN_TAKEN_BACK, [], [FORBIDDEN]).claims[0]
+    assert claim.stated_ids == [1] and not claim.passed
+
+
+@pytest.mark.parametrize(("verdict", "ids", "conflicts"), [
+    ("contradicted", [1], [1]),
+    ("contradicted", [1], []),
+    ("missing", [], []),
+])
+def test_a_forbidden_claim_the_answer_never_states_passes(verdict: str, ids: list[int], conflicts: list[int]) -> None:
+    answer = "Up to $250 needs no approval; your manager approves above that."
+    judge, _ = judge_with(reply_with_conflicts(verdict, ids, conflicts))
+    claim = judge.judge(answer, [], [FORBIDDEN]).claims[0]
+    assert claim.stated_ids == [] and claim.passed
+
+
+def test_a_must_state_claim_the_judge_calls_contradicted_with_its_statement_cited_fails() -> None:
+    judge, _ = judge_with(reply_with_conflicts("contradicted", [2, 1], [1]))
+    claim = judge.judge(CONTRADICTS_ITSELF, [NO_APPROVAL]).claims[0]
+    assert claim.verdict == "contradicted" and claim.stated_ids == [2] and not claim.passed
 
 
 def test_a_forbidden_claim_the_answer_states_fails_even_with_a_conflicting_sentence() -> None:
