@@ -17386,8 +17386,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
             CollectionNames.ENTITY_RELATIONS.value,
             (CollectionNames.USERS.value,),
         ),
+        EntityType.ORGANIZATION.value: (
+            CollectionNames.ENTITY_RELATIONS.value,
+            (CollectionNames.ORGS.value,),
+        ),
     }
-    _MEMBERSHIP_ENTITY_TYPES = TAXONOMY_ENTITY_TYPES | {EntityType.PERSON.value}
+    # Entity types records reach over entityRelations (KG-13): the node
+    # collection, how a node ``n`` is matched to @org_id, and its fields.
+    # An external organisation (a CRM account) carries its tenant as
+    # parentOrgId; the tenant org itself is never an entity.
+    _LINKED_ENTITY_NODES: dict[str, tuple[str, str, str]] = {
+        EntityType.PERSON.value: (
+            CollectionNames.USERS.value, "n.orgId == @org_id", "name: n.fullName, email: n.email",
+        ),
+        EntityType.ORGANIZATION.value: (
+            CollectionNames.ORGS.value, "n.isExternal == true AND n.parentOrgId == @org_id", "name: n.name",
+        ),
+    }
+    _MEMBERSHIP_ENTITY_TYPES = TAXONOMY_ENTITY_TYPES | set(_LINKED_ENTITY_NODES)
     _ENTITY_CANDIDATE_RECORD_FIELDS: tuple[str, ...] = (
         "_key", "recordName", "recordType", "connectorId", "virtualRecordId",
         "webUrl", "hideWeburl", "sourceLastModifiedTimestamp", "updatedAtTimestamp",
@@ -17500,9 +17516,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN rec
                 )"""
         scope = f"LET targets = [{targets}]"
-        if entity_type == EntityType.PERSON.value:
+        if entity_type in self._LINKED_ENTITY_NODES:
             return "", f"""(
-                    {self._person_records_loop("ref.id")}
+                    {self._linked_records_loop(entity_type, "ref.id")}
                         FILTER rec.orgId == @org_id AND rec.isDeleted != true
                         FILTER rec.indexingStatus == @completed
                         FILTER rec.connectorId IN ref.connectorIds
@@ -17518,21 +17534,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return scope, f"(rg != null AND rg.orgId == @org_id) ? {scan_subquery} : []"
         return scope, scan_subquery
 
-    @staticmethod
-    def _person_records_loop(user_key: str) -> str:
-        """AQL binding ``rec`` to each record linked to the org member whose
-        key is ``user_key``, over entityRelations in either direction
+    def _linked_records_loop(self, entity_type: str, key: str) -> str:
+        """AQL binding ``rec`` to each record linked to the ``entity_type``
+        node whose key is ``key``, over entityRelations in either direction
         (record_people writes record -> user, Slack mentions user -> record).
 
-        A traversal streams, so a caller's LIMIT stops it early; the user
+        A traversal streams, so a caller's LIMIT stops it early; the node
         lookup is a loop rather than a ternary, which AQL would hoist and
-        evaluate for a user of another org too."""
-        users, records = CollectionNames.USERS.value, CollectionNames.RECORDS.value
-        return f"""FOR person IN {users}
-                        FILTER person._key == {user_key} AND person.orgId == @org_id
-                        FOR rec IN 1..1 ANY person {CollectionNames.ENTITY_RELATIONS.value}
+        evaluate for another tenant's node too."""
+        collection, scope, _ = self._LINKED_ENTITY_NODES[entity_type]
+        return f"""FOR n IN {collection}
+                        FILTER n._key == {key} AND {scope}
+                        FOR rec IN 1..1 ANY n {CollectionNames.ENTITY_RELATIONS.value}
                             OPTIONS {{order: "bfs", uniqueVertices: "global"}}
-                            FILTER rec != null AND IS_SAME_COLLECTION("{records}", rec)"""
+                            FILTER rec != null AND IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", rec)"""
 
     _ENTITY_CANDIDATE_SORT = (
         "SORT NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) DESC, key ASC"
@@ -17645,27 +17660,71 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_record_people(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
         """See :meth:`IGraphDBProvider.get_record_people`."""
+        return await self._record_linked_entities(record_id, org_id, EntityType.PERSON.value)
+
+    async def get_record_organizations(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_record_organizations`."""
+        return await self._record_linked_entities(record_id, org_id, EntityType.ORGANIZATION.value)
+
+    async def _record_linked_entities(
+        self, record_id: str, org_id: str, entity_type: str,
+    ) -> list[dict[str, Any]]:
         if not record_id or not org_id:
             return []
+        collection, scope, fields = self._LINKED_ENTITY_NODES[entity_type]
         rows = await self.http_client.execute_aql(
             f"""
-            LET rec = CONCAT("{CollectionNames.RECORDS.value}/", @record_id)
-            FOR user_id IN UNION_DISTINCT(
-                (FOR e IN {CollectionNames.ENTITY_RELATIONS.value}
-                    FILTER e._from == rec AND STARTS_WITH(e._to, "{CollectionNames.USERS.value}/")
-                    RETURN e._to),
-                (FOR e IN {CollectionNames.ENTITY_RELATIONS.value}
-                    FILTER e._to == rec AND STARTS_WITH(e._from, "{CollectionNames.USERS.value}/")
-                    RETURN e._from)
-            )
-                LET u = DOCUMENT(user_id)
-                FILTER u != null AND u.orgId == @org_id
-                SORT u._key
-                RETURN {{id: u._key, name: u.fullName, email: u.email}}
+            FOR rec IN {CollectionNames.RECORDS.value}
+                FILTER rec._key == @record_id
+                FOR n IN 1..1 ANY rec {CollectionNames.ENTITY_RELATIONS.value}
+                    OPTIONS {{order: "bfs", uniqueVertices: "global"}}
+                    FILTER n != null AND IS_SAME_COLLECTION("{collection}", n) AND {scope}
+                    SORT n._key
+                    RETURN {{id: n._key, {fields}}}
             """,
             bind_vars={"record_id": record_id, "org_id": org_id},
         )
         return [dict(r) for r in rows or [] if r]
+
+    async def get_record_group_organization(
+        self, record_group_id: str, org_id: str, transaction: str | None = None,
+    ) -> str | None:
+        """See :meth:`IGraphDBProvider.get_record_group_organization`."""
+        if not record_group_id or not org_id:
+            return None
+        _, scope, _ = self._LINKED_ENTITY_NODES[EntityType.ORGANIZATION.value]
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR n IN 1..1 OUTBOUND CONCAT("{CollectionNames.RECORD_GROUPS.value}/", @group_id)
+                {CollectionNames.DEAL_OF.value}
+                FILTER n != null AND IS_SAME_COLLECTION("{CollectionNames.ORGS.value}", n) AND {scope}
+                SORT n._key
+                LIMIT 1
+                RETURN n._key
+            """,
+            bind_vars={"group_id": record_group_id, "org_id": org_id},
+            txn_id=transaction,
+        )
+        return next((r for r in rows or [] if r), None)
+
+    async def stamp_external_org_parents(self, org_id: str) -> int:
+        """See :meth:`IGraphDBProvider.stamp_external_org_parents`."""
+        if not org_id:
+            return 0
+        orgs = CollectionNames.ORGS.value
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR n IN 1..1 OUTBOUND CONCAT("{orgs}/", @org_id)
+                {CollectionNames.PROSPECT.value}, {CollectionNames.CUSTOMER.value}
+                OPTIONS {{uniqueVertices: "global", order: "bfs"}}
+                FILTER n != null AND IS_SAME_COLLECTION("{orgs}", n)
+                FILTER n.isExternal == true AND n.parentOrgId == null
+                UPDATE n WITH {{parentOrgId: @org_id}} IN {orgs}
+                RETURN 1
+            """,
+            bind_vars={"org_id": org_id},
+        )
+        return len(rows or [])
 
     async def get_permitted_entity_records(
         self,
@@ -17890,8 +17949,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         for ref_type, ref_ids in ids_by_type.items():
             edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[ref_type]
             targets = ", ".join(f'CONCAT("{c}/", ref_id)' for c in target_collections)
-            if ref_type == EntityType.PERSON.value:
-                linked = self._person_records_loop("ref_id")
+            if ref_type in self._LINKED_ENTITY_NODES:
+                linked = self._linked_records_loop(ref_type, "ref_id")
             else:
                 linked = f"""FOR edge IN {edge_collection}
                         FILTER edge._to IN targets

@@ -9001,3 +9001,13 @@ class TestCoverageFinalPush:
                 tx, "records", "externalRecordId", ["a", "b"], batch_size=2,
             )
         assert len(result) == 1
+
+
+def test_an_account_records_the_tenant_it_belongs_to() -> None:
+    """KG-13: an account is an organisation entity of its tenant only; the
+    tenant is what scopes it in search and in name matching."""
+    connector = _make_connector()
+    connector.data_entities_processor.org_id = "org-1"
+    account = connector._create_org(name="Acme", is_external=True)
+    assert account.to_arango_org()["parentOrgId"] == "org-1"
+    assert connector._create_org(name="Acme", is_external=True, parent_org_id="org-2").parent_org_id == "org-2"

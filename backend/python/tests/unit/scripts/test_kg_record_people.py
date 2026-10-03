@@ -36,6 +36,8 @@ def _graph(pages: list[list[str]], failing: frozenset[str] = frozenset()) -> Mag
     graph.get_user_by_email = AsyncMock(side_effect=lambda email: SimpleNamespace(id=email.split("@")[0]))
     graph.get_user_by_source_id = AsyncMock(return_value=None)
     graph.update_node = AsyncMock(return_value=True)
+    graph.get_record_group_organization = AsyncMock(return_value=None)
+    graph.stamp_external_org_parents = AsyncMock(return_value=0)
     return graph
 
 
@@ -51,13 +53,15 @@ async def test_a_dry_run_counts_edges_and_writes_nothing() -> None:
     assert _lines(out)[-1]["total"] == {"records": 2, "edges": 4, "skipped": 0, "failed_pages": 0}
     data_store.execute_idempotent_in_transaction.assert_not_awaited()
     graph.update_node.assert_not_awaited()
+    graph.stamp_external_org_parents.assert_not_awaited()
 
 
 async def test_apply_writes_each_page_in_one_retried_transaction() -> None:
     graph, out = _graph([["m1"], ["m2"]]), io.StringIO()
     tx_store = MagicMock(
         get_user_by_email=graph.get_user_by_email, get_user_by_source_id=graph.get_user_by_source_id,
-        delete_edges_from=AsyncMock(), batch_create_entity_relations=AsyncMock(),
+        delete_edges_between_collections=AsyncMock(), batch_create_entity_relations=AsyncMock(),
+        get_record_group_organization=graph.get_record_group_organization,
     )
     data_store = MagicMock()
 
@@ -82,7 +86,8 @@ async def test_apply_has_the_entity_index_project_the_orgs_people_again() -> Non
     graph, data_store = _graph([["m1"]]), MagicMock()
     tx_store = MagicMock(
         get_user_by_email=graph.get_user_by_email, get_user_by_source_id=graph.get_user_by_source_id,
-        delete_edges_from=AsyncMock(), batch_create_entity_relations=AsyncMock(),
+        delete_edges_between_collections=AsyncMock(), batch_create_entity_relations=AsyncMock(),
+        get_record_group_organization=graph.get_record_group_organization,
     )
 
     async def _run(fn: object) -> int:
@@ -106,7 +111,7 @@ async def test_a_failed_page_is_reported_and_the_run_carries_on() -> None:
     code = await backfill(graph, MagicMock(), "org-1", apply=False, logger=logging.getLogger("t"), out=out)
     lines = _lines(out)
     assert code == 1
-    assert lines[0] == {"after": "m1", "error": "RuntimeError"}
+    assert lines[1] == {"after": "m1", "error": "RuntimeError"}
     assert lines[-1]["total"] == {"records": 1, "edges": 2, "skipped": 0, "failed_pages": 1}
 
 
@@ -123,5 +128,37 @@ async def test_records_that_could_not_be_read_are_reported() -> None:
     graph, out = _graph([["m1", "m2"]]), io.StringIO()
     graph.get_typed_records_batch = AsyncMock(return_value={"m1": _mail("m1")})
     await backfill(graph, MagicMock(), "org-1", apply=False, logger=logging.getLogger("t"), out=out)
-    assert _lines(out)[0]["skipped"] == 1
+    assert _lines(out)[1]["skipped"] == 1
     assert _lines(out)[-1]["total"]["skipped"] == 1
+
+
+async def test_apply_stamps_accounts_first_and_links_deals_to_them() -> None:
+    from app.models.entities import DealRecord
+
+    graph, out = _graph([["d1"]]), io.StringIO()
+    deal = DealRecord(id="d1", external_record_id="d1", record_group_id="rg-1", **{**BASE, "record_type": RecordType.DEAL})
+    graph.get_typed_records_batch = AsyncMock(return_value={"d1": deal})
+    graph.get_record_group_organization = AsyncMock(return_value="acme")
+    graph.stamp_external_org_parents = AsyncMock(return_value=2)
+    tx_store = MagicMock(
+        get_user_by_email=graph.get_user_by_email, get_user_by_source_id=graph.get_user_by_source_id,
+        delete_edges_between_collections=AsyncMock(), batch_create_entity_relations=AsyncMock(),
+        get_record_group_organization=graph.get_record_group_organization,
+    )
+    data_store = MagicMock()
+
+    async def _run(fn: object) -> int:
+        return await fn(tx_store)
+
+    data_store.execute_idempotent_in_transaction = AsyncMock(side_effect=_run)
+    code = await backfill(graph, data_store, "org-1", apply=True, logger=logging.getLogger("t"), out=out)
+    assert code == 0
+    graph.stamp_external_org_parents.assert_awaited_once_with("org-1")
+    total = _lines(out)[-1]
+    assert (total["accounts_stamped"], total["total"]["edges"]) == (2, 1)
+
+    graph.stamp_external_org_parents = AsyncMock(side_effect=RuntimeError("down"))
+    graph.page_record_ids_by_type = AsyncMock(side_effect=[["d1"], []])
+    out = io.StringIO()
+    assert await backfill(graph, data_store, "org-1", apply=True, logger=logging.getLogger("t"), out=out) == 1
+    assert _lines(out)[0] == {"stamp_accounts": "failed", "error": "RuntimeError"}

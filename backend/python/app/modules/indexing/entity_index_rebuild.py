@@ -54,8 +54,8 @@ if TYPE_CHECKING:
 # Bump when what a pass writes changes, so its documents are re-projected;
 # separate, so a change to one pass does not re-scan every connector.
 ENTITY_INDEX_VERSION = 1
-# 2: people (KG-13).
-ORG_PASS_VERSION = 2
+# 2: people, 3: CRM accounts as organisations (KG-13).
+ORG_PASS_VERSION = 3
 
 LEADER_KEY = "entity_index_rebuild:leader"
 PAGE_SIZE = 200
@@ -95,6 +95,7 @@ ENTITY_INDEX_TAXONOMY_SOURCES: tuple[str, ...] = (
     CollectionNames.SUBCATEGORIES3.value,
     CollectionNames.TOPICS.value,
     _USERS,
+    _ORGS,
 )
 
 _SWEPT_TYPES: tuple[str, ...] = (
@@ -105,6 +106,7 @@ _SWEPT_TYPES: tuple[str, ...] = (
     EntityType.DEPARTMENT.value,
     EntityType.RECORD_GROUP.value,
     EntityType.PERSON.value,
+    EntityType.ORGANIZATION.value,
 )
 # Node collection of a swept point; subcategories are resolved by level.
 _SWEPT_COLLECTIONS: dict[str, str] = {
@@ -114,7 +116,10 @@ _SWEPT_COLLECTIONS: dict[str, str] = {
     EntityType.DEPARTMENT.value: _DEPARTMENTS,
     EntityType.RECORD_GROUP.value: _RECORD_GROUPS,
     EntityType.PERSON.value: _USERS,
+    EntityType.ORGANIZATION.value: _ORGS,
 }
+# The field naming a swept node's tenant, where it is not orgId.
+_SWEPT_OWNER_FIELDS: dict[str, str] = {_ORGS: "parentOrgId"}
 _SUBCATEGORY_COLLECTIONS: dict[str, str] = {
     kind.level: collection for collection, kind in KINDS_BY_COLLECTION.items() if kind.level
 }
@@ -521,12 +526,13 @@ class EntityIndexRebuilder:
         for collection, group in by_collection.items():
             for start in range(0, len(group), _SWEEP_LOOKUP_BATCH):
                 batch = group[start:start + _SWEEP_LOOKUP_BATCH]
+                owner_field = _SWEPT_OWNER_FIELDS.get(collection, "orgId")
                 rows = await self.graph.get_nodes_by_field_in(
                     collection, "id", sorted({r.entity_id for r in batch}),
-                    return_fields=["id", "orgId", "mergedInto"], raise_on_error=True,
+                    return_fields=["id", owner_field, "mergedInto"], raise_on_error=True,
                 )
                 owner = {
-                    _key_of(row): row.get("orgId") for row in rows or [] if not row.get("mergedInto")
+                    _key_of(row): row.get(owner_field) for row in rows or [] if not row.get("mergedInto")
                 }
                 for ref in batch:
                     if ref.entity_id not in owner or owner[ref.entity_id] not in (None, org_id):

@@ -5925,6 +5925,41 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_record_organizations(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
+        """External organisations of ``org_id`` (``isExternal``, with
+        ``parentOrgId == org_id``) linked to the record by an
+        ``entityRelations`` edge, each once: ``{"id", "name"}``.
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_group_organization(
+        self, record_group_id: str, org_id: str, transaction: str | None = None,
+    ) -> str | None:
+        """The external organisation of ``org_id`` a CRM account's record
+        group belongs to (its ``dealOf`` edge), or None.
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def stamp_external_org_parents(self, org_id: str) -> int:
+        """Set ``parentOrgId = org_id`` on the external organisations the
+        tenant org ``org_id`` has a ``prospect`` or ``customer`` edge to and
+        that carry no tenant yet (written before accounts recorded one).
+        Returns how many were stamped.
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
     async def get_permitted_entity_records(
         self,
         refs: list[dict[str, Any]],

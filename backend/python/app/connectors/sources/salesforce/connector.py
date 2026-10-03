@@ -800,8 +800,10 @@ class SalesforceConnector(BaseConnector):
         return Person(**kwargs)
 
     def _create_org(self, **kwargs) -> Org:
-        """EE override: injects org_id as parentOrgId for tenant isolation on external Org nodes."""
-        return Org(**kwargs)
+        """An account's external organisation, recording its tenant as
+        parentOrgId (KG-13: it scopes the organisation entity). EE overrides
+        this to the same effect."""
+        return Org(**{"parent_org_id": self.data_entities_processor.org_id, **kwargs})
 
     def __init__(
         self,

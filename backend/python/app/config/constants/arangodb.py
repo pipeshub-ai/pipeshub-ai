@@ -658,6 +658,19 @@ class EntityRelations(Enum):
     ADDRESSED_TO = "ADDRESSED_TO"
     REVIEWED_BY = "REVIEWED_BY"
     OWNED_BY = "OWNED_BY"
+    # Record -> the CRM account (external organisation) it belongs to (KG-13).
+    FOR_ACCOUNT = "FOR_ACCOUNT"
+
+
+class EntityOrigin(str, Enum):
+    """Where a record -> entity link came from (KG-13). Stored as ``origin``
+    on ``entityRelations`` edges; an edge without one predates the field
+    and came from a connector."""
+
+    # Taken directly from a connector's structured data.
+    INFERRED = "INFERRED"
+    # Produced by a model or agent while indexing or building knowledge.
+    EXTRACTED = "EXTRACTED"
 
 
 class EventTypes(Enum):

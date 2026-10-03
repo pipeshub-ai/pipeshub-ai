@@ -14,6 +14,9 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.connectors.core.base.data_processor.record_organizations import (
+    link_record_organization,
+)
 from app.connectors.core.base.data_processor.record_people import link_record_people
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.core.base.data_store.data_store import (
@@ -721,8 +724,10 @@ class DataSourceEntitiesProcessor:
 
     async def _handle_record_people(self, record: Record, tx_store: TransactionStore) -> None:
         """Link the record to the members it names (assignee, sender,
-        reviewer...); see ``record_people``."""
+        reviewer...) and to the CRM account it belongs to; see
+        ``record_people`` and ``record_organizations``."""
         await link_record_people(record, tx_store, self.logger)
+        await link_record_organization(record, tx_store, self.logger)
 
     async def _handle_message_entity_edges(self, message: MessageRecord, tx_store: TransactionStore) -> None:
         """
