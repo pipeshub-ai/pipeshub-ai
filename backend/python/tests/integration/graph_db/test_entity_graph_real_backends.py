@@ -805,6 +805,9 @@ class TestNeo4jLegacyAliasHeal:
     """KG-50: aliases stored as node lists before TaxonomyAlias nodes existed
     are healed once at startup, so tier 0 matches them again."""
 
+    # A deadlocked heal (the batches waiting on a lock the outer query holds)
+    # hangs for ever; fail fast instead.
+    @pytest.mark.timeout(60)
     async def test_list_only_aliases_get_alias_nodes_once(self, neo4j) -> None:
         provider, org_id = neo4j
         key = f"{org_id}-legacy-alias"
