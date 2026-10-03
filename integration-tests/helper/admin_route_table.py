@@ -32,11 +32,12 @@ from typing import Any
 ABSENT_ID = "65f0c0ffee00000000000000"
 INVALID_ID = "not-an-id"
 
-# userAdminCheck and adminValidator both throw BadRequestError, so a refused
-# member gets 400 rather than 403. The message is what tells it apart from a
-# validation error, which is also a 400.
-NODE_REFUSAL_STATUS = 400
-NODE_REFUSAL_MESSAGE = "Admin access required"
+# userAdminCheck and adminValidator both throw ForbiddenError with
+# ADMIN_ACCESS_REQUIRED_MESSAGE (user_management/services/user-admin.service.ts).
+NODE_REFUSAL_STATUS = 403
+NODE_REFUSAL_MESSAGE = "You need admin access to do this. Ask an admin in your organisation."
+# The wording Node used before #3696 (with HTTP 400); seeing it means that refusal is back.
+OLD_NODE_REFUSAL_MESSAGE = "Admin access required"
 
 
 @dataclass(frozen=True)
@@ -302,6 +303,7 @@ PYTHON_CONDITIONAL_ADMIN = {
     "connectors/api/router.py::get_all_oauth_configs": "secrets are masked for members",
     "connectors/api/router.py::list_oauth_configs": "secrets are masked for members",
     "connectors/api/router.py::get_oauth_config_by_id": "secrets are masked for members",
+    "api/routes/toolsets.py::get_toolset_instances": "secrets are masked for members",
     "api/routes/toolsets.py::get_toolset_instance": "secrets are masked for members",
     "api/routes/toolsets.py::list_toolset_oauth_configs": "secrets are masked for members",
     # Record reads: an admin may reach a team connector's records; members need a permission.

@@ -11969,12 +11969,12 @@ class Neo4jProvider(IGraphDBProvider):
                 MATCH (file_record)-[:IS_OF_TYPE]->(file:File {isFile: true})
                 WHERE file_record.isDeleted <> true
                   AND toLower(file_record.recordName) = toLower($file_name)
-                  AND file.mimeType = $mime_type
+                  AND coalesce(file_record.mimeType, file.mimeType) = $mime_type
                   AND ($exclude_record_id IS NULL OR file_record.id <> $exclude_record_id)
                   AND NOT EXISTS {
                       MATCH (file_record)<-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]-(:Record)
                   }
-                RETURN file_record, file
+                RETURN file_record, coalesce(file_record.mimeType, file.mimeType) AS mime_type
                 LIMIT 1
                 """
                 params = {
@@ -11989,9 +11989,9 @@ class Neo4jProvider(IGraphDBProvider):
                 MATCH (file_record)-[:IS_OF_TYPE]->(file:File {isFile: true})
                 WHERE file_record.isDeleted <> true
                   AND toLower(file_record.recordName) = toLower($file_name)
-                  AND file.mimeType = $mime_type
+                  AND coalesce(file_record.mimeType, file.mimeType) = $mime_type
                   AND ($exclude_record_id IS NULL OR file_record.id <> $exclude_record_id)
-                RETURN file_record, file
+                RETURN file_record, coalesce(file_record.mimeType, file.mimeType) AS mime_type
                 LIMIT 1
                 """
                 params = {
@@ -12005,12 +12005,11 @@ class Neo4jProvider(IGraphDBProvider):
             
             if results:
                 file_record_dict = dict(results[0]["file_record"])
-                file_dict = dict(results[0]["file"])
                 record_node = self._neo4j_to_arango_node(file_record_dict, CollectionNames.RECORDS.value)
                 return {
                     "_key": record_node.get("_key"),
                     "name": record_node.get("recordName"),
-                    "mimeType": file_dict.get("mimeType"),
+                    "mimeType": results[0]["mime_type"],
                 }
             
             return None
@@ -12033,10 +12032,13 @@ class Neo4jProvider(IGraphDBProvider):
             if parent_folder_id is None:
                 query = """
                 MATCH (rec:Record)-[:BELONGS_TO]->(kb:App {id: $kb_id, type: "KB"})
+                OPTIONAL MATCH (rec)-[:IS_OF_TYPE]->(file:File {isFile: true})
+                WITH rec, coalesce(rec.mimeType, file.mimeType) AS mime_type
                 WHERE rec.isDeleted <> true
-                  AND NOT rec.mimeType = "application/vnd.folder"
+                  AND mime_type IS NOT NULL
+                  AND mime_type <> "application/vnd.folder"
                   AND NOT (rec)<-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]-(:Record)
-                RETURN toLower(rec.recordName) AS name_lower, rec.mimeType AS mime_type
+                RETURN toLower(rec.recordName) AS name_lower, mime_type
                 """
                 params: dict = {"kb_id": kb_id}
             else:
@@ -12046,7 +12048,7 @@ class Neo4jProvider(IGraphDBProvider):
                       (rec:Record)
                 MATCH (rec)-[:IS_OF_TYPE]->(file:File {isFile: true})
                 WHERE rec.isDeleted <> true
-                RETURN toLower(rec.recordName) AS name_lower, file.mimeType AS mime_type
+                RETURN toLower(rec.recordName) AS name_lower, coalesce(rec.mimeType, file.mimeType) AS mime_type
                 """
                 params = {"parent_folder_id": parent_folder_id}
             results = await self.client.execute_query(query, parameters=params, txn_id=transaction)
@@ -15180,13 +15182,19 @@ class Neo4jProvider(IGraphDBProvider):
         record_id: str,
         transaction: str | None = None
     ) -> dict | None:
-        """Get parent information for a record."""
+        """Return ``{id, type}`` of the record's parent, or None at the root.
+
+        ``type`` is ``"record"`` or ``"recordGroup"``, as on ArangoDB. Callers read
+        ``"record"`` as "the parent is a folder"; a KB folder's recordType is FILE.
+        """
         try:
             query = """
-            MATCH (parent:Record)-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(r:Record {id: $record_id})
+            MATCH (parent)-[rel:RECORD_RELATION]->(r:Record {id: $record_id})
+            WHERE rel.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+              AND (parent:Record OR parent:RecordGroup)
             RETURN {
                 id: parent.id,
-                type: parent.recordType
+                type: CASE WHEN parent:RecordGroup THEN "recordGroup" ELSE "record" END
             } as parent_info
             LIMIT 1
             """

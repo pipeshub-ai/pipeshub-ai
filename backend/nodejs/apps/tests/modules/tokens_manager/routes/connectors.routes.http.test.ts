@@ -39,8 +39,8 @@ describe('Connector routes over HTTP', () => {
       it(`refuses a member's ${operation} before it reaches the connector service`, async () => {
         const r = await call(h, 'POST', `/vector-store/${operation}`, sessionToken(h, member))
 
-        expect(r.status).to.be.within(400, 499)
-        expect(errorMessage(r)).to.equal('Admin access required')
+        expect(r.status).to.equal(403)
+        expect(errorMessage(r)).to.equal('You need admin access to do this. Ask an admin in your organisation.')
         expect(h.backend.calls).to.have.length(0)
       })
 

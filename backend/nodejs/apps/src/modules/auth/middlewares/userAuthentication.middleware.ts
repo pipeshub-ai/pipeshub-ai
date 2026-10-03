@@ -3,11 +3,14 @@ import { isJwtTokenValid } from '../utils/validateJwt';
 import { AuthSessionRequest } from './types';
 import { SessionService } from '../services/session.service';
 import {
-  BadRequestError,
+  ForbiddenError,
   NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
-import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
+import {
+  ADMIN_ACCESS_REQUIRED_MESSAGE,
+  isUserOrgAdmin,
+} from '../../user_management/services/user-admin.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 
 export const userValidator = (
@@ -58,7 +61,7 @@ export const adminValidator = async (
     const isAdmin = await isUserOrgAdmin(userId, orgId);
 
     if (!isAdmin) {
-      throw new BadRequestError('Admin access required');
+      throw new ForbiddenError(ADMIN_ACCESS_REQUIRED_MESSAGE);
     }
 
     next();

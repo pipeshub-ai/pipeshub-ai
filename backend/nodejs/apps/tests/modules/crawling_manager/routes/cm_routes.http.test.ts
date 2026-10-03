@@ -341,8 +341,8 @@ describe('Crawling manager over HTTP', () => {
       await send('POST', `/${TYPE}/drive-olga/schedule`, session(OTHER_A), daily(6, 0))
 
       const res = await send('DELETE', '/schedule/all', session(MEMBER_A))
-      expect(res.status).to.equal(400)
-      expect(errorMessage(res)).to.equal('Admin access required')
+      expect(res.status).to.equal(403)
+      expect(errorMessage(res)).to.equal('You need admin access to do this. Ask an admin in your organisation.')
       expect(await repeatables()).to.have.length(2)
       expect(pendingRuns()).to.have.length(2)
     })

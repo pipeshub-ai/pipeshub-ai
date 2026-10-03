@@ -12645,7 +12645,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER child.isDeleted != true
                     LET file_doc = DOCUMENT(@@files_collection, child._key)
                     FILTER file_doc != null AND file_doc.isFile == true
-                    RETURN {name_lower: LOWER(child.recordName), mime_type: file_doc.mimeType}
+                    RETURN {name_lower: LOWER(child.recordName), mime_type: NOT_NULL(child.mimeType, file_doc.mimeType)}
                 """
                 bind_vars: dict[str, Any] = {
                     "parent_from": parent_from,
@@ -12671,7 +12671,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             RETURN 1
                     )
                     FILTER parent_edge == null
-                    RETURN {name_lower: LOWER(child.recordName), mime_type: file_doc.mimeType}
+                    RETURN {name_lower: LOWER(child.recordName), mime_type: NOT_NULL(child.mimeType, file_doc.mimeType)}
                 """
                 bind_vars = {
                     "parent_from": parent_from,
@@ -13089,13 +13089,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER parent_edge == null
                     LET file_doc = DOCUMENT(@@files_collection, file_record._key)
                     FILTER file_doc != null AND file_doc.isFile == true
-                    FILTER file_doc.mimeType == @mime_type
+                    LET mime_type = NOT_NULL(file_record.mimeType, file_doc.mimeType)
+                    FILTER mime_type == @mime_type
                     LET file_name_l = LOWER(file_record.recordName)
                     FILTER file_name_l IN @name_variants
                     RETURN {
                         _key: file_record._key,
                         name: file_record.recordName,
-                        mimeType: file_doc.mimeType
+                        mimeType: mime_type
                     }
                 """
                 bind_vars = {
@@ -13120,13 +13121,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER @exclude_record_id == null OR file_record._key != @exclude_record_id
                     LET file_doc = DOCUMENT(@@files_collection, file_record._key)
                     FILTER file_doc != null AND file_doc.isFile == true
-                    FILTER file_doc.mimeType == @mime_type
+                    LET mime_type = NOT_NULL(file_record.mimeType, file_doc.mimeType)
+                    FILTER mime_type == @mime_type
                     LET file_name_l = LOWER(file_record.recordName)
                     FILTER file_name_l IN @name_variants
                     RETURN {
                         _key: file_record._key,
                         name: file_record.recordName,
-                        mimeType: file_doc.mimeType
+                        mimeType: mime_type
                     }
                 """
                 bind_vars = {

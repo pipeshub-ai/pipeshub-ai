@@ -2251,6 +2251,11 @@ class TestSiblingConflictHelpers:
         )
         assert err["code"] == 409
 
+    def test_file_mime_type_prefers_the_record_and_falls_back_to_the_file_node(self, service) -> None:
+        assert service._file_mime_type({"mimeType": "text/plain"}, {"mimeType": "application/pdf"}) == "text/plain"
+        assert service._file_mime_type({}, {"mimeType": "application/pdf"}) == "application/pdf"
+        assert service._file_mime_type({}, {}) == ""
+
 
 # ===========================================================================
 # _resolve_user_ids_to_graph_keys
