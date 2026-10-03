@@ -47,6 +47,13 @@ Vaccination records are retained for three years.
 """
 
 
+def _unique(body: bytes) -> bytes:
+    # Identical bytes anywhere in the org share one virtual record id, filed
+    # under the first copy's knowledge base; a parallel worker's upload would
+    # then own this fixture's envelope.
+    return body + f"\nReference {uuid.uuid4().hex}\n".encode()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _cleanup_indexing_models_configured(ai_models_configured) -> None:
     """Seed the org LLM and embedding before anything here uploads.
@@ -78,7 +85,9 @@ async def _indexed_record(
     name = f"{label}-{uuid.uuid4().hex[:6]}.md"
 
     try:
-        upload = kb_client.upload_file(kb_id, name, body, mimetype="text/markdown")
+        upload = kb_client.upload_file(
+            kb_id, name, _unique(body), mimetype="text/markdown"
+        )
         assert upload["summary"]["failed"] == 0, f"Upload failed: {upload}"
         record_id = upload["records"][0]["recordId"]
 
@@ -156,7 +165,7 @@ async def record_in_a_folder(
 
         name = f"in-folder-{uuid.uuid4().hex[:6]}.md"
         upload = kb_client.upload_file(
-            kb_id, name, POLICY, folder_id=folder_id, mimetype="text/markdown"
+            kb_id, name, _unique(POLICY), folder_id=folder_id, mimetype="text/markdown"
         )
         assert upload["summary"]["failed"] == 0, f"Upload failed: {upload}"
         record_id = upload["records"][0]["recordId"]
