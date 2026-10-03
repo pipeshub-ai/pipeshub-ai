@@ -11688,6 +11688,7 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         connector_id: str | None = None,
+        require_live_parent: bool = False,
     ) -> list[str]:
         """See ``IGraphDBProvider.restore_records``."""
         if not restores:
@@ -11712,6 +11713,13 @@ class Neo4jProvider(IGraphDBProvider):
                   WHERE taken.id <> claim.id AND ({cypher_live_record("taken")} OR taken.id IN $ids)
                   RETURN taken
               }}
+              AND NOT ($require_live_parent AND EXISTS {{
+                  UNWIND $ids AS child_id
+                  MATCH (parent:Record)-[edge:RECORD_RELATION]->(:Record {{id: child_id}})
+                  WHERE edge.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                    AND parent.isDeleted = true AND NOT parent.id IN $ids
+                  RETURN parent
+              }})
             WITH found, COLLECT {{
                 UNWIND $reclaims AS claim
                 MATCH (holder:Record {{externalRecordId: claim.ext, connectorId: $connector_id}})
@@ -11736,6 +11744,7 @@ class Neo4jProvider(IGraphDBProvider):
                 "reclaims": reclaims,
                 "connector_id": connector_id,
                 "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
+                "require_live_parent": require_live_parent,
                 "batch_id": batch_id,
                 "now": get_epoch_timestamp_in_ms(),
             },

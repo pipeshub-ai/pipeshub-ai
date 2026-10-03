@@ -9,7 +9,10 @@ provider, with the KB's ``DataSourceEntitiesProcessor`` on a real
   back the whole subtree: every delete field cleared, visible again in the
   collection and folder listings and the live-only reads, its files queued
   for indexing again and the folder not.
-- A file whose folder went to the trash after it waits for the folder.
+- A file whose folder went to the trash after it waits for the folder, also
+  when the folder goes to the trash after the restore looked: the write checks
+  again. ``restore_records`` checks the parent only when asked, as the KB
+  restore does; the connector's restore does not.
 - A file whose name a new upload has taken comes back as "name (restored)",
   in the graph and in its type doc.
 - A record that gave its external id up gets it back when it is free, and is
@@ -62,7 +65,10 @@ from app.connectors.sources.localKB.handlers import kb_service as kb_service_mod
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.models.entities import FileRecord, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
-from app.services.graph_db.common.utils import TRASH_STATE_FIELDS, TRASHED_EXTERNAL_ID_PREFIX
+from app.services.graph_db.common.utils import (
+    TRASH_STATE_FIELDS,
+    TRASHED_EXTERNAL_ID_PREFIX,
+)
 from app.services.graph_db.neo4j import neo4j_provider as neo4j_provider_module
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -307,6 +313,106 @@ async def test_a_file_whose_folder_was_trashed_after_it_waits_for_the_folder(wor
     assert await world.live(("folder", "file_a", "file_b")) == {"folder", "file_b"}
     assert (await world.restore("file_a"))["success"] is True
     assert await world.live(("file_a",)) == {"file_a"}
+
+
+async def _restore_while_the_folder_goes_to_the_trash(
+    world: _World, monkeypatch: pytest.MonkeyPatch, owner: object, method: str,
+) -> dict:
+    """Restore file_a, trashing its folder when *owner*.*method* is first called."""
+    original = getattr(owner, method)
+    trashed_the_folder = False
+
+    async def trash_the_folder_first(*args: object, **kwargs: object) -> object:
+        nonlocal trashed_the_folder
+        if not trashed_the_folder:
+            trashed_the_folder = True
+            await world.trash("folder")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(owner, method, trash_the_folder_first)
+    result = await world.restore("file_a")
+    monkeypatch.setattr(owner, method, original)
+    assert trashed_the_folder, "the restore never reached its write"
+    return result
+
+
+async def _assert_refused_for_the_folder(world: _World, refused: dict, batch: str) -> None:
+    assert (refused["success"], refused["code"]) == (False, 409), refused
+    assert refused["reason"] == (
+        "'file_a.pdf' was in 'Docs', which is also in the trash. Restore 'Docs' first, then restore 'file_a.pdf'."
+    )
+    assert refused["parentId"] == world.ids["folder"]
+    file_a = await world.stored("file_a")
+    assert (file_a["isDeleted"], file_a["deleteBatchId"]) == (True, batch), "the file came back under a trashed folder"
+    assert world.reindexed() == set()
+
+
+async def test_a_folder_trashed_after_the_check_keeps_its_file_in_the_trash(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The KB restore reads the folder before its write, which used to trust that read."""
+    await world.trash("file_a")
+    batch = (await world.stored("file_a"))["deleteBatchId"]
+    world.producer.events.clear()
+
+    refused = await _restore_while_the_folder_goes_to_the_trash(
+        world, monkeypatch, world.processor, "restore_trashed_records"
+    )
+
+    await _assert_refused_for_the_folder(world, refused, batch)
+
+
+# Neo4j only, and not collected for Arango at all: the graph jobs fail on any skip. Arango
+# runs this write in the caller's stream transaction, whose snapshot is taken when the
+# transaction begins, so a folder trashed inside that transaction is not seen there.
+@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
+async def test_a_folder_trashed_just_before_the_write_keeps_its_file_in_the_trash(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await world.trash("file_a")
+    batch = (await world.stored("file_a"))["deleteBatchId"]
+    world.producer.events.clear()
+
+    refused = await _restore_while_the_folder_goes_to_the_trash(world, monkeypatch, world.graph, "restore_records")
+
+    await _assert_refused_for_the_folder(world, refused, batch)
+
+
+async def test_restore_records_checks_the_parent_only_when_asked(world: _World) -> None:
+    await world.trash("file_a")
+    await world.trash("folder")
+    batch = (await world.stored("file_a"))["deleteBatchId"]
+
+    assert await world.graph.restore_records([{"id": world.ids["file_a"]}], batch, require_live_parent=True) == []
+    assert (await world.stored("file_a"))["isDeleted"] is True
+
+    # The connector's restore asks for nothing, and brings the file back as before.
+    restored = await world.processor.restore_trashed_records(
+        world.kb_id, batch, [_restore_item(world, "file_a")], restore_source=DeleteSource.CONNECTOR,
+    )
+    assert restored == [world.ids["file_a"]]
+    assert await world.live(("folder", "file_a")) == {"file_a"}
+
+
+async def test_a_sync_restore_does_not_wait_for_the_parent(world: _World) -> None:
+    """The connector restore keeps its behaviour: only the KB restore checks the parent."""
+    world.ids["drive_folder"] = f"drive_folder-{uuid.uuid4().hex[:12]}"
+    await world.graph.batch_upsert_records([_file(world, "drive_folder", kb=False, folder=True)])
+    await world.graph.batch_create_edges(
+        [_edge(world.ids["drive_folder"], CollectionNames.RECORDS.value, world.ids["drive_file"],
+               CollectionNames.RECORDS.value, relationshipType="PARENT_CHILD")],
+        collection=CollectionNames.RECORD_RELATIONS.value,
+    )
+    await world.processor.on_record_deleted(world.ids["drive_file"])
+    await world.processor.on_record_deleted(world.ids["drive_folder"])
+    assert (await world.stored("drive_folder"))["isDeleted"] is True
+
+    seen_again = _file(world, "drive_file", kb=False, external_revision_id="rev-1")
+    seen_again.id = str(uuid.uuid4())
+    await world.processor.on_new_records([(seen_again, [])])
+
+    assert (await world.stored("drive_file"))["isDeleted"] is False
+    assert (await world.stored("drive_folder"))["isDeleted"] is True
 
 
 async def test_a_file_whose_name_was_taken_comes_back_renamed(world: _World) -> None:

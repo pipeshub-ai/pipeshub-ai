@@ -63,6 +63,7 @@ class _Store:
         self.records = {r.id: r for r in records}
         self.restored: list[tuple[list[dict], str | None]] = []
         self.released: list[dict] = []
+        self.parents: dict[str, str] = {}
 
     async def get_record_by_external_id(
         self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
@@ -86,7 +87,12 @@ class _Store:
         return True
 
     async def restore_records(
-        self, restores: list[dict], batch_id: str | None, *, connector_id: str | None = None
+        self,
+        restores: list[dict],
+        batch_id: str | None,
+        *,
+        connector_id: str | None = None,
+        require_live_parent: bool = False,
     ) -> list[str]:
         """All or nothing, with the external ids taken back in the same write, as the providers do."""
         ids = {r["id"] for r in restores}
@@ -94,6 +100,12 @@ class _Store:
             (rec := self.records.get(r["id"])) is not None and rec.is_deleted and rec.delete_batch_id == batch_id
             for r in restores
         )
+        if require_live_parent and any(
+            (parent := self.records.get(self.parents.get(rid, ""))) is not None
+            and parent.is_deleted and parent.id not in ids
+            for rid in ids
+        ):
+            return []
         claims = {r["id"]: r["reclaimExternalRecordId"] for r in restores if r.get("reclaimExternalRecordId")}
         taken = any(
             rec.external_record_id == ext and rec.id != rid and (not rec.is_deleted or rec.id in ids)
@@ -119,6 +131,18 @@ def _trashed(record_id: str, batch: str = "b-1", **overrides) -> Record:
 
 
 class TestRestoreTrashedRecords:
+    async def test_a_trashed_parent_refuses_only_when_asked(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, _Store([_trashed("r1"), _trashed("folder-1", batch="b-2")]))
+        store.parents = {"r1": "folder-1"}
+        with patch(f"{MODULE}.notify_kb_records_changed", AsyncMock()), \
+                patch(f"{MODULE}.record_restored"):
+            with pytest.raises(RestoreRefused) as refused:
+                await proc.restore_trashed_records("c1", "b-1", [{"id": "r1"}], require_live_parent=True)
+            assert refused.value.code == 409
+            assert store.restored == []
+            assert await proc.restore_trashed_records("c1", "b-1", [{"id": "r1"}]) == ["r1"]
+
     async def test_the_batch_comes_back_in_one_transaction(self) -> None:
         proc = _processor()
         store = _with_store(proc, _Store([_trashed("r1"), _trashed("r2")]))

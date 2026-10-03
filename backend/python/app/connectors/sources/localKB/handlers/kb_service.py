@@ -1583,18 +1583,8 @@ class KnowledgeBaseService:
                 }
 
             name = record.get("recordName") or "This item"
-            for item in members:
-                if item.get("parentIsDeleted") and item.get("parentId") not in member_ids:
-                    parent = item.get("parentName") or "the folder it was in"
-                    return {
-                        "success": False,
-                        "code": 409,
-                        "reason": (
-                            f"'{name}' was in '{parent}', which is also in the trash. Restore "
-                            f"'{parent}' first, then restore '{name}'."
-                        ),
-                        "parentId": item.get("parentId"),
-                    }
+            if parent_refusal := self._trashed_parent_refusal(name, members, member_ids):
+                return parent_refusal
 
             renames = await self._restore_renames(kb_id, members, member_ids)
             if renames is None:
@@ -1629,14 +1619,55 @@ class KnowledgeBaseService:
             ]
             processor = await self.processor_for_kb(kb_id)
             try:
-                await processor.restore_trashed_records(kb_id, batch_id, items, restore_source=DeleteSource.USER)
+                # The write checks the folder again, as it can go to the trash after the check above.
+                await processor.restore_trashed_records(
+                    kb_id, batch_id, items, restore_source=DeleteSource.USER, require_live_parent=True
+                )
             except RestoreRefused as refused:
-                return {"success": False, "code": refused.code, "reason": refused.reason, **refused.details}
+                return await self._restore_refused_response(refused, name, kb_id, batch_id, org_id)
 
             return await self._finish_restore(processor, batch_id, members, renames, reindex_ids)
         except Exception as e:
             self.logger.error("❌ Failed to restore record %s: %s", record_id, e, exc_info=True)
             return {"success": False, "code": 500, "reason": action_failed("restore this item")}
+
+    @staticmethod
+    def _trashed_parent_refusal(name: str, members: list[dict], member_ids: set[str]) -> dict | None:
+        """The 409 for a batch whose folder is in the trash outside it, else None."""
+        for item in members:
+            if item.get("parentIsDeleted") and item.get("parentId") not in member_ids:
+                parent = item.get("parentName") or "the folder it was in"
+                return {
+                    "success": False,
+                    "code": 409,
+                    "reason": (
+                        f"'{name}' was in '{parent}', which is also in the trash. Restore "
+                        f"'{parent}' first, then restore '{name}'."
+                    ),
+                    "parentId": item.get("parentId"),
+                }
+        return None
+
+    async def _restore_refused_response(
+        self, refused: RestoreRefused, name: str, kb_id: str, batch_id: str, org_id: str
+    ) -> dict:
+        """The answer for a restore the write refused, nothing written.
+
+        The write only says the batch no longer qualifies, so a folder that
+        went to the trash meanwhile is looked up again to give its own message.
+        """
+        try:
+            batch = await self.graph_provider.get_records_in_delete_batch(batch_id, org_id)
+            members = [item for item in batch if item["record"].get("connectorId") == kb_id]
+            parent_refusal = self._trashed_parent_refusal(
+                name, members, {item["record"]["_key"] for item in members}
+            )
+        except Exception as e:
+            self.logger.warning("Could not re-read delete batch %s after a refused restore: %s", batch_id, e)
+            parent_refusal = None
+        return parent_refusal or {
+            "success": False, "code": refused.code, "reason": refused.reason, **refused.details,
+        }
 
     async def _restore_renames(
         self, kb_id: str, members: list[dict], member_ids: set[str]

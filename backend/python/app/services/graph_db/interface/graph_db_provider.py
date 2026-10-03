@@ -4218,6 +4218,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         connector_id: str | None = None,
+        require_live_parent: bool = False,
     ) -> list[str]:
         """Bring records back from the trash; return the ids restored.
 
@@ -4230,7 +4231,11 @@ class IGraphDBProvider(ABC):
         All or nothing: every item must still be in the trash under
         ``batch_id``, and no live record and no other item may hold an id being
         taken back, or nothing is written and the result is empty, so a restore
-        racing a purge or another restore never brings back part of a batch. A
+        racing a purge or another restore never brings back part of a batch.
+        With ``require_live_parent``, every record an item hangs under (its
+        ``PARENT_CHILD`` or ``ATTACHMENT`` parent) must also be live or among
+        the items, checked in the same write, so a folder trashed after the
+        caller looked keeps its file from coming back under it. A
         write the graph refuses partway also leaves every record as it was,
         even where each statement commits on its own (Neo4j by default). The
         delete fields (``isDeleted``, ``deletedAtTimestamp``, ``deleteSource``,

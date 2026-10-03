@@ -176,7 +176,9 @@ class TestWhatComesBack:
         assert {r["recordId"] for r in result["restoredRecords"]} == {"f1", "c1", "m1"}
         kb, batch, items = mock_processor.restore_trashed_records.await_args.args
         assert (kb, batch) == (KB, "b-1")
-        assert mock_processor.restore_trashed_records.await_args.kwargs == {"restore_source": DeleteSource.USER}
+        assert mock_processor.restore_trashed_records.await_args.kwargs == {
+            "restore_source": DeleteSource.USER, "require_live_parent": True,
+        }
         sets = {i["id"]: i["set"] for i in items}
         assert sets == {"f1": {}, "c1": {"indexingStatus": ProgressStatus.NOT_STARTED.value}, "m1": {}}
         (reindexed,) = mock_processor.reindex_existing_records.await_args.args
@@ -206,6 +208,29 @@ class TestWhatComesBack:
         result = await svc.restore_record("r1", "u1", ORG)
         assert (result["code"], result["reason"], result["conflicting_record_id"]) == (409, "delete 'b.pdf' first", "r9")
         mock_processor.reindex_existing_records.assert_not_called()
+
+    async def test_a_folder_trashed_before_the_write_gets_the_folder_message(self, svc, mock_processor) -> None:
+        child = _doc("c1", name="a.pdf")
+        svc.graph_provider.get_document = AsyncMock(return_value=child)
+        svc.graph_provider.get_records_in_delete_batch = AsyncMock(side_effect=[
+            [_member(child, parent="f1", parent_deleted=False, parent_name="Docs")],
+            [_member(child, parent="f1", parent_deleted=True, parent_name="Docs")],
+        ])
+        mock_processor.restore_trashed_records = AsyncMock(side_effect=RestoreRefused(409, "Refresh the page"))
+        result = await svc.restore_record("c1", "u1", ORG)
+        assert result["code"] == 409
+        assert result["reason"] == "'a.pdf' was in 'Docs', which is also in the trash. Restore 'Docs' first, then restore 'a.pdf'."
+        assert result["parentId"] == "f1"
+        mock_processor.reindex_existing_records.assert_not_called()
+
+    async def test_a_refusal_is_passed_on_when_the_batch_cannot_be_read_again(self, svc, mock_processor) -> None:
+        _batch(svc, _doc("r1"), [_member(_doc("r1"))])
+        svc.graph_provider.get_records_in_delete_batch.side_effect = [
+            [_member(_doc("r1"))], RuntimeError("graph unavailable"),
+        ]
+        mock_processor.restore_trashed_records = AsyncMock(side_effect=RestoreRefused(409, "Refresh the page"))
+        result = await svc.restore_record("r1", "u1", ORG)
+        assert (result["code"], result["reason"]) == (409, "Refresh the page")
 
     async def test_an_unqueued_reindex_is_reported_with_what_to_do(self, svc, mock_processor) -> None:
         _batch(svc, _doc("r1"), [_member(_doc("r1"))])

@@ -13668,6 +13668,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         connector_id: str | None = None,
+        require_live_parent: bool = False,
     ) -> list[str]:
         """See ``IGraphDBProvider.restore_records``."""
         if not restores:
@@ -13694,7 +13695,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         LIMIT 1
                         RETURN true
             )
-            LET ok = LENGTH(found) == LENGTH(@items) AND taken == null
+            // Inside a stream transaction this reads its snapshot, taken when the transaction began.
+            LET orphaned = @require_live_parent ? FIRST(
+                FOR row IN found
+                    FOR edge IN @@record_relations
+                        FILTER edge._to == row.r._id AND edge.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                        LET parent = DOCUMENT(edge._from)
+                        FILTER parent != null AND IS_SAME_COLLECTION(@@records, parent)
+                        FILTER parent.isDeleted == true AND parent._key NOT IN @ids
+                        LIMIT 1
+                        RETURN true
+            ) : null
+            LET ok = LENGTH(found) == LENGTH(@items) AND taken == null AND orphaned == null
             LET releases = ok ? (
                 FOR claim IN @reclaims
                     FOR h IN @@records
@@ -13727,10 +13739,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "reclaims": reclaims,
                 "connector_id": connector_id,
                 "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
+                "require_live_parent": require_live_parent,
                 "batch_id": batch_id,
                 "cleared": cleared,
                 "now": get_epoch_timestamp_in_ms(),
                 "@records": CollectionNames.RECORDS.value,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
             },
             transaction=transaction,
         ) or []

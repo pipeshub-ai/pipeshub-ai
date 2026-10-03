@@ -2297,6 +2297,7 @@ class DataSourceEntitiesProcessor:
         items: list[dict[str, Any]],
         *,
         restore_source: DeleteSource = DeleteSource.USER,
+        require_live_parent: bool = False,
     ) -> list[str]:
         """Bring records back from the trash in one transaction; return their ids.
 
@@ -2305,7 +2306,9 @@ class DataSourceEntitiesProcessor:
         unless a live record holds it now: then nothing is restored, since two
         live records on one id would each be returned at random to a sync.
         Every item must still be in the trash under *batch_id*, or nothing is
-        restored either. The caller re-indexes what comes back.
+        restored either. With *require_live_parent*, so must be nothing an
+        item hangs under, unless it is restored with it. The caller re-indexes
+        what comes back.
         """
         ids = [item["id"] for item in items]
         if not ids:
@@ -2331,7 +2334,9 @@ class DataSourceEntitiesProcessor:
             # Taking an id back from another record in the trash happens in the same
             # write as the restore: on Neo4j each statement commits on its own, so a
             # release written first outlived a refused restore.
-            restored = await tx_store.restore_records(restores, batch_id, connector_id=connector_id)
+            restored = await tx_store.restore_records(
+                restores, batch_id, connector_id=connector_id, require_live_parent=require_live_parent
+            )
             if set(restored) != set(ids):
                 # Raising rolls the whole batch back, so it is never half restored.
                 raise await self._restore_refusal(tx_store, connector_id, items, reclaim, ids, restored)
