@@ -25,6 +25,20 @@ TAXONOMY_COLLECTIONS: frozenset[str] = frozenset(
     }
 )
 
+# Set on a node merged into another (app.modules.entity_resolution.consolidation);
+# lookups skip it and the resolver follows it to the winner.
+MERGED_INTO_FIELD = "mergedInto"
+# A redirect chain longer than this is a corrupt graph, not a real history.
+MAX_MERGE_REDIRECT_HOPS = 16
+
+# The edge collection a record reaches each taxonomy collection over.
+TAXONOMY_EDGE_COLLECTIONS: dict[str, str] = {
+    CollectionNames.CATEGORIES.value: CollectionNames.BELONGS_TO_CATEGORY.value,
+    **dict.fromkeys(SUBCATEGORY_LEVELS, CollectionNames.BELONGS_TO_CATEGORY.value),
+    CollectionNames.TOPICS.value: CollectionNames.BELONGS_TO_TOPIC.value,
+    CollectionNames.LANGUAGES.value: CollectionNames.BELONGS_TO_LANGUAGE.value,
+}
+
 # Entity types records reach over a belongsTo* edge (departments included).
 TAXONOMY_ENTITY_TYPES: frozenset[str] = frozenset(
     {"department", "category", "subcategory", "topic", "language"}
@@ -57,8 +71,11 @@ def alias_pairs(aliases: list[str], normalized_aliases: list[str]) -> list[tuple
 
 
 __all__ = [
+    "MAX_MERGE_REDIRECT_HOPS",
+    "MERGED_INTO_FIELD",
     "SUBCATEGORY_LEVELS",
     "TAXONOMY_COLLECTIONS",
+    "TAXONOMY_EDGE_COLLECTIONS",
     "TAXONOMY_ENTITY_TYPES",
     "alias_pairs",
     "is_taxonomy_collection",
