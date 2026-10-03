@@ -1148,6 +1148,31 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to get record by id %s: %s", record_id, str(e))
             return None
 
+    async def page_record_ids_by_type(
+        self,
+        org_id: str,
+        record_types: list[str],
+        *,
+        after_key: str | None = None,
+        limit: int = 500,
+    ) -> list[str]:
+        """See :meth:`IGraphDBProvider.page_record_ids_by_type`."""
+        if not org_id or not record_types:
+            return []
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.orgId == @org_id AND record.recordType IN @types
+                FILTER record.isDeleted != true
+                FILTER @after_key == null OR record._key > @after_key
+                SORT record._key
+                LIMIT @limit
+                RETURN record._key
+            """,
+            bind_vars={"org_id": org_id, "types": list(record_types), "after_key": after_key, "limit": max(1, limit)},
+        )
+        return [str(key) for key in rows or []]
+
     async def get_typed_records_batch(
         self,
         record_ids: list[str],

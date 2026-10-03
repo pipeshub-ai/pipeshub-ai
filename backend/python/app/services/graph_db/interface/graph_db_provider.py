@@ -479,6 +479,24 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def page_record_ids_by_type(
+        self,
+        org_id: str,
+        record_types: list[str],
+        *,
+        after_key: str | None = None,
+        limit: int = 500,
+    ) -> list[str]:
+        """Ids of ``org_id``'s non-deleted records whose ``recordType`` is in
+        ``record_types``, in key order, after ``after_key``, at most ``limit``.
+        For operator backfills that page through one org's records.
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
     async def get_typed_records_batch(
         self,
         record_ids: list[str],
