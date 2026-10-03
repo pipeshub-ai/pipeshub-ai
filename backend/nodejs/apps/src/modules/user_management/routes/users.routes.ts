@@ -208,6 +208,10 @@ const getAllUsersQueryParams = z.object({
   search: z.string().optional(),
   hasLoggedIn: z.enum(['true', 'false']).optional(),
   isBlocked: z.enum(['true', 'false']).optional(),
+  // Opt-in, for the screens that pick who belongs to a group or a team.
+  // Service accounts are left out of this list by default on purpose — see the
+  // filter in `getAllUsers` — so a caller that wants them has to say so.
+  includeServiceAccounts: z.enum(['true', 'false']).optional(),
   groupIds: z
     .string()
     .optional()

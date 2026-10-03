@@ -123,15 +123,16 @@ class ConfluenceDataSource:
         """Resolve an attachment ``_links.download`` path to a full URL.
 
         Data Center returns paths like ``/download/attachments/{pageId}/{file}``
-        relative to the Confluence site origin (not ``/rest/api``).
+        relative to the site's base address, which keeps any context path the
+        site is served under (``https://host/confluence``), not to the bare host.
         """
         if download_path.startswith("http://") or download_path.startswith("https://"):
             return download_path
-        parsed = urlparse(self.base_url)
-        origin = f"{parsed.scheme}://{parsed.netloc}"
-        if download_path.startswith("/"):
-            return f"{origin}{download_path}"
-        return f"{self.base_url.rstrip('/')}/{download_path}"
+        site_root = self._v1_rest_api_base()[: -len("/rest/api")]
+        parsed = urlparse(site_root)
+        if parsed.path and download_path.startswith(f"{parsed.path}/"):
+            return f"{parsed.scheme}://{parsed.netloc}{download_path}"
+        return f"{site_root}/{download_path.lstrip('/')}"
 
     async def _stream_download_url(
         self,

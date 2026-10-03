@@ -16,9 +16,52 @@ jobs:
       python-coverage-threshold: 89.8
       generate-coverage-reports: true
 
+  # Not in unit-test.yml: that workflow also runs on backend pull requests, and
+  # main.yml already gates frontend pull requests on this same coverage run.
+  # The minimum it checks lives in frontend/vitest.config.ts.
+  frontend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend unit tests with coverage
+        working-directory: frontend
+        run: npm run test:unit:coverage
+
+      - name: Zip frontend coverage folder
+        if: always()
+        working-directory: frontend
+        run: |
+          if [ -d "coverage/unit" ]; then
+            zip -r frontend-coverage-report.zip coverage/unit/
+          fi
+
+      - name: Upload frontend coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage-report
+          path: frontend/frontend-coverage-report.zip
+          retention-days: 7
+          if-no-files-found: ignore
+
   slack-notify:
     runs-on: ubuntu-latest
-    needs: [run-tests]
+    needs: [run-tests, frontend-tests]
     if: always()
 
     steps:
@@ -41,7 +84,7 @@ jobs:
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "${{ needs.run-tests.result == 'success' && ':large_green_circle:' || ':red_circle:' }} Weekly Coverage Report"
+                    "text": "${{ (needs.run-tests.result == 'success' && needs.frontend-tests.result == 'success') && ':large_green_circle:' || ':red_circle:' }} Weekly Coverage Report"
                   }
                 },
                 {
@@ -55,14 +98,15 @@ jobs:
                   "type": "section",
                   "fields": [
                     { "type": "mrkdwn", "text": "*Node.js (Ubuntu):* ${{ needs.run-tests.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThresholds: lines 89%, stmts 89%, funcs 90%, branches 80%" },
-                    { "type": "mrkdwn", "text": "*Python 3.12 (Ubuntu):* ${{ needs.run-tests.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThreshold: overall 89.8%" }
+                    { "type": "mrkdwn", "text": "*Python 3.12 (Ubuntu):* ${{ needs.run-tests.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThreshold: overall 89.8%" },
+                    { "type": "mrkdwn", "text": "*Frontend (Ubuntu):* ${{ needs.frontend-tests.result == 'success' && ':white_check_mark: Passed' || ':x: Failed' }}\nThresholds: lines 34%, stmts 33%, funcs 29%, branches 30%" }
                   ]
                 },
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "${{ needs.run-tests.result == 'success' && ':tada: All coverage thresholds met!' || ':warning: Coverage fell below threshold. Check the workflow run for details.' }}"
+                    "text": "${{ (needs.run-tests.result == 'success' && needs.frontend-tests.result == 'success') && ':tada: All coverage thresholds met!' || ':warning: Coverage fell below threshold. Check the workflow run for details.' }}"
                   }
                 },
                 {
@@ -137,3 +181,4 @@ jobs:
             label=$(basename "$dir" | sed 's/python-coverage-report-//')
             upload_file "${dir}python-coverage-report.zip" "Python ($label) Coverage Report"
           done
+          upload_file "coverage-reports/frontend-coverage-report/frontend-coverage-report.zip" "Frontend Coverage Report"

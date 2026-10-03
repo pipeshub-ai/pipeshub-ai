@@ -418,7 +418,7 @@ describe('ChatInput — attachments', () => {
 
     const reason = "Couldn't attach report.pdf. The file server is busy. Try again in a minute.";
     expect(screen.getByText(reason)).toBeTruthy();
-    expect(toastTitles()).toEqual([`Failed to upload report.pdf: ${reason}`]);
+    expect(toastTitles()).toEqual([reason]);
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Retry uploading report.pdf' }));

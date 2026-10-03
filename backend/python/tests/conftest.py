@@ -255,8 +255,12 @@ def _reset_default_backpressure_coordinator():
 def logger():
     """Provide a silent logger for tests."""
     log = logging.getLogger("test")
+    previous_level = log.level
     log.setLevel(logging.CRITICAL)
-    return log
+    yield log
+    # "test" is the parent of every test.* logger, so a level left behind here
+    # silences them in every later test, and caplog then sees nothing.
+    log.setLevel(previous_level)
 
 
 @pytest.fixture

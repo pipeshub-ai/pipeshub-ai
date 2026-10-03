@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from app.modules.demo_data.access import excluded_demo_connector_ids
+from app.modules.agents.context.source_catalog import DEMO_APP, ORG_HAS_REAL_DATA_KEY
+from app.modules.demo_data.access import (
+    excluded_demo_connector_ids,
+    org_real_data_state,
+)
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 
 if TYPE_CHECKING:
@@ -69,6 +73,27 @@ def exclude_from_state(chat_state: dict[str, Any], excluded: frozenset[str]) -> 
         chat_state["available_connectors"] = [
             c for c in connectors if not (isinstance(c, dict) and c.get("id") in excluded)
         ]
+
+
+async def note_org_real_data(
+    chat_state: dict[str, Any], graph_provider: IGraphDBProvider, org_id: str, log: logging.Logger
+) -> None:
+    """Tell the source catalog whether anything besides the demo has an indexed record.
+
+    Collections look like real sources whether or not they hold anything: every
+    user owns one, and the chat route searches them without listing them. Left
+    unset, the catalog assumes real data exists.
+    """
+    sources = [*(chat_state.get("available_connectors") or []), *(chat_state.get("agent_knowledge") or [])]
+    if not any(isinstance(c, dict) and str(c.get("type") or "").lower() == DEMO_APP for c in sources):
+        return
+    try:
+        found = await org_real_data_state(graph_provider, org_id)
+    except Exception as exc:
+        log.warning("could not tell whether the organization has data besides the demo: %s", exc)
+        return
+    if found is not None:
+        chat_state[ORG_HAS_REAL_DATA_KEY] = found
 
 
 def excluded_app_ids(state: dict[str, Any] | None) -> frozenset[str]:

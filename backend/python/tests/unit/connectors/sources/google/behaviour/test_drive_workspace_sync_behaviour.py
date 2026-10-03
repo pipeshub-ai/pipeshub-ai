@@ -139,6 +139,18 @@ async def test_each_users_drive_is_read_as_that_user_through_domain_wide_delegat
     assert ws.grants("b1") == {(BOB, "USER", "OWNER")}
 
 
+async def test_service_account_sign_in_uses_delegated_tokens_and_writes_no_settings(ws: Workspace) -> None:
+    ws.world.add_item("a1", "alice.txt", parent="root-alice", owner=ALICE)
+
+    await ws.sync()
+    await ws.sync()
+
+    assert ws.names() == {"alice.txt"}
+    assert {t["grant_type"] for t in ws.http.token_requests} == {"urn:ietf:params:oauth:grant-type:jwt-bearer"}
+    assert ws.config_service.writes == []
+    assert "credentials" not in ws.config
+
+
 async def test_users_and_groups_are_read_to_the_last_page(ws: Workspace) -> None:
     for n in range(3):
         ws.world.add_user(f"extra{n}@example.com")

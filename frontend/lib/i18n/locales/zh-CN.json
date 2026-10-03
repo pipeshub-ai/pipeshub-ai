@@ -539,6 +539,7 @@
     "goToCollections": "前往合集",
     "namedEmpty": "{{name}} 为空",
     "noRecords": "未找到记录",
+    "collectionsLoadFailed": "无法加载您的合集。请检查网络连接，然后选择“{{action}}”。",
     "searchEmptyHint": "未找到您要查找的内容。请尝试搜索其他内容。",
     "adjustFiltersHint": "请选择其他来源或调整筛选条件",
     "addFromCollectionsHint": "您可以从合集中添加公司的文件或文件夹",
@@ -1046,7 +1047,8 @@
     },
     "attachments": {
       "uploadFailed": "上传失败",
-      "uploadFailedNamed": "上传 {{name}} 失败：{{error}}",
+      "uploadFailedNamed": "无法附加 {{name}}。{{error}}",
+      "uploadFailedNamedRetry": "无法附加 {{name}}。请重试。",
       "unsupportedType": "不支持的文件类型：{{names}}。支持的类型：{{types}}。",
       "fileTooLarge": "文件过大：{{names}}。每个文件最大 {{maxMb}} MB。",
       "tooManyFiles": "每条消息最多 {{max}} 个附件。",
@@ -2443,6 +2445,8 @@
       },
       "filters": {
         "selectField": "选择{{field}}",
+        "selectFieldPlaceholder": "选择{{field}}",
+        "searchOptions": "搜索…",
         "addFieldValue": "添加{{field}}…",
         "authenticateForOptions": "请完成认证并保存连接器，以加载此筛选条件的选项。",
         "manualIndexingInfo": "关于手动索引",
@@ -3497,11 +3501,14 @@
         "loading": "正在加载令牌…",
         "copy": "复制令牌",
         "revokeTitle": "撤销此令牌？",
-        "revokeDescription": "「{{name}}」会立即停止工作且无法恢复。仍在使用它的一切都会开始失败。如果您正在轮换，请先创建替代令牌并将集成切换过去。"
+        "revokeDescription": "「{{name}}」会立即停止工作且无法恢复。仍在使用它的一切都会开始失败。如果您正在轮换，请先创建替代令牌并将集成切换过去。",
+        "selectAllScopes": "全选",
+        "clearAllScopes": "全部清除"
       },
       "disableTitle": "停用此服务账号？",
       "disableDescription": "{{name}} 会立即停止工作——包括它已持有的所有令牌，而不只是等到下次登录。在您重新启用之前，使用这些令牌的一切都会持续失败。",
-      "disableConfirm": "停用"
+      "disableConfirm": "停用",
+      "memberBadge": "服务账户"
     }
   },
   "filePreview": {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 
 import smbclient
@@ -60,11 +61,23 @@ class SmbStorageHelper:
                             walk(rel)
                         else:
                             keys.append(rel.replace("\\", "/"))
-            except FileNotFoundError:
-                return
+            except OSError as exc:
+                # smbprotocol raises SMBOSError, an OSError that is never the
+                # FileNotFoundError subclass, so match on errno. ENOENT is also
+                # what a missing share becomes on a server that tries DFS
+                # resolution for it, so it only means "folder not created yet"
+                # once the share itself has been read.
+                if exc.errno != errno.ENOENT or not path:
+                    raise
+                self._read_share_root(share)
 
         walk(prefix.replace("\\", "/").strip("/"))
         return keys
+
+    def _read_share_root(self, share: str) -> None:
+        """Raise if the share itself is missing or unreadable."""
+        with smbclient.scandir(self._unc(share), **self._kwargs()) as scan:
+            next(iter(scan), None)
 
     def _ensure_dir(self, share: str, dir_name: str) -> None:
         if not dir_name:

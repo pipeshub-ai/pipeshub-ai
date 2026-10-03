@@ -320,8 +320,8 @@ describe('FiltersSection — single choice, free text, booleans, numbers', () =>
   it('picks one project from a searchable list and shows it on the button', async () => {
     setup({ sync: [project], syncValues: { project: { operator: 'is', value: [] } } });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select Project' }));
-    fireEvent.change(await screen.findByPlaceholderText('Search'), { target: { value: 'gem' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Select project' }));
+    fireEvent.change(await screen.findByPlaceholderText('Search…'), { target: { value: 'gem' } });
     expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['Gemini']);
     fireEvent.click(screen.getByRole('option', { name: 'Gemini' }));
 
@@ -332,8 +332,8 @@ describe('FiltersSection — single choice, free text, booleans, numbers', () =>
 
   it('shows "No results found" when the search matches nothing', async () => {
     setup({ sync: [project], syncValues: { project: { operator: 'is', value: [] } } });
-    fireEvent.click(screen.getByRole('button', { name: 'Select Project' }));
-    fireEvent.change(await screen.findByPlaceholderText('Search'), { target: { value: 'zzz' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Select project' }));
+    fireEvent.change(await screen.findByPlaceholderText('Search…'), { target: { value: 'zzz' } });
     expect(screen.getByText('No results found')).toBeTruthy();
   });
 
@@ -422,7 +422,7 @@ describe('FiltersSection — single choice from a live list', () => {
       .mockResolvedValueOnce(page([{ id: 's2', label: 'Finance' }]));
     setup({ sync: [space], syncValues: { space: { operator: 'is', value: [] } } });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select Space' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Select space' }));
     const list = await screen.findByRole('listbox');
     await screen.findByText('Design');
     Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 500 });
@@ -440,7 +440,7 @@ describe('FiltersSection — single choice from a live list', () => {
     getFilterFieldOptions.mockRejectedValue(new Error('timeout of 300000ms exceeded'));
     setup({ sync: [space], syncValues: { space: { operator: 'is', value: [] } } });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select Space' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Select space' }));
 
     expect(
       await screen.findByText("We couldn't load the options for this filter. Close this list and open it again to retry."),

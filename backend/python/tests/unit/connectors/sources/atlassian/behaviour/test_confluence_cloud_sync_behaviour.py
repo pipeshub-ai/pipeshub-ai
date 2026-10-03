@@ -32,7 +32,7 @@ from atlassian_cloud_fakes import (
 )
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import Connectors, OriginTypes
+from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
@@ -354,33 +354,104 @@ class TestPageSync:
         assert "500" in db.records
         assert checkpoints.values_for("confluence_folders/ENG") is None
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Bug, left alone because an open PR edits this connector: only the first 100 "
-            "attachments of a page are listed; the rest are never synced."
-        ),
-    )
-    async def test_every_attachment_of_a_page_is_synced(self, api, db, checkpoints, search) -> None:
+    @staticmethod
+    def _many_attachments(api: AtlassianApiStub, search: ContentSearch, second_page: object) -> None:
         def att(i: int) -> dict[str, Any]:
             return {"id": f"att{i}", "title": f"file{i}.pdf", "mediaType": "application/pdf", "fileSize": 10,
                     "version": {"number": 1}, "_links": {"download": f"/download/attachments/10/file{i}.pdf"}}
 
         search.by_cursor[None] = search_page([v1_page("10", attachments=[att(0)])])
         first = {"results": [att(i) for i in range(100)], "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?cursor=A2"}}
-        second = {"results": [att(i) for i in range(100, 130)], "_links": {"base": WIKI}}
+        second = second_page if second_page is not None else {"results": [att(i) for i in range(100, 130)], "_links": {"base": WIKI}}
 
         def attachments(request: httpx.Request) -> httpx.Response:
-            return json_response(second if AtlassianApiStub.query(request).get("cursor") == "A2" else first)
+            page = second if AtlassianApiStub.query(request).get("cursor") == "A2" else first
+            return page if isinstance(page, httpx.Response) else json_response(page)
 
         api.on("GET", f"{V2}/pages/10/attachments", attachments)
         api.on("GET", f"{V2}/pages/10", {"id": "10", "body": {"atlas_doc_format": {"value": '{"type":"doc","content":[]}'}}})
+
+    async def test_every_attachment_of_a_page_is_synced(self, api, db, checkpoints, search) -> None:
+        self._many_attachments(api, search, None)
         connector, _ = await ready_connector(db, checkpoints)
 
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         files = [r for r in db.records.values() if isinstance(r, FileRecord)]
         assert len(files) == 130
+        assert checkpoints.values_for("confluence_pages/ENG") is not None
+
+    @pytest.mark.parametrize(
+        ("first_page", "checkpoint_moves"),
+        [
+            (json_response({"message": "Service Unavailable"}, status=503), False),
+            (json_response({"message": "Not Found"}, status=404), True),
+            ({"results": [], "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?limit=100"}}, False),
+        ],
+        ids=["temporary-first-page-failure-holds", "permanent-failure-falls-back", "unfollowable-next-link-holds"],
+    )
+    async def test_an_attachment_list_that_cannot_be_read_in_full_keeps_the_checkpoint(
+        self, api, db, checkpoints, search, first_page, checkpoint_moves
+    ) -> None:
+        att = {"id": "att0", "title": "file0.pdf", "mediaType": "application/pdf", "fileSize": 10,
+               "version": {"number": 1}, "_links": {"download": "/download/attachments/10/file0.pdf"}}
+        search.by_cursor[None] = search_page([v1_page("10", attachments=[att])])
+        api.on("GET", f"{V2}/pages/10/attachments", first_page if isinstance(first_page, httpx.Response) else json_response(first_page))
+        api.on("GET", f"{V2}/pages/10", {"id": "10", "body": {"atlas_doc_format": {"value": '{"type":"doc","content":[]}'}}})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert "att0" in db.records, "the attachment from the search result is still saved"
+        assert (checkpoints.values_for("confluence_pages/ENG") is not None) is checkpoint_moves
+
+    async def test_a_cursor_that_comes_round_again_ends_the_list_and_keeps_the_checkpoint(
+        self, api, db, checkpoints, search
+    ) -> None:
+        def att(i: int) -> dict[str, Any]:
+            return {"id": f"att{i}", "title": f"file{i}.pdf", "mediaType": "application/pdf", "fileSize": 10,
+                    "version": {"number": 1}, "_links": {"download": f"/download/attachments/10/file{i}.pdf"}}
+
+        pages = {
+            None: {"results": [att(0)], "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?cursor=A2"}},
+            "A2": {"results": [att(1)], "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?cursor=A3"}},
+            "A3": {"results": [att(2)], "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?cursor=A2"}},
+        }
+        search.by_cursor[None] = search_page([v1_page("10", attachments=[att(0)])])
+        api.on("GET", f"{V2}/pages/10/attachments", lambda r: json_response(pages[AtlassianApiStub.query(r).get("cursor")]))
+        api.on("GET", f"{V2}/pages/10", {"id": "10", "body": {"atlas_doc_format": {"value": '{"type":"doc","content":[]}'}}})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert len(api.calls("GET", f"{V2}/pages/10/attachments")) == 3, "A2 is not read a second time"
+        assert {"att0", "att1", "att2"} <= set(db.records)
+        assert checkpoints.values_for("confluence_pages/ENG") is None
+
+    async def test_opening_a_page_reads_every_attachment_for_its_images(self, api, db, checkpoints, search) -> None:
+        self._many_attachments(api, search, None)
+        connector, _ = await ready_connector(db, checkpoints)
+        page = WebpageRecord(
+            org_id="org-1", record_name="Page 10", record_type=RecordType.CONFLUENCE_PAGE, external_record_id="10",
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR, version=0,
+            weburl=f"{WIKI}/pages/10",
+        )
+
+        await connector.stream_record(page)
+
+        listed = [AtlassianApiStub.query(r).get("cursor") for r in api.calls("GET", f"{V2}/pages/10/attachments")]
+        assert "A2" in listed, "the attachment list is followed past the first 100"
+        assert len(await connector._fetch_page_attachments_list("10", RecordType.CONFLUENCE_PAGE)) == 130
+
+    async def test_a_failed_second_page_of_attachments_keeps_the_checkpoint(self, api, db, checkpoints, search) -> None:
+        self._many_attachments(api, search, json_response({"message": "Service Unavailable"}, status=503))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        files = [r for r in db.records.values() if isinstance(r, FileRecord)]
+        assert len(files) == 100, "what was listed is still saved"
+        assert checkpoints.values_for("confluence_pages/ENG") is None, "the rest are listed again next sync"
 
     async def test_images_shown_inside_the_page_are_not_duplicated_as_files(self, api, db, checkpoints, search) -> None:
         shot = {"id": "att1", "title": "shot.png", "mediaType": "image/png", "fileId": "media-1", "version": {"number": 1}}
@@ -732,7 +803,7 @@ class TestPlaceholderSweep:
         folder_stub = FileRecord(
             org_id="org-1", record_name="500", record_type=RecordType.FILE, external_record_id="500",
             connector_name=page_stub.connector_name, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR, version=0,
-            is_file=False, is_placeholder=True,
+            is_file=False, mime_type=MimeTypes.FOLDER.value, is_placeholder=True,
         )
         gone_stub = page_stub.model_copy(update={"id": "gone-id", "external_record_id": "404"})
         db.placeholders = [page_stub, gone_stub]
@@ -761,6 +832,39 @@ class TestPlaceholderSweep:
         assert [p.email for p in db.record_permissions["500"]] == ["ana@acme.com"]
         assert gone.is_placeholder is True and db.record_permissions["404"] == [], "an unreachable ancestor fails closed"
         assert api.calls("GET", f"{V2}/folders/500"), "the folder was fetched via the folder API"
+
+    async def test_a_chain_of_folder_ancestors_is_named_in_one_sweep(self, api, db, checkpoints) -> None:
+        page_stub = WebpageRecord(
+            org_id="org-1", record_name="10", record_type=RecordType.CONFLUENCE_PAGE, external_record_id="10",
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID,
+            origin=OriginTypes.CONNECTOR, version=0, is_placeholder=True,
+        )
+        db.placeholders = [page_stub]
+        for folder_id in ("500", "600"):
+            db.records[folder_id] = FileRecord(
+                org_id="org-1", record_name=folder_id, record_type=RecordType.FILE, external_record_id=folder_id,
+                connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR,
+                version=0, is_file=False, mime_type=MimeTypes.FOLDER.value, is_placeholder=True,
+            )
+        api.on("GET", f"{V2}/pages/10", {
+            "id": "10", "title": "Design doc", "spaceId": "77", "parentId": "500", "parentType": "folder",
+            "version": {"number": 4, "createdAt": "2024-05-01T10:00:00.000Z"}, "_links": {"base": WIKI, "webui": "/x/10"},
+        })
+        api.on("GET", f"{V2}/folders/500", {
+            "id": "500", "title": "Specs", "spaceId": "77", "parentId": "600", "parentType": "folder",
+            "version": {"number": 1}, "_links": {"base": WIKI, "webui": "/x/500"},
+        })
+        api.on("GET", f"{V2}/folders/600", {
+            "id": "600", "title": "Engineering", "spaceId": "77", "version": {"number": 1},
+            "_links": {"base": WIKI, "webui": "/x/600"},
+        })
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sweep_placeholder_records("org-1")
+
+        assert db.records["500"].record_name == "Specs" and db.records["500"].is_placeholder is False
+        assert db.records["600"].record_name == "Engineering" and db.records["600"].is_placeholder is False
+        assert api.calls("GET", f"{V2}/folders/600"), "the second-level folder was fetched via the folder API"
 
 
 class TestStreamingLegacyHtmlPages:

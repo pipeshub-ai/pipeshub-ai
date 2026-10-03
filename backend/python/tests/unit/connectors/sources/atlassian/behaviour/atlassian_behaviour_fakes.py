@@ -14,15 +14,37 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional
+from unittest.mock import MagicMock
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 
 if TYPE_CHECKING:
+    from app.connectors.core.base.connector.connector_service import BaseConnector
     from app.models.entities import Record
     from app.sources.client.http.http_client import HTTPClient
 
 Handler = Callable[[httpx.Request], httpx.Response]
+
+
+def record_logs(connector: BaseConnector) -> MagicMock:
+    """Record the connector's own log calls.
+
+    Unlike caplog, this does not depend on global logging state, which other tests in
+    the suite can leave disabled or non-propagating. The real logger is still called.
+    """
+    recorder = MagicMock(wraps=connector.logger)
+    connector.logger = recorder
+    return recorder
+
+
+def logged(recorder: MagicMock, level: str = "error") -> list[str]:
+    """Messages logged at ``level`` through a ``record_logs`` recorder, %-args applied."""
+    return [
+        str(call.args[0]) % call.args[1:] if len(call.args) > 1 else str(call.args[0])
+        for call in getattr(recorder, level).call_args_list
+        if call.args
+    ]
 
 
 def json_response(payload: object, status: int = 200, headers: Optional[dict[str, str]] = None) -> httpx.Response:
@@ -91,6 +113,17 @@ class AtlassianApiStub:
         )
 
 
+def as_base_record(record: Record) -> Record:
+    """What the graph stores return from an external-id lookup: a base Record.
+
+    Both providers rebuild it with ``Record.from_arango_base_record``, so subclass
+    fields such as ``is_file``, ``path`` and ``extension`` are gone.
+    """
+    from app.models.entities import Record
+
+    return Record.model_validate(record.model_dump(include=set(Record.model_fields)))
+
+
 class FakeRecordsDb:
     """In-memory stand-in for ``DataSourceEntitiesProcessor``.
 
@@ -123,7 +156,8 @@ class FakeRecordsDb:
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
         if external_record_id in self.fail_lookup_for:
             raise RuntimeError(f"database unavailable for {external_record_id}")
-        return self.records.get(external_record_id)
+        stored = self.records.get(external_record_id)
+        return None if stored is None else as_base_record(stored)
 
     async def get_records_by_parent(
         self, connector_id: str, parent_external_record_id: str, record_type: Optional[str] = None
@@ -174,6 +208,11 @@ class FakeCheckpointStore:
         return self.sync_points.get(key)
 
     async def update_sync_point(self, key: str, data: dict[str, Any]) -> None:
+        # Neo4j (the default DATA_STORE) only stores primitives or lists of primitives as properties.
+        for field, value in data.items():
+            items = value if isinstance(value, list) else [value]
+            if any(isinstance(item, (dict, list, tuple, set)) for item in items):
+                raise TypeError(f"sync point field {field!r} is not a primitive: {value!r}")
         self.sync_points[key] = dict(data)
 
     async def delete_sync_point(self, key: str) -> None:

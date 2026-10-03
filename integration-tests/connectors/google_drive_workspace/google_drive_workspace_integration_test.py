@@ -21,12 +21,9 @@
 
 from __future__ import annotations
 
-import asyncio
-import inspect
 import os
 import sys
-import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +41,11 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (  # no
     create_drive_folder,
     create_drive_text_file,
     move_drive_item,
+    record_absent,
+    record_present,
     rename_drive_item,
+    sync_and_wait,
+    sync_until,
 )
 from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
@@ -63,17 +64,6 @@ pytestmark = [
 _SYNC_TIMEOUT_SEC = int(os.getenv("GOOGLE_DRIVE_WORKSPACE_SYNC_TIMEOUT", "300"))
 
 
-_RESTART_SYNC_PAUSE_SEC = (5, 8)
-
-
-def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
-    """Disable then re-enable the connector to trigger a fresh incremental sync."""
-    pipeshub_client.toggle_sync(connector_id, enable=False)
-    pipeshub_client.wait(_RESTART_SYNC_PAUSE_SEC[0])
-    pipeshub_client.toggle_sync(connector_id, enable=True)
-    pipeshub_client.wait(_RESTART_SYNC_PAUSE_SEC[1])
-
-
 async def _wait_record_present(
     graph_provider: GraphProviderProtocol,
     connector_id: str,
@@ -83,7 +73,7 @@ async def _wait_record_present(
 ) -> None:
     await wait_until_graph_condition(
         connector_id,
-        check=_record_present(graph_provider, connector_id, external_id),
+        check=record_present(graph_provider, connector_id, external_id),
         timeout=_SYNC_TIMEOUT_SEC,
         poll_interval=10,
         description=description,
@@ -99,126 +89,11 @@ async def _wait_record_absent(
 ) -> None:
     await wait_until_graph_condition(
         connector_id,
-        check=_record_absent(graph_provider, connector_id, external_id),
+        check=record_absent(graph_provider, connector_id, external_id),
         timeout=_SYNC_TIMEOUT_SEC,
         poll_interval=10,
         description=description,
     )
-
-
-async def _sync_and_wait(
-    pipeshub_client: PipeshubClient,
-    graph_provider: GraphProviderProtocol,
-    connector_id: str,
-    *,
-    timeout: float | None = None,
-) -> None:
-    _restart_sync(pipeshub_client, connector_id)
-    await wait_for_sync_completion(
-        pipeshub_client,
-        graph_provider,
-        connector_id,
-        timeout=_SYNC_TIMEOUT_SEC if timeout is None else timeout,
-    )
-
-
-_RESYNC_INTERVAL_SEC = 15
-_GRAPH_POLL_INTERVAL_SEC = 10
-
-# The longest a sync wait can take on a quiet connector: it spends the whole
-# sync_start_timeout failing to see the sync start, then asks for twice the
-# settle polls. A shorter timeout makes it raise before it can settle. Read from
-# the helper's own defaults so the two cannot drift apart.
-_WAIT_DEFAULTS = inspect.signature(wait_for_sync_completion).parameters
-_SYNC_WAIT_FLOOR_SEC = (
-    _WAIT_DEFAULTS["sync_start_timeout"].default
-    + 2 * _WAIT_DEFAULTS["settle_checks"].default * _WAIT_DEFAULTS["settle_interval"].default
-)
-
-
-def _record_present(
-    graph_provider: GraphProviderProtocol, connector_id: str, external_id: str
-) -> Callable[[], Awaitable[bool]]:
-    async def _present() -> bool:
-        return (
-            await graph_provider.get_record_by_external_id(connector_id, external_id)
-            is not None
-        )
-
-    return _present
-
-
-def _record_absent(
-    graph_provider: GraphProviderProtocol, connector_id: str, external_id: str
-) -> Callable[[], Awaitable[bool]]:
-    async def _absent() -> bool:
-        return (
-            await graph_provider.get_record_by_external_id(connector_id, external_id)
-            is None
-        )
-
-    return _absent
-
-
-async def _sync_until(
-    pipeshub_client: PipeshubClient,
-    graph_provider: GraphProviderProtocol,
-    connector_id: str,
-    check: Callable[[], Awaitable[bool]],
-    *,
-    description: str,
-) -> None:
-    """Sync, and sync again, until ``check`` holds.
-
-    An edit made through the Drive API can take a while to reach the changes
-    feed an incremental sync reads. A sync started straight after the edit may
-    see nothing and the next one will, so a single sync followed by a wait on
-    the graph fails whenever that first sync ran too early.
-    """
-    # One budget for the whole wait. A round starts only when what is left
-    # covers the restart pauses plus the slowest sync wait, and the wait is
-    # given what remains after the restart. When no round fits any more, the
-    # graph is still polled until the deadline.
-    deadline = time.monotonic() + _SYNC_TIMEOUT_SEC
-    restart_sec = sum(_RESTART_SYNC_PAUSE_SEC)
-    round_sec = restart_sec + _SYNC_WAIT_FLOOR_SEC
-    if round_sec > _SYNC_TIMEOUT_SEC:
-        raise ValueError(
-            f"sync timeout {_SYNC_TIMEOUT_SEC}s is shorter than one sync round "
-            f"({round_sec}s); raise GOOGLE_DRIVE_WORKSPACE_SYNC_TIMEOUT"
-        )
-    last_sync_error: TimeoutError | None = None
-    # Set when the pause was shortened to keep a round: re-measuring after the
-    # pause would find a few milliseconds short and skip the round it kept.
-    round_kept = False
-    while True:
-        if round_kept or deadline - time.monotonic() >= round_sec:
-            round_kept = False
-            try:
-                await _sync_and_wait(
-                    pipeshub_client,
-                    graph_provider,
-                    connector_id,
-                    timeout=deadline - time.monotonic() - restart_sec,
-                )
-            except TimeoutError as exc:
-                # The graph decides, not whether the sync wait saw it settle.
-                last_sync_error = exc
-        if await check():
-            return
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            detail = f" (last sync wait: {last_sync_error})" if last_sync_error else ""
-            raise TimeoutError(
-                f"Timed out waiting for {description} for connector {connector_id}: "
-                f"not seen within {_SYNC_TIMEOUT_SEC}s of re-syncing{detail}"
-            )
-        if remaining >= round_sec:
-            # Shortened if need be, so the pause never costs the last round.
-            await asyncio.sleep(min(_RESYNC_INTERVAL_SEC, remaining - round_sec))
-            round_kept = True
-        else:
-            await asyncio.sleep(min(_GRAPH_POLL_INTERVAL_SEC, remaining))
 
 
 def _folder_ids_filters(folder_ids: list[str]) -> dict[str, Any]:
@@ -372,11 +247,11 @@ class TestDriveWorkspaceFolderFilter:
         drive_workspace_connector["new_file_id"] = new_file_id
         drive_workspace_connector["new_file_name"] = "new.txt"
 
-        await _sync_until(
+        await sync_until(
             pipeshub_client,
             graph_provider,
             connector_id,
-            _record_present(graph_provider, connector_id, new_file_id),
+            record_present(graph_provider, connector_id, new_file_id),
             description=f"new.txt ({new_file_id}) in graph",
         )
 
@@ -414,11 +289,11 @@ class TestDriveWorkspaceFolderFilter:
         drive_workspace_connector["deeper_folder_id"] = deeper_id
         drive_workspace_connector["deeper_file_id"] = deeper_file_id
 
-        await _sync_until(
+        await sync_until(
             pipeshub_client,
             graph_provider,
             connector_id,
-            _record_present(graph_provider, connector_id, deeper_file_id),
+            record_present(graph_provider, connector_id, deeper_file_id),
             description=f"deeper/file.txt ({deeper_file_id}) in graph",
         )
 
@@ -463,11 +338,11 @@ class TestDriveWorkspaceFolderFilter:
         drive_workspace_connector["leave_file_id"] = leave_file_id
         drive_workspace_connector["leave_file_name"] = "leave.txt"
 
-        await _sync_until(
+        await sync_until(
             pipeshub_client,
             graph_provider,
             connector_id,
-            _record_present(graph_provider, connector_id, leave_file_id),
+            record_present(graph_provider, connector_id, leave_file_id),
             description=f"leave.txt ({leave_file_id}) synced before move-out",
         )
 
@@ -479,11 +354,11 @@ class TestDriveWorkspaceFolderFilter:
         )
         drive_workspace_connector["leave_file_parent_id"] = oos_folder_id
 
-        await _sync_until(
+        await sync_until(
             pipeshub_client,
             graph_provider,
             connector_id,
-            _record_absent(graph_provider, connector_id, leave_file_id),
+            record_absent(graph_provider, connector_id, leave_file_id),
             description=f"leave.txt ({leave_file_id}) deleted after scope exit",
         )
 
@@ -509,11 +384,11 @@ class TestDriveWorkspaceFolderFilter:
         )
         drive_workspace_connector["leave_file_parent_id"] = seed_id
 
-        await _sync_until(
+        await sync_until(
             pipeshub_client,
             graph_provider,
             connector_id,
-            _record_present(graph_provider, connector_id, leave_file_id),
+            record_present(graph_provider, connector_id, leave_file_id),
             description=f"leave.txt ({leave_file_id}) re-synced after scope enter",
         )
 
@@ -551,11 +426,11 @@ class TestDriveWorkspaceFolderFilter:
         drive_workspace_connector["movable_folder_id"] = movable_id
         drive_workspace_connector["movable_inside_file_id"] = inside_id
 
-        await _sync_until(
+        await sync_until(
             pipeshub_client,
             graph_provider,
             connector_id,
-            _record_present(graph_provider, connector_id, inside_id),
+            record_present(graph_provider, connector_id, inside_id),
             description=f"movable/inside.txt ({inside_id}) synced before move-out",
         )
 
@@ -567,11 +442,11 @@ class TestDriveWorkspaceFolderFilter:
         )
         drive_workspace_connector["movable_parent_id"] = oos_folder_id
 
-        await _sync_until(
+        await sync_until(
             pipeshub_client,
             graph_provider,
             connector_id,
-            _record_absent(graph_provider, connector_id, movable_id),
+            record_absent(graph_provider, connector_id, movable_id),
             description=f"movable folder ({movable_id}) deleted after scope exit",
         )
         await _wait_record_absent(
@@ -604,11 +479,11 @@ class TestDriveWorkspaceFolderFilter:
         )
         drive_workspace_connector["movable_parent_id"] = seed_id
 
-        await _sync_until(
+        await sync_until(
             pipeshub_client,
             graph_provider,
             connector_id,
-            _record_present(graph_provider, connector_id, movable_id),
+            record_present(graph_provider, connector_id, movable_id),
             description=f"movable folder ({movable_id}) re-synced after scope enter",
         )
         await _wait_record_present(
@@ -665,7 +540,7 @@ class TestDriveWorkspaceFolderFilter:
         )
         drive_workspace_connector["oos_ignored_file_id"] = ignored_id
 
-        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
+        await sync_and_wait(pipeshub_client, graph_provider, connector_id)
 
         ignored = await graph_provider.get_record_by_external_id(
             connector_id, ignored_id
@@ -706,7 +581,7 @@ class TestDriveWorkspaceFolderFilter:
             )
             return record is not None and record.record_name == new_name
 
-        await _sync_until(
+        await sync_until(
             pipeshub_client,
             graph_provider,
             connector_id,
@@ -785,7 +660,7 @@ class TestDriveWorkspaceFolderFilter:
                 and record.parent_external_record_id == nested_id
             )
 
-        await _sync_until(
+        await sync_until(
             pipeshub_client,
             graph_provider,
             connector_id,

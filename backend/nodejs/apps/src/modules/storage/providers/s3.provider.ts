@@ -21,6 +21,7 @@ import {
   resolveS3Credentials,
   S3_PARTIAL_CREDENTIALS_MESSAGE,
 } from '../utils/s3-credentials.util';
+import { escapeRegExp } from '../../../utils/escape-regexp';
 
 /**
  * Implementation of StorageServiceInterface for Amazon S3
@@ -69,15 +70,20 @@ class AmazonS3Adapter implements StorageServiceInterface {
       }
       this.usingIamRole = resolvedCredentials.kind === 'iamRole';
 
-      // Initialize AWS S3 client
+      // SDK v2 presigns us-east-1 with Signature V2 unless this is set.
+      // SSE-KMS buckets reject those URLs with HTTP 400.
+      const clientOptions: S3.ClientConfiguration = {
+        region: sanitizedRegion,
+        signatureVersion: 'v4',
+      };
       this.s3 =
         resolvedCredentials.kind === 'explicit'
           ? new S3({
+              ...clientOptions,
               accessKeyId: resolvedCredentials.accessKeyId,
               secretAccessKey: resolvedCredentials.secretAccessKey,
-              region: sanitizedRegion,
             })
-          : new S3({ region: sanitizedRegion });
+          : new S3(clientOptions);
 
       this.bucketName = bucket;
       this.region = sanitizedRegion;
@@ -574,7 +580,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
   private extractKeyFromUrl(url: string): string {
     try {
       const urlPattern = new RegExp(
-        `https?://${this.bucketName}\\.s3\\.(?:${this.region}\\.)?amazonaws\\.com/(.+)`,
+        `^https?://${escapeRegExp(this.bucketName)}\\.s3\\.(?:${escapeRegExp(this.region)}\\.)?amazonaws\\.com/(.+)`,
       );
       const match = url.match(urlPattern);
 

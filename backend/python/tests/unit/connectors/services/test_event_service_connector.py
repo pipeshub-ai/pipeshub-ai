@@ -303,6 +303,15 @@ class TestProcessEvent:
         assert result is False
 
     @pytest.mark.asyncio
+    async def test_extra_segment_cannot_pick_the_action(self, service):
+        with patch.object(service, "_handle_delete", new_callable=AsyncMock) as mock_delete, \
+             patch.object(service, "_handle_start_sync", new_callable=AsyncMock) as mock_sync:
+            result = await service.process_event("web.delete.resync", {"orgId": "org1", "connectorId": "c1"})
+        assert result is False
+        mock_delete.assert_not_awaited()
+        mock_sync.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_exception(self, service):
         with patch.object(service, "_handle_init", new_callable=AsyncMock, side_effect=Exception("boom")):
             result = await service.process_event("gmail.init", {})

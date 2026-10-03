@@ -191,6 +191,60 @@ describe('Crawling Manager Controller', () => {
       // Will fail when trying to validate connector access or missing scheduleConfig
       expect(next.calledOnce).to.be.true
     })
+
+    it('schedules under the connector instance type, not the path segment', async () => {
+      const mockService = createMockCrawlingService()
+      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector.utils')
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { connector: { type: 'Web', scope: 'team', createdBy: 'user-1' } },
+      })
+      sinon.stub(
+        require('../../../../src/modules/tokens_manager/controllers/connector.controllers'),
+        'isUserAdmin',
+      ).resolves(true)
+
+      const handler = scheduleCrawlingJob(mockService, createMockAppConfig())
+      const req = createMockRequest({
+        params: { connector: 'web.delete', connectorId: 'conn-1' },
+        body: { scheduleConfig: { scheduleType: 'daily', hour: 2, minute: 0 } },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(mockService.scheduleJob.calledOnce).to.be.true
+      expect(mockService.scheduleJob.firstCall.args[0]).to.equal('Web')
+      expect(res.json.firstCall.args[0].data.connector).to.equal('Web')
+    })
+
+    it('refuses to schedule a connector whose type is unknown', async () => {
+      const mockService = createMockCrawlingService()
+      const connectorUtils = require('../../../../src/modules/tokens_manager/utils/connector.utils')
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { connector: { scope: 'team', createdBy: 'user-1' } },
+      })
+      sinon.stub(
+        require('../../../../src/modules/tokens_manager/controllers/connector.controllers'),
+        'isUserAdmin',
+      ).resolves(true)
+
+      const handler = scheduleCrawlingJob(mockService, createMockAppConfig())
+      const req = createMockRequest({
+        params: { connector: 'web', connectorId: 'conn-1' },
+        body: { scheduleConfig: { scheduleType: 'daily', hour: 2, minute: 0 } },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(mockService.scheduleJob.called).to.be.false
+    })
   })
 
   // -----------------------------------------------------------------------

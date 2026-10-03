@@ -37,6 +37,15 @@ export default defineConfig({
       exclude: ['**/*.test.{ts,tsx}', '**/__tests__/**', '**/*.d.ts'],
       reporter: ['text-summary', 'json-summary', 'json', 'html'],
       reportsDirectory: 'coverage/unit',
+      // Only ever raise the frontend minimum; never lower it to make a PR pass. Add tests instead.
+      // Enforced only by `npm run test:unit:coverage` (plain `test:unit` skips coverage).
+      // Keep this in step with the Slack text in .github/workflows/weekly-coverage.yml.
+      thresholds: {
+        statements: 33,
+        branches: 30,
+        functions: 29,
+        lines: 34,
+      },
     },
   },
   resolve: {

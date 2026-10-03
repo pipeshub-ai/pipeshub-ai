@@ -91,13 +91,14 @@ jobs:
         working-directory: frontend
         run: npm run i18n:check && npm run i18n:keys && npm run test:i18n
 
-      # frontend/package.json defines test:unit (vitest) and 380 tests exist
-      # across 27 files, but no workflow ran them. They need no browser and no
-      # services and finish in about twenty seconds.
-      - name: Run frontend unit tests
+      # The coverage run, not plain test:unit: the minimum lives in
+      # frontend/vitest.config.ts (coverage.thresholds) and is checked only when
+      # coverage is on. A run below it fails here with "Coverage for <metric>
+      # does not meet global threshold".
+      - name: Run frontend unit tests with coverage
         run: |
           cd frontend
-          npm run test:unit
+          npm run test:unit:coverage
 
       # The Electron local-sync tests drive a real file watcher against a real
       # temporary directory, so they are slower than the vitest suite (~45s) and

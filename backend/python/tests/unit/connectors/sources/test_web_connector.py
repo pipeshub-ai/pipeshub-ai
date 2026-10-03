@@ -74,6 +74,7 @@ def _make_connector():
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
     data_entities_processor.get_user_by_user_id = AsyncMock(return_value=None)
     data_entities_processor.on_record_deleted = AsyncMock()
     data_entities_processor.on_record_metadata_update = AsyncMock()
@@ -108,6 +109,8 @@ def _make_connector():
     )
     connector.record_sync_point.read_sync_point = AsyncMock(return_value={})
     connector.record_sync_point.update_sync_point = AsyncMock(return_value={})
+    # robots.txt handling has its own behaviour tests; these unit tests mock fetches one by one.
+    connector.respect_robots_txt = False
     return connector
 
 
@@ -1434,6 +1437,7 @@ def _make_connector_cov():
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_file_record_by_id = AsyncMock(return_value=None)
     dep.get_user_by_user_id = AsyncMock(return_value=None)
     dep.on_record_deleted = AsyncMock()
     dep.on_record_metadata_update = AsyncMock()
@@ -1447,6 +1451,8 @@ def _make_connector_cov():
     )
     c.record_sync_point.read_sync_point = AsyncMock(return_value={})
     c.record_sync_point.update_sync_point = AsyncMock(return_value={})
+    # robots.txt handling has its own behaviour tests; these unit tests mock fetches one by one.
+    c.respect_robots_txt = False
     return c
 
 
@@ -1593,10 +1599,8 @@ class TestDetermineMimeTypeExtended:
 
     def test_svg_content_type(self):
         c = _make_connector_cov()
-        # 'image/svg+xml' contains 'xml', which the code checks before 'svg',
-        # so the XML branch takes precedence
         mime, ext = c._determine_mime_type("https://x.com/f", "image/svg+xml")
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.SVG
 
     def test_docx_content_type(self):
         c = _make_connector_cov()
@@ -2016,6 +2020,7 @@ def _make_connector_fullcov():
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_file_record_by_id = AsyncMock(return_value=None)
     dep.get_user_by_user_id = AsyncMock(return_value=None)
     dep.on_record_deleted = AsyncMock()
     dep.on_record_metadata_update = AsyncMock()
@@ -2034,6 +2039,8 @@ def _make_connector_fullcov():
     )
     connector.record_sync_point.read_sync_point = AsyncMock(return_value={})
     connector.record_sync_point.update_sync_point = AsyncMock(return_value={})
+    # robots.txt handling has its own behaviour tests; these unit tests mock fetches one by one.
+    connector.respect_robots_txt = False
     return connector
 
 
@@ -2332,7 +2339,7 @@ class TestDetermineMimeType:
     def test_svg_from_content_type(self):
         connector = _make_connector_fullcov()
         mime, ext = connector._determine_mime_type("https://example.com/f", "image/svg+xml")
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.SVG
 
     def test_htm_extension(self):
         connector = _make_connector_fullcov()
@@ -2578,6 +2585,7 @@ class TestFetchAndProcessUrl:
         existing.id = "existing-id"
         existing.record_name = "Test"
         existing.external_revision_id = content_hash
+        existing.etag = existing.ctag = None
         existing.parent_external_record_id = None
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = "COMPLETED"
@@ -2649,7 +2657,8 @@ class TestFetchAndProcessUrl:
             )
             result = await connector._fetch_and_process_url("https://example.com/page", 0)
         assert result is None
-        assert "https://example.com/page" not in connector.retry_urls
+        # Recorded as a failed page, but never re-fetched this sync.
+        assert connector.retry_urls["https://example.com/page"].retries == MAX_RETRIES
 
 
 class TestEnsureParentRecordsExistFullCoverage:

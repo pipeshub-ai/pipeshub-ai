@@ -38,6 +38,7 @@ on:
             - google_drive_individual
             - gcs
             - azure_blob
+            - smb
             - azure_files
             - messaging
             - oauth_clients
@@ -162,13 +163,18 @@ jobs:
         # scripts/shard_durations.json) plus a "core" shard for everything else.
         # Each shard's marker is derived in the test step from CONN_SHARD_1 /
         # CONN_SHARD_2 / CONN_SHARD_3 (one source of truth); "core" is everything
-        # those three do not own, so the four partition -m "integration" exactly.
+        # those three and "demo" do not own, so the five partition -m "integration"
+        # exactly.
         # scripts/shard_balance.py checks that partition and the balance; run it
         # after adding or growing a connector suite.
+        # "demo" runs only the Acme Corp demo questions, on a stack where no
+        # other suite has indexed anything: the demo's prompt differs once the
+        # workspace has real data, and core would index plenty. Core leaves the
+        # demo marker out, so it runs once.
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || '["connectors-1","connectors-2","connectors-3","core"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || '["connectors-1","connectors-2","connectors-3","core","demo"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -179,6 +185,11 @@ jobs:
     env:
       MESSAGE_BROKER: ${{ needs.setup.outputs.message_broker }}
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      # One value for both sides: compose seeds the stack with it and the
+      # storage suite mints its service tokens with it. Test-only; a
+      # TEST_SCOPED_JWT_SECRET secret replaces it, except on a pull request,
+      # whose checked-out code must never see a real signing secret.
+      SCOPED_JWT_SECRET: ${{ (github.event_name != 'pull_request_target' && secrets.TEST_SCOPED_JWT_SECRET) || 'pipeshub-integration-scoped-jwt-secret-test-only' }}
       DOCKER_BUILDKIT: "1"
       PIPESHUB_TEST_ENV: local
       # A connector suite whose credential is missing skips itself, which on the
@@ -243,7 +254,7 @@ jobs:
       BOOKSTACK_DB_PORT: '3308'
       ZAMMAD_TEST_URL: http://localhost:8096
       ZAMMAD_CONNECTOR_URL: http://zammad-railsserver:3000
-      COMPOSE_PROFILES: ${{ format('{0},{1},{2}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '') }}
+      COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '') }}
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
@@ -268,6 +279,9 @@ jobs:
       # local .env run does today.
       TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
       TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
+      # The demo test's answer judge uses the Azure settings above. Without it,
+      # facts a question lists for the judge would go unchecked yet pass.
+      PIPESHUB_REQUIRE_JUDGE: '1'
       CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
       CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
       CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
@@ -324,14 +338,22 @@ jobs:
       SMTP_HOST: mailpit
       SMTP_PORT: '1025'
       SMTP_FROM_EMAIL: no-reply@example.com
-      # Nightly sets PIPESHUB_REQUIRE_CONNECTOR_SECRETS, so a missing SMB secret
-      # fails shard 2. CIFS is not registered, so it is not in a shard.
-      SMB_HOST: ${{ secrets.SMB_HOST }}
-      SMB_SHARE: ${{ secrets.SMB_SHARE }}
-      SMB_USERNAME: ${{ secrets.SMB_USERNAME }}
-      SMB_PASSWORD: ${{ secrets.SMB_PASSWORD }}
+      # The SMB connector syncs from the smb-source Samba share in the compose
+      # stack, started by the smb-source profile for connectors-2 (or a dispatch
+      # of smb). The connector reaches it by service name; the test process
+      # writes files through the published port. A secret, when set, points
+      # both at an external share instead. CIFS is not registered, so it is
+      # not in a shard.
+      SMB_HOST: ${{ secrets.SMB_HOST || 'localhost' }}
+      SMB_PORT: ${{ secrets.SMB_HOST && (secrets.SMB_PORT || '445') || '1445' }}
+      SMB_CONNECTOR_HOST: ${{ secrets.SMB_HOST || 'smb-source' }}
+      SMB_CONNECTOR_PORT: ${{ secrets.SMB_HOST && (secrets.SMB_PORT || '445') || '445' }}
+      SMB_SHARE: ${{ secrets.SMB_SHARE || 'pipeshubtest' }}
+      SMB_USERNAME: ${{ secrets.SMB_USERNAME || 'pipeshubtest' }}
+      SMB_PASSWORD: ${{ secrets.SMB_PASSWORD || 'pipeshubtest123' }}
       # Connector shards, one source of truth. The `core` shard is everything
-      # these three do not own, built in the test step from the same values.
+      # these three and the `demo` shard do not own, built in the test step
+      # from the same values.
       # Balanced on measured minutes across both graph legs (both legs run in
       # one job, so a shard's wall clock is the sum of the two):
       # shard 1 ~136 min, shard 2 ~135 min, shard 3 ~132 min. Shard 1 keeps
@@ -394,6 +416,13 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+
+      # The examples suite runs the Go SDK starter; the runner image only caches Go.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
 
       - name: Set up Python and install dependencies
         working-directory: integration-tests
@@ -501,15 +530,16 @@ jobs:
         run: |
           source .venv/bin/activate
           # Each shard runs its slice; `core` is everything the three connector
-          # lists do not own, built here so the lists live in one place. The
-          # single "dispatch" job (a one-marker workflow_dispatch) runs exactly
-          # the selected marker.
+          # lists and the demo shard do not own, built here so the lists live in
+          # one place. The single "dispatch" job (a one-marker workflow_dispatch)
+          # runs exactly the selected marker.
           case "$SHARD" in
             dispatch)     MARKERS="$CONNECTORS_INPUT" ;;
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo" ;;
+            demo)         MARKERS="demo" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
@@ -684,15 +714,16 @@ jobs:
         run: |
           source .venv/bin/activate
           # Each shard runs its slice; `core` is everything the three connector
-          # lists do not own, built here so the lists live in one place. The
-          # single "dispatch" job (a one-marker workflow_dispatch) runs exactly
-          # the selected marker.
+          # lists and the demo shard do not own, built here so the lists live in
+          # one place. The single "dispatch" job (a one-marker workflow_dispatch)
+          # runs exactly the selected marker.
           case "$SHARD" in
             dispatch)     MARKERS="$CONNECTORS_INPUT" ;;
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo" ;;
+            demo)         MARKERS="demo" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as

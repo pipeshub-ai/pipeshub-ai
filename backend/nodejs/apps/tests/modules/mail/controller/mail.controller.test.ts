@@ -101,6 +101,15 @@ describe('mail/controller/mail.controller', () => {
       }
     })
 
+    it('renders the email-change notice with the new address and a warning', () => {
+      const content = controller.getEmailContent('emailChangeNotice', {
+        name: 'Alice', orgName: 'Acme', newEmail: 'alice.new@example.com',
+      })
+      expect(content).to.include('alice.new@example.com')
+      expect(content).to.include('was <strong>not</strong> you')
+      expect(content).to.not.include('Verify email')  // a notice, not a link to act on
+    })
+
     it('should return content for SuspiciousLoginAttempt template', () => {
       try {
         const content = controller.getEmailContent('suspiciousLoginAttempt', { ip: '1.2.3.4' })

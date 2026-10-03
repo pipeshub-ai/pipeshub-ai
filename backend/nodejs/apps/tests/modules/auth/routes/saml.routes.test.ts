@@ -1,5 +1,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
+import express from 'express';
+import { AddressInfo } from 'net';
 import sinon from 'sinon';
 import { Container } from 'inversify';
 import { createSamlRouter } from '../../../../src/modules/auth/routes/saml.routes';
@@ -122,6 +124,39 @@ describe('createSamlRouter', () => {
     const router = createSamlRouter(container);
     expect(router).to.exist;
     expect(router).to.have.property('stack');
+  });
+
+  describe('session cookie', () => {
+    const sessionCookieFor = async (forwardedProto: string): Promise<string | undefined> => {
+      const app = express();
+      app.set('trust proxy', true);
+      app.use(createSamlRouter(container));
+      app.get('/probe', (_req, res) => {
+        res.send('ok');
+      });
+      const server = app.listen(0);
+      try {
+        const { port } = server.address() as AddressInfo;
+        const response = await fetch(`http://127.0.0.1:${port}/probe`, {
+          headers: { 'x-forwarded-proto': forwardedProto },
+        });
+        return response.headers
+          .getSetCookie()
+          .find((cookie) => cookie.startsWith('connect.sid='));
+      } finally {
+        server.close();
+      }
+    };
+
+    it('is marked Secure over HTTPS', async () => {
+      const cookie = await sessionCookieFor('https');
+      expect(cookie).to.be.a('string');
+      expect(cookie).to.match(/;\s*Secure/i);
+    });
+
+    it('is never sent over plain HTTP', async () => {
+      expect(await sessionCookieFor('http')).to.equal(undefined);
+    });
   });
 
   it('should register GET /signIn route', () => {

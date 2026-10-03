@@ -1298,6 +1298,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
                             # Comments already have indexing status set; just count them
                             # (Note: comments now includes attachment records too)
                             comment_count = sum(1 for rec, _ in comments if rec.record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT])
+                            if not content_comments_indexing_enabled:
+                                for rec, _ in comments:
+                                    if rec.record_type in (RecordType.COMMENT, RecordType.INLINE_COMMENT):
+                                        rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                             for comment_record, _ in comments:
                                 comment_record.inherit_permissions = webpage_record.inherit_permissions
                             records_with_permissions.extend(comments)

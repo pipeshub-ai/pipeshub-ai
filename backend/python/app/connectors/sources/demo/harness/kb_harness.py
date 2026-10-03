@@ -6,6 +6,15 @@ then asks each golden question N times and scores the citations against the
 fixture's must_cite / must_not_cite lists. This is the cheap way to tune the
 content before the demo connector exists: the words are identical either way.
 
+What an answer says is scored two ways. ``answer_must_mention`` is an exact,
+case-insensitive token ("2.2%", a name). ``answer_must_state`` (and optionally
+``answer_must_not_state``) lists facts as plain sentences, each one fact, the
+way a reviewer would check it: "A purchase of up to and including $250 needs
+no approval." An AI judge reads the answer against them (``answer_judge.py``
+says how it decides). Citations and permission checks never involve the judge.
+Run from here, the harness has no judge, so those facts show as "not judged";
+the nightly integration test judges them.
+
 Permissions are approximated with two knowledge bases: "shared" (everything
 readable by engineering or support) and "restricted" (pricing committee only).
 Run with --skip-restricted to model Alice, without it to model Bob.
@@ -41,6 +50,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from pipeshub_sdk import Pipeshub
+
+try:
+    from app.connectors.sources.demo.harness.answer_judge import (
+        AnswerJudge,
+        check_content,
+    )
+except ImportError:  # run as a script (acceptance.sh), with this folder on the path
+    from answer_judge import AnswerJudge, check_content  # type: ignore[no-redef]
 
 SYSTEM_LABEL = {"GITHUB": "GitHub", "JIRA": "Jira", "SLACK": "Slack", "DRIVE": "Google Drive", "SERVICENOW": "ServiceNow"}
 TYPE_LABEL = {"PULL_REQUEST": "Pull request", "TICKET": "Ticket", "MESSAGE": "Chat message", "FILE": "Document", "COMMENT": "Review comment"}
@@ -1429,11 +1446,17 @@ def states_together(answer: str, first: list[str], second: list[str]) -> bool:
     return False
 
 
-def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool, str]:
+def score(
+    q: dict, expect: str, cited_ids: set[str], answer: str, judge: AnswerJudge | None = None
+) -> tuple[bool, str]:
     """Score one answer against a golden question's must/must-not lists.
 
     ``expect`` is "cites" or "none" (the persona must not see the restricted
     material). Returns (passed, verdict text).
+
+    Citations, ``answer_must_mention`` tokens and every permission check are
+    exact rules. Only ``answer_must_state`` / ``answer_must_not_state`` go to
+    ``judge`` (see ``answer_judge``), and never for a persona expecting "none".
     """
     must = q.get("must_cite", [])
     missing = [x for x in must if x not in cited_ids]
@@ -1464,7 +1487,12 @@ def score(q: dict, expect: str, cited_ids: set[str], answer: str) -> tuple[bool,
     ok = enough and any_ok and not forbidden and not unmentioned
     full = "full" if not missing else f"{len(must)-len(missing)}/{len(must)}"
     verdict = f"PASS ({full})" if ok else f"FAIL (missing={missing} any_of_ok={any_ok} forbidden={forbidden} unmentioned={unmentioned})"
-    return ok, verdict
+    content = check_content(q, answer, judge)
+    if content is None:
+        return ok, verdict
+    if ok and not content.passed:
+        verdict = f"FAIL ({full})"
+    return ok and content.passed, f"{verdict} {content.render()}"
 
 
 # The chat landing asks in "agent" mode by default; "internal_search" is the

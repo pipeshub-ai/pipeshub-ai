@@ -16,7 +16,9 @@ import re
 import pytest
 
 from app.modules.agents.context.source_catalog import (
+    DEMO_ONLY_SOURCE_NOTE,
     DEMO_SOURCE_NOTE,
+    ORG_HAS_REAL_DATA_KEY,
     SourceCatalog,
     SourceKind,
 )
@@ -385,4 +387,70 @@ class TestDemoSourceNote:
     def test_the_note_sits_with_the_sources_not_in_place_of_them(self) -> None:
         cat = _catalog_from_knowledge([_make_app_entry("Acme Corp demo data", "Demo", DEMO_ID)])
         text = cat.render()
-        assert text.index(DEMO_ID) < text.index(DEMO_SOURCE_NOTE)
+        assert text.index(DEMO_ID) < text.index(cat.demo_note())
+
+
+class TestDemoOnly:
+    """With nothing real to search, the demo answers "our" questions; beside real
+    data it stays #3500's named fallback, so Acme facts never pass as the org's."""
+
+    def test_an_agent_on_the_demo_alone(self) -> None:
+        cat = _catalog_from_knowledge([_make_app_entry("Acme Corp demo data", "Demo", DEMO_ID)])
+        assert cat.demo_only()
+        assert DEMO_ONLY_SOURCE_NOTE in cat.render()
+        assert DEMO_SOURCE_NOTE not in cat.render()
+
+    @pytest.mark.parametrize("other", [_make_kb_entry("Policies", KB_ID), _make_app_entry("Engineering Jira", "JIRA", JIRA_ID)])
+    def test_an_agent_with_a_real_source_too(self, other: dict) -> None:
+        cat = _catalog_from_knowledge([_make_app_entry("Acme Corp demo data", "Demo", DEMO_ID), other])
+        assert not cat.demo_only()
+        assert DEMO_SOURCE_NOTE in cat.render()
+        assert DEMO_ONLY_SOURCE_NOTE not in cat.render()
+
+    def test_chat_in_a_workspace_with_no_real_data(self) -> None:
+        cat = SourceCatalog.from_state({"available_connectors": [{"type": "Demo"}], ORG_HAS_REAL_DATA_KEY: False})
+        assert cat.demo_only()
+        assert DEMO_ONLY_SOURCE_NOTE in cat.render()
+
+    @pytest.mark.parametrize("state_extra", [{}, {ORG_HAS_REAL_DATA_KEY: True}])
+    def test_chat_assumes_real_collections_unless_told_otherwise(self, state_extra: dict) -> None:
+        # The chat route searches Collections without listing them.
+        cat = SourceCatalog.from_state({"available_connectors": [{"type": "Demo"}], **state_extra})
+        assert not cat.demo_only()
+        assert DEMO_SOURCE_NOTE in cat.render()
+
+    def test_the_assistants_empty_collection_does_not_count(self) -> None:
+        # The universal agent lists every Collection, and every user owns one.
+        knowledge = [_make_kb_entry("Bob's Private", KB_ID), _make_app_entry("Acme Corp demo data", "Demo", DEMO_ID)]
+        empty = SourceCatalog.from_state({"agent_knowledge": knowledge, ORG_HAS_REAL_DATA_KEY: False})
+        assert empty.demo_only()
+        for state_extra in ({}, {ORG_HAS_REAL_DATA_KEY: True}):
+            assert not SourceCatalog.from_state({"agent_knowledge": knowledge, **state_extra}).demo_only()
+
+    def test_another_connector_counts_even_with_nothing_indexed(self) -> None:
+        knowledge = [_make_app_entry("Acme Corp demo data", "Demo", DEMO_ID), _make_app_entry("Engineering Jira", "JIRA", JIRA_ID)]
+        assert not SourceCatalog.from_state({"agent_knowledge": knowledge, ORG_HAS_REAL_DATA_KEY: False}).demo_only()
+
+    def test_chat_with_another_connector(self) -> None:
+        cat = SourceCatalog.from_state(
+            {"available_connectors": [{"type": "Demo"}, {"type": "SLACK"}], ORG_HAS_REAL_DATA_KEY: False}
+        )
+        assert not cat.demo_only()
+
+    def test_no_demo(self) -> None:
+        cat = SourceCatalog.from_state({"available_connectors": [{"type": "SLACK"}], ORG_HAS_REAL_DATA_KEY: False})
+        assert not cat.demo_only()
+        assert cat.demo_note() == ""
+
+    def test_both_notes_keep_the_org_name_out_of_demo_searches_only(self) -> None:
+        for note in (DEMO_SOURCE_NOTE, DEMO_ONLY_SOURCE_NOTE):
+            assert note.endswith("Leave the organization's name out of searches of the Demo source.")
+
+    def test_the_mixed_note_keeps_3500s_rules(self) -> None:
+        assert "never present an Acme Corp fact as the user's organization's" in DEMO_SOURCE_NOTE
+        assert "name Acme Corp" in DEMO_SOURCE_NOTE
+
+    def test_the_demo_only_note_answers_our_questions_and_says_it_is_demo_data(self) -> None:
+        assert "as from this workspace's own data" in DEMO_ONLY_SOURCE_NOTE
+        assert "In the Acme Corp demo data" in DEMO_ONLY_SOURCE_NOTE
+        assert "never decline Demo records" in DEMO_ONLY_SOURCE_NOTE

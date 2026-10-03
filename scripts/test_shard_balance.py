@@ -161,6 +161,35 @@ class TestCatchesMistakes(unittest.TestCase):
         strong_ok, _ = run(workflow=stronger, pytest_ini=pytest_ini)
         self.assertEqual(strong_ok, [])
 
+    def test_the_demo_shard_runs_the_demo_exactly_once(self) -> None:
+        with_job = WORKFLOW.replace('"core"]', '"core","demo"]')
+        core = '            core)         MARKERS="integration and not (alpha or beta or gamma){}" ;;\n'
+        case = '            demo)         MARKERS="demo" ;;\n'
+
+        def step(*lines: str) -> str:
+            return '          case "$SHARD" in\n' + "".join(lines) + "          esac\n"
+
+        sound = with_job + step(core.format(" and not demo"), case) * 2
+        self.assertEqual(run(workflow=sound)[0], [])
+        twice, _ = run(workflow=with_job + step(core.format(""), case) * 2)
+        self.assertTrue(any("run twice" in p for p in twice), twice)
+        one_leg, _ = run(workflow=with_job + step(core.format(" and not demo"), case) + step(core.format(" and not demo")))
+        self.assertTrue(any("unknown shard" in p for p in one_leg), one_leg)
+        # Two in one step and none in the other still totals two; the second step fails.
+        lopsided = with_job + step(core.format(" and not demo"), case, case) + step(core.format(" and not demo"))
+        self.assertTrue(any("unknown shard" in p for p in run(workflow=lopsided)[0]))
+        # The shell reads `MARKERS="demo"extra` as the marker "demoextra".
+        suffixed = with_job + step(core.format(" and not demo"), case.replace('"demo" ;;', '"demo"extra ;;')) * 2
+        self.assertTrue(any("unknown shard" in p for p in run(workflow=suffixed)[0]))
+        # Named only in the one-marker dispatch list, the demo job never runs on the nightly.
+        dispatch_only = WORKFLOW.replace("'[\"dispatch\"]'", "'[\"dispatch\",\"demo\"]'")
+        self.assertNotEqual(dispatch_only, WORKFLOW)
+        only_dispatch, _ = run(workflow=dispatch_only + step(core.format(" and not demo"), case) * 2)
+        self.assertTrue(any("stop running" in p for p in only_dispatch), only_dispatch)
+        dropped, _ = run(workflow=WORKFLOW + step(core.format(" and not demo")) * 2)
+        self.assertTrue(any("stop running" in p for p in dropped), dropped)
+        self.assertEqual(run(workflow=WORKFLOW + step(core.format("")) * 2)[0], [])
+
     def test_an_unmeasured_suite_is_named_but_allowed(self) -> None:
         # beta has no measured time; the two shards still weigh the same without it.
         problems, report = run(minutes={"alpha": 30.0, "gamma": 30.0})

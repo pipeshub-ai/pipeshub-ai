@@ -23,7 +23,7 @@ from app.connectors.sources.network_share.pathing import (
     join_rel_path,
     parent_of,
 )
-from app.models.entities import FileRecord, RecordGroupType, RecordType
+from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -118,8 +118,8 @@ class RecordMapper:
         parent_dir: str,
         connector_name: Connectors,
         connector_id: str,
-        existing_by_id: FileRecord | None,
-        existing_by_revision: FileRecord | None,
+        existing_by_id: Record | None,
+        existing_by_revision: Record | None,
         seen_file_ids: Collection[int],
         indexing_manual: bool,
     ) -> RecordDecision:
@@ -172,7 +172,7 @@ class RecordMapper:
         nfc_path: str,
         connector_name: Connectors,
         connector_id: str,
-        existing: FileRecord | None,
+        existing: Record | None,
         indexing_manual: bool,
         revision: str,
         ext_id: str,
@@ -198,7 +198,11 @@ class RecordMapper:
             external_record_group_id=share,
             external_record_id=ext_id,
             external_revision_id=revision,
-            version=0 if existing is None else existing.version + 1,
+            version=(
+                0
+                if existing is None
+                else existing.version + (1 if existing.external_revision_id != revision else 0)
+            ),
             origin=OriginTypes.CONNECTOR.value,
             connector_name=connector_name,
             connector_id=connector_id,

@@ -131,6 +131,8 @@ if [[ -f "$OUT/eks.yaml" ]]; then
   expect eks 'value: "redis"' present 'name: MESSAGE_BROKER'
   expect eks 'value: "redis"' present 'name: KV_STORE_TYPE'
   expect eks 'pipeshubai/pipeshub-sandbox:0.8.0' present
+  expect eks 'force-sigv4.js' absent
+  expect local-neo4j-kafka 'force-sigv4.js' absent
   expect eks 'name: ci-mongodb-initiate-1' present
   expect eks 'helm.sh/hook' absent
   expect eks 'cidr: 169.254.170.23/32' present
@@ -138,6 +140,7 @@ if [[ -f "$OUT/eks.yaml" ]]; then
   expect eks 'storageClassName: "gp3"' present
   # Neo4j is one pod. Qdrant is three. Count the StatefulSet replica lines by name.
   expect eks 'replicas: 3' present 'name: ci-pipeshub-ai-qdrant'
+  expect eks 'whenUnsatisfiable: ScheduleAnyway' present 'name: ci-pipeshub-ai-qdrant'
   expect eks 'replicas: 1' present 'name: ci-pipeshub-ai-neo4j'
 fi
 

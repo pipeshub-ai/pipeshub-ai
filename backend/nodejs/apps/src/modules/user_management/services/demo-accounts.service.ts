@@ -1,6 +1,7 @@
 import { Types } from 'mongoose';
 import { Users } from '../schema/users.schema';
 import { UserCredentials } from '../../auth/schema/userCredentials.schema';
+import { escapeRegExp } from '../../../utils/escape-regexp';
 
 /** Reserved domain of the bundled demo personas (RFC 2606 `.example`). */
 export const DEMO_ACCOUNT_DOMAIN = 'acme-demo.example';
@@ -12,8 +13,6 @@ export function isDemoAccountEmail(email: unknown): boolean {
   );
 }
 
-const escapeRegExp = (text: string): string =>
-  text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const DEMO_EMAIL = new RegExp(`@${escapeRegExp(DEMO_ACCOUNT_DOMAIN)}$`, 'i');
 
 /**

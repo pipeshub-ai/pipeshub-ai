@@ -13,6 +13,18 @@ interface UsePaginatedUserOptionsConfig {
   idField?: 'id' | 'userId';
   /** Page size (default 25) */
   limit?: number;
+  /**
+   * Also offer service accounts, each marked with `serviceAccountBadge`.
+   *
+   * Off by default, because the list of users is otherwise the list of people:
+   * a service account can never sign in, so elsewhere it would sit in the
+   * pending-invite set for good. The screens that choose who belongs to a
+   * group or a team are the exception, since membership is how a service
+   * account is given anything to read.
+   */
+  includeServiceAccounts?: boolean;
+  /** The word shown beside a service account in the list. */
+  serviceAccountBadge?: string;
 }
 
 interface UsePaginatedUserOptionsReturn {
@@ -60,6 +72,8 @@ export function usePaginatedUserOptions({
   enabled,
   idField = 'userId',
   limit = DEFAULT_LIMIT,
+  includeServiceAccounts = false,
+  serviceAccountBadge,
 }: UsePaginatedUserOptionsConfig): UsePaginatedUserOptionsReturn {
   const [options, setOptions] = useState<CheckboxOption[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -81,6 +95,7 @@ export function usePaginatedUserOptions({
           page: pageNum,
           limit,
           search: query || undefined,
+          includeServiceAccounts: includeServiceAccounts ? 'true' : undefined,
         });
         if (requestId !== requestIdRef.current) return;
 
@@ -89,6 +104,9 @@ export function usePaginatedUserOptions({
           label: u.name || u.email || 'Unknown User',
           subtitle: u.email,
           profilePicture: u.profilePicture,
+          // Marked so a machine identity cannot pass for a colleague in a list
+          // that is mostly colleagues.
+          badge: u.kind === 'service' ? serviceAccountBadge : undefined,
         }));
         setOptions((prev) => mergeOptionsById(prev, newOpts, append));
         pageRef.current = pageNum;
@@ -103,7 +121,7 @@ export function usePaginatedUserOptions({
         }
       }
     },
-    [limit, idField],
+    [limit, idField, includeServiceAccounts, serviceAccountBadge],
   );
 
   // Load first page when enabled; reset state when panel opens

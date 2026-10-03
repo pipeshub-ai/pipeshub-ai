@@ -724,6 +724,19 @@ class NextcloudConnector(BaseConnector):
 
         return path_map
 
+    async def _stored_folder_id_at(self, names: list[str], record_group_id: str) -> str | None:
+        """External id of the stored folder reached by ``names`` from the top of the drive, or None.
+
+        The graph store hands back the stored document, not a Record. A read that fails raises.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            stored = await tx_store.get_record_by_path(
+                connector_id=self.connector_id,
+                path=names,
+                external_record_group_id=record_group_id,
+            )
+        return stored.get("externalRecordId") if stored else None
+
     async def _process_nextcloud_entry(
         self,
         entry: Dict,
@@ -810,24 +823,17 @@ class NextcloudConnector(BaseConnector):
 
                 # C. Fallback to Database Lookup
                 else:
-                    try:
-                        async with self.data_store_provider.transaction() as tx_store:
-                            parent_record = await tx_store.get_record_by_path(
-                                connector_id=self.connector_id,
-                                path=parent_path
+                    folder_in_home = path_inside_user_home(clean_parent_path, user_id or self.current_user_id)
+                    if folder_in_home:
+                        parent_external_record_id = await self._stored_folder_id_at(
+                            folder_in_home.split("/"), record_group_id
+                        )
+                        if parent_external_record_id:
+                            path_to_external_id[clean_parent_path] = parent_external_record_id
+                        else:
+                            self.logger.warning(
+                                f"No stored folder at {parent_path}; saving {display_name} without a parent."
                             )
-
-                            if parent_record:
-                                parent_external_record_id = parent_record.external_record_id
-                                # Cache it for future lookups
-                                path_to_external_id[clean_parent_path] = parent_external_record_id
-                            else:
-                                # Only log debug if we really expected a parent
-                                self.logger.debug(
-                                    f"Parent path {parent_path} not found in DB or Cache for {display_name}."
-                                )
-                    except Exception as parent_ex:
-                        self.logger.debug(f"Parent lookup failed: {parent_ex}")
 
             # Detect parent or path changes (file/folder move)
             force_update = False
@@ -1897,23 +1903,30 @@ class NextcloudConnector(BaseConnector):
                         parent_lookup = path_to_external_id
                         if not parents_ready:
                             parent_lookup = await self._with_stored_parent(entry, path_to_external_id)
-                        record_update = await self._process_nextcloud_entry(
-                            entry=entry,
-                            user_id=user_id,
-                            user_email=user_email,
-                            record_group_id=record_group_id,
-                            user_root_path=user_root_path,
-                            path_to_external_id=parent_lookup
-                        )
+                        try:
+                            record_update = await self._process_nextcloud_entry(
+                                entry=entry,
+                                user_id=user_id,
+                                user_email=user_email,
+                                record_group_id=record_group_id,
+                                user_root_path=user_root_path,
+                                path_to_external_id=parent_lookup
+                            )
 
-                        if record_update:
-                            # For incremental sync: send new records immediately, handle updates separately
-                            if record_update.is_new and record_update.record:
-                                await self.data_entities_processor.on_new_records(
-                                    [(record_update.record, record_update.new_permissions or [])],
-                                )
-                            elif not await self._handle_record_updates(record_update):
-                                failed[path] = "the change could not be saved"
+                            if record_update:
+                                # For incremental sync: send new records immediately, handle updates separately
+                                if record_update.is_new and record_update.record:
+                                    await self.data_entities_processor.on_new_records(
+                                        [(record_update.record, record_update.new_permissions or [])],
+                                    )
+                                elif not await self._handle_record_updates(record_update):
+                                    failed[path] = "the change could not be saved"
+                        except Exception:
+                            # A later entry below this one would be saved under a parent that was
+                            # never stored; a save links a child only to a stored parent, and a
+                            # retry sees an unchanged parent id, so it would stay detached.
+                            path_to_external_id.pop(entry.get('path', '').rstrip('/'), None)
+                            raise
 
                     # Nextcloud logs one activity for a restored folder and none for what it held,
                     # which the folder's deletion removed from the index.

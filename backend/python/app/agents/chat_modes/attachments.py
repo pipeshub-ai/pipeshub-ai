@@ -26,7 +26,9 @@ Both kinds' `virtualRecordId`s are merged into the retrieval filter scope
 (`connector_ids` passed to `search_internal_knowledge` / the `filters`
 prefetch uses) so a retrieval call -- prefetch or a follow-up tool call --
 can surface the attachment's indexed content alongside the rest of the
-knowledge base.
+knowledge base. A client-supplied id is included only after
+`check_record_access_with_details` grants this user the record; otherwise
+the text is not loaded and the id is not added to that scope.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES
 from app.utils.chat_helpers import CitationRefMapper, record_to_message_content
+from app.utils.record_access import caller_can_read_virtual_record
 
 if TYPE_CHECKING:
     import logging
@@ -70,6 +73,9 @@ async def resolve_attachments(
     org_id: str,
     ref_mapper: CitationRefMapper,
     logger: "logging.Logger",
+    user_id: str | None = None,
+    graph_provider: Any = None,
+    is_service_account: bool = False,
 ) -> ResolvedAttachments:
     """Resolves the current turn's `query_info["attachments"]` into text
     context + retrieval-scope record IDs. `ref_mapper` is the SAME mapper
@@ -91,9 +97,19 @@ async def resolve_attachments(
     virtual_record_ids: list[str] = []
     content_blocks: list[dict[str, Any]] = []
 
+    async def _readable(vrid: str) -> bool:
+        return await caller_can_read_virtual_record(
+            graph_provider,
+            user_id=user_id,
+            org_id=org_id,
+            virtual_record_id=vrid,
+            logger=logger,
+            is_service_account=is_service_account,
+        )
+
     for att in doc_attachments:
         vrid = att.get("virtualRecordId") or ""
-        if not vrid:
+        if not vrid or not await _readable(vrid):
             continue
         virtual_record_ids.append(vrid)
         try:
@@ -106,10 +122,14 @@ async def resolve_attachments(
         record_blocks, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper)
         content_blocks.extend(record_blocks)
 
+    admitted_images: list[dict[str, Any]] = []
     for att in image_attachments:
         vrid = att.get("virtualRecordId") or ""
         if vrid:
+            if not await _readable(vrid):
+                continue
             virtual_record_ids.append(vrid)
+        admitted_images.append(att)
 
     parts: list[str] = []
     if content_blocks:
@@ -117,10 +137,10 @@ async def resolve_attachments(
         parts.extend(
             block["text"] for block in content_blocks if block.get("type") == "text" and block.get("text")
         )
-    if image_attachments:
-        names = ", ".join(att.get("fileName", "unnamed") for att in image_attachments if isinstance(att, dict))
+    if admitted_images:
+        names = ", ".join(att.get("fileName", "unnamed") for att in admitted_images if isinstance(att, dict))
         parts.append(
-            f"The user also attached {len(image_attachments)} image(s) ({names}) this turn. "
+            f"The user also attached {len(admitted_images)} image(s) ({names}) this turn. "
             "Image content is not visible to you directly -- if the image is relevant, ask the "
             "user to describe it, or try searching/fetching the record if it was indexed."
         )
@@ -128,5 +148,5 @@ async def resolve_attachments(
     return ResolvedAttachments(
         context_text="\n\n".join(parts),
         virtual_record_ids=virtual_record_ids,
-        has_image_attachments=bool(image_attachments),
+        has_image_attachments=bool(admitted_images),
     )

@@ -103,7 +103,16 @@ beforeEach(() => {
       },
     ],
   });
-  getScopes.mockResolvedValue({ scopes: ['kb:read'] });
+  getScopes.mockResolvedValue({
+    scopes: [
+      {
+        name: 'kb:read',
+        description: 'Read knowledge bases and records',
+        category: 'Knowledge Base',
+        requiresUserConsent: true,
+      },
+    ],
+  });
   revokeToken.mockResolvedValue(undefined);
 });
 

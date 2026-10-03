@@ -528,6 +528,7 @@
     "goToCollections": "Ir a Colecciones",
     "namedEmpty": "{{name}} está vacío",
     "noRecords": "No se han encontrado registros",
+    "collectionsLoadFailed": "No se han podido cargar sus colecciones. Compruebe su conexión y, a continuación, seleccione «{{action}}».",
     "searchEmptyHint": "No se ha encontrado lo que busca. Pruebe a buscar otra cosa.",
     "adjustFiltersHint": "Seleccione otra fuente o ajuste los filtros",
     "addFromCollectionsHint": "Puede añadir los archivos o las carpetas de su empresa desde Colecciones",
@@ -1041,7 +1042,8 @@
     },
     "attachments": {
       "uploadFailed": "Error al subir",
-      "uploadFailedNamed": "No se ha podido subir {{name}}: {{error}}",
+      "uploadFailedNamed": "No se ha podido adjuntar {{name}}. {{error}}",
+      "uploadFailedNamedRetry": "No se ha podido adjuntar {{name}}. Inténtelo de nuevo.",
       "unsupportedType": "Tipo de archivo no admitido: {{names}}. Tipos admitidos: {{types}}.",
       "fileTooLarge": "Archivo demasiado grande: {{names}}. El tamaño máximo es de {{maxMb}} MB por archivo.",
       "tooManyFiles": "Máximo {{max}} adjuntos por mensaje.",
@@ -2389,6 +2391,8 @@
       },
       "filters": {
         "selectField": "Seleccionar {{field}}",
+        "selectFieldPlaceholder": "Seleccionar {{field, lowercase}}",
+        "searchOptions": "Buscar…",
         "addFieldValue": "Añadir {{field}}…",
         "authenticateForOptions": "Complete la autenticación y guarde el conector para cargar las opciones de este filtro.",
         "manualIndexingInfo": "Acerca de la indexación manual",
@@ -3516,11 +3520,14 @@
         "loading": "Cargando tokens…",
         "copy": "Copiar el token",
         "revokeTitle": "¿Revocar este token?",
-        "revokeDescription": "\"{{name}}\" deja de funcionar de inmediato y no se puede recuperar. Todo lo que siga usándolo empezará a fallar. Si está rotando, cree primero el sustituto y pase la integración a él."
+        "revokeDescription": "\"{{name}}\" deja de funcionar de inmediato y no se puede recuperar. Todo lo que siga usándolo empezará a fallar. Si está rotando, cree primero el sustituto y pase la integración a él.",
+        "selectAllScopes": "Seleccionar todo",
+        "clearAllScopes": "Borrar todo"
       },
       "disableTitle": "¿Desactivar esta cuenta de servicio?",
       "disableDescription": "{{name}} deja de funcionar de inmediato, incluidos todos los tokens que ya tenga, no solo en el siguiente inicio de sesión. Todo lo que use uno de esos tokens empezará a fallar hasta que vuelva a activarla.",
-      "disableConfirm": "Desactivar"
+      "disableConfirm": "Desactivar",
+      "memberBadge": "Cuenta de servicio"
     }
   },
   "filePreview": {

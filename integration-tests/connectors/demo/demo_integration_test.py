@@ -39,7 +39,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
 import pytest
 import requests
@@ -55,6 +55,11 @@ from app.connectors.sources.demo.harness.kb_harness import (  # type: ignore[imp
     score,
 )
 from helper.pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
+
+if TYPE_CHECKING:
+    from app.connectors.sources.demo.harness.answer_judge import (  # type: ignore[import-not-found]
+        AnswerJudge,
+    )
 
 # The harness module pulls in only httpx and yaml; the connector module would
 # drag the whole connector framework into the test process.
@@ -249,7 +254,12 @@ def demo_connector(
 @pytest.mark.parametrize("chat_mode", CHAT_MODES)
 @pytest.mark.parametrize("persona", PERSONAS)
 def test_golden_questions_pass_for_persona(
-    pipeshub_client: PipeshubClient, demo_connector: str, personas: dict[str, str], persona: str, chat_mode: str
+    pipeshub_client: PipeshubClient,
+    demo_connector: str,
+    personas: dict[str, str],
+    persona: str,
+    chat_mode: str,
+    answer_judge: AnswerJudge | None,
 ) -> None:
     fx = _fixture()
     name_to_id, thread_of = build_name_index(fx)
@@ -262,7 +272,8 @@ def test_golden_questions_pass_for_persona(
         verdicts: list[str] = []
         for _ in range(runs):
             answer, cited_names = ask(pipeshub_client.base_url, jwt, q["ask"], chat_mode)
-            ok, verdict = score(q, expect, cited_fixture_ids(cited_names, name_to_id, thread_of), answer)
+            cited = cited_fixture_ids(cited_names, name_to_id, thread_of)
+            ok, verdict = score(q, expect, cited, answer, judge=answer_judge)
             passes += int(ok)
             # A failed run shows what was said, so a nightly miss can be diagnosed from the log.
             verdicts.append(verdict if ok else f"{verdict} answer={' '.join(answer.split())[:300]!r}")

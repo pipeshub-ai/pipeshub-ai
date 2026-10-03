@@ -521,6 +521,7 @@
     "goToCollections": "Zu den Sammlungen",
     "namedEmpty": "{{name}} ist leer",
     "noRecords": "Keine Datensätze gefunden",
+    "collectionsLoadFailed": "Ihre Sammlungen konnten nicht geladen werden. Prüfen Sie Ihre Verbindung und wählen Sie dann „{{action}}“.",
     "searchEmptyHint": "Keine passenden Ergebnisse gefunden. Versuchen Sie einen anderen Suchbegriff.",
     "adjustFiltersHint": "Wählen Sie eine andere Quelle oder passen Sie Ihre Filter an",
     "addFromCollectionsHint": "Sie können Unternehmensdateien oder -ordner über die Sammlungen hinzufügen",
@@ -985,7 +986,8 @@
     },
     "attachments": {
       "uploadFailed": "Upload fehlgeschlagen",
-      "uploadFailedNamed": "{{name}} konnte nicht hochgeladen werden: {{error}}",
+      "uploadFailedNamed": "{{name}} konnte nicht angehängt werden. {{error}}",
+      "uploadFailedNamedRetry": "{{name}} konnte nicht angehängt werden. Bitte versuchen Sie es erneut.",
       "unsupportedType": "Nicht unterstützter Dateityp: {{names}}. Unterstützte Typen: {{types}}.",
       "fileTooLarge": "Datei zu groß: {{names}}. Die maximale Größe beträgt {{maxMb}} MB pro Datei.",
       "tooManyFiles": "Höchstens {{max}} Anhänge pro Nachricht.",
@@ -2373,6 +2375,8 @@
       },
       "filters": {
         "selectField": "{{field}} auswählen",
+        "selectFieldPlaceholder": "{{field}} auswählen",
+        "searchOptions": "Suchen…",
         "addFieldValue": "{{field}} hinzufügen…",
         "authenticateForOptions": "Schließen Sie die Authentifizierung ab und speichern Sie den Konnektor, um die Optionen für diesen Filter zu laden.",
         "manualIndexingInfo": "Informationen zur manuellen Indexierung",
@@ -3490,11 +3494,14 @@
         "loading": "Tokens werden geladen…",
         "copy": "Token kopieren",
         "revokeTitle": "Dieses Token widerrufen?",
-        "revokeDescription": "„{{name}}“ funktioniert sofort nicht mehr und kann nicht wiederhergestellt werden. Alles, was es noch verwendet, schlägt anschließend fehl. Wenn Sie rotieren, erstellen Sie zuerst den Ersatz und stellen Sie die Integration darauf um."
+        "revokeDescription": "„{{name}}“ funktioniert sofort nicht mehr und kann nicht wiederhergestellt werden. Alles, was es noch verwendet, schlägt anschließend fehl. Wenn Sie rotieren, erstellen Sie zuerst den Ersatz und stellen Sie die Integration darauf um.",
+        "selectAllScopes": "Alle auswählen",
+        "clearAllScopes": "Auswahl aufheben"
       },
       "disableTitle": "Dieses Dienstkonto deaktivieren?",
       "disableDescription": "{{name}} funktioniert sofort nicht mehr – einschließlich aller bereits vorhandenen Tokens, nicht erst bei der nächsten Anmeldung. Alles, was eines dieser Tokens verwendet, schlägt fehl, bis Sie das Konto wieder aktivieren.",
-      "disableConfirm": "Deaktivieren"
+      "disableConfirm": "Deaktivieren",
+      "memberBadge": "Dienstkonto"
     }
   },
   "filePreview": {

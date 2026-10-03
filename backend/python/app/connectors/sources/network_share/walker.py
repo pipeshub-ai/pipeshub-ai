@@ -27,7 +27,7 @@ from app.connectors.sources.network_share.record_mapper import (
     revision_id,
     usable_file_id,
 )
-from app.models.entities import FileRecord
+from app.models.entities import FileRecord, Record
 from app.models.permission import Permission
 
 if TYPE_CHECKING:
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from app.config.constants.arangodb import Connectors
     from app.connectors.sources.network_share.protocol import INetworkShareDataSource
 
-ExistingLookup = Callable[[str], Awaitable[FileRecord | None]]
+ExistingLookup = Callable[[str], Awaitable[Record | None]]
 FlushUpserts = Callable[[list[tuple[FileRecord, list[Permission]]]], Awaitable[None]]
 FlushMoves = Callable[[list[tuple[str, FileRecord, list[Permission]]]], Awaitable[None]]
 PermissionsFor = Callable[[FileRecord], list[Permission]]
@@ -81,6 +81,7 @@ class ShareWalker:
         max_ts = 0
         upserts: list[tuple[FileRecord, list[Permission]]] = []
         moves: list[tuple[str, FileRecord, list[Permission]]] = []
+        pending_moves: list[tuple[MoveDecision, DirectoryEntry, str, list[Permission]]] = []
         seen_file_ids: set[int] = set()
         chosen_folders = {p.rstrip("/") for p in scope.list_prefixes if p}
 
@@ -157,9 +158,7 @@ class ShareWalker:
                 return None
             perms = self.permissions_for(decision.record)
             if isinstance(decision, MoveDecision):
-                moves.append((decision.old_external_id, decision.record, perms))
-                if len(moves) >= self.batch_size:
-                    await flush()
+                pending_moves.append((decision, entry, parent_dir, perms))
             elif isinstance(decision, UpsertDecision):
                 upserts.append((decision.record, perms))
                 if len(upserts) >= self.batch_size:
@@ -248,6 +247,29 @@ class ShareWalker:
             if directory and not await selected_prefix_is_walkable(directory):
                 continue
             await traverse(directory, prefix=bool(prefix))
+
+        # Settled only after the whole walk: the revision lookup returns one record
+        # per file id, so for a hard link walked before its other path it hands
+        # back the record of a link that is still on the share.
+        for decision, entry, parent_dir, perms in pending_moves:
+            if decision.old_external_id in seen:
+                fallback = self.mapper.classify(
+                    entry=entry,
+                    share=share,
+                    parent_dir=parent_dir,
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    existing_by_id=None,
+                    existing_by_revision=None,
+                    seen_file_ids=(),
+                    indexing_manual=indexing_manual,
+                )
+                if isinstance(fallback, UpsertDecision):
+                    upserts.append((fallback.record, perms))
+            else:
+                moves.append((decision.old_external_id, decision.record, perms))
+            if len(upserts) >= self.batch_size or len(moves) >= self.batch_size:
+                await flush()
 
         await flush()
         return WalkResult(seen=seen, complete=complete, max_timestamp_ms=max_ts)
