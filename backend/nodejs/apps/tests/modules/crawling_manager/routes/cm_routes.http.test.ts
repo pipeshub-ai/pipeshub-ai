@@ -346,6 +346,18 @@ describe('Crawling manager over HTTP', () => {
       expect(await repeatables()).to.have.length(2)
       expect(pendingRuns()).to.have.length(2)
     })
+
+    it('does not let a member list every schedule in the org, but still shows them their own', async () => {
+      await send('POST', `/${TYPE}/drive-team/schedule`, session(ADMIN_A), daily())
+      await send('POST', `/${TYPE}/drive-max/schedule`, session(MEMBER_A), daily(6, 0))
+
+      const all = await send('GET', '/schedule/all', session(MEMBER_A))
+      expect(all.status).to.equal(400)
+      expect(errorMessage(all)).to.equal('Admin access required')
+
+      const own = await send('GET', `/${TYPE}/drive-max/schedule`, session(MEMBER_A))
+      expect(own.status).to.equal(200)
+    })
   })
 
   describe('creating, changing, pausing and resuming', () => {
@@ -670,6 +682,47 @@ describe('Crawling manager over HTTP', () => {
 
       const res = await send('DELETE', '/schedule/all', session(ADMIN_A))
       expect(res.status).to.equal(200)
+    })
+
+    it('counts a schedule whose run is due but not yet picked up', async () => {
+      await scheduleBothAndPromote()
+      const res = await send('GET', '/stats', session(ADMIN_A))
+      expect(res.status).to.equal(200)
+      expect(res.body.data).to.include({ repeatable: 1 })
+    })
+  })
+
+  describe('queue statistics', () => {
+    it("counts only the caller's own org, even when another org picked the same time", async () => {
+      await send('POST', `/${TYPE}/drive-team/schedule`, session(ADMIN_A), daily())
+      await send('POST', `/${TYPE}/drive-max/schedule`, session(MEMBER_A), daily(6, 0))
+      await scheduler.scheduleJob(CONNECTOR, 'globex-drive', daily().scheduleConfig as never, ORG_B, ADMIN_B._id)
+
+      const globex = await send('GET', '/stats', session(ADMIN_B))
+      expect(globex.status).to.equal(200)
+      expect(globex.body.data).to.include({ delayed: 1, repeatable: 1, total: 1 })
+
+      const acme = await send('GET', '/stats', session(ADMIN_A))
+      expect(acme.body.data).to.include({ delayed: 2, repeatable: 2, total: 2 })
+    })
+
+    it("lets a member read their own org's counts", async () => {
+      await send('POST', `/${TYPE}/drive-team/schedule`, session(ADMIN_A), daily())
+      await scheduler.scheduleJob(CONNECTOR, 'globex-drive', daily(4, 0).scheduleConfig as never, ORG_B, ADMIN_B._id)
+
+      const res = await send('GET', '/stats', session(MEMBER_A))
+      expect(res.status).to.equal(200)
+      expect(res.body.data).to.include({ delayed: 1, repeatable: 1, total: 1 })
+    })
+
+    it('counts a paused schedule only in its own org', async () => {
+      await send('POST', `/${TYPE}/drive-team/schedule`, session(ADMIN_A), daily())
+      expect((await send('POST', `/${TYPE}/drive-team/pause`, session(ADMIN_A))).status).to.equal(200)
+
+      const acme = await send('GET', '/stats', session(ADMIN_A))
+      expect(acme.body.data).to.include({ paused: 1, repeatable: 0, total: 1 })
+      const globex = await send('GET', '/stats', session(ADMIN_B))
+      expect(globex.body.data).to.include({ paused: 0, total: 0 })
     })
   })
 

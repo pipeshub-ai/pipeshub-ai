@@ -41740,7 +41740,9 @@ paths:
         - Crawling Jobs
       summary: Get all crawling job statuses
       description: |
-        Retrieve the status of all scheduled crawling jobs across the organization.
+        Retrieve the status of all scheduled crawling jobs across the organization,
+        including org-wide connectors and other members' personal connectors.
+        Only an organization admin may call this; a member is refused with 400.
       operationId: getAllCrawlingJobStatus
       security:
         - bearerAuth: []
@@ -41759,8 +41761,16 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/JobStatus'
+        '400':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid JWT token required
+        '403':
+          description: Token lacks the required scope
 
     delete:
       tags:
@@ -41882,6 +41892,7 @@ paths:
       summary: Get queue statistics
       description: |
         Retrieve statistics for the crawling job queue including active, waiting, and completed job counts.
+        Counts cover only the caller's organization.
       operationId: getQueueStats
       security:
         - bearerAuth: []

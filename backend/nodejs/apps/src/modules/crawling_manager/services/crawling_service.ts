@@ -906,16 +906,32 @@ export class CrawlingSchedulerService {
   /**
    * Get queue statistics
    */
-  async getQueueStats(): Promise<any> {
-    this.logger.debug('Getting queue statistics');
+  async getQueueStats(orgId: string): Promise<any> {
+    this.logger.debug('Getting queue statistics', { orgId });
 
     try {
-      const waiting = await this.queue.getWaiting();
-      const active = await this.queue.getActive();
-      const completed = await this.queue.getCompleted();
-      const failed = await this.queue.getFailed();
-      const delayed = await this.queue.getDelayed();
-      const repeatableJobs = await this.queue.getRepeatableJobs();
+      const ofOrg = (jobs: Job[]): Job<CrawlingJobData>[] =>
+        (jobs as Job<CrawlingJobData>[]).filter((job) => job.data.orgId === orgId);
+      const waiting = ofOrg(await this.queue.getWaiting());
+      const active = ofOrg(await this.queue.getActive());
+      const completed = ofOrg(await this.queue.getCompleted());
+      const failed = ofOrg(await this.queue.getFailed());
+      const delayed = ofOrg(await this.queue.getDelayed());
+      // A schedule carries no job data: it is the org's when one of the org's
+      // queued runs has its name and repeat options. The name matters because
+      // orgs often pick the same cron pattern.
+      const orgRuns = ofOrg(await this.queue.getJobs([...PENDING_STATES, 'active']));
+      const repeatableJobs = (await this.queue.getRepeatableJobs()).filter(
+        (repeatableJob) =>
+          orgRuns.some(
+            (job) =>
+              job.name === repeatableJob.name &&
+              this.repeatOptsMatch(job.opts.repeat, repeatableJob),
+          ),
+      );
+      const paused = [...this.pausedJobs.values()].filter(
+        (pausedJob) => pausedJob.orgId === orgId,
+      ).length;
 
       const stats = {
         waiting: waiting.length,
@@ -923,7 +939,7 @@ export class CrawlingSchedulerService {
         completed: completed.length,
         failed: failed.length,
         delayed: delayed.length,
-        paused: this.pausedJobs.size,
+        paused,
         repeatable: repeatableJobs.length,
         total:
           waiting.length +
@@ -931,7 +947,7 @@ export class CrawlingSchedulerService {
           completed.length +
           failed.length +
           delayed.length +
-          this.pausedJobs.size,
+          paused,
       };
 
       this.logger.debug('Queue statistics retrieved', stats);
