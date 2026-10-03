@@ -26,6 +26,7 @@ from helper.cleanup_sources import (
     wait_for_virtual_id as _wait_for_virtual_id,
 )
 from helper.clients.kb_client import KBClient
+from helper.mongo_store import records_folder
 
 logger = logging.getLogger("cleanup-fixtures")
 
@@ -44,6 +45,13 @@ HUSBANDRY = b"""# Ferret Husbandry Notes
 Bedding is replaced weekly and charged to the field budget.
 Vaccination records are retained for three years.
 """
+
+
+def _unique(body: bytes) -> bytes:
+    # Identical bytes anywhere in the org share one virtual record id, filed
+    # under the first copy's knowledge base; a parallel worker's upload would
+    # then own this fixture's envelope.
+    return body + f"\nReference {uuid.uuid4().hex}\n".encode()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -77,14 +85,18 @@ async def _indexed_record(
     name = f"{label}-{uuid.uuid4().hex[:6]}.md"
 
     try:
-        upload = kb_client.upload_file(kb_id, name, body, mimetype="text/markdown")
+        upload = kb_client.upload_file(
+            kb_id, name, _unique(body), mimetype="text/markdown"
+        )
         assert upload["summary"]["failed"] == 0, f"Upload failed: {upload}"
         record_id = upload["records"][0]["recordId"]
 
         virtual_record_id = await _wait_for_virtual_id(kb_client, record_id)
         await _wait_for_embeddings(vector_store, virtual_record_id, record_id)
 
-        prefix = f"{test_org_id}/PipesHub/records/{virtual_record_id}"
+        prefix = await mongo_store.envelope_path(
+            test_org_id, virtual_record_id, within=records_folder(test_org_id, kb_id)
+        )
         # Read the vendor rather than assume it: on a stack configured for S3
         # or Azure the blob probe must say it cannot inspect that backend, not
         # look in an empty local directory and call the record cleaned up.
@@ -153,7 +165,7 @@ async def record_in_a_folder(
 
         name = f"in-folder-{uuid.uuid4().hex[:6]}.md"
         upload = kb_client.upload_file(
-            kb_id, name, POLICY, folder_id=folder_id, mimetype="text/markdown"
+            kb_id, name, _unique(POLICY), folder_id=folder_id, mimetype="text/markdown"
         )
         assert upload["summary"]["failed"] == 0, f"Upload failed: {upload}"
         record_id = upload["records"][0]["recordId"]
@@ -161,7 +173,9 @@ async def record_in_a_folder(
         virtual_record_id = await _wait_for_virtual_id(kb_client, record_id)
         await _wait_for_embeddings(vector_store, virtual_record_id, record_id)
 
-        prefix = f"{test_org_id}/PipesHub/records/{virtual_record_id}"
+        prefix = await mongo_store.envelope_path(
+            test_org_id, virtual_record_id, within=records_folder(test_org_id, kb_id)
+        )
         vendor = await mongo_store.storage_vendor_under_path(prefix) or "local"
         yield {
             "kb_id": kb_id,

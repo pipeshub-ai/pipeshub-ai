@@ -35,6 +35,7 @@ from app.connectors.core.base.token_service.oauth_service import (
 from app.connectors.core.registry.auth_builder import OAuthScopeType
 from app.edition_containers import ConnectorAppContainer
 from app.edition_config import (
+    REDACTED_PLACEHOLDER,
     check_user_is_admin,
     get_oauth_credentials_for_toolset,
     get_toolset_by_id,
@@ -221,6 +222,45 @@ def _validate_dict(value: object, field_name: str, *, allow_empty: bool = True) 
             detail=f"{field_name} must be an object"
         )
     return value
+
+
+def _holds_object(value: object) -> bool:
+    return isinstance(value, dict) or (isinstance(value, list) and any(_holds_object(v) for v in value))
+
+
+def _mask_inline_auth(auth: dict[str, Any]) -> dict[str, Any]:
+    """Edition masking, with any nested object hidden whole: the masker reads top-level keys only."""
+    return {
+        key: REDACTED_PLACEHOLDER if _holds_object(value) else value
+        for key, value in mask_oauth_secrets(auth).items()
+    }
+
+
+def _instance_for_response(instance: dict[str, Any], *, is_admin: bool) -> dict[str, Any]:
+    """Copy of *instance* that is safe to return.
+
+    Its inline ``auth`` holds credentials: non-admins never get it, admins get it
+    masked the way the edition masks OAuth secrets.
+    """
+    if "auth" not in instance:
+        return instance
+    safe = {k: v for k, v in instance.items() if k != "auth"}
+    auth = instance["auth"]
+    if is_admin and isinstance(auth, dict) and auth:
+        safe["auth"] = _mask_inline_auth(auth)
+    return safe
+
+
+def _keep_stored_secrets(incoming: dict[str, Any], stored: dict[str, Any] | None) -> dict[str, Any]:
+    """A client echoing back a masked value must not overwrite the stored secret."""
+    stored = stored or {}
+    merged: dict[str, Any] = {}
+    for key, value in incoming.items():
+        if not is_redacted_placeholder(value):
+            merged[key] = value
+        elif key in stored:
+            merged[key] = stored[key]
+    return merged
 
 
 def _has_oauth_credentials(auth_config: dict[str, Any]) -> bool:
@@ -765,6 +805,8 @@ async def _create_or_update_toolset_oauth_config(
                     for k, v in enriched.items():
                         if k == "type":
                             continue  # Skip type field
+                        if is_redacted_placeholder(v):
+                            continue  # A masked value echoed back keeps what is stored
                         if k == "clientSecret" and (
                             not v or not str(v).strip() or is_redacted_placeholder(v)
                         ):
@@ -780,6 +822,8 @@ async def _create_or_update_toolset_oauth_config(
             logger.warning("OAuth config not found, creating new one")
 
         # Create new OAuth config
+        if any(is_redacted_placeholder(v) for v in auth_config.values()):
+            raise InvalidAuthConfigError("a masked value cannot be saved. Enter the value again.")
         enriched = await _prepare_toolset_auth_config(
             auth_config, toolset_type, registry, config_service, base_url
         )
@@ -807,6 +851,8 @@ async def _create_or_update_toolset_oauth_config(
         await config_service.set_config(path, oauth_configs)
         return new_cfg["_id"]
 
+    except InvalidAuthConfigError:
+        raise
     except Exception as e:
         logger.error(f"Error creating/updating toolset OAuth config: {e}", exc_info=True)
         return None
@@ -1278,7 +1324,7 @@ async def create_toolset_instance(
 
     return {
         "status": "success",
-        "instance": new_instance,
+        "instance": _instance_for_response(new_instance, is_admin=True),
         "message": "Toolset instance created successfully."
     }
 
@@ -1310,6 +1356,11 @@ async def get_toolset_instances(
             or search_lower in i.get("toolsetType", "").lower()
         ]
 
+    # Only instances with inline credentials need to know who is asking.
+    is_admin = any("auth" in i for i in instances) and await _check_user_is_admin(
+        user_context["user_id"], request, config_service
+    )
+
     # Add registry metadata
     registry = _get_registry(request)
     enriched = []
@@ -1317,7 +1368,7 @@ async def get_toolset_instances(
         toolset_type = inst.get("toolsetType", "")
         meta = registry.get_toolset_metadata(toolset_type)
         enriched.append({
-            **inst,
+            **_instance_for_response(inst, is_admin=is_admin),
             "displayName": meta.get("display_name", toolset_type) if meta else toolset_type,
             "description": meta.get("description", "") if meta else "",
             "iconPath": meta.get("icon_path", "") if meta else "",
@@ -1370,7 +1421,7 @@ async def get_toolset_instance(
     meta = registry.get_toolset_metadata(toolset_type)
 
     result: dict[str, Any] = {
-        **instance,
+        **_instance_for_response(instance, is_admin=is_admin),
         "displayName": meta.get("display_name", toolset_type) if meta else toolset_type,
         "description": meta.get("description", "") if meta else "",
         "iconPath": meta.get("icon_path", "") if meta else "",
@@ -1599,7 +1650,7 @@ async def update_toolset_instance(
         auth_config = _validate_dict(
             value=body.get("authConfig"), field_name="authConfig", allow_empty=True
         )
-        instance["auth"] = auth_config
+        instance["auth"] = _keep_stored_secrets(auth_config, instance.get("auth"))
 
     # Recalculate inheritedFromOrgId server-side when oauth config linkage changed.
     if oauth_credentials_changed and instance.get("oauthConfigId"):
@@ -1638,7 +1689,7 @@ async def update_toolset_instance(
 
     return {
         "status": "success",
-        "instance": instance,
+        "instance": _instance_for_response(instance, is_admin=True),
         "message": msg,
         "deauthenticatedUserCount": deauthed_count,
     }

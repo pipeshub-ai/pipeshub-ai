@@ -6843,8 +6843,9 @@ class TestListToolsetOAuthConfigsNonAdmin:
                 assert "clientSecret" not in cfg
 
     @pytest.mark.asyncio
-    async def test_admin_sees_all_fields(self) -> None:
+    async def test_admin_sees_secret_fields_masked(self) -> None:
         from app.api.routes.toolsets import list_toolset_oauth_configs
+        from app.edition_config import REDACTED_PLACEHOLDER
         cs = AsyncMock()
         configs = [
             {"_id": "oc-1", "orgId": "o1", "config": {"clientId": "cid", "clientSecret": "secret"}}
@@ -6861,7 +6862,7 @@ class TestListToolsetOAuthConfigsNonAdmin:
         with patch("app.api.routes.toolsets._check_user_is_admin", return_value=True):
             result = await list_toolset_oauth_configs("google", req, cs)
             assert result["status"] == "success"
-            assert result["oauthConfigs"][0]["clientSecret"] == "secret"
+            assert result["oauthConfigs"][0]["clientSecret"] == REDACTED_PLACEHOLDER
             assert result["oauthConfigs"][0]["clientSecretSet"] is True
 
 # =============================================================================

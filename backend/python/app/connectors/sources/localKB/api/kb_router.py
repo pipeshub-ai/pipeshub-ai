@@ -115,6 +115,19 @@ HTTP_INTERNAL_SERVER_ERROR = 500
 
 kb_router = APIRouter(prefix="/api/v1/kb", tags=["Knowledge Base"])
 
+
+def _listing_or_error(result: dict[str, Any]) -> dict[str, Any]:
+    """Turn the service's error payload into an error status.
+
+    The error payload is not a valid listing, so returned as-is it fails the
+    response model and the caller gets a bare 500 without the message.
+    """
+    if result.get("success") is False:
+        raise HTTPException(status_code=result.get("code") or 500, detail=result.get("reason"))
+    if result.get("error"):
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=result["error"])
+    return result
+
 def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
     if not value:
@@ -989,7 +1002,7 @@ async def list_kb_records(
 ) -> Dict[str, Any]:
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    return await kb_service.list_kb_records(
+    return _listing_or_error(await kb_service.list_kb_records(
         kb_id=kb_id,
         user_id=user_id,
         org_id=org_id,
@@ -1004,7 +1017,7 @@ async def list_kb_records(
         date_to=date_to,
         sort_by=sort_by,
         sort_order=sort_order,
-    )
+    ))
 
 @kb_router.get(
     "/{kb_id}/children",
@@ -1750,7 +1763,7 @@ async def list_all_records(
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
 
-    return await kb_service.list_all_records(
+    return _listing_or_error(await kb_service.list_all_records(
         user_id=user_id,
         org_id=org_id,
         page=page,
@@ -1766,7 +1779,7 @@ async def list_all_records(
         sort_by=sort_by,
         sort_order=sort_order,
         source=source,
-    )
+    ))
 
 
 # ========================================================================

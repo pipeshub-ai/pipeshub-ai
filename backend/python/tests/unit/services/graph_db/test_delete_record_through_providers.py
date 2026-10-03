@@ -97,7 +97,7 @@ class _ArangoDriver:
 
     async def execute_aql(self, query: str, bind_vars: dict | None = None, txn_id: str | None = None, **_: Any) -> list:
         self.statements.append((query, bind_vars or {}))
-        if "anyoneAccess" in query:
+        if "directAccessPermissionEdge" in query:
             return [self.access if self.access else None]
         if "FILTER user.userId == @user_id" in query:
             return [dict(USER)]

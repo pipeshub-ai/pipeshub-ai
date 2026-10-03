@@ -75,7 +75,7 @@ class TestLlmHealthCheck:
             )
 
         assert resp.status_code == 500
-        assert "LLM failed" in resp.body.decode()
+        assert "LLM failed" not in resp.body.decode()  # logged, never returned
 
 
 class TestInitializeEmbeddingModel:

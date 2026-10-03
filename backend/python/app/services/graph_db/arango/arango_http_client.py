@@ -495,7 +495,8 @@ class ArangoHTTPClient:
         query: str,
         bind_vars: Optional[Dict] = None,
         txn_id: Optional[str] = None,
-        batch_size: int = 1000
+        batch_size: int = 1000,
+        options: dict | None = None,
     ) -> List[Dict]:
         """
         Execute AQL query.
@@ -505,6 +506,7 @@ class ArangoHTTPClient:
             bind_vars: Query bind variables
             txn_id: Optional transaction ID
             batch_size: Batch size for cursor
+            options: Cursor options, e.g. optimizer rules for one query
 
         Returns:
             List[Dict]: Query results
@@ -520,6 +522,8 @@ class ArangoHTTPClient:
             "count": True,
             "batchSize": batch_size
         }
+        if options:
+            payload["options"] = options
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 

@@ -56,6 +56,8 @@ class TestLookupUserForRecords:
 
         result = await lookup_user_for_records(graph_provider, "u1", "org-1")
         assert result["_key"] == "u1"
+        # A failed lookup must raise, not read as "user not found".
+        graph_provider.get_user_by_user_id.assert_awaited_once_with(user_id="u1", raise_on_error=True)
 
     async def test_returns_none_when_not_found(self) -> None:
         from app.connectors.api.connector_resolvers import lookup_user_for_records
