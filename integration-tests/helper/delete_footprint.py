@@ -23,7 +23,8 @@ Where a record's data lives:
 Records with identical content share one virtual record id (MD5 dedup is
 org-wide), so the vector, blob and envelope data of a shared id belong to every
 record that carries it, even though the envelope is filed under the name of the
-copy indexed first.
+copy indexed first. A survivor check counts that envelope where it was before the
+delete, so "unchanged" means those bytes are still there.
 """
 
 from __future__ import annotations
@@ -34,7 +35,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Iterable
 
 from helper.cleanup_errors import StoreNotEmptied
-from helper.mongo_store import records_folder
 
 if TYPE_CHECKING:
     from helper.blob_store import BlobStoreProbe
@@ -53,28 +53,19 @@ SETTLED_STATUSES = frozenset({
 })
 
 
-def envelope_prefix(org_id: str, virtual_record_id: str) -> str:
-    """The flat folder indexing falls back to; most records are filed elsewhere."""
-    return records_folder(org_id, virtual_record_id)
-
-
-def pending_shared_envelopes(org_id: str, virtual_record_ids: Iterable[str]) -> dict[str, str]:
-    """Envelope folders for a survivor's content that is filed under a deleted record's name.
-
-    Whether that content must stay where it is or end up filed for the survivor
-    is not decided yet, so a survivor check still looks in the flat folder for
-    it, as it did before indexing filed content by place. That folder normally
-    holds nothing, so the shared envelope is not covered until the decision is made.
-    """
-    return {v: envelope_prefix(org_id, v) for v in virtual_record_ids}
+async def envelope_location(
+    mongo: "MongoStoreProbe", org_id: str, virtual_record_id: str, *, within: str
+) -> tuple[str, str]:
+    """The folder a record's envelope was filed in, and which backend holds it."""
+    path = await mongo.envelope_path(org_id, virtual_record_id, within=within)
+    return path, await mongo.storage_vendor_under_path(path) or "local"
 
 
 async def storage_vendor(
     mongo: "MongoStoreProbe", org_id: str, virtual_record_id: str, *, within: str
 ) -> str:
     """Which backend holds a record's envelope, read from where it was filed."""
-    path = await mongo.envelope_path(org_id, virtual_record_id, within=within)
-    return await mongo.storage_vendor_under_path(path) or "local"
+    return (await envelope_location(mongo, org_id, virtual_record_id, within=within))[1]
 
 
 @dataclass(frozen=True)
@@ -240,6 +231,21 @@ async def capture_when_stable(*args: Any, attempts: int = 12, **kwargs: Any) -> 
             return current
         previous = current
     raise AssertionError(f"Store counts kept changing; last read: {previous}")
+
+
+def assert_shared_envelope_counted(fp: StoresFootprint, virtual_record_id: str) -> None:
+    """Precondition: shared content counted as zero before the delete would pass "unchanged" with nothing there."""
+    path = fp.envelope_paths.get(virtual_record_id)
+    counts = {
+        "embeddings": fp.points.get(virtual_record_id, 0),
+        "blob files": fp.blobs.get(path, 0) if path else 0,
+        "storage documents": fp.documents.get(f"prefix:{path}", 0) if path else 0,
+    }
+    empty = [store for store, count in counts.items() if not count]
+    assert path and not empty, (
+        f"The shared content {virtual_record_id} has nothing in {empty or 'any store'} "
+        f"under {path!r} before the delete, so checking it is unchanged would prove nothing."
+    )
 
 
 def assert_every_store_holds_it(fp: StoresFootprint) -> None:

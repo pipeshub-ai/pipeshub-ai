@@ -216,19 +216,19 @@ class TestDeletingOneOfTwoIdenticalRecords:
 
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_shared_embeddings_envelope_and_documents_stay(
-        self, one_copy_deleted, graph_provider, vector_store, blob_store, mongo_store, test_org_id
+        self, one_copy_deleted, graph_provider, vector_store, blob_store, mongo_store
     ) -> None:
         """Checked store by store against the counts from before; only the deleted copy's upload may go."""
         copies = one_copy_deleted["copies"]
         vrid = one_copy_deleted["second"].virtual_record_id
-        prefix = fp.envelope_prefix(test_org_id, vrid)
+        path = copies.envelope_paths[vrid]
         assert await vector_store.count_for_virtual_record(vrid) == copies.points[vrid], (
             "Deleting one copy changed the embeddings the other copy still uses."
         )
-        assert await blob_store.count_under(prefix, one_copy_deleted["vendor"]) == copies.blobs[prefix], (
+        assert await blob_store.count_under(path, one_copy_deleted["vendor"]) == copies.blobs[path], (
             "Deleting one copy changed the shared envelope in blob storage."
         )
-        assert await mongo_store.count_documents_under_path(prefix) == copies.documents[f"prefix:{prefix}"], (
+        assert await mongo_store.count_documents_under_path(path) == copies.documents[f"prefix:{path}"], (
             "Deleting one copy changed the shared envelope's storage documents."
         )
         second_upload = one_copy_deleted["second"].upload_document_id

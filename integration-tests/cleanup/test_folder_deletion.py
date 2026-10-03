@@ -157,12 +157,13 @@ async def folder_tree_delete(
             org_id=test_org_id, records=inside, within=within, vendor=vendor,
         )
         fp.assert_every_store_holds_it(before)
-        undecided = fp.pending_shared_envelopes(test_org_id, [shared.virtual_record_id])
+        shared_envelope = {shared.virtual_record_id: before.envelope_paths[shared.virtual_record_id]}
         outside_before = await fp.capture_when_stable(
             await fp.graph_footprint_of_records(graph_provider, [sibling] + [r.record_id for r in outside]),
             vector_store, blob_store, mongo_store,
-            org_id=test_org_id, records=outside, within=within, vendor=vendor, envelope_paths=undecided,
+            org_id=test_org_id, records=outside, within=within, vendor=vendor, envelope_paths=shared_envelope,
         )
+        fp.assert_shared_envelope_counted(outside_before, shared.virtual_record_id)
 
         kb_client.delete_folder(kb_id, target)
         await fp.settle(

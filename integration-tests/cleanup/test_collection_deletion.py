@@ -128,13 +128,15 @@ async def collection_delete(
             org_id=test_org_id, records=[shared, *unique], within=doomed_folder, vendor=vendor,
         )
         fp.assert_every_store_holds_it(before)
-        undecided = fp.pending_shared_envelopes(test_org_id, [shared.virtual_record_id])
+        # One envelope per virtual id, filed under the doomed copy; the survivor's is counted there.
+        shared_envelope = {shared.virtual_record_id: before.envelope_paths[shared.virtual_record_id]}
         survivor_before = await fp.capture_when_stable(
             await fp.graph_footprint_of_connector(graph_provider, survivor_kb),
             vector_store, blob_store, mongo_store,
             org_id=test_org_id, records=survivors, within=records_folder(test_org_id, survivor_kb),
-            vendor=vendor, envelope_paths=undecided,
+            vendor=vendor, envelope_paths=shared_envelope,
         )
+        fp.assert_shared_envelope_counted(survivor_before, shared.virtual_record_id)
 
         kb_client.delete_kb(doomed_kb)
         await fp.settle(

@@ -10,6 +10,8 @@ honest are pinned here:
 * A survivor check reports every store that changed, and passes only when none did.
 * A record's envelope is counted in the folder MongoDB says it was filed in, and a
   re-count after a delete looks in that same folder.
+* Content a survivor shares with a deleted record is counted where it was filed,
+  must hold something before the delete, and moving it is reported as a change.
 """
 
 from __future__ import annotations
@@ -118,8 +120,94 @@ async def test_storage_vendor_is_read_from_the_envelope_folder() -> None:
     assert await fp.storage_vendor(mongo, ORG, VRID, within=FOLDER) == "local"
 
 
-def test_pending_shared_envelopes_still_point_at_the_flat_folder() -> None:
-    assert fp.pending_shared_envelopes(ORG, [VRID]) == {VRID: FLAT}
+@pytest.mark.asyncio
+async def test_envelope_location_gives_the_folder_and_its_backend() -> None:
+    *_, mongo = _stores()
+    mongo.storage_vendor_under_path.return_value = "azureBlob"
+
+    assert await fp.envelope_location(mongo, ORG, VRID, within=FOLDER) == (PREFIX, "azureBlob")
+    mongo.envelope_path.assert_awaited_once_with(ORG, VRID, within=FOLDER)
+
+
+SURVIVOR_FOLDER = f"{ORG}/PipesHub/records/kb-2"
+OWN_VRID = "vrid-own"
+OWN_PATH = f"{SURVIVOR_FOLDER}/own.md"
+SURVIVORS = [
+    fp.Tracked(name="copy.md", record_id="r2", virtual_record_id=VRID),
+    fp.Tracked(name="own.md", record_id="r3", virtual_record_id=OWN_VRID),
+]
+
+
+def _survivor_stores(blobs_by_path: dict[str, int], docs_by_path: dict[str, int] | None = None):
+    docs = blobs_by_path if docs_by_path is None else docs_by_path
+    stores = _stores()
+    _, _, blob, mongo = stores
+    blob.count_under.side_effect = lambda path, vendor: blobs_by_path.get(path, 0)
+    mongo.count_documents_under_path.side_effect = lambda path: 1 if docs.get(path) else 0
+    mongo.envelope_path.return_value = OWN_PATH
+    return stores
+
+
+async def _survivor_capture(stores) -> fp.StoresFootprint:
+    graph, vector, blob, mongo = stores
+    return await fp.capture(
+        GRAPH, vector, blob, mongo, org_id=ORG, records=SURVIVORS,
+        within=SURVIVOR_FOLDER, envelope_paths={VRID: PREFIX},
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_survivor_counts_shared_content_where_the_deleted_copy_filed_it() -> None:
+    _, _, _, mongo = stores = _survivor_stores({PREFIX: 2, OWN_PATH: 2})
+    before = await _survivor_capture(stores)
+
+    mongo.envelope_path.assert_awaited_once_with(ORG, OWN_VRID, within=SURVIVOR_FOLDER)
+    assert before.envelope_paths == {VRID: PREFIX, OWN_VRID: OWN_PATH}
+    assert before.blobs == {PREFIX: 2, OWN_PATH: 2}
+    assert before.documents == {f"prefix:{PREFIX}": 1, f"prefix:{OWN_PATH}": 1}
+    fp.assert_shared_envelope_counted(before, VRID)
+
+
+@pytest.mark.asyncio
+async def test_shared_content_leaving_where_it_was_fails_the_survivor_check() -> None:
+    """Moving it under the survivor's name is a change the check must report, not absorb."""
+    graph, vector, blob, mongo = stores = _survivor_stores({PREFIX: 2, OWN_PATH: 2})
+    before = await _survivor_capture(stores)
+    moved = {OWN_PATH: 2, f"{SURVIVOR_FOLDER}/copy.md": 2}
+    blob.count_under.side_effect = lambda path, vendor: moved.get(path, 0)
+    mongo.count_documents_under_path.side_effect = lambda path: 1 if moved.get(path) else 0
+
+    with pytest.raises(AssertionError) as caught:
+        await fp.assert_unchanged(before, graph, vector, blob, mongo, org_id=ORG, records=SURVIVORS, what="x")
+    message = str(caught.value)
+    assert f"blob files {PREFIX}: 2 -> 0" in message
+    assert f"storage documents prefix:{PREFIX}: 1 -> 0" in message
+
+
+@pytest.mark.parametrize(
+    ("blobs_by_path", "docs_by_path", "missing", "present"),
+    [
+        ({OWN_PATH: 2}, {PREFIX: 1, OWN_PATH: 1}, "blob files", "storage documents"),
+        ({PREFIX: 2, OWN_PATH: 2}, {OWN_PATH: 1}, "storage documents", "blob files"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_shared_content_counted_as_nothing_before_the_delete_is_refused(
+    blobs_by_path: dict[str, int], docs_by_path: dict[str, int], missing: str, present: str
+) -> None:
+    before = await _survivor_capture(_survivor_stores(blobs_by_path, docs_by_path))
+
+    with pytest.raises(AssertionError, match=missing) as caught:
+        fp.assert_shared_envelope_counted(before, VRID)
+    assert present not in str(caught.value)
+    assert not isinstance(caught.value, StoreNotEmptied)
+
+
+def test_shared_content_that_was_never_counted_is_refused() -> None:
+    before = fp.StoresFootprint(GRAPH, None, points={VRID: 3})
+
+    with pytest.raises(AssertionError, match="prove nothing"):
+        fp.assert_shared_envelope_counted(before, VRID)
 
 
 @pytest.mark.asyncio

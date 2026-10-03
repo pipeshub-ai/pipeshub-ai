@@ -106,7 +106,8 @@ async def connector_delete(
             f"virtual record id ({twin_records[names['twin_shared']].virtual_record_id} vs "
             f"{shared_vrid}), so this scenario cannot test shared content surviving."
         )
-        vendor = await fp.storage_vendor(
+        # One envelope per virtual id, filed under the doomed copy; the twin's is counted there.
+        shared_path, vendor = await fp.envelope_location(
             mongo_store, test_org_id, shared_vrid, within=records_folder(test_org_id, doomed)
         )
 
@@ -119,10 +120,9 @@ async def connector_delete(
         )
         fp.assert_every_store_holds_it(doomed_before)
 
-        undecided = fp.pending_shared_envelopes(test_org_id, [shared_vrid])
         survivors = {}
         for label, cid, records, known in (
-            ("twin", twin, list(twin_records.values()), undecided),
+            ("twin", twin, list(twin_records.values()), {shared_vrid: shared_path}),
             ("other", other, list(other_records.values()), {}),
         ):
             graph_fp = await fp.graph_footprint_of_connector(graph_provider, cid)
@@ -135,7 +135,7 @@ async def connector_delete(
                     connector_id=cid, vendor=vendor, envelope_paths=known,
                 ),
             }
-        assert survivors["twin"]["before"].points.get(shared_vrid), "The shared content has no embeddings."
+        fp.assert_shared_envelope_counted(survivors["twin"]["before"], shared_vrid)
 
         src.delete_connector(pipeshub_client, doomed)
         created["connectors"].remove(doomed)
