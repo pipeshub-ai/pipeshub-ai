@@ -814,3 +814,23 @@ async def test_the_cascade_delete_takes_a_trashed_root_only_when_asked(world: _W
     assert taken["failed_records"] == [] and taken["successfully_deleted"] == 1, taken
     assert await g.get_document(rid, CollectionNames.RECORDS.value) is None
     assert await g.get_document(rid, CollectionNames.FILES.value) is None
+
+
+async def test_with_the_trash_on_the_github_prune_leaves_a_trashed_record_for_the_purge(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(processor_module, "is_soft_delete_enabled", AsyncMock(return_value=True))
+    repo = SimpleNamespace(id=4243, full_name="org/repo")
+    await _put_shared_records_in_group(world, f"{repo.id}-code-repository", {
+        "live_shared": blob_external_id(repo.id, "kept.py"),
+        "trashed_shared": blob_external_id(repo.id, "gone.py"),
+    })
+    connector = SimpleNamespace(
+        data_entities_processor=_processor(world), connector_id=world.connector_id, logger=MagicMock()
+    )
+
+    await ReposSync(connector)._prune_deleted_paths(repo, {"kept.py"})
+
+    doc = await world.graph.get_document(world.ids["trashed_shared"], CollectionNames.RECORDS.value)
+    assert doc is not None and doc["isDeleted"] is True
+    assert not connector.logger.error.called, connector.logger.error.call_args_list
