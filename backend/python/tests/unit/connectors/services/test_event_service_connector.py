@@ -521,7 +521,6 @@ class TestHandleStartSync:
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
              _current_coordinator() as mock_stm:
             mock_stm.is_running_here.return_value = False
-            mock_stm.start_sync = AsyncMock()
             mock_stm.spawn = AsyncMock(side_effect=_spawned)
             result = await service._handle_start_sync("gmail", {"orgId": "org1", "connectorId": "c1"})
             assert result is True
@@ -540,7 +539,6 @@ class TestHandleStartSync:
              patch.object(service, "_get_connector", return_value=mock_conn), \
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
              _current_coordinator() as mock_stm:
-            mock_stm.start_sync = AsyncMock()
             mock_stm.spawn = AsyncMock(return_value=None)  # already running
 
             result = await service._handle_start_sync(
@@ -550,7 +548,7 @@ class TestHandleStartSync:
         # Acknowledged: the work is already in flight, so redelivering would
         # only repeat the decision.
         assert result is True
-        mock_stm.start_sync.assert_not_awaited()
+        mock_stm.spawn.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_declined_sync_is_recorded_for_re_issue(self, service):
@@ -564,7 +562,6 @@ class TestHandleStartSync:
         mock_conn = AsyncMock()
         mock_conn.run_sync = AsyncMock()
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn),              patch.object(service, "_get_connector", return_value=mock_conn),              patch.object(service, "_update_app_status", new_callable=AsyncMock),              patch.object(service, "_persist_pending_resync", new_callable=AsyncMock) as mock_persist,              _current_coordinator() as mock_stm:
-            mock_stm.start_sync = AsyncMock()
             mock_stm.spawn = AsyncMock(return_value=None)  # already running
 
             result = await service._handle_start_sync(
@@ -580,7 +577,6 @@ class TestHandleStartSync:
         mock_conn = AsyncMock()
         mock_conn.run_sync = AsyncMock()
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn),              patch.object(service, "_get_connector", return_value=mock_conn),              patch.object(service, "_update_app_status", new_callable=AsyncMock),              patch.object(service, "_persist_pending_resync", new_callable=AsyncMock) as mock_persist,              _current_coordinator() as mock_stm:
-            mock_stm.start_sync = AsyncMock()
             mock_stm.spawn = AsyncMock(return_value=None)
 
             result = await service._handle_start_sync(
@@ -599,7 +595,6 @@ class TestHandleStartSync:
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
              _current_coordinator() as mock_stm:
             mock_stm.is_running_here.return_value = False
-            mock_stm.start_sync = AsyncMock()
             mock_stm.spawn = AsyncMock(side_effect=_spawned)
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": True
@@ -685,7 +680,6 @@ class TestHandleStartSync:
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
              _current_coordinator() as mock_stm:
             mock_stm.is_running_here.return_value = False
-            mock_stm.start_sync = AsyncMock()
             mock_stm.spawn = AsyncMock(side_effect=_spawned)
             
             # Call with fullSync=False in payload, but pendingFullSync=True in doc
@@ -735,7 +729,6 @@ class TestHandleStartSync:
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
              _current_coordinator() as mock_stm:
             mock_stm.is_running_here.return_value = False
-            mock_stm.start_sync = AsyncMock()
             mock_stm.spawn = AsyncMock(side_effect=_spawned)
 
             result = await service._handle_start_sync("gmail", {
@@ -809,7 +802,6 @@ class TestHandleStartSync:
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
              _current_coordinator() as mock_stm:
             mock_stm.is_running_here.return_value = False
-            mock_stm.start_sync = AsyncMock()
             mock_stm.spawn = AsyncMock(side_effect=_spawned)
             
             result = await service._handle_start_sync("gmail", {
@@ -1390,12 +1382,7 @@ class TestStartSyncLease:
             "app.connectors.services.event_service.get_coordinator",
             return_value=manager,
         ), patch.object(service, "_ensure_connector", side_effect=_ensure), \
-             patch.object(service, "_update_app_status", new_callable=AsyncMock), \
-             _current_coordinator() as stm:
-            stm.spawn = AsyncMock(side_effect=_spawned)
-            # Nothing running locally, so the prep is allowed to proceed and
-            # its ordering against acquire is what this asserts.
-            stm.is_running = MagicMock(return_value=False)
+             patch.object(service, "_update_app_status", new_callable=AsyncMock):
             await service._handle_start_sync(
                 "gmail", {"orgId": "o1", "connectorId": "c1", "fullSync": True}
             )
@@ -1519,8 +1506,7 @@ class TestStartSyncLease:
             return_value=manager,
         ), patch.object(
             service, "_ensure_connector", new_callable=AsyncMock, return_value=AsyncMock()
-        ), _current_coordinator() as stm:
-            stm.spawn = AsyncMock(side_effect=_spawned)
+        ):
             result = await service._handle_start_sync(
                 "gmail", {"orgId": "o1", "connectorId": "c1"}
             )
