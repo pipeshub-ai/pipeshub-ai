@@ -1273,3 +1273,81 @@ class TestExecuteInTransactionRetriesTransientFailures:
         with pytest.raises(RuntimeError, match="Deadlock"):
             await store.execute_in_transaction(always_deadlocks)
         assert provider.rollback_transaction.await_count == 3
+
+
+# The exception text ArangoDB's HTTP client raised in the 2 October nightly, when an
+# SMB sync's on_new_records collided with indexing writing the same record.
+ARANGO_BATCH_CONFLICT = "Batch insert failed with 1 error(s): Item 0: [1200] write-write conflict"
+
+
+class _Processor:
+    """Stands in for DataSourceEntitiesProcessor: the decorator reads `data_store_provider`."""
+
+    def __init__(self, data_store_provider: object, failures: list[Exception]) -> None:
+        self.data_store_provider = data_store_provider
+        self.failures = failures
+        self.calls = 0
+
+    @retry_on_deadlock()
+    async def on_new_records(self) -> str:
+        self.calls += 1
+        if self.failures:
+            raise self.failures.pop(0)
+        return "stored"
+
+
+def _arango_store() -> GraphDataStore:
+    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+
+    provider = ArangoHTTPProvider(logger=MagicMock(spec=logging.Logger), config_service=MagicMock())
+    return GraphDataStore(MagicMock(), provider)
+
+
+class TestRetryOnArangoWriteConflict:
+    """ArangoDB reports a clash with another writer as errorNum 1200, never as a deadlock."""
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch) -> None:
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            ARANGO_BATCH_CONFLICT,
+            'Query failed (status=409): {"code":409,"error":true,"errorMessage":"write-write conflict","errorNum":1200}',
+        ],
+    )
+    def test_the_arango_store_calls_a_write_conflict_transient(self, message: str) -> None:
+        assert _arango_store().is_transient_error(RuntimeError(message)) is True
+
+    def test_the_arango_store_does_not_call_other_failures_transient(self) -> None:
+        store = _arango_store()
+        assert store.is_transient_error(RuntimeError("unique constraint violated - [1210]")) is False
+        assert store.is_transient_error(asyncio.CancelledError()) is False
+
+    @pytest.mark.asyncio
+    async def test_a_write_conflict_reruns_the_method(self) -> None:
+        processor = _Processor(_arango_store(), [RuntimeError(ARANGO_BATCH_CONFLICT)])
+        assert await processor.on_new_records() == "stored"
+        assert processor.calls == 2
+
+    @pytest.mark.asyncio
+    async def test_a_lasting_write_conflict_still_raises(self) -> None:
+        processor = _Processor(_arango_store(), [RuntimeError(ARANGO_BATCH_CONFLICT) for _ in range(5)])
+        with pytest.raises(RuntimeError, match=r"\[1200\]"):
+            await processor.on_new_records()
+        assert processor.calls == 3
+
+    @pytest.mark.asyncio
+    async def test_any_other_failure_raises_at_once(self) -> None:
+        processor = _Processor(_arango_store(), [RuntimeError("unique constraint violated - [1210]")])
+        with pytest.raises(RuntimeError, match="1210"):
+            await processor.on_new_records()
+        assert processor.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_a_mocked_store_is_not_taken_as_saying_retry(self) -> None:
+        processor = _Processor(MagicMock(), [RuntimeError(ARANGO_BATCH_CONFLICT)])
+        with pytest.raises(RuntimeError, match=r"\[1200\]"):
+            await processor.on_new_records()
+        assert processor.calls == 1

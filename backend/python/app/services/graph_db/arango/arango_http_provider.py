@@ -959,6 +959,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to commit transaction: {str(e)}")
             raise
 
+    def is_transient_error(self, error: BaseException) -> bool:
+        """A write-write conflict (errorNum 1200) with another writer, such as
+        indexing updating the same record. A stream transaction rolls back
+        whole, so the block can be re-run."""
+        return isinstance(error, Exception) and _is_write_conflict(error)
+
     async def rollback_transaction(self, transaction: str) -> None:
         """
         Rollback a transaction - FULLY ASYNC.

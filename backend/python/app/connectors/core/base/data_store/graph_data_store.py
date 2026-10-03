@@ -59,12 +59,24 @@ def _is_deadlock_error(exception: Exception) -> bool:
     )
 
 
+def _is_retryable(instance: object, exception: Exception) -> bool:
+    """A Neo4j deadlock, or a failure the instance's data store calls transient
+    (an ArangoDB write-write conflict, which never says "deadlock")."""
+    if _is_deadlock_error(exception):
+        return True
+    store = getattr(instance, "data_store_provider", None)
+    # `is True`: a mocked provider answers with a truthy mock, which is not a yes.
+    return isinstance(store, DataStoreProvider) and store.is_transient_error(exception) is True
+
+
 def retry_on_deadlock(max_retries: int = 3):
     """
-    Decorator that retries an async function on Neo4j deadlock errors.
+    Decorator that retries an async function on deadlocks and write conflicts.
 
-    When a deadlock is detected, the entire function is re-executed from scratch,
-    which naturally creates a fresh transaction on retry.
+    When one is detected, the entire function is re-executed from scratch,
+    which naturally creates a fresh transaction on retry. Besides Neo4j's
+    deadlock error, it retries whatever the decorated object's
+    ``data_store_provider`` reports as transient.
 
     Uses exponential backoff: 0.1s, 0.2s, 0.4s, ...
 
@@ -90,20 +102,21 @@ def retry_on_deadlock(max_retries: int = 3):
                     return await func(*args, **kwargs)
                 except Exception as e:
                     last_exception = e
+                    retryable = _is_retryable(args[0] if args else None, e)
 
-                    if _is_deadlock_error(e) and attempt < max_retries - 1:
+                    if retryable and attempt < max_retries - 1:
                         backoff = 0.1 * (2 ** attempt)  # 0.1s, 0.2s, 0.4s
                         logger.warning(
-                            f"Deadlock detected in {func.__name__} "
+                            f"Deadlock or write conflict in {func.__name__} "
                             f"(attempt {attempt + 1}/{max_retries}), "
                             f"retrying in {backoff:.1f}s: {str(e)[:200]}"
                         )
                         await asyncio.sleep(backoff)
                         continue
                     else:
-                        if _is_deadlock_error(e):
+                        if retryable:
                             logger.error(
-                                f"Deadlock persists in {func.__name__} "
+                                f"Deadlock or write conflict persists in {func.__name__} "
                                 f"after {max_retries} attempts: {str(e)[:200]}"
                             )
                         raise
@@ -900,6 +913,9 @@ class GraphDataStore(DataStoreProvider):
     def __init__(self, logger: Logger, graph_provider: IGraphDBProvider) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        return self.graph_provider.is_transient_error(error)
 
     async def compare_and_set_indexing_status(
         self, record_ids: list[str], expected: str, new_status: str
