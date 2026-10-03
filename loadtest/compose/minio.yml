@@ -23,9 +23,13 @@ services:
       # Deterministic corpora are re-uploaded per run; retaining versions would
       # let one run's deletions inflate the next run's listing cost.
       MINIO_BROWSER: "off"
+      # Bitnami keeps the first run's root credentials in the volume; without this
+      # a changed LT_MINIO_* pair is shown in the env but never accepted.
+      MINIO_FORCE_NEW_KEYS: "yes"
     ports:
-      - "${LT_MINIO_HOST_PORT:-9100}:9000"
-      - "${LT_MINIO_CONSOLE_PORT:-9101}:9001"
+      # Loopback only: the default credentials above are public.
+      - "127.0.0.1:${LT_MINIO_HOST_PORT:-9100}:9000"
+      - "127.0.0.1:${LT_MINIO_CONSOLE_PORT:-9101}:9001"
     volumes:
       - lt_minio_data:/bitnami/minio/data
     networks:
