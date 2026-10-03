@@ -101,6 +101,7 @@ def _same_source_refusal(record_id: str, external_id: str) -> RestoreRefused:
 
 # ~39 bytes per vrid in the move-tree JSON body; Node accepts 10 MB.
 _MAX_FOLDER_MOVE_VRIDS = 100_000
+_GROUP_RECORD_PAGE = 1000
 
 
 def _owner_within(owner: str | tuple[str, ...] | None, vrids: set[str]) -> bool:
@@ -4285,7 +4286,9 @@ class DataSourceEntitiesProcessor:
     async def on_record_group_deleted(
         self,
         external_group_id: str,
-        connector_id: str
+        connector_id: str,
+        *,
+        trash_live_records: bool = False,
     ) -> bool:
         """
         Delete a record group and all its associated edges from the database.
@@ -4293,6 +4296,9 @@ class DataSourceEntitiesProcessor:
         Args:
             external_group_id: The external ID of the group from the source system.
             connector_id: The ID of the connector (e.g., 'DROPBOX').
+            trash_live_records: With the trash on, first move the group's live
+                records to the trash, for a caller that removes a group before
+                it has deleted the group's records. Ignored with the trash off.
 
         With the trash on, a group that a record in the trash still belongs to
         is kept with its edges, so a restore puts the record back in it. The
@@ -4304,6 +4310,8 @@ class DataSourceEntitiesProcessor:
         """
         try:
             soft_delete = await is_soft_delete_enabled(self.config_service)
+            if soft_delete and trash_live_records:
+                await self._trash_live_records_of_group(external_group_id, connector_id)
             async with self.data_store_provider.transaction() as tx_store:
                 # 1. Find the record group by its external ID
                 record_group = await tx_store.get_record_group_by_external_id(
@@ -4355,6 +4363,24 @@ class DataSourceEntitiesProcessor:
                 exc_info=True
             )
             return False
+
+    async def _trash_live_records_of_group(self, external_group_id: str, connector_id: str) -> None:
+        record_ids: list[str] = []
+        after_key: str | None = None
+        while True:
+            page = await self.get_records_in_record_group(
+                connector_id, external_group_id, _GROUP_RECORD_PAGE, after_key
+            )
+            record_ids.extend(r.id for r in page)
+            if len(page) < _GROUP_RECORD_PAGE:
+                break
+            after_key = page[-1].id
+        if record_ids:
+            self.logger.info(
+                f"Moving {len(record_ids)} records of group {external_group_id} to the trash: "
+                "the source removed the group"
+            )
+            await self.on_records_soft_deleted(record_ids, connector_id, delete_source=DeleteSource.CONNECTOR)
 
 
     async def _delete_group_organization_edges(self, tx_store, group_internal_id: str) -> None:
