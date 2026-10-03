@@ -1204,12 +1204,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     try:
                         item_id = item_data.get("id")
                         item_title = item_data.get("title")
-                        # Before anything can skip it: an item that fails or is given up on still exists.
-                        if item_id:
-                            seen.add(str(item_id))
-
-                        if not item_id or not item_title:
+                        if not item_id:
                             continue
+                        # Before anything can skip it: an item that fails or is given up on still exists.
+                        seen.add(str(item_id))
 
                         if (
                             record_type == RecordType.CONFLUENCE_PAGE
@@ -1224,6 +1222,12 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                             if item_marker and given_up[str(item_id)] == item_marker:
                                 continue
                             del given_up[str(item_id)]
+
+                        if not item_title:
+                            # Counted as failed, so it holds the checkpoint and is read again, within the retry limit.
+                            self.logger.warning(f"Could not save {content_type} {item_id} in space {space_key}: it has no title")
+                            failed_items.append((str(item_id), "", item_marker or ""))
+                            continue
 
                         self.logger.debug(f"Processing {content_type}: {item_title} ({item_id})")
 

@@ -1179,6 +1179,20 @@ class TestAuditPassEdgeCases:
         assert db.records["p1"] is before, "content whose type changed is left as it was"
 
 
+def count_group_reads(db: TeamDb) -> list[str]:
+    """Records each first-page read of a space's stored records."""
+    reads: list[str] = []
+    original = db.get_records_in_record_group
+
+    async def counting(connector_id: str, external_group_id: str, limit: int, after_key: Optional[str] = None) -> list[Record]:
+        if after_key is None:
+            reads.append(external_group_id)
+        return await original(connector_id, external_group_id, limit, after_key)
+
+    db.get_records_in_record_group = counting
+    return reads
+
+
 def child_of(cid: str, parent: str) -> dict[str, Any]:
     return {**content(cid), "ancestors": [{"id": parent}]}
 
@@ -1451,6 +1465,66 @@ class TestRemovalFromSource:
         await connector.run_sync()
         assert not [c for c in search.cql if "id in (p2)" in c], "an unchanged given-up page is not synced by id again"
         assert store.values_for("confluence_pages/ENG")["last_sync_time"] > held
+
+    async def test_a_page_listed_without_a_title_holds_the_checkpoint_until_given_up_and_is_never_removed(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        held = self._hold_checkpoint(store)
+        untitled = {**content("p2", version=2), "title": None}
+        self._search_window(atlassian_api, search, "2023-12-31 00:00", [content("p1", version=2), untitled])
+
+        for attempt in range(1, 5):
+            search.cql.clear()
+            await connector.run_sync()
+            stored = store.values_for("confluence_pages/ENG")
+            assert any('lastModified > "2023-12-31 00:00"' in c for c in search.cql), "it is read again"
+            assert stored["last_sync_time"] == held, "an item that could not be saved holds the checkpoint"
+            assert json.loads(stored.get("failedPages") or "{}") == {"p2": attempt}
+
+        await connector.run_sync()
+
+        stored = store.values_for("confluence_pages/ENG")
+        assert stored["last_sync_time"] > held, "one untitled page does not freeze the space"
+        assert json.loads(stored["failedPages"]) == {}
+        assert json.loads(stored["givenUpPages"]) == {"p2": "2024-05-01T10:00:00.000Z"}
+
+        search.add("page", 0, listing([untitled]))
+        atlassian_api.on("GET", f"{API}/content/search", search)
+        moved = stored["last_sync_time"]
+        await connector.run_sync()
+
+        stored = store.values_for("confluence_pages/ENG")
+        assert stored["last_sync_time"] >= moved and json.loads(stored["failedPages"]) == {}, "given up, so not held again"
+        assert db.records["p2"].record_name == "Title p2", "the stored page still exists, so it is kept as it was"
+
+    async def test_the_stored_space_is_read_once_for_its_pages_and_blog_posts(self, atlassian_api, db, store, search) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        search.add("blogpost", 0, listing([content("b1", ctype="blogpost")]))
+        await connector.run_sync()
+        assert "b1" in db.records
+        search.add("blogpost", 0, listing([]))
+        search.existing["page"] = [content("p1"), child_of("p3", "p1")]
+        search.existing["blogpost"] = []
+        reads = count_group_reads(db)
+
+        await connector.run_sync()
+
+        assert len(reads) == 1, "one read of the space serves both its pages and its blog posts"
+        assert not {"p2", "b1"} & set(db.records), "both types are still brought in line from it"
+
+    async def test_a_blog_post_saved_after_the_pages_read_is_still_checked_that_sync(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        search.add("blogpost", 0, listing([content("b1", ctype="blogpost")]))
+        search.existing["blogpost"] = []
+        reads = count_group_reads(db)
+
+        await connector.run_sync()
+
+        assert "b1" not in db.records, "the search had it, the space no longer does"
+        assert len(reads) == 2, "the read made for the pages predates b1, so the space is read again"
 
     async def test_a_narrowed_page_filter_removes_the_page_and_the_pages_below_it(
         self, atlassian_api, db, store, search

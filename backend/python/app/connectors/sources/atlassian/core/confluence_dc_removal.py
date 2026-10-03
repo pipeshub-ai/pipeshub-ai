@@ -123,6 +123,9 @@ class ConfluenceDataCenterRemovalMixin:
     a ``_sync_content_by_ids`` that syncs the given ids and says whether it read them all.
     """
 
+    # The space's stored pages and blog posts as the last reconcile read them, kept for the next one only.
+    _stored_space_scan: tuple[str, dict[RecordType, list[Record]]] | None = None
+
     async def _sync_content_by_ids(self, space: RecordGroup, record_type: RecordType, ids: list[str]) -> bool:
         raise NotImplementedError
 
@@ -205,15 +208,30 @@ class ConfluenceDataCenterRemovalMixin:
         whatever its last modified time, so an item comes back once the account
         can see it again. Returns False when a read or delete failed, so the
         caller holds the checkpoint.
+
+        The space's stored records are read once for both types: the blog posts
+        reuse the read made for the pages just before.
         """
+        space_id = str(space.external_group_id)
+        earlier, self._stored_space_scan = self._stored_space_scan, None
         existing = await self._list_space_content(space.short_name, record_type)
         if existing is None:
             return False
-        try:
-            stored = await self._stored_content(str(space.external_group_id), record_type)
-        except Exception as e:
-            self.logger.warning(f"Could not read the stored records of space {space.short_name}; nothing removed: {e}")
-            return False
+        stored: list[Record] | None = None
+        if record_type == RecordType.CONFLUENCE_BLOGPOST and earlier is not None and earlier[0] == space_id:
+            stored = earlier[1].get(record_type, [])
+            # The read predates this sync's blog posts; one it saved, or failed to save, is missing from it.
+            if not listing.seen <= {r.external_record_id for r in stored}:
+                stored = None
+        if stored is None:
+            try:
+                by_type = await self._stored_content(space_id)
+            except Exception as e:
+                self.logger.warning(f"Could not read the stored records of space {space.short_name}; nothing removed: {e}")
+                return False
+            if record_type == RecordType.CONFLUENCE_PAGE:
+                self._stored_space_scan = (space_id, by_type)
+            stored = by_type.get(record_type, [])
 
         settled = True
         stored_ids = {r.external_record_id for r in stored}
@@ -316,15 +334,17 @@ class ConfluenceDataCenterRemovalMixin:
             modified=when(version.get("when") or (history.get("lastUpdated") or {}).get("when")),
         )
 
-    async def _stored_content(self, space_id: str, record_type: RecordType) -> list[Record]:
-        """Stored records of this type in the space, without placeholder ancestors."""
-        stored: list[Record] = []
+    async def _stored_content(self, space_id: str) -> dict[RecordType, list[Record]]:
+        """The space's stored pages and blog posts by type, without placeholder ancestors."""
+        stored: dict[RecordType, list[Record]] = {RecordType.CONFLUENCE_PAGE: [], RecordType.CONFLUENCE_BLOGPOST: []}
         after_key: str | None = None
         while True:
             page = await self.data_entities_processor.get_records_in_record_group(
                 self.connector_id, space_id, RECORD_SCAN_PAGE_SIZE, after_key
             )
-            stored.extend(r for r in page if r.record_type == record_type and not r.is_placeholder)
+            for r in page:
+                if r.record_type in stored and not r.is_placeholder:
+                    stored[r.record_type].append(r)
             if len(page) < RECORD_SCAN_PAGE_SIZE:
                 return stored
             after_key = page[-1].id

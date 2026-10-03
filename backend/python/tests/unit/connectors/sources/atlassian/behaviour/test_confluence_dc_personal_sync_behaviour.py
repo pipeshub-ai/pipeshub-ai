@@ -1099,6 +1099,20 @@ async def test_switching_off_comment_indexing_is_respected(
     assert records_db.records["c1"].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
 
+def count_group_reads(db: RemovalRecordsDb) -> list[str]:
+    """Records each first-page read of a space's stored records."""
+    reads: list[str] = []
+    original = db.get_records_in_record_group
+
+    async def counting(connector_id: str, external_group_id: str, limit: int, after_key: Optional[str] = None) -> list[Any]:
+        if after_key is None:
+            reads.append(external_group_id)
+        return await original(connector_id, external_group_id, limit, after_key)
+
+    db.get_records_in_record_group = counting
+    return reads
+
+
 def footer_comment(cid: str) -> dict[str, Any]:
     return {
         "id": cid,
@@ -1201,6 +1215,53 @@ class TestRemovalFromSource:
             assert not [c for c in search.cql if "id in (p2)" in c], "an unchanged given-up page is not synced by id again"
             assert stored["last_sync_time"] > held
             assert json.loads(stored["givenUpPages"]) == {"p2": "2024-05-01T10:00:00.000Z"}, "kept until it changes"
+
+    async def test_a_page_listed_without_a_title_holds_the_checkpoint_until_given_up_and_is_never_removed(
+        self, atlassian_api, records_db, checkpoints, search
+    ) -> None:
+        connector = await self._synced(atlassian_api, records_db, checkpoints, search)
+        held = self._hold(checkpoints)
+        untitled = {**content("p2", version=2), "title": ""}
+        search.add("page", "ENG", 0, listing([untitled]))
+
+        for attempt in range(1, 5):
+            search.cql.clear()
+            await connector.run_sync()
+            stored = checkpoints.values_for("confluence_pages/ENG")
+            assert [c for c in search.cql if c.startswith("type=page")], "it is read again"
+            assert stored["last_sync_time"] == held, "an item that could not be saved holds the checkpoint"
+            assert json.loads(stored.get("failedPages") or "{}") == {"p2": attempt}
+
+        await connector.run_sync()
+
+        stored = checkpoints.values_for("confluence_pages/ENG")
+        assert stored["last_sync_time"] > held, "one untitled page does not freeze the space"
+        assert json.loads(stored["failedPages"]) == {}
+        assert json.loads(stored["givenUpPages"]) == {"p2": "2024-05-01T10:00:00.000Z"}
+
+        moved = stored["last_sync_time"]
+        await connector.run_sync()
+
+        stored = checkpoints.values_for("confluence_pages/ENG")
+        assert stored["last_sync_time"] >= moved and json.loads(stored["failedPages"]) == {}, "given up, so not held again"
+        assert records_db.records["p2"].record_name == "Title p2", "the stored page still exists, so it is kept as it was"
+
+    async def test_the_stored_space_is_read_once_for_its_pages_and_blog_posts(
+        self, atlassian_api, records_db, checkpoints, search
+    ) -> None:
+        connector = await self._synced(atlassian_api, records_db, checkpoints, search)
+        search.add("blogpost", "ENG", 0, listing([content("b1", ctype="blogpost")]))
+        await connector.run_sync()
+        assert "b1" in records_db.records
+        search.add("blogpost", "ENG", 0, listing([]))
+        search.existing[self.PAGES] = [content("p1"), content("p3", ancestors=[{"id": "p1"}])]
+        search.existing[("blogpost", "ENG")] = []
+        reads = count_group_reads(records_db)
+
+        await connector.run_sync()
+
+        assert len(reads) == 1, "one read of the space serves both its pages and its blog posts"
+        assert not {"p2", "b1"} & set(records_db.records), "both types are still brought in line from it"
 
     async def test_an_archived_page_the_account_can_see_is_kept(self, atlassian_api, records_db, checkpoints, search) -> None:
         connector = await self._synced(atlassian_api, records_db, checkpoints, search)
