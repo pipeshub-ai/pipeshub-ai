@@ -4,6 +4,9 @@ from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.zammad.zammad import ZammadClient, ZammadResponse
 
 SUCCESS_CODE_IS_LESS_THAN = 400
+# /api/v1/tickets/search pages 50 tickets by default and at most 200.
+TICKET_SEARCH_DEFAULT_PER_PAGE = 50
+TICKET_SEARCH_MAX_PER_PAGE = 200
 
 
 class ZammadDataSource:
@@ -2310,69 +2313,86 @@ class ZammadDataSource:
         self,
         query: str,
         limit: Optional[int] = None,
-        offset: Optional[int] = None
+        offset: Optional[int] = None,
+        sort_by: str = "updated_at,id",
+        order_by: str = "desc,desc",
     ) -> ZammadResponse:
-        """Search tickets using global search API with objects=Ticket
+        """Search tickets through /api/v1/tickets/search, one page at a time.
+
+        /api/v1/search ignores ``offset`` before Zammad 6.5 and answers every
+        page with the first one. This endpoint pages by ``page``/``per_page`` on
+        every version, so ``limit``/``offset`` are turned into those.
 
         Args:
             query: str (required) - Search query using Elasticsearch syntax
-            limit: Optional[int] (optional) - Number of results to return
-            offset: Optional[int] (optional) - Number of results to skip for pagination
+            limit: Optional[int] (optional) - Page size, 1 to 200 (default 50)
+            offset: Optional[int] (optional) - Tickets to skip, a multiple of the page size
+            sort_by: str - Comma separated ticket columns to sort by
+            order_by: str - Matching comma separated asc/desc. The id tie-break
+                keeps tickets that share an updated_at in one order across pages.
 
         Returns:
-            ZammadResponse with tickets extracted from assets.Ticket as a list
+            ZammadResponse with the page's tickets as a list, in search order
         """
-        # Use global search endpoint with objects=Ticket
-        url = f"{self.base_url}/api/v1/search"
-        query_params = {"objects": "Ticket"}
+        per_page = TICKET_SEARCH_DEFAULT_PER_PAGE if limit is None else limit
+        skip = offset or 0
+        # Zammad shrinks a larger per_page to 200 without saying so, and the page
+        # number only lands on ``offset`` when it is a whole number of pages.
+        if not 1 <= per_page <= TICKET_SEARCH_MAX_PER_PAGE:
+            return ZammadResponse(
+                success=False,
+                error=f"limit must be between 1 and {TICKET_SEARCH_MAX_PER_PAGE}, got {per_page}",
+                message="search_tickets failed: invalid limit",
+            )
+        if skip < 0 or skip % per_page:
+            return ZammadResponse(
+                success=False,
+                error=f"offset must be a non-negative multiple of limit {per_page}, got {skip}",
+                message="search_tickets failed: invalid offset",
+            )
 
-        if query is not None:
-            query_params["query"] = query
-        if limit is not None:
-            query_params["limit"] = str(limit)
-        if offset is not None:
-            query_params["offset"] = str(offset)
-
-        request_body = None
+        url = f"{self.base_url}/api/v1/tickets/search"
+        query_params = {
+            "query": query,
+            "page": str(skip // per_page + 1),
+            "per_page": str(per_page),
+            "sort_by": sort_by,
+            "order_by": order_by,
+            # The expanded answer is a plain list of tickets on every version;
+            # without it 6.5 answers with a list and earlier versions with ids and assets.
+            "expand": "true",
+        }
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body,
                 query=query_params
             )
             response = await self.http_client.execute(request)
 
             response_text = response.text()
             status_ok = response.status < SUCCESS_CODE_IS_LESS_THAN
+            json_data = response.json() if response_text else []
 
-            # Parse response: extract tickets from assets.Ticket dict
-            data = None
-            if response_text:
-                json_data = response.json()
-                if isinstance(json_data, dict) and json_data.get("error"):
-                    # An error body read as "no tickets" would end a listing early.
-                    status_ok = False
-                elif isinstance(json_data, dict):
-                    # Response structure:
-                    # {
-                    #   "assets": {"Ticket": {"1": {...}, "7": {...}}, ...},
-                    #   "result": [{"type": "Ticket", "id": 1}, ...]
-                    # }
-                    assets = json_data.get("assets", {})
-                    ticket_assets = assets.get("Ticket", {})
-                    # Convert dict {id: ticket_obj} to list of ticket objects
-                    data = list(ticket_assets.values()) if ticket_assets else []
-                else:
-                    # Fallback: if response is not a dict, return as-is
-                    data = json_data if isinstance(json_data, list) else []
+            if isinstance(json_data, list):
+                data = [ticket for ticket in json_data if isinstance(ticket, dict)]
+                error = None
+            else:
+                # An error body, or a shape this method does not know, read as
+                # "no tickets" would end a listing early, so it is a failure.
+                data = None
+                error = json_data.get("error") if isinstance(json_data, dict) else None
+                error = str(error) if error else "unexpected ticket search response"
+                status_ok = False
 
             return ZammadResponse(
                 success=status_ok,
                 data=data,
-                message="search_tickets succeeded" if status_ok else "search_tickets failed"
+                error=error,
+                message="search_tickets succeeded" if status_ok else "search_tickets failed",
+                status_code=response.status,
             )
         except Exception as e:
             return ZammadResponse(

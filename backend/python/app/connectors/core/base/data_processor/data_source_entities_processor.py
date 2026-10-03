@@ -4294,10 +4294,16 @@ class DataSourceEntitiesProcessor:
             external_group_id: The external ID of the group from the source system.
             connector_id: The ID of the connector (e.g., 'DROPBOX').
 
+        With the trash on, a group that a record in the trash still belongs to
+        is kept with its edges, so a restore puts the record back in it. The
+        purge removes the group once its last such record goes. Keeping it
+        counts as done and returns True.
+
         Returns:
             bool: True if the group was successfully deleted, False otherwise.
         """
         try:
+            soft_delete = await is_soft_delete_enabled(self.config_service)
             async with self.data_store_provider.transaction() as tx_store:
                 # 1. Find the record group by its external ID
                 record_group = await tx_store.get_record_group_by_external_id(
@@ -4313,6 +4319,20 @@ class DataSourceEntitiesProcessor:
 
                 record_group_internal_id = record_group.id
                 record_group_name = record_group.name
+
+                if soft_delete and await tx_store.get_records_by_status(
+                    org_id=self.org_id,
+                    connector_id=connector_id,
+                    status_filters=None,
+                    record_group_id=record_group_internal_id,
+                    limit=1,
+                    visibility=RecordVisibility.DELETED,
+                ):
+                    self.logger.info(
+                        f"Keeping record group '{record_group_name}' (external_id: {external_group_id}): "
+                        "records in the trash still belong to it"
+                    )
+                    return True
 
                 self.logger.debug(
                     f"Deleting record group: '{record_group_name}' (internal_id: {record_group_internal_id})"
