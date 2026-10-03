@@ -11784,7 +11784,9 @@ class Neo4jProvider(IGraphDBProvider):
         folder_name: str,
         parent_folder_id: str | None = None,
         exclude_folder_id: str | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Find a folder by name within a specific parent (KB root or folder).
@@ -11796,15 +11798,15 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             if parent_folder_id is None:
                 # KB root: Find immediate children (no incoming RECORD_RELATION edges)
-                query = """
-                MATCH (folder:Record)-[:BELONGS_TO]->(kb:App {id: $kb_id, type: "KB"})
+                query = f"""
+                MATCH (folder:Record)-[:BELONGS_TO]->(kb:App {{id: $kb_id, type: "KB"}})
                 WHERE folder.mimeType = "application/vnd.folder"
                   AND toLower(folder.recordName) = toLower($folder_name)
-                  AND folder.isDeleted <> true
+                  AND {cypher_live_record("folder")}
                   AND ($exclude_folder_id IS NULL OR folder.id <> $exclude_folder_id)
-                  AND NOT EXISTS {
-                      MATCH (folder)<-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]-(:Record)
-                  }
+                  AND NOT EXISTS {{
+                      MATCH (folder)<-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]-(:Record)
+                  }}
                 RETURN folder
                 LIMIT 1
                 """
@@ -11832,6 +11834,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to find folder by name: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def find_file_by_name_in_parent(
@@ -11907,6 +11911,8 @@ class Neo4jProvider(IGraphDBProvider):
         kb_id: str,
         parent_folder_id: str | None,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> set[tuple[str, str]]:
         """Return (name_lower, mime_type_str) tuples for all non-deleted file
         records that are immediate children of *parent_folder_id* (or KB root
@@ -11915,21 +11921,21 @@ class Neo4jProvider(IGraphDBProvider):
         """
         try:
             if parent_folder_id is None:
-                query = """
-                MATCH (rec:Record)-[:BELONGS_TO]->(kb:App {id: $kb_id, type: "KB"})
-                WHERE rec.isDeleted <> true
+                query = f"""
+                MATCH (rec:Record)-[:BELONGS_TO]->(kb:App {{id: $kb_id, type: "KB"}})
+                WHERE {cypher_live_record("rec")}
                   AND NOT rec.mimeType = "application/vnd.folder"
-                  AND NOT (rec)<-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]-(:Record)
+                  AND NOT (rec)<-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]-(:Record)
                 RETURN toLower(rec.recordName) AS name_lower, rec.mimeType AS mime_type
                 """
                 params: dict = {"kb_id": kb_id}
             else:
-                query = """
-                MATCH (parent:Record {id: $parent_folder_id})
-                      -[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->
+                query = f"""
+                MATCH (parent:Record {{id: $parent_folder_id}})
+                      -[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->
                       (rec:Record)
-                MATCH (rec)-[:IS_OF_TYPE]->(file:File {isFile: true})
-                WHERE rec.isDeleted <> true
+                MATCH (rec)-[:IS_OF_TYPE]->(file:File {{isFile: true}})
+                WHERE {cypher_live_record("rec")}
                 RETURN toLower(rec.recordName) AS name_lower, file.mimeType AS mime_type
                 """
                 params = {"parent_folder_id": parent_folder_id}
@@ -11941,6 +11947,8 @@ class Neo4jProvider(IGraphDBProvider):
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch existing file names: {str(e)}")
+            if raise_on_error:
+                raise
             return set()
 
     def _normalize_name(self, name: str | None) -> str | None:

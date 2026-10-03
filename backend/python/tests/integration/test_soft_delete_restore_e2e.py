@@ -390,3 +390,73 @@ async def test_restore_records_changes_only_its_own_batch(world: _World) -> None
 
     assert await world.graph.restore_records([{"id": world.ids["solo"]}], batch) == [world.ids["solo"]]
     assert await world.graph.restore_records([{"id": world.ids["solo"]}], batch) == []
+
+
+async def _add_sibling_written_before_soft_delete(world: _World, name: str, **extra: object) -> None:
+    """A live record stored without ``isDeleted``, as everything written before soft delete is."""
+    world.ids[name] = f"{name}-{uuid.uuid4().hex[:12]}"
+    await world.graph.batch_upsert_records([_file(world, name, **extra)])
+    await _link_to_kb(world, (name,))
+    if isinstance(world.graph, Neo4jProvider):
+        await world.graph.client.execute_query(
+            "MATCH (r:Record {id: $id}) REMOVE r.isDeleted", parameters={"id": world.ids[name]}
+        )
+    else:
+        await world.graph.http_client.execute_aql(
+            "UPDATE @key WITH { isDeleted: null } IN records OPTIONS { keepNull: false }",
+            {"key": world.ids[name]},
+        )
+    assert "isDeleted" not in await world.stored(name)
+
+
+async def test_a_file_is_renamed_past_a_sibling_stored_without_is_deleted(world: _World) -> None:
+    await world.trash("report")
+    await _add_sibling_written_before_soft_delete(world, "old_report", record_name="report.pdf")
+
+    result = await world.restore("report")
+
+    assert result["success"] is True, result
+    assert (await world.stored("report"))["recordName"] == "report (restored).pdf"
+    assert (await world.stored("old_report"))["recordName"] == "report.pdf"
+
+
+async def test_a_root_folder_is_renamed_past_a_sibling_stored_without_is_deleted(world: _World) -> None:
+    await world.trash("folder")
+    await _add_sibling_written_before_soft_delete(world, "old_docs", folder=True)
+
+    result = await world.restore("folder")
+
+    assert result["success"] is True, result
+    assert (await world.stored("folder"))["recordName"] == "Docs (restored)"
+    assert (await world.stored("old_docs"))["recordName"] == "Docs"
+
+
+@pytest.mark.parametrize("kind", ["file", "folder"])
+async def test_a_failed_name_lookup_fails_the_restore_and_keeps_the_record_in_the_trash(
+    world: _World, monkeypatch: pytest.MonkeyPatch, kind: str,
+) -> None:
+    """Read as "no clash", a failed lookup would bring the record back under a taken name."""
+    name = "report" if kind == "file" else "folder"
+    await world.trash(name)
+    world.producer.events.clear()
+    neo4j = isinstance(world.graph, Neo4jProvider)
+    owner = world.graph.client if neo4j else world.graph
+    marker = "name_lower" if kind == "file" else ("$folder_name" if neo4j else "@name_variants")
+    original = owner.execute_query
+    failed = False
+
+    async def fail_the_name_lookup(query, *args, **kwargs) -> object:
+        nonlocal failed
+        if marker in query:
+            failed = True
+            raise RuntimeError("graph unavailable")
+        return await original(query, *args, **kwargs)
+
+    monkeypatch.setattr(owner, "execute_query", fail_the_name_lookup)
+    result = await world.restore(name)
+    monkeypatch.setattr(owner, "execute_query", original)
+
+    assert failed, "the restore never looked the name up"
+    assert result["success"] is False and result["code"] == 500, result
+    assert (await world.stored(name))["isDeleted"] is True
+    assert world.reindexed() == set()

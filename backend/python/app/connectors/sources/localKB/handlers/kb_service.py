@@ -1645,7 +1645,8 @@ class KnowledgeBaseService:
 
         Files clash with files and folders with folders, by name alone. Only
         roots can clash: everything else comes back inside a restored folder.
-        None when no free name turned up.
+        None when no free name turned up. A failed lookup raises: read as "no
+        clash", it would bring the record back under a name already taken.
         """
         gp = self.graph_provider
         live_file_names: dict[str | None, set[str]] = {}
@@ -1660,7 +1661,9 @@ class KnowledgeBaseService:
             name = record.get("recordName") or ""
             is_file = item.get("isFile") is True
             if is_file and parent_id not in live_file_names:
-                existing = await gp._fetch_existing_file_names_in_parent(kb_id=kb_id, parent_folder_id=parent_id)
+                existing = await gp._fetch_existing_file_names_in_parent(
+                    kb_id=kb_id, parent_folder_id=parent_id, raise_on_error=True,
+                )
                 live_file_names[parent_id] = {existing_name for existing_name, _mime in existing}
             candidate = name
             for attempt in range(MAX_RESTORED_NAME_ATTEMPTS + 1):
@@ -1680,6 +1683,7 @@ class KnowledgeBaseService:
                         folder_name=candidate,
                         parent_folder_id=parent_id,
                         exclude_folder_id=record_id,
+                        raise_on_error=True,
                     )
                 if not taken:
                     break

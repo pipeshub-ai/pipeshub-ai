@@ -2321,6 +2321,8 @@ class IGraphDBProvider(ABC):
         parent_folder_id: str | None = None,
         exclude_folder_id: str | None = None,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """Find a folder by name within a specific parent (KB root or folder).
         
@@ -2330,6 +2332,8 @@ class IGraphDBProvider(ABC):
             parent_folder_id: Parent folder ID, or None for KB root
             exclude_folder_id: Optional folder ID to exclude from results (for rename operations)
             transaction: Optional transaction ID
+            raise_on_error: Raise a failed lookup instead of returning None, which
+                reads as "no such folder"
         """
         pass
 

@@ -238,7 +238,7 @@ class TestNameClash:
         renamed = mock_processor.on_record_metadata_update.await_args.args[0]
         assert renamed.record_name == "Report (restored 2).pdf"
         svc.graph_provider._fetch_existing_file_names_in_parent.assert_awaited_once_with(
-            kb_id=KB, parent_folder_id=None
+            kb_id=KB, parent_folder_id=None, raise_on_error=True
         )
         # Renamed before the reindex, so indexing sees the new name.
         assert mock_processor.method_calls.index(
