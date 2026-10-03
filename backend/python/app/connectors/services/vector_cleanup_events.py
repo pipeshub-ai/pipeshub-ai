@@ -21,6 +21,13 @@ Two events, chosen by whether the connector's points carry membership arrays:
     alone cannot distinguish a healthy connector from one whose points it never
     managed to tag.
 
+``deleteConnectorEntities`` — ``{orgId, connectorId, connectorName, recordGroupIds}``
+    Always published, last (``build_connector_cleanup_events``): the
+    connector's footprint in the entities collection. A connector or KB can
+    have entity points with no indexed record (a synced record group), when
+    neither event above is sent. ``recordGroupIds`` is null when the graph
+    did not say, which lets the store recover them from its own points.
+
 Consumers route on ``eventType``, never on which keys a payload happens to
 carry. That matters during a rolling upgrade: an old consumer meets an event
 type it does not know, fails the message and dead-letters it, which is visible
@@ -127,6 +134,40 @@ def build_stored_document_cleanup_events(
     ]
 
 
+def build_connector_cleanup_events(
+    *,
+    org_id: str,
+    connector_id: str,
+    vector_membership_backfilled: bool,
+    vector_membership_backfill_exhausted: bool = False,
+    connector_name: str | None = None,
+    record_group_ids: Sequence[str] | None = None,
+    virtual_record_ids: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Every event one connector/KB deletion publishes: the record-vector
+    cleanup (``build_connector_vector_cleanup_events``), then the entity
+    cleanup, which the indexing service runs and retries."""
+    events = build_connector_vector_cleanup_events(
+        org_id=org_id,
+        connector_id=connector_id,
+        vector_membership_backfilled=vector_membership_backfilled,
+        vector_membership_backfill_exhausted=vector_membership_backfill_exhausted,
+        connector_name=connector_name,
+        record_group_ids=record_group_ids,
+        virtual_record_ids=virtual_record_ids,
+    )
+    events.append(_event(
+        EventTypes.DELETE_CONNECTOR_ENTITIES.value,
+        {
+            "orgId": org_id,
+            "connectorId": connector_id,
+            "connectorName": connector_name,
+            "recordGroupIds": None if record_group_ids is None else _unique_non_empty(record_group_ids),
+        },
+    ))
+    return events
+
+
 def _event(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "eventType": event_type,
@@ -173,7 +214,9 @@ def log_cleanup_publish_failure(
         )
         logger.debug("Unpublished storage document ids for %s: %s", subject, documents)
         return
-    if ids:
+    if event_type == EventTypes.DELETE_CONNECTOR_ENTITIES.value:
+        where, detail = "entity cleanup", "entity points of this connector"
+    elif ids:
         where = (
             f"chunk {payload.get('chunkIndex', 0) + 1}/"
             f"{payload.get('chunkCount', 1)}"

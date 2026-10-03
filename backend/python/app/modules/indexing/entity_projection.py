@@ -88,7 +88,7 @@ async def project_taxonomy_nodes(
         # point holds (repairing lost updates). A record indexed between the
         # read and this write can lose its connector here until it is next
         # indexed; search only narrows, and every hit is re-checked.
-        failed += await store.upsert_entities_batch(entities, merge_membership=False) or 0
+        failed += (await store.upsert_entities_batch(entities, merge_membership=False)).failed
     if unreached:
         try:
             # Re-read: a record linked to the node since the first read has

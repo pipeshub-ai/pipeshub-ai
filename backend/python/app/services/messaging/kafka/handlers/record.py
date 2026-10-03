@@ -315,6 +315,38 @@ class RecordEventHandler(BaseEventService):
                 e,
             )
 
+    async def _delete_connector_entities(self, payload: dict) -> None:
+        """Remove a deleted connector's footprint from the entities collection:
+        shared taxonomy points lose it and its record groups, the rest go.
+        Raises so the consumer retries, then dead-letters."""
+        org_id, connector_id = payload.get("orgId"), payload.get("connectorId")
+        if not org_id or not connector_id:
+            # A producer bug no retry can fix: TERMINAL.
+            raise ProcessingError(
+                "deleteConnectorEntities needs orgId and connectorId",
+                details={"payload_keys": sorted(payload.keys())},
+            )
+        store = self._entity_vector_store()
+        if store is None:
+            self.logger.info("No entity store; nothing to clean for connector %s", connector_id)
+            return
+        graph_provider = self.event_processor.graph_provider
+        try:
+            await store.delete_entities_by_connector(
+                org_id=org_id,
+                connector_id=connector_id,
+                # [] means the graph knew of none; only None makes the store
+                # recover them from its own points.
+                record_group_ids=payload.get("recordGroupIds"),
+                membership_lookup=lambda refs: graph_provider.get_taxonomy_entity_membership(refs, org_id),
+            )
+        except Exception as exc:
+            raise IndexingError(
+                f"Entity cleanup for connector {connector_id} did not complete",
+                details={"org_id": org_id, "connector_id": connector_id},
+            ) from exc
+        self.logger.info("✅ Entity points removed for connector %s (org %s)", connector_id, org_id)
+
     async def _reconcile_pending_duplicates(
         self,
         record_id: str,
@@ -779,6 +811,12 @@ class RecordEventHandler(BaseEventService):
                     )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="connector_purge", count=0))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="connector_purge", count=0))
+                return
+
+            if event_type == EventTypes.DELETE_CONNECTOR_ENTITIES.value:
+                await self._delete_connector_entities(payload)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="connector_entities", count=0))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="connector_entities", count=0))
                 return
 
             if event_type == EventTypes.BULK_DELETE_RECORDS.value:

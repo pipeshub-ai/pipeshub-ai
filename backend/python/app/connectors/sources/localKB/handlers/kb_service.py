@@ -14,7 +14,7 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.vector_cleanup_events import (
-    build_connector_vector_cleanup_events,
+    build_connector_cleanup_events,
     build_stored_document_cleanup_events,
     log_cleanup_publish_failure,
 )
@@ -30,7 +30,6 @@ if TYPE_CHECKING:
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
         DataSourceEntitiesProcessor,
     )
-    from app.modules.transformers.entity_vectorstore import EntityVectorStore
 
 read_collections = [
     collection.value for collection in CollectionNames
@@ -122,7 +121,6 @@ class KnowledgeBaseService:
         kafka_service : KafkaService,
         processor_for_kb: Callable[[str], Awaitable["DataSourceEntitiesProcessor"]] = None,
         config_service=None,
-        entity_vector_store: "EntityVectorStore | None" = None,
     ) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
@@ -134,7 +132,6 @@ class KnowledgeBaseService:
         self.config_service = config_service
         # Entities-collection cleanup on KB delete; optional so this class stays
         # constructible without it (e.g. in tests).
-        self.entity_vector_store = entity_vector_store
 
     def _mutation_failure(self, result: object, action: str) -> dict:
         """Turn a failed graph-provider write into something a person can act on.
@@ -758,10 +755,11 @@ class KnowledgeBaseService:
                     "code": 500,
                 }
 
-            # Vector cleanup for every record at once: one connector-scoped
+            # Vector cleanup for every record at once (one connector-scoped
             # event normally, chunked id lists for a KB whose points predate the
-            # membership arrays.
-            events = build_connector_vector_cleanup_events(
+            # membership arrays), then the entity cleanup, which the indexing
+            # service runs and retries.
+            events = build_connector_cleanup_events(
                 org_id=org_id,
                 connector_id=kb_id,
                 vector_membership_backfilled=result.get(
@@ -771,7 +769,8 @@ class KnowledgeBaseService:
                     "vector_membership_backfill_exhausted", False
                 ),
                 connector_name=result.get("connector_name"),
-                record_group_ids=result.get("record_group_ids", []),
+                # None (the graph did not say) reaches the entity cleanup as None.
+                record_group_ids=result.get("record_group_ids"),
                 virtual_record_ids=result.get("virtual_record_ids", []),
             )
             published = 0
@@ -786,24 +785,6 @@ class KnowledgeBaseService:
                     f"Published only {published}/{len(events)} vector-cleanup "
                     f"event(s) for KB {kb_id}; some embeddings were not cleaned up"
                 )
-
-            # Entities collection cleanup: KB records/groups carry connectorIds=[kb_id]
-            # (see SinkOrchestrator._sync_record_name_entity/_sync_record_group_entity),
-            # so the connector-scoped shrink-or-delete applies unchanged here. Entities
-            # can exist for a KB with no indexed record behind them (e.g. a synced
-            # RecordGroup), which is why this does not ride bulkDeleteRecords above.
-            if self.entity_vector_store is not None:
-                try:
-                    await self.entity_vector_store.delete_entities_by_connector(
-                        org_id=org_id,
-                        connector_id=kb_id,
-                        record_group_ids=result.get("record_group_ids"),
-                        membership_lookup=lambda refs: self.graph_provider.get_taxonomy_entity_membership(
-                            refs, org_id,
-                        ),
-                    )
-                except Exception as e:
-                    self.logger.error(f"❌ Failed to clean up entity vectors for KB {kb_id}: {str(e)}")
 
             # Fire-and-forget: etcd config + blob storage cleanup runs in the
             # background so the API response is not blocked (mirrors the async
