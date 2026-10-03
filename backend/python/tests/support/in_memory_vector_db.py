@@ -247,6 +247,17 @@ class InMemoryVectorDBService(IVectorDBService):
         return [self._search(collection_name, request) for request in requests]
 
     def _search(self, collection_name: str, request: HybridSearchRequest) -> list[SearchResult]:
+        config = self.configs.get(collection_name)
+        if (
+            request.dense_query is not None and config is not None and self._points(collection_name)
+            and len(request.dense_query) != config.embedding_size
+        ):
+            # As every real backend does once the collection holds points
+            # (Redis lets an empty one pass).
+            raise ValueError(
+                f"query vector dimension {len(request.dense_query)} does not match "
+                f"the collection's {config.embedding_size}"
+            )
         candidates = [
             p for p in self._points(collection_name).values() if _passes(p.payload, request.filter)
         ]
