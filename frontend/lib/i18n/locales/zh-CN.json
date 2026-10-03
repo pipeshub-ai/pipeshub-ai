@@ -2243,6 +2243,24 @@
         "confirm": "确定",
         "cancel": "取消"
       },
+      "stopSync": {
+        "label": "停止同步",
+        "labelFull": "停止完整同步",
+        "stopping": "正在停止…"
+      },
+      "stopSyncConfirm": {
+        "title": "停止正在进行的同步？",
+        "titleFull": "停止正在进行的完整同步？",
+        "message": "已同步的记录会保留，但本次运行的其余部分将被放弃。同步可能需要片刻才能完全停止。之后可以重新开始。",
+        "confirm": "停止同步",
+        "confirmFull": "停止完整同步"
+      },
+      "fullSync": {
+        "disabledTooltip": "请先停止正在进行的同步，再开始完整同步"
+      },
+      "sync": {
+        "disabledTooltip": "请先停止正在进行的完整同步"
+      },
       "fullSyncConfirm": {
         "title": "开始完整同步？",
         "message": "完整同步会覆盖并从头重新同步所有数据，比普通同步更慢。当内容缺失、重复或与来源不一致时，请使用完整同步。日常更新请使用普通同步。",
@@ -2425,6 +2443,8 @@
           "syncingTooltip": "此连接器正在同步新增和更新的内容。",
           "fullSyncing": "完整同步进行中",
           "fullSyncingTooltip": "此连接器正在从来源执行完整重新同步。",
+          "queued": "已排队",
+          "queuedTooltip": "正在等待空闲的同步名额。名额空出后将自动开始。",
           "removing": "正在移除",
           "removingTooltip": "此实例正在被删除。"
         }
