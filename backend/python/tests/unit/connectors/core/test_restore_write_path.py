@@ -263,7 +263,7 @@ class TestSyncBringsBackWhatTheConnectorDeleted:
         )
         store = _sync_store(existing)
 
-        processed, _ = await proc._process_record(_incoming(), [], store)
+        processed, _ = await proc._process_record(_incoming(md5_hash="md5-from-source"), [], store)
 
         ((restores, batch), _) = store.restore_records.await_args
         assert batch == "b-9"
@@ -278,6 +278,8 @@ class TestSyncBringsBackWhatTheConnectorDeleted:
         # Unchanged content would stay COMPLETED and publish nothing; its vectors are gone.
         assert processed.indexing_status == ProgressStatus.NOT_STARTED.value
         assert processed.is_deleted is False
+        # Or the upsert would write the source's checksum back for the sweep to skip on.
+        assert processed.md5_hash is None
 
     async def test_a_manual_only_item_never_indexed_stays_manual(self) -> None:
         proc = _processor()

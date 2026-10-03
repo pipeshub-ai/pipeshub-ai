@@ -621,6 +621,33 @@ async def test_the_stranded_sweep_republishes_a_restore_that_failed_after_its_wr
     assert doc["virtualRecordId"] == f"vr-{world.ids['drive_file']}", "citations still resolve"
 
 
+async def test_the_stranded_sweep_republishes_a_restore_whose_index_event_was_lost(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sync finishes but the broker never acks the index event. The upsert used to
+    write the source's checksum back, so the sweep again took the row for a parked duplicate."""
+    await world.graph.update_node(
+        world.ids["drive_file"], CollectionNames.RECORDS.value, {"md5Checksum": "md5-indexed-before"}
+    )
+    await world.processor.on_record_deleted(world.ids["drive_file"])
+
+    async def never_acked(_topic: str, messages: list) -> list[bool]:
+        return [False] * len(messages)
+
+    monkeypatch.setattr(world.producer, "send_messages", never_acked)
+    await _sync_sees_drive_file_again(world, md5_hash="md5-from-source")
+
+    sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph)
+
+    assert [event for event, payload in sent if payload["recordId"] == world.ids["drive_file"]] == [
+        EventTypes.REINDEX_RECORD.value
+    ]
+    doc = await world.stored("drive_file")
+    assert (doc["isDeleted"], doc["indexingStatus"]) == (False, ProgressStatus.NOT_STARTED.value)
+    assert doc.get("md5Checksum") is None
+    assert doc["virtualRecordId"] == f"vr-{world.ids['drive_file']}"
+
+
 async def test_restore_records_changes_only_its_own_batch(world: _World) -> None:
     await world.trash("solo")
     batch = (await world.stored("solo"))["deleteBatchId"]

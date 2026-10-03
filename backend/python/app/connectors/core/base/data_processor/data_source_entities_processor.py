@@ -1460,6 +1460,10 @@ class DataSourceEntitiesProcessor:
             if restored != [existing_record.id]:
                 raise RuntimeError(f"Could not bring record {existing_record.id} back from the trash")
             existing_record = existing_record.model_copy(update={"is_deleted": False})
+            if reindex_restored:
+                # The upsert below writes the source's checksum back, and the row it
+                # leaves is what the sweep sees if the index event is then lost.
+                record.md5_hash = None
             restored_from_trash = True
             record_restored(DeleteSource.CONNECTOR.value, 1)
             self.logger.info(
