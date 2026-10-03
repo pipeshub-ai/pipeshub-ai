@@ -154,6 +154,22 @@ class TestRenameAcrossChosenFolders:
         assert path("legal/a.txt") in db.paths()
 
 
+    @pytest.mark.asyncio
+    async def test_a_chosen_folder_left_empty_goes_with_its_last_file(
+        self, connector: BaseConnector, store: FakeObjectStore, db: FakeRecordsDb, config: FakeConfigService,
+    ) -> None:
+        config.set_folders(["legal", "reports"])
+        store.put("legal/a.txt", "contract")
+        store.put("reports/x.txt", "numbers")
+        await connector.run_sync()
+        assert path("reports") in db.paths()
+
+        store.delete("reports/x.txt")
+        await connector.run_incremental_sync()
+
+        assert db.paths() == {path("legal"), path("legal/a.txt")}
+
+
 class TestFailedListing:
     @staticmethod
     async def _synced_then_first_key_deleted(connector: BaseConnector, store: FakeObjectStore) -> None:

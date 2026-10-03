@@ -236,13 +236,13 @@ class TestSaveReconciliationMetadata:
         )
         graph_provider.batch_upsert_nodes = AsyncMock()
         bs = _make_bs(graph_provider=graph_provider)
-        bs.upload_next_version = AsyncMock(return_value=("existing", 123))
+        bs._update_metadata_buffer = AsyncMock(return_value=("existing", 123))
 
         result = await bs.save_reconciliation_metadata(
             "org", "rec", "vr", {"a": 1},
         )
         assert result == "existing"
-        bs.upload_next_version.assert_awaited_once()
+        bs._update_metadata_buffer.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_lookup_error_falls_back_to_create(self):

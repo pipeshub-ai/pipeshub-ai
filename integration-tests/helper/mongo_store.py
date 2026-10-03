@@ -71,19 +71,64 @@ class MongoStoreProbe:
         return await asyncio.to_thread(_find)
 
     async def count_documents_under_path(self, path_prefix: str) -> int:
-        """Storage documents whose path starts with the given prefix.
+        """Storage documents filed at this path or in a folder below it.
 
-        A record's documents sit under a path containing its virtual record id,
-        so this is how a record's storage metadata is found without knowing
-        each document id up front.
+        This is how a record's storage metadata is found without knowing each
+        document id up front.
         """
 
         def _count() -> int:
             return self._documents().count_documents(
-                {"documentPath": {"$regex": f"^{_escape(path_prefix)}"}}
+                {"documentPath": {"$regex": _under(path_prefix)}}
             )
 
         return await asyncio.to_thread(_count)
+
+    async def envelope_path(
+        self,
+        org_id: str,
+        virtual_record_id: str,
+        *,
+        within: str,
+        timeout: int = _DEFAULT_TIMEOUT,
+    ) -> str:
+        """The folder indexing filed a record's processed content in.
+
+        That folder follows the record's place in its collection
+        (``records/<kbId>/<folder>/<name>``), not its virtual record id, so it is
+        read from the ``record_<virtualRecordId>`` storage document indexing
+        writes. *within* keeps the search to one collection's folder: identical
+        content elsewhere in the org shares the virtual record id. Indexing
+        files under the flat ``records/<virtualRecordId>`` instead when it
+        cannot work out the record's place, so that folder is searched too.
+        """
+        flat = records_folder(org_id, virtual_record_id)
+        query = {
+            "orgId": {"$in": _id_forms(org_id)},
+            "documentName": f"record_{virtual_record_id}",
+            "$or": [
+                {"documentPath": {"$regex": _under(within)}},
+                {"documentPath": {"$regex": _under(flat)}},
+            ],
+        }
+
+        def _paths() -> list[str]:
+            return sorted(self._documents().distinct("documentPath", query))
+
+        deadline = asyncio.get_event_loop().time() + timeout
+        paths = await asyncio.to_thread(_paths)
+        while not paths and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(_POLL_INTERVAL)
+            paths = await asyncio.to_thread(_paths)
+        assert paths, (
+            f"No storage document record_{virtual_record_id} under {within!r} or "
+            f"{flat!r} after {timeout}s, so indexing never stored the record's content."
+        )
+        assert len(paths) == 1, (
+            f"record_{virtual_record_id} is filed in {len(paths)} folders: {paths}. "
+            "A cleanup test cannot tell which one is the record's."
+        )
+        return paths[0]
 
     async def count_documents_for_org(self, org_id: str) -> int:
         def _count() -> int:
@@ -104,7 +149,7 @@ class MongoStoreProbe:
 
         def _find() -> str | None:
             doc = self._documents().find_one(
-                {"documentPath": {"$regex": f"^{_escape(path_prefix)}"}},
+                {"documentPath": {"$regex": _under(path_prefix)}},
                 {"storageVendor": 1},
             )
             return None if doc is None else doc.get("storageVendor")
@@ -192,11 +237,34 @@ class MongoStoreProbe:
             )
 
 
+def records_folder(org_id: str, name: str) -> str:
+    """A folder in the org's processed-records storage.
+
+    Named by a collection or connector id, it holds that source's records; named
+    by a virtual record id, it is the flat folder indexing falls back to.
+    """
+    return f"{org_id}/PipesHub/records/{name}"
+
+
 def _escape(value: str) -> str:
     """Quote a path so regex metacharacters in an id cannot alter the match."""
     import re
 
     return re.escape(value)
+
+
+def is_within(path: str, folder: str) -> bool:
+    """Whether *path* is *folder* itself or a folder below it, as ``_under`` matches in MongoDB."""
+    folder = folder.rstrip("/")
+    return path == folder or path.startswith(f"{folder}/")
+
+
+def _under(path: str) -> str:
+    """Match *path* itself or a folder below it, never a sibling that only starts the same.
+
+    Paths carry record names, so ``.../notes`` must not take in ``.../notes-2``.
+    """
+    return f"^{_escape(path.rstrip('/'))}(/|$)"
 
 
 def _id_forms(value: str) -> list[Any]:

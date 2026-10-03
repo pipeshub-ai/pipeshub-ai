@@ -234,6 +234,7 @@
   "nav": {
     "collections": "集合",
     "allRecords": "所有记录",
+    "allArtifacts": "所有产物",
     "workspace": "工作区",
     "shared": "与我共享",
     "private": "我的集合",
@@ -247,6 +248,31 @@
     "searchChats": "搜索聊天",
     "inbox": "收件箱",
     "notifications": "通知"
+  },
+  "artifacts": {
+    "title": "所有产物",
+    "empty": "暂无产物",
+    "emptyHint": "智能体在聊天中创建的文件会显示在这里。",
+    "loadFailed": "无法加载产物",
+    "previewFailed": "无法预览此文件",
+    "downloadFailed": "无法下载此文件",
+    "openInChat": "在聊天中打开",
+    "searchPlaceholder": "搜索产物",
+    "conversation": "对话",
+    "untitledChat": "—",
+    "name": "名称",
+    "size": "大小",
+    "showing": "显示第 {{start}}-{{end}} 项，共 {{total}} 项",
+    "types": {
+      "IMAGE": "图片",
+      "CHART": "图表",
+      "DOCUMENT": "文档",
+      "SPREADSHEET": "电子表格",
+      "PRESENTATION": "演示文稿",
+      "DATA_FILE": "数据文件",
+      "CODE": "代码",
+      "CODE_OUTPUT": "代码输出"
+    }
   },
   "notifications": {
     "title": "通知",
@@ -1232,6 +1258,8 @@
         "send": "发送邀请",
         "successTitle": "邀请已发送！",
         "successDescription": "已向 {{email}} 发出邀请",
+        "queuedTitle": "邀请已加入队列",
+        "queuedDescription": "正在后台向 {{email}} 发送邮件。如有邮件无法送达，您将收到通知。",
         "invalidEmail": "电子邮件地址无效",
         "errorGeneric": "发送邀请失败",
         "importNoEmails": "文件中未找到电子邮件地址",
@@ -4076,7 +4104,10 @@
       "orgEmailVerifiedTitle": "组织已验证",
       "orgEmailVerifiedDescription": "您的组织现已激活。请登录以继续。",
       "orgEmailVerifyFailedTitle": "验证失败",
-      "orgEmailVerifyFailedDescription": "链接可能无效或已过期。请重新注册。"
+      "orgEmailVerifyFailedDescription": "链接可能无效或已过期。请重新注册。",
+      "loadFailedTitle": "无法加载登录",
+      "loadFailedDescription": "PipesHub 无法连接服务器以加载登录选项。请检查网络连接或服务器地址，然后重试。",
+      "retry": "重试"
     },
     "common": {
       "signIn": "登录",
@@ -4110,6 +4141,11 @@
       "hidePassword": "隐藏密码",
       "accountDisabled": "您的账号已被停用。",
       "tooManyIncorrectCredentials": "您输入错误凭据的次数过多"
+    },
+    "desktopHandoff": {
+      "title": "登录已发送到 PipesHub",
+      "description": "您可以关闭此标签页并返回 PipesHub 应用。",
+      "openApp": "打开 PipesHub"
     }
   },
   "healthGate": {

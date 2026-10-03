@@ -152,7 +152,7 @@ class TestApplyMetadataPresent:
         await transformer.apply(ctx)
 
         transformer.save_metadata_to_db.assert_awaited_once_with(
-            "rec-1", metadata, "vr-1", True
+            "rec-1", metadata, "vr-1", True, resolution=None
         )
 
     @pytest.mark.asyncio
@@ -170,7 +170,7 @@ class TestApplyMetadataPresent:
         await transformer.apply(ctx)
 
         transformer.save_metadata_to_db.assert_awaited_once_with(
-            "rec-1", metadata, "vr-1", False
+            "rec-1", metadata, "vr-1", False, resolution=None
         )
 
 

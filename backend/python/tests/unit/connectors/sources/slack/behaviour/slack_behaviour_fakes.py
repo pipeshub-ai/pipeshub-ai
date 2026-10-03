@@ -440,7 +440,9 @@ class FakeSlackStore:
             self.records[record.external_record_id] = record
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
-        return self.records.get(external_record_id)
+        """A base Record, as both graph stores rebuild it: no subclass fields."""
+        stored = self.records.get(external_record_id)
+        return None if stored is None else Record.model_validate(stored.model_dump(include=set(Record.model_fields)))
 
     async def get_record_by_weburl(self, weburl: str) -> Optional[Record]:
         return None

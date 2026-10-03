@@ -6,7 +6,7 @@ Phase 1 (``EnvSandboxSettingsLoader``): reads from process environment,
 same vars the legacy stack used (``SANDBOX_MODE``, ``SANDBOX_DOCKER_IMAGE``,
 ``SANDBOX_EGRESS_NETWORK``, ``SANDBOX_PIP_INDEX_URL``, ``SANDBOX_NPM_REGISTRY``,
 ``SANDBOX_ALLOW_NETWORK``, ``E2B_API_KEY``, plus new ``SANDBOX_MAX_TOTAL``,
-``SANDBOX_MAX_PER_ORG``).
+``SANDBOX_MAX_PER_ORG``, ``SANDBOX_EGRESS_ALLOW_CIDRS``).
 
 Phase 4 (``ConfigServiceSandboxSettingsLoader``): per-org settings through
 ``ConfigurationService`` — interface defined here, body raises
@@ -22,13 +22,16 @@ from typing import Any, Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.sandbox.coding.base import SandboxContext
+from app.agent_loop_lib.sandbox.coding.egress_firewall import parse_cidrs
 
 __all__ = [
     "SandboxSettings",
+    "SandboxUnavailableError",
     "SharedSandboxConfig",
     "SandboxSettingsLoader",
     "EnvSandboxSettingsLoader",
     "ConfigServiceSandboxSettingsLoader",
+    "resolve_sandbox_mode",
 ]
 
 logger = logging.getLogger(__name__)
@@ -40,9 +43,79 @@ _FALSY_ENV_VALUES = {"0", "false", "no", "off"}
 # same as not warning at all.
 _warned_about_host_isolation = False
 
+_ENV_SANDBOX_MODE = "SANDBOX_MODE"
+
 # `SANDBOX_MODE` value -> backend name. The only accepted spellings; anything
 # else is a misconfiguration rather than a hint to guess from.
 _SANDBOX_MODES = {"LOCAL": "local", "DOCKER": "docker", "E2B": "e2b"}
+_SUPPORTED_MODES_TEXT = ", ".join(sorted(_SANDBOX_MODES.values()))
+
+
+class SandboxUnavailableError(ValueError):
+    """No code-execution backend can be built from the current configuration.
+
+    Raised when `SANDBOX_MODE` is unset or not a supported value. Subclasses
+    `ValueError` so callers that already treated a bad mode as a config error
+    keep working; the point of the dedicated type is that tool loaders can
+    catch it and drop the sandbox tools instead of failing the whole chat.
+    """
+
+
+def resolve_sandbox_mode() -> str:
+    """`SANDBOX_MODE` -> backend name (`local`, `docker`, `e2b`), failing closed.
+
+    Unset or blank means no backend: the previous fallback to `local` ran
+    model-generated code as a subprocess of this service whenever an
+    operator forgot the variable, which is the least isolated option chosen
+    by omission. An unknown value is rejected for the same reason, since
+    `SANDBOX_MODE=docekr` would otherwise silently downgrade to host
+    execution while the operator believes it is containerised. `local` is
+    accepted only when typed out, and logs once per process that it runs
+    code in-process.
+
+    Blank reads as unset rather than invalid, matching how shell and
+    Compose `${VAR:-default}` treat an empty value.
+    """
+    configured = os.environ.get(_ENV_SANDBOX_MODE)
+    mode_raw = (configured or "").strip().upper()
+
+    if not mode_raw:
+        raise SandboxUnavailableError(
+            f"{_ENV_SANDBOX_MODE} is not set, so code execution is disabled. "
+            f"Set it to one of: {_SUPPORTED_MODES_TEXT}. 'docker' and 'e2b' "
+            f"isolate generated code; 'local' runs it as a subprocess of this "
+            f"service and must be chosen explicitly."
+        )
+
+    backend = _SANDBOX_MODES.get(mode_raw)
+    if backend is None:
+        logger.error(
+            "%s=%r is not a supported coding sandbox; code execution is disabled "
+            "until it is set to one of: %s",
+            _ENV_SANDBOX_MODE, configured, _SUPPORTED_MODES_TEXT,
+        )
+        raise SandboxUnavailableError(
+            f"{_ENV_SANDBOX_MODE}={configured!r} is not a supported coding "
+            f"sandbox, so code execution is disabled. Use one of: "
+            f"{_SUPPORTED_MODES_TEXT}."
+        )
+
+    if backend == "local":
+        _warn_about_host_isolation()
+    return backend
+
+
+def _warn_about_host_isolation() -> None:
+    global _warned_about_host_isolation
+    if _warned_about_host_isolation:
+        return
+    _warned_about_host_isolation = True
+    logger.warning(
+        "%s=local: model-generated code runs as a subprocess of this service "
+        "(isolation=host: no network namespace, no filesystem boundary beyond "
+        "rlimits). Use %s=docker or e2b for container isolation.",
+        _ENV_SANDBOX_MODE, _ENV_SANDBOX_MODE,
+    )
 
 
 def _env_bool(key: str, default: bool = True) -> bool:
@@ -103,7 +176,9 @@ class SandboxSettings(BaseModel):
 
     backend: str = "local"
     backend_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    allow_network: bool = True
+    # Off unless an operator opts in: with it on, generated code (which a
+    # prompt-injected document can steer) gets an outbound connection.
+    allow_network: bool = False
     max_concurrent_per_request: int = 5
     max_lifetime_s: float = 1800.0
     provision_timeout_s: float = 60.0
@@ -147,6 +222,7 @@ class EnvSandboxSettingsLoader:
     _ENV_PIP_INDEX_URL = "SANDBOX_PIP_INDEX_URL"
     _ENV_NPM_REGISTRY = "SANDBOX_NPM_REGISTRY"
     _ENV_ALLOW_NETWORK = "SANDBOX_ALLOW_NETWORK"
+    _ENV_EGRESS_ALLOW_CIDRS = "SANDBOX_EGRESS_ALLOW_CIDRS"
     _ENV_E2B_API_KEY = "E2B_API_KEY"
     _ENV_MAX_TOTAL = "SANDBOX_MAX_TOTAL"
     _ENV_MAX_PER_ORG = "SANDBOX_MAX_PER_ORG"
@@ -170,6 +246,7 @@ class EnvSandboxSettingsLoader:
                 "egress_network": os.environ.get(self._ENV_EGRESS_NETWORK, self._DEFAULT_EGRESS_NETWORK),
                 "pip_index_url": os.environ.get(self._ENV_PIP_INDEX_URL, self._DEFAULT_PIP_INDEX_URL),
                 "npm_registry": os.environ.get(self._ENV_NPM_REGISTRY, self._DEFAULT_NPM_REGISTRY),
+                "egress_allow_cidrs": list(parse_cidrs(os.environ.get(self._ENV_EGRESS_ALLOW_CIDRS))),
             }
         # No E2B branch: the API key deliberately never enters
         # `SandboxSettings`. This model is logged and dumped freely, and
@@ -179,7 +256,7 @@ class EnvSandboxSettingsLoader:
         return SandboxSettings(
             backend=backend,
             backend_options=backend_options,
-            allow_network=_env_bool(self._ENV_ALLOW_NETWORK, default=True),
+            allow_network=_env_bool(self._ENV_ALLOW_NETWORK, default=False),
             max_concurrent_per_request=_env_int(self._ENV_MAX_CONCURRENT, 5),
             max_lifetime_s=_env_float(self._ENV_MAX_LIFETIME_S, 1800.0),
             provision_timeout_s=_env_float(self._ENV_PROVISION_TIMEOUT_S, 60.0),
@@ -191,61 +268,7 @@ class EnvSandboxSettingsLoader:
 
 
     def _resolve_backend(self) -> str:
-        """`SANDBOX_MODE` -> backend name, rejecting anything unrecognised.
-
-        Mapping an unknown value to `local` is the most permissive possible
-        reading of a value the operator clearly meant to be something else,
-        and it silently downgrades to the weakest isolation: `SANDBOX_MODE=docekr`
-        would run generated code as a subprocess of this service while the
-        operator believes it is containerised. That is worse than an unset
-        variable, where at least nobody thinks otherwise.
-
-        Blank reads as unset rather than invalid, matching how shell and
-        Compose `${VAR:-default}` treat an empty value.
-        """
-        configured = os.environ.get(self._ENV_SANDBOX_MODE)
-        mode_raw = (configured or "").strip().upper()
-
-        if not mode_raw:
-            self._warn_about_implicit_host_isolation()
-            return "local"
-
-        backend = _SANDBOX_MODES.get(mode_raw)
-        if backend is None:
-            raise ValueError(
-                f"{self._ENV_SANDBOX_MODE}={configured!r} is not a supported "
-                f"coding sandbox. Use one of: "
-                f"{', '.join(sorted(v for v in _SANDBOX_MODES.values()))}. "
-                f"Leave it unset only if you accept running generated code as "
-                f"a subprocess of this service."
-            )
-        return backend
-
-    @staticmethod
-    def _warn_about_implicit_host_isolation() -> None:
-        """Say so when nobody chose this backend.
-
-        `local` is `IsolationLevel.HOST`: model-generated code runs as a
-        subprocess of the service, with the service's network and filesystem
-        reach, bounded only by rlimits. Every shipped docker-compose file
-        sets `SANDBOX_MODE=${SANDBOX_MODE:-docker}`, but the Helm chart sets
-        it nowhere — so a Helm install silently lands here.
-
-        Only the IMPLICIT fallback warns. An operator who typed `local` has
-        made the call knowingly, and nagging them every run would train them
-        to filter out the message that matters.
-        """
-        global _warned_about_host_isolation
-        if _warned_about_host_isolation:
-            return
-        _warned_about_host_isolation = True
-        logger.warning(
-            "SANDBOX_MODE is not set — falling back to the 'local' coding "
-            "sandbox, which runs generated code as a subprocess on this host "
-            "(isolation=host: no network namespace, no filesystem boundary "
-            "beyond rlimits). Set SANDBOX_MODE=docker for container isolation, "
-            "or SANDBOX_MODE=local explicitly to silence this."
-        )
+        return resolve_sandbox_mode()
 
 
 class ConfigServiceSandboxSettingsLoader:

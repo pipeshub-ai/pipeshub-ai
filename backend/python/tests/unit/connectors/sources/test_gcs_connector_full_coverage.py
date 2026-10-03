@@ -794,12 +794,15 @@ class TestProcessGcsObject95:
     async def test_move_detected(self, connector):
         existing = MagicMock()
         existing.id = "moved-id"
+        existing.external_record_group_id = "bucket"
         existing.external_record_id = "bucket/old/file.txt"
         existing.external_revision_id = "same_md5"
         existing.version = 0
         existing.source_created_at = 1700000000000
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
+        # The old key is gone from the bucket, so equal content at the new key is a move.
+        connector.data_source = MagicMock(list_blobs=AsyncMock(return_value=MagicMock(success=True, data={"Contents": []})))
         connector.scope = ConnectorScope.TEAM.value
 
         obj = {

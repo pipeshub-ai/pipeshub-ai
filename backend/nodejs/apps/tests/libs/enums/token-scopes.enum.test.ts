@@ -49,8 +49,8 @@ describe('TokenScopes', () => {
     expect(TokenScopes.EMAIL_VERIFIED).to.equal('email:verified');
   });
 
-  it('should have exactly 12 scopes', () => {
-    expect(Object.keys(TokenScopes)).to.have.lengthOf(12);
+  it('should have exactly 13 scopes', () => {
+    expect(Object.keys(TokenScopes)).to.have.lengthOf(13);
   });
 
   it('should contain only the expected keys', () => {
@@ -67,6 +67,7 @@ describe('TokenScopes', () => {
       'ORG_EMAIL_VERIFY',
       'EMAIL_VERIFIED',
       'DESKTOP_COMMAND',
+      'CALLER_ROLE',
     ];
     expect(Object.keys(TokenScopes)).to.have.members(expectedKeys);
   });

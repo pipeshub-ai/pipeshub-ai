@@ -14,6 +14,7 @@ import {
   EMAIL_MISMATCH,
   OAUTH_SIGN_IN_FAILED,
   PROVIDER_SHARED_NO_EMAIL,
+  ACCOUNT_NO_LONGER_ACTIVE,
   SESSION_NO_LONGER_VALID,
   OTP_SEND_FAILED,
   SIGN_IN_ACCOUNT_CHANGED,
@@ -296,7 +297,12 @@ describe('UserAccountController sign-in flow', () => {
     sinon.stub(UserCredentials, 'findOne').callsFake(((filter: { userId: string }) =>
       Promise.resolve(credentialsByUser[String(filter.userId)] ?? null)) as unknown as typeof UserCredentials.findOne);
     sinon.stub(UserCredentials, 'findOneAndUpdate').callsFake(((
-      filter: { userId: string; hashedOTP?: string },
+      filter: {
+        userId: string;
+        hashedOTP?: string;
+        isBlocked?: { $ne: boolean };
+        wrongCredentialCount?: { $lt: number };
+      },
       update: {
         $inc?: { wrongCredentialCount?: number };
         $set?: Record<string, unknown>;
@@ -305,6 +311,14 @@ describe('UserAccountController sign-in flow', () => {
     ) => {
       const doc = credentialsByUser[String(filter.userId)];
       if (!doc || ('hashedOTP' in filter && doc.hashedOTP !== filter.hashedOTP)) {
+        return Promise.resolve(null);
+      }
+      // An attempt is only reserved while the account is unlocked and under the limit.
+      if (
+        (filter.isBlocked && doc.isBlocked === true) ||
+        (filter.wrongCredentialCount &&
+          doc.wrongCredentialCount >= filter.wrongCredentialCount.$lt)
+      ) {
         return Promise.resolve(null);
       }
       if (update.$inc?.wrongCredentialCount) {
@@ -316,6 +330,25 @@ describe('UserAccountController sign-in flow', () => {
       }
       return Promise.resolve(doc);
     }) as unknown as typeof UserCredentials.findOneAndUpdate);
+    sinon.stub(UserCredentials, 'updateOne').callsFake(((
+      filter: {
+        userId: string;
+        isBlocked?: { $ne: boolean };
+        wrongCredentialCount?: number;
+      },
+      update: { $set?: Record<string, unknown> },
+    ) => {
+      const doc = credentialsByUser[String(filter.userId)];
+      const matches =
+        doc &&
+        !(filter.isBlocked && doc.isBlocked === true) &&
+        (filter.wrongCredentialCount === undefined ||
+          doc.wrongCredentialCount === filter.wrongCredentialCount);
+      if (matches) {
+        Object.assign(doc, update.$set ?? {});
+      }
+      return Promise.resolve({});
+    }) as unknown as typeof UserCredentials.updateOne);
     configuredSteps = [['password']];
     sinon.stub(Org, 'findOne').callsFake((() =>
       Promise.resolve({ _id: orgId, shortName: 'Acme' })) as unknown as typeof Org.findOne);
@@ -830,16 +863,122 @@ describe('UserAccountController sign-in flow', () => {
       expect(logger.error.calledWithMatch('Failed to fetch session-invalidating activity on refresh')).to.be.true;
     });
 
-    it('refuses to refresh for a user who has since been deleted', async () => {
-      stubLatestInvalidation(null);
-      iamService.getUserById.resolves({ statusCode: 404, data: null });
+    it('refuses a refresh token issued before the account was deleted, without a lookup', async () => {
+      stubLatestInvalidation({ createdAt: new Date(), activityType: 'ACCOUNT DELETED' });
       const res = makeRes();
       const next = sinon.stub();
 
       await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
 
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
-      expect(next.firstCall.args[0].message).to.equal(SESSION_NO_LONGER_VALID);
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+      expect(iamService.getUserById.called).to.be.false;
+    });
+
+    it('refuses a refresh token issued in the same second the account was deleted', async () => {
+      stubLatestInvalidation({ createdAt: new Date(issuedAt * 1000 + 500), activityType: 'ACCOUNT DELETED' });
+      const res = makeRes();
+      const next = sinon.stub();
+
+      await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+    });
+
+    it('mints no token when the account is deleted while the refresh is running', async () => {
+      // The first check sees nothing; the deletion lands before the token is minted.
+      let checks = 0;
+      stubLatestInvalidation(async () => {
+        checks += 1;
+        return checks === 1 ? null : { createdAt: new Date(), activityType: 'ACCOUNT DELETED' };
+      });
+      iamService.getUserById.resolves({ statusCode: 200, data: { ...alice } });
+      credentialsByUser[alice._id] = credentialsDoc({ userId: alice._id, orgId });
+      const res = makeRes();
+      const next = sinon.stub();
+
+      await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+      expect(checks).to.equal(2);
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+      expect(res.body).to.be.undefined;
+    });
+
+    it('keeps the one-second allowance for a sign-out in the second the token was issued', async () => {
+      stubLatestInvalidation({ createdAt: new Date(issuedAt * 1000 + 500), activityType: 'LOGOUT' });
+      iamService.getUserById.resolves({ statusCode: 200, data: { ...alice } });
+      credentialsByUser[alice._id] = credentialsDoc({ userId: alice._id, orgId });
+      const res = makeRes();
+      const next = sinon.stub();
+
+      await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+      expect(next.called).to.be.false;
+      expect(res.body?.accessToken).to.be.a('string');
+    });
+
+    // The lookup goes through the real IAM client, so a deleted account reaches
+    // the controller the way production sees it: an axios error for the 404.
+    describe('when the account lookup is the real IAM client', () => {
+      beforeEach(() => {
+        const realIam = new IamService(
+          ...([{ iamBackend: IAM_BACKEND }, logger] as unknown as ConstructorParameters<typeof IamService>),
+        );
+        iamService.getUserById.callsFake((id: string, token: string) =>
+          realIam.getUserById(id, token),
+        );
+        stubLatestInvalidation(null);
+      });
+
+      afterEach(() => {
+        nock.cleanAll();
+      });
+
+      it('answers a deleted account with 401 and a plain message, not a server error', async () => {
+        nock(IAM_BACKEND)
+          .get(`/api/v1/users/internal/${alice._id}`)
+          .reply(404, { error: { message: 'User not found' } });
+        const res = makeRes();
+        const next = sinon.stub();
+
+        await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+        const error = next.firstCall.args[0];
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect(error.message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+        expect(res.body).to.be.undefined;
+      });
+
+      it('answers a disabled account with the same 401', async () => {
+        nock(IAM_BACKEND)
+          .get(`/api/v1/users/internal/${alice._id}`)
+          .reply(200, { ...alice, isDisabled: true });
+        const res = makeRes();
+        const next = sinon.stub();
+
+        await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+        expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+        expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+      });
+
+      it('turns an unreachable users service into a handled error', async () => {
+        nock(IAM_BACKEND)
+          .get(`/api/v1/users/internal/${alice._id}`)
+          .replyWithError('connect ECONNREFUSED');
+        const res = makeRes();
+        const next = sinon.stub();
+
+        await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+        const error = next.firstCall.args[0];
+        expect(error).to.be.instanceOf(InternalServerError);
+        expect(error.message).to.include('refresh your session');
+        expect(error.message).to.not.include('ECONNREFUSED');
+        expect(logger.error.calledWithMatch('Looking up the account to refresh a session failed')).to.be.true;
+      });
     });
   });
 
@@ -1477,6 +1616,8 @@ describe('UserAccountController sign-in flow', () => {
       bind('AppConfig', appConfig);
       bind('AuthMiddleware', { scopedTokenValidator: () => sinon.stub() });
       bind('SessionService', sessionService);
+      // These are web sign-ins; the desktop handoff is never reached.
+      bind('SamlDesktopHandoffService', {});
       bind('IamService', iamService);
       bind('JitProvisioningService', jitService);
       bind('ConfigurationManagerService', configService);
