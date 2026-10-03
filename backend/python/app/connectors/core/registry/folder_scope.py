@@ -345,7 +345,8 @@ async def remove_deselected_containers(
             logger.warning(f"{result.failed} records of de-selected {container_name} could not be removed; retrying next sync")
             continue
         # The group goes last: while it stays, the next sync finds the container again.
-        await data_entities_processor.on_record_group_deleted(container_name, connector_id)
+        if not await data_entities_processor.on_record_group_deleted(container_name, connector_id):
+            logger.warning(f"Could not remove the record group of de-selected {container_name}; retrying next sync")
 
 
 async def clean_up_scope(
