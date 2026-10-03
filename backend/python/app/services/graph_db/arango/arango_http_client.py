@@ -888,9 +888,9 @@ class ArangoHTTPClient:
         self,
         collection_name: str,
         fields: List[str],
+        unique: bool = False,  # noqa: FBT001, FBT002 - positional, as callers have always passed it
         *,
         sparse: bool = False,
-        unique: bool = False,
     ) -> bool:
         """
         Create a persistent index on a collection (idempotent).
