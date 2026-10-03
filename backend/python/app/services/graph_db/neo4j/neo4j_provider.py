@@ -2914,7 +2914,7 @@ class Neo4jProvider(IGraphDBProvider):
                 // 2) Get records belonging to each group via BELONGS_TO
                 MATCH (record:Record)-[:BELONGS_TO]->(recordGroup)
                 WHERE record.connectorId = $connector_id
-                AND record.isDeleted <> true
+                AND (record.isDeleted IS NULL OR record.isDeleted <> true)
                 AND (record.orgId = $org_id OR record.orgId IS NULL)
                 {status_clause}
 
@@ -2940,7 +2940,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE all(rel IN relationships(treePath) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
                 AND record IN candidateRecords
                 AND record.connectorId = $connector_id
-                AND record.isDeleted <> true
+                AND (record.isDeleted IS NULL OR record.isDeleted <> true)
                 AND (record.orgId = $org_id OR record.orgId IS NULL)
                 {status_clause}
 
@@ -3105,7 +3105,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE (length(path) = 0 OR all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']))
                 AND record.connectorId = $connector_id
                 AND (record.orgId = $org_id OR record.orgId IS NULL)
-                AND record.isDeleted <> true
+                AND (record.isDeleted IS NULL OR record.isDeleted <> true)
                 {status_clause}
 
                 OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
@@ -9060,7 +9060,7 @@ class Neo4jProvider(IGraphDBProvider):
                 query = f"""
                 CALL {{
                     MATCH (rg:RecordGroup {{connectorId: $parent_id}})
-                    WHERE rg.isDeleted <> true
+                    WHERE (rg.isDeleted IS NULL OR rg.isDeleted <> true)
                     MATCH (direct:Record)-[:BELONGS_TO]->(rg)
                     WHERE direct.id IN $node_ids
                     RETURN direct.id AS id, 1 AS level
@@ -9070,7 +9070,7 @@ class Neo4jProvider(IGraphDBProvider):
                     RETURN kb_rec.id AS id, 1 AS level
                     UNION ALL
                     MATCH (rg2:RecordGroup {{connectorId: $parent_id}})
-                    WHERE rg2.isDeleted <> true
+                    WHERE (rg2.isDeleted IS NULL OR rg2.isDeleted <> true)
                     MATCH (top:Record)-[:BELONGS_TO]->(rg2)
                     MATCH path = (top)-[:RECORD_RELATION*1..{record_depth}]->(desc:Record)
                     WHERE ALL(rel IN relationships(path)
@@ -11559,7 +11559,7 @@ class Neo4jProvider(IGraphDBProvider):
                 MATCH (folder:Record)-[:BELONGS_TO]->(kb:App {id: $kb_id, type: "KB"})
                 WHERE folder.mimeType = "application/vnd.folder"
                   AND toLower(folder.recordName) = toLower($folder_name)
-                  AND folder.isDeleted <> true
+                  AND (folder.isDeleted IS NULL OR folder.isDeleted <> true)
                   AND ($exclude_folder_id IS NULL OR folder.id <> $exclude_folder_id)
                   AND NOT EXISTS {
                       MATCH (folder)<-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]-(:Record)
@@ -11609,7 +11609,7 @@ class Neo4jProvider(IGraphDBProvider):
                 query = """
                 MATCH (file_record:Record)-[:BELONGS_TO]->(kb:App {id: $kb_id, type: "KB"})
                 MATCH (file_record)-[:IS_OF_TYPE]->(file:File {isFile: true})
-                WHERE file_record.isDeleted <> true
+                WHERE (file_record.isDeleted IS NULL OR file_record.isDeleted <> true)
                   AND toLower(file_record.recordName) = toLower($file_name)
                   AND file.mimeType = $mime_type
                   AND ($exclude_record_id IS NULL OR file_record.id <> $exclude_record_id)
@@ -11629,7 +11629,7 @@ class Neo4jProvider(IGraphDBProvider):
                 query = """
                 MATCH (parent:Record {id: $parent_folder_id})-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(file_record:Record)
                 MATCH (file_record)-[:IS_OF_TYPE]->(file:File {isFile: true})
-                WHERE file_record.isDeleted <> true
+                WHERE (file_record.isDeleted IS NULL OR file_record.isDeleted <> true)
                   AND toLower(file_record.recordName) = toLower($file_name)
                   AND file.mimeType = $mime_type
                   AND ($exclude_record_id IS NULL OR file_record.id <> $exclude_record_id)
@@ -11675,7 +11675,7 @@ class Neo4jProvider(IGraphDBProvider):
             if parent_folder_id is None:
                 query = """
                 MATCH (rec:Record)-[:BELONGS_TO]->(kb:App {id: $kb_id, type: "KB"})
-                WHERE rec.isDeleted <> true
+                WHERE (rec.isDeleted IS NULL OR rec.isDeleted <> true)
                   AND NOT rec.mimeType = "application/vnd.folder"
                   AND NOT (rec)<-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]-(:Record)
                 RETURN toLower(rec.recordName) AS name_lower, rec.mimeType AS mime_type
@@ -11687,7 +11687,7 @@ class Neo4jProvider(IGraphDBProvider):
                       -[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->
                       (rec:Record)
                 MATCH (rec)-[:IS_OF_TYPE]->(file:File {isFile: true})
-                WHERE rec.isDeleted <> true
+                WHERE (rec.isDeleted IS NULL OR rec.isDeleted <> true)
                 RETURN toLower(rec.recordName) AS name_lower, file.mimeType AS mime_type
                 """
                 params = {"parent_folder_id": parent_folder_id}
@@ -12668,7 +12668,7 @@ class Neo4jProvider(IGraphDBProvider):
 
                 OPTIONAL MATCH (kb)<-[:BELONGS_TO]-(kbRecord:Record)
                 WHERE kbRecord.orgId = $org_id
-                    AND kbRecord.isDeleted <> true
+                    AND (kbRecord.isDeleted IS NULL OR kbRecord.isDeleted <> true)
                     AND kbRecord.origin = "UPLOAD"
                     AND kbRecord.recordType <> "ARTIFACT"
                     AND NOT kbRecord.mimeType = "application/vnd.folder"
@@ -12692,7 +12692,7 @@ class Neo4jProvider(IGraphDBProvider):
                 // Collect connector records
                 OPTIONAL MATCH (u)-[permissionEdge:PERMISSION {{type: "USER"}}]->(connectorRecord:Record)
                 WHERE connectorRecord.orgId = $org_id
-                    AND connectorRecord.isDeleted <> true
+                    AND (connectorRecord.isDeleted IS NULL OR connectorRecord.isDeleted <> true)
                     AND connectorRecord.origin = "CONNECTOR"
                     {permission_filter}
                     {connector_record_filter}
@@ -12781,7 +12781,7 @@ class Neo4jProvider(IGraphDBProvider):
 
                 OPTIONAL MATCH (kb)<-[:BELONGS_TO]-(kbRecord:Record)
                 WHERE kbRecord.orgId = $org_id
-                    AND kbRecord.isDeleted <> true
+                    AND (kbRecord.isDeleted IS NULL OR kbRecord.isDeleted <> true)
                     AND kbRecord.origin = "UPLOAD"
                     AND kbRecord.recordType <> "ARTIFACT"
                     AND NOT kbRecord.mimeType = "application/vnd.folder"
@@ -12799,7 +12799,7 @@ class Neo4jProvider(IGraphDBProvider):
                 // Count connector records
                 OPTIONAL MATCH (u)-[permissionEdge:PERMISSION {{type: "USER"}}]->(connectorRecord:Record)
                 WHERE connectorRecord.orgId = $org_id
-                    AND connectorRecord.isDeleted <> true
+                    AND (connectorRecord.isDeleted IS NULL OR connectorRecord.isDeleted <> true)
                     AND connectorRecord.origin = "CONNECTOR"
                     {permission_filter}
                     {connector_record_filter}
@@ -12842,7 +12842,7 @@ class Neo4jProvider(IGraphDBProvider):
 
                 OPTIONAL MATCH (kb)<-[:BELONGS_TO]-(kbRecord:Record)
                 WHERE kbRecord.orgId = $org_id
-                    AND kbRecord.isDeleted <> true
+                    AND (kbRecord.isDeleted IS NULL OR kbRecord.isDeleted <> true)
                     AND kbRecord.origin = "UPLOAD"
                     AND kbRecord.recordType <> "ARTIFACT"
                     AND NOT kbRecord.mimeType = "application/vnd.folder"
@@ -12859,7 +12859,7 @@ class Neo4jProvider(IGraphDBProvider):
                 // Collect connector records
                 OPTIONAL MATCH (u)-[permissionEdge:PERMISSION {type: "USER"}]->(connectorRecord:Record)
                 WHERE connectorRecord.orgId = $org_id
-                    AND connectorRecord.isDeleted <> true
+                    AND (connectorRecord.isDeleted IS NULL OR connectorRecord.isDeleted <> true)
                     AND connectorRecord.origin = "CONNECTOR"
 
                 WITH u, kbRecords, COLLECT({record: connectorRecord, role: permissionEdge.role}) AS connectorRecords
@@ -13215,7 +13215,7 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (folder:Record)-[:BELONGS_TO]->(kb)
             WHERE folder.mimeType = "application/vnd.folder"{folder_match}
             MATCH (folder)-[rel:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(record:Record)
-            WHERE record.isDeleted <> true
+            WHERE (record.isDeleted IS NULL OR record.isDeleted <> true)
             AND record.orgId = $org_id
             AND NOT record.mimeType = "application/vnd.folder"
             {record_filter}
@@ -13261,7 +13261,7 @@ class Neo4jProvider(IGraphDBProvider):
             // Part 2: Records at KB root (no parent folder)
             MATCH (kb:App {{id: $kb_id, type: "KB"}})
             MATCH (record:Record)-[:BELONGS_TO]->(kb)
-            WHERE record.isDeleted <> true
+            WHERE (record.isDeleted IS NULL OR record.isDeleted <> true)
             AND record.orgId = $org_id
             AND NOT record.mimeType = "application/vnd.folder"
             AND NOT EXISTS {{
@@ -13321,14 +13321,14 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (folder:Record)-[:BELONGS_TO]->(kb)
             WHERE folder.mimeType = "application/vnd.folder"{folder_match}
             OPTIONAL MATCH (folder)-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(folderRecord:Record)
-            WHERE folderRecord.isDeleted <> true
+            WHERE (folderRecord.isDeleted IS NULL OR folderRecord.isDeleted <> true)
             AND folderRecord.orgId = $org_id
             AND NOT folderRecord.mimeType = "application/vnd.folder"
             {record_filter.replace('record.', 'folderRecord.')}
 
             // Count records at KB root
             OPTIONAL MATCH (rootRecord:Record)-[:BELONGS_TO]->(kb)
-            WHERE rootRecord.isDeleted <> true
+            WHERE (rootRecord.isDeleted IS NULL OR rootRecord.isDeleted <> true)
             AND rootRecord.orgId = $org_id
             AND NOT rootRecord.mimeType = "application/vnd.folder"
             AND NOT EXISTS {{
@@ -13358,13 +13358,13 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (folder:Record)-[:BELONGS_TO]->(kb)
             WHERE folder.mimeType = "application/vnd.folder"
             OPTIONAL MATCH (folder)-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(folderRecord:Record)
-            WHERE folderRecord.isDeleted <> true
+            WHERE (folderRecord.isDeleted IS NULL OR folderRecord.isDeleted <> true)
             AND folderRecord.orgId = $org_id
             AND NOT folderRecord.mimeType = "application/vnd.folder"
 
             // Get records at KB root
             OPTIONAL MATCH (rootRecord:Record)-[:BELONGS_TO]->(kb)
-            WHERE rootRecord.isDeleted <> true
+            WHERE (rootRecord.isDeleted IS NULL OR rootRecord.isDeleted <> true)
             AND rootRecord.orgId = $org_id
             AND NOT rootRecord.mimeType = "application/vnd.folder"
             AND NOT EXISTS {
@@ -13498,7 +13498,7 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (kb:App {{id: $kb_id, type: "KB"}})
             // Get immediate children (folders with BELONGS_TO but no incoming RECORD_RELATION)
             MATCH (folder_record:Record)-[:BELONGS_TO]->(kb)
-            WHERE folder_record.isDeleted <> true
+            WHERE (folder_record.isDeleted IS NULL OR folder_record.isDeleted <> true)
               AND folder_record.mimeType = "application/vnd.folder"
               AND NOT EXISTS {{
                   MATCH (folder_record)<-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]-(:Record)
@@ -13509,7 +13509,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (folder_record)-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(child_record:Record)
             WITH folder_record, current_level,
                  sum(CASE WHEN child_record.mimeType = "application/vnd.folder" THEN 1 ELSE 0 END) AS direct_subfolders,
-                 sum(CASE WHEN child_record IS NOT NULL AND child_record.isDeleted <> true AND NOT child_record.mimeType = "application/vnd.folder" THEN 1 ELSE 0 END) AS direct_records
+                 sum(CASE WHEN child_record IS NOT NULL AND (child_record.isDeleted IS NULL OR child_record.isDeleted <> true) AND NOT child_record.mimeType = "application/vnd.folder" THEN 1 ELSE 0 END) AS direct_records
             ORDER BY folder_record.recordName ASC
             RETURN {{
                 id: folder_record.id,
@@ -13535,7 +13535,7 @@ class Neo4jProvider(IGraphDBProvider):
             records_query = f"""
             MATCH (kb:App {{id: $kb_id, type: "KB"}})
             MATCH (record:Record)-[:BELONGS_TO]->(kb)
-            WHERE record.isDeleted <> true
+            WHERE (record.isDeleted IS NULL OR record.isDeleted <> true)
               AND NOT record.mimeType = "application/vnd.folder"
               AND NOT EXISTS {{
                   MATCH (record)<-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]-(:Record)
@@ -13725,7 +13725,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (child_record)-[:IS_OF_TYPE]->(child_file:File)
             WITH subfolder_record, subfolder_file, current_level,
                  sum(CASE WHEN child_file IS NOT NULL AND child_file.isFile = false THEN 1 ELSE 0 END) AS direct_subfolders,
-                 sum(CASE WHEN child_record IS NOT NULL AND child_record.isDeleted <> true AND (child_file IS NULL OR child_file.isFile <> false) THEN 1 ELSE 0 END) AS direct_records
+                 sum(CASE WHEN child_record IS NOT NULL AND (child_record.isDeleted IS NULL OR child_record.isDeleted <> true) AND (child_file IS NULL OR child_file.isFile <> false) THEN 1 ELSE 0 END) AS direct_records
             ORDER BY subfolder_record.recordName ASC
             RETURN {{
                 id: subfolder_record.id,
@@ -13750,7 +13750,7 @@ class Neo4jProvider(IGraphDBProvider):
             # Query to get all records directly in folder (excluding folders)
             records_query = f"""
             MATCH (folder_record:Record {{id: $folder_id}})-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(record:Record)
-            WHERE record.isDeleted <> true
+            WHERE (record.isDeleted IS NULL OR record.isDeleted <> true)
             // Exclude folders by checking if there's a File with isFile = false
             OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(check_file:File)
             WHERE check_file.isFile = false
@@ -18542,7 +18542,7 @@ class Neo4jProvider(IGraphDBProvider):
                 base_query = """
             // App node depth>=2: find records under record groups + KB direct records
             OPTIONAL MATCH (rg:RecordGroup {connectorId: $parent_doc_id})
-            WHERE rg.isDeleted <> true AND rg IN accessible_rgs
+            WHERE (rg.isDeleted IS NULL OR rg.isDeleted <> true) AND rg IN accessible_rgs
             OPTIONAL MATCH (rg_rec:Record)-[:BELONGS_TO]->(rg)
             WHERE rg_rec.orgId = $org_id
             WITH accessible_rgs, accessible_records,
@@ -18559,7 +18559,7 @@ class Neo4jProvider(IGraphDBProvider):
                     child_clause = f"""
             // Depth>=3: children of records under record groups
             OPTIONAL MATCH (rg2:RecordGroup {{connectorId: $parent_doc_id}})
-            WHERE rg2.isDeleted <> true
+            WHERE (rg2.isDeleted IS NULL OR rg2.isDeleted <> true)
             OPTIONAL MATCH (rg_top:Record)-[:BELONGS_TO]->(rg2)
             WHERE rg_top.orgId = $org_id
             OPTIONAL MATCH rg_child_path = (rg_top)-[:RECORD_RELATION*1..{remaining}]->(rg_child:Record)
