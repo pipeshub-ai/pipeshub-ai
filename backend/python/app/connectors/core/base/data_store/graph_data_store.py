@@ -305,6 +305,9 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.delete_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
 
     async def delete_nodes(self, keys: list[str], collection: str) -> None:
+        if collection == CollectionNames.RECORDS.value:
+            for key in keys:
+                self._memo_forget_record(key)
         return await self.graph_provider.delete_nodes(keys, collection, transaction=self.txn)
 
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> None:
@@ -354,6 +357,7 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_single_record(self, record_id: str) -> dict:
         """Single-record delete within the active transaction — no containment walk."""
+        self._memo_forget_record(record_id)
         return await self.graph_provider.delete_single_record(record_id, transaction=self.txn)
 
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str, *, raise_on_error: bool = False) -> Optional[AppUserGroup]:

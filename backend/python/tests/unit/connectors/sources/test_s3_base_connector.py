@@ -1188,6 +1188,18 @@ class TestRunIncrementalSync:
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_folder_memo_is_cleared_per_run(self, mock_filters, s3_connector):
+        mock_filters.return_value = (FilterCollection(), FilterCollection())
+        s3_connector.data_source = MagicMock()
+        s3_connector.bucket_name = "mybucket"
+        s3_connector._get_bucket_region = AsyncMock(return_value="us-east-1")
+        s3_connector._sync_bucket = AsyncMock()
+        s3_connector._ensured_folders.add("mybucket/a")
+        await s3_connector.run_incremental_sync()
+        assert not s3_connector._ensured_folders
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
     async def test_no_buckets(self, mock_filters, s3_connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         s3_connector.data_source = MagicMock()

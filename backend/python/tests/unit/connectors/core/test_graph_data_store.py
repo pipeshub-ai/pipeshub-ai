@@ -221,6 +221,38 @@ class TestGraphTransactionStore:
         assert mock_graph_provider.get_record_by_external_id.await_count == 2
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("delete", ["delete_nodes", "delete_single_record"])
+    async def test_every_record_delete_drops_it_from_the_cache(
+        self, tx_store, mock_graph_provider, delete
+    ) -> None:
+        vertex = MagicMock(id="rec-1")
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=vertex)
+        mock_graph_provider.delete_nodes = AsyncMock()
+        mock_graph_provider.delete_single_record = AsyncMock(return_value={})
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        if delete == "delete_nodes":
+            await tx_store.delete_nodes(["rec-1"], "records")
+        else:
+            await tx_store.delete_single_record("rec-1")
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        assert mock_graph_provider.get_record_by_external_id.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_deleting_other_nodes_keeps_cached_records(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-1"))
+        mock_graph_provider.delete_nodes = AsyncMock()
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        await tx_store.delete_nodes(["rec-1"], "recordGroups")
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        assert mock_graph_provider.get_record_by_external_id.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_a_subtree_delete_drops_every_cached_record(
         self, tx_store, mock_graph_provider
     ) -> None:

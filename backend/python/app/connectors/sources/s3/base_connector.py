@@ -1570,6 +1570,9 @@ class S3CompatibleBaseConnector(BaseConnector):
             if not self.data_source:
                 raise ConnectionError(f"{self.connector_name} connector is not initialized.")
 
+            # Per run, as in run_sync: a folder removed between runs must be re-created.
+            self._ensured_folders.clear()
+
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, self.filter_key, self.connector_id, self.logger
             )
