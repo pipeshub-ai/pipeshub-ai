@@ -768,3 +768,23 @@ class TestSweepScanFailures:
         store.page_entity_points = AsyncMock(return_value=([], None))
         assert await rebuilder.tick() == "sweep"
         assert graph.docs[ORGS]["org-2"][EntityIndexState.SWEPT_AT] == NOW
+
+    async def test_a_delete_failure_is_counted_and_the_sweep_eventually_moves_on(self) -> None:
+        """A delete one backend always rejects must not keep this org first
+        in line for ever, as a scan failure must not."""
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: MARKER})
+        graph.docs[ORGS]["org-2"] = _org("org-2", **{EntityIndexState.STATE: MARKER})
+        store.page_entity_points = AsyncMock(return_value=([_point("topic", "t-gone")], None))
+        store.delete_entities = AsyncMock(side_effect=RuntimeError("delete-by-query rejected"))
+        rebuilder = _rebuilder(graph, store)
+        for attempt in range(1, MAX_ATTEMPTS):
+            with pytest.raises(RuntimeError):
+                await rebuilder.tick()
+            assert graph.docs[ORGS]["org-1"][EntityIndexState.SWEEP_FAILURES] == attempt
+        with pytest.raises(RuntimeError):
+            await rebuilder.tick()
+        assert graph.docs[ORGS]["org-1"][EntityIndexState.SWEPT_AT] == NOW
+        store.page_entity_points = AsyncMock(return_value=([], None))
+        assert await rebuilder.tick() == "sweep"
+        assert graph.docs[ORGS]["org-2"][EntityIndexState.SWEPT_AT] == NOW

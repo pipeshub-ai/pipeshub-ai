@@ -480,6 +480,16 @@ class EntityIndexRebuilder:
             # past its 10,000-result window on a large org.
             refs, next_offset = await self._scan(org_id, offset)
             stale = await self._stale(org_id, refs)
+            if not await self.lock.refresh():
+                self.logger.warning(
+                    "entity_index_rebuild: lost leadership during sweep | org=%s; nothing deleted",
+                    org_id,
+                )
+                return
+            # Counted too: a delete one backend always rejects would otherwise
+            # keep this org first in line and starve every other org.
+            for entity_type, ids in sorted(stale.items()):
+                await self.store.delete_entities(org_id, entity_type, ids)
         except Exception:
             failures = _int(org.get(EntityIndexState.SWEEP_FAILURES)) + 1
             if failures < MAX_ATTEMPTS:
@@ -497,14 +507,6 @@ class EntityIndexRebuilder:
                     EntityIndexState.SWEEP_FAILURES: 0,
                 })
             raise
-        if not await self.lock.refresh():
-            self.logger.warning(
-                "entity_index_rebuild: lost leadership during sweep | org=%s; nothing deleted",
-                org_id,
-            )
-            return
-        for entity_type, ids in sorted(stale.items()):
-            await self.store.delete_entities(org_id, entity_type, ids)
         self.logger.info(
             "entity_index_rebuild: sweep chunk | org=%s offset=%s scanned=%d stale=%d done=%s",
             org_id, offset, len(refs), sum(map(len, stale.values())), next_offset is None,

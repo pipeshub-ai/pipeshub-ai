@@ -126,6 +126,7 @@ from app.services.graph_db.taxonomy import (
 from app.services.graph_db.entity_index_queries import (
     build_entity_index_candidate_cypher,
     build_entity_index_source_page_cypher,
+    entity_index_source,
 )
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_cypher,
@@ -2623,9 +2624,11 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: str | None = None,
     ) -> list[dict]:
         """See :meth:`IGraphDBProvider.page_entity_index_source`."""
-        query = build_entity_index_source_page_cypher(source, has_after_key=bool(after_key))
+        # Validated first, so an unknown source raises whatever the scope.
+        entity_index_source(source)
         if not scope_id:
             return []
+        query = build_entity_index_source_page_cypher(source, has_after_key=bool(after_key))
         parameters: dict = {"scope_id": scope_id, "limit": max(1, int(limit))}
         if after_key:
             parameters["after_key"] = after_key
