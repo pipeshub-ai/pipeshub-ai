@@ -31,6 +31,7 @@ class FakeResult:
     score: float = 0.0
     vrid: str | None = None
     block_id: str | None = None
+    content: str | None = None
     payload: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -40,6 +41,8 @@ class FakeResult:
         if self.block_id:
             metadata["blockId"] = self.block_id
         self.payload = {"metadata": metadata}
+        if self.content is not None:
+            self.payload["page_content"] = self.content
 
 
 def _collection(name: str, *results: FakeResult) -> CollectionResults:
@@ -63,6 +66,19 @@ class TestResultIdentity:
         it is the same block."""
         a = FakeResult("uuid-a", vrid="vr-1", block_id="b1")
         b = FakeResult("uuid-b", vrid="vr-1", block_id="b1")
+        assert result_identity(a) == result_identity(b)
+
+    def test_two_vectors_of_one_block_are_distinct(self) -> None:
+        """`vectorstore._build_text_documents` emits a whole-block document and
+        one per sentence, all carrying the same blockId. Keying on the block
+        alone would drop every sentence but the first."""
+        a = FakeResult("p1", vrid="vr-1", block_id="b1", content="First sentence.")
+        b = FakeResult("p2", vrid="vr-1", block_id="b1", content="Second sentence.")
+        assert result_identity(a) != result_identity(b)
+
+    def test_the_same_chunk_in_two_collections_is_still_one_hit(self) -> None:
+        a = FakeResult("uuid-a", vrid="vr-1", block_id="b1", content="Same text.")
+        b = FakeResult("uuid-b", vrid="vr-1", block_id="b1", content="Same text.")
         assert result_identity(a) == result_identity(b)
 
     def test_a_hit_missing_block_id_falls_back_to_its_point_id(self):
