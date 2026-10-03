@@ -99,6 +99,16 @@ def test_every_route_declares_a_token_policy(router_name, route):
     )
 
 
+def test_inventoried_routers_hold_a_flat_list_of_routes():
+    for name, (module, attr) in _ROUTERS.items():
+        router = getattr(importlib.import_module(module), attr)
+        for route in router.routes:
+            assert isinstance(route, APIRoute), (
+                f"{name} router holds {route!r}; _mounted_routes() only collects APIRoute, "
+                "so it and any routes under it would go unchecked"
+            )
+
+
 def test_service_token_routes_match_the_reviewed_list():
     admitted = {}
     for name, route in _ROUTES:

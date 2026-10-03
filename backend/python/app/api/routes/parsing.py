@@ -108,7 +108,7 @@ async def parse_file(
             provider_enum = ParserProvider(provider)
         except ValueError:
             return JSONResponse(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 content={
                     "success": False,
                     "error": {
@@ -196,7 +196,7 @@ async def parse_file(
             # other record fast for the breaker's cooldown and sent them to
             # the back of the queue with a retry attempt spent.
             return JSONResponse(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 content={"success": False, "error": exc.to_dict()},
             )
         except Exception as exc:  # noqa: BLE001

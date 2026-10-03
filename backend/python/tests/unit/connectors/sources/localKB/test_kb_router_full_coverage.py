@@ -740,7 +740,7 @@ class TestUpdateKnowledgeBaseRouteGaps:
         request.json = AsyncMock(return_value={"name": 12345})
         with pytest.raises(HTTPException) as exc:
             await update_knowledge_base("kb1", request, kb_service=AsyncMock())
-        assert exc.value.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert exc.value.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
     @pytest.mark.asyncio
     async def test_update_kb_route_empty_updates_400(self):
