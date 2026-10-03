@@ -51,11 +51,14 @@ class TestMultimodalEmbeddingFactory:
 
     def test_openai_compatible_provider(self) -> None:
         config = MultimodalProviderConfig(
-            provider=EmbeddingProvider.OPENAI_COMPATIBLE.value, base_url="http://x"
+            provider=EmbeddingProvider.OPENAI_COMPATIBLE.value,
+            base_url="http://x",
+            multimodal_request_format="vllm_messages",
         )
         provider = MultimodalEmbeddingFactory.create(config)
         assert isinstance(provider, OpenAICompatMultimodalProvider)
         assert provider.provider_name == EmbeddingProvider.OPENAI_COMPATIBLE.value
+        assert provider._request_format == "vllm_messages"
 
     def test_lm_studio_routes_through_openai_compat_provider(self) -> None:
         config = MultimodalProviderConfig(

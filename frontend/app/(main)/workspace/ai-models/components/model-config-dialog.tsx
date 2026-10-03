@@ -758,7 +758,7 @@ function ModelConfigFormBody({
               </Box>
             </Flex>
           ) : null}
-          {modelConfigFields.map((field) => (
+          {modelConfigFields.filter((field) => field.name !== 'multimodalRequestFormat').map((field) => (
             <SchemaFormField
               key={field.name}
               field={toSchemaField(field, placeholderFor(field))}
@@ -768,6 +768,25 @@ function ModelConfigFormBody({
               startAdornment={fieldStartAdornment(field.name)}
             />
           ))}
+          {boolValue(values.isMultimodal) && modelConfigFields
+            .filter((field) => field.name === 'multimodalRequestFormat')
+            .map((field) => (
+              <Box key={field.name} asChild>
+                <details>
+                  <Text asChild size="2" weight="medium" color="gray">
+                    <summary>{t('workspace.oauth2.manageApplication.advancedSectionTitle')}</summary>
+                  </Text>
+                  <Box pt="2">
+                    <SchemaFormField
+                      field={toSchemaField(field)}
+                      value={values[field.name]}
+                      onChange={onFieldChange}
+                      disabled={saving}
+                    />
+                  </Box>
+                </details>
+              </Box>
+            ))}
         </Flex>
       </Box>
 

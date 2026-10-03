@@ -19,6 +19,7 @@ class MultimodalProviderConfig:
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     base_url: str | None = None
+    multimodal_request_format: str = "auto"
     # Dimension the target collection was created with. Providers that let
     # the caller choose an output length (Bedrock Titan) must request this
     # one, or every point they return is rejected by
