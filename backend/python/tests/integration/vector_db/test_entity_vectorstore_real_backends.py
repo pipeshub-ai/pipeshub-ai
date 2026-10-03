@@ -63,6 +63,12 @@ logger = logging.getLogger("entity-store-it")
 DIM = 16
 
 
+async def _best(store, names, org_id, entity_type, level=None) -> list:
+    """The first candidate per name, as the resolver's single best match."""
+    found = await store.find_candidates(names, org_id, entity_type, level, k=1)
+    return [c[0] if c else None for c in found]
+
+
 class _StubEmbeddings:
     """Deterministic unit vectors from the text's hash: equal text, equal vector."""
 
@@ -231,7 +237,7 @@ class TestMembershipReads:
         assert list(payload["metadata"]["aliases"]) == ["RC"]
         # The vector was kept: the entity is still found by its name.
         await _publish_writes(store)
-        (match,) = await store.find_best_matches(["Release checklist"], org, "topic")
+        (match,) = await _best(store, ["Release checklist"], org, "topic")
         assert match["entityId"] == "t1"
 
     async def test_updating_a_missing_point_is_ignored(self, store: EntityVectorStore) -> None:
@@ -257,14 +263,33 @@ class TestMatchesAndSearch:
         ])
         await _publish_writes(store)
 
-        (level_one,) = await store.find_best_matches(["2024"], org, "subcategory", level="1")
-        (level_three,) = await store.find_best_matches(["2024"], org, "subcategory", level="3")
+        (level_one,) = await _best(store, ["2024"], org, "subcategory", level="1")
+        (level_three,) = await _best(store, ["2024"], org, "subcategory", level="3")
 
         assert level_one == {
             "entityId": "2024", "entityType": "subcategory", "name": "2024",
             "aliases": [], "level": "1", "score": level_one["score"],
         }
         assert level_three is None
+
+    async def test_several_candidates_per_name_best_first(self, store: EntityVectorStore) -> None:
+        """KG-12: the resolver offers the top candidates, so each must be a
+        distinct entity of the asked org and type, the exact name first."""
+        org, other = f"org-{uuid.uuid4().hex[:6]}", f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([
+            _entity("checklist", org=org, name="Release checklist", connectors=["c1"]),
+            _entity("notes", org=org, name="Release notes", connectors=["c1"]),
+            _entity("plan", org=org, name="Release plan", connectors=["c1"]),
+            _entity("elsewhere", org=other, name="Release checklist", connectors=["c1"]),
+            _entity("legal", EntityType.CATEGORY, org=org, name="Release checklist", connectors=["c1"]),
+        ])
+        await _publish_writes(store)
+
+        (candidates,) = await store.find_candidates(["Release checklist"], org, "topic", k=3)
+
+        ids = [c["entityId"] for c in candidates]
+        assert ids[0] == "checklist"
+        assert sorted(ids) == ["checklist", "notes", "plan"]
 
     async def test_search_is_scoped_by_org_and_membership(self, store: EntityVectorStore) -> None:
         org, other = f"org-{uuid.uuid4().hex[:6]}", f"org-{uuid.uuid4().hex[:6]}"
@@ -671,3 +696,28 @@ class TestSearchPasses:
         assert {h["entityId"] for h in group_pass} == {"by-group"}
         assert {h["entityId"] for h in connector_pass} == {"by-connector"}
         assert {h["entityId"] for h in wide_pass} == {"by-group", "by-connector", "unscoped"}
+
+    async def test_record_titles_do_not_crowd_out_taxonomy_entities(self, store: EntityVectorStore) -> None:
+        """KG-14: titles outnumber taxonomy nodes by orders of magnitude; with
+        one pool a query word shared by many titles pushed the topics out."""
+        from app.modules.transformers.entity_vectorstore import EntitySearchPass
+
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        titles = [
+            _entity(f"t{i}", EntityType.RECORD, org=org, name=f"Security review notes {i}", connectors=["c1"])
+            for i in range(12)
+        ]
+        await store.upsert_entities_batch([
+            *titles,
+            _entity("sec-topic", org=org, name="Security", connectors=["c1"]),
+            _entity("audit-topic", org=org, name="Security audit", connectors=["c1"]),
+        ])
+        await _publish_writes(store)
+
+        (hits,) = await store.search_entities_passes(
+            "security review", org, [EntitySearchPass(org_wide=True)], top_k=4,
+        )
+
+        types = [h["entityType"] for h in hits]
+        assert {"sec-topic", "audit-topic"} <= {h["entityId"] for h in hits}
+        assert types.count("record") == 2  # top_k split evenly between the two requests

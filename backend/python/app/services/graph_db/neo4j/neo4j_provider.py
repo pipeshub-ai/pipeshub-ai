@@ -8,10 +8,10 @@ Maps ArangoDB concepts (collections, _key, edges) to Neo4j concepts (labels, pro
 from __future__ import annotations
 
 import asyncio
-import random
 import hashlib
 import json
 import os
+import random
 import re
 import time
 import traceback
@@ -30,8 +30,8 @@ from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     AppGroups,
     CollectionNames,
-    ConnectorScopes,
     Connectors,
+    ConnectorScopes,
     DepartmentNames,
     OriginTypes,
     PersonMigrationMode,
@@ -70,9 +70,9 @@ from app.models.entities import (
     LinkRecord,
     MailRecord,
     MeetingRecord,
+    MessageRecord,
     Person,
     ProductRecord,
-    MessageRecord,
     ProjectRecord,
     PullRequestRecord,
     Record,
@@ -93,16 +93,22 @@ from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
-    EntityCandidateRows,
     KB_ROLE_PRIORITY,
     MAX_DIRECT_GRANT_RECORDS,
-    PermittedEntityRows,
     PATH_MAX_CANDIDATES,
     ROOT_SCOPED_CONNECTOR_TYPES,
+    EntityCandidateRows,
+    PermittedEntityRows,
     build_connector_stats_response,
     dedupe_agents_by_id,
     select_canonical_chain_names,
     uploaded_document_id,
+)
+from app.services.graph_db.entity_index_queries import (
+    ENTITY_INDEX_SOURCES,
+    build_entity_index_candidate_cypher,
+    build_entity_index_source_page_cypher,
+    entity_index_source,
 )
 from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
@@ -124,6 +130,7 @@ from app.services.graph_db.neo4j.neo4j_client import (
 )
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
+    MAX_TAXONOMY_ALIASES,
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
@@ -131,12 +138,6 @@ from app.services.graph_db.taxonomy import (
     global_department_key,
     is_taxonomy_collection,
     subcategory_level,
-)
-from app.services.graph_db.entity_index_queries import (
-    ENTITY_INDEX_SOURCES,
-    build_entity_index_candidate_cypher,
-    build_entity_index_source_page_cypher,
-    entity_index_source,
 )
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_cypher,
@@ -17229,7 +17230,7 @@ class Neo4jProvider(IGraphDBProvider):
         normalized_aliases: list[str],
         *,
         org_id: str,
-        max_aliases: int = 20,
+        max_aliases: int = MAX_TAXONOMY_ALIASES,
         transaction: str | None = None,
     ) -> None:
         """See :meth:`IGraphDBProvider.add_taxonomy_aliases`."""

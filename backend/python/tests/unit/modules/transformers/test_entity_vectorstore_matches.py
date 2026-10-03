@@ -18,6 +18,12 @@ from app.services.vector_db.models import (
 )
 
 
+async def _best(store, names, org_id, entity_type, level=None) -> list:
+    """The first candidate per name, as the resolver's single best match."""
+    found = await store.find_candidates(names, org_id, entity_type, level, k=1)
+    return [c[0] if c else None for c in found]
+
+
 def _make_store(vector_db_service=None) -> EntityVectorStore:
     vector_db_service = vector_db_service or MagicMock()
     vector_db_service.get_capabilities.return_value = MagicMock(supports_sparse_vectors=False)
@@ -63,13 +69,13 @@ class TestFindBestMatches:
         service = MagicMock()
         service.query_nearest_points = AsyncMock(return_value=[[_hit("k1", "Manual Testing", "subcategory", "2")], []])
         store = _make_store(service)
-        results = await store.find_best_matches(["Integration Testing", "Other"], "org-1", "subcategory", level="2")
+        results = await _best(store, ["Integration Testing", "Other"], "org-1", "subcategory", level="2")
         assert service.filter_collection.await_args.kwargs["must"] == {
             "metadata.orgId": "org-1", "metadata.entityType": "subcategory", "metadata.level": "2",
         }
         requests = service.query_nearest_points.await_args.kwargs["requests"]
         assert [r.text_query for r in requests] == ["Integration Testing", "Other"]
-        assert all(r.limit == 1 and r.fusion_method is FusionMethod.RRF for r in requests)
+        assert all(r.limit == 2 and r.fusion_method is FusionMethod.RRF for r in requests)
         assert results[0] == {
             "entityId": "k1", "entityType": "subcategory", "name": "Manual Testing",
             "aliases": [], "level": "2", "score": 0.9,
@@ -80,17 +86,17 @@ class TestFindBestMatches:
         service = MagicMock()
         service.query_nearest_points = AsyncMock(return_value=[[]])
         store = _make_store(service)
-        await store.find_best_matches(["Legal"], "org-1", "category")
+        await _best(store, ["Legal"], "org-1", "category")
         assert "metadata.level" not in service.filter_collection.await_args.kwargs["must"]
 
     async def test_blank_names_and_empty_org_short_circuit(self) -> None:
         service = MagicMock()
         service.query_nearest_points = AsyncMock(return_value=[[_hit("k1", "x")]])
         store = _make_store(service)
-        assert await store.find_best_matches(["", "  "], "org-1", "topic") == [None, None]
-        assert await store.find_best_matches(["Legal"], "", "topic") == [None]
+        assert await _best(store, ["", "  "], "org-1", "topic") == [None, None]
+        assert await _best(store, ["Legal"], "", "topic") == [None]
         service.query_nearest_points.assert_not_awaited()
-        results = await store.find_best_matches(["", "Legal"], "org-1", "topic")
+        results = await _best(store, ["", "Legal"], "org-1", "topic")
         assert results == [None, {"entityId": "k1", "entityType": "topic", "name": "x", "aliases": [], "level": None, "score": 0.9}]
 
     async def test_mismatched_type_or_level_is_dropped(self) -> None:
@@ -99,14 +105,14 @@ class TestFindBestMatches:
             [_hit("k1", "Legal", entity_type="category")], [_hit("k2", "Deep", "subcategory", "3")],
         ])
         store = _make_store(service)
-        assert await store.find_best_matches(["a b", "c d"], "org-1", "subcategory", level="2") == [None, None]
+        assert await _best(store, ["a b", "c d"], "org-1", "subcategory", level="2") == [None, None]
 
     async def test_vector_failure_propagates(self) -> None:
         service = MagicMock()
         service.query_nearest_points = AsyncMock(side_effect=RuntimeError("down"))
         store = _make_store(service)
         with pytest.raises(RuntimeError):
-            await store.find_best_matches(["Legal"], "org-1", "category")
+            await _best(store, ["Legal"], "org-1", "category")
 
     async def test_redis_type_guessed_level_and_name_still_match(self) -> None:
         """On Redis a level-1 subcategory came back with level 1 (an int),
@@ -118,7 +124,7 @@ class TestFindBestMatches:
         service.query_nearest_points = AsyncMock(return_value=[[hit]])
         store = _make_store(service)
 
-        (result,) = await store.find_best_matches(["2024 plan"], "org-1", "subcategory", level="1")
+        (result,) = await _best(store, ["2024 plan"], "org-1", "subcategory", level="1")
 
         assert result is not None
         assert result["entityId"] == "2024"
@@ -129,7 +135,42 @@ class TestFindBestMatches:
         service = MagicMock()
         service.query_nearest_points = AsyncMock(return_value=[[_hit("k1", "Legal", org_id="org-2")]])
         store = _make_store(service)
-        assert await store.find_best_matches(["Legal"], "org-1", "topic") == [None]
+        assert await _best(store, ["Legal"], "org-1", "topic") == [None]
+
+
+class TestFindCandidates:
+    """KG-12: up to k candidates per name, so a right node ranked second is
+    still offered to the model."""
+
+    async def test_k_candidates_in_rank_order_skipping_invalid_hits(self) -> None:
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock(return_value=[[
+            _hit("k1", "Release checklist"),
+            _hit("k2", "Release notes", org_id="org-2"),
+            _hit("k3", "Release plan"),
+            _hit("k1", "Release checklist"),
+            _hit("k4", "Release train"),
+        ]])
+        store = _make_store(service)
+        (candidates,) = await store.find_candidates(["Release checklists"], "org-1", "topic", k=3)
+        assert [c["entityId"] for c in candidates] == ["k1", "k3", "k4"]
+        request = service.query_nearest_points.await_args.kwargs["requests"][0]
+        # Over-fetched: hits from another org or repeats are skipped, not counted.
+        assert request.limit > 3
+
+    async def test_best_match_is_the_first_candidate(self) -> None:
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock(return_value=[[_hit("k1", "a"), _hit("k2", "b")]])
+        store = _make_store(service)
+        (best,) = await _best(store, ["a"], "org-1", "topic")
+        assert best["entityId"] == "k1"
+
+    async def test_blank_names_get_no_candidates(self) -> None:
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock()
+        store = _make_store(service)
+        assert await store.find_candidates(["", " "], "org-1", "topic", k=3) == [[], []]
+        service.query_nearest_points.assert_not_awaited()
 
 
 class TestLevelIndex:
@@ -482,7 +523,9 @@ class TestSearchPassesAreOneRequest:
         service = MagicMock()
         service.query_nearest_points = AsyncMock(return_value=[
             [SearchResult(id="p1", score=0.9, payload={"metadata": {"entityId": "a", "entityType": "topic"}})],
+            [],
             [SearchResult(id="p2", score=0.8, payload={"metadata": {"entityId": "b", "entityType": "topic"}})],
+            [],
         ])
         store = _make_store(service)
 
@@ -490,13 +533,14 @@ class TestSearchPassesAreOneRequest:
             EntitySearchPass(frozenset({"g1"}), frozenset({"c1"})),
             EntitySearchPass(frozenset(), frozenset()),  # no scope, not org-wide: skipped
             EntitySearchPass(org_wide=True),
-        ])
+        ], entity_types=["topic", "record"])
 
         service.query_nearest_points.assert_awaited_once()
         requests = service.query_nearest_points.await_args.kwargs["requests"]
-        assert len(requests) == 2
+        # Two searchable passes, each split into non-title and title requests.
+        assert len(requests) == 4
         assert requests[0].filter["should"] == {"recordGroupIds": ["g1"], "connectorIds": ["c1"]}
-        assert requests[1].filter["should"] == {}
+        assert requests[2].filter["should"] == {}
         assert [[h["entityId"] for h in r] for r in results] == [["a"], [], ["b"]]
 
     async def test_no_searchable_pass_makes_no_request(self) -> None:
@@ -520,3 +564,63 @@ async def test_a_failed_entity_search_logs_no_query_text() -> None:
         await store.search_entities_passes("salary of jane doe", "org-1", [EntitySearchPass(org_wide=True)])
     logged = " ".join(str(a) for c in store.logger.error.call_args_list for a in c.args)
     assert "vector db down" in logged and "jane" not in logged
+
+
+class TestTitlesSearchedApart:
+    """KG-14: record titles and the other entity types are separate requests
+    with their own top_k, merged taxonomy-first."""
+
+    async def test_two_requests_per_pass_merged_alternately(self) -> None:
+        from app.modules.transformers.entity_vectorstore import EntitySearchPass
+        from app.services.vector_db.models import SearchResult
+
+        def _r(entity_id: str, entity_type: str, score: float) -> SearchResult:
+            return SearchResult(id=entity_id, score=score, payload={"metadata": {"entityId": entity_id, "entityType": entity_type}})
+
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock(return_value=[
+            [_r("t1", "topic", 0.03), _r("t2", "topic", 0.02)],
+            [_r("r1", "record", 0.03), _r("r2", "record", 0.02), _r("r3", "record", 0.01)],
+        ])
+        store = _make_store(service)
+
+        (hits,) = await store.search_entities_passes("q", "org-1", [EntitySearchPass(org_wide=True)], top_k=3)
+
+        requests = service.query_nearest_points.await_args.kwargs["requests"]
+        assert len(requests) == 2
+        assert requests[0].filter["must_not"] == {"metadata.entityType": "record"}
+        assert requests[1].filter["must"]["metadata.entityType"] == "record"
+        assert [h["entityId"] for h in hits] == ["t1", "r1", "t2", "r2", "r3"]
+
+    async def test_asking_for_records_only_is_one_request(self) -> None:
+        from app.modules.transformers.entity_vectorstore import EntitySearchPass
+
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock(return_value=[[]])
+        store = _make_store(service)
+        await store.search_entities_passes("q", "org-1", [EntitySearchPass(org_wide=True)], entity_types=["record"])
+        assert len(service.query_nearest_points.await_args.kwargs["requests"]) == 1
+
+
+async def test_a_split_pass_keeps_its_overall_top_k() -> None:
+    """KG-14 review: two requests of top_k each doubled a pass, so the first
+    pass filled the probe pool and later passes added nothing; each group
+    gets half."""
+    from app.modules.transformers.entity_vectorstore import EntitySearchPass
+
+    service = MagicMock()
+    service.query_nearest_points = AsyncMock(return_value=[[], []])
+    store = _make_store(service)
+    await store.search_entities_passes("q", "org-1", [EntitySearchPass(org_wide=True)], top_k=30)
+    assert [r.limit for r in service.query_nearest_points.await_args.kwargs["requests"]] == [15, 15]
+
+
+async def test_an_empty_type_list_means_every_type() -> None:
+    from app.modules.transformers.entity_vectorstore import EntitySearchPass
+
+    service = MagicMock()
+    service.query_nearest_points = AsyncMock(return_value=[[], []])
+    store = _make_store(service)
+    await store.search_entities_passes("q", "org-1", [EntitySearchPass(org_wide=True)], entity_types=[])
+    for request in service.query_nearest_points.await_args.kwargs["requests"]:
+        assert request.filter["must"].get("metadata.entityType") != []

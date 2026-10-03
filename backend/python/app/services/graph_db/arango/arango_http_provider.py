@@ -20,9 +20,10 @@ import unicodedata
 import uuid
 from collections import defaultdict
 from logging import Logger
-from typing import TYPE_CHECKING, Any, Optional, Dict, TypeVar
+from typing import TYPE_CHECKING, Any, Dict, Optional, TypeVar
 
 from fastapi import Request
+
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     PERSON_CRM_EDGES,
@@ -33,8 +34,8 @@ from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     AppGroups,
     CollectionNames,
-    ConnectorScopes,
     Connectors,
+    ConnectorScopes,
     DepartmentNames,
     GraphNames,
     OriginTypes,
@@ -84,6 +85,7 @@ from app.schema.arango.documents import (
     agent_template_schema,
     app_role_schema,
     app_schema,
+    artifact_record_schema,
     code_file_record_schema,
     comment_record_schema,
     deal_record_schema,
@@ -102,15 +104,14 @@ from app.schema.arango.documents import (
     pull_request_record_schema,
     record_group_schema,
     record_schema,
+    sql_table_record_schema,
+    sql_view_record_schema,
     team_schema,
     ticket_record_schema,
     tool_schema,
     toolset_schema,
     user_schema,
     webpage_record_schema,
-    artifact_record_schema,
-    sql_table_record_schema,
-    sql_view_record_schema,
 )
 from app.schema.arango.edges import (
     agent_has_knowledge_schema,
@@ -147,17 +148,23 @@ from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
-    EntityCandidateRows,
     KB_MAX_FOLDER_DEPTH,
     KB_ROLE_PRIORITY,
     MAX_DIRECT_GRANT_RECORDS,
-    PermittedEntityRows,
     PATH_MAX_CANDIDATES,
     ROOT_SCOPED_CONNECTOR_TYPES,
+    EntityCandidateRows,
+    PermittedEntityRows,
     build_connector_stats_response,
     dedupe_agents_by_id,
     select_canonical_chain_names,
     uploaded_document_id,
+)
+from app.services.graph_db.entity_index_queries import (
+    ENTITY_INDEX_SOURCES,
+    build_entity_index_candidate_aql,
+    build_entity_index_source_page_aql,
+    entity_index_source,
 )
 from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
@@ -177,6 +184,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
+    MAX_TAXONOMY_ALIASES,
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
@@ -185,12 +193,6 @@ from app.services.graph_db.taxonomy import (
     hierarchy_edge_key,
     is_taxonomy_collection,
     subcategory_level,
-)
-from app.services.graph_db.entity_index_queries import (
-    ENTITY_INDEX_SOURCES,
-    build_entity_index_candidate_aql,
-    build_entity_index_source_page_aql,
-    entity_index_source,
 )
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_aql,
@@ -18070,7 +18072,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         normalized_aliases: list[str],
         *,
         org_id: str,
-        max_aliases: int = 20,
+        max_aliases: int = MAX_TAXONOMY_ALIASES,
         transaction: str | None = None,
     ) -> None:
         """See :meth:`IGraphDBProvider.add_taxonomy_aliases`."""
