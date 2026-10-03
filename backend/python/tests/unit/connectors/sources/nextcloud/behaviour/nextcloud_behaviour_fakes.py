@@ -399,6 +399,7 @@ class FakeRecordsDb:
         self.fail_write_for: set[str] = set()
         self.fail_delete_for: set[str] = set()
         self.unreadable_paths: set[str] = set()
+        self.fail_record_scan = False
         self.messaging_producer: Any = None
 
     def _by_id(self, record_id: str) -> Optional[FileRecord]:
@@ -506,6 +507,18 @@ class FakeRecordsDb:
             self.deleted.append(record.record_name)
         return {"success": True, "deleted_records": doomed, "failed_records": [],
                 "successfully_deleted": len(doomed), "failed_count": 0}
+
+    async def get_records_by_status(self, connector_id: str, status_filters: list[str] | None,
+                                    limit: int | None = None, offset: int = 0,
+                                    after_key: str | None = None, **_: object) -> list[FileRecord]:
+        """Keyset pages ordered by record id, and an unreadable listing raises, as both graph stores do."""
+        if self.fail_record_scan:
+            raise RuntimeError("database unavailable")
+        ordered = sorted(self.records.values(), key=lambda r: r.id)
+        if after_key is not None:
+            ordered = [r for r in ordered if r.id > after_key]
+        page = ordered[offset:offset + limit] if limit else ordered[offset:]
+        return [r.model_copy(deep=True) for r in page]
 
     async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str,
                                     record_type: str | None = None) -> list[FileRecord]:

@@ -40,7 +40,11 @@ from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
-from app.connectors.core.registry.folder_scope import FolderScope, clean_up_scope
+from app.connectors.core.registry.folder_scope import (
+    FolderScope,
+    clean_up_scope,
+    path_in_container,
+)
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -393,6 +397,9 @@ class AzureBlobConnector(BaseConnector):
         self.data_source: AzureBlobDataSource | None = None
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
+        # Records moved during this listing: two new copies of a deleted blob
+        # must not both take its record before the batch naming it is saved.
+        self._moved_record_ids: set[str] = set()
         self.container_name: str | None = None
         self.creator_email: str | None = None  # Cached to avoid repeated DB queries
         self.account_name: str | None = None
@@ -926,6 +933,7 @@ class AzureBlobConnector(BaseConnector):
                 modified_after_ms = last_sync_time
 
         batch_records = []
+        self._moved_record_ids = set()
         max_timestamp = last_sync_time if last_sync_time else 0
         blob_count = 0
         listing_failed = False
@@ -1166,7 +1174,11 @@ class AzureBlobConnector(BaseConnector):
     async def _process_azure_blob(
         self, blob: dict, container_name: str
     ) -> tuple[FileRecord | None, list[Permission]]:
-        """Process a single Azure blob and convert it to a FileRecord."""
+        """Process a single Azure blob and convert it to a FileRecord.
+
+        A blob at a new name whose content matches a stored record is a move only
+        when that record's blob is gone; otherwise it is a copy with its own record.
+        """
         try:
             blob_name = blob.get("name", "")
             if not blob_name:
@@ -1245,9 +1257,17 @@ class AzureBlobConnector(BaseConnector):
                 existing_record = await self.data_entities_processor.get_record_by_external_revision_id(
                     self.connector_id, current_revision_id
                 )
+                if existing_record and (
+                    existing_record.id in self._moved_record_ids or await self._still_in_container(existing_record)
+                ):
+                    self.logger.info(
+                        f"New document: {normalized_name} is a copy of {existing_record.external_record_id}, not a move"
+                    )
+                    existing_record = None
 
                 if existing_record:
                     is_move = True
+                    self._moved_record_ids.add(existing_record.id)
                     self.logger.info(
                         f"Move/rename detected: {normalized_name} - file moved from {existing_record.external_record_id} to {external_record_id}"
                     )
@@ -1333,6 +1353,29 @@ class AzureBlobConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error processing Azure blob: {e}", exc_info=True)
             return None, []
+
+    async def _still_in_container(self, record: Record) -> bool:
+        """Whether ``record``'s blob is still listed. A check that fails counts as yes:
+        taking a copy for a move would lose the original's record."""
+        container_name = record.external_record_group_id
+        blob_name = path_in_container(container_name, record.external_record_id)
+        if not container_name or not blob_name:
+            return True
+        try:
+            async with self.rate_limiter:
+                response = await self.data_source.list_blobs(container_name=container_name, prefix=blob_name)
+                if not response.success or response.data is None:
+                    self.logger.warning(
+                        f"Could not check whether {container_name}/{blob_name} still exists: {response.error}"
+                    )
+                    return True
+                # Names list in lexicographic order, so the name itself comes first among those it prefixes.
+                async for blob in response.data:
+                    return self._blob_properties_to_dict(blob).get("name") == blob_name
+                return False
+        except Exception as e:
+            self.logger.warning(f"Could not check whether {container_name}/{blob_name} still exists: {e}")
+            return True
 
     async def _create_azure_blob_permissions(
         self, container_name: str, blob_name: str

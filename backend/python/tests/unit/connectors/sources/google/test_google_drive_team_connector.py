@@ -83,7 +83,10 @@ from app.connectors.sources.google.common.impersonation import (
     get_impersonation_candidates,
     resolve_explicit_user,
 )
-from app.connectors.sources.google.drive.utils.folder_filter_utils import pass_folder_filter
+from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+    is_directory_refusal_403,
+    pass_folder_filter,
+)
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -724,8 +727,10 @@ class TestProcessGroup:
             "members": [{"type": "USER", "id": "u1", "email": ""}],
         })
         await conn._process_group(group)
-        # No user members with email -> on_new_user_groups not called
-        conn.data_entities_processor.on_new_user_groups.assert_not_called()
+        # Stored all the same, with no direct user members.
+        conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = conn.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
     @pytest.mark.asyncio
     async def test_process_group_member_found_in_synced_users(self):
@@ -792,7 +797,10 @@ class TestProcessGroup:
             ],
         })
         await conn._process_group(group)
-        conn.data_entities_processor.on_new_user_groups.assert_not_called()
+        # Stored all the same, with no direct user members.
+        conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = conn.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
     @pytest.mark.asyncio
     async def test_process_group_error_propagates(self):
@@ -2531,6 +2539,7 @@ class TestSyncPersonalDrive:
         mock_ds.files_list = AsyncMock(side_effect=[
             {"files": [_make_file_metadata()], "nextPageToken": "next"},
             {"files": []},
+            {"files": []},  # the full sync's trash sweep
         ])
 
         with patch.object(conn, "_process_drive_files_batch", new_callable=AsyncMock,
@@ -2539,6 +2548,7 @@ class TestSyncPersonalDrive:
                               return_value=([], 0)):
                 with patch.object(conn, "sync_shared_with_me", new_callable=AsyncMock):
                     await conn.sync_personal_drive(user, mock_ds, "perm-id", "drive-id")
+        assert mock_ds.files_list.await_args_list[-1].kwargs["q"] == "trashed = true"
 
     @pytest.mark.asyncio
     async def test_full_sync_no_start_token(self):
@@ -4993,3 +5003,24 @@ class TestExternalCollaborators:
         assert src.index("_process_users_in_batches") < src.index(
             "await self._flush_external_app_users()"
         )
+
+
+@pytest.mark.parametrize(
+    ("status", "details", "refused"),
+    [
+        (403, [{"reason": "forbidden"}], True),
+        (403, [{"reason": "forbidden"}, {"reason": "rateLimitExceeded"}], False),
+        (403, [{"reason": "aReasonGoogleAddsLater"}], False),
+        (403, [], False),
+        (403, "Forbidden", False),
+        (404, [{"reason": "forbidden"}], False),
+    ],
+)
+def test_only_an_explicit_directory_forbidden_is_a_refusal(status: int, details: object, refused: bool) -> None:
+    from googleapiclient.errors import HttpError
+
+    resp = MagicMock()
+    resp.status = status
+    error = HttpError(resp, b"{}")
+    error.error_details = details
+    assert is_directory_refusal_403(error) is refused

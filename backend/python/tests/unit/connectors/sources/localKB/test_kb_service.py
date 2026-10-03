@@ -2478,6 +2478,14 @@ class TestMoveRecord:
 
 class TestListAllRecords:
     @pytest.mark.asyncio
+    async def test_a_failed_user_read_is_an_error_not_a_missing_user(self, service):
+        service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("graph down"))
+        result = await service.list_all_records("user1", "org1")
+        service.graph_provider.get_user_by_user_id.assert_awaited_once_with(user_id="user1", raise_on_error=True)
+        assert result.get("code") != 404
+        assert "error" in result
+
+    @pytest.mark.asyncio
     async def test_success(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.list_all_records = AsyncMock(
@@ -2625,6 +2633,14 @@ class TestListKbRecordsExtended:
 
 
 class TestListKbRecords:
+    @pytest.mark.asyncio
+    async def test_a_failed_user_read_is_an_error_not_a_missing_user(self, service):
+        service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("graph down"))
+        result = await service.list_kb_records("kb1", "user1", "org1")
+        service.graph_provider.get_user_by_user_id.assert_awaited_once_with(user_id="user1", raise_on_error=True)
+        assert result.get("code") != 404
+        assert "error" in result
+
     @pytest.mark.asyncio
     async def test_user_not_found(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)

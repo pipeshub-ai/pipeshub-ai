@@ -29,13 +29,13 @@ from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     AppGroups,
     CollectionNames,
-    ConnectorScopes,
     Connectors,
+    ConnectorScopes,
     DeleteSource,
     DepartmentNames,
     OriginTypes,
-    PersonMigrationMode,
     PermissionModel,
+    PersonMigrationMode,
     ProgressStatus,
     RecordTypes,
 )
@@ -70,45 +70,46 @@ from app.models.entities import (
     LinkRecord,
     MailRecord,
     MeetingRecord,
+    MessageRecord,
     Person,
     ProductRecord,
-    MessageRecord,
     ProjectRecord,
     PullRequestRecord,
     Record,
     RecordGroup,
+    SQLTableRecord,
+    SQLViewRecord,
     TicketRecord,
     User,
     WebpageRecord,
-    SQLTableRecord,
-    SQLViewRecord,
     substitute_user_email,
 )
 from app.models.entities import EntityType as KnowledgeGraphEntityType
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES, EntityType
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
-from app.services.graph_db.common.utils import (
-    CANONICAL_PARENT_RELATION_TYPES,
-    CONTAINER_INHERIT_MAX_DEPTH,
-    CONTAINMENT_MAX_DEPTH,
-    ENTITY_CANDIDATE_SCAN_CAP,
-    TRASHED_EXTERNAL_ID_PREFIX,
-    empty_soft_delete_result,
-    soft_delete_request_result,
-    soft_delete_result,
-    MAX_DIRECT_GRANT_RECORDS,
-    PATH_MAX_CANDIDATES,
-    ROOT_SCOPED_CONNECTOR_TYPES,
-    build_connector_stats_response,
-    dedupe_agents_by_id,
-    select_canonical_chain_names,
-)
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     cypher_live_record,
     cypher_record_visibility,
     is_live_record,
+)
+from app.services.graph_db.common.utils import (
+    CANONICAL_PARENT_RELATION_TYPES,
+    CONTAINER_INHERIT_MAX_DEPTH,
+    CONTAINMENT_MAX_DEPTH,
+    ENTITY_CANDIDATE_SCAN_CAP,
+    KB_ROLE_PRIORITY,
+    MAX_DIRECT_GRANT_RECORDS,
+    PATH_MAX_CANDIDATES,
+    ROOT_SCOPED_CONNECTOR_TYPES,
+    TRASHED_EXTERNAL_ID_PREFIX,
+    build_connector_stats_response,
+    dedupe_agents_by_id,
+    empty_soft_delete_result,
+    select_canonical_chain_names,
+    soft_delete_request_result,
+    soft_delete_result,
 )
 from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
@@ -128,9 +129,11 @@ from app.services.graph_db.neo4j.neo4j_client import (
 from app.services.graph_db.taxonomy import (
     TAXONOMY_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
-    alias_pairs as _alias_pairs,
     is_taxonomy_collection,
     subcategory_level,
+)
+from app.services.graph_db.taxonomy import (
+    alias_pairs as _alias_pairs,
 )
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_cypher,
@@ -6746,7 +6749,9 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         node_key: str,
         collection: str = CollectionNames.PERMISSION.value,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[User]:
         """Get users with permission to node"""
         try:
@@ -6776,12 +6781,55 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get users with permission failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return []
+
+    async def get_groups_with_permission_to_node(
+        self,
+        node_key: str,
+        collection: str = CollectionNames.PERMISSION.value,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[AppUserGroup]:
+        """Get the user groups with a permission edge to a node"""
+        try:
+            query = """
+            MATCH (g:Group)-[r:PERMISSION]->(n)
+            WHERE n.id = $node_key AND g.externalGroupId IS NOT NULL
+            RETURN DISTINCT g
+            """
+
+            _, key = self._parse_arango_id(node_key)
+            if not key:
+                key = node_key
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"node_key": key},
+                txn_id=transaction
+            )
+
+            return [
+                AppUserGroup.from_arango_base_user_group(
+                    self._neo4j_to_arango_node(dict(record["g"]), CollectionNames.GROUPS.value)
+                )
+                for record in results
+            ]
+
+        except Exception as e:
+            self.logger.error(f"❌ Get groups with permission failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_record_owner_source_user_email(
         self,
         record_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> str | None:
         """Get record owner source user email"""
         try:
@@ -6801,6 +6849,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get record owner email failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     # ==================== File/Parent Operations ====================
@@ -12857,7 +12907,6 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (u)-[kbEdge:PERMISSION {{type: "USER"}}]->(kb:App)
                 WHERE kb.orgId = $org_id
                     AND kb.type = "KB"
-                    AND kbEdge.role IN $kb_permissions
                     AND coalesce(kb.isHidden, false) = false
                 WITH u, COLLECT({{kb: kb, role: kbEdge.role}}) AS directKbs
 
@@ -12867,8 +12916,16 @@ class Neo4jProvider(IGraphDBProvider):
                 WITH u, directKbs, COLLECT({{kb: kb2, role: userTeamPerm.role}}) AS teamKbs
 
                 WITH u, directKbs + teamKbs AS allKbAccess
-                UNWIND [access IN allKbAccess WHERE access.kb IS NOT NULL] AS kbAccess
-                WITH DISTINCT u, kbAccess.kb AS kb, kbAccess.role AS kb_role
+                // One null row when the user reaches no KB: UNWIND of an empty list ends
+                // the query, and the connector records below would be lost with it.
+                WITH u, [access IN allKbAccess WHERE access.kb IS NOT NULL] AS reachableKbs
+                UNWIND CASE WHEN size(reachableKbs) = 0 THEN [null] ELSE reachableKbs END AS kbAccess
+                WITH u, kbAccess.kb AS kb, kbAccess.role AS role
+                ORDER BY coalesce($kb_role_priority[role], 0) DESC
+                WITH u, kb, head(collect(role)) AS kb_role
+                // The permissions filter applies to the role the user ends up with. A
+                // filtered-out KB becomes null rather than no row, for the reason above.
+                WITH u, CASE WHEN kb_role IN $kb_permissions THEN kb END AS kb, kb_role
 
                 OPTIONAL MATCH (kb)<-[:BELONGS_TO]-(kbRecord:Record)
                 WHERE kbRecord.orgId = $org_id
@@ -12970,18 +13027,25 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (u)-[kbEdge:PERMISSION {{type: "USER"}}]->(kb:App)
                 WHERE kb.orgId = $org_id
                     AND kb.type = "KB"
-                    AND kbEdge.role IN $kb_permissions
                     AND coalesce(kb.isHidden, false) = false
-                WITH u, COLLECT({{kb: kb}}) AS directKbs
+                WITH u, COLLECT({{kb: kb, role: kbEdge.role}}) AS directKbs
 
                 OPTIONAL MATCH (u)-[userTeamPerm:PERMISSION {{type: "USER"}}]->(team:Teams)
                 OPTIONAL MATCH (team)-[teamKbPerm:PERMISSION {{type: "TEAM"}}]->(kb2:App)
                 WHERE kb2.orgId = $org_id AND kb2.type = "KB" AND coalesce(kb2.isHidden, false) = false
-                WITH u, directKbs, COLLECT({{kb: kb2}}) AS teamKbs
+                WITH u, directKbs, COLLECT({{kb: kb2, role: userTeamPerm.role}}) AS teamKbs
 
                 WITH u, directKbs + teamKbs AS allKbAccess
-                UNWIND [access IN allKbAccess WHERE access.kb IS NOT NULL] AS kbAccess
-                WITH DISTINCT u, kbAccess.kb AS kb
+                // One null row when the user reaches no KB: UNWIND of an empty list ends
+                // the query, and the connector records below would be lost with it.
+                WITH u, [access IN allKbAccess WHERE access.kb IS NOT NULL] AS reachableKbs
+                UNWIND CASE WHEN size(reachableKbs) = 0 THEN [null] ELSE reachableKbs END AS kbAccess
+                WITH u, kbAccess.kb AS kb, kbAccess.role AS role
+                ORDER BY coalesce($kb_role_priority[role], 0) DESC
+                WITH u, kb, head(collect(role)) AS kb_role
+                // The permissions filter applies to the role the user ends up with. A
+                // filtered-out KB becomes null rather than no row, for the reason above.
+                WITH u, CASE WHEN kb_role IN $kb_permissions THEN kb END AS kb, kb_role
 
                 OPTIONAL MATCH (kb)<-[:BELONGS_TO]-(kbRecord:Record)
                 WHERE kbRecord.orgId = $org_id
@@ -13041,8 +13105,13 @@ class Neo4jProvider(IGraphDBProvider):
                 WITH u, directKbs, COLLECT({kb: kb2, role: userTeamPerm.role}) AS teamKbs
 
                 WITH u, directKbs + teamKbs AS allKbAccess
-                UNWIND [access IN allKbAccess WHERE access.kb IS NOT NULL] AS kbAccess
-                WITH DISTINCT u, kbAccess.kb AS kb, kbAccess.role AS kb_role
+                // One null row when the user reaches no KB: UNWIND of an empty list ends
+                // the query, and the connector records below would be lost with it.
+                WITH u, [access IN allKbAccess WHERE access.kb IS NOT NULL] AS reachableKbs
+                UNWIND CASE WHEN size(reachableKbs) = 0 THEN [null] ELSE reachableKbs END AS kbAccess
+                WITH u, kbAccess.kb AS kb, kbAccess.role AS role
+                ORDER BY coalesce($kb_role_priority[role], 0) DESC
+                WITH u, kb, head(collect(role)) AS kb_role
 
                 OPTIONAL MATCH (kb)<-[:BELONGS_TO]-(kbRecord:Record)
                 WHERE kbRecord.orgId = $org_id
@@ -13097,6 +13166,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Build parameters
             params = {
+                "kb_role_priority": KB_ROLE_PRIORITY,
                 "user_id": user_id,
                 "org_id": org_id,
                 "skip": skip,
@@ -13161,13 +13231,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ List all records failed: {str(e)}")
-            return [], 0, {
-                "recordTypes": [],
-                "origins": [],
-                "connectors": [],
-                "indexingStatus": [],
-                "permissions": []
-            }
+            raise
 
     def _artifact_gallery_sort_expr(self, sort_by: str) -> str:
         return {
@@ -13411,55 +13475,8 @@ class Neo4jProvider(IGraphDBProvider):
                 folder_match = " AND folder.id = $folder_id"
                 params["folder_id"] = folder_id
 
-            # Main query - get all records from folders AND KB root
-            # Uses UNION to combine folder-based records and root-level records
-            main_query = f"""
-            // Part 1: Records in folders
-            MATCH (kb:App {{id: $kb_id, type: "KB"}})
-            MATCH (folder:Record)-[:BELONGS_TO]->(kb)
-            WHERE folder.mimeType = "application/vnd.folder"{folder_match}
-            MATCH (folder)-[rel:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(record:Record)
-            WHERE record.isDeleted <> true
-            AND record.orgId = $org_id
-            AND NOT record.mimeType = "application/vnd.folder"
-            {record_filter}
-            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
-
-            WITH folder, record, file, $user_permission AS user_permission, $kb_id AS kb_id
-
-            RETURN {{
-                id: record.id,
-                externalRecordId: record.externalRecordId,
-                externalRevisionId: record.externalRevisionId,
-                recordName: record.recordName,
-                recordType: record.recordType,
-                origin: record.origin,
-                connectorName: COALESCE(record.connectorName, "KNOWLEDGE_BASE"),
-                indexingStatus: record.indexingStatus,
-                createdAtTimestamp: record.createdAtTimestamp,
-                updatedAtTimestamp: record.updatedAtTimestamp,
-                sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
-                sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp,
-                orgId: record.orgId,
-                version: record.version,
-                isDeleted: record.isDeleted,
-                deletedByUserId: record.deletedByUserId,
-                isLatestVersion: COALESCE(record.isLatestVersion, true),
-                webUrl: record.webUrl,
-                fileRecord: CASE WHEN file IS NOT NULL THEN {{
-                    id: file.id,
-                    name: file.name,
-                    extension: file.extension,
-                    mimeType: file.mimeType,
-                    sizeInBytes: file.sizeInBytes,
-                    isFile: file.isFile,
-                    webUrl: file.webUrl
-                }} ELSE null END,
-                permission: {{role: user_permission, type: "USER"}},
-                kb_id: kb_id,
-                folder: {{id: folder.id, name: folder.recordName}}
-            }} AS result
-
+            # A folder filter lists that folder's children only, so the KB-root arm runs without one.
+            root_arm = "" if folder_id else f"""
             UNION
 
             // Part 2: Records at KB root (no parent folder)
@@ -13509,41 +13526,76 @@ class Neo4jProvider(IGraphDBProvider):
                 folder: null
             }} AS result
 
+            """
+            records_union = f"""
+            // Part 1: Records in folders
+            MATCH (kb:App {{id: $kb_id, type: "KB"}})
+            MATCH (folder:Record)-[:BELONGS_TO]->(kb)
+            WHERE folder.mimeType = "application/vnd.folder"{folder_match}
+            MATCH (folder)-[rel:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(record:Record)
+            WHERE record.isDeleted <> true
+            AND record.orgId = $org_id
+            AND NOT record.mimeType = "application/vnd.folder"
+            {record_filter}
+            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
+
+            WITH folder, record, file, $user_permission AS user_permission, $kb_id AS kb_id
+
+            RETURN {{
+                id: record.id,
+                externalRecordId: record.externalRecordId,
+                externalRevisionId: record.externalRevisionId,
+                recordName: record.recordName,
+                recordType: record.recordType,
+                origin: record.origin,
+                connectorName: COALESCE(record.connectorName, "KNOWLEDGE_BASE"),
+                indexingStatus: record.indexingStatus,
+                createdAtTimestamp: record.createdAtTimestamp,
+                updatedAtTimestamp: record.updatedAtTimestamp,
+                sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
+                sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp,
+                orgId: record.orgId,
+                version: record.version,
+                isDeleted: record.isDeleted,
+                deletedByUserId: record.deletedByUserId,
+                isLatestVersion: COALESCE(record.isLatestVersion, true),
+                webUrl: record.webUrl,
+                fileRecord: CASE WHEN file IS NOT NULL THEN {{
+                    id: file.id,
+                    name: file.name,
+                    extension: file.extension,
+                    mimeType: file.mimeType,
+                    sizeInBytes: file.sizeInBytes,
+                    isFile: file.isFile,
+                    webUrl: file.webUrl
+                }} ELSE null END,
+                permission: {{role: user_permission, type: "USER"}},
+                kb_id: kb_id,
+                folder: {{id: folder.id, name: folder.recordName}}
+            }} AS result
+
+            {root_arm}
+            """
+            main_query = f"""
+            CALL {{
+            {records_union}
+            }}
+            WITH result
             ORDER BY result.{sort_by} {sort_order.upper()}
             SKIP $skip
             LIMIT $limit
+            RETURN result
             """
 
             results = await self.client.execute_query(main_query, parameters=params, txn_id=transaction)
             records = [r["result"] for r in results if r.get("result")]
 
-            # Count query - includes both folder-based and root-level records
-            count_params = {k: v for k, v in params.items() if k not in ["skip", "limit", "user_permission"]}
+            count_params = {k: v for k, v in params.items() if k not in ["skip", "limit"]}
             count_query = f"""
-            // Count records in folders
-            MATCH (kb:App {{id: $kb_id, type: "KB"}})
-            OPTIONAL MATCH (folder:Record)-[:BELONGS_TO]->(kb)
-            WHERE folder.mimeType = "application/vnd.folder"{folder_match}
-            OPTIONAL MATCH (folder)-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(folderRecord:Record)
-            WHERE folderRecord.isDeleted <> true
-            AND folderRecord.orgId = $org_id
-            AND NOT folderRecord.mimeType = "application/vnd.folder"
-            {record_filter.replace('record.', 'folderRecord.')}
-
-            // Count records at KB root
-            OPTIONAL MATCH (rootRecord:Record)-[:BELONGS_TO]->(kb)
-            WHERE rootRecord.isDeleted <> true
-            AND rootRecord.orgId = $org_id
-            AND NOT rootRecord.mimeType = "application/vnd.folder"
-            AND NOT EXISTS {{
-                MATCH (parentFolder:Record)-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(rootRecord)
+            CALL {{
+            {records_union}
             }}
-            {record_filter.replace('record.', 'rootRecord.')}
-
-            WITH collect(DISTINCT folderRecord) + collect(DISTINCT rootRecord) AS allRecords
-            UNWIND allRecords AS record
-            WITH DISTINCT record WHERE record IS NOT NULL
-            RETURN count(record) AS total
+            RETURN count(result) AS total
             """
 
             count_results = await self.client.execute_query(count_query, parameters=count_params, txn_id=transaction)
@@ -13614,14 +13666,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to list KB records: {str(e)}")
-            return [], 0, {
-                "recordTypes": [],
-                "origins": [],
-                "connectors": [],
-                "indexingStatus": [],
-                "permissions": [],
-                "folders": []
-            }
+            raise
 
     async def get_kb_children(
         self,
@@ -15053,31 +15098,44 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def get_records(
         self,
-        record_ids: list[str],
-        transaction: str | None = None
-    ) -> list[Record]:
-        """Get multiple records by IDs."""
-        try:
-            query = """
-            UNWIND $record_ids AS record_id
-            MATCH (r:Record {id: record_id})
-            RETURN r
-            """
-            results = await self.client.execute_query(
-                query,
-                parameters={"record_ids": record_ids},
-                txn_id=transaction
-            )
-            records = []
-            for result in results:
-                record_data = result.get("r", {})
-                typed_record = self._create_typed_record_from_neo4j_simple(record_data)
-                if typed_record:
-                    records.append(typed_record)
-            return records
-        except Exception as e:
-            self.logger.error(f"❌ Get records failed: {str(e)}")
-            return []
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: str | None,
+        record_types: list[str] | None,
+        origins: list[str] | None,
+        connectors: list[str] | None,
+        indexing_status: list[str] | None,
+        permissions: list[str] | None,
+        date_from: int | None,
+        date_to: int | None,
+        sort_by: str,
+        sort_order: str,
+        source: str,
+    ) -> tuple[list[dict], int, dict]:
+        """List all records the user can access; ``user_id`` is the user's graph key.
+
+        The same list as ``list_all_records``, which takes the same key. A read
+        that fails raises; it is never reported as an empty list.
+        """
+        return await self.list_all_records(
+            user_id,
+            org_id,
+            skip,
+            limit,
+            search,
+            record_types,
+            origins,
+            connectors,
+            indexing_status,
+            permissions,
+            date_from,
+            date_to,
+            sort_by,
+            sort_order,
+            source,
+        )
 
     async def get_user_connector_instances(
         self,

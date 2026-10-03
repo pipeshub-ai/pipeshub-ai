@@ -451,8 +451,8 @@ class TestGetUserKBPermission:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_user_kb_permission("kb1", "user1")
-        assert result is None
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_user_kb_permission("kb1", "user1")
 
 
 # ===========================================================================

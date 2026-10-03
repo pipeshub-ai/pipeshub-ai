@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import logging
+import random
 from contextlib import asynccontextmanager
 from logging import Logger
 from typing import AsyncContextManager, Optional
@@ -39,8 +40,20 @@ from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-_TRANSACTION_RETRY_ATTEMPTS = 3
-_TRANSACTION_RETRY_BASE_DELAY = 0.5
+# An ArangoDB write-write conflict (1200) clears only once the other transaction
+# commits, and an indexing stream transaction can hold a record for seconds. So
+# the waits are 0.5, 1, 2, 4, 4s, each +/-20% so colliding writers drift apart:
+# 9.2s to 13.8s across six attempts. Neo4j deadlocks share the schedule.
+_RETRY_ATTEMPTS = 6
+_RETRY_BASE_DELAY = 0.5
+_RETRY_MAX_DELAY = 4.0
+_RETRY_JITTER = 0.2
+
+
+def _retry_delay(failed_attempt: int) -> float:
+    """Seconds to wait after the failed attempt with this 0-based number."""
+    nominal = min(_RETRY_MAX_DELAY, _RETRY_BASE_DELAY * (2 ** failed_attempt))
+    return nominal * random.uniform(1 - _RETRY_JITTER, 1 + _RETRY_JITTER)
 
 
 def _is_deadlock_error(exception: Exception) -> bool:
@@ -60,20 +73,32 @@ def _is_deadlock_error(exception: Exception) -> bool:
     )
 
 
-def retry_on_deadlock(max_retries: int = 3):
+def _is_retryable(instance: object, exception: Exception) -> bool:
+    """A Neo4j deadlock, or a failure the instance's data store calls transient
+    (an ArangoDB write-write conflict, which never says "deadlock")."""
+    if _is_deadlock_error(exception):
+        return True
+    store = getattr(instance, "data_store_provider", None)
+    # `is True`: a mocked provider answers with a truthy mock, which is not a yes.
+    return isinstance(store, DataStoreProvider) and store.is_transient_error(exception) is True
+
+
+def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
     """
-    Decorator that retries an async function on Neo4j deadlock errors.
+    Decorator that retries an async function on deadlocks and write conflicts.
 
-    When a deadlock is detected, the entire function is re-executed from scratch,
-    which naturally creates a fresh transaction on retry.
+    When one is detected, the entire function is re-executed from scratch,
+    which naturally creates a fresh transaction on retry. Besides Neo4j's
+    deadlock error, it retries whatever the decorated object's
+    ``data_store_provider`` reports as transient.
 
-    Uses exponential backoff: 0.1s, 0.2s, 0.4s, ...
+    Waits between attempts follow ``_retry_delay``: about 11.5s in all by default.
 
     Args:
-        max_retries: Maximum number of attempts (default: 3)
+        max_retries: Maximum number of attempts (default: 6)
 
     Usage:
-        @retry_on_deadlock(max_retries=3)
+        @retry_on_deadlock()
         async def on_new_records(self, records):
             async with self.data_store_provider.transaction() as tx_store:
                 # transaction code here
@@ -91,20 +116,21 @@ def retry_on_deadlock(max_retries: int = 3):
                     return await func(*args, **kwargs)
                 except Exception as e:
                     last_exception = e
+                    retryable = _is_retryable(args[0] if args else None, e)
 
-                    if _is_deadlock_error(e) and attempt < max_retries - 1:
-                        backoff = 0.1 * (2 ** attempt)  # 0.1s, 0.2s, 0.4s
+                    if retryable and attempt < max_retries - 1:
+                        backoff = _retry_delay(attempt)
                         logger.warning(
-                            f"Deadlock detected in {func.__name__} "
+                            f"Deadlock or write conflict in {func.__name__} "
                             f"(attempt {attempt + 1}/{max_retries}), "
                             f"retrying in {backoff:.1f}s: {str(e)[:200]}"
                         )
                         await asyncio.sleep(backoff)
                         continue
                     else:
-                        if _is_deadlock_error(e):
+                        if retryable:
                             logger.error(
-                                f"Deadlock persists in {func.__name__} "
+                                f"Deadlock or write conflict persists in {func.__name__} "
                                 f"after {max_retries} attempts: {str(e)[:200]}"
                             )
                         raise
@@ -231,8 +257,12 @@ class GraphTransactionStore(TransactionStore):
     async def get_app_user_by_email(self, email: str, connector_id: str) -> Optional[AppUser]:
         return await self.graph_provider.get_app_user_by_email(email, connector_id, transaction=self.txn)
 
-    async def get_record_owner_source_user_email(self, record_id: str) -> Optional[str]:
-        return await self.graph_provider.get_record_owner_source_user_email(record_id, transaction=self.txn)
+    async def get_record_owner_source_user_email(
+        self, record_id: str, *, raise_on_error: bool = False
+    ) -> str | None:
+        return await self.graph_provider.get_record_owner_source_user_email(
+            record_id, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
         return await self.graph_provider.get_user_by_user_id(user_id)
@@ -495,8 +525,19 @@ class GraphTransactionStore(TransactionStore):
     async def get_first_user_with_permission_to_node(self, node_id: str, node_collection: str) -> Optional[User]:
         return await self.graph_provider.get_first_user_with_permission_to_node(node_id, node_collection, transaction=self.txn)
 
-    async def get_users_with_permission_to_node(self, node_id: str, node_collection: str) -> list[User]:
-        return await self.graph_provider.get_users_with_permission_to_node(node_id, node_collection, transaction=self.txn)
+    async def get_users_with_permission_to_node(
+        self, node_id: str, node_collection: str, *, raise_on_error: bool = False
+    ) -> list[User]:
+        return await self.graph_provider.get_users_with_permission_to_node(
+            node_id, node_collection, transaction=self.txn, raise_on_error=raise_on_error
+        )
+
+    async def get_groups_with_permission_to_node(
+        self, node_id: str, node_collection: str, *, raise_on_error: bool = False
+    ) -> list[AppUserGroup]:
+        return await self.graph_provider.get_groups_with_permission_to_node(
+            node_id, node_collection, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[dict]:
         return await self.graph_provider.get_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
@@ -943,6 +984,9 @@ class GraphDataStore(DataStoreProvider):
         self.logger = logger
         self.graph_provider = graph_provider
 
+    def is_transient_error(self, error: BaseException) -> bool:
+        return self.graph_provider.is_transient_error(error)
+
     async def compare_and_set_indexing_status(
         self, record_ids: list[str], expected: str, new_status: str
     ) -> list[str]:
@@ -1015,12 +1059,12 @@ class GraphDataStore(DataStoreProvider):
                 async with self.transaction() as tx_store:
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
-                if attempts >= _TRANSACTION_RETRY_ATTEMPTS or not self.graph_provider.is_transient_error(e):
+                if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_transient_error(e):
                     raise
-                delay = _TRANSACTION_RETRY_BASE_DELAY * attempts
+                delay = _retry_delay(attempts - 1)
                 self.logger.warning(
                     "Transient graph transaction failure (attempt %d/%d), retrying in %.1fs: %s",
-                    attempts, _TRANSACTION_RETRY_ATTEMPTS, delay, e,
+                    attempts, _RETRY_ATTEMPTS, delay, e,
                 )
                 await asyncio.sleep(delay)
 
