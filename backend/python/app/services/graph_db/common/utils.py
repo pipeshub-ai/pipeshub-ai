@@ -196,10 +196,9 @@ def build_connector_stats_response(
     }
 
 
-# Soft delete marks a subtree in pages of this many keys, one UPDATE each, and
-# walks at most this deep, matching the hard delete's containment walk.
+# ArangoDB marks a subtree in pages of this many keys, one UPDATE each, inside
+# one stream transaction.
 SOFT_DELETE_CHUNK = 1000
-SOFT_DELETE_MAX_DEPTH = 20
 
 
 def empty_soft_delete_result(batch_id: str) -> dict[str, Any]:

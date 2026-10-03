@@ -93,8 +93,6 @@ from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
-    SOFT_DELETE_CHUNK,
-    SOFT_DELETE_MAX_DEPTH,
     empty_soft_delete_result,
     soft_delete_request_result,
     soft_delete_result,
@@ -11524,63 +11522,69 @@ class Neo4jProvider(IGraphDBProvider):
         """See ``IGraphDBProvider.soft_delete_records``."""
         if not record_ids:
             return empty_soft_delete_result(batch_id)
-        max_depth = SOFT_DELETE_MAX_DEPTH if follow else 0
+        root_check = f"""
+            {cypher_live_record("rec")} AND rec.connectorId = $connector_id
+            AND ($folder_id IS NULL OR EXISTS {{
+                MATCH (:Record {{id: $folder_id}})
+                      (()-[c:RECORD_RELATION WHERE c.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->()){{1,{CONTAINMENT_MAX_DEPTH}}}
+                      (rec)
+            }})
+        """
         txn_id = transaction
         if transaction is None:
             txn_id = await self.begin_transaction(read=[], write=[CollectionNames.RECORDS.value])
         try:
-            inventory = await self.client.execute_query(
+            checked = await self.client.execute_query(
                 f"""
                 UNWIND $record_ids AS rid
-                OPTIONAL MATCH (rec:Record {{id: rid}})
-                WHERE {cypher_live_record("rec")} AND rec.connectorId = $connector_id
-                  AND ($folder_id IS NULL OR EXISTS {{
-                      MATCH (:Record {{id: $folder_id}})
-                            (()-[c:RECORD_RELATION WHERE c.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->()){{1,{CONTAINMENT_MAX_DEPTH}}}
-                            (rec)
-                  }})
-                WITH collect(DISTINCT rec) AS roots
-                UNWIND CASE WHEN size(roots) = 0 THEN [null] ELSE roots END AS root
-                OPTIONAL MATCH path = (root)-[:RECORD_RELATION*0..{max_depth}]->(v:Record)
-                WHERE root IS NOT NULL
-                  AND all(rel IN relationships(path) WHERE rel.relationshipType IN $follow)
-                  AND {cypher_live_record("v")}
-                RETURN [r IN roots | r.id] AS root_keys, collect(DISTINCT v.id) AS keys
+                MATCH (rec:Record {{id: rid}})
+                WHERE {root_check}
+                RETURN collect(DISTINCT rec.id) AS root_keys
                 """,
-                parameters={
-                    "record_ids": record_ids,
-                    "connector_id": connector_id,
-                    "follow": list(follow),
-                    "folder_id": within_folder_id,
-                },
+                parameters={"record_ids": record_ids, "connector_id": connector_id, "folder_id": within_folder_id},
                 txn_id=txn_id,
             )
-            found = inventory[0] if inventory else {"root_keys": [], "keys": []}
-            keys = [k for k in found.get("keys") or [] if k]
-            marked: list[dict] = []
-            now = get_epoch_timestamp_in_ms()
-            for start in range(0, len(keys), SOFT_DELETE_CHUNK):
-                marked += await self.client.execute_query(
+            root_keys = (checked[0] if checked else {}).get("root_keys") or []
+            found: dict = {"root_keys": [], "marked": []}
+            if root_keys:
+                # Each statement commits on its own unless explicit transactions are on,
+                # so the check above may be stale and a mark split over statements could
+                # stop halfway. One statement re-checks, walks and marks: all or nothing.
+                rows = await self.client.execute_query(
                     f"""
-                    UNWIND $keys AS k
-                    MATCH (r:Record {{id: k}})
-                    WHERE {cypher_live_record("r")}
-                    SET r.isDeleted = true,
-                        r.deletedAtTimestamp = $now,
-                        r.deleteSource = $source,
-                        r.deleteBatchId = $batch_id,
-                        r.deletedByUserId = $user_id
-                    RETURN r.id AS id, r.recordName AS name, r.virtualRecordId AS vrid, r.orgId AS orgId
+                    UNWIND $root_ids AS rid
+                    MATCH (rec:Record {{id: rid}})
+                    WHERE {root_check}
+                    WITH collect(DISTINCT rec) AS roots
+                    UNWIND CASE WHEN size(roots) = 0 THEN [null] ELSE roots END AS root
+                    OPTIONAL MATCH (root)
+                          (()-[c:RECORD_RELATION WHERE c.relationshipType IN $follow]->()){{0,{CONTAINMENT_MAX_DEPTH}}}
+                          (v:Record)
+                    WHERE root IS NOT NULL AND {cypher_live_record("v")}
+                    WITH roots, collect(DISTINCT v) AS vertices
+                    FOREACH (r IN vertices |
+                        SET r.isDeleted = true,
+                            r.deletedAtTimestamp = $now,
+                            r.deleteSource = $source,
+                            r.deleteBatchId = $batch_id,
+                            r.deletedByUserId = $user_id)
+                    RETURN [r IN roots | r.id] AS root_keys,
+                           [r IN vertices | {{id: r.id, name: r.recordName, vrid: r.virtualRecordId, orgId: r.orgId}}]
+                               AS marked
                     """,
                     parameters={
-                        "keys": keys[start:start + SOFT_DELETE_CHUNK],
-                        "now": now,
+                        "root_ids": root_keys,
+                        "connector_id": connector_id,
+                        "folder_id": within_folder_id,
+                        "follow": list(follow),
+                        "now": get_epoch_timestamp_in_ms(),
                         "source": delete_source,
                         "batch_id": batch_id,
                         "user_id": deleted_by_user_id,
                     },
                     txn_id=txn_id,
-                ) or []
+                )
+                found = rows[0] if rows else found
             if transaction is None:
                 await self.commit_transaction(txn_id)
         except Exception as e:
@@ -11588,7 +11592,7 @@ class Neo4jProvider(IGraphDBProvider):
                 await self.rollback_transaction(txn_id)
             self.logger.error("❌ Failed to move records to the trash: %s", e)
             raise
-        return soft_delete_result(record_ids, found.get("root_keys") or [], marked, batch_id)
+        return soft_delete_result(record_ids, found.get("root_keys") or [], found.get("marked") or [], batch_id)
 
     async def delete_single_record(
         self,
