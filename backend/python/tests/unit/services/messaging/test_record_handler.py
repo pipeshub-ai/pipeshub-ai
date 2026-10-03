@@ -2758,6 +2758,87 @@ class TestReconcilePromotedDuplicates:
         assert handler._reconcile_promoted_duplicates.await_count == expected_calls
 
     @pytest.mark.asyncio
+    async def test_a_sibling_that_attached_early_gets_the_final_extraction_status(self):
+        """It copied the status this record had before its extraction finished,
+        and ran none of its own."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_records_by_virtual_record_id = AsyncMock(
+            return_value=["r1", "early", "own", "attaching"]
+        )
+        gp.copy_document_relationships = AsyncMock(return_value=True)
+        gp.update_node = AsyncMock(return_value=True)
+        docs = {
+            "r1": {"_key": "r1", "orgId": "org-1", "extractionStatus": "COMPLETED"},
+            "early": {"_key": "early", "orgId": "org-1", "indexingStatus": "COMPLETED",
+                      "extractionStatus": "NOT_STARTED"},
+            "own": {"_key": "own", "orgId": "org-1", "indexingStatus": "COMPLETED",
+                    "extractionStatus": "FAILED"},
+            # Holds the VRID but has not finished attaching: its own attach
+            # writes its status.
+            "attaching": {"_key": "attaching", "orgId": "org-1", "indexingStatus": "IN_PROGRESS",
+                          "extractionStatus": "NOT_STARTED"},
+        }
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll: docs[key])
+        handler.event_processor.sync_vector_membership = AsyncMock()
+
+        with patch(
+            "app.services.messaging.kafka.handlers.record.get_epoch_timestamp_in_ms",
+            return_value=500,
+        ):
+            assert await handler._reconcile_promoted_duplicates("r1", "vr1") is True
+
+        gp.update_node.assert_awaited_once_with(
+            "early", CollectionNames.RECORDS.value,
+            {"extractionStatus": "COMPLETED", "lastExtractionTimestamp": 500},
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", [
+        {"extractionStatus": "NOT_STARTED"},
+        {"extractionStatus": "IN_PROGRESS"},
+        {"extractionStatus": None},
+        # Re-indexed: the status is the previous run's, older than the vectors.
+        {"extractionStatus": "COMPLETED", "lastIndexTimestamp": 200, "lastExtractionTimestamp": 100},
+    ], ids=["not-started", "in-progress", "missing", "reindexed-stale-status"])
+    async def test_extraction_status_is_left_alone_until_this_record_has_one(
+        self, source
+    ):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=["r1", "early"])
+        gp.copy_document_relationships = AsyncMock(return_value=True)
+        gp.update_node = AsyncMock(return_value=True)
+        docs = {
+            "r1": {"_key": "r1", "orgId": "org-1", **source},
+            "early": {"_key": "early", "orgId": "org-1", "indexingStatus": "COMPLETED",
+                      "extractionStatus": "NOT_STARTED"},
+        }
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll: docs[key])
+        handler.event_processor.sync_vector_membership = AsyncMock()
+
+        await handler._reconcile_promoted_duplicates("r1", "vr1")
+
+        gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_extraction_status_write_keeps_the_reconcile_pending(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=["r1", "early"])
+        gp.copy_document_relationships = AsyncMock(return_value=True)
+        gp.update_node = AsyncMock(return_value=False)
+        docs = {
+            "r1": {"_key": "r1", "orgId": "org-1", "extractionStatus": "COMPLETED"},
+            "early": {"_key": "early", "orgId": "org-1", "indexingStatus": "COMPLETED",
+                      "extractionStatus": "NOT_STARTED"},
+        }
+        gp.get_document = AsyncMock(side_effect=lambda key, _coll: docs[key])
+        handler.event_processor.sync_vector_membership = AsyncMock()
+
+        assert await handler._reconcile_promoted_duplicates("r1", "vr1") is False
+
+    @pytest.mark.asyncio
     async def test_no_siblings_besides_self_is_noop(self):
         handler = _make_handler()
         gp = handler.event_processor.graph_provider

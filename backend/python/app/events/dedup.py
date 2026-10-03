@@ -23,6 +23,36 @@ from typing import Any
 
 from app.config.constants.arangodb import ProgressStatus
 
+# What a COMPLETED record's extractionStatus reads while its extraction has not
+# produced taxonomy edges yet, and what it reads once it has.
+EXTRACTION_NOT_FINISHED = (
+    None,
+    ProgressStatus.NOT_STARTED.value,
+    ProgressStatus.IN_PROGRESS.value,
+)
+EXTRACTION_FINISHED = (
+    ProgressStatus.COMPLETED.value,
+    ProgressStatus.FAILED.value,
+)
+
+
+def extraction_finished(record: Mapping[str, Any]) -> bool:
+    """Whether a COMPLETED record's taxonomy edges are final.
+
+    The status alone is not enough: a re-index keeps the previous run's
+    extractionStatus until the new extraction ends, so a re-indexed record
+    reads finished for the whole of it. Indexing stamps lastIndexTimestamp
+    when the vectors land and extraction stamps lastExtractionTimestamp when
+    the edges do, so an extraction older than the index is the previous one.
+    """
+    if record.get("extractionStatus") not in EXTRACTION_FINISHED:
+        return False
+    indexed = record.get("lastIndexTimestamp")
+    extracted = record.get("lastExtractionTimestamp")
+    if isinstance(indexed, (int, float)) and isinstance(extracted, (int, float)):
+        return extracted >= indexed
+    return True
+
 
 @dataclass(frozen=True)
 class DedupDecision:
@@ -60,6 +90,29 @@ def _is_processed(record: Mapping[str, Any]) -> bool:
         # reusing it means this record is empty too, not that it was indexed.
         return True
     return bool(record.get("virtualRecordId")) and status == ProgressStatus.COMPLETED.value
+
+
+def _is_settled(record: Mapping[str, Any]) -> bool:
+    """Processed, and its taxonomy edges exist: nothing left to wait for."""
+    if not _is_processed(record):
+        return False
+    return record.get("indexingStatus") == ProgressStatus.EMPTY.value or (
+        extraction_finished(record)
+        and record.get("extractionStatus") == ProgressStatus.COMPLETED.value
+    )
+
+
+def _is_processed_and_not_failed(record: Mapping[str, Any]) -> bool:
+    """Processed, and not settled on a failed extraction.
+
+    A record still extracting may yet produce the edges a failed one never
+    will, so it is the better twin: attaching to it flags it, and its
+    reconcile brings them over when it finishes.
+    """
+    return _is_processed(record) and not (
+        extraction_finished(record)
+        and record.get("extractionStatus") == ProgressStatus.FAILED.value
+    )
 
 
 def _is_in_progress(record: Mapping[str, Any]) -> bool:
@@ -111,9 +164,17 @@ def select_duplicate(
         target.append(record)
 
     for pool, same_collection in ((same, True), (other, False)):
-        for predicate, is_processed in ((_is_processed, True), (_is_in_progress, False)):
+        for predicate, is_processed in (
+            (_is_settled, True),
+            (_is_processed_and_not_failed, True),
+            (_is_processed, True),
+            (_is_in_progress, False),
+        ):
             # Within a pool, finished beats in-flight; across pools, same
             # collection beats other. Hence pool first, status second.
+            # Among finished ones, a record whose extraction succeeded comes
+            # first, then one still extracting, and a failed extraction last:
+            # its vectors are still worth reusing, its edges are not coming.
             match = next((r for r in pool if predicate(r)), None)
             if match is not None:
                 return DuplicateMatch(

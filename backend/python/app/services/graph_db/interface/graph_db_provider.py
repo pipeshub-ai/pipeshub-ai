@@ -2990,9 +2990,14 @@ class IGraphDBProvider(ABC):
         record_type: str | None = None,
         size_in_bytes: int | None = None,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Find duplicate records based on MD5 checksum, scoped to a single org.
+
+        Returns [] on a failed read unless ``raise_on_error``, for a caller
+        that must tell "no duplicates" from "could not tell".
 
         Deliberately does NOT filter by connector: dedup decisions need to see
         duplicates from *other* connectors too, so the caller can decide whether

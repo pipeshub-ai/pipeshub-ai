@@ -6,7 +6,7 @@ import logging
 import math
 import multiprocessing
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
@@ -32,10 +32,19 @@ from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.transformers.pipeline import IndexingPipeline
-from app.events.dedup import DedupDecision, select_duplicate
+from app.events.dedup import (
+    EXTRACTION_FINISHED,
+    DedupDecision,
+    DuplicateMatch,
+    extraction_finished,
+    select_duplicate,
+)
 from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.interface.graph_db_provider import (
+    DUPLICATE_RECONCILE_PENDING_FIELD,
+    IGraphDBProvider,
+)
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -535,6 +544,10 @@ class EventProcessor:
                     record_doc,
                     {
                         "extractionStatus": ProgressStatus.FAILED.value,
+                        # Stamped like every other end of an extraction, so
+                        # duplicate dedup can tell this run's result from a
+                        # previous run's (see dedup.extraction_finished).
+                        "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
                         "reason": ENRICHMENT_FAILED,
                     },
                 )
@@ -677,6 +690,8 @@ class EventProcessor:
         md5_checksum: str,
         record_type: str | None,
         size_in_bytes: int | None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         # Dedup must never cross org boundaries — two orgs holding
         # byte-identical content are not duplicates of each other.
@@ -690,12 +705,16 @@ class EventProcessor:
                 "Record %s has no orgId; MD5 dedup will match nothing",
                 _record_key(doc),
             )
+        # Passed only when asked for, so a provider double without the
+        # parameter keeps working for the callers that do not use it.
+        options = {"raise_on_error": True} if raise_on_error else {}
         return await self.graph_provider.find_duplicate_records(
             record_key=_record_key(doc),
             md5_checksum=md5_checksum,
             org_id=org_id,
             record_type=record_type,
             size_in_bytes=size_in_bytes,
+            **options,
         )
 
     def _resolve_write_collection(self, record_doc: dict[str, Any]) -> str | None:
@@ -795,14 +814,18 @@ class EventProcessor:
 
         if not md5_checksum:
             return DedupDecision(virtual_record_id=None, skip_indexing=False)
-        duplicate_records = await self._find_duplicate_records(
-            doc=doc,
-            md5_checksum=md5_checksum,
-            record_type=record_type,
-            size_in_bytes=size_in_bytes,
-        )
 
-        duplicate_records = [r for r in duplicate_records if r is not None]
+        async def _find_duplicates(*, raise_on_error: bool = False) -> list[dict]:
+            found = await self._find_duplicate_records(
+                doc=doc,
+                md5_checksum=md5_checksum,
+                record_type=record_type,
+                size_in_bytes=size_in_bytes,
+                raise_on_error=raise_on_error,
+            )
+            return [r for r in found if r is not None]
+
+        duplicate_records = await _find_duplicates()
 
         if not duplicate_records:
             self.logger.debug(
@@ -821,101 +844,9 @@ class EventProcessor:
             )
             return DedupDecision()
 
-        attached_vrid = match.record.get("virtualRecordId")
-
-        if (
-            match.is_processed
-            and attached_vrid
-            and match.record.get("indexingStatus") == ProgressStatus.COMPLETED.value
-            and not await self._vrid_has_stored_content(doc.get("orgId") or "", attached_vrid)
-        ):
-            # The twin's stored content is gone (e.g. deleted with the connector
-            # that indexed it first). Reusing its VRID would leave this record
-            # unreadable, and every re-index would skip against the same twin.
-            # Indexing instead rewrites the content and re-points the mapping,
-            # which heals every record sharing that VRID.
-            self.logger.warning(
-                "Duplicate %s has no stored content for VRID %s; indexing %s instead of reusing it",
-                _record_key(match.record), attached_vrid, _record_key(doc),
-            )
-            return DedupDecision(
-                rebuild_shared_vrid=doc.get("virtualRecordId") == attached_vrid
-            )
-
         if match.is_processed:
-            if match.same_collection:
-                # The vectors this record needs already exist. Take the
-                # duplicate's state wholesale and skip indexing.
-                duplicate_fields = {
-                    "isDirty": False,
-                    "summaryDocumentId": match.record.get("summaryDocumentId"),
-                    "virtualRecordId": attached_vrid,
-                    "indexingStatus": match.record.get("indexingStatus"),
-                    "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
-                    # EMPTY duplicates never ran extraction, so this can be
-                    # missing/None on the source record — don't propagate None.
-                    "extractionStatus": (
-                        match.record.get("extractionStatus")
-                        or ProgressStatus.NOT_STARTED.value
-                    ),
-                    "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
-                }
-            elif attached_vrid:
-                # Same content, different collection: reuse the content
-                # identity (and with it the stored blob), but leave
-                # indexingStatus alone so this record still gets vectors of its
-                # own in its own collection.
-                duplicate_fields = {"virtualRecordId": attached_vrid}
-            else:
-                # A finished duplicate with no virtualRecordId has no content
-                # identity to lend. Writing the None would blank whatever this
-                # record already had.
-                duplicate_fields = {}
-
-            if duplicate_fields:
-                self._require_persisted(
-                    await self.update_record_fields(doc, duplicate_fields),
-                    "Failed to persist duplicate record fields",
-                    doc,
-                )
-
-            # Copy all relationships from the duplicate to this document
-            self._require_persisted(
-                await self.graph_provider.copy_document_relationships(
-                    _record_key(match.record),
-                    _record_key(doc),
-                ),
-                "Failed to copy duplicate record relationships",
-                doc,
-            )
-            if attached_vrid and match.same_collection:
-                await self.sync_vector_membership(attached_vrid)
-            if match.same_collection and self.sink_orchestrator is not None:
-                # The copy above only touched the graph — this record still
-                # has no `record`/`record_group` point, and the taxonomy
-                # points it now shares carry only the other record's
-                # connectorId/recordGroupId. Different-collection duplicates
-                # skip this: they continue to full indexing and get entity
-                # sync from SinkOrchestrator.index()/enrich() there instead.
-                # sync_entities_for_duplicate is already best-effort
-                # internally; caught again here so a mock/mis-wired sink in
-                # a caller can never turn dedup's own bookkeeping into a
-                # failed event.
-                try:
-                    await self.sink_orchestrator.sync_entities_for_duplicate(doc)
-                except Exception as exc:
-                    self.logger.warning(
-                        "Entity vector sync failed for duplicate %s (non-fatal): %s",
-                        _record_key(doc),
-                        exc,
-                    )
-            self.logger.debug(
-                "✅ Duplicate record %s resolved (same_collection=%s)",
-                _record_key(match.record),
-                match.same_collection,
-            )
-            return DedupDecision(
-                virtual_record_id=attached_vrid, skip_indexing=match.same_collection
+            return await self._resolve_processed_duplicate(
+                match, doc, duplicate_records, _find_duplicates
             )
 
         if not match.same_collection:
@@ -936,7 +867,286 @@ class EventProcessor:
             "Failed to persist QUEUED status for duplicate record",
             doc,
         )
+
+        # The twin promotes what it finds QUEUED only after writing its own
+        # COMPLETED. Had it finished between the read above and the write just
+        # made, it found nothing, and nothing would ever promote this record:
+        # the stranded sweep never looks at an upload. Reading again after our
+        # write means one side always sees the other. A failed read raises:
+        # taken as "no duplicates", it would send this record off to index the
+        # same content alongside a twin that is still doing so.
+        recheck = await _find_duplicates(raise_on_error=True)
+        rematch = select_duplicate(
+            recheck, current_collection, self._resolve_write_collection
+        )
+        if rematch is not None and rematch.is_processed:
+            self.logger.info(
+                "Duplicate record %s finished while %s was being parked; attaching now",
+                _record_key(rematch.record),
+                _record_key(doc),
+            )
+            return await self._resolve_processed_duplicate(
+                rematch, doc, recheck, _find_duplicates
+            )
+        if rematch is None or not rematch.same_collection:
+            # Nothing left to wait on in this collection (the twin failed or
+            # went away), so this record indexes itself.
+            self.logger.info(
+                "No duplicate of %s is in flight any more; indexing it", _record_key(doc)
+            )
+            return DedupDecision()
         return DedupDecision(skip_indexing=True)
+
+    async def _resolve_processed_duplicate(
+        self,
+        match: DuplicateMatch,
+        doc: dict[str, Any],
+        duplicates: list[dict],
+        find_duplicates: Callable[..., Awaitable[list[dict]]],
+    ) -> DedupDecision:
+        twin = match.record
+        attached_vrid = twin.get("virtualRecordId")
+
+        if (
+            attached_vrid
+            and twin.get("indexingStatus") == ProgressStatus.COMPLETED.value
+            and not await self._vrid_has_stored_content(doc.get("orgId") or "", attached_vrid)
+        ):
+            # The twin's stored content is gone (e.g. deleted with the connector
+            # that indexed it first). Reusing its VRID would leave this record
+            # unreadable, and every re-index would skip against the same twin.
+            # Indexing instead rewrites the content and re-points the mapping,
+            # which heals every record sharing that VRID.
+            self.logger.warning(
+                "Duplicate %s has no stored content for VRID %s; indexing %s instead of reusing it",
+                _record_key(twin), attached_vrid, _record_key(doc),
+            )
+            return DedupDecision(
+                rebuild_shared_vrid=doc.get("virtualRecordId") == attached_vrid
+            )
+
+        if match.same_collection:
+            # The vectors this record needs already exist.
+            await self._attach_to_processed_twin(twin, doc, duplicates, find_duplicates)
+            if self.sink_orchestrator is not None:
+                # The copy only touched the graph — this record still has no
+                # `record`/`record_group` point, and the taxonomy points it now
+                # shares carry only the other record's connectorId/
+                # recordGroupId. Different-collection duplicates skip this:
+                # they continue to full indexing and get entity sync from
+                # SinkOrchestrator.index()/enrich() there instead.
+                # sync_entities_for_duplicate is already best-effort
+                # internally; caught again here so a mock/mis-wired sink in
+                # a caller can never turn dedup's own bookkeeping into a
+                # failed event.
+                try:
+                    await self.sink_orchestrator.sync_entities_for_duplicate(doc)
+                except Exception as exc:
+                    self.logger.warning(
+                        "Entity vector sync failed for duplicate %s (non-fatal): %s",
+                        _record_key(doc),
+                        exc,
+                    )
+        else:
+            if attached_vrid:
+                # Same content, different collection: reuse the content
+                # identity (and with it the stored blob), but leave
+                # indexingStatus alone so this record still gets vectors of its
+                # own in its own collection. A twin with no virtualRecordId has
+                # no identity to lend, and writing its None would blank ours.
+                self._require_persisted(
+                    await self.update_record_fields(doc, {"virtualRecordId": attached_vrid}),
+                    "Failed to persist duplicate record fields",
+                    doc,
+                )
+            await self._copy_twin_edges(twin, doc)
+
+        self.logger.debug(
+            "✅ Duplicate record %s resolved (same_collection=%s)",
+            _record_key(twin),
+            match.same_collection,
+        )
+        return DedupDecision(
+            virtual_record_id=attached_vrid, skip_indexing=match.same_collection
+        )
+
+    async def _copy_twin_edges(self, twin: dict[str, Any], doc: dict[str, Any]) -> None:
+        self._require_persisted(
+            await self.graph_provider.copy_document_relationships(
+                _record_key(twin),
+                _record_key(doc),
+            ),
+            "Failed to copy duplicate record relationships",
+            doc,
+        )
+
+    @staticmethod
+    def _still_extracting(record: dict[str, Any], vrid: str | None) -> bool:
+        """A COMPLETED record on this VRID whose taxonomy edges are not final yet."""
+        return (
+            bool(vrid)
+            and record.get("virtualRecordId") == vrid
+            and record.get("indexingStatus") == ProgressStatus.COMPLETED.value
+            and not extraction_finished(record)
+        )
+
+    async def _attach_to_processed_twin(
+        self,
+        twin: dict[str, Any],
+        doc: dict[str, Any],
+        duplicates: list[dict],
+        find_duplicates: Callable[..., Awaitable[list[dict]]],
+    ) -> None:
+        """Make ``doc`` a copy of a finished twin in the same collection.
+
+        Status is written last. The handler drops a redelivered event for a
+        COMPLETED record, so flipping it first turned any failure in the edge
+        copy or the membership sync into a permanent one: the record claimed
+        to be indexed while its connectorId was missing from the VRID's points.
+        """
+        target_key = _record_key(doc)
+        vrid = twin.get("virtualRecordId")
+        prior_identity = {
+            "virtualRecordId": doc.get("virtualRecordId"),
+            "summaryDocumentId": doc.get("summaryDocumentId"),
+        }
+        completion = {
+            "isDirty": False,
+            "indexingStatus": twin.get("indexingStatus"),
+            "processingStartedAt": None,
+            "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
+            # EMPTY duplicates never ran extraction, so this can be
+            # missing/None on the source record — don't propagate None.
+            "extractionStatus": (
+                twin.get("extractionStatus") or ProgressStatus.NOT_STARTED.value
+            ),
+            "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
+        }
+
+        # A QUEUED record with this md5 is what a finishing twin promotes. Left
+        # QUEUED for the length of the attach, this one could be promoted to
+        # COMPLETED underneath it, and a failure afterwards would then undo the
+        # identity of a record nothing retries. IN_PROGRESS takes it out of
+        # the promotion's reach; a failed attempt is put back to QUEUED by the
+        # handler, as for any record.
+        await self.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
+
+        # A twin reads COMPLETED from the moment its vectors land, seconds
+        # before its extraction writes the taxonomy edges. Attaching in between
+        # copies no edges, and a record's own reconcile only runs for copies it
+        # promoted. The pending flag asks for that reconcile when it finishes.
+        # Any record on the VRID may be the one extracting — the twin chosen
+        # here can itself be a copy that attached a moment ago — so each is
+        # flagged; only the one whose event is running will ever read it.
+        twin_still_extracting = self._still_extracting(twin, vrid)
+        if twin_still_extracting:
+            if completion["extractionStatus"] in EXTRACTION_FINISHED:
+                # A re-indexed twin still shows its previous run's result. Not
+                # this record's to claim: the reconcile sets the real one.
+                completion["extractionStatus"] = ProgressStatus.NOT_STARTED.value
+            for other in duplicates:
+                if not self._still_extracting(other, vrid) or other.get(DUPLICATE_RECONCILE_PENDING_FIELD):
+                    continue
+                self._require_persisted(
+                    await self.graph_provider.update_node(
+                        _record_key(other),
+                        CollectionNames.RECORDS.value,
+                        {DUPLICATE_RECONCILE_PENDING_FIELD: True},
+                    ),
+                    "Failed to flag duplicate's twin for reconciliation",
+                    doc,
+                )
+            self.logger.info(
+                "Duplicate %s is attaching to %s before its extraction has finished; "
+                "flagged for reconciliation",
+                target_key, _record_key(twin),
+            )
+
+        await self._copy_twin_edges(twin, doc)
+        self._require_persisted(
+            await self.update_record_fields(
+                doc,
+                {
+                    "virtualRecordId": vrid,
+                    "summaryDocumentId": twin.get("summaryDocumentId"),
+                },
+            ),
+            "Failed to persist duplicate record fields",
+            doc,
+        )
+        synced = False
+        try:
+            if vrid:
+                await self.sync_vector_membership(vrid)
+                synced = True
+            if twin_still_extracting:
+                # The extracting record may have finished, and read its flag,
+                # before the flag was written. Then its edges exist by now:
+                # take them here, from whichever record on the VRID has them.
+                # A successful extraction first: a failed one has no edges to
+                # give, and another record may still be producing them.
+                finished = min(
+                    (
+                        r for r in await find_duplicates(raise_on_error=True)
+                        if r.get("virtualRecordId") == vrid
+                        and r.get("indexingStatus") == ProgressStatus.COMPLETED.value
+                        and extraction_finished(r)
+                    ),
+                    key=lambda r: r.get("extractionStatus") != ProgressStatus.COMPLETED.value,
+                    default=None,
+                )
+                if finished is not None:
+                    await self._copy_twin_edges(finished, doc)
+                    completion["extractionStatus"] = finished["extractionStatus"]
+                    self.logger.info(
+                        "Duplicate %s took its edges from %s, which finished extracting meanwhile",
+                        target_key, _record_key(finished),
+                    )
+            self._require_persisted(
+                await self.update_record_fields(doc, completion),
+                "Failed to persist duplicate record fields",
+                doc,
+            )
+        except (Exception, asyncio.CancelledError):
+            # Left holding the twin's VRID after a failure, the record would
+            # keep its connectorId on that VRID's points, and a later reindex
+            # of it would overwrite the twin's vectors.
+            await self._restore_identity_after_failed_attach(
+                target_key, prior_identity, vrid if synced else None
+            )
+            raise
+
+    async def _restore_identity_after_failed_attach(
+        self,
+        record_key: str,
+        prior_identity: dict[str, Any],
+        synced_vrid: str | None,
+    ) -> None:
+        """Best effort: the event is already failing, and its retry redoes the attach."""
+        try:
+            current = await self.graph_provider.get_document(
+                record_key, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            if (current or {}).get("indexingStatus") in (
+                ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value,
+            ):
+                # The status write landed and only its answer was lost. The
+                # attach is complete; taking its identity away now would leave
+                # a finished record with no VRID and nothing to retry it.
+                return
+            if not await self.graph_provider.update_node(
+                record_key, CollectionNames.RECORDS.value, prior_identity
+            ):
+                raise IndexingError("record no longer exists")
+            if synced_vrid:
+                await self.sync_vector_membership(synced_vrid)
+        except Exception as e:
+            self.logger.error(
+                "Could not restore the previous content identity of %s after a failed "
+                "duplicate attach; it may still hold its twin's VRID until its retry: %s",
+                record_key,
+                e,
+            )
 
     async def on_event(self, event_data: dict[str, Any]) -> AsyncGenerator[dict[str, Any], None]:
         """

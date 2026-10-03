@@ -4327,6 +4327,8 @@ class Neo4jProvider(IGraphDBProvider):
         record_type: str | None = None,
         size_in_bytes: int | None = None,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Find duplicate records based on MD5 checksum, scoped to a single org.
@@ -4399,6 +4401,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Error finding duplicate records: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def find_next_queued_duplicate(
@@ -4636,7 +4640,12 @@ class Neo4jProvider(IGraphDBProvider):
                 # Map indexing status to extraction status
                 # For EMPTY status, extraction status should also be EMPTY, not FAILED
                 if new_indexing_status == ProgressStatus.COMPLETED.value:
-                    extraction_status = ProgressStatus.COMPLETED.value
+                    # The promoted copy ran no extraction of its own, so the
+                    # reference record's result is its result, failed or
+                    # deferred included.
+                    extraction_status = (
+                        ref_record.get("extractionStatus") or ProgressStatus.NOT_STARTED.value
+                    )
                 elif new_indexing_status == ProgressStatus.EMPTY.value:
                     extraction_status = ProgressStatus.EMPTY.value
                 else:
@@ -4649,6 +4658,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "isDirty": False,
                     "virtualRecordId": virtual_record_id,
                     "extractionStatus": extraction_status,
+                    "lastExtractionTimestamp": current_timestamp,
                 }
                 if reason:
                     update_doc["reason"] = reason

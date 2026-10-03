@@ -17,7 +17,12 @@ content into one collection at once.
 import pytest
 
 from app.config.constants.arangodb import ProgressStatus
-from app.events.dedup import DedupDecision, DuplicateMatch, select_duplicate
+from app.events.dedup import (
+    DedupDecision,
+    DuplicateMatch,
+    extraction_finished,
+    select_duplicate,
+)
 
 DRIVE = "drive_records"
 SLACK = "slack_records"
@@ -124,6 +129,62 @@ class TestWhatCountsAsUsable:
     def test_none_entries_are_skipped(self):
         match = _select([None, _rec("same-done", COMPLETED, DRIVE)])
         assert match.record["_key"] == "same-done"
+
+
+class TestExtractionFinished:
+    """A COMPLETED record's taxonomy edges exist only once its extraction ends."""
+
+    @pytest.mark.parametrize("record, finished", [
+        ({"extractionStatus": "COMPLETED"}, True),
+        ({"extractionStatus": "FAILED"}, True),
+        ({"extractionStatus": "NOT_STARTED"}, False),
+        ({"extractionStatus": "IN_PROGRESS"}, False),
+        ({}, False),
+        ({"extractionStatus": "COMPLETED", "lastIndexTimestamp": 100, "lastExtractionTimestamp": 100}, True),
+        ({"extractionStatus": "COMPLETED", "lastIndexTimestamp": 100, "lastExtractionTimestamp": 150}, True),
+        # Re-indexed: the status is the previous run's until the new extraction ends.
+        ({"extractionStatus": "COMPLETED", "lastIndexTimestamp": 200, "lastExtractionTimestamp": 100}, False),
+        ({"extractionStatus": "FAILED", "lastIndexTimestamp": 200, "lastExtractionTimestamp": 100}, False),
+    ])
+    def test_status_and_timestamps(self, record, finished):
+        assert extraction_finished(record) is finished
+
+
+class TestSettledTwinPreferred:
+    """A copy that attached a moment ago is a finished duplicate too, but its
+    edges only arrive when the record it copied finishes extracting. Picked as
+    the twin, it has none to lend."""
+
+    def test_a_record_with_finished_extraction_beats_one_still_waiting(self):
+        waiting = {**_rec("waiting-copy", COMPLETED, DRIVE), "extractionStatus": "NOT_STARTED"}
+        settled = {**_rec("primary", COMPLETED, DRIVE), "extractionStatus": "COMPLETED"}
+        assert _select([waiting, settled]).record["_key"] == "primary"
+        assert _select([settled, waiting]).record["_key"] == "primary"
+
+    def test_a_waiting_record_is_still_usable_when_nothing_is_settled(self):
+        waiting = {**_rec("waiting-copy", COMPLETED, DRIVE), "extractionStatus": "NOT_STARTED"}
+        match = _select([_rec("inflight", IN_PROGRESS, DRIVE), waiting])
+        assert match.record["_key"] == "waiting-copy" and match.is_processed
+
+    def test_a_failed_extraction_comes_after_one_still_running(self):
+        """The running one may yet produce edges; the failed one never will.
+        Attaching to the running one flags it, so its edges arrive later."""
+        failed = {**_rec("failed", COMPLETED, DRIVE), "extractionStatus": "FAILED"}
+        running = {**_rec("running", COMPLETED, DRIVE), "extractionStatus": "NOT_STARTED"}
+        done = {**_rec("done", COMPLETED, DRIVE), "extractionStatus": "COMPLETED"}
+        assert _select([failed, running]).record["_key"] == "running"
+        assert _select([failed, running, done]).record["_key"] == "done"
+
+    def test_a_failed_extraction_is_still_reused_when_nothing_better_exists(self):
+        """Its vectors are fine: indexing the same content again would only
+        fail the same classification."""
+        failed = {**_rec("failed", COMPLETED, DRIVE), "extractionStatus": "FAILED"}
+        match = _select([_rec("inflight", IN_PROGRESS, DRIVE), failed])
+        assert match.record["_key"] == "failed" and match.is_processed
+
+    def test_an_empty_record_counts_as_settled(self):
+        waiting = {**_rec("waiting-copy", COMPLETED, DRIVE), "extractionStatus": "NOT_STARTED"}
+        assert _select([waiting, _rec("empty", EMPTY, DRIVE, vrid=None)]).record["_key"] == "empty"
 
 
 class TestUnresolvableCollections:
