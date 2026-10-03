@@ -15,9 +15,7 @@ import { domainFromEmail } from '../../../libs/services/telemetry/identity';
 import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics';
 import { PAT_APP_CLIENT_ID_PREFIX } from '../../oauth_provider/constants/constants';
 
-const logger = Logger.getInstance({
-  service: 'MCPController',
-});
+
 
 // ESM-only modules — imported eagerly at module load, Node caches the result
 const mcpServerModule = import('@pipeshub-ai/mcp/esm/mcp-server/server.js');
@@ -99,7 +97,6 @@ function recordActivityFromProps(
 /**
  * Handle an MCP JSON-RPC request (initialize, tool calls, SSE, session termination).
  * Creates a stateless MCP server per request, connected to the PipeshubCore SDK
- * using the caller's bearer token.
  */
 export const handleMCPRequest =
   (appConfig: AppConfig) =>
@@ -108,7 +105,15 @@ export const handleMCPRequest =
     res: Response,
     next: NextFunction,
   ): Promise<void> => {
+    const logger = Logger.getInstance({
+      service: 'MCPController',
+    });
     try {
+      const pipeshubRequestId = req.headers['x-pipeshub-request-id'];
+      if (pipeshubRequestId) {
+        logger.info('Incoming MCP request', { 'x-pipeshub-request-id': pipeshubRequestId });
+      }
+
       // Extract the raw Bearer token from the Authorization header for the MCP SDK
       const token = req.headers.authorization?.replace('Bearer ', '') || '';
       const serverURL = `${appConfig.oauthBackendUrl}/api/v1`;

@@ -99,15 +99,15 @@ class TestVerifyRequestIntegration:
     @pytest.mark.asyncio
     async def test_failure_missing_both_headers(self):
         verifier, logger = _make_verifier()
-        request = _make_request(headers={}, client_ip="1.2.3.4")
+        request = _make_request(headers={}, client_ip="74.125.0.1")
         result = await verifier.verify_request(request)
         assert result is False
         # Should have warnings for both invalid signature and verify_request
         assert logger.warning.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_success_with_non_google_ip(self):
-        """IP check is commented out, so non-Google IPs should succeed."""
+    async def test_failure_with_non_google_ip(self):
+        """Non-Google IPs should be rejected by the IP restriction."""
         verifier, logger = _make_verifier()
         request = _make_request(
             headers={
@@ -117,7 +117,7 @@ class TestVerifyRequestIntegration:
             client_ip="192.168.1.1",
         )
         result = await verifier.verify_request(request)
-        assert result is True
+        assert result is False
 
 
 # ===================================================================

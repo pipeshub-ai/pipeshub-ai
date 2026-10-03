@@ -30,10 +30,10 @@ class WebhookAuthVerifier:
         """Combined IP and signature check"""
         client_ip = request.client.host
 
-        # Uncomment this to enable IP restriction
-        # if not self._is_google_ip(client_ip):
-        #     self.logger.warning(f"Unauthorized IP attempt from: {client_ip}")
-        #     return False
+        # IP restriction ensures request comes from Google
+        if not self._is_google_ip(client_ip):
+            self.logger.warning(f"Unauthorized IP attempt from: {client_ip}")
+            return False
 
         if not await self._verify_signature(request):
             self.logger.warning("Invalid signature in request from %s", client_ip)
@@ -76,7 +76,8 @@ class WebhookAuthVerifier:
                 )
                 return False
 
-            # TODO: Add actual signature validation here
+            # Google Drive webhooks do not use HMAC signatures. Security is enforced via
+            # IP whitelisting in `verify_request()` and presence of channel/resource IDs.
             return True
 
         except (InvalidSignature, ValueError, TypeError) as e:
