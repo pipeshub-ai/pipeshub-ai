@@ -17327,7 +17327,7 @@ class Neo4jProvider(IGraphDBProvider):
                 reason: record.reason,
                 createdAt: coalesce(record.createdAtTimestamp, 0),
                 updatedAt: coalesce(record.updatedAtTimestamp, 0),
-                sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
+                sizeInBytes: coalesce(record.sizeInBytes, file_info.sizeInBytes),
                 mimeType: record.mimeType,
                 extension: file_info.extension,
                 webUrl: record.webUrl,
@@ -17464,7 +17464,7 @@ class Neo4jProvider(IGraphDBProvider):
                 reason: orphan_record.reason,
                 createdAt: coalesce(orphan_record.sourceCreatedAtTimestamp, orphan_record.createdAtTimestamp, 0),
                 updatedAt: coalesce(orphan_record.sourceLastModifiedTimestamp, orphan_record.updatedAtTimestamp, 0),
-                sizeInBytes: coalesce(orphan_record.sizeInBytes, file_info.fileSizeInBytes),
+                sizeInBytes: coalesce(orphan_record.sizeInBytes, file_info.sizeInBytes),
                 mimeType: orphan_record.mimeType,
                 extension: file_info.extension,
                 webUrl: orphan_record.webUrl,
@@ -17631,7 +17631,7 @@ class Neo4jProvider(IGraphDBProvider):
                 updatedAt: CASE WHEN record.connectorName = 'KB'
                     THEN coalesce(record.updatedAtTimestamp, 0)
                     ELSE coalesce(record.sourceLastModifiedTimestamp, record.updatedAtTimestamp, 0) END,
-                sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
+                sizeInBytes: coalesce(record.sizeInBytes, file_info.sizeInBytes),
                 mimeType: record.mimeType,
                 extension: file_info.extension,
                 webUrl: record.webUrl,
@@ -17796,7 +17796,7 @@ class Neo4jProvider(IGraphDBProvider):
                 updatedAt: CASE WHEN record.connectorName = 'KB'
                     THEN coalesce(record.updatedAtTimestamp, 0)
                     ELSE coalesce(record.sourceLastModifiedTimestamp, record.updatedAtTimestamp, 0) END,
-                sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
+                sizeInBytes: coalesce(record.sizeInBytes, file_info.sizeInBytes),
                 mimeType: record.mimeType,
                 extension: file_info.extension,
                 webUrl: record.webUrl,
@@ -17890,7 +17890,7 @@ class Neo4jProvider(IGraphDBProvider):
             updatedAt: CASE WHEN record.connectorName = 'KB'
                 THEN coalesce(record.updatedAtTimestamp, 0)
                 ELSE coalesce(record.sourceLastModifiedTimestamp, record.updatedAtTimestamp, 0) END,
-            sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
+            sizeInBytes: coalesce(record.sizeInBytes, file_info.sizeInBytes),
             mimeType: record.mimeType,
             extension: file_info.extension,
             webUrl: record.webUrl,

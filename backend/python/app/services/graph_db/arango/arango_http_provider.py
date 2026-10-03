@@ -15895,7 +15895,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if detect_folder:
             size_expr = (
                 "record.sizeInBytes != null ? record.sizeInBytes : "
-                "(file_info ? file_info.fileSizeInBytes : null)"
+                "(file_info ? file_info.sizeInBytes : null)"
             )
 
         return f"""
@@ -16018,7 +16018,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         updatedAt: (record_parent_app != null AND record_parent_app.type == "KB")
                             ? (record.updatedAtTimestamp != null ? record.updatedAtTimestamp : 0)
                             : (record.sourceLastModifiedTimestamp != null ? record.sourceLastModifiedTimestamp : (record.updatedAtTimestamp != null ? record.updatedAtTimestamp : 0)),
-                        sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : (file_info ? file_info.fileSizeInBytes : null),
+                        sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : (file_info ? file_info.sizeInBytes : null),
                         mimeType: record.mimeType,
                         extension: file_info ? file_info.extension : null,
                         webUrl: record.webUrl,
@@ -19115,7 +19115,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     reason: record.reason,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
-                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
+                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.sizeInBytes,
                     mimeType: record.mimeType,
                     extension: file_info.extension,
                     webUrl: record.webUrl,
@@ -19276,7 +19276,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     reason: record.reason,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
-                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
+                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.sizeInBytes,
                     mimeType: record.mimeType,
                     extension: file_info.extension,
                     webUrl: record.webUrl,
@@ -19381,7 +19381,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     reason: record.reason,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
-                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
+                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.sizeInBytes,
                     mimeType: record.mimeType,
                     extension: file_info.extension,
                     webUrl: record.webUrl,
@@ -19522,7 +19522,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     reason: record.reason,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
-                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
+                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.sizeInBytes,
                     mimeType: record.mimeType,
                     extension: file_info.extension,
                     webUrl: record.webUrl,
@@ -19616,7 +19616,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     reason: record.reason,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
-                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
+                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.sizeInBytes,
                     mimeType: record.mimeType,
                     extension: file_info.extension,
                     webUrl: record.webUrl,
