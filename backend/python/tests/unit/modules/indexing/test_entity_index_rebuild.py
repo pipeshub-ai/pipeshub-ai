@@ -143,8 +143,25 @@ class FakeStore:
         nxt = start + limit
         return page, (str(nxt) if nxt < len(self.points) else None)
 
+    def offset_after_delete(self, next_offset: str | None, deleted: int) -> str | None:
+        return next_offset
+
     def written(self) -> list:
         return [e for call in self.upserts for e in call["entities"]]
+
+
+class PositionalStore(FakeStore):
+    """Pages by result position and really deletes, as Redis does."""
+
+    async def delete_entities(self, org_id: str, entity_type: str, entity_ids: list[str]) -> None:
+        await super().delete_entities(org_id, entity_type, entity_ids)
+        gone = set(entity_ids)
+        self.points = [
+            p for p in self.points if not (p.entity_type == entity_type and p.entity_id in gone)
+        ]
+
+    def offset_after_delete(self, next_offset: str | None, deleted: int) -> str | None:
+        return None if next_offset is None else str(max(0, int(next_offset) - deleted))
 
 
 class FakeLock:
@@ -609,6 +626,17 @@ class TestSweep:
         assert [c[2] for c in store.page_calls] == [None, "2", "4"]
         assert org[EntityIndexState.SWEPT_AT] == NOW
         assert sorted(i for d in store.deletes for i in d[2]) == [f"t{i}" for i in range(5)]
+
+    async def test_deletes_do_not_make_a_positional_sweep_skip_points(self) -> None:
+        graph, store = FakeGraph(), PositionalStore()
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: MARKER})
+        graph.nodes[TOPICS] = {"t1": {"orgId": "org-1"}, "t4": {"orgId": "org-1"}}
+        store.points = [_point("topic", f"t{i}") for i in range(6)]
+        rebuilder = _rebuilder(graph, store, sweep_points_per_tick=2)
+        for _ in range(4):
+            await rebuilder.tick()
+        assert graph.docs[ORGS]["org-1"][EntityIndexState.SWEPT_AT] == NOW
+        assert sorted(p.entity_id for p in store.points) == ["t1", "t4"]
 
     async def test_lookup_failure_deletes_nothing_then_gives_up(self, caplog) -> None:
         graph, store = FakeGraph(), FakeStore()

@@ -723,6 +723,11 @@ class EntityVectorStore:
                 refs.append(EntityPointRef(meta["entityType"], meta["entityId"], meta.get("level")))
         return refs, page.next_offset
 
+    def offset_after_delete(self, next_offset: str | None, deleted: int) -> str | None:
+        """``next_offset`` from ``page_entity_points`` after ``deleted`` points
+        of that page were deleted (see ``IVectorDBService.scroll_offset_after_delete``)."""
+        return self.vector_db_service.scroll_offset_after_delete(next_offset, deleted)
+
     async def delete_entities_for_org(self, org_id: str) -> None:
         """Remove ALL entity vectors for an organisation (e.g. on org deletion)."""
         try:

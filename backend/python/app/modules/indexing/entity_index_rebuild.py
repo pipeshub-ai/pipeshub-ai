@@ -507,9 +507,16 @@ class EntityIndexRebuilder:
                     EntityIndexState.SWEEP_FAILURES: 0,
                 })
             raise
+        stale_keys = {(t, i) for t, ids in stale.items() for i in ids}
+        deleted = sum((r.entity_type, r.entity_id) in stale_keys for r in refs)
+        if next_offset is not None and deleted:
+            # On a positional cursor (Redis) the deleted points no longer hold
+            # their places, so the stored offset would skip that many.
+            next_offset = self.store.offset_after_delete(next_offset, deleted)
         self.logger.info(
-            "entity_index_rebuild: sweep chunk | org=%s offset=%s scanned=%d stale=%d done=%s",
-            org_id, offset, len(refs), sum(map(len, stale.values())), next_offset is None,
+            "entity_index_rebuild: sweep chunk | org=%s offset=%s scanned=%d stale=%d "
+            "next=%s done=%s",
+            org_id, offset, len(refs), deleted, next_offset, next_offset is None,
         )
         if next_offset is not None:
             await self.graph.update_node(org_id, _ORGS, {
