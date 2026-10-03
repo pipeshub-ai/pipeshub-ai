@@ -15,6 +15,7 @@ from app.modules.retrieval.entity_permissions import (
     search_entities_for_user,
 )
 from app.services.graph_db.common.utils import EntityCandidateRows
+from tests.unit.modules.retrieval.entity_access_fakes import permitted_records
 
 ORG = "org-1"
 
@@ -47,8 +48,9 @@ def _graph(rows: list[dict], *, capped: bool, permitted: set[str] | None = None)
             (ref["type"], ref["id"]): EntityCandidateRows(window, capped=capped) for ref in refs
         }
 
-    graph.get_entity_candidate_records = AsyncMock(side_effect=_candidates)
-    graph.filter_nodes_with_permission_role = AsyncMock(return_value=set(permitted or ()))
+    graph.get_permitted_entity_records = AsyncMock(
+        side_effect=permitted_records(_candidates, permitted=permitted or ()),
+    )
     return graph
 
 
@@ -88,24 +90,15 @@ class TestListingReportsTheCap:
         )
         assert page.capped is False
 
-    async def test_provider_returning_plain_lists_is_treated_as_uncapped(self) -> None:
-        graph = MagicMock()
-        graph.get_entity_candidate_records = AsyncMock(
-            return_value={("topic", "t1"): [_row("r1")]},
-        )
-        graph.filter_nodes_with_permission_role = AsyncMock(return_value=set())
-        page = await list_accessible_entity_records(
-            graph, _context(), entity_id="t1", entity_type="topic", limit=20,
-        )
-        assert page.capped is False
-
 
 class TestSearchPreviewReportsTheCap:
     async def test_capped_entity_says_more_records_even_when_its_window_is_exhausted(self) -> None:
         graph = _graph([_row("r1")], capped=True)
         store = MagicMock()
-        store.search_entities = AsyncMock(return_value=[
-            {"entityId": "t1", "entityType": "topic", "name": "Security", "score": 0.9},
+        # Every pass in one call; the hit comes from the first.
+        store.search_entities_passes = AsyncMock(side_effect=lambda q, org, passes, **kw: [
+            [{"entityId": "t1", "entityType": "topic", "name": "Security", "score": 0.9}],
+            *([] for _ in passes[1:]),
         ])
         hits = await search_entities_for_user(store, graph, _context(), "security")
         assert len(hits) == 1
@@ -128,8 +121,10 @@ class TestEmptyCappedWindow:
     async def test_probe_with_an_empty_capped_window_says_more_records(self) -> None:
         graph = _graph([], capped=True)
         store = MagicMock()
-        store.search_entities = AsyncMock(return_value=[
-            {"entityId": "rg-1", "entityType": "record_group", "name": "Roadmaps", "score": 0.9},
+        # Every pass in one call; the hit comes from the first.
+        store.search_entities_passes = AsyncMock(side_effect=lambda q, org, passes, **kw: [
+            [{"entityId": "rg-1", "entityType": "record_group", "name": "Roadmaps", "score": 0.9}],
+            *([] for _ in passes[1:]),
         ])
         context = EntityAccessContext(
             org_id=ORG, user_key="ukey", app_level_app_ids=frozenset({"kb-1"}),

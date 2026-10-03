@@ -95,6 +95,7 @@ from app.services.graph_db.common.utils import (
     EntityCandidateRows,
     KB_ROLE_PRIORITY,
     MAX_DIRECT_GRANT_RECORDS,
+    PermittedEntityRows,
     PATH_MAX_CANDIDATES,
     ROOT_SCOPED_CONNECTOR_TYPES,
     build_connector_stats_response,
@@ -543,6 +544,14 @@ class Neo4jProvider(IGraphDBProvider):
                 f"CREATE INDEX {label.lower()}_{spec.scope_field.lower()}_key IF NOT EXISTS "
                 f"FOR (n:{label}) ON (n.{spec.scope_field}, n.id)"
             )
+
+        # "Anyone" shares are looked up per record by (file_key, organization),
+        # once per walked row in get_permitted_entity_records; without this
+        # each lookup scans every org's shares.
+        indexes.append(
+            "CREATE INDEX anyone_file_key_org IF NOT EXISTS "
+            "FOR (n:Anyone) ON (n.file_key, n.organization)"
+        )
 
         # ==================== RECORD INDEXES (Highest Priority) ====================
         # Records are the most queried entity, especially in permission checks
@@ -1917,7 +1926,8 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         query: str,
         bind_vars: dict | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> list[dict] | None:
         """
         Execute a Cypher query.
@@ -1926,6 +1936,7 @@ class Neo4jProvider(IGraphDBProvider):
             query: Cypher query string
             bind_vars: Query parameters
             transaction: Optional transaction ID
+            timeout_seconds: Server-side limit for a query outside a transaction
 
         Returns:
             Optional[List[Dict]]: Query results
@@ -1934,7 +1945,8 @@ class Neo4jProvider(IGraphDBProvider):
             return await self.client.execute_query(
                 query,
                 parameters=bind_vars or {},
-                txn_id=transaction
+                txn_id=transaction,
+                **({"timeout": timeout_seconds} if timeout_seconds is not None else {}),
             )
         except Exception as e:
             self.logger.error(f"❌ Query execution failed: {str(e)}")
@@ -16599,7 +16611,7 @@ class Neo4jProvider(IGraphDBProvider):
 
     _ENTITY_CANDIDATE_RECORD_PROJECTION = (
         "rec {_key: rec.id, .recordName, .recordType, .connectorId, .virtualRecordId, "
-        ".webUrl, .sourceLastModifiedTimestamp, .updatedAtTimestamp}"
+        ".webUrl, .hideWeburl, .sourceLastModifiedTimestamp, .updatedAtTimestamp}"
     )
 
     def _entity_node_match(self, entity_type: str) -> tuple[str, str]:
@@ -16619,17 +16631,22 @@ class Neo4jProvider(IGraphDBProvider):
                 {branches}
               }}"""
 
+    _ENTITY_CANDIDATE_RECORD_FILTER = """rec.orgId = $org_id
+                AND coalesce(rec.isDeleted, false) = false
+                AND rec.indexingStatus = $completed
+                AND rec.connectorId IN ref.connectorIds
+                AND ($record_types IS NULL OR rec.recordType IN $record_types)"""
+    _ENTITY_CANDIDATE_ORDER = (
+        "coalesce(rec.sourceLastModifiedTimestamp, rec.updatedAtTimestamp, 0) DESC, rec.id ASC"
+    )
+
     def _entity_candidate_records_cypher(self, entity_type: str) -> str:
         projection = self._ENTITY_CANDIDATE_RECORD_PROJECTION
         if entity_type == KnowledgeGraphEntityType.RECORD.value:
             return f"""
             UNWIND $refs AS ref
             OPTIONAL MATCH (rec:Record {{id: ref.id}})
-            WHERE rec.orgId = $org_id
-              AND coalesce(rec.isDeleted, false) = false
-              AND rec.indexingStatus = $completed
-              AND rec.connectorId IN ref.connectorIds
-              AND ($record_types IS NULL OR rec.recordType IN $record_types)
+            WHERE {self._ENTITY_CANDIDATE_RECORD_FILTER}
             RETURN ref.id AS id,
                    CASE WHEN rec IS NULL OR $offset > 0 THEN [] ELSE [{projection}] END AS rows
             """
@@ -16645,11 +16662,7 @@ class Neo4jProvider(IGraphDBProvider):
               WITH ref
               {entity_match}
               MATCH (rec:Record)-[:{relationship}]->(e)
-              WHERE rec.orgId = $org_id
-                AND coalesce(rec.isDeleted, false) = false
-                AND rec.indexingStatus = $completed
-                AND rec.connectorId IN ref.connectorIds
-                AND ($record_types IS NULL OR rec.recordType IN $record_types)
+              WHERE {self._ENTITY_CANDIDATE_RECORD_FILTER}
               WITH DISTINCT rec
               LIMIT $scan_cap
               WITH collect(rec) AS scanned
@@ -16657,7 +16670,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WITH scanned
                 UNWIND scanned AS rec
                 WITH rec
-                ORDER BY coalesce(rec.sourceLastModifiedTimestamp, rec.updatedAtTimestamp, 0) DESC, rec.id ASC
+                ORDER BY {self._ENTITY_CANDIDATE_ORDER}
                 SKIP $offset LIMIT $limit
                 RETURN collect({projection}) AS rows
               }}
@@ -16666,22 +16679,92 @@ class Neo4jProvider(IGraphDBProvider):
             RETURN ref.id AS id, rows, capped
             """
 
-    async def get_entity_candidate_records(
-        self,
-        refs: list[dict[str, Any]],
-        org_id: str,
-        *,
-        record_types: list[str] | None = None,
-        limit_per_entity: int = 20,
-        offset: int = 0,
-        transaction: str | None = None,
-    ) -> dict[tuple[str, str], EntityCandidateRows]:
-        """See :meth:`IGraphDBProvider.get_entity_candidate_records`."""
-        if not refs or not org_id:
-            return {}
-        if not self.client:
-            raise RuntimeError("Neo4j client is not connected")
+    def _permitted_entity_walk_cypher(self) -> str:
+        """Walk ``win`` in order and collect up to ``$limit`` rows the user
+        ``u`` may read, each with its position in the window. The UNION yields
+        one row when any grant holds and none otherwise; the role fragment
+        yields no row when the user has no role."""
+        record_role = self._get_permission_role_cypher("record", "rec", "u")
+        projection = self._ENTITY_CANDIDATE_RECORD_PROJECTION
+        return f"""
+              CALL {{
+                WITH win, u
+                UNWIND range(0, size(win) - 1) AS pos
+                WITH win[pos] AS rec, pos, u
+                CALL {{
+                  WITH rec, u
+                  WITH rec WHERE rec.connectorId IN $app_level_connector_ids
+                  RETURN true AS granted
+                  UNION
+                  WITH rec, u
+                  WITH rec WHERE NOT rec.connectorId IN $app_level_connector_ids
+                    AND EXISTS {{
+                      MATCH (a:Anyone)
+                      WHERE a.file_key = rec.id AND a.organization = $org_id
+                        AND coalesce(a.active, true) = true
+                    }}
+                  RETURN true AS granted
+                  UNION
+                  WITH rec, u
+                  WITH rec, u WHERE NOT rec.connectorId IN $app_level_connector_ids
+                  {record_role}
+                  WITH permission_role WHERE permission_role IS NOT NULL AND permission_role <> ''
+                  RETURN true AS granted
+                }}
+                WITH rec, pos
+                LIMIT $limit
+                RETURN collect({{pos: pos, row: {projection}}}) AS hits
+              }}"""
 
+    def _permitted_entity_records_cypher(self, entity_type: str) -> str:
+        walk = self._permitted_entity_walk_cypher()
+        if entity_type == KnowledgeGraphEntityType.RECORD.value:
+            return f"""
+            MATCH (u:User {{id: $user_key}})
+            UNWIND $refs AS ref
+            CALL {{
+              WITH ref, u
+              OPTIONAL MATCH (rec:Record {{id: ref.id}})
+              WHERE $offset = 0 AND {self._ENTITY_CANDIDATE_RECORD_FILTER}
+              WITH collect(rec) AS win, u
+              {walk}
+              RETURN hits, size(win) AS window_size, false AS capped
+            }}
+            RETURN ref.id AS id, hits, window_size, capped
+            """
+
+        relationship, entity_match = self._entity_node_match(entity_type)
+        if entity_type == KnowledgeGraphEntityType.RECORD_GROUP.value:
+            entity_match += "\n              WHERE e.orgId = $org_id"
+        # Sorting the capped scan is cheap; the permission walk is the cost,
+        # and it stops at $limit permitted rows or the end of the window.
+        return f"""
+            MATCH (u:User {{id: $user_key}})
+            UNWIND $refs AS ref
+            CALL {{
+              WITH ref, u
+              {entity_match}
+              MATCH (rec:Record)-[:{relationship}]->(e)
+              WHERE {self._ENTITY_CANDIDATE_RECORD_FILTER}
+              WITH DISTINCT rec, u
+              LIMIT $scan_cap
+              WITH collect(rec) AS scanned, u
+              CALL {{
+                WITH scanned
+                UNWIND scanned AS rec
+                WITH rec
+                ORDER BY {self._ENTITY_CANDIDATE_ORDER}
+                SKIP $offset LIMIT $window
+                RETURN collect(rec) AS win
+              }}
+              {walk}
+              RETURN hits, size(win) AS window_size, size(scanned) >= $scan_cap AS capped
+            }}
+            RETURN ref.id AS id, hits, window_size, capped
+            """
+
+    def _entity_refs_by_type(self, refs: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        """Supported refs grouped by type, first occurrence of each kept."""
         refs_by_type: dict[str, list[dict[str, Any]]] = {}
         seen: set[tuple[str, str]] = set()
         for ref in refs:
@@ -16699,9 +16782,76 @@ class Neo4jProvider(IGraphDBProvider):
             refs_by_type.setdefault(ref_type, []).append(
                 {"id": str(ref_id), "connectorIds": list(ref.get("connectorIds") or [])}
             )
+        return refs_by_type
+
+    async def get_permitted_entity_records(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        user_key: str,
+        *,
+        app_level_connector_ids: list[str],
+        record_types: list[str] | None = None,
+        limit_per_entity: int = 20,
+        offset: int = 0,
+        window: int = 200,
+        timeout_seconds: float | None = None,
+    ) -> dict[tuple[str, str], PermittedEntityRows]:
+        """See :meth:`IGraphDBProvider.get_permitted_entity_records`."""
+        if not refs or not org_id or not user_key:
+            return {}
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+
+        limit = max(1, limit_per_entity)
+        results: dict[tuple[str, str], PermittedEntityRows] = {}
+        for entity_type, typed_refs in self._entity_refs_by_type(refs).items():
+            rows = await self.client.execute_query(
+                self._permitted_entity_records_cypher(entity_type),
+                parameters={
+                    "refs": typed_refs,
+                    "org_id": org_id,
+                    "user_key": user_key,
+                    "app_level_connector_ids": list(app_level_connector_ids),
+                    "record_types": list(record_types) if record_types else None,
+                    "offset": max(0, offset),
+                    "window": max(1, window),
+                    "limit": limit,
+                    "scan_cap": ENTITY_CANDIDATE_SCAN_CAP,
+                    "completed": ProgressStatus.COMPLETED.value,
+                },
+                **({"timeout": timeout_seconds} if timeout_seconds is not None else {}),
+            )
+            for typed_ref in typed_refs:
+                results.setdefault((entity_type, typed_ref["id"]), PermittedEntityRows())
+            for row in rows or []:
+                if row.get("id"):
+                    results[(entity_type, str(row["id"]))] = PermittedEntityRows.from_window(
+                        ({"pos": h.get("pos"), "row": dict(h.get("row") or {})} for h in row.get("hits") or []),
+                        limit=limit,
+                        window_size=int(row.get("window_size") or 0),
+                        capped=bool(row.get("capped")),
+                    )
+        return results
+
+    async def get_entity_candidate_records(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        *,
+        record_types: list[str] | None = None,
+        limit_per_entity: int = 20,
+        offset: int = 0,
+        transaction: str | None = None,
+    ) -> dict[tuple[str, str], EntityCandidateRows]:
+        """See :meth:`IGraphDBProvider.get_entity_candidate_records`."""
+        if not refs or not org_id:
+            return {}
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
 
         results: dict[tuple[str, str], EntityCandidateRows] = {}
-        for entity_type, typed_refs in refs_by_type.items():
+        for entity_type, typed_refs in self._entity_refs_by_type(refs).items():
             rows = await self.client.execute_query(
                 self._entity_candidate_records_cypher(entity_type),
                 parameters={

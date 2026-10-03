@@ -11,7 +11,7 @@ import time
 from logging import Logger
 from typing import TYPE_CHECKING, Any
 
-from neo4j import AsyncGraphDatabase
+from neo4j import AsyncGraphDatabase, Query
 from neo4j.exceptions import ClientError, ServiceUnavailable, SessionExpired
 
 from app.services.resource_governor.feedback import get_default_downstream_feedback
@@ -529,7 +529,8 @@ class Neo4jClient:
         self,
         query: str,
         parameters: dict[str, Any] | None = None,
-        txn_id: str | None = None
+        txn_id: str | None = None,
+        timeout: float | None = None,
     ) -> list[dict[str, Any]]:
         """
         Execute a Cypher query with automatic reconnection on transient failures.
@@ -538,6 +539,8 @@ class Neo4jClient:
             query: Cypher query string
             parameters: Query parameters
             txn_id: Optional transaction ID (if None, creates auto-commit transaction)
+            timeout: Server-side limit in seconds for an auto-commit query.
+                Ignored inside a transaction, which has its own limit.
 
         Returns:
             List[Dict]: Query results as list of dictionaries
@@ -578,7 +581,7 @@ class Neo4jClient:
             # catches most stale connections, but a race (connection dies
             # between check and use) can still occur.
             try:
-                return await self._run_autocommit(query, parameters)
+                return await self._run_autocommit(query, parameters, timeout)
             except (ServiceUnavailable, SessionExpired) as first:
                 # One dead connection is not a dead driver: the pool opens a
                 # fresh connection for the retry, so try that before doing
@@ -587,17 +590,18 @@ class Neo4jClient:
                     "Neo4j connection lost during query — retrying on the pool: %s", first
                 )
                 try:
-                    return await self._run_autocommit(query, parameters)
+                    return await self._run_autocommit(query, parameters, timeout)
                 except (ServiceUnavailable, SessionExpired) as second:
                     await self._rebuild_driver_if_unreachable(second)
-                    return await self._run_autocommit(query, parameters)
+                    return await self._run_autocommit(query, parameters, timeout)
 
     async def _run_autocommit(
-        self, query: str, parameters: dict[str, Any]
+        self, query: str, parameters: dict[str, Any], timeout: float | None = None,
     ) -> list[dict[str, Any]]:
         try:
             async with self.driver.session(database=self.database) as session:
-                result = await session.run(query, parameters)
+                statement = Query(query, timeout=timeout) if timeout is not None else query
+                result = await session.run(statement, parameters)
                 return await result.data()
         except (ClientError, ServiceUnavailable, SessionExpired) as e:
             _report_neo4j_failure(e)
