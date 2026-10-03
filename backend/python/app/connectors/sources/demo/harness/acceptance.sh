@@ -27,7 +27,7 @@ for persona in alice bob; do
   echo "=================================================================="
   echo " persona: $persona   runs: $RUNS   min pass: $MIN_PASS"
   echo "=================================================================="
-  if ! uv run --with pipeshub-sdk --with httpx --with pyyaml \
+  if ! uv run --with pipeshub-sdk --with httpx --with pyyaml --with pydantic \
       python "$HERE/kb_harness.py" --env "$ENV_FILE" --fixture "$FIXTURE" \
       --persona "$persona" --runs "$RUNS" --min-pass "$MIN_PASS"; then
     status=1

@@ -95,6 +95,8 @@ class TestUpsertPayloadShape:
             "typeCategory": "generic_schema_free",
             "aliases": ["Law"],
             "level": None,
+            # Which model embedded the point, so a model change re-embeds it.
+            "embeddingModel": store._fingerprint(),
         }
         assert point.payload["connectorIds"] == []
         assert point.payload["recordGroupIds"] == []

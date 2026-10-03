@@ -2401,6 +2401,57 @@ class ZammadDataSource:
                 message="search_tickets failed: " + str(e)
             )
 
+    async def count_tickets(
+        self,
+        query: str,
+        ids: list[int] | None = None,
+    ) -> ZammadResponse:
+        """Count the tickets a search matches, among ``ids`` only when given.
+
+        Args:
+            query: str (required) - Search query using Elasticsearch syntax
+            ids: list[int] | None (optional) - Ticket ids the count is limited to
+
+        Returns:
+            ZammadResponse with data {"total_count": int}. Zammad before 6.5
+            ignores only_total_count and answers with a page of tickets; data is
+            then None.
+        """
+        # POST, so a long id list travels in the body rather than the URL.
+        url = f"{self.base_url}/api/v1/tickets/search"
+        request_body: dict[str, object] = {"query": query, "only_total_count": True}
+        if ids is not None:
+            request_body["ids"] = [str(i) for i in ids]
+
+        try:
+            request = HTTPRequest(
+                url=url,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+                body=request_body,
+            )
+            response = await self.http_client.execute(request)
+
+            status_ok = response.status < SUCCESS_CODE_IS_LESS_THAN
+            json_data = response.json() if response.text() else None
+            if isinstance(json_data, dict) and json_data.get("error"):
+                status_ok = False
+            total = json_data.get("total_count") if isinstance(json_data, dict) else None
+            counted = isinstance(total, int) and not isinstance(total, bool)
+
+            return ZammadResponse(
+                success=status_ok,
+                data={"total_count": total} if status_ok and counted else None,
+                message="count_tickets succeeded" if status_ok else "count_tickets failed",
+                status_code=response.status,
+            )
+        except Exception as e:
+            return ZammadResponse(
+                success=False,
+                error=str(e),
+                message="count_tickets failed: " + str(e)
+            )
+
     async def search_kb_answers(
         self,
         query: str,

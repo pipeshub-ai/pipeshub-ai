@@ -37,7 +37,14 @@ class TestGetSandboxMode:
 
     def test_local(self, monkeypatch) -> None:
         monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
         assert get_sandbox_mode() == SandboxMode.LOCAL
+
+    def test_local_without_dev_flag_is_unavailable(self, monkeypatch) -> None:
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.delenv("SANDBOX_ALLOW_LOCAL", raising=False)
+        with pytest.raises(SandboxUnavailableError, match="SANDBOX_ALLOW_LOCAL=true"):
+            get_sandbox_mode()
 
     def test_docker(self, monkeypatch) -> None:
         monkeypatch.setenv("SANDBOX_MODE", "docker")
@@ -81,6 +88,15 @@ class TestGetExecutor:
         from app.sandbox.docker_executor import DockerExecutor
         assert isinstance(get_executor(), DockerExecutor)
 
+    def test_local_without_dev_flag_builds_no_executor(self, monkeypatch) -> None:
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "false")
+        with pytest.raises(SandboxUnavailableError):
+            get_executor()
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
+        from app.sandbox.local_executor import LocalExecutor
+        assert isinstance(get_executor(), LocalExecutor)
+
     def test_garbage_raises(self, monkeypatch) -> None:
         monkeypatch.setenv("SANDBOX_MODE", "kubernetes")
         with pytest.raises(SandboxUnavailableError):
@@ -88,6 +104,7 @@ class TestGetExecutor:
 
     def test_explicit_local_returns_local_executor_with_warning(self, monkeypatch, caplog) -> None:
         monkeypatch.setenv("SANDBOX_MODE", "LOCAL")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
         with caplog.at_level(logging.WARNING):
             executor = get_executor()
         from app.sandbox.local_executor import LocalExecutor
@@ -105,12 +122,14 @@ class TestGetExecutor:
 
     def test_singleton(self, monkeypatch) -> None:
         monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
         e1 = get_executor()
         e2 = get_executor()
         assert e1 is e2
 
     def test_reset_clears_singleton(self, monkeypatch) -> None:
         monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
         e1 = get_executor()
         reset_executor()
         e2 = get_executor()

@@ -76,6 +76,8 @@ def mock_data_entities_processor():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.initialize = AsyncMock()
@@ -536,6 +538,7 @@ class TestSyncBucket95:
         )
         connector.record_sync_point = MagicMock()
         connector.record_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.record_sync_point.update_sync_point = AsyncMock()
         await connector._sync_bucket("bucket")
 
     @pytest.mark.asyncio
@@ -566,6 +569,7 @@ class TestSyncBucket95:
         ext_filter = MagicMock()
         ext_filter.is_empty.return_value = False
         ext_filter.value = ["pdf"]
+        ext_filter.operator_value = "in"
         sync_filters = MagicMock()
         sync_filters.get.side_effect = lambda key: ext_filter if key == "file_extensions" else None
         connector.sync_filters = sync_filters
@@ -664,6 +668,7 @@ class TestSyncBucket95:
         ext_filter = MagicMock()
         ext_filter.is_empty.return_value = False
         ext_filter.value = ["pdf"]
+        ext_filter.operator_value = "in"
         sync_filters = MagicMock()
         sync_filters.get.side_effect = lambda key: ext_filter if key == "file_extensions" else None
         connector.sync_filters = sync_filters
@@ -1540,7 +1545,8 @@ class TestFolderFilter:
 
         assert prefixes == ["reports/"]
         assert [c.args[0]["Key"] for c in connector._process_gcs_object.await_args_list] == ["reports/a.pdf"]
-        connector.data_entities_processor.get_records_in_record_group.assert_awaited_once()
+        # Read before listing, read to find deletions, and the scope cleanup.
+        assert connector.data_entities_processor.get_records_in_record_group.await_count == 3
 
     @pytest.mark.asyncio
     async def test_an_already_cleaned_scope_is_not_scanned_again(self, connector):
@@ -1550,7 +1556,8 @@ class TestFolderFilter:
         await connector._sync_bucket("b1")
         await connector._sync_bucket("b1")
 
-        connector.data_entities_processor.get_records_in_record_group.assert_awaited_once()
+        # Two reads per sync; the unchanged scope is cleaned up once.
+        assert connector.data_entities_processor.get_records_in_record_group.await_count == 5
 
     @pytest.mark.asyncio
     def _page_then_listing_error(self, connector, processed):
@@ -1607,6 +1614,13 @@ class TestFolderFilter:
         assert [c.args[0]["Key"] for c in connector._process_gcs_object.await_args_list] == ["a.pdf"]
 
 
+
+class _AllRecorded:
+    """Every listed object already has a record, so the date cutoff alone decides what is skipped."""
+
+    def __contains__(self, _: object) -> bool:
+        return True
+
 _JAN = [datetime(2026, 1, day, tzinfo=timezone.utc) for day in (1, 2, 3)]
 
 
@@ -1652,7 +1666,7 @@ class TestFailedObjectCheckpoint:
     async def _sync(connector):
         from app.connectors.core.registry.folder_scope import FolderScope
 
-        await connector._sync_bucket_prefix("b1", "", FolderScope())
+        await connector._sync_bucket_prefix("b1", "", FolderScope(), _AllRecorded(), [])
 
     @pytest.mark.asyncio
     async def test_a_failed_object_holds_the_checkpoint_before_it(self, connector):

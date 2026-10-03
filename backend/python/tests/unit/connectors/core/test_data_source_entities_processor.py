@@ -4445,6 +4445,40 @@ class TestOnRecordContentUpdateFlushBeforePublish:
 # ===========================================================================
 
 
+class TestOnRecordsDetachedFromParent:
+    @pytest.mark.asyncio
+    async def test_clears_each_parent_link_in_one_partial_update(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.batch_update_nodes = AsyncMock(return_value=True)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_detached_from_parent(["a", "b"])
+
+        tx_store.batch_update_nodes.assert_awaited_once_with(
+            [{"id": "a", "externalParentId": None}, {"id": "b", "externalParentId": None}],
+            CollectionNames.RECORDS.value,
+        )
+
+    @pytest.mark.asyncio
+    async def test_raises_when_a_record_was_not_updated(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.batch_update_nodes = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        with pytest.raises(RuntimeError):
+            await proc.on_records_detached_from_parent(["a"])
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_detach_touches_nothing(self) -> None:
+        proc = _make_processor()
+
+        await proc.on_records_detached_from_parent([])
+
+        proc.data_store_provider.transaction.assert_not_called()
+
+
 class TestOnRecordMetadataUpdateAndDelete:
     @pytest.mark.asyncio
     async def test_metadata_update_processes_and_updates(self):

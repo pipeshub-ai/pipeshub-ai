@@ -47,10 +47,12 @@ class FakeObjectStore:
 
     ``fail_page`` makes the listing fail on that page (0-based): ``"error"``
     returns an unsuccessful response, ``"raise"`` raises mid-listing.
+    ``fail_prefix`` makes every listing of that prefix fail the same way.
     """
 
     objects: dict[str, StoredObject] = field(default_factory=dict)
     fail_page: int | None = None
+    fail_prefix: str | None = None
     fail_mode: str = "error"
     clock: datetime = field(default_factory=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
 
@@ -75,7 +77,7 @@ class FakeObjectStore:
         self.objects[new_key] = StoredObject(new_key, old.body, now, now)
 
     def page(self, prefix: str | None, start: int, size: int) -> tuple[list[StoredObject], int | None]:
-        if self.fail_page == start // size:
+        if self.fail_page == start // size or (self.fail_prefix is not None and prefix == self.fail_prefix):
             if self.fail_mode == "raise":
                 raise ConnectionError("connection reset while listing")
             raise _ListingFailed("service unavailable")
@@ -216,6 +218,7 @@ class FakeRecordsDb:
         self.records: dict[str, FileRecord] = {}
         self.record_groups: dict[str, Any] = {}
         self.deleted: list[str] = []
+        self.written: list[str] = []
         self.failing: set[str] = set()
 
     def _check(self, method: str) -> None:
@@ -265,6 +268,7 @@ class FakeRecordsDb:
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
         self._check("on_new_records")
         for record, _ in records_with_permissions:
+            self.written.append(record.external_record_id)
             # The processor upserts by external id, keeping the stored record's id.
             same_path = self.by_path().get(record.external_record_id)
             if same_path and same_path.id != record.id:
@@ -315,6 +319,9 @@ class FakeConfigService:
 
     def __init__(self) -> None:
         self.sync_filters: dict[str, Any] = {}
+
+    def set_folders(self, folders: list[str]) -> None:
+        self.sync_filters["folder_paths"] = {"operator": "in", "value": folders, "type": "list"}
 
     def set_extensions(self, operator: str, extensions: list[str]) -> None:
         self.sync_filters["file_extensions"] = {"operator": operator, "value": extensions, "type": "multiselect"}

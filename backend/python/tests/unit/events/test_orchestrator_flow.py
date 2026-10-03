@@ -694,3 +694,75 @@ async def test_blob_storage_called_after_enrichment() -> None:
     sink_orchestrator.enrich.assert_awaited_once()
     sink_orchestrator.blob_storage.apply.assert_awaited_once()
     assert call_order == ["enrich", "blob_storage.apply"]
+
+
+# ---------------------------------------------------------------------------
+# Org sent to the parsing and extraction services
+# ---------------------------------------------------------------------------
+
+
+def _service_clients() -> tuple[MagicMock, MagicMock, MagicMock]:
+    parsing_client = MagicMock()
+    parsing_client.circuit_open = False
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+
+    extraction_client = MagicMock()
+    extraction_client.classify = AsyncMock(return_value=None)
+
+    sink_orchestrator = MagicMock()
+    sink_orchestrator.index = AsyncMock()
+    sink_orchestrator.enrich = AsyncMock()
+    sink_orchestrator.blob_storage.apply = AsyncMock()
+    return parsing_client, extraction_client, sink_orchestrator
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_event_without_org_sends_the_stored_records_org() -> None:
+    parsing_client, extraction_client, sink_orchestrator = _service_clients()
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
+    )
+    event_data = _make_event_data()
+    del event_data["payload"]["orgId"]
+
+    async for _ in ep.on_event(event_data):
+        pass
+
+    assert parsing_client.parse.await_args.kwargs["org_id"] == "org-1"
+    assert extraction_client.classify.await_args.kwargs["org_id"] == "org-1"
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_record_with_no_org_anywhere_fails_for_good_without_calling_the_services() -> None:
+    from app.exceptions.indexing_exceptions import ProcessingError  # noqa: PLC0415
+    from app.services.messaging.error_classifier import (  # noqa: PLC0415
+        MessageErrorClassifier,
+        MessageErrorType,
+    )
+
+    parsing_client, extraction_client, sink_orchestrator = _service_clients()
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
+    )
+    del ep.graph_provider.get_document.return_value["orgId"]
+    event_data = _make_event_data()
+    del event_data["payload"]["orgId"]
+
+    with pytest.raises(ProcessingError, match="has no organisation") as exc_info:
+        async for _ in ep.on_event(event_data):
+            pass
+
+    assert (
+        MessageErrorClassifier.classify_by_exception(exc_info.value)
+        == MessageErrorType.TERMINAL
+    )
+    parsing_client.parse.assert_not_awaited()
+    extraction_client.classify.assert_not_awaited()
+    updates = [call.args[2] for call in ep.graph_provider.update_node.await_args_list]
+    assert not any("indexingStatus" in update for update in updates)

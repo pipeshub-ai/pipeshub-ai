@@ -55,6 +55,7 @@ class FakeGraph:
         self.calls: list[tuple[str, Any]] = []
         self.fail_find = False
         self.fail_node_lookup = False
+        self.node_lookup_kwargs: list[dict[str, Any]] = []
 
     # ---- setup helpers ----
     def add_record(self, key: str, org_id: str, connector_id: str = "conn-1",
@@ -109,10 +110,17 @@ class FakeGraph:
             )
         ]
 
-    async def get_nodes_by_field_in(self, collection, field_name, field_values, return_fields=None, transaction=None) -> list[dict[str, Any]]:
+    async def get_nodes_by_field_in(
+        self, collection, field_name, field_values, return_fields=None, transaction=None,
+        *, raise_on_error=False,
+    ) -> list[dict[str, Any]]:
         self.calls.append(("get_nodes_by_field_in", (collection, field_name, list(field_values))))
+        self.node_lookup_kwargs.append({"raise_on_error": raise_on_error})
         if self.fail_node_lookup:
-            raise RuntimeError("graph down")
+            # Like both real providers: swallowed unless the caller asks.
+            if raise_on_error:
+                raise RuntimeError("graph down")
+            return []
         assert field_name == "id"
         wanted = set(field_values)
         return [
@@ -347,7 +355,7 @@ class ScriptedModel:
         self.calls: list[list[dict[str, Any]]] = []
         self.raise_error = False
 
-    async def __call__(self, llm, messages, schema, max_retries=2) -> MergeDecisions | None:
+    async def __call__(self, llm, messages, schema, max_retries=2, **_kwargs) -> MergeDecisions | None:
         if self.raise_error:
             raise RuntimeError("model down")
         items = parse_prompt_items(messages[0].content)
@@ -399,8 +407,8 @@ def scripted_model() -> Iterator[Callable[..., ScriptedModel]]:
     """Patch the model call; returns a factory that installs a script."""
     holder: dict[str, ScriptedModel] = {"model": ScriptedModel()}
 
-    async def _invoke(llm, messages, schema, max_retries=2) -> MergeDecisions | None:
-        return await holder["model"](llm, messages, schema, max_retries)
+    async def _invoke(llm, messages, schema, max_retries=2, **kwargs) -> MergeDecisions | None:
+        return await holder["model"](llm, messages, schema, max_retries, **kwargs)
 
     with patch(
         "app.modules.entity_resolution.resolver.invoke_with_structured_output_and_reflection",

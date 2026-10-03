@@ -1523,7 +1523,9 @@ class TestRunSync:
         space.name = "Test Space"
         c._sync_spaces = AsyncMock(return_value=[space])
         c._sync_folders = AsyncMock()
-        c._sync_content = AsyncMock()
+        c._sync_content = AsyncMock(return_value=MagicMock(checkpoint_time=None))
+        c._remove_content_gone_from_source = AsyncMock(return_value=True)
+        c._remove_spaces_out_of_scope = AsyncMock()
         c._sync_permission_changes_from_audit_log = AsyncMock()
 
         await c.run_sync()

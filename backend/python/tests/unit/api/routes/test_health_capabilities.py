@@ -10,6 +10,7 @@ that a failed image probe means what the message says it means.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -296,6 +297,80 @@ class TestImageEmbeddingProbe:
         assert resp.status_code == 400
         assert "512" in resp.body.decode()
 
+    async def test_a_provider_that_cannot_be_set_up_is_not_called_incapable(
+        self, mock_request,
+    ) -> None:
+        """A missing or refused endpoint is a settings problem; the uncheck
+        hint would have the admin switch off a capability over it."""
+        with self._patch_text_embedding(), \
+             patch(FACTORY) as factory:
+            factory.create.side_effect = ValueError("base_url (endpoint) is required sk-secret")
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(
+                mock_request, _embedding_config("openAICompatible", isMultimodal=True), MagicMock(),
+            )
+
+        body = json.loads(resp.body)
+        assert resp.status_code == 400
+        assert body["message"] == (
+            "PipesHub couldn't set up image embedding for this provider. Check its endpoint "
+            "and API key in Workspace → AI Models, then try again."
+        )
+        assert "hint" not in body["details"]
+        assert "sk-secret" not in resp.body.decode()
+
+    async def test_a_model_that_refuses_images_gets_fixed_text(self, mock_request) -> None:
+        provider = MagicMock()
+        provider.supports_multimodal.return_value = True
+        provider.embed_images = AsyncMock(
+            side_effect=ValueError("image input is not supported by deployment sk-secret"),
+        )
+
+        with self._patch_text_embedding(), \
+             patch(FACTORY) as factory:
+            factory.create.return_value = provider
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(
+                mock_request, _embedding_config(isMultimodal=True), MagicMock(),
+            )
+
+        body = json.loads(resp.body)
+        assert resp.status_code == 400
+        assert body["message"] == "Model cannot embed images."
+        assert body["details"]["hint"].startswith("Uncheck Multimodal")
+        assert "sk-secret" not in resp.body.decode()
+
+    async def test_an_empty_image_embedding_keeps_the_provider_error_in_the_log(
+        self, mock_request,
+    ) -> None:
+        """Several providers put `str(e)` in the result's error field."""
+        provider = MagicMock()
+        provider.supports_multimodal.return_value = True
+        provider.embed_images = AsyncMock(return_value=[MagicMock(
+            embedding=None, error="401 Unauthorized: invalid api key sk-secret",
+        )])
+        logger = MagicMock()
+
+        with self._patch_text_embedding(), \
+             patch(FACTORY) as factory:
+            factory.create.return_value = provider
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(
+                mock_request, _embedding_config(isMultimodal=True), logger,
+            )
+
+        body = json.loads(resp.body)
+        assert resp.status_code == 400
+        assert body["message"] == (
+            "The model returned no embedding for a test image, so images wouldn't be "
+            "indexed. Check its API key and endpoint and that it accepts images, then try again."
+        )
+        # The error is a key/endpoint failure; unchecking Multimodal would not fix it.
+        assert "hint" not in body["details"]
+        assert "sk-secret" not in resp.body.decode()
+        logged = " ".join(str(arg) for c in logger.warning.call_args_list for arg in c.args)
+        assert "sk-secret" in logged
+
     async def test_a_text_only_model_is_not_probed_for_images(self, mock_request) -> None:
         with self._patch_text_embedding(), \
              patch(FACTORY) as factory:
@@ -342,6 +417,40 @@ class TestEmbeddingDimensionChecks:
         assert resp.status_code == 400
         assert "asked for 256" in body
 
+
+
+class TestCollectionGuardFollowsTheActiveModel:
+    """The guard rebuilds an empty store at the checked model's size, so it may
+    run only for the model that embeds once saved. Adding a model that is not
+    the default used to rebuild the store at a size the default never writes."""
+
+    async def _check(self, mock_request, config: dict) -> tuple[JSONResponse, AsyncMock]:
+        with patch(f"{MODULE}.get_embedding_model", return_value=MagicMock()), \
+             patch(f"{MODULE}._embed_with_timeout", new_callable=AsyncMock,
+                   return_value=[[0.1] * 384]), \
+             patch(f"{MODULE}._check_collection_compatibility",
+                   new_callable=AsyncMock, return_value=None) as guard:
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(mock_request, config, MagicMock())
+        return resp, guard
+
+    async def test_a_model_that_will_not_embed_leaves_the_store_alone(self, mock_request) -> None:
+        resp, guard = await self._check(mock_request, _embedding_config(becomesActive=False))
+
+        assert resp.status_code == 200
+        guard.assert_not_awaited()
+
+    async def test_the_model_that_will_embed_is_checked_against_the_store(self, mock_request) -> None:
+        resp, guard = await self._check(mock_request, _embedding_config(becomesActive=True))
+
+        assert resp.status_code == 200
+        guard.assert_awaited_once()
+
+    async def test_a_caller_that_does_not_say_is_still_checked(self, mock_request) -> None:
+        resp, guard = await self._check(mock_request, _embedding_config())
+
+        assert resp.status_code == 200
+        guard.assert_awaited_once()
 
 class TestConfigurationWarnings:
     """A setting that is wrong but no longer fatal still has to be reported —

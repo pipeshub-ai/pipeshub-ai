@@ -299,7 +299,12 @@ class TestConnectorDeletion:
             "org-1", "conn-a", record_group_ids=["ga"],
         )
 
-        group_scans = [f for f, _ in entities.scrolls if "metadata.entityType" in f["must"]]
+        # Scans over record/record-group points; the post-sweep check over
+        # taxonomy types is a different scan.
+        group_scans = [
+            f for f, _ in entities.scrolls
+            if {"record", "record_group"} & set(f["must"].get("metadata.entityType") or [])
+        ]
         assert [f["must"]["metadata.entityType"] for f in group_scans] == [["record_group"]]
 
     @pytest.mark.asyncio
@@ -528,13 +533,23 @@ class TestExclusiveLookingPointsAreCheckedAgainstTheGraph:
 
 class TestUpsertEntitiesBatchMergeMembershipFlag:
     @pytest.mark.asyncio
-    async def test_merge_membership_false_skips_membership_read(self) -> None:
+    async def test_merge_membership_false_replaces_instead_of_unioning(self) -> None:
         from app.models.entities import EntityRecord, EntityTypeCategory
 
         vector_db_service = MagicMock()
         vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
         vector_db_service.scroll = AsyncMock()
         vector_db_service.upsert_points = AsyncMock()
+        # Stored membership the replace must discard, not union with.
+        vector_db_service.retrieve_points = AsyncMock(return_value=[VectorPoint(
+            id=EntityVectorStore._point_id("org-1", "department", "eng"),
+            payload={
+                "page_content": "Engineering",
+                "metadata": {},
+                "connectorIds": ["conn-a"],
+                "recordGroupIds": [],
+            },
+        )])
         store = _make_store(vector_db_service)
         entity = EntityRecord(
             entity_id="eng",
@@ -548,7 +563,6 @@ class TestUpsertEntitiesBatchMergeMembershipFlag:
 
         await store.upsert_entities_batch([entity], merge_membership=False)
 
-        vector_db_service.retrieve_points.assert_not_called()
         (point,) = vector_db_service.upsert_points.call_args.kwargs["points"]
         assert point.payload["connectorIds"] == ["conn-b"]
 
