@@ -103,11 +103,13 @@ from app.services.graph_db.common.utils import (
     MAX_DIRECT_GRANT_RECORDS,
     PATH_MAX_CANDIDATES,
     ROOT_SCOPED_CONNECTOR_TYPES,
+    TRASH_STATE_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
     EntityCandidateRows,
     build_connector_stats_response,
     dedupe_agents_by_id,
     empty_soft_delete_result,
+    restore_items,
     select_canonical_chain_names,
     soft_delete_request_result,
     soft_delete_result,
@@ -589,6 +591,13 @@ class Neo4jProvider(IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_deleted_at IF NOT EXISTS "
             "FOR (n:Record) ON (n.deletedAtTimestamp)"
+        )
+
+        # Restore reads a whole delete batch; the property is cleared on
+        # restore, so this too covers only the trash.
+        indexes.append(
+            "CREATE INDEX record_delete_batch IF NOT EXISTS "
+            "FOR (n:Record) ON (n.deleteBatchId)"
         )
 
         indexes.append(
@@ -11793,6 +11802,115 @@ class Neo4jProvider(IGraphDBProvider):
             raise
         return soft_delete_result(record_ids, found.get("root_keys") or [], found.get("marked") or [], batch_id)
 
+    async def get_records_in_delete_batch(
+        self,
+        batch_id: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See ``IGraphDBProvider.get_records_in_delete_batch``."""
+        if not batch_id or not org_id:
+            return []
+        rows = await self.client.execute_query(
+            """
+            MATCH (r:Record {deleteBatchId: $batch_id})
+            WHERE r.isDeleted = true AND r.orgId = $org_id
+            OPTIONAL MATCH (p:Record)-[rel:RECORD_RELATION]->(r)
+            WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+            WITH r, head(collect(CASE WHEN p IS NULL THEN null ELSE {p: p, type: rel.relationshipType} END)) AS parent
+            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
+            WITH r, parent, head(collect(t)) AS t
+            RETURN r, parent.p AS p, parent.type AS parent_type, t.isFile AS is_file, t.mimeType AS file_mime
+            """,
+            parameters={"batch_id": batch_id, "org_id": org_id},
+            txn_id=transaction,
+        )
+        items = []
+        for row in rows or []:
+            parent = dict(row["p"]) if row.get("p") is not None else None
+            items.append({
+                "record": self._neo4j_to_arango_node(dict(row["r"]), CollectionNames.RECORDS.value),
+                "parentId": parent.get("id") if parent else None,
+                "parentRelation": row.get("parent_type"),
+                "parentIsDeleted": (parent.get("isDeleted") is True) if parent else None,
+                "parentBatchId": parent.get("deleteBatchId") if parent else None,
+                "parentName": parent.get("recordName") if parent else None,
+                "isFile": row.get("is_file"),
+                "fileMimeType": row.get("file_mime"),
+            })
+        return items
+
+    async def restore_records(
+        self,
+        restores: list[dict[str, Any]],
+        batch_id: str | None,
+        transaction: str | None = None,
+        *,
+        connector_id: str | None = None,
+        require_live_parent: bool = False,
+    ) -> list[str]:
+        """See ``IGraphDBProvider.restore_records``."""
+        if not restores:
+            return []
+        items, reclaims = restore_items(restores, connector_id)
+        cleared = ", ".join(f"r.{name} = null" for name in TRASH_STATE_FIELDS)
+        # Each statement commits on its own unless explicit transactions are on, so a
+        # restore split over statements could stop halfway, and an external id given
+        # up before a refused restore stayed given up. One statement re-checks every
+        # item and the ids taken back, releases them and restores: all or nothing.
+        rows = await self.client.execute_query(
+            f"""
+            UNWIND $items AS item
+            OPTIONAL MATCH (r:Record {{id: item.id}})
+            WHERE r.isDeleted = true
+              AND (r.deleteBatchId = $batch_id OR ($batch_id IS NULL AND r.deleteBatchId IS NULL))
+            WITH collect(CASE WHEN r IS NULL THEN null ELSE {{r: r, fields: item.set}} END) AS found
+            WHERE size(found) = size($items)
+              AND NOT EXISTS {{
+                  UNWIND $reclaims AS claim
+                  MATCH (taken:Record {{externalRecordId: claim.ext, connectorId: $connector_id}})
+                  WHERE taken.id <> claim.id AND ({cypher_live_record("taken")} OR taken.id IN $ids)
+                  RETURN taken
+              }}
+              AND NOT ($require_live_parent AND EXISTS {{
+                  UNWIND $ids AS child_id
+                  MATCH (parent:Record)-[edge:RECORD_RELATION]->(:Record {{id: child_id}})
+                  WHERE edge.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                    AND parent.isDeleted = true AND NOT parent.id IN $ids
+                  RETURN parent
+              }})
+            WITH found, COLLECT {{
+                UNWIND $reclaims AS claim
+                MATCH (holder:Record {{externalRecordId: claim.ext, connectorId: $connector_id}})
+                WHERE holder.isDeleted = true AND NOT holder.id IN $ids
+                RETURN holder
+            }} AS holders
+            FOREACH (holder IN holders |
+                SET holder += {{
+                    trashedExternalRecordId: holder.externalRecordId,
+                    externalRecordId: $trashed_prefix + holder.id
+                }})
+            WITH found
+            UNWIND found AS row
+            WITH row.r AS r, row.fields AS fields
+            SET r.isDeleted = false, {cleared}, r.updatedAtTimestamp = $now
+            SET r += fields
+            RETURN r.id AS id
+            """,
+            parameters={
+                "items": items,
+                "ids": [item["id"] for item in items],
+                "reclaims": reclaims,
+                "connector_id": connector_id,
+                "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
+                "require_live_parent": require_live_parent,
+                "batch_id": batch_id,
+                "now": get_epoch_timestamp_in_ms(),
+            },
+            txn_id=transaction,
+        )
+        return [row["id"] for row in rows or []]
+
     async def delete_single_record(
         self,
         record_id: str,
@@ -11906,7 +12024,9 @@ class Neo4jProvider(IGraphDBProvider):
         folder_name: str,
         parent_folder_id: str | None = None,
         exclude_folder_id: str | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Find a folder by name within a specific parent (KB root or folder).
@@ -11918,25 +12038,26 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             if parent_folder_id is None:
                 # KB root: Find immediate children (no incoming RECORD_RELATION edges)
-                query = """
-                MATCH (folder:Record)-[:BELONGS_TO]->(kb:App {id: $kb_id, type: "KB"})
+                query = f"""
+                MATCH (folder:Record)-[:BELONGS_TO]->(kb:App {{id: $kb_id, type: "KB"}})
                 WHERE folder.mimeType = "application/vnd.folder"
                   AND toLower(folder.recordName) = toLower($folder_name)
-                  AND folder.isDeleted <> true
+                  AND {cypher_live_record("folder")}
                   AND ($exclude_folder_id IS NULL OR folder.id <> $exclude_folder_id)
-                  AND NOT EXISTS {
-                      MATCH (folder)<-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]-(:Record)
-                  }
+                  AND NOT EXISTS {{
+                      MATCH (folder)<-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]-(:Record)
+                  }}
                 RETURN folder
                 LIMIT 1
                 """
                 params = {"kb_id": kb_id, "folder_name": folder_name, "exclude_folder_id": exclude_folder_id}
             else:
                 # Nested folder: Find children via RECORD_RELATION edge
-                query = """
-                MATCH (parent:Record {id: $parent_folder_id})-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(folder:Record)
+                query = f"""
+                MATCH (parent:Record {{id: $parent_folder_id}})-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(folder:Record)
                 WHERE folder.mimeType = "application/vnd.folder"
                   AND toLower(folder.recordName) = toLower($folder_name)
+                  AND {cypher_live_record("folder")}
                   AND ($exclude_folder_id IS NULL OR folder.id <> $exclude_folder_id)
                 RETURN folder
                 LIMIT 1
@@ -11953,6 +12074,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to find folder by name: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def find_file_by_name_in_parent(
@@ -12027,6 +12150,8 @@ class Neo4jProvider(IGraphDBProvider):
         kb_id: str,
         parent_folder_id: str | None,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> set[tuple[str, str]]:
         """Return (name_lower, mime_type_str) tuples for all non-deleted file
         records that are immediate children of *parent_folder_id* (or KB root
@@ -12035,24 +12160,24 @@ class Neo4jProvider(IGraphDBProvider):
         """
         try:
             if parent_folder_id is None:
-                query = """
-                MATCH (rec:Record)-[:BELONGS_TO]->(kb:App {id: $kb_id, type: "KB"})
-                OPTIONAL MATCH (rec)-[:IS_OF_TYPE]->(file:File {isFile: true})
+                query = f"""
+                MATCH (rec:Record)-[:BELONGS_TO]->(kb:App {{id: $kb_id, type: "KB"}})
+                OPTIONAL MATCH (rec)-[:IS_OF_TYPE]->(file:File {{isFile: true}})
                 WITH rec, coalesce(rec.mimeType, file.mimeType) AS mime_type
-                WHERE rec.isDeleted <> true
+                WHERE {cypher_live_record("rec")}
                   AND mime_type IS NOT NULL
                   AND mime_type <> "application/vnd.folder"
-                  AND NOT (rec)<-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]-(:Record)
+                  AND NOT (rec)<-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]-(:Record)
                 RETURN toLower(rec.recordName) AS name_lower, mime_type
                 """
                 params: dict = {"kb_id": kb_id}
             else:
-                query = """
-                MATCH (parent:Record {id: $parent_folder_id})
-                      -[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->
+                query = f"""
+                MATCH (parent:Record {{id: $parent_folder_id}})
+                      -[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->
                       (rec:Record)
-                MATCH (rec)-[:IS_OF_TYPE]->(file:File {isFile: true})
-                WHERE rec.isDeleted <> true
+                MATCH (rec)-[:IS_OF_TYPE]->(file:File {{isFile: true}})
+                WHERE {cypher_live_record("rec")}
                 RETURN toLower(rec.recordName) AS name_lower, coalesce(rec.mimeType, file.mimeType) AS mime_type
                 """
                 params = {"parent_folder_id": parent_folder_id}
@@ -12064,6 +12189,8 @@ class Neo4jProvider(IGraphDBProvider):
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch existing file names: {str(e)}")
+            if raise_on_error:
+                raise
             return set()
 
     def _normalize_name(self, name: str | None) -> str | None:

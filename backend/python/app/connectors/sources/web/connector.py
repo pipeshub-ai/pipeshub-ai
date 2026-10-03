@@ -5,10 +5,10 @@ import hashlib
 import random
 import re
 import uuid
-from http import HTTPStatus
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
+from http import HTTPStatus
 from io import BytesIO
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
@@ -23,9 +23,9 @@ from PIL import Image
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    FILE_MIME_TYPES,
     AppGroups,
     Connectors,
-    FILE_MIME_TYPES,
     MimeTypes,
     OriginTypes,
     PermissionModel,
@@ -33,7 +33,6 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
-from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -44,6 +43,12 @@ from app.connectors.core.base.error.stream_errors import (
     internal_service_status,
     map_source_status,
 )
+from app.connectors.core.base.sync_point.sync_point import (
+    SyncDataPointType,
+    SyncPoint,
+    generate_record_sync_point_key,
+)
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
@@ -63,6 +68,32 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.sources.web.address_guard import (
+    create_guarded_session,
+    is_unsafe_url,
+)
+from app.connectors.sources.web.browser_supervisor import BrowserUnavailableError
+from app.connectors.sources.web.crawl4ai_fetcher import (
+    Crawl4AIFetcher,
+    FetchResult,
+    get_shared_fetcher,
+    release_shared_fetcher,
+    resolve_fetch_status_code,
+)
+from app.connectors.sources.web.csr_detection import (
+    CSR_PROBE_JS,
+    PRE_HYDRATION_INIT_SCRIPT,
+    analyze_rendering,
+)
+from app.connectors.sources.web.fetch_strategy import (
+    MAX_RATE_LIMIT_BACKOFF,
+    FetchResponse,
+    build_stealth_headers,
+    fetch_url_with_fallback,
+    too_many_redirects_response,
+    unsafe_address_response,
+)
+from app.connectors.sources.web.robots import RobotsRules
 from app.models.entities import (
     AppUser,
     FileRecord,
@@ -72,27 +103,14 @@ from app.models.entities import (
     RecordType,
     User,
 )
-from app.connectors.sources.web.address_guard import create_guarded_session, is_unsafe_url
-from app.connectors.sources.web.fetch_strategy import (
-    MAX_RATE_LIMIT_BACKOFF,
-    FetchResponse,
-    build_stealth_headers,
-    fetch_url_with_fallback,
-    too_many_redirects_response,
-    unsafe_address_response,
-)
-from app.connectors.sources.web.browser_supervisor import BrowserUnavailableError
-from app.connectors.sources.web.crawl4ai_fetcher import Crawl4AIFetcher, FetchResult, get_shared_fetcher, release_shared_fetcher, resolve_fetch_status_code
-from app.connectors.sources.web.robots import RobotsRules
-from app.connectors.sources.web.csr_detection import CSR_PROBE_JS, PRE_HYDRATION_INIT_SCRIPT, analyze_rendering
-from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint, generate_record_sync_point_key
-from app.services.notification.types import NotificationSeverity, NotificationType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.services.notification.types import NotificationSeverity, NotificationType
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
 
 async def _bytes_async_gen(data: bytes) -> AsyncGenerator[bytes, None]:
     """Wrap raw bytes as an async generator for StreamingResponse."""
@@ -2696,7 +2714,10 @@ class WebConnector(BaseConnector):
             await self._remove_record(old, requested_url)
 
     async def _remove_record(self, record: Record, url: str) -> None:
-        await self.data_entities_processor.on_record_deleted(record.id)
+        in_trash = await self.data_entities_processor.on_record_deleted(record.id)
+        # A page in the trash keeps its stored copy; the purge removes both.
+        if in_trash:
+            return
         if record.storage_document_id and not await self._delete_storage_document(record.storage_document_id):
             self.logger.warning("Removed %s but could not delete its stored copy %s", url, record.storage_document_id)
 

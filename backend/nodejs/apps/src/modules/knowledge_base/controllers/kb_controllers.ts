@@ -1682,6 +1682,81 @@ export const deleteRecord =
   };
 
 /**
+ * Bring a deleted item back from the trash, with everything deleted along with it.
+ * The connector service checks the caller's role on the collection.
+ */
+export const restoreRecord =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { recordId } = req.params as { recordId: string };
+      const { userId, orgId } = req.user || {};
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/record/${encodeURIComponent(recordId)}/restore`,
+        HttpMethod.POST,
+        req.headers as Record<string, string>,
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Restoring record',
+        'Record not restored',
+      );
+    } catch (error: any) {
+      logger.error('Error restoring record', {
+        recordId: req.params.recordId,
+        error: error.message,
+        status: error.response?.status,
+      });
+      next(handleBackendError(error, 'restore record'));
+    }
+  };
+
+/**
+ * Restore several deleted items; the answer lists the outcome for each id.
+ */
+export const restoreRecords =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { userId, orgId } = req.user || {};
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+      const { recordIds } = req.body as { recordIds: string[] };
+
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/records/restore`,
+        HttpMethod.POST,
+        req.headers as Record<string, string>,
+        { recordIds },
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Restoring records',
+        'Records not restored',
+      );
+    } catch (error: any) {
+      logger.error('Error restoring records', {
+        error: error.message,
+        status: error.response?.status,
+      });
+      next(handleBackendError(error, 'restore records'));
+    }
+  };
+
+/**
  * Create permissions for multiple users on a knowledge base
  */
 export const createKBPermission =

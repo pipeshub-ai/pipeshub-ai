@@ -26,6 +26,8 @@ from app.connectors.sources.localKB.api.models import (
     ListPermissionsResponse,
     ListRecordsResponse,
     RemovePermissionResponse,
+    RestoreRecordResponse,
+    RestoreRecordsResponse,
     SuccessResponse,
     UpdateKnowledgeBaseRequest,
     UpdatePermissionResponse,
@@ -1647,6 +1649,84 @@ async def delete_record_in_folder(
             status_code=500,
             detail=action_failed("delete this file")
         )
+
+
+def _raise_refusal(result: dict[str, Any] | None) -> None:
+    error_code = int((result or {}).get("code", HTTP_INTERNAL_SERVER_ERROR))
+    raise HTTPException(
+        status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
+        detail=(result or {}).get("reason") or action_failed("restore this item"),
+    )
+
+
+@kb_router.post(
+    "/record/{record_id}/restore",
+    response_model=RestoreRecordResponse,
+    response_model_exclude_none=True,
+    responses={
+        403: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+    },
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_DELETE))],
+)
+@inject
+async def restore_record(
+    record_id: str,
+    request: Request,
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+) -> RestoreRecordResponse:
+    try:
+        result = await kb_service.restore_record(
+            record_id=record_id,
+            user_id=request.state.user.get("userId"),
+            org_id=request.state.user.get("orgId"),
+        )
+        if not result or result.get("success") is False:
+            _raise_refusal(result)
+        return RestoreRecordResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.error("restore_record failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("restore this item")) from e
+
+
+@kb_router.post(
+    "/records/restore",
+    response_model=RestoreRecordsResponse,
+    responses={400: {"model": ErrorResponse}},
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_DELETE))],
+)
+@inject
+async def restore_records(
+    request: Request,
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+) -> RestoreRecordsResponse:
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        record_ids = body.get("recordIds") if isinstance(body, dict) else None
+        if not isinstance(record_ids, list) or not all(isinstance(i, str) and i for i in record_ids):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Send the items to restore as recordIds, a list of record ids.",
+            )
+        result = await kb_service.restore_records(
+            record_ids=record_ids,
+            user_id=request.state.user.get("userId"),
+            org_id=request.state.user.get("orgId"),
+        )
+        if result.get("code") == status.HTTP_400_BAD_REQUEST:
+            _raise_refusal(result)
+        return RestoreRecordsResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.error("restore_records failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("restore these items")) from e
 
 
 @kb_router.get(

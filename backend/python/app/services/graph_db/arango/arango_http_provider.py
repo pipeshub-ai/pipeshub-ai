@@ -161,11 +161,13 @@ from app.services.graph_db.common.utils import (
     PATH_MAX_CANDIDATES,
     ROOT_SCOPED_CONNECTOR_TYPES,
     SOFT_DELETE_CHUNK,
+    TRASH_STATE_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
     EntityCandidateRows,
     build_connector_stats_response,
     dedupe_agents_by_id,
     empty_soft_delete_result,
+    restore_items,
     select_canonical_chain_names,
     soft_delete_request_result,
     soft_delete_result,
@@ -826,6 +828,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["deletedAtTimestamp", "_key"],
+            sparse=True,
+        )
+
+        # SPARSE: restore reads a whole delete batch; the field is cleared on
+        # restore, so only the trash is in it.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["deleteBatchId"],
             sparse=True,
         )
 
@@ -12626,6 +12636,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         kb_id: str,
         parent_folder_id: str | None,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> set[tuple[str, str]]:
         """Return (name_lower, mime_type_str) tuples for all non-deleted file
         records that are immediate children of *parent_folder_id* (or KB root
@@ -12687,6 +12699,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch existing file names: {str(e)}")
+            if raise_on_error:
+                raise
             return set()
 
     async def kb_exists(self, kb_id: str) -> bool:
@@ -12964,6 +12978,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         parent_folder_id: str | None = None,
         exclude_folder_id: str | None = None,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """Find a folder by name within a specific parent (KB root or folder)."""
         try:
@@ -13022,6 +13038,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER edge.relationshipType == "PARENT_CHILD"
                     LET folder_record = DOCUMENT(edge._to)
                     FILTER folder_record != null
+                    FILTER folder_record.isDeleted != true
                     FILTER @exclude_folder_id == null OR folder_record._key != @exclude_folder_id
                     LET folder_file = FIRST(
                         FOR isEdge IN @@is_of_type
@@ -13054,6 +13071,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return results[0] if results else None
         except Exception as e:
             self.logger.error(f"❌ Failed to find folder by name: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def find_file_by_name_in_parent(
@@ -13760,6 +13779,143 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to move records to the trash: %s", e)
             raise
         return soft_delete_result(record_ids, found["root_keys"], marked, batch_id)
+
+    async def get_records_in_delete_batch(
+        self,
+        batch_id: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See ``IGraphDBProvider.get_records_in_delete_batch``."""
+        if not batch_id or not org_id:
+            return []
+        return await self.execute_query(
+            """
+            FOR r IN @@records
+                FILTER r.deleteBatchId == @batch_id AND r.isDeleted == true AND r.orgId == @org_id
+                LET parent = FIRST(
+                    FOR e IN @@record_relations
+                        FILTER e._to == r._id AND e.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                        LET p = DOCUMENT(e._from)
+                        FILTER p != null AND IS_SAME_COLLECTION(@@records, p)
+                        RETURN { doc: p, type: e.relationshipType }
+                )
+                LET t = FIRST(
+                    FOR e IN @@is_of_type
+                        FILTER e._from == r._id
+                        LET d = DOCUMENT(e._to)
+                        FILTER d != null
+                        RETURN d
+                )
+                RETURN {
+                    record: r,
+                    parentId: parent.doc._key,
+                    parentRelation: parent.type,
+                    parentIsDeleted: parent == null ? null : parent.doc.isDeleted == true,
+                    parentBatchId: parent.doc.deleteBatchId,
+                    parentName: parent.doc.recordName,
+                    isFile: t.isFile,
+                    fileMimeType: t.mimeType
+                }
+            """,
+            bind_vars={
+                "batch_id": batch_id,
+                "org_id": org_id,
+                "@records": CollectionNames.RECORDS.value,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+            },
+            transaction=transaction,
+        ) or []
+
+    async def restore_records(
+        self,
+        restores: list[dict[str, Any]],
+        batch_id: str | None,
+        transaction: str | None = None,
+        *,
+        connector_id: str | None = None,
+        require_live_parent: bool = False,
+    ) -> list[str]:
+        """See ``IGraphDBProvider.restore_records``."""
+        if not restores:
+            return []
+        items, reclaims = restore_items(restores, connector_id)
+        # keepNull false drops the cleared fields instead of storing nulls.
+        cleared = {"isDeleted": False, **dict.fromkeys(TRASH_STATE_FIELDS)}
+        # The same checks and writes as Neo4j's single statement, so both backends
+        # refuse the same batches. One UPDATE, releases first: AQL modifies a
+        # collection once per query.
+        rows = await self.execute_query(
+            f"""
+            LET found = (
+                FOR item IN @items
+                    LET r = DOCUMENT(@@records, item.id)
+                    FILTER r != null AND r.isDeleted == true AND r.deleteBatchId == @batch_id
+                    RETURN {{ r: r, fields: item.set }}
+            )
+            LET taken = FIRST(
+                FOR claim IN @reclaims
+                    FOR t IN @@records
+                        FILTER t.externalRecordId == claim.ext AND t.connectorId == @connector_id
+                        FILTER t._key != claim.id AND ({aql_live_record("t")} OR t._key IN @ids)
+                        LIMIT 1
+                        RETURN true
+            )
+            // Inside a stream transaction this reads its snapshot, taken when the transaction began.
+            LET orphaned = @require_live_parent ? FIRST(
+                FOR row IN found
+                    FOR edge IN @@record_relations
+                        FILTER edge._to == row.r._id AND edge.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                        LET parent = DOCUMENT(edge._from)
+                        FILTER parent != null AND IS_SAME_COLLECTION(@@records, parent)
+                        FILTER parent.isDeleted == true AND parent._key NOT IN @ids
+                        LIMIT 1
+                        RETURN true
+            ) : null
+            LET ok = LENGTH(found) == LENGTH(@items) AND taken == null AND orphaned == null
+            LET releases = ok ? (
+                FOR claim IN @reclaims
+                    FOR h IN @@records
+                        FILTER h.externalRecordId == claim.ext AND h.connectorId == @connector_id
+                        FILTER h.isDeleted == true AND h._key NOT IN @ids
+                        RETURN {{
+                            key: h._key,
+                            patch: {{
+                                externalRecordId: CONCAT(@trashed_prefix, h._key),
+                                trashedExternalRecordId: h.externalRecordId
+                            }},
+                            restored: false
+                        }}
+            ) : []
+            LET restoring = ok ? (
+                FOR row IN found
+                    RETURN {{
+                        key: row.r._key,
+                        patch: MERGE(@cleared, {{ updatedAtTimestamp: @now }}, row.fields),
+                        restored: true
+                    }}
+            ) : []
+            FOR change IN APPEND(releases, restoring)
+                UPDATE change.key WITH change.patch IN @@records OPTIONS {{ keepNull: false }}
+                RETURN change.restored ? NEW._key : null
+            """,
+            bind_vars={
+                "items": items,
+                "ids": [item["id"] for item in items],
+                "reclaims": reclaims,
+                "connector_id": connector_id,
+                "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
+                "require_live_parent": require_live_parent,
+                "batch_id": batch_id,
+                "cleared": cleared,
+                "now": get_epoch_timestamp_in_ms(),
+                "@records": CollectionNames.RECORDS.value,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+            },
+            transaction=transaction,
+        ) or []
+        return [key for key in rows if key is not None]
 
     async def delete_single_record(
         self,

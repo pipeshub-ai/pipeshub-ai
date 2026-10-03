@@ -361,6 +361,20 @@ class GraphTransactionStore(TransactionStore):
             include_trashed_roots=include_trashed_roots,
         )
 
+    async def restore_records(
+        self,
+        restores: list[dict],
+        batch_id: str | None,
+        *,
+        connector_id: str | None = None,
+        require_live_parent: bool = False,
+    ) -> list[str]:
+        """Bring records back from the trash within the active transaction."""
+        return await self.graph_provider.restore_records(
+            restores, batch_id, transaction=self.txn,
+            connector_id=connector_id, require_live_parent=require_live_parent,
+        )
+
     async def delete_single_record(self, record_id: str) -> dict:
         """Single-record delete within the active transaction — no containment walk."""
         return await self.graph_provider.delete_single_record(record_id, transaction=self.txn)

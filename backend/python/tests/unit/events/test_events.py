@@ -257,6 +257,23 @@ class TestCheckDuplicateMd5EdgeCases:
         assert result.skip_indexing is False
 
     @pytest.mark.asyncio
+    async def test_a_restored_record_without_its_checksum_is_hashed_again_and_indexed(self) -> None:
+        """A restore clears md5Checksum and keeps virtualRecordId; unchanged content must
+        get its checksum back and be indexed, never matched against itself."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = []
+        doc = {"_key": "restored-1", "virtualRecordId": "vr-old", "recordType": "FILE", "sizeInBytes": 4}
+
+        with patch.object(ep, "update_record_fields", new_callable=AsyncMock, return_value=True) as update:
+            result = await ep._check_duplicate_by_md5(b"same", doc)
+
+        md5 = ep._hash_for_dedup(b"same", "FILE", None)
+        update.assert_awaited_once_with(doc, {"md5Checksum": md5})
+        assert gp.find_duplicate_records.await_args.kwargs["record_key"] == "restored-1"
+        assert gp.find_duplicate_records.await_args.kwargs["md5_checksum"] == md5
+        assert result.skip_indexing is False
+
+    @pytest.mark.asyncio
     async def test_completed_without_virtual_record_id_not_matched(self):
         """A COMPLETED duplicate without virtualRecordId is NOT treated as processed."""
         ep, _, _, gp = _make_event_processor()
