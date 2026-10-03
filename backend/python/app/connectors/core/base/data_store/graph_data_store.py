@@ -36,6 +36,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -174,7 +175,11 @@ class GraphTransactionStore(TransactionStore):
         return AppMetadata.from_db_document(doc) if doc else None
 
     async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
-        return await self.graph_provider.get_record_by_external_id(connector_id, external_id, transaction=self.txn)
+        # Sync decides create-or-update on this answer; hiding a trashed record
+        # would mint a second record for the same source item.
+        return await self.graph_provider.get_record_by_external_id(
+            connector_id, external_id, transaction=self.txn, visibility=RecordVisibility.ALL
+        )
 
     async def get_record_by_external_revision_id(self, connector_id: str, external_revision_id: str) -> Optional[Record]:
         return await self.graph_provider.get_record_by_external_revision_id(connector_id, external_revision_id, transaction=self.txn)
@@ -190,6 +195,7 @@ class GraphTransactionStore(TransactionStore):
         is_placeholder: Optional[bool] = None,
         after_key: Optional[str] = None,
         exclude_statuses: Optional[list[str]] = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Get records by status. Returns properly typed Record instances.
 
@@ -207,6 +213,7 @@ class GraphTransactionStore(TransactionStore):
             is_placeholder=is_placeholder,
             after_key=after_key,
             exclude_statuses=exclude_statuses,
+            visibility=visibility,
         )
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
@@ -308,7 +315,7 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_records_recursive(
         self, record_ids: list[str], connector_id: str, cascade_children: bool = True,
-        within_folder_id: str | None = None,
+        within_folder_id: str | None = None, *, include_trashed_roots: bool = False,
     ) -> dict:
         """Delete records within the active transaction.
 
@@ -318,7 +325,7 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.delete_records_recursive(
             record_ids, connector_id, transaction=self.txn, cascade_children=cascade_children,
-            within_folder_id=within_folder_id,
+            within_folder_id=within_folder_id, include_trashed_roots=include_trashed_roots,
         )
 
     async def delete_single_record(self, record_id: str) -> dict:

@@ -29,6 +29,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +262,7 @@ class TestDelegateMethods:
             record_group_id="rg-key",
             limit=100,
             after_key="after",
+            visibility=RecordVisibility.LIVE,
         )
 
     @pytest.mark.asyncio
@@ -320,6 +322,7 @@ class TestDelegateMethods:
             is_placeholder=True,
             after_key=None,
             exclude_statuses=None,
+            visibility=RecordVisibility.LIVE,
         )
 
     @pytest.mark.asyncio

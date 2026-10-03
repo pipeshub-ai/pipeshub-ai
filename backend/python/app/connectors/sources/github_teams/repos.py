@@ -59,6 +59,7 @@ from app.connectors.core.base.error.stream_errors import (
 from app.connectors.core.base.sync_point.sync_point import generate_record_sync_point_key
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.models.entities import CodeFileRecord, FileRecord, Record, RecordGroupType, RecordType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 from .constants import (
     CODE_FILE_MAX_SIZE_BYTES,
@@ -383,12 +384,18 @@ class ReposSync:
         external_group_id = f"{repo.id}-code-repository"
         try:
             existing = await self._list_code_records_by_path(external_group_id)
+            # Listed apart so the valve below judges the walk by live records only,
+            # and a trashed record sharing a live one's path cannot hide it.
+            trashed = await self._list_code_records_by_path(
+                external_group_id, visibility=RecordVisibility.DELETED
+            )
         except Exception as e:
             self.logger.error("Could not list code records for pruning in %s: %s", repo.full_name, e, exc_info=True)
             return
 
         stale = {path: rec_id for path, rec_id in existing.items() if path not in walked_paths}
-        if not stale:
+        stale_trashed = {path: rec_id for path, rec_id in trashed.items() if path not in walked_paths}
+        if not stale and not stale_trashed:
             return
         if (
             len(stale) > REPO_DELETE_VALVE_MIN_ABSOLUTE
@@ -402,16 +409,31 @@ class ReposSync:
             )
             return
 
-        self.logger.info("Pruning %s deleted code record(s) from %s", len(stale), repo.full_name)
+        self.logger.info(
+            "Pruning %s deleted code record(s) from %s", len(stale) + len(stale_trashed), repo.full_name
+        )
         # Deepest-first so a stale folder is deleted only after its stale
         # children — the same bottom-up order _cleanup_emptied_folders uses.
-        ordered_ids = [stale[p] for p in sorted(stale, key=lambda p: p.count("/"), reverse=True)]
+        pruned = [*stale.items(), *stale_trashed.items()]
+        ordered_ids = [rec_id for _, rec_id in sorted(pruned, key=lambda item: item[0].count("/"), reverse=True)]
         try:
-            await c.data_entities_processor.on_records_deleted_cascade(ordered_ids, c.connector_id)
+            result = await c.data_entities_processor.on_records_deleted_cascade(
+                ordered_ids, c.connector_id, include_trashed_roots=True
+            )
         except Exception as e:
             self.logger.error("Failed to prune deleted code records in %s: %s", repo.full_name, e, exc_info=True)
+            return
+        failed = [f.get("record_id") for f in (result or {}).get("failed_records") or []]
+        if not (result or {}).get("success", False) or failed:
+            self.logger.error(
+                "Could not prune %s of %s deleted code record(s) in %s: %s",
+                len(failed) or len(ordered_ids), len(ordered_ids), repo.full_name,
+                failed[:20] or (result or {}).get("reason"),
+            )
 
-    async def _list_code_records_by_path(self, external_group_id: str) -> dict[str, str]:
+    async def _list_code_records_by_path(
+        self, external_group_id: str, visibility: RecordVisibility = RecordVisibility.LIVE
+    ) -> dict[str, str]:
         """``{repo_path: record_id}`` for every record under a code record group.
 
         Folders are ``FileRecord``s with no ``file_path`` attribute, so their
@@ -429,6 +451,7 @@ class ReposSync:
                 external_group_id=external_group_id,
                 limit=page_size,
                 after_key=after_key,
+                visibility=visibility,
             )
             if not page:
                 break

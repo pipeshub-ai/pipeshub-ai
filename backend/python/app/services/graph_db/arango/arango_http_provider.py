@@ -142,6 +142,12 @@ from app.schema.arango.edges import (
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    aql_live_record,
+    aql_record_visibility,
+    is_live_record,
+)
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
@@ -804,6 +810,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["md5Checksum"],
+        )
+
+        # SPARSE: only trashed records carry deletedAtTimestamp, so the index
+        # holds just the trash and gives the purge a sorted keyset walk.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["deletedAtTimestamp", "_key"],
+            sparse=True,
         )
 
         # COMPOSITE: orgId + recordType — gallery listing filters ARTIFACT
@@ -3408,13 +3422,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         external_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> Record | None:
         """Get record by external ID"""
         query = f"""
         FOR doc IN {CollectionNames.RECORDS.value}
             FILTER doc.externalRecordId == @external_id
             AND doc.connectorId == @connector_id
+            AND {aql_record_visibility("doc", visibility)}
             LIMIT 1
             RETURN doc
         """
@@ -3958,6 +3974,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         is_placeholder: bool | None = None,
         after_key: str | None = None,
         exclude_statuses: list[str] | None = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """
         Get records by their indexing status with pagination support.
@@ -4044,6 +4061,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FILTER record.orgId == @org_id
                 AND record.connectorId == @connector_id
                 AND (@status_filters == null OR LENGTH(@status_filters) == 0 OR record.indexingStatus IN @status_filters)
+                AND {aql_record_visibility("record", visibility)}
                 {record_group_clause}
                 {placeholder_clause}
             {exclude_clause}
@@ -4885,6 +4903,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.webUrl == @weburl
                 {"AND record.orgId == @org_id" if org_id else ""}
+                AND {aql_live_record("record")}
                 RETURN record
             """
 
@@ -4924,7 +4943,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         connector_id: str,
         parent_external_record_id: str,
         record_type: str | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """
         Get all child records for a parent record by parent_external_record_id.
@@ -4950,6 +4970,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER record.externalParentId != null
                     AND record.externalParentId == @parent_id
                     AND record.connectorId == @connector_id
+                    AND {aql_record_visibility("record", visibility)}
             """
 
             bind_vars = {
@@ -7005,6 +7026,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 AND record._key != @record_id
                 AND record.indexingStatus == @queued_status
                 AND record.orgId == @org_id
+                AND {aql_live_record("record")}
             """
 
             bind_vars = {
@@ -8698,7 +8720,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             record = await self.get_record_by_external_id(
                 connector_id,
                 external_id,
-                transaction=transaction
+                transaction=transaction,
+                visibility=RecordVisibility.ALL,
             )
             if not record:
                 self.logger.warning(f"⚠️ Record {external_id} not found in {connector_id}")
@@ -8744,7 +8767,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             record = await self.get_record_by_external_id(
                 connector_id,
                 external_id,
-                transaction=transaction
+                transaction=transaction,
+                visibility=RecordVisibility.ALL,
             )
             if not record:
                 self.logger.warning(f"⚠️ Record {external_id} not found in {connector_id}")
@@ -10884,11 +10908,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Generic method that can be used for any connector.
         """
-        query = """
+        query = f"""
         FOR doc IN records
             FILTER doc.orgId == @org_id
             AND doc.indexingStatus == "FAILED"
             AND doc.connectorId == @connector_id
+            AND {aql_live_record("doc")}
 
             LET active_users = (
                 FOR perm IN permission
@@ -10901,10 +10926,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             FILTER LENGTH(active_users) > 0
 
-            RETURN {
+            RETURN {{
                 record: doc,
                 users: active_users
-            }
+            }}
         """
 
         try:
@@ -10930,8 +10955,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Generic method using filters instead of embedded AQL.
         """
-        # Use generic get_nodes_by_filters method
-        return await self.get_nodes_by_filters(
+        records = await self.get_nodes_by_filters(
             collection=CollectionNames.RECORDS.value,
             filters={
                 "orgId": org_id,
@@ -10939,6 +10963,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "connectorId": connector_id
             }
         )
+        return [r for r in records if is_live_record(r)]
 
     async def organization_exists(
         self,
@@ -12465,7 +12490,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER child.isDeleted != true
                     LET file_doc = DOCUMENT(@@files_collection, child._key)
                     FILTER file_doc != null AND file_doc.isFile == true
-                    RETURN {name_lower: LOWER(child.recordName), mime_type: file_doc.mimeType}
+                    RETURN {name_lower: LOWER(child.recordName), mime_type: NOT_NULL(child.mimeType, file_doc.mimeType)}
                 """
                 bind_vars: dict[str, Any] = {
                     "parent_from": parent_from,
@@ -12491,7 +12516,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             RETURN 1
                     )
                     FILTER parent_edge == null
-                    RETURN {name_lower: LOWER(child.recordName), mime_type: file_doc.mimeType}
+                    RETURN {name_lower: LOWER(child.recordName), mime_type: NOT_NULL(child.mimeType, file_doc.mimeType)}
                 """
                 bind_vars = {
                     "parent_from": parent_from,
@@ -12909,13 +12934,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER parent_edge == null
                     LET file_doc = DOCUMENT(@@files_collection, file_record._key)
                     FILTER file_doc != null AND file_doc.isFile == true
-                    FILTER file_doc.mimeType == @mime_type
+                    LET mime_type = NOT_NULL(file_record.mimeType, file_doc.mimeType)
+                    FILTER mime_type == @mime_type
                     LET file_name_l = LOWER(file_record.recordName)
                     FILTER file_name_l IN @name_variants
                     RETURN {
                         _key: file_record._key,
                         name: file_record.recordName,
-                        mimeType: file_doc.mimeType
+                        mimeType: mime_type
                     }
                 """
                 bind_vars = {
@@ -12940,13 +12966,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER @exclude_record_id == null OR file_record._key != @exclude_record_id
                     LET file_doc = DOCUMENT(@@files_collection, file_record._key)
                     FILTER file_doc != null AND file_doc.isFile == true
-                    FILTER file_doc.mimeType == @mime_type
+                    LET mime_type = NOT_NULL(file_record.mimeType, file_doc.mimeType)
+                    FILTER mime_type == @mime_type
                     LET file_name_l = LOWER(file_record.recordName)
                     FILTER file_name_l IN @name_variants
                     RETURN {
                         _key: file_record._key,
                         name: file_record.recordName,
-                        mimeType: file_doc.mimeType
+                        mimeType: mime_type
                     }
                 """
                 bind_vars = {
@@ -13185,6 +13212,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None,
         cascade_children: bool = True,
         within_folder_id: str | None = None,
+        *,
+        include_trashed_roots: bool = False,
     ) -> dict:
         """Delete records and their owned descendants, scoped by connector_id.
 
@@ -13223,7 +13252,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 LET checked = (
                     FOR rid IN @record_ids
                         LET rec = DOCUMENT('records', rid)
-                        FILTER rec != null AND rec.isDeleted != true
+                        FILTER rec != null AND (@include_trashed_roots OR rec.isDeleted != true)
                         FILTER rec.connectorId == @connector_id
                         // The containment path's edge keys, so they can be locked before the delete.
                         LET inside = @folder_id == null ? [] : FIRST(
@@ -13277,6 +13306,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "record_ids": record_ids,
                         "connector_id": connector_id,
                         "folder_id": within_folder_id,
+                        "include_trashed_roots": include_trashed_roots,
                         "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                         "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                     },
@@ -15801,6 +15831,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     LET is_rg = IS_SAME_COLLECTION("recordGroups", inherited_node)
                     LET is_record = IS_SAME_COLLECTION("records", inherited_node)
                     FILTER is_rg OR is_record
+                    FILTER is_rg OR {aql_live_record("inherited_node")}
                     {inherited_access}
                     FILTER (
                         (is_rg AND ({scope_filter_rg_inline})) OR
@@ -15835,7 +15866,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER perm._from == principal.id AND perm.type == "USER"
                 FILTER STARTS_WITH(perm._to, "records/")
                 LET record = DOCUMENT(perm._to)
-                FILTER record != null AND record.orgId == @org_id
+                FILTER record != null AND record.orgId == @org_id AND {aql_live_record("record")}
                 FILTER principal.connectorId == null OR record.connectorId == principal.connectorId
                 LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
                 LET record_parent_app = record_app
@@ -15857,7 +15888,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR record, groupEdge IN 1..1 ANY group._id permission
                     FILTER groupEdge.type == "GROUP" OR groupEdge.type == "ROLE"
                     FILTER IS_SAME_COLLECTION("records", record)
-                    FILTER record.orgId == @org_id
+                    FILTER record.orgId == @org_id AND {aql_live_record("record")}
                     FILTER principal.connectorId == null OR record.connectorId == principal.connectorId
                     LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
                     LET record_parent_app = record_app
@@ -15878,7 +15909,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR record, orgPerm IN 1..1 ANY org._id permission
                     FILTER orgPerm.type == "ORG"
                     FILTER IS_SAME_COLLECTION("records", record)
-                    FILTER record.orgId == @org_id
+                    FILTER record.orgId == @org_id AND {aql_live_record("record")}
                     FILTER principal.connectorId == null OR record.connectorId == principal.connectorId
                     LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
                     LET record_parent_app = record_app
@@ -15923,7 +15954,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR edge IN inheritPermissions
                     FILTER edge._to == seed_app._id
                     LET record = DOCUMENT(edge._from)
-                    FILTER record != null AND record.orgId == @org_id
+                    FILTER record != null AND record.orgId == @org_id AND {aql_live_record("record")}
                     LET record_parent_app = DOCUMENT(CONCAT("apps/", record.connectorId))
                     {scope_filter_record}
                     {record_prefilter}
@@ -16184,7 +16215,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }
                 )[0] : null
 
-                LET record_node = record != null ? (
+                LET record_node = record != null AND __LIVE_RECORD__ ? (
                     LET file_info = FIRST(
                         FOR file_edge IN isOfType FILTER file_edge._from == record._id
                         LET file = DOCUMENT(file_edge._to) RETURN file
@@ -16234,7 +16265,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
 
         RETURN { nodes: hydrated_nodes }
-        """
+        """.replace("__LIVE_RECORD__", aql_live_record("record"))
 
     async def get_knowledge_hub_search(
         self,
@@ -18294,6 +18325,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             record_doc = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
             if not record_doc:
                 self.logger.warning(f"⚠️ Record not found: {record_id}")
+                return None
+            if not is_live_record(record_doc):
+                self.logger.info("Record %s is in the trash; no access", record_id)
                 return None
 
             # Build app record filter for connector records
@@ -20973,6 +21007,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER record.md5Checksum == @md5_checksum
                 AND record._key != @record_key
                 AND record.orgId == @org_id
+                AND {aql_live_record("record")}
             """
 
             bind_vars = {
@@ -21082,6 +21117,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER record.md5Checksum == @md5_checksum
                 AND record._key != @record_id
                 AND record.indexingStatus == @queued_status
+                AND {aql_live_record("record")}
             """
 
             bind_vars = {
@@ -21376,6 +21412,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 metadata_filter_clause, time_range, bind_vars
             )
 
+            live_record = aql_live_record("record")
             query = f"""
             LET userDoc = FIRST(
                 FOR user IN @@users
@@ -21397,6 +21434,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER IS_SAME_COLLECTION("records", record)
                     FILTER record.connectorId == @connectorId
                     FILTER record.indexingStatus == @completedStatus
+                    FILTER {live_record}
                     {metadata_filter_clause}
                     RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
@@ -21410,6 +21448,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
+                        FILTER {live_record}
                         {metadata_filter_clause}
                         RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
@@ -21421,6 +21460,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
+                        FILTER {live_record}
                         {metadata_filter_clause}
                         RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
@@ -21433,6 +21473,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
+                        FILTER {live_record}
                         {metadata_filter_clause}
                         RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
@@ -21447,6 +21488,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER IS_SAME_COLLECTION("records", record)
                             FILTER record.connectorId == @connectorId
                             FILTER record.indexingStatus == @completedStatus
+                            FILTER {live_record}
                             {metadata_filter_clause}
                             RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
@@ -21460,6 +21502,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER IS_SAME_COLLECTION("records", record)
                             FILTER record.connectorId == @connectorId
                             FILTER record.indexingStatus == @completedStatus
+                            FILTER {live_record}
                             {metadata_filter_clause}
                             RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
@@ -21472,6 +21515,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
+                        FILTER {live_record}
                         {metadata_filter_clause}
                         RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
@@ -21638,6 +21682,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 metadata_filter_clause, time_range, bind_vars
             )
 
+            live_record = aql_live_record("record")
             query = f"""
             LET userDoc = FIRST(
                 FOR user IN @@users
@@ -21654,6 +21699,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER IS_SAME_COLLECTION("records", record)
                     FILTER record.origin == "UPLOAD"
                     FILTER record.indexingStatus == @completedStatus
+                    FILTER {live_record}
                     {metadata_filter_clause}
                     RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
@@ -21671,6 +21717,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER IS_SAME_COLLECTION("records", record)
                     FILTER record.origin == "UPLOAD"
                     FILTER record.indexingStatus == @completedStatus
+                    FILTER {live_record}
                     {metadata_filter_clause}
                     RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
@@ -22446,7 +22493,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_records_by_record_ids(
         self,
         record_ids: list[str],
-        org_id: str
+        org_id: str,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[dict[str, Any]]:
         """
         Batch fetch full record documents by their _key (record IDs).
@@ -22468,10 +22516,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             self.logger.debug(f"Fetching {len(record_ids)} records by record IDs")
 
-            query = """
+            query = f"""
             FOR record IN @@records
                 FILTER record._key IN @record_ids
                   AND record.orgId == @orgId
+                  AND {aql_record_visibility("record", visibility)}
                 RETURN record
             """
 

@@ -29,6 +29,8 @@ from msgraph_core.middleware.async_graph_transport import AsyncGraphTransport
 from packaging.version import Version
 from requests.structures import CaseInsensitiveDict
 
+from app.services.graph_db.common.record_visibility import is_live_record
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -308,7 +310,7 @@ class FakeRecordsDb:
 
         children = []
         for stored in self.records.values():
-            if stored.parent_external_record_id != parent_external_record_id:
+            if stored.parent_external_record_id != parent_external_record_id or not is_live_record(stored):
                 continue
             stored_type = getattr(stored.record_type, "value", stored.record_type)
             if record_type and stored_type != record_type:

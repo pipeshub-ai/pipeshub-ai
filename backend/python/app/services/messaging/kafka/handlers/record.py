@@ -32,6 +32,7 @@ from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import EntityType
 from app.modules.transformers.transformer import TransformContext
 from app.services.cache.invalidation_hooks import notify_record_indexed
+from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_PENDING_FIELD,
 )
@@ -999,6 +1000,24 @@ class RecordEventHandler(BaseEventService):
                 # and nothing to fail, so drain the message like the delete path
                 # does instead of retrying it three times.
                 self.logger.error(f"❌ Record {record_id} not found in database")
+                yield PipelineEvent(
+                    event=IndexingEvent.PARSING_COMPLETE,
+                    data=PipelineEventData(record_id=record_id),
+                )
+                yield PipelineEvent(
+                    event=IndexingEvent.INDEXING_COMPLETE,
+                    data=PipelineEventData(record_id=record_id),
+                )
+                return
+
+            if not is_live_record(record):
+                # Same as not found: indexing a record in the trash would put
+                # back the vectors its delete removed. Cleared so the finally
+                # block does not hand its status on to queued duplicates.
+                self.logger.info(
+                    "Record %s is in the trash; dropping its %s event", record_id, event_type
+                )
+                record = None
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
                     data=PipelineEventData(record_id=record_id),

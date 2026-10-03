@@ -2715,7 +2715,7 @@ class TestFolderFilter:
         c.sync_filters = _folder_filter(["reports"])
         self._prepare(c, {"reports/": []})
         processor = c.data_entities_processor
-        processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a: [_out_of_scope_record()])
+        processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a, **kw: [_out_of_scope_record()])
         processor.on_record_deleted = AsyncMock(side_effect=[Exception("graph down"), None])
 
         await c._sync_container("c1")
