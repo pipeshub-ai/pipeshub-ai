@@ -20,7 +20,7 @@ import unicodedata
 import uuid
 from collections import defaultdict
 from logging import Logger
-from typing import TYPE_CHECKING, Any, Optional, Dict
+from typing import TYPE_CHECKING, Any, Optional, Dict, TypeVar
 
 from fastapi import Request
 from app.config.configuration_service import ConfigurationService
@@ -183,7 +183,7 @@ from app.services.graph_db.vector_membership_queries import (
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, Callable
 
 # Constants for ArangoDB document ID format
 ARANGO_ID_PARTS_COUNT = 2  # ArangoDB document IDs are in format "collection/key"
@@ -243,6 +243,7 @@ NODE_COLLECTIONS = [
 
 _WRITE_CONFLICT_ATTEMPTS = 6
 _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
+_T = TypeVar("_T")
 
 
 def _is_write_conflict(exc: Exception) -> bool:
@@ -17353,8 +17354,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
             raise ValueError("taxonomy node needs an id")
         doc = self._translate_node_to_arango(dict(node))
         doc.pop("aliases", None)
-        result = await self.http_client.batch_insert_documents(
-            collection, [doc], txn_id=transaction, overwrite=True, overwrite_mode="ignore",
+        # Records that resolve the same new name create it at once, and the
+        # insert fails with errorNum 1200 while another record's insert or
+        # alias update holds the key, rather than waiting for it.
+        result = await self._retry_write_conflicts(
+            lambda: self.http_client.batch_insert_documents(
+                collection, [doc], txn_id=transaction, overwrite=True, overwrite_mode="ignore",
+            ),
+            transaction,
         )
         if (result or {}).get("errors", 0):
             raise RuntimeError(
@@ -17419,20 +17426,33 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # Records resolving to one popular node add aliases to it at once, and
         # ArangoDB rejects all but one concurrent UPDATE of a document with
         # errorNum 1200 even outside a stream transaction. The merge is
-        # idempotent, so a retry cannot double-apply anything. Inside a
-        # caller's transaction the conflict is the caller's to handle.
-        for attempt in range(_WRITE_CONFLICT_ATTEMPTS):
+        # idempotent, so a retry cannot double-apply anything.
+        await self._retry_write_conflicts(
+            lambda: self.execute_query(query, bind_vars=bind_vars, transaction=transaction),
+            transaction,
+        )
+
+    @staticmethod
+    async def _retry_write_conflicts(
+        write: Callable[[], Awaitable[_T]], transaction: str | None,
+    ) -> _T:
+        """Run an idempotent single write, retrying errorNum 1200 with backoff.
+
+        Inside a caller's transaction the conflict has aborted it, so it is the
+        caller's to handle and is raised at once."""
+        attempt = 0
+        while True:
             try:
-                await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
-                return
+                return await write()
             except Exception as exc:
+                attempt += 1
                 if (
                     transaction is not None
-                    or attempt == _WRITE_CONFLICT_ATTEMPTS - 1
+                    or attempt >= _WRITE_CONFLICT_ATTEMPTS
                     or not _is_write_conflict(exc)
                 ):
                     raise
-                await asyncio.sleep(random.uniform(0.02, 0.1) * (attempt + 1))
+                await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)
 
     async def get_user_app_ids(
         self,
