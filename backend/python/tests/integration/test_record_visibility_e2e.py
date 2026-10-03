@@ -46,6 +46,9 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.core.base.data_processor import (
+    data_source_entities_processor as processor_module,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -53,6 +56,9 @@ from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.registry.folder_scope import (
     FolderScope,
     remove_records_outside_scope,
+)
+from app.connectors.sources.atlassian.confluence_cloud.connector import (
+    ConfluenceConnector,
 )
 from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     ConfluenceDataCenterConnector,
@@ -410,7 +416,25 @@ async def _by_record_ids(w: _World, visibility: RecordVisibility) -> set[str]:
     ))
 
 
+async def _by_virtual_record_id(w: _World, visibility: RecordVisibility) -> set[str]:
+    return set(await w.graph.get_records_by_virtual_record_id(
+        w.shared_vrid, raise_on_error=True, visibility=visibility,
+    ))
+
+
 # method -> (probe, live names, trashed names) for the same seed
+async def _by_revision(w: _World, visibility: RecordVisibility) -> set[str]:
+    found = set()
+    for name in ("live", "trashed"):
+        await w.graph.update_node(w.ids[name], CollectionNames.RECORDS.value, {"externalRevisionId": f"rev-{name}"})
+        record = await w.graph.get_record_by_external_revision_id(
+            w.connector_id, f"rev-{name}", visibility=visibility
+        )
+        if record is not None:
+            found.add(record.id)
+    return found
+
+
 PARAM_PROBES = {
     "get_record_by_external_id": (_by_external_id, {"live"}, {"trashed"}),
     "get_records_by_status": (_by_status, {"live_failed"}, {"trashed_failed"}),
@@ -420,6 +444,8 @@ PARAM_PROBES = {
         {"trashed", "trashed_shared", "trashed_failed"},
     ),
     "get_records_by_record_ids": (_by_record_ids, {"live"}, {"trashed"}),
+    "get_records_by_virtual_record_id": (_by_virtual_record_id, {"live_shared"}, {"trashed_shared"}),
+    "get_record_by_external_revision_id": (_by_revision, {"live"}, {"trashed"}),
 }
 
 
@@ -446,7 +472,6 @@ EXERCISED_HERE: dict[str, str] = {
     "get_failed_records_with_active_users": "test_failed_records",
     "get_record_by_weburl": "test_weburl_lookup",
     "get_entity_candidate_records": "test_entity_candidate_records",
-    "get_records_by_virtual_record_id": "test_vector_delete_authority",
     "get_virtual_record_ids_shared_outside_connector": "test_content_shared_outside_a_deleted_connector",
     "get_knowledge_hub_children": "test_knowledge_hub_browse",
     "get_knowledge_hub_search": "test_knowledge_hub_search",
@@ -698,6 +723,26 @@ async def test_a_full_listing_removes_a_trashed_record_the_source_no_longer_has(
         assert await world.graph.get_document(world.ids[name], records) is not None, name
 
 
+async def test_with_the_trash_on_a_full_listing_leaves_a_trashed_record_for_the_purge(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Passing an already-trashed record on must not count as a failed removal,
+    or the full sync would report failure and retry it every run."""
+    monkeypatch.setattr(processor_module, "is_soft_delete_enabled", AsyncMock(return_value=True))
+    processor = _processor(world)
+    connector = SimpleNamespace(
+        data_entities_processor=processor, connector_id=world.connector_id, logger=logger
+    )
+    listed = {world.ext(name) for name in (*LIVE_CONNECTOR, *TRASHED_CONNECTOR) if name != "trashed"}
+    before = await world.graph.get_document(world.ids["trashed"], CollectionNames.RECORDS.value)
+
+    assert await NextcloudConnector._remove_records_not_listed(connector, listed) is True
+
+    after = await world.graph.get_document(world.ids["trashed"], CollectionNames.RECORDS.value)
+    assert after is not None and after["isDeleted"] is True
+    assert (after["deleteSource"], after["deleteBatchId"]) == (before["deleteSource"], before["deleteBatchId"])
+
+
 async def test_a_record_group_listing_finds_the_trash_only_when_asked(world: _World) -> None:
     """The listing the folder-scope cleanup and GitHub's prune walk, on the real store."""
     processor = _processor(world)
@@ -777,6 +822,26 @@ async def test_the_cascade_delete_takes_a_trashed_root_only_when_asked(world: _W
     assert await g.get_document(rid, CollectionNames.FILES.value) is None
 
 
+async def test_with_the_trash_on_the_github_prune_leaves_a_trashed_record_for_the_purge(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(processor_module, "is_soft_delete_enabled", AsyncMock(return_value=True))
+    repo = SimpleNamespace(id=4243, full_name="org/repo")
+    await _put_shared_records_in_group(world, f"{repo.id}-code-repository", {
+        "live_shared": blob_external_id(repo.id, "kept.py"),
+        "trashed_shared": blob_external_id(repo.id, "gone.py"),
+    })
+    connector = SimpleNamespace(
+        data_entities_processor=_processor(world), connector_id=world.connector_id, logger=MagicMock()
+    )
+
+    await ReposSync(connector)._prune_deleted_paths(repo, {"kept.py"})
+
+    doc = await world.graph.get_document(world.ids["trashed_shared"], CollectionNames.RECORDS.value)
+    assert doc is not None and doc["isDeleted"] is True
+    assert not connector.logger.error.called, connector.logger.error.call_args_list
+
+
 async def test_a_child_listing_finds_the_trash_only_when_asked(world: _World) -> None:
     """The walk Confluence's page delete uses to collect comments, on the real store."""
     processor = _processor(world)
@@ -811,3 +876,94 @@ async def test_confluence_dc_removes_a_trashed_page_and_its_trashed_comment(worl
     assert await world.graph.get_document(page_id, records) is None
     assert await world.graph.get_document(comment_id, records) is None
     assert await world.graph.get_document(world.ids["live_shared"], records) is not None
+
+
+async def _attach(world: _World, parent: str, child: str) -> None:
+    now = get_epoch_timestamp_in_ms()
+    records = CollectionNames.RECORDS.value
+    await world.graph.batch_create_edges(
+        [{"from_id": world.ids[parent], "from_collection": records, "to_id": world.ids[child],
+          "to_collection": records, "relationshipType": "ATTACHMENT",
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+        collection=CollectionNames.RECORD_RELATIONS.value,
+    )
+
+
+async def test_the_trash_walks_from_a_trashed_root_only_when_asked(world: _World) -> None:
+    """A trashed root keeps its batch; with include_trashed_roots its live attachment is trashed too."""
+    g, records = world.graph, CollectionNames.RECORDS.value
+    await _attach(world, "trashed_shared", "live")
+    before = await g.get_document(world.ids["trashed_shared"], records)
+
+    refused = await g.soft_delete_records(
+        [world.ids["trashed_shared"]], world.connector_id, delete_source="CONNECTOR", batch_id="b-refused",
+    )
+    assert refused["successfully_deleted"] == 0 and refused["soft_deleted_records"] == []
+    assert (await g.get_document(world.ids["live"], records)).get("isDeleted") is not True
+
+    taken = await g.soft_delete_records(
+        [world.ids["trashed_shared"]], world.connector_id, delete_source="CONNECTOR", batch_id="b-taken",
+        follow=("ATTACHMENT",), include_trashed_roots=True,
+    )
+
+    assert taken["failed_records"] == [] and taken["successfully_deleted"] == 1, taken
+    assert [r["record_id"] for r in taken["soft_deleted_records"]] == [world.ids["live"]]
+    attachment = await g.get_document(world.ids["live"], records)
+    assert attachment["isDeleted"] is True and attachment["deleteBatchId"] == "b-taken"
+    root = await g.get_document(world.ids["trashed_shared"], records)
+    assert root["deleteBatchId"] == before["deleteBatchId"], "the trashed root keeps its own batch"
+
+
+async def test_with_the_trash_on_confluence_dc_trashes_what_hangs_under_a_trashed_page(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A trashed page the space no longer lists takes its live attachment to the trash, and the removal is done."""
+    monkeypatch.setattr(processor_module, "is_soft_delete_enabled", AsyncMock(return_value=True))
+    records = CollectionNames.RECORDS.value
+    await _attach(world, "trashed_shared", "live")
+    processor = _processor(world)
+    stored = await processor.get_records_by_status(world.connector_id, None, visibility=RecordVisibility.ALL)
+    pages = [r for r in stored if r.id in (world.ids["trashed_shared"], world.ids["live_shared"])]
+    connector = SimpleNamespace(
+        data_entities_processor=processor, connector_id=world.connector_id, logger=logger,
+        _cascade_succeeded=ConfluenceDataCenterConnector._cascade_succeeded,
+    )
+
+    assert await ConfluenceDataCenterConnector._delete_content_records(connector, pages) is True
+
+    for name in ("trashed_shared", "live_shared", "live"):
+        doc = await world.graph.get_document(world.ids[name], records)
+        assert doc is not None and doc["isDeleted"] is True, name
+
+
+@pytest.mark.parametrize("connector_class", [ConfluenceConnector, ConfluenceDataCenterConnector])
+@pytest.mark.parametrize("trash_on", [True, False])
+async def test_a_removed_space_keeps_its_group_while_records_in_the_trash_belong_to_it(
+    world: _World, monkeypatch: pytest.MonkeyPatch, connector_class: type, trash_on: bool,
+) -> None:
+    """With the trash on, the group and its BELONGS_TO edges stay for a restore; off, the space goes as on main."""
+    monkeypatch.setattr(processor_module, "is_soft_delete_enabled", AsyncMock(return_value=trash_on))
+    await _put_shared_records_in_group(world, "space-vis", {
+        "live_shared": "page-kept-vis", "trashed_shared": "page-trashed-vis",
+    })
+    records, groups = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value
+    processor = _processor(world)
+    stored = await processor.get_records_by_status(world.connector_id, None, visibility=RecordVisibility.ALL)
+    in_space = [r for r in stored if r.id in (world.ids["live_shared"], world.ids["trashed_shared"])]
+    connector = SimpleNamespace(
+        data_entities_processor=processor, connector_id=world.connector_id, logger=logger,
+        pages_sync_point=AsyncMock(), _cascade_succeeded=ConfluenceDataCenterConnector._cascade_succeeded,
+    )
+
+    assert await connector_class._remove_space(connector, "space-vis", in_space) is True
+
+    group = await world.graph.get_document(world.record_group_id, groups)
+    if trash_on:
+        assert group is not None, "the trash keeps the space"
+        for name in ("live_shared", "trashed_shared"):
+            doc = await world.graph.get_document(world.ids[name], records)
+            assert doc is not None and doc["isDeleted"] is True, name
+    else:
+        assert group is None
+        for name in ("live_shared", "trashed_shared"):
+            assert await world.graph.get_document(world.ids[name], records) is None, name

@@ -881,6 +881,24 @@ class RecordEventHandler(BaseEventService):
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="bulk_delete", count=len(virtual_record_ids)))
                 return
 
+            if event_type == EventTypes.SOFT_DELETE_RECORDS.value:
+                # Records moved to the trash: their vectors go, through the same
+                # duplicate-safe check as a hard delete, and nothing else. The
+                # mapping row, stored content, uploaded file and Mongo document
+                # stay for the purge, which is also what restore needs.
+                virtual_record_ids = payload.get("virtualRecordIds") or []
+                result = await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
+                    virtual_record_ids, keep_mapping=True
+                )
+                if result.get("success") is False:
+                    raise IndexingError(
+                        "Trash vector cleanup did not complete; nothing was removed",
+                        details={"result": result, "batchId": payload.get("batchId")},
+                    )
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="soft_delete", count=len(virtual_record_ids)))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="soft_delete", count=len(virtual_record_ids)))
+                return
+
             if event_type == EventTypes.SYNC_VECTOR_MEMBERSHIP.value:
                 virtual_record_id = payload.get("virtualRecordId")
                 if virtual_record_id:

@@ -230,3 +230,28 @@ async def test_no_organisation_anywhere_deletes_nothing(service) -> None:
 
     assert (result["success"], result["code"]) == (False, 503)
     service.processor_for_kb.return_value.on_records_deleted_cascade.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", list(DELETES))
+@pytest.mark.parametrize("trash_on", [True, False])
+async def test_with_the_trash_on_the_files_stay_until_the_purge(service, kind, trash_on) -> None:
+    """A restore needs the original uploads, so a soft delete schedules no removal.
+
+    The flag is read once and handed to the cascade, so the two cannot disagree.
+    """
+    _writer(service)
+    cascade = AsyncMock(return_value={"success": True, "successfully_deleted": 1, "total_requested": 1})
+    service.processor_for_kb.return_value.on_records_deleted_cascade = cascade
+
+    with patch(
+        "app.connectors.sources.localKB.handlers.kb_service.is_soft_delete_enabled",
+        AsyncMock(return_value=trash_on),
+    ):
+        result = await DELETES[kind](service)
+
+    assert result["success"] is True
+    assert cascade.await_args.kwargs["soft_delete"] is trash_on
+    removals = [e for e in _published(service) if e["eventType"] == EventTypes.DELETE_STORED_DOCUMENTS.value]
+    assert bool(removals) is not trash_on
+    assert service.graph_provider.get_uploaded_document_ids.await_count == (0 if trash_on else 1)

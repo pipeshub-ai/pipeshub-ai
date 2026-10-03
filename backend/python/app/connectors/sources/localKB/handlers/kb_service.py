@@ -7,6 +7,7 @@ from app.config.constants.arangodb import (
     CollectionNames,
     ConnectorScopes,
     Connectors,
+    DeleteSource,
     OriginTypes,
     ProgressStatus,
 )
@@ -20,6 +21,7 @@ from app.connectors.services.vector_cleanup_events import (
 )
 from app.models.entities import FileRecord, RecordType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
+from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.retry import retry_async
@@ -1296,11 +1298,17 @@ class KnowledgeBaseService:
             # which cascades to remove the folder + all descendants (records/subfolders +
             # edges + files docs) and publishes a deleteRecord event per contained file,
             # so the router does not need to publish eventData for this path.
-            refused = await self._schedule_upload_removal(kb_id, record_ids=[folder_id])
-            if refused:
-                return refused
             processor = await self.processor_for_kb(kb_id)
-            cascade_result = await processor.on_records_deleted_cascade([folder_id], kb_id)
+            soft_delete = await is_soft_delete_enabled(processor.config_service)
+            if not soft_delete:
+                # The trash keeps uploaded files until the purge.
+                refused = await self._schedule_upload_removal(kb_id, record_ids=[folder_id])
+                if refused:
+                    return refused
+            cascade_result = await processor.on_records_deleted_cascade(
+                [folder_id], kb_id, delete_source=DeleteSource.USER, deleted_by_user_id=user_key,
+                soft_delete=soft_delete,
+            )
             if not (cascade_result and cascade_result.get("success")):
                 # The recursive delete itself failed (not just the cleanup-event
                 # publish) — do not report a success the graph doesn't back up.
@@ -1316,7 +1324,7 @@ class KnowledgeBaseService:
                 # failed after retries. Report the deletion as what it is
                 # (successful) while flagging that embeddings need reconciliation.
                 response["vectorCleanupPending"] = True
-                response["vectorCleanupFailedRecordIds"] = cascade_result["vectorCleanupFailedRecordIds"]
+                response["vectorCleanupFailedRecordIds"] = cascade_result.get("vectorCleanupFailedRecordIds", [])
             return response
 
         except Exception as e:
@@ -1483,11 +1491,17 @@ class KnowledgeBaseService:
             # Delete through the shared processor: recursively deletes each record + its
             # subtree, cascades all edges + type docs, publishes a deleteRecord per
             # indexed record (Qdrant cleanup). Returns the provider result for the response.
-            refused = await self._schedule_upload_removal(kb_id, record_ids=record_ids)
-            if refused:
-                return refused
             processor = await self.processor_for_kb(kb_id)
-            result = await processor.on_records_deleted_cascade(record_ids, kb_id)
+            soft_delete = await is_soft_delete_enabled(processor.config_service)
+            if not soft_delete:
+                # The trash keeps uploaded files until the purge.
+                refused = await self._schedule_upload_removal(kb_id, record_ids=record_ids)
+                if refused:
+                    return refused
+            result = await processor.on_records_deleted_cascade(
+                record_ids, kb_id, delete_source=DeleteSource.USER, deleted_by_user_id=user_key,
+                soft_delete=soft_delete,
+            )
             if result and result.get("success"):
                 result.pop("eventData", None)
                 # Bulk-delete best practice: none of the requested ids matched (foreign /
@@ -1546,12 +1560,17 @@ class KnowledgeBaseService:
             # folder, the KB root, or moved out since the request began is kept and
             # reported as failed. Its files are safe in the removal scheduled here,
             # since the consumer skips any file a record still lists.
-            refused = await self._schedule_upload_removal(kb_id, record_ids=record_ids)
-            if refused:
-                return refused
             processor = await self.processor_for_kb(kb_id)
+            soft_delete = await is_soft_delete_enabled(processor.config_service)
+            if not soft_delete:
+                # The trash keeps uploaded files until the purge.
+                refused = await self._schedule_upload_removal(kb_id, record_ids=record_ids)
+                if refused:
+                    return refused
             result = await processor.on_records_deleted_cascade(
-                record_ids, kb_id, within_folder_id=folder_id
+                record_ids, kb_id, within_folder_id=folder_id,
+                delete_source=DeleteSource.USER, deleted_by_user_id=user_key,
+                soft_delete=soft_delete,
             )
             if result and result.get("success"):
                 result.pop("eventData", None)

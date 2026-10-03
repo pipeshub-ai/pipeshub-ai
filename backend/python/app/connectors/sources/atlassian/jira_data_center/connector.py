@@ -22,6 +22,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
     Connectors,
+    DeleteSource,
     ProgressStatus,
     RecordRelations,
     get_mime_type_for_extension,
@@ -93,6 +94,7 @@ from app.models.entities import (
     get_epoch_timestamp_in_ms,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
@@ -1050,6 +1052,7 @@ class JiraDataCenterConnector(BaseConnector):
             except Exception:
                 pass
 
+            soft_delete = await is_soft_delete_enabled(self.config_service)
             async with self.data_store_provider.transaction() as tx_store:
                 issue_record = await tx_store.get_record_by_issue_key(
                     connector_id=self.connector_id,
@@ -1072,19 +1075,39 @@ class JiraDataCenterConnector(BaseConnector):
                     issue_key, record_internal_id, issue_id,
                 )
 
-                attachment_count = await self._delete_direct_attachment_records(
-                    issue_id, tx_store,
-                )
+                if soft_delete:
+                    # The same set the hard delete below removes: the issue and its direct file children.
+                    attachments = await tx_store.get_records_by_parent(
+                        connector_id=self.connector_id,
+                        parent_external_record_id=issue_id,
+                        record_type=RecordType.FILE.value,
+                    )
+                else:
+                    attachment_count = await self._delete_direct_attachment_records(
+                        issue_id, tx_store,
+                    )
 
-                await tx_store.delete_records_and_relations(
-                    record_key=record_internal_id,
-                    hard_delete=True,
-                )
+                    await tx_store.delete_records_and_relations(
+                        record_key=record_internal_id,
+                        hard_delete=True,
+                    )
 
-                self.logger.info(
-                    "🗑️ Deleted issue %s (%s direct attachments)",
-                    issue_key, attachment_count,
-                )
+                    self.logger.info(
+                        "🗑️ Deleted issue %s (%s direct attachments)",
+                        issue_key, attachment_count,
+                    )
+                    return
+
+            await self.data_entities_processor.on_records_soft_deleted(
+                [record_internal_id, *(attachment.id for attachment in attachments)],
+                self.connector_id,
+                delete_source=DeleteSource.CONNECTOR,
+                follow=(),
+            )
+            self.logger.info(
+                "🗑️ Moved issue %s (%s direct attachments) to the trash",
+                issue_key, len(attachments),
+            )
 
         except Exception as e:
             self.logger.error(

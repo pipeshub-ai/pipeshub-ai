@@ -1054,6 +1054,36 @@ class TestRecordNotFound:
             await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
 
+class TestSoftDeleteRecordsEvent:
+    """Records moved to the trash lose their vectors and nothing else."""
+
+    @pytest.mark.asyncio
+    async def test_only_the_vectors_are_removed(self) -> None:
+        handler = _make_handler()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock(return_value={"success": True})
+        payload = {"orgId": "o1", "connectorId": "c1", "virtualRecordIds": ["v1", "v2"], "batchId": "b1"}
+
+        events = await _collect_events(handler, EventTypes.SOFT_DELETE_RECORDS.value, payload)
+
+        assert [e.event for e in events] == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["v1", "v2"], keep_mapping=True)
+        pipeline.purge_connector_by_virtual_record_ids.assert_not_called()
+        pipeline.purge_connector.assert_not_called()
+        handler.event_processor.graph_provider.get_document.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_cleanup_is_retried(self) -> None:
+        handler = _make_handler()
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock(
+            return_value={"success": False}
+        )
+        with pytest.raises(IndexingError):
+            await _collect_events(
+                handler, EventTypes.SOFT_DELETE_RECORDS.value, {"virtualRecordIds": ["v1"], "batchId": "b1"}
+            )
+
+
 class TestRecordInTrash:
     """A record in the trash is drained like a missing one."""
 

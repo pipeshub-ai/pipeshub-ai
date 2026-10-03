@@ -25,6 +25,7 @@ from app.modules.indexing.vector_membership_backfill import (
 )
 from app.containers.indexing import initialize_container
 from app.edition_containers import IndexingAppContainer
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     ConsumerType,
@@ -638,6 +639,18 @@ async def _sweep_orphaned_virtual_record_mappings(
                 )
                 continue
             if records:
+                continue
+            try:
+                # Content still held by a record in the trash is the purge's to
+                # remove; releasing it here would delete a restorable record's
+                # stored content ahead of time.
+                trashed = await graph_provider.get_records_by_virtual_record_id(
+                    vrid, raise_on_error=True, visibility=RecordVisibility.DELETED
+                )
+            except Exception as exc:
+                logger.warning("Could not check virtual record %s for trashed records: %s", vrid, exc)
+                continue
+            if trashed:
                 continue
             try:
                 outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)

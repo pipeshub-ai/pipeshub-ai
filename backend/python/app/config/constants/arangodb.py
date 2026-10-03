@@ -673,6 +673,8 @@ class EventTypes(Enum):
     DELETE_CONNECTOR_EMBEDDINGS = "deleteConnectorEmbeddings"
     SYNC_VECTOR_MEMBERSHIP = "syncVectorMembership"
     DELETE_VECTOR_COLLECTION = "deleteVectorCollection"
+    # Vectors-only cleanup for records moved to the trash; never touches blob or Mongo.
+    SOFT_DELETE_RECORDS = "softDeleteRecords"
     DELETE_STORED_DOCUMENTS = "deleteStoredDocuments"
 
 

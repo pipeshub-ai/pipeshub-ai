@@ -25,6 +25,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.arangodb import DeleteSource
+
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.utils.user_messages import action_failed
 from app.config.constants.service import DefaultEndpoints
@@ -928,7 +930,9 @@ class TestDeleteFolder:
 
         result = await service.delete_folder("kb1", "f1", "user1")
         assert result["success"] is True
-        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(["f1"], "kb1")
+        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
+            ["f1"], "kb1", delete_source=DeleteSource.USER, deleted_by_user_id="uk1", soft_delete=False
+        )
 
     @pytest.mark.asyncio
     async def test_not_owner(self, service):
@@ -975,6 +979,24 @@ class TestDeleteFolder:
         assert result["success"] is True
         assert result["vectorCleanupPending"] is True
         assert result["vectorCleanupFailedRecordIds"] == ["f1"]
+
+    @pytest.mark.asyncio
+    async def test_a_pending_cleanup_without_record_ids_is_still_a_success(self, service) -> None:
+        """The folder is gone once the cascade returns; a missing id list must not turn that into a 500."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.processor_for_kb.return_value.on_records_deleted_cascade = AsyncMock(return_value={
+            "success": True,
+            "softDeleted": True,
+            "vectorCleanupPending": True,
+            "vectorCleanupFailedVirtualRecordIds": ["v1"],
+        })
+
+        result = await service.delete_folder("kb1", "f1", "user1")
+        assert result["success"] is True and result["code"] == 200
+        assert result["vectorCleanupPending"] is True
+        assert result["vectorCleanupFailedRecordIds"] == []
 
     @pytest.mark.asyncio
     async def test_cascade_failure_is_not_reported_as_success(self, service):
@@ -1201,7 +1223,9 @@ class TestDeleteRecordsInKb:
 
         result = await service.delete_records_in_kb("kb1", ["r1", "r2"], "user1")
         assert result["success"] is True
-        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(["r1", "r2"], "kb1")
+        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
+            ["r1", "r2"], "kb1", delete_source=DeleteSource.USER, deleted_by_user_id="uk1", soft_delete=False
+        )
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, service):
@@ -1306,7 +1330,8 @@ class TestDeleteRecordsInFolder:
         result = await service.delete_records_in_folder("kb1", "f1", ["r1"], "user1")
         assert result["success"] is True
         service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
-            ["r1"], "kb1", within_folder_id="f1"
+            ["r1"], "kb1", within_folder_id="f1", delete_source=DeleteSource.USER, deleted_by_user_id="uk1",
+            soft_delete=False,
         )
 
     @pytest.mark.asyncio
@@ -1318,7 +1343,8 @@ class TestDeleteRecordsInFolder:
         await service.delete_records_in_folder("kb1", "f1", ["in-f1", "in-f2"], "user1")
 
         service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
-            ["in-f1", "in-f2"], "kb1", within_folder_id="f1"
+            ["in-f1", "in-f2"], "kb1", within_folder_id="f1", delete_source=DeleteSource.USER,
+            deleted_by_user_id="uk1", soft_delete=False,
         )
 
     @pytest.mark.asyncio
