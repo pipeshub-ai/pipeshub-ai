@@ -156,6 +156,7 @@ from app.services.graph_db.common.utils import (
     ENTITY_CANDIDATE_SCAN_CAP,
     KB_MAX_FOLDER_DEPTH,
     SOFT_DELETE_CHUNK,
+    TRASH_STATE_FIELDS,
     SOFT_DELETE_MAX_DEPTH,
     empty_soft_delete_result,
     soft_delete_request_result,
@@ -808,6 +809,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["deletedAtTimestamp", "_key"],
+            sparse=True,
+        )
+
+        # SPARSE: restore reads a whole delete batch; the field is cleared on
+        # restore, so only the trash is in it.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["deleteBatchId"],
             sparse=True,
         )
 
@@ -12861,6 +12870,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER edge.relationshipType == "PARENT_CHILD"
                     LET folder_record = DOCUMENT(edge._to)
                     FILTER folder_record != null
+                    FILTER folder_record.isDeleted != true
                     FILTER @exclude_folder_id == null OR folder_record._key != @exclude_folder_id
                     LET folder_file = FIRST(
                         FOR isEdge IN @@is_of_type
@@ -13522,6 +13532,89 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to move records to the trash: %s", e)
             raise
         return soft_delete_result(record_ids, found["root_keys"], marked, batch_id)
+
+    async def get_records_in_delete_batch(
+        self,
+        batch_id: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See ``IGraphDBProvider.get_records_in_delete_batch``."""
+        if not batch_id or not org_id:
+            return []
+        return await self.execute_query(
+            """
+            FOR r IN @@records
+                FILTER r.deleteBatchId == @batch_id AND r.isDeleted == true AND r.orgId == @org_id
+                LET parent = FIRST(
+                    FOR e IN @@record_relations
+                        FILTER e._to == r._id AND e.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                        LET p = DOCUMENT(e._from)
+                        FILTER p != null AND IS_SAME_COLLECTION(@@records, p)
+                        RETURN { doc: p, type: e.relationshipType }
+                )
+                LET t = FIRST(
+                    FOR e IN @@is_of_type
+                        FILTER e._from == r._id
+                        LET d = DOCUMENT(e._to)
+                        FILTER d != null
+                        RETURN d
+                )
+                RETURN {
+                    record: r,
+                    parentId: parent.doc._key,
+                    parentRelation: parent.type,
+                    parentIsDeleted: parent == null ? null : parent.doc.isDeleted == true,
+                    parentBatchId: parent.doc.deleteBatchId,
+                    parentName: parent.doc.recordName,
+                    isFile: t.isFile,
+                    fileMimeType: t.mimeType
+                }
+            """,
+            bind_vars={
+                "batch_id": batch_id,
+                "org_id": org_id,
+                "@records": CollectionNames.RECORDS.value,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+            },
+            transaction=transaction,
+        ) or []
+
+    async def restore_records(
+        self,
+        restores: list[dict[str, Any]],
+        batch_id: str | None,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """See ``IGraphDBProvider.restore_records``."""
+        if not restores:
+            return []
+        items = [{"id": item["id"], "set": dict(item.get("set") or {})} for item in restores]
+        # keepNull false drops the cleared fields instead of storing nulls.
+        cleared = {"isDeleted": False, **dict.fromkeys(TRASH_STATE_FIELDS)}
+        restored: list[str] = []
+        now = get_epoch_timestamp_in_ms()
+        for start in range(0, len(items), SOFT_DELETE_CHUNK):
+            restored += await self.execute_query(
+                """
+                FOR item IN @items
+                    LET r = DOCUMENT(@@records, item.id)
+                    FILTER r != null AND r.isDeleted == true AND r.deleteBatchId == @batch_id
+                    UPDATE r WITH MERGE(@cleared, { updatedAtTimestamp: @now }, item.set)
+                        IN @@records OPTIONS { keepNull: false }
+                    RETURN NEW._key
+                """,
+                bind_vars={
+                    "items": items[start:start + SOFT_DELETE_CHUNK],
+                    "batch_id": batch_id,
+                    "cleared": cleared,
+                    "now": now,
+                    "@records": CollectionNames.RECORDS.value,
+                },
+                transaction=transaction,
+            ) or []
+        return restored
 
     async def delete_single_record(
         self,

@@ -201,6 +201,17 @@ def build_connector_stats_response(
 SOFT_DELETE_CHUNK = 1000
 SOFT_DELETE_MAX_DEPTH = 20
 
+# Cleared when a record leaves the trash; ``isDeleted`` is set to false instead.
+TRASH_STATE_FIELDS = (
+    "deletedAtTimestamp",
+    "deleteSource",
+    "deleteBatchId",
+    "deletedByUserId",
+    "purgeAttempts",
+    "purgeLastError",
+    "trashedExternalRecordId",
+)
+
 
 def empty_soft_delete_result(batch_id: str) -> dict[str, Any]:
     return soft_delete_result([], [], [], batch_id)

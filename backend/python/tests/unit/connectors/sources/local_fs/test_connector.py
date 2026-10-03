@@ -198,7 +198,8 @@ def folder_connector() -> LocalFsConnector:
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_file_record_by_id = AsyncMock(return_value=None)
     proc.get_records_by_status = AsyncMock(return_value=[])
-    proc.on_record_deleted = AsyncMock()
+    # A hard delete, unless a test moves the record to the trash.
+    proc.on_record_deleted = AsyncMock(return_value=False)
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
@@ -1003,7 +1004,7 @@ class TestLocalFsConnectorAsync:
         folder_connector.data_entities_processor.get_file_record_by_id = AsyncMock(
             return_value=existing
         )
-        folder_connector.data_entities_processor.on_record_deleted = AsyncMock()
+        folder_connector.data_entities_processor.on_record_deleted = AsyncMock(return_value=False)
         folder_connector._delete_storage_document = AsyncMock()
 
         with patch(
@@ -1793,6 +1794,26 @@ class TestDeleteExternalIds:
 
         assert failed == []
         folder_connector._delete_storage_document.assert_awaited_once_with("doc-7")
+
+    async def test_a_push_flow_record_moved_to_the_trash_keeps_its_stored_copy(
+        self, folder_connector
+    ) -> None:
+        """The trash entry owns the file until the purge removes both."""
+        record = _file_record(path=f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-7")
+        folder_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_as_base_record(record)
+        )
+        folder_connector.data_entities_processor.get_file_record_by_id = AsyncMock(
+            return_value=record
+        )
+        folder_connector.data_entities_processor.on_record_deleted = AsyncMock(return_value=True)
+        folder_connector._delete_storage_document = AsyncMock()
+
+        failed = await folder_connector._delete_external_ids(["ext-1"], "user-1")
+
+        assert failed == []
+        folder_connector.data_entities_processor.on_record_deleted.assert_awaited_once()
+        folder_connector._delete_storage_document.assert_not_awaited()
 
     async def test_a_record_whose_file_record_cannot_be_read_is_kept_owed(
         self, folder_connector

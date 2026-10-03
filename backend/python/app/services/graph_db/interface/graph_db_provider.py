@@ -4180,6 +4180,43 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_records_in_delete_batch(
+        self,
+        batch_id: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Every record in the trash under one ``deleteBatchId``, in this org.
+
+        Each item is ``record`` (the stored document, ``_key`` set on both
+        backends), ``parentId``, ``parentRelation`` (``PARENT_CHILD`` or
+        ``ATTACHMENT``), ``parentIsDeleted``, ``parentBatchId`` and
+        ``parentName`` for the record it hangs under (all None at a KB or group
+        root), and ``isFile`` and ``fileMimeType`` from its type doc (None when
+        it has none). A failed read raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def restore_records(
+        self,
+        restores: list[dict[str, Any]],
+        batch_id: str | None,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Bring records back from the trash; return the ids restored.
+
+        Each item is ``{"id": key, "set": {field: value}}``; ``set`` (optional)
+        is written as well, for an external id put back or an indexing status.
+        Only a record still in the trash under ``batch_id`` is touched, so a
+        restore racing a purge or another restore changes nothing twice. The
+        delete fields (``isDeleted``, ``deletedAtTimestamp``, ``deleteSource``,
+        ``deleteBatchId``, ``deletedByUserId``, the purge counters and
+        ``trashedExternalRecordId``) are cleared. A failure raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def delete_single_record(
         self,
         record_id: str,

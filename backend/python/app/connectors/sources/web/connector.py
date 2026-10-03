@@ -2633,7 +2633,10 @@ class WebConnector(BaseConnector):
             self._gone_this_sync.add(external_id)
             return
         self.logger.info("Removing %s: gone, or moved to another stored page, on two syncs in a row", url)
-        await self.data_entities_processor.on_record_deleted(record.id)
+        in_trash = await self.data_entities_processor.on_record_deleted(record.id)
+        # A page in the trash keeps its stored copy; the purge removes both.
+        if in_trash:
+            return
         if record.storage_document_id and not await self._delete_storage_document(record.storage_document_id):
             self.logger.warning("Removed %s but could not delete its stored copy %s", url, record.storage_document_id)
 

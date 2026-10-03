@@ -369,6 +369,8 @@ class TestAbstractMethodInventory:
         "delete_records_recursive",
         "delete_single_record",
         "soft_delete_records",
+        "get_records_in_delete_batch",
+        "restore_records",
         "delete_connector_instance",
         "get_key_by_external_file_id",
         "organization_exists",

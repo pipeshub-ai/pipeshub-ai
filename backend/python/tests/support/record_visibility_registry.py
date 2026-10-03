@@ -103,6 +103,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_taxonomy_entities_for_record": (Rule.ALL, _STRUCTURE),
     "get_record_path": (Rule.ALL, _STRUCTURE),
     "get_record_path_segments": (Rule.ALL, "storage path of a record the caller already resolved"),
+    "get_records_in_delete_batch": (
+        Rule.ALL,
+        "restore reads the batch it brings back, and every record in it is in the trash",
+    ),
     "get_descendant_virtual_record_ids": (
         Rule.ALL,
         "a storage move takes every stored file under the folder, or a restored record would lose its content",
@@ -122,4 +126,5 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "delete_records_recursive": (Rule.WRITE, ""),
     "delete_single_record": (Rule.WRITE, ""),
     "soft_delete_records": (Rule.WRITE, "marks live records only"),
+    "restore_records": (Rule.WRITE, "changes only records still in the trash under the batch named"),
 }

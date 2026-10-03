@@ -350,6 +350,43 @@ class SuccessResponse(BaseModel):
     success: bool = Field(True, description="Success status")
     message: Optional[str] = Field(None, description="Success message")
 
+class RestoredRecord(BaseModel):
+    """One item brought back from the trash"""
+    recordId: str = Field(..., description="Record id")
+    name: str | None = Field(None, description="Name it has now")
+    renamedFrom: str | None = Field(
+        None, description="Its name before restore, when another item next to it had taken that name"
+    )
+
+
+class RestoreRecordResponse(BaseModel):
+    """Response model for restoring a deleted item and everything deleted with it"""
+    success: bool = Field(True, description="Success status")
+    message: str = Field(..., description="What happened")
+    batchId: str | None = Field(None, description="The delete batch that was restored")
+    restoredRecords: list[RestoredRecord] = Field(default_factory=list, description="Items restored")
+    reindexPending: bool | None = Field(None, description="Some restored files are not queued for indexing yet")
+    reindexPendingRecordIds: list[str] | None = Field(None, description="Files to reindex by hand")
+    reindexPendingReason: str | None = Field(None, description="What to do about them")
+    renamePendingRecordIds: list[str] | None = Field(
+        None, description="Items restored under a name another item next to them has"
+    )
+    renamePendingReason: str | None = Field(None, description="What to do about them")
+
+
+class RestoreRecordsRequest(BaseModel):
+    """Request model for restoring several deleted items"""
+    recordIds: list[str] = Field(..., min_length=1, max_length=100, description="Items to restore")
+
+
+class RestoreRecordsResponse(BaseModel):
+    """Response model for restoring several deleted items; each id has its own outcome"""
+    success: bool = Field(..., description="True when every item was restored")
+    restoredCount: int = Field(..., description="Items restored, counting those restored with them")
+    failedCount: int = Field(..., description="Ids that could not be restored")
+    results: list[dict[str, Any]] = Field(..., description="Outcome per requested id")
+
+
 class ListAllRecordsResponse(ListRecordsResponse):
     """Response model for listing all records (across KBs)"""
     pass

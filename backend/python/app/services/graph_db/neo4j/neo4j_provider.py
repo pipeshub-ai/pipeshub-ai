@@ -95,6 +95,7 @@ from app.services.graph_db.common.utils import (
     ENTITY_CANDIDATE_SCAN_CAP,
     SOFT_DELETE_CHUNK,
     SOFT_DELETE_MAX_DEPTH,
+    TRASH_STATE_FIELDS,
     empty_soft_delete_result,
     soft_delete_request_result,
     soft_delete_result,
@@ -580,6 +581,13 @@ class Neo4jProvider(IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_deleted_at IF NOT EXISTS "
             "FOR (n:Record) ON (n.deletedAtTimestamp)"
+        )
+
+        # Restore reads a whole delete batch; the property is cleared on
+        # restore, so this too covers only the trash.
+        indexes.append(
+            "CREATE INDEX record_delete_batch IF NOT EXISTS "
+            "FOR (n:Record) ON (n.deleteBatchId)"
         )
 
         indexes.append(
@@ -11590,6 +11598,74 @@ class Neo4jProvider(IGraphDBProvider):
             raise
         return soft_delete_result(record_ids, found.get("root_keys") or [], marked, batch_id)
 
+    async def get_records_in_delete_batch(
+        self,
+        batch_id: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See ``IGraphDBProvider.get_records_in_delete_batch``."""
+        if not batch_id or not org_id:
+            return []
+        rows = await self.client.execute_query(
+            """
+            MATCH (r:Record {deleteBatchId: $batch_id})
+            WHERE r.isDeleted = true AND r.orgId = $org_id
+            OPTIONAL MATCH (p:Record)-[rel:RECORD_RELATION]->(r)
+            WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+            WITH r, head(collect(CASE WHEN p IS NULL THEN null ELSE {p: p, type: rel.relationshipType} END)) AS parent
+            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
+            WITH r, parent, head(collect(t)) AS t
+            RETURN r, parent.p AS p, parent.type AS parent_type, t.isFile AS is_file, t.mimeType AS file_mime
+            """,
+            parameters={"batch_id": batch_id, "org_id": org_id},
+            txn_id=transaction,
+        )
+        items = []
+        for row in rows or []:
+            parent = dict(row["p"]) if row.get("p") is not None else None
+            items.append({
+                "record": self._neo4j_to_arango_node(dict(row["r"]), CollectionNames.RECORDS.value),
+                "parentId": parent.get("id") if parent else None,
+                "parentRelation": row.get("parent_type"),
+                "parentIsDeleted": (parent.get("isDeleted") is True) if parent else None,
+                "parentBatchId": parent.get("deleteBatchId") if parent else None,
+                "parentName": parent.get("recordName") if parent else None,
+                "isFile": row.get("is_file"),
+                "fileMimeType": row.get("file_mime"),
+            })
+        return items
+
+    async def restore_records(
+        self,
+        restores: list[dict[str, Any]],
+        batch_id: str | None,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """See ``IGraphDBProvider.restore_records``."""
+        if not restores:
+            return []
+        items = [{"id": item["id"], "set": dict(item.get("set") or {})} for item in restores]
+        cleared = ", ".join(f"r.{name} = null" for name in TRASH_STATE_FIELDS)
+        restored: list[str] = []
+        now = get_epoch_timestamp_in_ms()
+        for start in range(0, len(items), SOFT_DELETE_CHUNK):
+            rows = await self.client.execute_query(
+                f"""
+                UNWIND $items AS item
+                MATCH (r:Record {{id: item.id}})
+                WHERE r.isDeleted = true
+                  AND (r.deleteBatchId = $batch_id OR ($batch_id IS NULL AND r.deleteBatchId IS NULL))
+                SET r.isDeleted = false, {cleared}, r.updatedAtTimestamp = $now
+                SET r += item.set
+                RETURN r.id AS id
+                """,
+                parameters={"items": items[start:start + SOFT_DELETE_CHUNK], "batch_id": batch_id, "now": now},
+                txn_id=transaction,
+            )
+            restored += [row["id"] for row in rows or []]
+        return restored
+
     async def delete_single_record(
         self,
         record_id: str,
@@ -11730,10 +11806,11 @@ class Neo4jProvider(IGraphDBProvider):
                 params = {"kb_id": kb_id, "folder_name": folder_name, "exclude_folder_id": exclude_folder_id}
             else:
                 # Nested folder: Find children via RECORD_RELATION edge
-                query = """
-                MATCH (parent:Record {id: $parent_folder_id})-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(folder:Record)
+                query = f"""
+                MATCH (parent:Record {{id: $parent_folder_id}})-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(folder:Record)
                 WHERE folder.mimeType = "application/vnd.folder"
                   AND toLower(folder.recordName) = toLower($folder_name)
+                  AND {cypher_live_record("folder")}
                   AND ($exclude_folder_id IS NULL OR folder.id <> $exclude_folder_id)
                 RETURN folder
                 LIMIT 1

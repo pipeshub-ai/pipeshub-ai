@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Iterable, Optional
@@ -59,7 +60,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     FolderChangedDuringDelete,
 )
 from app.services.messaging.messaging_factory import MessagingFactory
-from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
+from app.telemetry.modules.soft_delete_metrics import record_restored, record_soft_deleted
 from app.services.messaging.utils import MessagingUtils
 from app.services.vector_db.membership import record_group_id_from_edge
 from app.utils.retry import retry_async
@@ -77,6 +78,20 @@ _NO_OLD_PATH = object()  # sentinel: "no pre-computed old_path supplied"
 
 # Unique per record and never a source id, so no sync or move can land on it.
 TRASHED_EXTERNAL_ID_PREFIX = "trashed:"
+
+
+class RestoreRefused(Exception):
+    """A restore that would break something, so nothing was restored.
+
+    ``reason`` is written for the person who asked, and says what to do next.
+    """
+
+    def __init__(self, code: int, reason: str, **details: object) -> None:
+        super().__init__(reason)
+        self.code = code
+        self.reason = reason
+        self.details = details
+
 
 # ~39 bytes per vrid in the move-tree JSON body; Node accepts 10 MB.
 _MAX_FOLDER_MOVE_VRIDS = 100_000
@@ -1388,18 +1403,31 @@ class DataSourceEntitiesProcessor:
                     "Skipping %s (%s): its id belongs to a record in the trash", record.record_name, record.id
                 )
                 return None, []
+        restored_from_trash = False
         if existing_record is not None and not is_live_record(existing_record):
             # A user's delete holds until the purge even though the source still
-            # has the item. A connector-trashed item seen again is restored by the
-            # restore path; until then it is left alone too, since upserting it
-            # would bring it back live with its vectors already gone.
-            self.logger.info(
-                "Skipping %s (%s): it is in the trash (deleted by %s)",
-                record.record_name,
-                existing_record.id,
-                getattr(existing_record.delete_source, "value", existing_record.delete_source),
+            # has the item. An item the connector deleted and the source has
+            # again comes back, but only on a path that publishes an index event:
+            # its vectors went with the delete.
+            if not publishes_event or existing_record.delete_source != DeleteSource.CONNECTOR:
+                self.logger.info(
+                    "Skipping %s (%s): it is in the trash (deleted by %s)",
+                    record.record_name,
+                    existing_record.id,
+                    getattr(existing_record.delete_source, "value", existing_record.delete_source),
+                )
+                return None, []
+            restored = await tx_store.restore_records(
+                [{"id": existing_record.id}], existing_record.delete_batch_id
             )
-            return None, []
+            if restored != [existing_record.id]:
+                raise RuntimeError(f"Could not bring record {existing_record.id} back from the trash")
+            existing_record = existing_record.model_copy(update={"is_deleted": False})
+            restored_from_trash = True
+            record_restored(DeleteSource.CONNECTOR.value, 1)
+            self.logger.info(
+                "Restoring %s (%s) from the trash: the source has it again", record.record_name, existing_record.id
+            )
 
         # Set org_id only when the caller didn't supply one. KB and cross-org
         # callers pass an explicit request org that must win over self.org_id.
@@ -1514,6 +1542,14 @@ class DataSourceEntitiesProcessor:
             if record.external_revision_id != existing_record.external_revision_id:
                 if publishes_event:
                     self._stamp_queued_at(record)
+            if restored_from_trash and not (
+                record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+                and existing_record.indexing_status != ProgressStatus.COMPLETED.value
+            ):
+                # Indexed again even when unchanged, since the delete took its
+                # vectors. A manual-only item that was never indexed stays so.
+                record.indexing_status = ProgressStatus.NOT_STARTED.value
+                self._stamp_queued_at(record)
 
         # Link record to group AFTER saving (when record.id is available for edges)
         if record_group_id or record.shared_with_me_record_group_ids:
@@ -2254,13 +2290,19 @@ class DataSourceEntitiesProcessor:
             raise
 
     async def _release_external_id_from_trash(
-        self, tx_store: TransactionStore, connector_id: str, external_id: str
+        self,
+        tx_store: TransactionStore,
+        connector_id: str,
+        external_id: str,
+        *,
+        restoring: Collection[str] = (),
     ) -> None:
         """Move every trashed record holding *external_id* off it, keeping the
         original in ``trashedExternalRecordId`` for restore.
 
         Lookups by external id stop at the first match, so a trashed and a live
-        record sharing one id would each be returned at random.
+        record sharing one id would each be returned at random. A holder that
+        is itself in *restoring* is not released: the restore is refused.
         """
         released: set[str] = set()
         while (
@@ -2268,6 +2310,14 @@ class DataSourceEntitiesProcessor:
                 connector_id=connector_id, external_id=external_id, visibility=RecordVisibility.DELETED
             )
         ) is not None:
+            if trashed.id in restoring:
+                raise RestoreRefused(
+                    409,
+                    "Two of the items being restored came from the same source item, so only one of them "
+                    "can come back. Restore them one at a time, starting with the one you want to keep.",
+                    record_id=trashed.id,
+                    external_id=external_id,
+                )
             if trashed.id in released:
                 raise RuntimeError(
                     f"Record {trashed.id} in the trash still holds external id {external_id} after release"
@@ -2284,8 +2334,82 @@ class DataSourceEntitiesProcessor:
             if updated is not True:
                 raise RuntimeError(f"Could not release external id {external_id} from trashed record {trashed.id}")
             self.logger.info(
-                "Record %s in the trash gave up external id %s to a moved record", trashed.id, external_id
+                "Record %s in the trash gave up external id %s to another record", trashed.id, external_id
             )
+
+    @retry_on_deadlock()
+    async def restore_trashed_records(
+        self,
+        connector_id: str,
+        batch_id: str | None,
+        items: list[dict[str, Any]],
+        *,
+        restore_source: DeleteSource = DeleteSource.USER,
+    ) -> list[str]:
+        """Bring records back from the trash in one transaction; return their ids.
+
+        Each item is ``{"id", "name", "trashedExternalRecordId", "set"}``. A
+        record that gave its external id up to another record gets it back,
+        unless a live record holds it now: then nothing is restored, since two
+        live records on one id would each be returned at random to a sync.
+        Every item must still be in the trash under *batch_id*, or nothing is
+        restored either. The caller re-indexes what comes back.
+        """
+        ids = [item["id"] for item in items]
+        if not ids:
+            return []
+        reclaim: dict[str, str] = {}
+        for item in items:
+            external_id = item.get("trashedExternalRecordId")
+            if not external_id:
+                continue
+            if external_id in reclaim.values():
+                raise RestoreRefused(
+                    409,
+                    "Two of the items being restored came from the same source item, so only one of them "
+                    "can come back. Restore them one at a time, starting with the one you want to keep.",
+                    record_id=item["id"],
+                    external_id=external_id,
+                )
+            reclaim[item["id"]] = external_id
+
+        async with self.data_store_provider.transaction() as tx_store:
+            restores = []
+            for item in items:
+                fields = dict(item.get("set") or {})
+                external_id = reclaim.get(item["id"])
+                if external_id:
+                    holder = await tx_store.get_record_by_external_id(
+                        connector_id=connector_id, external_id=external_id, visibility=RecordVisibility.LIVE
+                    )
+                    if holder is not None and holder.id != item["id"]:
+                        name = item.get("name") or "This item"
+                        raise RestoreRefused(
+                            409,
+                            f"'{name}' can't be restored because '{holder.record_name}' has taken its place. "
+                            "That usually means the same item was added again after this one was deleted. "
+                            f"To restore this one, delete '{holder.record_name}' first, then try again.",
+                            record_id=item["id"],
+                            conflicting_record_id=holder.id,
+                            conflicting_record_name=holder.record_name,
+                        )
+                    await self._release_external_id_from_trash(
+                        tx_store, connector_id, external_id, restoring=set(ids)
+                    )
+                    fields["externalRecordId"] = external_id
+                restores.append({"id": item["id"], "set": fields})
+            restored = await tx_store.restore_records(restores, batch_id)
+            if set(restored) != set(ids):
+                # Raising rolls the whole batch back, so it is never half restored.
+                raise RestoreRefused(
+                    409,
+                    "Some of these items changed while they were being restored, so nothing was restored. "
+                    "Refresh the page and try again.",
+                    missing=sorted(set(ids) - set(restored)),
+                )
+        record_restored(DeleteSource(restore_source).value, len(restored))
+        await notify_kb_records_changed(connector_id)
+        return restored
 
     async def _publish_delete_events(self, event_data: dict | None) -> list[str]:
         """Publish deleteRecord events (Qdrant vector cleanup) for a delete result.
@@ -2340,7 +2464,12 @@ class DataSourceEntitiesProcessor:
         return unpublished_record_ids
 
     @retry_on_deadlock()
-    async def on_record_deleted(self, record_id: str) -> None:
+    async def on_record_deleted(self, record_id: str) -> bool:
+        """Delete one connector record; True when it went to the trash instead.
+
+        On True a caller that also removes the record's stored file must keep
+        it: the file belongs to the trash entry until the purge removes both.
+        """
         if await is_soft_delete_enabled(self.config_service):
             async with self.data_store_provider.transaction() as tx_store:
                 # A failed read must raise: None would read as "already gone"
@@ -2351,12 +2480,13 @@ class DataSourceEntitiesProcessor:
                 existing.get("connectorId") if isinstance(existing, dict)
                 else getattr(existing, "connector_id", None)
             )
-            if connector_id:
-                # The record alone, as the hard delete removes only its vertex.
-                await self.on_records_soft_deleted(
-                    [record_id], connector_id, delete_source=DeleteSource.CONNECTOR, follow=()
-                )
-            return
+            if not connector_id:
+                return False
+            # The record alone, as the hard delete removes only its vertex.
+            await self.on_records_soft_deleted(
+                [record_id], connector_id, delete_source=DeleteSource.CONNECTOR, follow=()
+            )
+            return True
         # Connector per-record delete: remove the record vertex and its incoming
         # PARENT_CHILD edge (so the parent's child-list keeps no dangling edge; the
         # call is a no-op for root records with no parent). Capture VRID before the
@@ -2378,6 +2508,7 @@ class DataSourceEntitiesProcessor:
         await self._publish_delete_events(
             {"payloads": [event_payload]} if event_payload else None
         )
+        return False
 
     @retry_on_deadlock()
     async def on_records_deleted_cascade(
@@ -2582,7 +2713,7 @@ class DataSourceEntitiesProcessor:
     @retry_on_deadlock()
     async def reindex_existing_records(
         self, records: list[Record], *, vector_db_only: bool = False
-    ) -> None:
+    ) -> list[str]:
         """
         Publish reindex events for existing records without DB operations.
         Used for reindexing functionality where records already exist in DB.
@@ -2592,11 +2723,14 @@ class DataSourceEntitiesProcessor:
             records: List of properly typed Record instances (FileRecord, MailRecord, etc.)
             vector_db_only: When True, indexing reloads blob content and re-embeds
                 without re-parsing the source.
+
+        Returns:
+            The ids whose reindex event reached the broker.
         """
         try:
             if not records:
                 self.logger.info("No records to reindex")
-                return
+                return []
 
             existing_keys = await self.data_store_provider.get_existing_record_keys(
                 [r.id for r in records]
@@ -2624,7 +2758,7 @@ class DataSourceEntitiesProcessor:
                 to_publish.append(record)
 
             if not to_publish:
-                return
+                return []
 
             acked = await self.messaging_producer.send_messages(
                 "record-events",
@@ -2658,6 +2792,7 @@ class DataSourceEntitiesProcessor:
                 f"skipped {skipped_records} internal, {missing} missing, "
                 f"{len(to_publish) - len(published_ids)} failed to publish"
             )
+            return published_ids
         except Exception as e:
             self.logger.error(f"Failed to publish reindex events: {str(e)}")
             raise e
