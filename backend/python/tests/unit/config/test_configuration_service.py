@@ -322,7 +322,7 @@ class TestGetEnvFallback:
         with patch("app.config.configuration_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)):
             result = svc._get_env_fallback("/services/qdrant")
 
-        assert result == {"host": "qdrant.local", "port": 6333, "grpcPort": 6334, "apiKey": "my-key"}
+        assert result == {"host": "qdrant.local", "port": 6333, "grpcPort": 6334, "apiKey": "my-key", "https": False, "prefer_grpc": True}
 
     def test_qdrant_fallback_defaults(self):
         svc = _build_service()
@@ -333,6 +333,24 @@ class TestGetEnvFallback:
 
         assert result["grpcPort"] == 6334
         assert result["apiKey"] == "qdrant"
+        assert result["https"] is False
+        assert result["prefer_grpc"] is True
+
+    def test_qdrant_fallback_cloud_tls(self):
+        svc = _build_service()
+
+        env = {
+            "QDRANT_HOST": "xyz.cloud.qdrant.io",
+            "QDRANT_PORT": "6333",
+            "QDRANT_API_KEY": "cloud-key",
+            "QDRANT_HTTPS": "true",
+            "QDRANT_PREFER_GRPC": "false",
+        }
+        with patch("app.config.configuration_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)):
+            result = svc._get_env_fallback("/services/qdrant")
+
+        assert result["https"] is True
+        assert result["prefer_grpc"] is False
 
     def test_qdrant_fallback_no_host_returns_none(self):
         svc = _build_service()
