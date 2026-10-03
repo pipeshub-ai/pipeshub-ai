@@ -22,6 +22,12 @@ the demo is hidden from them once the organization has indexed records from
 any other source, and the rest of the suite indexes plenty; without the switch
 these questions would measure that default instead of the demo.
 
+The Build Pack questions (the fixture's ``pack_questions``: sales, support,
+marketing, finance and people) are asked the same way, one test per pack,
+question, persona and mode. They cost about four times the golden questions'
+model calls, so they run only when ``DEMO_PACK_QUESTIONS=1``: the workflow sets
+it for the nightly and for a dispatch of the demo marker.
+
 Needs an LLM configured on the instance (the integration workflow does that
 before the suite runs). ``DEMO_PERSONA_PASSWORD`` may be set to reuse
 existing persona accounts; otherwise a throwaway password is generated.
@@ -45,6 +51,7 @@ from app.connectors.sources.demo.harness.kb_harness import (  # type: ignore[imp
     ask,
     build_name_index,
     cited_fixture_ids,
+    expectation,
     score,
 )
 from helper.pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
@@ -64,6 +71,9 @@ RUNS = int(os.environ.get("DEMO_ACCEPTANCE_RUNS", "3"))
 MIN_PASS = int(os.environ.get("DEMO_ACCEPTANCE_MIN_PASS", "2"))
 AGENT_RUNS = int(os.environ.get("DEMO_ACCEPTANCE_AGENT_RUNS", "2"))
 AGENT_MIN_PASS = int(os.environ.get("DEMO_ACCEPTANCE_AGENT_MIN_PASS", "1"))
+PACK_QUESTIONS_ON = os.environ.get("DEMO_PACK_QUESTIONS") == "1"
+PACK_RUNS = int(os.environ.get("DEMO_PACK_RUNS", "2"))
+PACK_MIN_PASS = int(os.environ.get("DEMO_PACK_MIN_PASS", "1"))
 INDEX_TIMEOUT_S = 420
 CONNECTOR_NAME = "Acme Corp demo data: GitHub, Jira, Slack, Google Drive and ServiceNow"
 PERSONAS = ("alice", "bob")
@@ -287,3 +297,54 @@ def test_restricted_document_never_leaks_to_alice(
     names = _search_names(pipeshub_client.base_url, personas["alice"], "enterprise pricing strategy 2026 platform fee tiers")
     leaked = restricted_titles & set(names)
     assert not leaked, f"restricted records visible to Alice: {leaked}"
+
+
+def _pack_cases() -> list[Any]:
+    """One case per pack question, persona and chat mode, named so a nightly failure reads at a glance."""
+    cases = []
+    for pack, questions in (_fixture().get("pack_questions") or {}).items():
+        for q in questions:
+            for persona in PERSONAS:
+                for mode in CHAT_MODES:
+                    cases.append(pytest.param(pack, q["id"], persona, mode, id=f"{pack}-{q['id']}-{persona}-{mode}"))
+    return cases
+
+
+@pytest.mark.skipif(
+    not PACK_QUESTIONS_ON,
+    reason="the pack questions run nightly and on a demo dispatch (set DEMO_PACK_QUESTIONS=1 to run them)",
+)
+@pytest.mark.parametrize(("pack", "question_id", "persona", "chat_mode"), _pack_cases())
+def test_pack_question(
+    pipeshub_client: PipeshubClient, demo_connector: str, personas: dict[str, str],
+    pack: str, question_id: str, persona: str, chat_mode: str,
+    answer_judge: AnswerJudge | None,
+) -> None:
+    """A Build Pack question, scored as the standalone harness scores it, with
+    its plain-sentence facts read by the answer judge.
+
+    A question the persona may answer ("cites") needs PACK_MIN_PASS of
+    PACK_RUNS. One hinging on a restricted record needs every run, whichever
+    way it goes: its reader must always get the record, and anyone else must
+    never see it or its restricted facts.
+    """
+    fx = _fixture()
+    q = next(x for x in fx["pack_questions"][pack] if x["id"] == question_id)
+    name_to_id, thread_of = build_name_index(fx)
+    expect = expectation(q, persona, fx)
+    need = PACK_RUNS if q.get("restricted") else min(PACK_MIN_PASS, PACK_RUNS)
+    passes = 0
+    verdicts: list[str] = []
+    for _ in range(PACK_RUNS):
+        answer, cited_names = ask(pipeshub_client.base_url, personas[persona], q["ask"], chat_mode)
+        cited = cited_fixture_ids(cited_names, name_to_id, thread_of)
+        ok, verdict = score(q, expect, cited, answer, judge=answer_judge)
+        passes += int(ok)
+        verdicts.append(
+            verdict if ok
+            else f"{verdict} cited={sorted(cited - set(thread_of.values()))} answer={' '.join(answer.split())[:300]!r}"
+        )
+    assert passes >= need, (
+        f"{pack} {question_id} [{persona}, {chat_mode}, expect {expect}]: {passes}/{PACK_RUNS} passed "
+        f"(need {need}): {q['ask']!r}\n" + "\n".join(verdicts)
+    )
