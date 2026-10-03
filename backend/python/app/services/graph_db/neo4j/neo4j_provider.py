@@ -11381,6 +11381,8 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: str | None = None,
         cascade_children: bool = True,
         within_folder_id: str | None = None,
+        *,
+        include_trashed_roots: bool = False,
     ) -> dict:
         """Delete records and their owned descendants, scoped by connector_id.
 
@@ -11422,7 +11424,7 @@ class Neo4jProvider(IGraphDBProvider):
                 UNWIND $record_ids AS rid
                 OPTIONAL MATCH (rec:Record {id: rid})
                 WITH collect(DISTINCT CASE
-                        WHEN rec IS NOT NULL AND (rec.isDeleted IS NULL OR rec.isDeleted <> true) AND rec.connectorId = $connector_id
+                        WHEN rec IS NOT NULL AND ($include_trashed_roots OR rec.isDeleted IS NULL OR rec.isDeleted <> true) AND rec.connectorId = $connector_id
                              AND ($folder_id IS NULL OR EXISTS {
                                  MATCH (:Record {id: $folder_id})
                                        (()-[c:RECORD_RELATION WHERE c.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->()){1,""" + str(CONTAINMENT_MAX_DEPTH) + """}
@@ -11455,6 +11457,7 @@ class Neo4jProvider(IGraphDBProvider):
                         "record_ids": record_ids,
                         "connector_id": connector_id,
                         "folder_id": within_folder_id,
+                        "include_trashed_roots": include_trashed_roots,
                     },
                     txn_id=txn_id,
                 )

@@ -53,6 +53,12 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.core.registry.folder_scope import (
+    FolderScope,
+    remove_records_outside_scope,
+)
+from app.connectors.sources.github_teams.models import blob_external_id
+from app.connectors.sources.github_teams.repos import ReposSync
 from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.models.entities import FileRecord, RecordType
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
@@ -747,3 +753,64 @@ async def test_a_record_group_listing_finds_the_trash_only_when_asked(world: _Wo
 
     assert _ids(live) == {world.ids["live_shared"]}
     assert _ids(every) == {world.ids["live_shared"], world.ids["trashed_shared"]}
+
+
+async def _put_shared_records_in_group(world: _World, group_external_id: str, external_ids: dict[str, str]) -> None:
+    """Point the seeded record group, and the two records in it, at a connector's own ids."""
+    await world.graph.update_node(
+        world.record_group_id, CollectionNames.RECORD_GROUPS.value, {"externalGroupId": group_external_id}
+    )
+    for name, external_id in external_ids.items():
+        await world.graph.update_node(
+            world.ids[name], CollectionNames.RECORDS.value,
+            {"recordGroupId": world.record_group_id, "externalRecordId": external_id},
+        )
+
+
+async def test_the_folder_scope_cleanup_removes_a_trashed_record_outside_the_scope(world: _World) -> None:
+    """The cleanup S3, Azure Blob, GCS and network shares run when the synced folders narrow."""
+    await _put_shared_records_in_group(world, "bucket-vis", {
+        "live_shared": "bucket-vis/reports/a.pdf",
+        "trashed_shared": "bucket-vis/legal/old.pdf",
+    })
+
+    result = await remove_records_outside_scope(
+        _processor(world), world.connector_id, "bucket-vis", FolderScope(("reports/",)), logger
+    )
+
+    records = CollectionNames.RECORDS.value
+    assert (result.removed, result.failed) == (1, 0)
+    assert await world.graph.get_document(world.ids["trashed_shared"], records) is None
+    assert await world.graph.get_document(world.ids["live_shared"], records) is not None
+
+
+async def test_the_github_prune_removes_a_trashed_record_the_tree_no_longer_has(world: _World) -> None:
+    repo = SimpleNamespace(id=4242, full_name="org/repo")
+    await _put_shared_records_in_group(world, f"{repo.id}-code-repository", {
+        "live_shared": blob_external_id(repo.id, "kept.py"),
+        "trashed_shared": blob_external_id(repo.id, "gone.py"),
+    })
+    connector = SimpleNamespace(
+        data_entities_processor=_processor(world), connector_id=world.connector_id, logger=logger
+    )
+
+    await ReposSync(connector)._prune_deleted_paths(repo, {"kept.py"})
+
+    records = CollectionNames.RECORDS.value
+    assert await world.graph.get_document(world.ids["trashed_shared"], records) is None
+    assert await world.graph.get_document(world.ids["live_shared"], records) is not None
+
+
+async def test_the_cascade_delete_takes_a_trashed_root_only_when_asked(world: _World) -> None:
+    g, rid = world.graph, world.ids["trashed"]
+
+    refused = await g.delete_records_recursive([rid], world.connector_id)
+
+    assert [f["record_id"] for f in refused["failed_records"]] == [rid]
+    assert await g.get_document(rid, CollectionNames.RECORDS.value) is not None
+
+    taken = await g.delete_records_recursive([rid], world.connector_id, include_trashed_roots=True)
+
+    assert taken["failed_records"] == [] and taken["successfully_deleted"] == 1, taken
+    assert await g.get_document(rid, CollectionNames.RECORDS.value) is None
+    assert await g.get_document(rid, CollectionNames.FILES.value) is None
