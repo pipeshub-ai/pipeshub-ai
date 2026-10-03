@@ -14823,13 +14823,19 @@ class Neo4jProvider(IGraphDBProvider):
         record_id: str,
         transaction: str | None = None
     ) -> dict | None:
-        """Get parent information for a record."""
+        """Return ``{id, type}`` of the record's parent, or None at the root.
+
+        ``type`` is ``"record"`` or ``"recordGroup"``, as on ArangoDB. Callers read
+        ``"record"`` as "the parent is a folder"; a KB folder's recordType is FILE.
+        """
         try:
             query = """
-            MATCH (parent:Record)-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(r:Record {id: $record_id})
+            MATCH (parent)-[rel:RECORD_RELATION]->(r:Record {id: $record_id})
+            WHERE rel.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+              AND (parent:Record OR parent:RecordGroup)
             RETURN {
                 id: parent.id,
-                type: parent.recordType
+                type: CASE WHEN parent:RecordGroup THEN "recordGroup" ELSE "record" END
             } as parent_info
             LIMIT 1
             """

@@ -5,7 +5,9 @@ name and the same type (MIME type). Files uploaded through the shared processor
 are stored with the type on the record only; the file node has none. The checks
 read it from the file node, so for those files the rename, move and folder
 upload checks never found a duplicate. These tests upload files the way the
-product does today and check both backends.
+product does today and check both backends. On Neo4j the rename checks also
+searched the collection root for a file inside a folder, because the parent
+lookup returned the folder's recordType instead of "record".
 
 Runs in backend-matrix on both graph jobs. Environment: NEO4J_IT_URI,
 NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
@@ -210,3 +212,51 @@ async def test_the_same_name_with_a_different_type_is_still_allowed(kb: _Kb) -> 
     assert renamed.get("success") is not False, renamed
     assert uploaded["totalCreated"] == 1, uploaded
     assert moved.get("success") is not False, moved
+
+
+async def test_a_file_in_a_folder_reports_the_folder_as_a_record_parent(kb: _Kb) -> None:
+    # The rename checks read type == "record" as "the parent is a folder". Neo4j
+    # returned the folder's recordType (FILE), so renames searched the root.
+    in_folder = (await kb.upload("report", TEXT, folder=kb.folder))["id"]
+    at_root = (await kb.upload("notes", TEXT))["id"]
+
+    assert await kb.graph.get_record_parent_info(in_folder) == {"id": kb.folder, "type": "record"}
+    assert await kb.graph.get_record_parent_info(at_root) is None
+
+
+async def test_a_rename_inside_a_folder_onto_a_same_type_sibling_is_refused(kb: _Kb) -> None:
+    await kb.upload("report", TEXT, folder=kb.folder)
+    notes = (await kb.upload("notes", TEXT, folder=kb.folder))["id"]
+
+    result = await kb.service.update_record(
+        user_id=kb.user_id, record_id=notes, updates={"recordName": "report"},
+    )
+
+    assert result["success"] is False and result["code"] == 409, result
+    kept = await kb.graph.get_document(notes, CollectionNames.RECORDS.value)
+    assert kept["recordName"] == "notes", kept
+
+
+async def test_a_rename_inside_a_folder_onto_a_root_file_name_is_allowed(kb: _Kb) -> None:
+    await kb.upload("report", TEXT)
+    notes = (await kb.upload("notes", TEXT, folder=kb.folder))["id"]
+
+    result = await kb.service.update_record(
+        user_id=kb.user_id, record_id=notes, updates={"recordName": "report"},
+    )
+
+    assert result.get("success") is not False, result
+    renamed = await kb.graph.get_document(notes, CollectionNames.RECORDS.value)
+    assert renamed["recordName"] == "report", renamed
+
+
+async def test_a_subfolder_rename_onto_a_sibling_folder_name_is_refused(kb: _Kb) -> None:
+    # Same parent lookup as the file rename, so the same Neo4j gap applied.
+    for name in ("2025", "2026"):
+        created = await kb.service.create_nested_folder(kb.kb_id, kb.folder, name, kb.user_id, kb.org_id)
+        assert created and created.get("success") is not False, created
+        kb.records.append(created["id"])
+
+    result = await kb.service.updateFolder(kb.records[-1], kb.kb_id, kb.user_id, "2025")
+
+    assert result["success"] is False and result["code"] == 409, result
