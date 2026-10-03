@@ -181,7 +181,8 @@ class TestPermissionMap:
         await provider._get_virtual_ids_for_connector("u1", "o1", "c1", raise_on_error=True)
         (query,) = _arango_queries(provider)
         paths = query.count("FILTER record.indexingStatus == @completedStatus")
-        assert paths == 8
+        # Seven since #3691 dropped the "anyone" path, which granted no access.
+        assert paths == 7
         assert query.count(f"FILTER {aql_live_record('record')}") == paths
         assert query.index(aql_live_record("record")) < query.index("COLLECT virtualRecordId")
 
@@ -198,7 +199,7 @@ class TestPermissionMap:
         await provider._get_virtual_ids_for_connector("u1", "o1", "c1", raise_on_error=True)
         (query,) = _neo4j_queries(provider)
         paths = query.count("r.indexingStatus = $completedStatus")
-        assert paths == 8
+        assert paths == 7
         assert query.count(f"AND {cypher_live_record('r')}") == paths
 
     async def test_neo4j_kb_map_filters_every_path(self) -> None:
