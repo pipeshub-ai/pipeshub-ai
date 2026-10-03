@@ -2286,6 +2286,8 @@ class DataSourceEntitiesProcessor:
         self, record_ids: list[str], connector_id: str,
         cascade_children: bool = True,
         within_folder_id: str | None = None,
+        *,
+        include_trashed_roots: bool = False,
     ) -> dict:
         """Recursively delete records — the single delete path for files, folders and
         multi-record deletes, generic across KB and connectors.
@@ -2303,6 +2305,9 @@ class DataSourceEntitiesProcessor:
         With *within_folder_id*, only roots contained in that folder are deleted;
         the check runs in the delete's own transaction, so a record moved out in
         the meantime is kept.
+
+        A root in the trash is refused unless *include_trashed_roots*, for a
+        caller removing what the source no longer has.
         """
         if not record_ids:
             return {
@@ -2317,7 +2322,7 @@ class DataSourceEntitiesProcessor:
             async with self.data_store_provider.transaction() as tx_store:
                 result = await tx_store.delete_records_recursive(
                     record_ids, connector_id, cascade_children=cascade_children,
-                    within_folder_id=within_folder_id,
+                    within_folder_id=within_folder_id, include_trashed_roots=include_trashed_roots,
                 )
         except FolderChangedDuringDelete:
             # The transaction rolled back, so nothing was deleted.

@@ -47,7 +47,7 @@ def make_mock_connector() -> MagicMock:
     dep.on_records_moved = AsyncMock()
     dep.on_record_deleted = AsyncMock()
     dep.on_record_group_deleted = AsyncMock()
-    dep.on_records_deleted_cascade = AsyncMock()
+    dep.on_records_deleted_cascade = AsyncMock(return_value={"success": True, "failed_records": []})
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.get_records_by_parent = AsyncMock(return_value=[])
     dep.get_user_by_user_id = AsyncMock(return_value=None)

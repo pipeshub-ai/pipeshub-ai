@@ -13109,6 +13109,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None,
         cascade_children: bool = True,
         within_folder_id: str | None = None,
+        *,
+        include_trashed_roots: bool = False,
     ) -> dict:
         """Delete records and their owned descendants, scoped by connector_id.
 
@@ -13147,7 +13149,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 LET checked = (
                     FOR rid IN @record_ids
                         LET rec = DOCUMENT('records', rid)
-                        FILTER rec != null AND rec.isDeleted != true
+                        FILTER rec != null AND (@include_trashed_roots OR rec.isDeleted != true)
                         FILTER rec.connectorId == @connector_id
                         // The containment path's edge keys, so they can be locked before the delete.
                         LET inside = @folder_id == null ? [] : FIRST(
@@ -13201,6 +13203,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "record_ids": record_ids,
                         "connector_id": connector_id,
                         "folder_id": within_folder_id,
+                        "include_trashed_roots": include_trashed_roots,
                         "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                         "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                     },
