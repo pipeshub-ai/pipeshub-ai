@@ -17,11 +17,17 @@ from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.context import CancellationToken
-from app.agent_loop_lib.core.messages import AssistantMessage, ToolCall, UserMessage
+from app.agent_loop_lib.core.messages import (
+    AssistantMessage,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+)
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.events.base import EventType
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
+from app.agent_loop_lib.tools.builtin.planning.task_complete import TaskCompleteTool
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from tests.unit.agents.adapter.support.scripted_transport import (
@@ -74,9 +80,11 @@ def _build(
     *,
     max_turns: int,
     cancellation_token: CancellationToken | None = None,
+    extra_tools: tuple[Tool, ...] = (),
 ) -> Agent:
     registry = ToolRegistry()
-    registry.register_tool(tool)
+    for registered in (tool, *extra_tools):
+        registry.register_tool(registered)
     transports = TransportRegistry()
     transports.register("scripted", lambda: transport)
     spec = AgentSpec(
@@ -105,6 +113,16 @@ def _tool_turns(max_turns: int) -> list[ScriptedStep]:
 
 
 _GOAL = Goal(description="List the members who grew up in Illinois")
+
+
+async def _unanswered_tool_calls(agent: Agent) -> list[str]:
+    messages = await agent.context.messages()
+    answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
+    return [
+        call.id
+        for m in messages if isinstance(m, AssistantMessage)
+        for call in m.tool_calls or [] if call.id not in answered
+    ]
 
 
 class TestFinalAnswerTurn:
@@ -142,13 +160,51 @@ class TestFinalAnswerTurn:
     async def test_tool_calls_in_the_final_turn_are_not_executed(self) -> None:
         transport = ScriptedTransport(script=[*_tool_turns(3), _tool_turn(call_id="ignored")])
         tool = _CountingTool()
+        agent = _build(transport, tool, max_turns=3)
 
-        result = await _build(transport, tool, max_turns=3).run(_GOAL)
+        result = await agent.run(_GOAL)
 
         assert tool.executions == 3
         # Falls back to the degraded tail: the narration is all there is.
         assert result.success is True
         assert result.output == _NARRATION
+        # The saved history must stay valid to send to a provider again.
+        assert await _unanswered_tool_calls(agent) == []
+
+    async def test_text_written_beside_a_dropped_call_is_the_answer(self) -> None:
+        reply = "The members are Trent Smith, Tyler Hewitt and Annabella Warren. Let me double-check."
+        transport = ScriptedTransport(script=[
+            *_tool_turns(2),
+            ScriptedStep(message=AssistantMessage(content=reply, tool_calls=[
+                ToolCall(id="ignored", name="run_query", arguments={"sql": "SELECT 2"}),
+            ]), text_chunks=[reply]),
+        ])
+        tool = _CountingTool()
+        agent = _build(transport, tool, max_turns=2)
+
+        events = [event async for event in agent.stream(_GOAL)]
+
+        assert tool.executions == 2
+        # It was already streamed, so it must not be swapped for older narration.
+        assert agent.last_stream_result.output == reply
+        streamed = "".join(e.payload.get("delta", "") for e in events if e.event_type == EventType.TEXT_MESSAGE_CONTENT)
+        assert streamed.endswith(reply)
+        assert await _unanswered_tool_calls(agent) == []
+
+    async def test_a_run_ending_call_in_the_final_turn_still_ends_the_run(self) -> None:
+        transport = ScriptedTransport(script=[
+            *_tool_turns(2),
+            ScriptedStep(message=AssistantMessage(tool_calls=[
+                ToolCall(id="done", name="task_complete", arguments={"output": _ANSWER}),
+            ])),
+        ])
+        tool = _CountingTool()
+
+        result = await _build(transport, tool, max_turns=2, extra_tools=(TaskCompleteTool(),)).run(_GOAL)
+
+        assert tool.executions == 2
+        assert result.success is True
+        assert result.output == _ANSWER
 
     async def test_a_failed_final_call_falls_back_instead_of_failing_the_run(self) -> None:
         transport = ScriptedTransport(script=[

@@ -103,8 +103,8 @@ async def _finish_after_max_turns(agent: "Agent", goal: Goal) -> AgentResult:
     When the last turn called tools, the model has not seen those results
     yet, and that turn's text is only its narration before the calls. One
     extra answer-only turn lets it answer from what it gathered; a turn
-    that produces no answer (it calls a tool anyway, the call fails, or the
-    reply is empty) falls through to the tail below.
+    that produces no answer (the call fails, or the reply has no text once
+    its non-terminal tool calls are removed) falls through to the tail below.
 
     A hard `fail()` here throws away whatever the model DID produce, even
     when it was most of the way to a real answer — a slower-converging

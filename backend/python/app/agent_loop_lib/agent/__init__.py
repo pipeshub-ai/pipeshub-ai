@@ -636,10 +636,11 @@ class Agent:
         loop shape.
 
         `final_answer_only=True` is the wrap-up turn after `max_turns` (see
-        `loops.py::_finish_after_max_turns`): the turn only stops the run
-        with a non-empty text answer. Tool calls are never executed, and a
-        failed model call or an empty reply returns `continue` instead of
-        failing the run, so the caller can fall back to what it already has.
+        `loops.py::_finish_after_max_turns`): only calls to tools that end
+        the run are executed (see `_drop_non_terminal_tool_calls`), so the
+        reply's text or a terminal call is the answer. A failed model call
+        or a reply with no answer returns `continue` instead of failing the
+        run, so the caller can fall back to what it already has.
         """
         spec, runtime, context = self._spec, self._runtime, self._context
 
@@ -843,6 +844,8 @@ class Agent:
             ))
 
         response_msg = response.message
+        if final_answer_only:
+            response_msg = await self._drop_non_terminal_tool_calls(response_msg, turn_index)
         self._usage.add(response.usage)
         if runtime.budget is not None:
             await runtime.budget.record_turn(
@@ -935,18 +938,6 @@ class Agent:
             )
             await obs.write_turn_memory(self, terminal_turn, turn_index)
             return StepOutcome("stop", result=result)
-
-        if final_answer_only:
-            # The tool list is still sent on this turn (providers reject tool
-            # history without tool definitions), so a model can ignore the
-            # instruction; its calls are dropped, never run.
-            await obs.append_timeline(
-                self, "final_answer_turn_tool_calls_ignored",
-                f"Final-answer turn requested {len(tool_calls)} tool call(s); not executed",
-                "calling_llm",
-                {"turn_index": turn_index, "tools": [c.name for c in tool_calls]},
-            )
-            return StepOutcome("continue")
 
         # --- Process tool calls ---
         turn = AgentTurn(messages=[response_msg], tool_calls=tool_calls)
@@ -1120,6 +1111,30 @@ class Agent:
         if isinstance(msg, AssistantMessage) and msg.tool_calls:
             return list(msg.tool_calls)
         return []
+
+    async def _drop_non_terminal_tool_calls(self, msg: Message, turn_index: int) -> Message:
+        """The final-answer turn still sends the tool list (providers reject
+        tool history without tool definitions), so the model may call a
+        tool anyway. Only calls that end the run (`TAG_LIFECYCLE_TERMINAL`,
+        e.g. `final_answer`, `task_complete`) are kept. The rest are removed
+        before the reply is recorded: history never holds a call without a
+        result, and text streamed beside a removed call becomes the answer
+        rather than being replaced by older narration."""
+        registry = self._runtime.tool_registry
+        kept: list[ToolCall] = []
+        dropped: list[ToolCall] = []
+        for call in self._extract_tool_calls(msg):
+            terminal = registry is not None and TAG_LIFECYCLE_TERMINAL in registry.tags_for_name(call.name)
+            (kept if terminal else dropped).append(call)
+        if not dropped:
+            return msg
+        await obs.append_timeline(
+            self, "final_answer_turn_tool_calls_ignored",
+            f"Final-answer turn requested {len(dropped)} tool call(s); not executed",
+            "calling_llm",
+            {"turn_index": turn_index, "tools": [c.name for c in dropped]},
+        )
+        return msg.model_copy(update={"tool_calls": kept or None})
 
     def stream(self, goal: Goal, **run_kwargs):
         """Streaming turn loop: run this goal while yielding `AgentEvent`s

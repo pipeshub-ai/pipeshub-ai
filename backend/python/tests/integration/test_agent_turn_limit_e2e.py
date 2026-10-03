@@ -211,6 +211,15 @@ class TestTurnLimitEndToEnd:
         # No answer from the extra turn: the run keeps the narration, as before.
         assert _answer(events) == _NARRATION
 
+    async def test_text_written_beside_an_ignored_call_is_the_answer(self, chat_model: _ScriptedChatModel) -> None:
+        chat_model.responses = _turn_limit_script(narration=_NARRATION, final=_tool_turn(_MAX_TURNS, _ANSWER))
+
+        events = await _stream()
+
+        assert len(events["TOOL_CALL_RESULT"]) == _MAX_TURNS
+        # Already streamed to the user, so it is not swapped for the older narration.
+        assert _answer(events) == _ANSWER
+
     async def test_the_two_turns_left_warning_names_no_tool_the_agent_lacks(
         self, chat_model: _ScriptedChatModel,
     ) -> None:
