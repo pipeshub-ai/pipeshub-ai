@@ -197,3 +197,32 @@ async def test_record_group_name_falls_back_like_the_index_path() -> None:
     await arango.page_entity_index_source(GROUPS, "app-1", None, 10)
     assert "coalesce(n.groupName, n.name) AS name" in _neo4j_call(neo)[0]
     assert "name: n.groupName || n.name" in _arango_call(arango)[0]
+
+
+class TestKeysetIndexes:
+    """Every source is paged by scope then key; without an index on both,
+    each page filters and re-sorts the whole scope."""
+
+    async def test_arango_indexes_every_source_on_scope_then_key(self) -> None:
+        p = _arango([])
+        p.http_client.ensure_persistent_index = AsyncMock()
+        await p._ensure_indexes()
+        made = {
+            (c.args[0], tuple(c.args[1]))
+            for c in p.http_client.ensure_persistent_index.await_args_list
+        }
+        missing = [
+            (s.collection, s.scope_field) for s in ENTITY_INDEX_SOURCES.values()
+            if (s.collection, (s.scope_field, "_key")) not in made
+        ]
+        assert missing == []
+
+    def test_neo4j_indexes_every_source_on_scope_then_id(self) -> None:
+        from app.config.constants.neo4j import collection_to_label
+
+        made = " ".join(_neo4j([])._generate_performance_indexes())
+        missing = [
+            (s.collection, s.scope_field) for s in ENTITY_INDEX_SOURCES.values()
+            if f"FOR (n:{collection_to_label(s.collection)}) ON (n.{s.scope_field}, n.id)" not in made
+        ]
+        assert missing == []
