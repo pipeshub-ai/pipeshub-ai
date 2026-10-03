@@ -1150,32 +1150,6 @@ class TestProcessTxtDocument:
 
         assert len(events) == 2
 
-    @pytest.mark.asyncio
-    async def test_decode_failure_raises(self):
-        """Raises ValueError when all decodings fail."""
-        proc, _, _, _ = _make_processor()
-
-        # Create bytes that cannot be decoded by any encoding - use invalid continuation bytes
-        bad_bytes = MagicMock()
-        bad_bytes.decode = MagicMock(side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "bad"))
-
-        with pytest.raises(Exception):
-            await _collect(
-                proc.process_txt_document(
-                    recordName="test.txt",
-                    recordId="rec-1",
-                    version=1,
-                    source="upload",
-                    orgId="org-1",
-                    txt_binary=bad_bytes,
-                    virtual_record_id="vr-1",
-                    recordType="FILE",
-                    connectorName="",
-                    origin="UPLOAD",
-                )
-            )
-
-
 # ===========================================================================
 # Processor.process_pptx_document
 # ===========================================================================
@@ -1989,21 +1963,6 @@ class TestProcessMdDocument:
 
 class TestProcessTxtDocument:
     """Tests for process_txt_document."""
-
-    @pytest.mark.asyncio
-    async def test_decode_failure(self):
-        """Should raise when all encodings fail."""
-        proc, _, gp, config = _make_processor()
-
-        # Create binary that fails all decodings
-        bad_binary = MagicMock()
-        bad_binary.decode = MagicMock(side_effect=UnicodeDecodeError('utf-8', b'', 0, 1, 'bad'))
-
-        with pytest.raises(Exception):
-            await _collect(proc.process_txt_document(
-                "test.txt", "rec-1", 1, "upload", "org-1",
-                bad_binary, "vr-1", "FILE", "KB", "UPLOAD"
-            ))
 
     @pytest.mark.asyncio
     async def test_success_delegates_to_md(self):

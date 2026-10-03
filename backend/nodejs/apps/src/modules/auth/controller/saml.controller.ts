@@ -27,17 +27,14 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { samlSsoCallbackUrl, samlSsoConfigUrl } from '../constants/constants';
 import { Org } from '../../user_management/schema/org.schema';
 import { isValidEmail } from '../routes/saml.routes';
+import {
+  isValidCodeChallenge,
+  isValidDesktopState,
+} from '../services/samlDesktopHandoff.service';
 
 const orgIdToSamlEmailKey: Record<string, string> = {};
-passport.serializeUser((user, done) => {
-  done(null, user);
-});
-
-passport.deserializeUser((obj, done) => {
-  if (obj) {
-    done(null, obj);
-  }
-});
+export const SAML_LOGOUT_UNSUPPORTED_MESSAGE =
+  "Signing out through your identity provider isn't supported. To sign out, use Sign out in PipesHub.";
 @injectable()
 export class SamlController {
   constructor(
@@ -154,10 +151,11 @@ export class SamlController {
             return done(err as Error);
           }
         },
-        async (_req: Request, profile: Profile, done: VerifiedCallback) => {
-          // Optional: Handle logout request here
-          // For now, just pass profile through
-          return done(null, profile);
+        (_req: Request, _profile: Profile, done: VerifiedCallback) => {
+          // Failing here makes passport-saml report one error, before it would
+          // build a logout response and call req.logout(), which needs a session
+          // this app does not keep and then writes to an already-sent response.
+          done(new Error(SAML_LOGOUT_UNSUPPORTED_MESSAGE));
         },
       ),
     );
@@ -184,13 +182,22 @@ export class SamlController {
         throw new NotFoundError('Organisation configuration not found');
       }
 
-      const relayStateObj = { orgId: orgAuthConfig.orgId, sessionToken };
+      const { state, code_challenge: codeChallenge } = req.query;
+      // Both or neither: a desktop flow without either cannot be completed safely.
+      const desktop =
+        req.query.client === 'desktop' &&
+        isValidDesktopState(state) &&
+        isValidCodeChallenge(codeChallenge);
+      const relayStateObj = desktop
+        ? { orgId: orgAuthConfig.orgId, sessionToken, client: 'desktop', state, codeChallenge }
+        : { orgId: orgAuthConfig.orgId, sessionToken };
       const relayStateEncoded = Buffer.from(
         JSON.stringify(relayStateObj),
       ).toString('base64');
       req.query.RelayState = relayStateEncoded;
 
       passport.authenticate('saml', {
+        session: false,
         failureRedirect: `/${this.config.frontendUrl}/auth/sign-in`,
         successRedirect: '/',
       })(req, res, next);

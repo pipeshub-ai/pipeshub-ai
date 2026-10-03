@@ -23,12 +23,12 @@ from aiohttp.abc import AbstractResolver, ResolveResult
 from aiohttp.resolver import DefaultResolver
 
 from app.utils.url_fetcher import (
-    _CLOUD_METADATA_ADDRESSES,
     FetchError,
     IPAddress,
     PublicTarget,
     _hostname_is_blocked,
     _ip_is_blocked,
+    is_never_allowed_address,
     resolve_public_http_target,
 )
 
@@ -38,8 +38,6 @@ if TYPE_CHECKING:
 
 ALLOWED_HOSTS_ENV = "WEB_CONNECTOR_ALLOWED_HOSTS"
 _DEFAULT_PORTS = {"http": 80, "https": 443}
-# AWS's IPv6 metadata endpoint is a private (ULA) address, so only this list keeps it closed to an allowed host.
-_NEVER_ALLOWED = _CLOUD_METADATA_ADDRESSES | {ipaddress.ip_address("fd00:ec2::254")}
 
 
 class UnsafeAddressError(aiohttp.ClientConnectionError):
@@ -58,9 +56,7 @@ def _host_allowed(host: str | None) -> bool:
 
 
 def _refuse_never_allowed(host: str, ip: IPAddress) -> None:
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
-        ip = ip.ipv4_mapped  # ::ffff:169.254.169.254 reaches the IPv4 metadata address
-    if ip.is_link_local or ip in _NEVER_ALLOWED:
+    if is_never_allowed_address(ip):
         raise UnsafeAddressError(f"{host!r} resolves to a link-local or cloud metadata address")
 
 

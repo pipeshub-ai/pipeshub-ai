@@ -278,7 +278,7 @@ class TestHandleUpdatedRecord:
         record = _make_record(version=2)
         existing = _make_record(version=1)
 
-        await proc._handle_updated_record(record, existing, tx_store)
+        await proc._handle_updated_record(record, existing, tx_store, old_path=None)
 
         tx_store.batch_upsert_records.assert_awaited_once_with([record])
 
@@ -371,10 +371,11 @@ class TestProcessRecord:
         tx_store = _make_tx_store()
         record = _make_record()
 
-        result = await proc._process_record(record, [], tx_store)
+        result, pending_moves = await proc._process_record(record, [], tx_store)
 
         assert result is not None
         assert result.org_id == "org-1"
+        assert pending_moves == []
         tx_store.batch_upsert_records.assert_awaited()
 
     @pytest.mark.asyncio
@@ -391,7 +392,7 @@ class TestProcessRecord:
         record = _make_record(version=2)
         record.external_revision_id = "rev-2"
 
-        result = await proc._process_record(record, [], tx_store)
+        result, pending_moves = await proc._process_record(record, [], tx_store)
 
         assert result.id == "existing-id"
         # Should have been called at least once for initial upsert
@@ -411,7 +412,7 @@ class TestProcessRecord:
         record = _make_record(version=1)
         record.external_revision_id = "rev-1"
 
-        result = await proc._process_record(record, [], tx_store)
+        result, _ = await proc._process_record(record, [], tx_store)
 
         assert result.id == "existing-id"
 
@@ -733,12 +734,9 @@ class TestOnRecordDeleted:
     async def test_deletes_record_publishes_when_vrid_present(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
-        existing = MagicMock()
-        existing.virtual_record_id = "vr-9"
-        existing.org_id = "org-1"
-        existing.id = "rec-1"
-        existing.version = 1
-        existing.connector_id = "conn-9"
+        # The stored document, as GraphTransactionStore.get_record_by_key returns it.
+        existing = {"_key": "rec-1", "orgId": "org-1", "version": 1,
+                    "virtualRecordId": "vr-9", "connectorId": "conn-9"}
         tx_store.get_record_by_key = AsyncMock(return_value=existing)
 
         ctx = AsyncMock()
@@ -1004,24 +1002,30 @@ class TestHandleRecordPermissions:
         tx_store.batch_create_edges.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_user_permission_unknown_user_skipped(self):
-        """External user without record in DB is skipped."""
+    async def test_user_permission_unknown_user_becomes_person(self):
+        """An email with no user in the DB is an external collaborator: a Person is
+        created for it and the grant is recorded, rather than being dropped."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
 
         record = _make_record()
         record.id = "rec-1"
 
-        permission = MagicMock()
-        permission.entity_type = EntityType.USER.value
-        permission.email = "external@example.com"
-        permission.external_id = None
+        permission = Permission(
+            type=PermissionType.READ,
+            entity_type=EntityType.USER.value,
+            email="external@example.com",
+        )
 
         await proc._handle_record_permissions(record, [permission], tx_store)
 
-        # No edges created for unknown user
-        tx_store.batch_create_edges.assert_not_awaited()
+        tx_store.batch_create_edges.assert_awaited()
+        edges = tx_store.batch_create_edges.await_args.args[0]
+        assert edges[0]["from_id"] == "person-1"
+        assert edges[0]["from_collection"] == CollectionNames.PEOPLE.value
 
     @pytest.mark.asyncio
     async def test_group_permission(self):
@@ -1901,23 +1905,25 @@ class TestOnNewAppRoles:
 # ===========================================================================
 
 
-class TestUpsertExternalPerson:
+class TestResolvePrincipal:
     @pytest.mark.asyncio
-    async def test_returns_person_id(self):
+    async def test_returns_surviving_person_id(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
 
-        result = await proc._upsert_external_person("ext@test.com", tx_store)
-        assert result is not None
-        tx_store.batch_upsert_people.assert_awaited()
+        result = await proc._resolve_principal("ext@test.com", tx_store)
+        assert result == ("person-1", CollectionNames.PEOPLE.value)
 
     @pytest.mark.asyncio
     async def test_returns_none_on_error(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
-        tx_store.batch_upsert_people.side_effect = Exception("db fail")
+        tx_store.get_user_by_email.side_effect = Exception("db fail")
 
-        result = await proc._upsert_external_person("ext@test.com", tx_store)
+        result = await proc._resolve_principal("ext@test.com", tx_store)
         assert result is None
 
 
@@ -2719,7 +2725,7 @@ class TestOnNewRecordGroupsAdditional:
         parent_rg = MagicMock()
         parent_rg.id = "parent-rg-id"
         parent_rg.name = "Parent Group"
-        tx_store.get_record_group_by_external_id.side_effect = [None, parent_rg]
+        tx_store.get_record_group_by_external_id.side_effect = [None, None, parent_rg]
 
         rg = RecordGroup(
             external_group_id="ext-g1",

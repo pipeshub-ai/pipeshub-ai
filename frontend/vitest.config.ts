@@ -26,7 +26,7 @@ export default defineConfig({
     // Every unit test under app/ and lib/. A hand-kept list let new test
     // files sit unrun: three never ran, and one of them caught a real bug.
     // Playwright (tests/e2e) and Electron (electron/, run by
-    // test:electron:local-sync) have their own runners.
+    // test:electron) have their own runners.
     include: ['app/**/*.test.{ts,tsx}', 'lib/**/*.test.{ts,tsx}'],
     passWithNoTests: false,
     // `include` lists every source file, loaded by a test or not, so the

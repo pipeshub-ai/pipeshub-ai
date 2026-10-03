@@ -464,7 +464,128 @@ class TestResolveThreadRecordGroup:
 
 
 @pytest.mark.asyncio
+class TestResolveUserKey:
+    async def test_none_without_user_id(self):
+        graph = AsyncMock()
+        assert await fst.resolve_user_key(graph, None) is None
+        graph.get_user_by_user_id.assert_not_awaited()
+
+    async def test_prefers_key_then_id(self):
+        graph = AsyncMock()
+        graph.get_user_by_user_id = AsyncMock(return_value={"_key": "k1", "id": "i1"})
+        assert await fst.resolve_user_key(graph, "u") == "k1"
+        graph.get_user_by_user_id = AsyncMock(return_value={"id": "i1"})
+        assert await fst.resolve_user_key(graph, "u") == "i1"
+
+    async def test_unknown_user_or_error_is_none(self):
+        graph = AsyncMock()
+        graph.get_user_by_user_id = AsyncMock(return_value=None)
+        assert await fst.resolve_user_key(graph, "u") is None
+        graph.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("db"))
+        assert await fst.resolve_user_key(graph, "u") is None
+
+
+@pytest.mark.asyncio
+class TestUserCanAccessNode:
+    async def test_true_when_node_returned(self):
+        graph = AsyncMock()
+        graph.get_knowledge_hub_node_access = AsyncMock(return_value={"id": "r1"})
+        assert await fst.user_can_access_node(graph, "r1", "ukey", "org1") is True
+        kwargs = graph.get_knowledge_hub_node_access.await_args.kwargs
+        assert kwargs["node_id"] == "r1"
+        assert kwargs["user_key"] == "ukey"
+        assert kwargs["org_id"] == "org1"
+
+    async def test_false_when_denied_or_error(self):
+        graph = AsyncMock()
+        graph.get_knowledge_hub_node_access = AsyncMock(return_value=None)
+        assert await fst.user_can_access_node(graph, "r1", "ukey", "org1") is False
+        graph.get_knowledge_hub_node_access = AsyncMock(side_effect=RuntimeError("db"))
+        assert await fst.user_can_access_node(graph, "r1", "ukey", "org1") is False
+
+
+@pytest.mark.asyncio
+class TestFetchThreadRecordsImplAccess:
+    @patch.object(fst, "_resolve_thread_record_group", new_callable=AsyncMock)
+    @patch.object(fst, "user_can_access_node", new_callable=AsyncMock)
+    @patch.object(fst, "resolve_user_key", new_callable=AsyncMock)
+    async def test_denied_record_returns_error_without_content(
+        self, mock_key, mock_access, mock_resolve,
+    ):
+        mock_key.return_value = "ukey"
+        mock_access.return_value = False
+        graph = AsyncMock()
+        out = await fst._fetch_thread_records_impl(
+            "private-rec",
+            {},
+            graph_provider=graph,
+            blob_store=MagicMock(),
+            org_id="org1",
+            user_id="outsider",
+        )
+        assert out["ok"] is False
+        assert "don't have access" in out["error"]
+        assert "records" not in out
+        mock_access.assert_awaited_once_with(graph, "private-rec", "ukey", "org1")
+        mock_resolve.assert_not_awaited()
+        graph.get_records_by_record_group.assert_not_awaited()
+
+    @patch.object(fst, "_resolve_thread_record_group", new_callable=AsyncMock)
+    @patch.object(fst, "resolve_user_key", new_callable=AsyncMock)
+    async def test_unresolved_user_is_rejected(self, mock_key, mock_resolve):
+        mock_key.return_value = None
+        out = await fst._fetch_thread_records_impl(
+            "rid",
+            {},
+            graph_provider=AsyncMock(),
+            blob_store=MagicMock(),
+            org_id="org1",
+            user_id=None,
+        )
+        assert out["ok"] is False
+        assert "user" in out["error"]
+        mock_resolve.assert_not_awaited()
+
+    @patch.object(fst, "_resolve_thread_record_group", new_callable=AsyncMock)
+    @patch.object(fst, "user_can_access_node", new_callable=AsyncMock)
+    @patch.object(fst, "resolve_user_key", new_callable=AsyncMock)
+    async def test_thread_listing_is_permission_filtered(
+        self, mock_key, mock_access, mock_resolve,
+    ):
+        mock_key.return_value = "ukey"
+        mock_access.return_value = True
+        mock_resolve.return_value = {
+            "record_group_id": "trg",
+            "connector_id": "c",
+            "org_id": "org1",
+        }
+        graph = AsyncMock()
+        graph.get_records_by_record_group = AsyncMock(return_value=[])
+        out = await fst._fetch_thread_records_impl(
+            "rid",
+            {},
+            graph_provider=graph,
+            blob_store=MagicMock(),
+            org_id="org1",
+            user_id="member",
+        )
+        assert out["ok"] is True
+        kwargs = graph.get_records_by_record_group.await_args.kwargs
+        assert kwargs["user_key"] == "ukey"
+        assert kwargs["org_id"] == "org1"
+
+
+@pytest.mark.asyncio
 class TestFetchThreadRecordsImpl:
+    @pytest.fixture(autouse=True)
+    def _allow_access(self):
+        with patch.object(
+            fst, "resolve_user_key", AsyncMock(return_value="ukey"),
+        ), patch.object(
+            fst, "user_can_access_node", AsyncMock(return_value=True),
+        ):
+            yield
+
     async def test_missing_graph_provider(self):
         out = await fst._fetch_thread_records_impl(
             "rid",
@@ -477,11 +598,11 @@ class TestFetchThreadRecordsImpl:
         assert "graph_provider" in out["error"]
 
     @patch.object(fst, "_resolve_thread_record_group", new_callable=AsyncMock)
-    async def test_missing_org_after_resolve(self, mock_resolve):
+    async def test_missing_chat_org_is_not_taken_from_record(self, mock_resolve):
         mock_resolve.return_value = {
             "record_group_id": "trg",
             "connector_id": "c",
-            "org_id": "",
+            "org_id": "org-from-record",
         }
         graph = AsyncMock()
         out = await fst._fetch_thread_records_impl(
@@ -493,6 +614,8 @@ class TestFetchThreadRecordsImpl:
         )
         assert out["ok"] is False
         assert "org_id" in out["error"].lower()
+        mock_resolve.assert_not_awaited()
+        graph.get_records_by_record_group.assert_not_awaited()
 
     @patch.object(fst, "_resolve_thread_record_group", new_callable=AsyncMock)
     async def test_missing_blob_without_config_service(self, mock_resolve):
@@ -508,7 +631,7 @@ class TestFetchThreadRecordsImpl:
             {},
             graph_provider=graph,
             blob_store=None,
-            org_id="",
+            org_id="org",
             config_service=None,
         )
         assert out["ok"] is False
@@ -530,7 +653,7 @@ class TestFetchThreadRecordsImpl:
             {},
             graph_provider=graph,
             blob_store=None,
-            org_id="",
+            org_id="org",
             config_service=MagicMock(),
         )
         assert out["ok"] is True
@@ -697,6 +820,19 @@ class TestCreateFetchSlackThreadTool:
         assert kwargs["record_id"] == "rec-1"
         assert kwargs["virtual_record_id_to_result"] is vmap
         assert kwargs["config_service"] is not None
+        assert kwargs["user_id"] is None
+
+    @patch.object(fst, "_fetch_thread_records_impl", new_callable=AsyncMock)
+    async def test_tool_forwards_user_id(self, mock_impl):
+        mock_impl.return_value = {"ok": True, "records": []}
+        tool_fn = fst.create_fetch_slack_thread_tool(
+            {},
+            org_id="o",
+            graph_provider=AsyncMock(),
+            user_id="user-1",
+        )
+        await tool_fn.ainvoke({"record_id": "rec-1"})
+        assert mock_impl.await_args.kwargs["user_id"] == "user-1"
 
     @patch.object(fst, "_fetch_thread_records_impl", new_callable=AsyncMock)
     async def test_tool_exception_returns_error_dict(self, mock_impl):

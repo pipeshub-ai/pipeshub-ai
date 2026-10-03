@@ -36,7 +36,7 @@ def _graph_provider(*, access: bool = True, indexing_status: str | None = None) 
 
 
 def _cached_record(record_id: str) -> dict:
-    return {"id": record_id, "record_type": "FILE", "block_containers": {"blocks": []}}
+    return {"id": record_id, "record_name": f"Record {record_id}", "record_type": "FILE", "block_containers": {"blocks": []}}
 
 
 async def _fetch(record_ids: list[str], **kwargs):

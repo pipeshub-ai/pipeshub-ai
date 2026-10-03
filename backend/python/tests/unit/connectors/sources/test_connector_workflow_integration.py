@@ -263,10 +263,9 @@ class MockTransactionStore:
         return None
 
     async def get_record_by_key(self, key: str) -> Optional[Dict]:
+        """The stored document, as GraphTransactionStore.get_record_by_key returns it."""
         doc = self._s.get_node(CollectionNames.RECORDS.value, key)
-        if doc:
-            return self._doc_to_record(doc)
-        return None
+        return dict(doc) if doc else None
 
     async def batch_upsert_records(self, records: List[Record]) -> None:
         for record in records:
