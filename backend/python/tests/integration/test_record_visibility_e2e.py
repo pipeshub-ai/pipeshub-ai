@@ -57,6 +57,9 @@ from app.connectors.core.registry.folder_scope import (
     FolderScope,
     remove_records_outside_scope,
 )
+from app.connectors.sources.atlassian.confluence_cloud.connector import (
+    ConfluenceConnector,
+)
 from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     ConfluenceDataCenterConnector,
 )
@@ -931,3 +934,37 @@ async def test_with_the_trash_on_confluence_dc_trashes_what_hangs_under_a_trashe
     for name in ("trashed_shared", "live_shared", "live"):
         doc = await world.graph.get_document(world.ids[name], records)
         assert doc is not None and doc["isDeleted"] is True, name
+
+
+@pytest.mark.parametrize("connector_class", [ConfluenceConnector, ConfluenceDataCenterConnector])
+@pytest.mark.parametrize("trash_on", [True, False])
+async def test_a_removed_space_keeps_its_group_while_records_in_the_trash_belong_to_it(
+    world: _World, monkeypatch: pytest.MonkeyPatch, connector_class: type, trash_on: bool,
+) -> None:
+    """With the trash on, the group and its BELONGS_TO edges stay for a restore; off, the space goes as on main."""
+    monkeypatch.setattr(processor_module, "is_soft_delete_enabled", AsyncMock(return_value=trash_on))
+    await _put_shared_records_in_group(world, "space-vis", {
+        "live_shared": "page-kept-vis", "trashed_shared": "page-trashed-vis",
+    })
+    records, groups = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value
+    processor = _processor(world)
+    stored = await processor.get_records_by_status(world.connector_id, None, visibility=RecordVisibility.ALL)
+    in_space = [r for r in stored if r.id in (world.ids["live_shared"], world.ids["trashed_shared"])]
+    connector = SimpleNamespace(
+        data_entities_processor=processor, connector_id=world.connector_id, logger=logger,
+        pages_sync_point=AsyncMock(), _cascade_succeeded=ConfluenceDataCenterConnector._cascade_succeeded,
+    )
+    connector._space_holds_trash = lambda space_id: connector_class._space_holds_trash(connector, space_id)
+
+    assert await connector_class._remove_space(connector, "space-vis", in_space) is True
+
+    group = await world.graph.get_document(world.record_group_id, groups)
+    if trash_on:
+        assert group is not None, "the trash keeps the space"
+        for name in ("live_shared", "trashed_shared"):
+            doc = await world.graph.get_document(world.ids[name], records)
+            assert doc is not None and doc["isDeleted"] is True, name
+    else:
+        assert group is None
+        for name in ("live_shared", "trashed_shared"):
+            assert await world.graph.get_document(world.ids[name], records) is None, name
