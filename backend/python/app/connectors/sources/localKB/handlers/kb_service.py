@@ -900,8 +900,12 @@ class KnowledgeBaseService:
         raise ValueError(f"No record of knowledge base {kb_id} names its organisation")
 
     async def _publish_with_retry(self, event: dict, kb_id: str) -> None:
+        async def publish() -> None:
+            if await self.kafka_service.publish_event("record-events", event) is False:
+                raise RuntimeError("the message broker did not accept the event")
+
         await retry_async(
-            lambda: self.kafka_service.publish_event("record-events", event),
+            publish,
             logger=self.logger,
             description=f"publish {event['eventType']} for KB {kb_id}",
         )

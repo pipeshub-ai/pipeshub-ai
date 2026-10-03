@@ -70,6 +70,21 @@ async def test_a_storage_event_that_cannot_be_published_deletes_nothing(service)
 
 
 @pytest.mark.asyncio
+async def test_a_storage_event_the_broker_refuses_deletes_nothing(service) -> None:
+    _owner(service)
+    service.graph_provider.get_uploaded_document_ids = AsyncMock(return_value=DOC_IDS)
+    service.kafka_service.publish_event = AsyncMock(return_value=False)
+
+    with patch("app.utils.retry.asyncio.sleep", AsyncMock()):
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+    assert result["success"] is False
+    assert result["code"] == 503
+    assert service.kafka_service.publish_event.await_count == 3
+    service.graph_provider.delete_connector_instance.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_listing_failure_deletes_nothing_and_asks_to_retry(service):
     """The listed ids are the only handle on the files, so no list means no delete."""
     _owner(service)

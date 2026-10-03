@@ -63,6 +63,19 @@ async def test_a_removal_that_cannot_be_published_deletes_nothing():
 
 
 @pytest.mark.asyncio
+async def test_a_removal_the_broker_refuses_deletes_nothing() -> None:
+    provider, kafka = _provider(), AsyncMock()
+    kafka.publish_event = AsyncMock(return_value=False)
+
+    with patch("app.utils.retry.asyncio.sleep", AsyncMock()), pytest.raises(HTTPException) as caught:
+        await delete_record("r1", _request(), provider, kafka)
+
+    assert caught.value.status_code == 503
+    assert kafka.publish_event.await_count == 3
+    provider.delete_record.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_connector_record_schedules_no_storage_removal():
     provider, kafka = _provider(origin="CONNECTOR"), AsyncMock()
 

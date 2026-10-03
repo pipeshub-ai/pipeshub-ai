@@ -2378,8 +2378,12 @@ async def _schedule_upload_removal(
         for event in build_stored_document_cleanup_events(
             org_id=org_id, document_ids=files, connector_id=connector_id
         ):
+            async def publish(event: dict = event) -> None:
+                if await kafka_service.publish_event("record-events", event) is False:
+                    raise RuntimeError("the message broker did not accept the event")
+
             await retry_async(
-                lambda event=event: kafka_service.publish_event("record-events", event),
+                publish,
                 logger=logger,
                 description=f"publish {event['eventType']} for record {record_id}",
             )

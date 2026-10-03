@@ -4126,6 +4126,8 @@ class IGraphDBProvider(ABC):
         ``under_record_ids`` limits it to those records and everything they contain
         (PARENT_CHILD / ATTACHMENT, as a delete cascades); ``among`` to these ids.
         Read before the records are deleted: afterwards nothing points at them.
+        A failed query raises: an empty list must mean there are no uploads, since
+        the delete then goes ahead without scheduling any file removal.
         """
         pass
 
