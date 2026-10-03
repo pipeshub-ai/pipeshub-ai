@@ -253,6 +253,12 @@ def _escape(value: str) -> str:
     return re.escape(value)
 
 
+def is_within(path: str, folder: str) -> bool:
+    """Whether *path* is *folder* itself or a folder below it, as ``_under`` matches in MongoDB."""
+    folder = folder.rstrip("/")
+    return path == folder or path.startswith(f"{folder}/")
+
+
 def _under(path: str) -> str:
     """Match *path* itself or a folder below it, never a sibling that only starts the same.
 

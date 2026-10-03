@@ -12,6 +12,8 @@ honest are pinned here:
   re-count after a delete looks in that same folder.
 * Content a survivor shares with a deleted record is counted where it was filed,
   must hold something before the delete, and moving it is reported as a change.
+* Shared content a connector or collection delete rebuilds under its surviving
+  holder must turn up inside that holder's folder with every count it had before.
 """
 
 from __future__ import annotations
@@ -314,3 +316,99 @@ async def test_a_record_missing_from_the_graph_fails_even_when_counts_match() ->
     graph.record_node_handles.return_value = ["Record/f1", "File/f1"]
     footprint = await fp.graph_footprint_of_records(graph, ["f1"])
     assert footprint.handles == ("Record/f1", "File/f1")
+
+
+@pytest.mark.asyncio
+async def test_a_connector_footprint_can_leave_out_a_record_and_its_type_node() -> None:
+    graph = AsyncMock()
+    graph.connector_node_handles.return_value = ["Record/r2", "File/r2", "Record/r3", "File/r3", "RecordGroup/g"]
+    graph.record_node_handles.return_value = ["Record/r2", "File/r2"]
+    graph.count_edges_touching.return_value = 5
+
+    footprint = await fp.graph_footprint_of_connector(graph, "kb-2", excluding_records=["r2"])
+
+    assert footprint.handles == ("Record/r3", "File/r3", "RecordGroup/g")
+    graph.count_edges_touching.assert_awaited_once_with(footprint.handles)
+    graph.record_node_handles.return_value = graph.connector_node_handles.return_value
+    with pytest.raises(AssertionError, match="leaves nothing"):
+        await fp.graph_footprint_of_connector(graph, "kb-2", excluding_records=["r2", "r3"])
+
+
+def test_store_changes_read_a_moved_folder_at_its_new_place() -> None:
+    new = f"{SURVIVOR_FOLDER}/copy.md"
+    before = fp.StoresFootprint(GRAPH, None, {VRID: 3}, {PREFIX: 2}, {f"prefix:{PREFIX}": 1})
+    after = fp.StoresFootprint(GRAPH, None, {VRID: 3}, {new: 2}, {f"prefix:{new}": 1})
+
+    assert fp.store_changes(before, after, moved={PREFIX: new}) == []
+    assert fp.store_changes(before, after) == [
+        f"blob files {PREFIX}: 2 -> None",
+        f"storage documents prefix:{PREFIX}: 1 -> None",
+    ]
+    short = fp.StoresFootprint(GRAPH, None, {VRID: 3}, {new: 1}, {f"prefix:{new}": 1})
+    assert fp.store_changes(before, short, moved={PREFIX: new}) == [f"blob files {PREFIX} (now {new}): 2 -> 1"]
+
+
+REBUILT = f"{SURVIVOR_FOLDER}/copy.md"
+HOLDER = fp.Tracked(name="copy.md", record_id="r2", virtual_record_id=VRID)
+
+
+async def _rebuild_stores(counts_by_path: dict[str, int], *, rebuilt_at: str = REBUILT):
+    """Shared content counted under the deleted copy's folder, then the stores as they stand after the rebuild."""
+    graph, vector, blob, mongo = stores = _survivor_stores({PREFIX: 2})
+    before = await fp.capture(
+        GRAPH, vector, blob, mongo, org_id=ORG, records=[HOLDER], envelope_paths={VRID: PREFIX}
+    )
+    blob.count_under.side_effect = lambda path, vendor: counts_by_path.get(path, 0)
+    mongo.count_documents_under_path.side_effect = lambda path: 1 if counts_by_path.get(path) else 0
+    mongo.envelope_path.return_value = rebuilt_at
+    graph.get_record_by_name.return_value = {"id": "r2", "recordName": "copy.md", "indexingStatus": "COMPLETED"}
+    return before, stores
+
+
+async def _assert_rebuilt(before, stores) -> None:
+    graph, vector, blob, mongo = stores
+    await fp.assert_rebuilt(
+        before, graph, vector, blob, mongo, org_id=ORG, connector_id="kb-2", holder=HOLDER, what="x"
+    )
+
+
+@pytest.mark.asyncio
+async def test_shared_content_rebuilt_whole_under_the_survivor_passes() -> None:
+    before, stores = await _rebuild_stores({REBUILT: 2})
+    graph, *_, mongo = stores
+    graph.count_edges_touching.return_value = 9
+
+    await _assert_rebuilt(before, stores)
+
+    mongo.envelope_path.assert_awaited_with(ORG, VRID, within=SURVIVOR_FOLDER, timeout=480)
+    graph.get_record_by_name.assert_awaited_with("kb-2", "copy.md")
+
+
+@pytest.mark.asyncio
+async def test_shared_content_not_rebuilt_whole_is_reported() -> None:
+    before, stores = await _rebuild_stores({REBUILT: 1})
+    stores[1].count_for_virtual_record.return_value = 0
+
+    with pytest.raises(AssertionError) as caught:
+        await _assert_rebuilt(before, stores)
+    message = str(caught.value)
+    assert f"blob files {PREFIX} (now {REBUILT}): 2 -> 1" in message
+    assert f"embeddings {VRID}: 3 -> 0" in message
+
+
+@pytest.mark.parametrize("rebuilt_at", [FLAT, f"{ORG}/PipesHub/records/kb-2-old/copy.md"])
+@pytest.mark.asyncio
+async def test_shared_content_rebuilt_outside_the_survivors_folder_is_reported(rebuilt_at: str) -> None:
+    before, stores = await _rebuild_stores({rebuilt_at: 2}, rebuilt_at=rebuilt_at)
+
+    with pytest.raises(AssertionError, match="not under"):
+        await _assert_rebuilt(before, stores)
+
+
+@pytest.mark.asyncio
+async def test_a_rebuilt_holder_missing_from_the_graph_is_reported() -> None:
+    before, stores = await _rebuild_stores({REBUILT: 2})
+    stores[0].count_existing_nodes.return_value = 1
+
+    with pytest.raises(AssertionError, match="graph nodes 2 -> 1"):
+        await _assert_rebuilt(before, stores)

@@ -12,9 +12,15 @@ The scenario, built once for the module:
 * ``other``: a PostgreSQL connector, a different type, over its own schema.
 
 Everything is counted before ``doomed`` is deleted; each test then checks one
-store, or one survivor, so a failure names what went wrong. Blob storage and
-MongoDB are never cleaned by a connector delete today: those two tests are
-strict expected failures and will turn red, on purpose, when that is fixed.
+store, or one survivor, so a failure names what went wrong.
+
+What a connector delete does today (``event_service.py`` ``_handle_delete``):
+it clears the graph, the vector database and the connector's config, then
+deletes the connector's whole ``records/{connectorId}`` storage tree in blob
+storage and MongoDB. That tree holds the shared envelope too, so it then
+re-indexes the twin's copy (``repair_shared_records``), which files a new
+envelope under the twin's own folder. The twin is checked against that: its
+own content untouched, the shared content whole again in its folder.
 """
 
 from __future__ import annotations
@@ -28,20 +34,12 @@ import pytest_asyncio
 
 from helper import cleanup_sources as src
 from helper import delete_footprint as fp
-from helper.cleanup_errors import StoreNotEmptied
 from helper.mongo_store import records_folder
 from helper.run_folder import new_run_folder
 
 logger = logging.getLogger("cleanup-connector-deletion")
 
 pytestmark = [pytest.mark.integration, pytest.mark.cleanup]
-
-STORAGE_GAP = (
-    "A connector delete clears the graph, the vector database and the connector's "
-    "config (event_service.py _handle_delete) but never calls the storage service, "
-    "so each record's processed envelope under {orgId}/PipesHub/records/{connectorId}/... stays "
-    "in blob storage and its storage document stays in MongoDB."
-)
 
 SHARED = b"# Kestrel Ringing Log\n\nEvery ring is logged with its date, site and ringer.\n"
 
@@ -66,6 +64,8 @@ async def connector_delete(
     tag = uuid.uuid4().hex[:6]
     pg = src.postgres(f"cleanup_{tag}")
     created: dict[str, list[str]] = {"connectors": [], "folders": []}
+    # Per run, so the only other holder of the shared content is this run's twin.
+    shared_body = SHARED + f"\nRun {tag}\n".encode()
     names = {
         "doomed_unique": f"doomed-unique-{tag}.md",
         "doomed_shared": f"doomed-shared-{tag}.md",
@@ -75,7 +75,7 @@ async def connector_delete(
     try:
         doomed = await _minio_connector(
             pipeshub_client, graph_provider, storage, "doomed",
-            {names["doomed_unique"]: src.unique_text("doomed"), names["doomed_shared"]: SHARED},
+            {names["doomed_unique"]: src.unique_text("doomed"), names["doomed_shared"]: shared_body},
             created,
         )
         doomed_records = await fp.wait_for_connector_records(
@@ -83,7 +83,7 @@ async def connector_delete(
         )
         twin = await _minio_connector(
             pipeshub_client, graph_provider, storage, "twin",
-            {names["twin_unique"]: src.unique_text("twin"), names["twin_shared"]: SHARED},
+            {names["twin_unique"]: src.unique_text("twin"), names["twin_shared"]: shared_body},
             created,
         )
         twin_records = await fp.wait_for_connector_records(
@@ -106,7 +106,7 @@ async def connector_delete(
             f"virtual record id ({twin_records[names['twin_shared']].virtual_record_id} vs "
             f"{shared_vrid}), so this scenario cannot test shared content surviving."
         )
-        # One envelope per virtual id, filed under the doomed copy; the twin's is counted there.
+        # One envelope per virtual id, filed under the doomed copy until the delete removes it.
         shared_path, vendor = await fp.envelope_location(
             mongo_store, test_org_id, shared_vrid, within=records_folder(test_org_id, doomed)
         )
@@ -120,22 +120,32 @@ async def connector_delete(
         )
         fp.assert_every_store_holds_it(doomed_before)
 
+        # The twin's copy of the shared content is re-indexed by the delete, so it is
+        # left out of the twin's snapshot (with the twin's connector-wide point count,
+        # which includes it) and counted on its own.
+        holder = twin_records[names["twin_shared"]]
         survivors = {}
-        for label, cid, records, known in (
-            ("twin", twin, list(twin_records.values()), {shared_vrid: shared_path}),
-            ("other", other, list(other_records.values()), {}),
+        for label, cid, records, excluded, count_points in (
+            ("twin", twin, [twin_records[names["twin_unique"]]], [holder.record_id], False),
+            ("other", other, list(other_records.values()), [], True),
         ):
-            graph_fp = await fp.graph_footprint_of_connector(graph_provider, cid)
+            graph_fp = await fp.graph_footprint_of_connector(graph_provider, cid, excluding_records=excluded)
             survivors[label] = {
-                "connector_id": cid,
+                "connector_id": cid if count_points else None,
                 "records": records,
                 "before": await fp.capture_when_stable(
                     graph_fp, vector_store, blob_store, mongo_store,
                     org_id=test_org_id, records=records, within=records_folder(test_org_id, cid),
-                    connector_id=cid, vendor=vendor, envelope_paths=known,
+                    connector_id=cid if count_points else None, vendor=vendor,
                 ),
             }
-        fp.assert_shared_envelope_counted(survivors["twin"]["before"], shared_vrid)
+        shared_before = await fp.capture_when_stable(
+            await fp.graph_footprint_of_records(graph_provider, [holder.record_id]),
+            vector_store, blob_store, mongo_store,
+            org_id=test_org_id, records=[holder], vendor=vendor,
+            envelope_paths={shared_vrid: shared_path},
+        )
+        fp.assert_shared_envelope_counted(shared_before, shared_vrid)
 
         src.delete_connector(pipeshub_client, doomed)
         created["connectors"].remove(doomed)
@@ -147,6 +157,9 @@ async def connector_delete(
             "before": doomed_before,
             "shared_vrid": shared_vrid,
             "survivors": survivors,
+            "twin_id": twin,
+            "holder": holder,
+            "shared_before": shared_before,
             "vendor": vendor,
         }
     finally:
@@ -186,7 +199,6 @@ class TestDeletingAConnector:
         )
         await vector_store.assert_connector_embeddings_gone(connector_delete["connector_id"], timeout=60)
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Connector delete: {STORAGE_GAP}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_files_are_removed_from_blob_storage(
         self, connector_delete, blob_store
@@ -197,7 +209,6 @@ class TestDeletingAConnector:
             vendor=connector_delete["vendor"],
         )
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Connector delete: {STORAGE_GAP}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_storage_documents_are_removed_from_mongodb(
         self, connector_delete, mongo_store
@@ -213,12 +224,23 @@ class TestWhatSurvivesAConnectorDelete:
     async def test_another_connector_of_the_same_type_is_untouched(
         self, connector_delete, graph_provider, vector_store, blob_store, mongo_store, test_org_id
     ) -> None:
-        """Including the content it shares with the deleted connector."""
+        """Everything of it except its copy of the shared content, which the next test checks."""
         twin = connector_delete["survivors"]["twin"]
         await fp.assert_unchanged(
             twin["before"], graph_provider, vector_store, blob_store, mongo_store,
             org_id=test_org_id, records=twin["records"], connector_id=twin["connector_id"],
             vendor=connector_delete["vendor"], what="the other MinIO connector",
+        )
+
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_the_content_it_shared_is_rebuilt_under_the_other_connector(
+        self, connector_delete, graph_provider, vector_store, blob_store, mongo_store, test_org_id
+    ) -> None:
+        await fp.assert_rebuilt(
+            connector_delete["shared_before"], graph_provider, vector_store, blob_store, mongo_store,
+            org_id=test_org_id, connector_id=connector_delete["twin_id"],
+            holder=connector_delete["holder"], vendor=connector_delete["vendor"],
+            what="the content shared with the other MinIO connector",
         )
 
     @pytest.mark.asyncio(loop_scope="session")

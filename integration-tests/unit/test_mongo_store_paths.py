@@ -40,6 +40,23 @@ def test_under_matches_the_path_and_its_folders_only(path: str, matches: bool) -
     assert bool(re.search(mongo_store._under(f"{KB}/policy-433e53"), path)) is matches
 
 
+@pytest.mark.parametrize(
+    ("path", "inside"),
+    [
+        (f"{KB}/policy-433e53", True),
+        (f"{KB}/policy-433e53/6abffe413081615fc6a009f6", True),
+        (f"{KB}/policy-433e53-2", False),
+        (f"{KB}/policy-433e5", False),
+        (f"{KB}/folder/policy-433e53", False),
+    ],
+)
+def test_is_within_agrees_with_the_mongodb_match(path: str, inside: bool) -> None:
+    folder = f"{KB}/policy-433e53"
+    assert mongo_store.is_within(path, folder) is inside
+    assert mongo_store.is_within(path, f"{folder}/") is inside
+    assert bool(re.search(mongo_store._under(folder), path)) is inside
+
+
 def test_under_ignores_a_trailing_slash() -> None:
     assert re.search(mongo_store._under(f"{KB}/"), f"{KB}/policy-433e53")
 
