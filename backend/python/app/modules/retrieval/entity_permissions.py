@@ -101,8 +101,13 @@ class EntityHit:
 
 @dataclass(frozen=True)
 class EntityRecordPage:
+    """``capped``: the entity has more records than the provider scans, so
+    the page is newest within a sample and an end of paging is not the end
+    of the entity's records."""
+
     records: list[dict[str, Any]]
     next_cursor: str | None
+    capped: bool = False
 
 
 @dataclass
@@ -113,6 +118,7 @@ class _Probe:
     connector_ids: list[str]
     permitted: list[dict[str, Any]] = field(default_factory=list)
     exhausted: bool = False
+    capped: bool = False
 
 
 async def get_entity_access_context(
@@ -286,7 +292,7 @@ async def _run_probes(
             offset=round_index * PROBE_BATCH,
         )
         rows_by_probe = {
-            id(p): by_entity.get((p.entity_type, p.entity_id)) or [] for p in pending
+            id(p): _rows_for(by_entity, p.entity_type, p.entity_id) for p in pending
         }
         permitted = await _filter_permitted_rows(
             graph_provider, context, [row for rows in rows_by_probe.values() for row in rows],
@@ -295,10 +301,24 @@ async def _run_probes(
             rows = rows_by_probe[id(probe)]
             probe.permitted.extend(row for row in rows if row.get("_key") in permitted)
             probe.exhausted = len(rows) < PROBE_BATCH
+            probe.capped = probe.capped or _is_capped(rows)
     for probe in probes:
         if not probe.connector_ids:
             probe.exhausted = True
     return rounds
+
+
+def _rows_for(
+    by_entity: dict[tuple[str, str], list[dict[str, Any]]], entity_type: str, entity_id: str,
+) -> list[dict[str, Any]]:
+    # Not ``.get(...) or []``: an empty capped window is falsy, and swapping it
+    # for a plain list would lose ``capped`` exactly when paging reaches the cap.
+    rows = by_entity.get((entity_type, entity_id))
+    return rows if rows is not None else []
+
+
+def _is_capped(rows: list[dict[str, Any]]) -> bool:
+    return bool(getattr(rows, "capped", False))
 
 
 def _is_kept(context: EntityAccessContext, probe: _Probe) -> bool:
@@ -392,7 +412,11 @@ async def search_entities_for_user(
                 name=probe.hit.get("name") or probe.hit.get("canonicalName") or probe.entity_id,
                 score=float(probe.hit.get("score") or 0.0),
                 records=probe.permitted[:PREVIEW_RECORD_COUNT],
-                more_records=len(probe.permitted) > PREVIEW_RECORD_COUNT or not probe.exhausted,
+                more_records=(
+                    len(probe.permitted) > PREVIEW_RECORD_COUNT
+                    or not probe.exhausted
+                    or probe.capped
+                ),
                 aliases=tuple(str(a) for a in (probe.hit.get("aliases") or []) if a),
             ))
         stats.append(
@@ -466,7 +490,8 @@ async def list_accessible_entity_records(
     """Records connected to one entity that the user can access, newest
     first. ``next_cursor`` is an offset into the org- and connector-scoped
     candidate list; every row is re-checked, so a forged cursor exposes
-    nothing. No totals are returned."""
+    nothing. No totals are returned. ``capped`` is set when the provider's
+    scan of the entity hit its cap (see ``EntityRecordPage``)."""
     if entity_type not in SEARCHABLE_ENTITY_TYPES:
         raise ValueError(f"Unsupported entity type {entity_type!r}")
     offset = _parse_cursor(cursor)
@@ -477,6 +502,7 @@ async def list_accessible_entity_records(
 
     records: list[dict[str, Any]] = []
     scanned = 0
+    capped = False
     while scanned < max_scan:
         size = min(max(limit * 2, CANDIDATE_BATCH_MIN), CANDIDATE_BATCH_MAX, max_scan - scanned)
         by_entity = await _fetch_candidates(
@@ -487,7 +513,8 @@ async def list_accessible_entity_records(
             limit_per_entity=size,
             offset=offset,
         )
-        batch = by_entity.get((entity_type, entity_id)) or []
+        batch = _rows_for(by_entity, entity_type, entity_id)
+        capped = capped or _is_capped(batch)
         permitted = await _filter_permitted_rows(graph_provider, context, batch)
         for index, row in enumerate(batch):
             if row.get("_key") not in permitted:
@@ -498,12 +525,18 @@ async def list_accessible_entity_records(
                 return EntityRecordPage(
                     records=records,
                     next_cursor=str(offset + index + 1) if more else None,
+                    capped=capped,
                 )
         offset += len(batch)
         scanned += len(batch)
         if len(batch) < size:
-            return EntityRecordPage(records=records, next_cursor=None)
-    return EntityRecordPage(records=records, next_cursor=str(offset))
+            if capped:
+                logger.info(
+                    "entity listing reached the scan cap org=%s entity=%s/%s offset=%d",
+                    context.org_id, entity_type, entity_id, offset,
+                )
+            return EntityRecordPage(records=records, next_cursor=None, capped=capped)
+    return EntityRecordPage(records=records, next_cursor=str(offset), capped=capped)
 
 
 __all__ = [

@@ -590,6 +590,14 @@ class ProgressStatus(Enum):
     QUEUED = "QUEUED"
 
 
+class DeleteSource(str, Enum):
+    """Who moved a record to the trash. Decides whether a sync may restore it."""
+
+    USER = "USER"
+    CONNECTOR = "CONNECTOR"
+    SYSTEM = "SYSTEM"
+
+
 class RecordTypes(Enum):
     FILE = "FILE"
     ATTACHMENT = "ATTACHMENT"
@@ -665,6 +673,7 @@ class EventTypes(Enum):
     DELETE_CONNECTOR_EMBEDDINGS = "deleteConnectorEmbeddings"
     SYNC_VECTOR_MEMBERSHIP = "syncVectorMembership"
     DELETE_VECTOR_COLLECTION = "deleteVectorCollection"
+    DELETE_STORED_DOCUMENTS = "deleteStoredDocuments"
 
 
 class AccountType(Enum):

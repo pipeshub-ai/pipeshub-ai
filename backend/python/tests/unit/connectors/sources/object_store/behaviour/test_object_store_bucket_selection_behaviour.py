@@ -86,6 +86,18 @@ class TestDeselectedBucket:
         assert BUCKET in db.record_groups
 
     @pytest.mark.asyncio
+    async def test_a_trashed_record_in_it_is_removed_too(self, kind, connector, db, config) -> None:
+        trashed = next(r for r in db.records.values() if r.external_record_id == f"{OTHER}/a.txt")
+        trashed.is_deleted = True
+
+        config.set_selection(filter_name(kind), [BUCKET])
+        await connector.run_sync()
+
+        assert trashed.id in db.deleted
+        assert in_bucket(db, OTHER) == set()
+        assert OTHER not in db.record_groups
+
+    @pytest.mark.asyncio
     async def test_selecting_it_again_syncs_it_again(self, kind, connector, db, config) -> None:
         config.set_selection(filter_name(kind), [BUCKET])
         await connector.run_sync()

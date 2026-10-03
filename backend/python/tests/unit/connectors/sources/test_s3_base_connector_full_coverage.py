@@ -29,6 +29,7 @@ from app.connectors.sources.s3.base_connector import (
 )
 from app.connectors.sources.s3.connector import S3Connector
 from app.models.entities import FileRecord, Record, RecordType, User
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
 @pytest.fixture()
@@ -1288,6 +1289,7 @@ class TestFolderFilter:
         # the first sync with this scope also cleans up what it leaves out.
         reads = connector.data_entities_processor.get_records_in_record_group.await_args_list
         assert [c.args for c in reads] == [(connector.connector_id, "b1", 500, None)] * 3
+        assert all(c.kwargs == {"visibility": RecordVisibility.ALL} for c in reads)
 
     @pytest.mark.asyncio
     async def test_exclude_lists_everything_and_skips_the_folder(self, connector):
@@ -1362,7 +1364,7 @@ class TestFolderFilter:
         connector.sync_filters = _folder_filter(["reports"])
         self._prepare(connector, {"reports/": []})
         processor = connector.data_entities_processor
-        processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a: [_out_of_scope_record()])
+        processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a, **kw: [_out_of_scope_record()])
         processor.on_record_deleted = AsyncMock(side_effect=[Exception("graph down"), None])
 
         await connector._sync_bucket("b1")

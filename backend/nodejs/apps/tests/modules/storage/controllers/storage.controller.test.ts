@@ -858,6 +858,20 @@ describe('StorageController', () => {
       return { doc, req }
     }
 
+    it('should refuse a malformed user id with 400 before writing anything', async () => {
+      const { doc, req } = nextVersionSetup()
+      req.user.userId = 'not-a-user-id'
+      const next = sinon.stub()
+
+      await controller.uploadNextVersionDocument(req, makeRes(), next)
+
+      expect((controller.cloneDocument as sinon.SinonStub).called).to.be.false
+      expect(adapter.uploadDocumentToStorageService.called).to.be.false
+      expect(doc.save.called).to.be.false
+      expect(next.firstCall.args[0].statusCode).to.equal(HTTP_STATUS.BAD_REQUEST)
+      expect(next.firstCall.args[0].message).to.contain("The user id in the storage token isn't valid")
+    })
+
     it('should leave the current file untouched when the new version cannot be written', async () => {
       const { doc, req } = nextVersionSetup()
       adapter.uploadDocumentToStorageService.reset()
@@ -1122,6 +1136,33 @@ describe('StorageController', () => {
       await controller.rollBackToPreviousVersion(req, res, next)
       expect(res.statusCode).to.equal(HTTP_STATUS.OK)
       expect(doc.save.calledOnce).to.be.true
+    })
+
+    it('should refuse a malformed user id with 400 before cloning anything', async () => {
+      const doc = makeDocument({
+        isVersionedFile: true,
+        versionHistory: [
+          { version: 0, s3: { url: 'v0' }, size: 100 },
+          { version: 1, s3: { url: 'v1' }, size: 200 },
+        ],
+        storageVendor: StorageVendor.S3,
+      })
+      sinon.stub(storageUtils, 'getDocumentInfo').resolves({ document: doc })
+      sinon.stub(storageUtils, 'getDocumentRootPath').returns('org/path/doc')
+      sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
+      sinon.stub(storageUtils, 'getCurrentFilePath').returns('current/path')
+      sinon.stub(storageUtils, 'getVersionFilePath').returns('version/path')
+      sinon.stub(storageUtils, 'isValidStorageVendor').returns(true)
+      const clone = sinon.stub(controller, 'cloneDocument').resolves({ statusCode: 200, data: 'rolled-url' })
+      const req = makeReq({ userId: 'not-a-user-id', body: { version: 0, note: 'rollback to v0' }, query: {} })
+      const next = sinon.stub()
+
+      await controller.rollBackToPreviousVersion(req, makeRes(), next)
+
+      expect(clone.called).to.be.false
+      expect(doc.save.called).to.be.false
+      expect(next.firstCall.args[0].statusCode).to.equal(HTTP_STATUS.BAD_REQUEST)
+      expect(next.firstCall.args[0].message).to.contain("The user id in the storage token isn't valid")
     })
 
     it('should throw NotFoundError when document not found', async () => {

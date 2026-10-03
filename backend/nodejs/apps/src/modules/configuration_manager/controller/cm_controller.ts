@@ -80,6 +80,8 @@ import {
   mergeAiModelCredentials,
   maskWebSearchProvider,
   mergeWebSearchProviderPlaceholders,
+  maskSlackBotConfig,
+  mergeSlackBotConfigPlaceholders,
 } from '../utils/maskConfigSecrets';
 import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
 import {
@@ -642,12 +644,24 @@ const updateSlackBotStoreWithCAS = async <T>(
   throw new Error('Failed to update Slack bot config.');
 };
 
-const slackBotConfig = (config: SlackBotConfigEntry) => ({
+/** Admin-facing shape. Credentials are masked; an edit re-submitting the
+ * placeholder is restored from storage by mergeSlackBotConfigPlaceholders. */
+const slackBotConfig = (config: SlackBotConfigEntry) =>
+  maskSlackBotConfig({
+    id: config.id,
+    name: config.name,
+    agentId: config.agentId ?? null,
+    createdAt: config.createdAt,
+    updatedAt: config.updatedAt,
+    botToken: config.botToken,
+    signingSecret: config.signingSecret,
+  });
+
+/** Everything the bot process needs to verify a signature and act as the bot,
+ * and nothing else. Served only to SLACK_BOT_VERIFY holders. */
+const slackBotInternalConfig = (config: SlackBotConfigEntry) => ({
   id: config.id,
-  name: config.name,
   agentId: config.agentId ?? null,
-  createdAt: config.createdAt,
-  updatedAt: config.updatedAt,
   botToken: config.botToken,
   signingSecret: config.signingSecret,
 });
@@ -666,6 +680,28 @@ export const getSlackBotConfigs =
         .end();
     } catch (error: any) {
       logger.error('Error getting slack bot configs', { error });
+      next(error);
+    }
+  };
+
+export const getInternalSlackBotConfigs =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (
+    _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const store = await getSlackBotStore(keyValueStoreService);
+      res
+        .status(HTTP_STATUS.OK)
+        .json({
+          status: 'success',
+          configs: store.configs.map(slackBotInternalConfig),
+        })
+        .end();
+    } catch (error: any) {
+      logger.error('Error getting internal slack bot configs', { error });
       next(error);
     }
   };
@@ -757,11 +793,15 @@ export const updateSlackBotConfig =
           if (!previousConfig) {
             throw new Error("Config not found");
           }
+          const credentials = mergeSlackBotConfigPlaceholders(
+            { botToken, signingSecret },
+            previousConfig,
+          );
           const nextConfig: SlackBotConfigEntry = {
             ...previousConfig,
             name,
-            botToken,
-            signingSecret,
+            botToken: credentials.botToken,
+            signingSecret: credentials.signingSecret,
             agentId: normalizedAgentId,
             updatedAt: new Date().toISOString(),
           };
@@ -3148,6 +3188,82 @@ export const streamEmbeddingDownloadProgress =
     }
   };
 
+// The model the Python services embed with: the default one, else the first
+// (retrieval_service.get_embedding_model_instance, VectorStore). null means
+// none is configured and the built-in model embeds.
+const activeEmbeddingModel = (
+  configs: unknown,
+): AIModelConfiguration | null => {
+  if (!Array.isArray(configs)) return null;
+  const models = configs as AIModelConfiguration[];
+  return models.find((config) => config.isDefault) ?? models[0] ?? null;
+};
+
+const EMBEDDING_MODEL_IN_USE_MESSAGE =
+  'This model is embedding your indexed content. Delete the embeddings in Labs first, then change or delete the model and re-embed.';
+
+// Asks the AI service whether `nextActive` (null: the built-in model) may take
+// over embedding. It answers 400 while the vector store holds vectors from
+// another model, and rebuilds an empty store at the new model's size.
+const checkEmbeddingModelTakeover = async (
+  nextActive: AIModelConfiguration | null,
+  req: AuthenticatedUserRequest,
+  appConfig: AppConfig,
+): Promise<AIServiceResponse> => {
+  const body = nextActive
+    ? [
+        {
+          provider: nextActive.provider,
+          configuration: nextActive.configuration,
+          modelType: 'embedding',
+          isMultimodal: nextActive.isMultimodal ?? false,
+          isReasoning: nextActive.isReasoning ?? false,
+          isDefault: true,
+          contextLength: nextActive.contextLength ?? null,
+          ...(nextActive.modelFriendlyName && {
+            modelFriendlyName: nextActive.modelFriendlyName,
+          }),
+        },
+      ]
+    : [];
+  const command = new AIServiceCommand({
+    uri: `${appConfig.aiBackend}/api/v1/embedding-health-check`,
+    method: HttpMethod.POST,
+    headers: req.headers as Record<string, string>,
+    body,
+  });
+  return (await command.execute()) as AIServiceResponse;
+};
+
+// The AI service refuses an embedding change with a 400 marked "not healthy"
+// only while the vector store holds vectors from another model. Its other 400s
+// ("error": a bad model name, a dimensions override, a failed image probe) are
+// the model's own setup problems and keep their own text.
+const isEmbeddingInUseRefusal = (
+  response: AIServiceResponse | undefined,
+): boolean =>
+  response?.statusCode === 400 && response.data?.status === 'not healthy';
+
+const takeoverRefusalMessage = (
+  takeover: AIServiceResponse,
+  fallback: string,
+): string =>
+  isEmbeddingInUseRefusal(takeover)
+    ? EMBEDDING_MODEL_IN_USE_MESSAGE
+    : healthCheckFailureMessage(takeover.data, fallback);
+
+const healthCheckFailureMessage = (data: unknown, fallback: string): string => {
+  const body = (data ?? {}) as {
+    message?: string;
+    error?: string | { message?: string };
+  };
+  return (
+    body.message ??
+    (typeof body.error === 'string' ? body.error : body.error?.message) ??
+    fallback
+  );
+};
+
 export const addAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
@@ -3195,7 +3311,7 @@ export const addAIModelProvider =
         return;
       }
 
-      const healthCheckPayload = {
+      const healthCheckPayload: Record<string, unknown> = {
         provider,
         configuration,
         modelType,
@@ -3204,6 +3320,15 @@ export const addAIModelProvider =
         isReasoning,
         contextLength,
       };
+      if (modelType === 'embedding') {
+        // Only the model that will embed may reshape the vector store; any
+        // other is checked for health alone.
+        healthCheckPayload.becomesActive =
+          Boolean(isDefault) ||
+          activeEmbeddingModel(
+            (await readStoredAiModelsConfig(keyValueStoreService))?.embedding,
+          ) === null;
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/health-check/${encodeURIComponent(String(modelType))}`,
@@ -3222,8 +3347,10 @@ export const addAIModelProvider =
       if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
         const errData: any = aiResponseData?.data ?? {};
         const reasonMessage =
-          (errData && (errData.message ?? errData.error?.message)) ??
-          `Failed to do health check of ${modelType} configuration, check credentials again`;
+          modelType === 'embedding' && isEmbeddingInUseRefusal(aiResponseData)
+            ? EMBEDDING_MODEL_IN_USE_MESSAGE
+            : ((errData && (errData.message ?? errData.error?.message)) ??
+              `Failed to do health check of ${modelType} configuration, check credentials again`);
 
         // The reason is written for the admin filling in the dialog ("Incorrect
         // API key provided"); the raw body behind it is for the log only.
@@ -3461,7 +3588,7 @@ export const updateAIModelProvider =
         targetModel.configuration as Record<string, unknown>,
       );
 
-      const healthCheckPayload = {
+      const healthCheckPayload: Record<string, unknown> = {
         provider,
         configuration: mergedConfiguration,
         modelType,
@@ -3470,6 +3597,26 @@ export const updateAIModelProvider =
         isDefault,
         contextLength,
       };
+      const activeEmbeddingBefore =
+        targetModelType === 'embedding'
+          ? activeEmbeddingModel(aiModels.embedding)
+          : null;
+      const activeEmbeddingAfter =
+        targetModelType === 'embedding'
+          ? activeEmbeddingModel(
+              (aiModels.embedding as AIModelConfiguration[]).map((config) => ({
+                ...config,
+                isDefault:
+                  config.modelKey === modelKey
+                    ? isDefault
+                    : !isDefault && config.isDefault,
+              })),
+            )
+          : null;
+      if (targetModelType === 'embedding') {
+        healthCheckPayload.becomesActive =
+          activeEmbeddingAfter?.modelKey === modelKey;
+      }
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/health-check/${modelType}`,
@@ -3488,8 +3635,10 @@ export const updateAIModelProvider =
       if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
         const errData: any = aiResponseData?.data ?? {};
         const reasonMessage =
-          (errData && (errData.message ?? errData.error?.message)) ??
-          `Failed to do health check of ${modelType} configuration, check credentials again`;
+          modelType === 'embedding' && isEmbeddingInUseRefusal(aiResponseData)
+            ? EMBEDDING_MODEL_IN_USE_MESSAGE
+            : ((errData && (errData.message ?? errData.error?.message)) ??
+              `Failed to do health check of ${modelType} configuration, check credentials again`);
 
         // The reason is written for the admin filling in the dialog ("Incorrect
         // API key provided"); the raw body behind it is for the log only.
@@ -3505,6 +3654,31 @@ export const updateAIModelProvider =
           },
         });
         return;
+      }
+
+      // Taking the default off the model that embeds hands embedding to
+      // another model, which has to fit the vector store too.
+      if (
+        activeEmbeddingBefore?.modelKey === modelKey &&
+        activeEmbeddingAfter?.modelKey !== modelKey
+      ) {
+        const takeover = await checkEmbeddingModelTakeover(
+          activeEmbeddingAfter,
+          req,
+          appConfig,
+        );
+        if (!takeover.data || takeover.statusCode !== 200) {
+          res.status(takeover.statusCode).json({
+            error: {
+              status: 'error',
+              message: takeoverRefusalMessage(
+                takeover,
+                'The model that would take over embedding failed its health check, so nothing was changed. Check its settings and try again.',
+              ),
+            },
+          });
+          return;
+        }
       }
 
       // Extract modelFriendlyName from configuration if present
@@ -3716,6 +3890,39 @@ export const deleteAIModelProvider =
         throw new ConflictError(message, { agents: agentsUsing });
       }
 
+      // Deleting the model that embeds hands embedding to the next one (or the
+      // built-in model). The AI service refuses that while vectors from this
+      // model are stored, the same check that guards changing the default.
+      if (
+        targetModelType === 'embedding' &&
+        activeEmbeddingModel(aiModels.embedding)?.modelKey === modelKey
+      ) {
+        const takeover = await checkEmbeddingModelTakeover(
+          activeEmbeddingModel(
+            (aiModels.embedding as AIModelConfiguration[]).filter(
+              (config) => config.modelKey !== modelKey,
+            ),
+          ),
+          req,
+          appConfig,
+        );
+        if (isEmbeddingInUseRefusal(takeover)) {
+          throw new BadRequestError(EMBEDDING_MODEL_IN_USE_MESSAGE);
+        }
+        if (!takeover.data || takeover.statusCode !== 200) {
+          res.status(takeover.statusCode).json({
+            error: {
+              status: 'error',
+              message: healthCheckFailureMessage(
+                takeover.data,
+                "The model that would take over embedding failed its health check, so this model was not deleted. Check that model's settings and try again.",
+              ),
+            },
+          });
+          return;
+        }
+      }
+
       const wasDefault = deletedModel.isDefault || false;
 
       // Remove the model from the configuration
@@ -3881,47 +4088,49 @@ export const updateDefaultAIModel =
         'stt',
       ];
       if (healthCheckSupportedTypes.includes(targetModelType)) {
-        const healthCheckPayload = {
-          provider: targetModel.provider,
-          configuration: targetModel.configuration,
-          modelType: targetModelType,
-          isMultimodal: targetModel.isMultimodal ?? false,
-          isReasoning: targetModel.isReasoning ?? false,
-          isDefault: true,
-          contextLength: targetModel.contextLength ?? null,
-          ...(targetModel.modelFriendlyName && {
-            modelFriendlyName: targetModel.modelFriendlyName,
-          }),
-        };
-
-        // Embedding uses the collection-managing endpoint; all others use the
-        // generic per-model health check.
-        const isEmbedding = targetModelType === 'embedding';
-        const aiCommandOptions: AICommandOptions = {
-          uri: isEmbedding
-            ? `${appConfig.aiBackend}/api/v1/embedding-health-check`
-            : `${appConfig.aiBackend}/api/v1/health-check/${encodeURIComponent(targetModelType)}`,
-          method: HttpMethod.POST,
-          headers: req.headers as Record<string, string>,
-          body: isEmbedding ? [healthCheckPayload] : healthCheckPayload,
-        };
-
         logger.debug(
           `Health Check for AI ${targetModelType} default-update API calling`,
         );
 
-        const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-        const aiResponseData =
-          (await aiServiceCommand.execute()) as AIServiceResponse;
+        let aiResponseData: AIServiceResponse;
+        if (targetModelType === 'embedding') {
+          // Embedding uses the collection-managing endpoint.
+          aiResponseData = await checkEmbeddingModelTakeover(
+            targetModel as AIModelConfiguration,
+            req,
+            appConfig,
+          );
+        } else {
+          const aiServiceCommand = new AIServiceCommand({
+            uri: `${appConfig.aiBackend}/api/v1/health-check/${encodeURIComponent(targetModelType)}`,
+            method: HttpMethod.POST,
+            headers: req.headers as Record<string, string>,
+            body: {
+              provider: targetModel.provider,
+              configuration: targetModel.configuration,
+              modelType: targetModelType,
+              isMultimodal: targetModel.isMultimodal ?? false,
+              isReasoning: targetModel.isReasoning ?? false,
+              isDefault: true,
+              contextLength: targetModel.contextLength ?? null,
+              ...(targetModel.modelFriendlyName && {
+                modelFriendlyName: targetModel.modelFriendlyName,
+              }),
+            },
+          });
+          aiResponseData =
+            (await aiServiceCommand.execute()) as AIServiceResponse;
+        }
 
         if (!aiResponseData?.data || aiResponseData?.statusCode !== 200) {
           const errData: any = aiResponseData?.data ?? {};
-          const reasonMessage =
-            errData.message ??
-            errData.error?.message ??
-            (typeof errData.error === 'string' ? errData.error : null) ??
+          const fallback =
             `Failed health check while setting default ${targetModelType} model. ` +
-              `Refusing to change default to prevent breaking the system.`;
+            `Refusing to change default to prevent breaking the system.`;
+          const reasonMessage =
+            targetModelType === 'embedding'
+              ? takeoverRefusalMessage(aiResponseData, fallback)
+              : healthCheckFailureMessage(errData, fallback);
 
           res.status(aiResponseData?.statusCode ?? 500).json({
             error: {

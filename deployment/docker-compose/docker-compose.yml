@@ -18,7 +18,7 @@
 #   graph-arango  — ArangoDB          (with DATA_STORE=arangodb)
 #   kv-etcd       — etcd              (with KV_STORE_TYPE=etcd)
 #   broker-kafka  — Zookeeper + Kafka (with MESSAGE_BROKER=kafka)
-#   sandbox       — coding-sandbox image pull (SANDBOX_MODE=docker)
+#   sandbox       — coding-sandbox image pull + Docker API proxy (SANDBOX_MODE=docker)
 #
 # Full stack: DATA_STORE=neo4j, KV_STORE_TYPE=etcd, MESSAGE_BROKER=kafka and
 # COMPOSE_PROFILES=graph-neo4j,kv-etcd,broker-kafka,sandbox
@@ -80,6 +80,8 @@ services:
     # int(os.getenv(KEY, default)) and crashes on "". Unset blanks so the key
     # is absent (slim uses its built-in default; new Python sizes from CPU).
     # A numeric value in .env is kept as an operator cap.
+    # Then hand over to the image entrypoint, which drops to the unprivileged
+    # user; images from earlier releases have none and start as before.
     entrypoint:
       - /bin/sh
       - -c
@@ -90,7 +92,9 @@ services:
         v=$$(printenv "$$k" || true);
         [ -z "$$v" ] && unset "$$k";
         done;
-        exec /app/process_monitor.sh
+        if [ -x /usr/local/bin/docker-entrypoint.sh ];
+        then exec /usr/local/bin/docker-entrypoint.sh /app/process_monitor.sh;
+        else exec /app/process_monitor.sh; fi
     logging:
       driver: local
       options:
@@ -306,12 +310,21 @@ services:
 
       # Code sandbox
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+      # SANDBOX_MODE=local is refused unless this is "true" (single-user dev only).
+      - SANDBOX_ALLOW_LOCAL=${SANDBOX_ALLOW_LOCAL:-false}
       # Generated code gets no network unless set to true; even then private,
       # link-local and cloud-metadata addresses are firewalled. CIDRs in
       # SANDBOX_EGRESS_ALLOW_CIDRS (comma-separated, e.g. a pip mirror) are exempt.
       - SANDBOX_ALLOW_NETWORK=${SANDBOX_ALLOW_NETWORK:-false}
       - SANDBOX_EGRESS_ALLOW_CIDRS=${SANDBOX_EGRESS_ALLOW_CIDRS:-}
+      # Per-run writable-layer cap (default 10g; 0 disables). Enforced only where
+      # the storage driver supports it; logs a warning once otherwise.
+      - SANDBOX_DISK_QUOTA=${SANDBOX_DISK_QUOTA:-10g}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+      - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      # The app never sees the Docker socket; sandbox containers are created
+      # through docker-socket-proxy, which only admits sandbox-shaped requests.
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
       # Eval deploy type skips the Slack bot process inside the app container.
       - PIPESHUB_SKIP_SLACKBOT=${PIPESHUB_SKIP_SLACKBOT:-false}
 
@@ -350,15 +363,23 @@ services:
       sandbox-image:
         condition: service_completed_successfully
         required: false
+      docker-socket-proxy:
+        # Not service_healthy: an older image (rollback.sh) has no proxy
+        # module, and that must cost run_code, not the whole app.
+        condition: service_started
+        required: false
+
+    security_opt:
+      - no-new-privileges:true
 
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
       - pipeshub_hf_cache:/root/.cache/huggingface
-      - /var/run/docker.sock:/var/run/docker.sock
 
     networks:
       - pipeshub
+      - sandbox-control
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -378,6 +399,44 @@ services:
       timeout: 10s
       retries: 5
       start_period: 300s
+
+  # The only container with the Docker socket. It forwards just the calls the
+  # coding sandbox makes, refuses any container create that would reach the
+  # host (privileged, binds, devices, host namespaces, other images or
+  # networks), and only acts on containers it created. See
+  # backend/python/app/sandbox/docker_proxy.py.
+  docker-socket-proxy:
+    profiles: ["sandbox"]
+    image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
+    restart: always
+    # Root only to open the root-owned socket; it holds no capabilities.
+    user: "0:0"
+    working_dir: /app/python
+    # Bypasses the image entrypoint, which drops privileges for the app and
+    # needs capabilities this container deliberately does not have.
+    entrypoint: ["python", "-m", "app.docker_proxy_main"]
+    environment:
+      - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+      - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - sandbox-control
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2375/_ping', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ---------------------------------------------------------------------------
   # Always-on stateful services
@@ -656,3 +715,8 @@ volumes:
 networks:
   pipeshub:
     driver: bridge
+  # App <-> docker-socket-proxy only. Internal: no route out, and nothing else
+  # can reach the proxy.
+  sandbox-control:
+    driver: bridge
+    internal: true

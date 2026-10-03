@@ -45,6 +45,7 @@ from uuid import uuid4
 
 from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     CONTAINER_HARDENING,
+    create_sandbox_container,
     ensure_egress_network_sync,
     firewall_unavailable,
     firewalled_container_kwargs,
@@ -303,7 +304,8 @@ class DockerExecutor(BaseExecutor):
         token: str,
     ) -> bytes:
         """Deps tar from one firewalled install container."""
-        container = client.containers.create(
+        container = create_sandbox_container(
+            client,
             image=SANDBOX_IMAGE,
             environment={},
             mem_limit=self.memory_limit_mb * 1024 * 1024,
@@ -414,7 +416,8 @@ class DockerExecutor(BaseExecutor):
             mem_bytes = self.memory_limit_mb * 1024 * 1024
             nano_cpus = int(self.cpu_limit * 1e9)
 
-            container = client.containers.create(
+            container = create_sandbox_container(
+                client,
                 image=image,
                 command=command,
                 environment=env,
@@ -562,6 +565,11 @@ def _extract_container_dir(container: object, container_path: str, local_dir: st
     The archive is streamed chunk-by-chunk into a ``SpooledTemporaryFile`` so
     small archives stay in memory while large ones transparently spill to
     disk. This prevents high memory consumption / OOM on large outputs.
+
+    Only regular files are extracted. A symlink (or hardlink/device) member is
+    never a legitimate artifact and, left on the host, would be followed by the
+    next run's readers and copy host files back into the sandbox (SB-5), so
+    non-regular members are dropped and ``filter="data"`` sanitises the rest.
     """
     try:
         bits, _ = container.get_archive(container_path)
@@ -576,6 +584,12 @@ def _extract_container_dir(container: object, container_path: str, local_dir: st
                 for member in tar:
                     if member.isdir():
                         continue
+                    if not member.isfile():
+                        logger.warning(
+                            "Skipping non-regular tar member %r (type %r) from %s",
+                            member.name, member.type, container_path,
+                        )
+                        continue
                     if member.name.startswith(prefix):
                         member.name = member.name[len(prefix):]
                     if not member.name:
@@ -587,6 +601,6 @@ def _extract_container_dir(container: object, container_path: str, local_dir: st
                             member.name, target,
                         )
                         continue
-                    tar.extract(member, local_dir)
+                    tar.extract(member, local_dir, filter="data")
     except Exception:
         logger.debug("No output artifacts to extract from container %s", container_path)

@@ -20,6 +20,7 @@ from app.api.middlewares.auth import (
     require_scopes,
     require_service_token,
     resolve_request_role,
+    service_token_org,
 )
 from app.api.middlewares.caller_role import CallerRole, CallerRoleStatus
 from app.config.constants.service import TokenScopes
@@ -1193,3 +1194,28 @@ class TestGetConfigService:
 
         assert result is fake_config_service
         request.app.container.config_service.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# service_token_org
+# ---------------------------------------------------------------------------
+
+
+class TestServiceTokenOrg:
+    def test_service_token_org_returns_claim(self):
+        claims = {"orgId": "org-1", "scopes": ["document:parse"]}
+        assert service_token_org(claims) == "org-1"
+        assert service_token_org(claims, "org-1") == "org-1"
+        assert service_token_org(claims, "") == "org-1"
+
+    def test_service_token_org_missing_claim_is_401(self):
+        with pytest.raises(HTTPException) as exc_info:
+            service_token_org({"scopes": ["document:parse"]}, "org-1")
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail == "Token missing orgId"
+
+    def test_service_token_org_mismatch_is_403(self):
+        with pytest.raises(HTTPException) as exc_info:
+            service_token_org({"orgId": "org-1"}, "org-2")
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.detail == "org_id does not match the service token"

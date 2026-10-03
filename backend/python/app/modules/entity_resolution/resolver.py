@@ -61,8 +61,9 @@ if TYPE_CHECKING:
 
 LLM_ROLE = "indexing"
 
-# A hung model call would hold the record's indexing slot; past this the names
-# become new, as on any other model failure.
+# Bounds each provider call of the merge decision, not the wait for the shared
+# indexing model slot: a busy slot is backpressure, and timing it out would make
+# every unresolved name of the record a new node for good.
 MERGE_CALL_TIMEOUT_SECONDS = 60.0
 
 
@@ -318,6 +319,8 @@ class EntityResolver:
             live = await self._live_node_ids(
                 org_id, group[0].kind.collection, {w.entity_id for w in candidates.values()},
             )
+            if live is None:
+                continue
             for index, winner in candidates.items():
                 if winner.entity_id in live:
                     stats.winners_offered += 1
@@ -326,26 +329,30 @@ class EntityResolver:
                     stats.stale_winners += 1
         return winners
 
-    async def _live_node_ids(self, org_id: str, collection: str, ids: set[str]) -> set[str]:
-        """The ``ids`` that are canonical nodes of ``org_id`` in the graph.
+    async def _live_node_ids(
+        self, org_id: str, collection: str, ids: set[str],
+    ) -> set[str] | None:
+        """The ``ids`` that are canonical nodes of ``org_id`` in the graph, or
+        ``None`` when the check could not run.
 
         The vector store can point at a node that was deleted, or at a legacy
         node shared across orgs (created before resolution, or copied onto a
         duplicate); merging into either would write this org's aliases where
         they do not belong. A failed check offers no winner, like a failed
-        vector lookup.
+        vector lookup, and is counted as an error rather than as stale winners.
         """
         try:
             rows = await self.graph_provider.get_nodes_by_field_in(
                 collection, "id", sorted(ids), return_fields=["id", "orgId", "normalizedName"],
+                raise_on_error=True,
             )
         except Exception:
             metrics.record_fallback("winner_check_error", len(ids))
             self.logger.warning(
-                "entity_resolution: winner check failed for %s; offering no winners",
-                collection, exc_info=True,
+                "entity_resolution: winner check failed for org %s collection %s (%d ids); "
+                "offering no winners", org_id, collection, len(ids), exc_info=True,
             )
-            return set()
+            return None
         live = {
             str(row.get("id") or row.get("_key"))
             for row in rows or []
@@ -353,7 +360,8 @@ class EntityResolver:
             and row.get("orgId") == org_id
             and row.get("normalizedName")
         }
-        metrics.record_fallback("stale_winner", len(ids - live))
+        if ids - live:
+            metrics.record_fallback("stale_winner", len(ids - live))
         return live
 
     @staticmethod
@@ -400,17 +408,17 @@ class EntityResolver:
         prompt = build_prompt(metadata.summary, unresolved, winners)
         try:
             llm = await self._get_llm()
-            response = await asyncio.wait_for(
-                invoke_with_structured_output_and_reflection(
-                    llm, [HumanMessage(content=prompt)], MergeDecisions,
-                ),
-                timeout=MERGE_CALL_TIMEOUT_SECONDS,
+            response = await invoke_with_structured_output_and_reflection(
+                llm, [HumanMessage(content=prompt)], MergeDecisions,
+                call_timeout=MERGE_CALL_TIMEOUT_SECONDS,
             )
         except Exception:
             response = None
-            self._llm = None
             self.logger.warning("entity_resolution: merge model call raised", exc_info=True)
         if response is None:
+            # Rebuilt from current config on the next record, so a replaced or
+            # re-keyed indexing model is picked up without a restart.
+            self._llm = None
             stats.model_failures += 1
             metrics.record_model_call("failed")
             metrics.record_fallback("model_error", len(unresolved))

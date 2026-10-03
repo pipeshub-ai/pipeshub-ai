@@ -16,6 +16,7 @@ from app.connectors.core.registry.filters import (
     FilterOperator,
     SyncFilterKey,
 )
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 if TYPE_CHECKING:
     import logging
@@ -130,13 +131,15 @@ async def _records_in(
 ) -> AsyncIterator[tuple[Record, str]]:
     """This connector's records in ``container_name`` with their paths, a page at a time.
 
-    Record ids are ``<container>/<path>``.
+    Record ids are ``<container>/<path>``. Trashed records are included: a removal
+    scan must still delete one the source no longer has, and a listed object whose
+    record is in the trash is a known object, not an unrecorded one.
     """
     prefix = f"{container_name}/"
     after_key = None
     while True:
         page = await data_entities_processor.get_records_in_record_group(
-            connector_id, container_name, _PAGE_SIZE, after_key
+            connector_id, container_name, _PAGE_SIZE, after_key, visibility=RecordVisibility.ALL
         )
         for record in page:
             external_id = record.external_record_id or ""

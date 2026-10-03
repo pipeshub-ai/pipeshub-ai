@@ -426,6 +426,22 @@ def require_service_token(*scopes: ScopeLike) -> Callable[..., Coroutine[Any, An
     return _tag_auth_policy(_check_service_token, "service", scopes)
 
 
+def service_token_org(claims: Mapping[str, Any], requested_org_id: str | None = None) -> str:
+    """Org a service token acts for; a caller-supplied org may only repeat it."""
+    org_id = claims.get("orgId")
+    if not org_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token missing orgId",
+        )
+    if requested_org_id and requested_org_id != org_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="org_id does not match the service token",
+        )
+    return org_id
+
+
 async def deny_service_tokens(request: Request) -> None:
     """FastAPI dependency for routes open to any authenticated user but never to service tokens."""
     if is_service_token(_authenticated_user(request)):
