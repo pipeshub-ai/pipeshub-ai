@@ -6364,6 +6364,22 @@ class TestGetInstanceStatusRoute:
 
         assert result["isAuthenticated"] is False
 
+    @pytest.mark.asyncio
+    async def test_get_status_none_auth_type_returns_authenticated_true(self) -> None:
+        """Toolsets with authType NONE require no credentials and must be authenticated."""
+        from app.api.routes.toolsets import get_instance_status
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value=None)
+
+        instances = [{"_id": "i1", "orgId": "o1", "instanceName": "Calculator", "toolsetType": "calculator", "authType": "NONE"}]
+        req = _make_request()
+
+        with patch("app.api.routes.toolsets._load_toolset_instances", return_value=instances):
+            result = await get_instance_status("i1", req, cs)
+
+        assert result["isAuthenticated"] is True
+        assert result["authType"] == "NONE"
+
 
 class TestGetInstanceDetailRoute:
     """Cover get_toolset_instance handler (lines 1420-1500)."""
@@ -7839,7 +7855,42 @@ class TestAgentScopedToolsets:
         assert ts["instanceId"] == "i1"
         assert ts["isAuthenticated"] is True
         assert ts["isConfigured"] is True
-        assert "hasCredentials" in ts
+        assert result["filterCounts"]["authenticated"] == 1
+        assert result["filterCounts"]["notAuthenticated"] == 0
+
+    @pytest.mark.asyncio
+    async def test_build_toolsets_list_response_with_none_authtype_instance(self) -> None:
+        """Toolsets with authType NONE should be marked authenticated even without auth records."""
+        from app.api.routes.toolsets import _build_toolsets_list_response
+
+        request = _make_request()
+        request.app.state.toolset_registry = _make_registry("calculator", supported_auth=["NONE"])
+        config_service = AsyncMock()
+        instances = [
+            {"_id": "i1", "orgId": "o1", "toolsetType": "calculator", "authType": "NONE",
+             "instanceName": "Calculator"}
+        ]
+
+        with patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+            result = await _build_toolsets_list_response(
+                request=request,
+                org_id="o1",
+                config_service=config_service,
+                search=None,
+                page=1,
+                limit=20,
+                include_registry=False,
+                fetch_auth_for_instance=AsyncMock(return_value=None),
+                include_has_credentials=True,
+            )
+
+        assert result["status"] == "success"
+        assert len(result["toolsets"]) == 1
+        ts = result["toolsets"][0]
+        assert ts["instanceId"] == "i1"
+        assert ts["isAuthenticated"] is True
+        assert ts["isConfigured"] is True
+        assert ts["hasCredentials"] is False
         assert result["filterCounts"]["authenticated"] == 1
         assert result["filterCounts"]["notAuthenticated"] == 0
 
@@ -8049,6 +8100,73 @@ class TestGetAuthenticatedToolsets:
         assert toolset["isAuthenticated"] is True
         assert toolset["createdAtTimestamp"] == 1234567890
         assert toolset["updatedAtTimestamp"] == 1234567900
+
+    @pytest.mark.asyncio
+    async def test_treats_none_authtype_as_authenticated_without_credentials(self) -> None:
+        """Toolsets with authType NONE require no credentials and must be included in authenticated list."""
+        from app.api.routes.toolsets import get_authenticated_toolsets
+
+        config_service = AsyncMock()
+        instances = [
+            {
+                "_id": "inst_none",
+                "orgId": "o1",
+                "toolsetType": "calculator",
+                "instanceName": "Calculator",
+                "authType": "NONE",
+            },
+            {
+                "_id": "inst_token_unauthed",
+                "orgId": "o1",
+                "toolsetType": "jira",
+                "instanceName": "Jira",
+                "authType": "API_TOKEN",
+            },
+        ]
+
+        async def mock_get_config(path, default=None):
+            if "toolset-instances" in path:
+                return instances
+            # Neither instance has credentials stored in etcd
+            return None
+
+        config_service.get_config = mock_get_config
+        registry = MagicMock()
+        registry.get_toolset_metadata.return_value = {
+            "display_name": "Calculator",
+            "description": "Performs math operations",
+            "tools": [{"name": "add", "description": "Add two numbers"}],
+        }
+
+        result, auth_by_instance = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        assert len(result) == 1
+        assert result[0]["instanceId"] == "inst_none"
+        assert result[0]["authType"] == "NONE"
+        assert result[0]["isAuthenticated"] is True
+        assert "inst_none" in auth_by_instance
+        assert auth_by_instance["inst_none"]["isAuthenticated"] is True
+        assert auth_by_instance["inst_none"]["authType"] == "NONE"
+        assert "inst_token_unauthed" not in auth_by_instance
+
+    @pytest.mark.asyncio
+    async def test_get_authenticated_toolsets_missing_or_empty_authtype_fails_closed(self) -> None:
+        """Instances with missing, empty, or None authType must not be treated as NONE or authenticated."""
+        from app.api.routes.toolsets import get_authenticated_toolsets
+
+        config_service = AsyncMock()
+        instances = [
+            {"_id": "inst_no_authtype", "orgId": "o1", "toolsetType": "custom"},
+            {"_id": "inst_empty_authtype", "orgId": "o1", "toolsetType": "custom", "authType": ""},
+            {"_id": "inst_none_val_authtype", "orgId": "o1", "toolsetType": "custom", "authType": None},
+        ]
+
+        config_service.get_config = AsyncMock(side_effect=lambda path, default=None: instances if "toolset-instances" in path else None)
+        registry = MagicMock()
+        registry.get_toolset_metadata.return_value = {"tools": []}
+
+        result, auth_by_instance = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+        assert len(result) == 0
+        assert len(auth_by_instance) == 0
 
 
 class TestIsActionsEnabled:
