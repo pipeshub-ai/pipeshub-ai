@@ -35,6 +35,8 @@ _ROUTERS = {
         "knowledge_hub_router",
     ),
     "connectors": ("app.connectors.api.router", "router"),
+    "parsing": ("app.api.routes.parsing", "router"),
+    "extraction": ("app.api.routes.extraction", "router"),
 }
 
 # Every route that admits a service token, with the scopes it admits.
@@ -57,6 +59,9 @@ _SERVICE_TOKEN_ROUTES = {
     },
     ("connectors", "GET", "/api/v1/internal/records/{record_id}/content"): {"record:content"},
     ("connectors", "GET", "/api/v1/connectors/internal/all-scheduled"): {"fetch:config"},
+    ("parsing", "POST", "/api/v1/parse"): {"document:parse"},
+    ("parsing", "GET", "/api/v1/parse/providers"): {"document:parse"},
+    ("extraction", "POST", "/api/v1/extract/classify"): {"document:classify"},
 }
 
 
@@ -114,7 +119,8 @@ def test_internal_service_routes_reject_user_tokens():
     service_only = {
         key
         for key in _SERVICE_TOKEN_ROUTES
-        if "/internal/" in key[2] and not key[2].endswith("/service-account")
+        if key[0] in {"parsing", "extraction"}
+        or ("/internal/" in key[2] and not key[2].endswith("/service-account"))
     }
     for name, route in _ROUTES:
         for method in _methods(route):

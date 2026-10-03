@@ -332,10 +332,12 @@ class ContainerUtils:
         from app.services.parsing.client import ParsingClient  # noqa: PLC0415
         return ParsingClient(config_service=config_service)
 
-    async def create_extraction_client(self) -> "ExtractionClient":  # type: ignore[name-defined]
+    async def create_extraction_client(
+        self, config_service: ConfigurationService
+    ) -> "ExtractionClient":  # type: ignore[name-defined]
         """Async factory for ExtractionClient."""
         from app.services.extraction.client import ExtractionClient  # noqa: PLC0415
-        return ExtractionClient()
+        return ExtractionClient(config_service=config_service)
 
     async def create_retrieval_service(
         self,

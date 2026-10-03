@@ -150,6 +150,7 @@ class IndexingAppContainer(BaseAppContainer):
 
     extraction_client = providers.Resource(
         container_utils.create_extraction_client,
+        config_service=config_service,
     )
 
     event_processor = providers.Resource(

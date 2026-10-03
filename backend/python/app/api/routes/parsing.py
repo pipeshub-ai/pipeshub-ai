@@ -19,11 +19,18 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Annotated
+from collections.abc import Mapping
+from typing import Annotated, Any
 
-from fastapi import APIRouter, File, Form, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 
+from app.api.middlewares.auth import (
+    authMiddleware,
+    require_service_token,
+    service_token_org,
+)
+from app.config.constants.service import TokenScopes
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
@@ -41,7 +48,14 @@ from app.utils.semaphore_logger import SemaphoreLogger
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/parse", tags=["parsing"])
+require_parse_token = require_service_token(TokenScopes.DOCUMENT_PARSE)
+
+# On the router, not the app, so the checks hold wherever this router is included.
+router = APIRouter(
+    prefix="/api/v1/parse",
+    tags=["parsing"],
+    dependencies=[Depends(authMiddleware), Depends(require_parse_token)],
+)
 
 # How long a request will wait for a parsing slot before it's reported as
 # "saturated" (still waiting) and, ultimately, before the gate gives up and
@@ -78,6 +92,7 @@ def _get_registry(request: Request) -> ParserRegistry:
 async def parse_file(
     request: Request,
     file: Annotated[UploadFile, File(description="File to parse")],
+    claims: Annotated[Mapping[str, Any], Depends(require_parse_token)],
     record_name: Annotated[str, Form(description="Human-readable filename")] = "",
     mime_type: Annotated[str, Form(description="MIME type of the file")] = "",
     extension: Annotated[str, Form(description="File extension (without dot)")] = "",
@@ -99,6 +114,7 @@ async def parse_file(
           "error": null
         }
     """
+    service_token_org(claims, org_id)
     registry = _get_registry(request)
 
     # Resolve provider enum if supplied
