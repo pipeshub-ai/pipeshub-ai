@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import logging
+import random
 from contextlib import asynccontextmanager
 from logging import Logger
 from typing import AsyncContextManager, Optional
@@ -38,8 +39,20 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-_TRANSACTION_RETRY_ATTEMPTS = 3
-_TRANSACTION_RETRY_BASE_DELAY = 0.5
+# An ArangoDB write-write conflict (1200) clears only once the other transaction
+# commits, and an indexing stream transaction can hold a record for seconds. So
+# the waits are 0.5, 1, 2, 4, 4s, each +/-20% so colliding writers drift apart:
+# 9.2s to 13.8s across six attempts. Neo4j deadlocks share the schedule.
+_RETRY_ATTEMPTS = 6
+_RETRY_BASE_DELAY = 0.5
+_RETRY_MAX_DELAY = 4.0
+_RETRY_JITTER = 0.2
+
+
+def _retry_delay(failed_attempt: int) -> float:
+    """Seconds to wait after the failed attempt with this 0-based number."""
+    nominal = min(_RETRY_MAX_DELAY, _RETRY_BASE_DELAY * (2 ** failed_attempt))
+    return nominal * random.uniform(1 - _RETRY_JITTER, 1 + _RETRY_JITTER)
 
 
 def _is_deadlock_error(exception: Exception) -> bool:
@@ -69,7 +82,7 @@ def _is_retryable(instance: object, exception: Exception) -> bool:
     return isinstance(store, DataStoreProvider) and store.is_transient_error(exception) is True
 
 
-def retry_on_deadlock(max_retries: int = 3):
+def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
     """
     Decorator that retries an async function on deadlocks and write conflicts.
 
@@ -78,13 +91,13 @@ def retry_on_deadlock(max_retries: int = 3):
     deadlock error, it retries whatever the decorated object's
     ``data_store_provider`` reports as transient.
 
-    Uses exponential backoff: 0.1s, 0.2s, 0.4s, ...
+    Waits between attempts follow ``_retry_delay``: about 11.5s in all by default.
 
     Args:
-        max_retries: Maximum number of attempts (default: 3)
+        max_retries: Maximum number of attempts (default: 6)
 
     Usage:
-        @retry_on_deadlock(max_retries=3)
+        @retry_on_deadlock()
         async def on_new_records(self, records):
             async with self.data_store_provider.transaction() as tx_store:
                 # transaction code here
@@ -105,7 +118,7 @@ def retry_on_deadlock(max_retries: int = 3):
                     retryable = _is_retryable(args[0] if args else None, e)
 
                     if retryable and attempt < max_retries - 1:
-                        backoff = 0.1 * (2 ** attempt)  # 0.1s, 0.2s, 0.4s
+                        backoff = _retry_delay(attempt)
                         logger.warning(
                             f"Deadlock or write conflict in {func.__name__} "
                             f"(attempt {attempt + 1}/{max_retries}), "
@@ -989,12 +1002,12 @@ class GraphDataStore(DataStoreProvider):
                 async with self.transaction() as tx_store:
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
-                if attempts >= _TRANSACTION_RETRY_ATTEMPTS or not self.graph_provider.is_transient_error(e):
+                if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_transient_error(e):
                     raise
-                delay = _TRANSACTION_RETRY_BASE_DELAY * attempts
+                delay = _retry_delay(attempts - 1)
                 self.logger.warning(
                     "Transient graph transaction failure (attempt %d/%d), retrying in %.1fs: %s",
-                    attempts, _TRANSACTION_RETRY_ATTEMPTS, delay, e,
+                    attempts, _RETRY_ATTEMPTS, delay, e,
                 )
                 await asyncio.sleep(delay)
 

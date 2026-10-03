@@ -3,6 +3,8 @@
 import asyncio
 import contextlib
 import logging
+import random
+from collections.abc import Callable
 from typing import Never
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -915,6 +917,10 @@ class TestDeadlockDetection:
 class TestRetryOnDeadlockDecorator:
     """Tests for the @retry_on_deadlock decorator."""
 
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch) -> None:
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+
     @pytest.mark.asyncio
     async def test_succeeds_without_retry(self) -> None:
         """Test that a successful function is not retried."""
@@ -1004,16 +1010,16 @@ class TestRetryOnDeadlockDecorator:
             raise create_deadlock_error()
 
         with patch('app.connectors.core.base.data_store.graph_data_store.asyncio.sleep',
-                   new_callable=AsyncMock) as mock_sleep:
+                   new_callable=AsyncMock) as mock_sleep, \
+             patch('app.connectors.core.base.data_store.graph_data_store.random.uniform',
+                   side_effect=lambda low, high: (low + high) / 2):
             with contextlib.suppress(Exception):
                 await my_func()
 
             # 4 attempts means 3 sleeps (between attempts)
             assert mock_sleep.await_count == 3
             sleep_calls = [call.args[0] for call in mock_sleep.await_args_list]
-            assert sleep_calls[0] == pytest.approx(0.1, rel=0.01)
-            assert sleep_calls[1] == pytest.approx(0.2, rel=0.01)
-            assert sleep_calls[2] == pytest.approx(0.4, rel=0.01)
+            assert sleep_calls == pytest.approx([0.5, 1.0, 2.0])
 
     @pytest.mark.asyncio
     async def test_custom_max_retries(self) -> None:
@@ -1272,7 +1278,7 @@ class TestExecuteInTransactionRetriesTransientFailures:
 
         with pytest.raises(RuntimeError, match="Deadlock"):
             await store.execute_in_transaction(always_deadlocks)
-        assert provider.rollback_transaction.await_count == 3
+        assert provider.rollback_transaction.await_count == 6
 
 
 # The exception text ArangoDB's HTTP client raised in the 2 October nightly, when an
@@ -1333,10 +1339,10 @@ class TestRetryOnArangoWriteConflict:
 
     @pytest.mark.asyncio
     async def test_a_lasting_write_conflict_still_raises(self) -> None:
-        processor = _Processor(_arango_store(), [RuntimeError(ARANGO_BATCH_CONFLICT) for _ in range(5)])
+        processor = _Processor(_arango_store(), [RuntimeError(ARANGO_BATCH_CONFLICT) for _ in range(10)])
         with pytest.raises(RuntimeError, match=r"\[1200\]"):
             await processor.on_new_records()
-        assert processor.calls == 3
+        assert processor.calls == 6
 
     @pytest.mark.asyncio
     async def test_any_other_failure_raises_at_once(self) -> None:
@@ -1351,3 +1357,82 @@ class TestRetryOnArangoWriteConflict:
         with pytest.raises(RuntimeError, match=r"\[1200\]"):
             await processor.on_new_records()
         assert processor.calls == 1
+
+
+class TestWriteConflictRetryBudget:
+    """A 1200 conflict clears only when the other writer commits, and an indexing
+    stream transaction can hold a record for seconds: the retries must outlast that."""
+
+    @pytest.fixture
+    def slept(self, monkeypatch) -> list[float]:
+        waits: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            waits.append(seconds)
+
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", fake_sleep)
+        return waits
+
+    @staticmethod
+    def _pin_jitter(monkeypatch, pick) -> None:
+        monkeypatch.setattr(random, "uniform", pick)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("pick", "waits"),
+        [
+            (lambda low, high: (low + high) / 2, [0.5, 1.0, 2.0, 4.0, 4.0]),
+            (lambda low, high: low, [0.4, 0.8, 1.6, 3.2, 3.2]),
+            (lambda low, high: high, [0.6, 1.2, 2.4, 4.8, 4.8]),
+        ],
+        ids=["nominal", "shortest", "longest"],
+    )
+    async def test_the_schedule_spans_seconds_and_stays_bounded(self, slept, monkeypatch, pick, waits) -> None:
+        self._pin_jitter(monkeypatch, pick)
+        processor = _Processor(_arango_store(), [RuntimeError(ARANGO_BATCH_CONFLICT) for _ in range(10)])
+        with pytest.raises(RuntimeError, match=r"\[1200\]"):
+            await processor.on_new_records()
+        assert processor.calls == 6
+        assert slept == pytest.approx(waits)
+
+    @staticmethod
+    def _conflict_until(slept: list[float], seconds: float) -> Callable[[], None]:
+        def raise_while_held() -> None:
+            if sum(slept) < seconds:
+                raise RuntimeError(ARANGO_BATCH_CONFLICT)
+        return raise_while_held
+
+    @pytest.mark.asyncio
+    async def test_the_decorator_outlasts_a_five_second_conflict(self, slept, monkeypatch) -> None:
+        self._pin_jitter(monkeypatch, lambda low, high: low)
+        held = self._conflict_until(slept, 5.0)
+
+        class Indexing(_Processor):
+            @retry_on_deadlock()
+            async def on_new_records(self) -> str:
+                self.calls += 1
+                held()
+                return "stored"
+
+        processor = Indexing(_arango_store(), [])
+        assert await processor.on_new_records() == "stored"
+        assert processor.calls == 5
+
+    @pytest.mark.asyncio
+    async def test_execute_in_transaction_outlasts_a_five_second_conflict(self, slept, monkeypatch) -> None:
+        self._pin_jitter(monkeypatch, lambda low, high: low)
+        held = self._conflict_until(slept, 5.0)
+        provider = MagicMock()
+        provider.begin_transaction = AsyncMock(side_effect=[f"txn-{i}" for i in range(10)])
+        provider.commit_transaction = AsyncMock()
+        provider.rollback_transaction = AsyncMock()
+        provider.is_transient_error = MagicMock(return_value=True)
+        store = GraphDataStore(MagicMock(), provider)
+
+        async def write(tx_store) -> str:
+            held()
+            return "done"
+
+        assert await store.execute_in_transaction(write) == "done"
+        assert provider.rollback_transaction.await_count == 4
+        provider.commit_transaction.assert_awaited_once()
