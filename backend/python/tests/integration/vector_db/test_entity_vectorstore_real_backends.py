@@ -500,6 +500,30 @@ class TestRebuildSupport:
             + [("subcategory", "s1", "2"), ("record_group", "g1", None)]
         )
 
+    async def test_paging_on_after_deleting_a_page_reaches_every_remaining_point(
+        self, store: EntityVectorStore,
+    ) -> None:
+        """What the sweep does: read a page, delete its points, page on from
+        the adjusted offset. A positional cursor (Redis) left unadjusted skips
+        as many points as were deleted."""
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([_entity(f"t{i}", org=org, connectors=["c1"]) for i in range(7)])
+        await _publish_writes(store)
+
+        first, offset = await store.page_entity_points(org, ["topic"], limit=3)
+        assert len(first) == 3 and offset is not None
+        await store.delete_entities(org, "topic", [r.entity_id for r in first])
+        await _publish_writes(store)
+        offset = store.offset_after_delete(offset, len(first))
+
+        rest: list[EntityPointRef] = []
+        while offset is not None:
+            page, offset = await store.page_entity_points(org, ["topic"], offset=offset, limit=3)
+            rest.extend(page)
+        assert sorted(r.entity_id for r in rest) == sorted(
+            {f"t{i}" for i in range(7)} - {r.entity_id for r in first}
+        )
+
     async def test_delete_entities_removes_only_the_named_points(self, store: EntityVectorStore) -> None:
         org = f"org-{uuid.uuid4().hex[:6]}"
         await store.upsert_entities_batch([
