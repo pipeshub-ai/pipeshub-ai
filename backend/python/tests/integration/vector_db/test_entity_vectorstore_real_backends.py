@@ -397,6 +397,9 @@ class TestReplaceMode:
             merge_membership=False,
         )
         store.vector_db_service.upsert_points = AsyncMock(wraps=store.vector_db_service.upsert_points)
+        store.vector_db_service.update_payload_by_ids = AsyncMock(
+            wraps=store.vector_db_service.update_payload_by_ids,
+        )
 
         await store.upsert_entities_batch(
             [_entity("rec-1", EntityType.RECORD, org=org, name="Q3 plan", connectors=["c1"], groups=["g-new"])],
@@ -404,6 +407,8 @@ class TestReplaceMode:
         )
 
         store.vector_db_service.upsert_points.assert_not_awaited()
+        # By id: a search-based update can miss a point not yet refreshed.
+        store.vector_db_service.update_payload_by_ids.assert_awaited_once()
         payload = await _point(store, org, "record", "rec-1")
         assert payload["recordGroupIds"] == ["g-new"]
         assert payload["page_content"] == "Q3 plan"
@@ -422,6 +427,7 @@ class TestFinalSweep:
             _entity("rg-a", EntityType.RECORD_GROUP, org=org, connectors=["A"], groups=["ga"]),
         ], merge_membership=False)
         untyped_id = store._point_id(org, "none", "junk")
+        other_untyped_id = store._point_id(org, "none", "other-junk")
         await store.vector_db_service.upsert_points(store.collection_name, [VectorPoint(
             id=untyped_id,
             dense_vector=_StubEmbeddings().embed_query("junk"),
@@ -429,6 +435,15 @@ class TestFinalSweep:
                 "page_content": "junk",
                 "metadata": {"orgId": org, "name": "junk"},
                 "connectorIds": ["A"],
+                "recordGroupIds": [],
+            },
+        ), VectorPoint(
+            id=other_untyped_id,
+            dense_vector=_StubEmbeddings().embed_query("other-junk"),
+            payload={
+                "page_content": "other-junk",
+                "metadata": {"orgId": org, "name": "other-junk"},
+                "connectorIds": ["B"],
                 "recordGroupIds": [],
             },
         )])
@@ -442,3 +457,5 @@ class TestFinalSweep:
         assert await _point(store, org, "record_group", "rg-a") is None
         remaining = await store.vector_db_service.retrieve_points(store.collection_name, [untyped_id])
         assert remaining == []
+        # Another connector's untyped point is outside the sweep.
+        assert await store.vector_db_service.retrieve_points(store.collection_name, [other_untyped_id]) != []

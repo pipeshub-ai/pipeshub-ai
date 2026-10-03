@@ -540,6 +540,16 @@ class TestUpsertEntitiesBatchMergeMembershipFlag:
         vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
         vector_db_service.scroll = AsyncMock()
         vector_db_service.upsert_points = AsyncMock()
+        # Stored membership the replace must discard, not union with.
+        vector_db_service.retrieve_points = AsyncMock(return_value=[VectorPoint(
+            id=EntityVectorStore._point_id("org-1", "department", "eng"),
+            payload={
+                "page_content": "Engineering",
+                "metadata": {},
+                "connectorIds": ["conn-a"],
+                "recordGroupIds": [],
+            },
+        )])
         store = _make_store(vector_db_service)
         entity = EntityRecord(
             entity_id="eng",
