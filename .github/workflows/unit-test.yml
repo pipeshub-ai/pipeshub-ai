@@ -57,10 +57,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
@@ -101,7 +101,7 @@ jobs:
 
       - name: Upload Node.js coverage artifact
         if: ${{ always() && inputs.generate-coverage-reports == true }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nodejs-coverage-report-${{ matrix.os }}
           path: backend/nodejs/apps/coverage-report.zip
@@ -119,10 +119,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -178,6 +178,7 @@ jobs:
           # -- leaving it exactly as unenforced on a pull request as it was.
           PYTHONPATH=backend/python:integration-tests \
             pytest integration-tests/unit/test_graph_entity_schemas.py \
+              integration-tests/unit/test_graph_edge_schemas.py \
               integration-tests/unit/test_connector_types_are_registered.py \
               --noconftest -c backend/python/pytest.ini -v
 
@@ -253,7 +254,7 @@ jobs:
 
       - name: Upload Python coverage artifact
         if: ${{ always() && inputs.generate-coverage-reports == true }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: python-coverage-report-${{ matrix.os }}-${{ matrix.python-version }}
           path: backend/python/python-coverage-report.zip
@@ -269,12 +270,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
@@ -304,7 +305,7 @@ jobs:
         run: pytest tests/integration/redis_cluster -v -m integration
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 

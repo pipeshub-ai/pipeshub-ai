@@ -760,6 +760,7 @@ def get_record_id_shortener_if_enabled(state: dict[str, Any]) -> "RecordIdShorte
 logger = create_logger("chat_helpers")
 
 TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
+FRAGMENT_DIRECTIVE_DELIMITER = ":~:"
 
 GRAPH_CONTEXT_ENRICHMENT_CONNECTORS: frozenset[Connectors] = frozenset({
     Connectors.JIRA,
@@ -851,6 +852,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 source_created_at=record_dict.get("source_created_at") or None,
                 source_updated_at=record_dict.get("source_updated_at") or None,
                 semantic_metadata=SemanticMetadata(**(record_dict.get("semantic_metadata") or {})),
+                parent_external_record_id=record_dict.get("parent_external_record_id"),
             )
         except Exception as e:
             # One malformed record must not fail the whole search; it just loses its header.
@@ -876,6 +878,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
             "weburl": record_dict.get("weburl", ""),
             "hide_weburl": bool(record_dict.get("hide_weburl")),
             "semantic_metadata": SemanticMetadata(**(record_dict.get("semantic_metadata") or {})),
+            "parent_external_record_id": record_dict.get("parent_external_record_id"),
         }
 
         if record_type == RecordType.TICKET.value and graph_doc:
@@ -1087,13 +1090,26 @@ def _build_record_dict_from_graph_base(base_doc: dict[str, Any]) -> dict[str, An
     record_dict: dict[str, Any] = {
         "id": base_doc.get("id") or base_doc.get("_key", ""),
         "version": base_doc.get("version", 1),
-        "semantic_metadata": {},
     }
     for graph_key, record_key_name in _GRAPH_TO_RECORD_FIELDS.items():
         record_dict[record_key_name] = base_doc.get(graph_key) or ""
     record_dict["source_created_at"] = base_doc.get("sourceCreatedAtTimestamp")
     record_dict["source_updated_at"] = base_doc.get("sourceLastModifiedTimestamp")
     record_dict["hide_weburl"] = bool(base_doc.get("hideWeburl"))
+    record_dict["location"] = base_doc.get("location") or ""
+    record_dict["parent_external_record_id"] = base_doc.get("externalParentId")
+    sem: dict[str, Any] = {}
+    if base_doc.get("summary"):
+        sem["summary"] = base_doc["summary"]
+    if base_doc.get("topics"):
+        sem["topics"] = base_doc["topics"]
+    if base_doc.get("categories"):
+        sem["categories"] = base_doc["categories"]
+    for level in (1, 2, 3):
+        val = base_doc.get(f"subCategoryLevel{level}") or base_doc.get(f"sub_category_level_{level}")
+        if val:
+            sem[f"sub_category_level_{level}"] = val
+    record_dict["semantic_metadata"] = sem
     return record_dict
 
 async def _fetch_type_specific_doc(
@@ -2190,7 +2206,16 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 graph_provider, list(by_record_id), by_record_id
             )
 
-    await asyncio.gather(*[get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider,frontend_url,batched_lookups.get(virtual_record_id),type_docs) for virtual_record_id in records_to_fetch])
+    async def _fetch_record(virtual_record_id: str) -> None:
+        # One unreadable blob (e.g. its storage document was deleted) must not
+        # fail the whole search; treat it like a record that fetched empty.
+        try:
+            await get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider,frontend_url,batched_lookups.get(virtual_record_id),type_docs)
+        except Exception as e:
+            logger.warning("Skipping record %s: fetch failed: %s", virtual_record_id, e)
+            virtual_record_id_to_result[virtual_record_id] = None
+
+    await asyncio.gather(*[_fetch_record(virtual_record_id) for virtual_record_id in records_to_fetch])
     # Prefetch reconciliation metadata in parallel (records were fully fetched above).
     vrids_needing_recon: set = set[Any]()
 
@@ -4958,8 +4983,9 @@ def _build_text_fragment_url(base_url: str, text_snippet: str) -> str:
     if not base_url or not text_snippet:
         return base_url
 
-    # Preserve URLs that already have a text fragment
-    if TEXT_FRAGMENT_DIRECTIVE_PREFIX in base_url:
+    # Everything after the first `:~:` is the fragment directive, so a URL that
+    # already carries one cannot take a second.
+    if FRAGMENT_DIRECTIVE_DELIMITER in base_url:
         return base_url
 
     try:
@@ -4983,10 +5009,16 @@ def _build_text_fragment_url(base_url: str, text_snippet: str) -> str:
         if end_text:
             encoded_end = quote(end_text, safe="';:[]")
 
-        if '#' in base_url:
-            base_url = base_url.split('#')[0]
+        # Append rather than replace: a conforming browser hands the page the
+        # fragment up to `:~:` and keeps the directive to itself, so an anchor
+        # the connector set (a Gmail message id, a heading) still resolves.
+        delimiter = (
+            FRAGMENT_DIRECTIVE_DELIMITER
+            if '#' in base_url
+            else f"#{FRAGMENT_DIRECTIVE_DELIMITER}"
+        )
 
-        return f"{base_url}#:~:text={encoded_start}{(',' + encoded_end) if encoded_end else ''}"
+        return f"{base_url}{delimiter}text={encoded_start}{(',' + encoded_end) if encoded_end else ''}"
 
     except Exception:
         return base_url

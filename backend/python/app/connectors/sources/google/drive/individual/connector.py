@@ -102,6 +102,7 @@ from app.connectors.core.base.error.stream_errors import (
     not_downloadable,
     to_stream_error,
 )
+from app.utils.filename_utils import temp_path_for
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
@@ -1809,7 +1810,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 self.logger.info(f"Converting file to PDF: {file_name}")
                 # For regular files, download and convert to PDF
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_file_path = os.path.join(temp_dir, file_name)
+                    temp_file_path = temp_path_for(temp_dir, file_name)
 
                     # Download file to temp directory
                     try:

@@ -5733,7 +5733,11 @@ components:
         - breadcrumbs
         - counts
         - permissions
+        - maxFolderDepth
       properties:
+        maxFolderDepth:
+          type: integer
+          description: Deepest a collection folder may be nested; a folder directly in the collection is depth 1.
         success:
           type: boolean
           enum: [true]
@@ -6435,7 +6439,9 @@ components:
           type: string
           description: |
             Identifier for the AI model configuration to use.
-            Available models depend on organization settings.
+            Available models depend on organization settings. When neither
+            `modelKey` nor `modelName` is sent, the organization's default
+            model answers and is saved in the conversation's `modelInfo`.
           example: "gpt-5.6-luna"
         modelName:
           type: string
@@ -6858,7 +6864,10 @@ components:
         query:
           type: string
           minLength: 1
-          description: The follow-up question or message content
+          maxLength: 100000
+          description: |
+            The follow-up question or message content. Held to the same
+            100,000-character limit as the first message of a conversation.
           example: "Can you elaborate on the revenue trends?"
         filters:
           $ref: '#/components/schemas/Filters'
@@ -6873,7 +6882,10 @@ components:
             `POST /conversations/attachments/upload`).
         modelKey:
           type: string
-          description: Override the model for this specific message
+          description: |
+            Override the model for this specific message. When neither
+            `modelKey` nor `modelName` is sent, the organization's default
+            model answers and is saved in the message's `modelInfo`.
         modelName:
           type: string
           description: Display name of the model
@@ -7015,6 +7027,7 @@ components:
         query:
           type: string
           minLength: 1
+          maxLength: 100000
           description: |
             User follow-up prompt to append to the existing agent conversation.
             Saved as a new `user_query` message before the upstream AI stream
@@ -18032,19 +18045,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/RefreshTokenResponse'
         '400':
-          description: Disabled user account
+          description: The account is locked after repeated failed sign-ins
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Invalid or expired refresh token - user must re-authenticate
+          description: |
+            The user must sign in again. Either the refresh token is invalid or
+            expired, or the session was ended by signing out or a password change.
+
+            If the account has been deleted or disabled, the message is
+            "Your account is no longer active. Contact your admin." Signing in
+            again will not help until an admin restores the account.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found (account may have been deleted), User credentials not found, or Organization not found
+          description: The user's credentials or organization could not be found
           content:
             application/json:
               schema:
@@ -19325,6 +19344,16 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The deletion could not be recorded, so the user was not deleted. Safe to retry:
+            "We couldn't delete this user just now. They are still a member; please try
+            again in a moment." If the write timed out it may still have been saved, in
+            which case the user's existing sessions have ended and they sign in again.
           content:
             application/json:
               schema:
@@ -26995,8 +27024,9 @@ paths:
                 $ref: '#/components/schemas/CreateConversationResponse'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, contains markup or
-            printf-style format specifiers, or another field fails validation.
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
           content:
             application/json:
               schema:
@@ -27017,8 +27047,9 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '424':
           description: |
-            No usable LLM — none is configured for the organization, or the
-            selected one could not start. The message says what to fix.
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -28991,8 +29022,9 @@ paths:
                 $ref: '#/components/schemas/AddMessageResponse'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, contains markup or
-            printf-style format specifiers, or another field fails validation.
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
           content:
             application/json:
               schema:
@@ -29022,8 +29054,9 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '424':
           description: |
-            No usable LLM — none is configured for the organization, or the
-            selected one could not start. The message says what to fix.
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -29100,8 +29133,9 @@ paths:
                 $ref: '#/components/schemas/ConversationMessageStreamSSEEvent'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, or another field
-            fails validation (for example a malformed `currentTime`).
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, or another field fails validation (for example a
+            malformed `currentTime`).
         '401':
           description: Unauthorized — valid bearer token required.
         '403':
@@ -33024,8 +33058,9 @@ paths:
                 $ref: '#/components/schemas/AddMessageResponse'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, contains markup or
-            printf-style format specifiers, or another field fails validation.
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
           content:
             application/json:
               schema:
@@ -33055,8 +33090,9 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '424':
           description: |
-            No usable LLM — none is configured for the organization, or the
-            selected one could not start. The message says what to fix.
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -33741,8 +33777,9 @@ paths:
                 $ref: '#/components/schemas/CreateAgentConversationResponse'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, contains markup or
-            printf-style format specifiers, or another field fails validation.
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
           content:
             application/json:
               schema:
@@ -33763,8 +33800,9 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '424':
           description: |
-            No usable LLM — none is configured for the organization, or the
-            selected one could not start. The message says what to fix.
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -39378,8 +39416,10 @@ paths:
                 $ref: '#/components/schemas/AIModelProviderResponse'
         '400':
           description: |
-            Invalid request body (Zod validation), controller validation, or
-            health-check failure (invalid credentials or provider config).
+            Invalid request body (Zod validation), controller validation, or a
+            health check the provider refused because of these settings: it
+            rejected the API key, could not find the model, or its endpoint
+            could not be reached. `error.message` names the setting to fix.
           content:
             application/json:
               schema:
@@ -39396,6 +39436,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            The health check failed for a reason other than the settings, for
+            example PipesHub cannot reach the internet to call a cloud provider.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddAIModelProviderErrorResponse'
+        '504':
+          description: The health check timed out waiting for the provider.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddAIModelProviderErrorResponse'
 
   /configurationManager/ai-models/providers/{modelType}/{modelKey}:
     put:
@@ -39443,7 +39497,9 @@ paths:
         '400':
           description: |
             Invalid request body (Zod validation), controller validation (e.g. model type
-            mismatch, missing fields), health-check failure, or admin access required.
+            mismatch, missing fields), admin access required, or a health check the
+            provider refused because of these settings: it rejected the API key, could
+            not find the model, or its endpoint could not be reached.
           content:
             application/json:
               schema:
@@ -39586,12 +39642,21 @@ paths:
       responses:
         '200':
           description: Default model updated
+        '400':
+          description: |
+            The model's health check was refused because of its settings: the
+            provider rejected the API key, could not find the model, or could
+            not be reached at the endpoint. `error.message` names what to fix.
         '401':
           description: Unauthorized
         '403':
           description: Admin access required
         '404':
           description: Model not found
+        '500':
+          description: The health check failed for a reason other than the model's settings.
+        '503':
+          description: The vector store could not be checked for the embedding model change; try again.
 
   /configurationManager/ai-models/prepare-model:
     post:

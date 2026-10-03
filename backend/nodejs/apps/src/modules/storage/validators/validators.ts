@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_SIGNED_URL_TTL_SECONDS } from '../constants/constants';
 
 // Common Schema Components
 export const Headers = z.object({
@@ -13,6 +14,28 @@ export const DocumentIdParams = z.object({
   body: z.object({
     fileBuffer: z.any(),
   }),
+});
+
+const treePath = z
+  .string()
+  .min(1)
+  .refine(
+    (p) => !p.split('/').includes('..') && !p.startsWith('/'),
+    'path must be relative and must not contain ".." segments',
+  );
+
+export const MoveTreeSchema = z.object({
+  headers: Headers,
+  body: z
+    .object({
+      oldPath: treePath,
+      newPath: treePath,
+      virtualRecordId: z.string().min(1).optional(),
+      virtualRecordIds: z.array(z.string().min(1)).optional(),
+    })
+    .refine(({ oldPath, newPath }) => !newPath.startsWith(`${oldPath}/`), {
+      message: 'newPath must not be a descendant of oldPath',
+    }),
 });
 
 export const DocumentIdParamsWithVersion = z.object({
@@ -30,9 +53,14 @@ export const DocumentIdParamsWithVersion = z.object({
     expirationTimeInSeconds: z.string()
       .optional()
       .transform((val) => (val ? Number(val) : undefined))
-      .refine((num) => num === undefined || num > 0, {
-        message: "expirationTimeInSeconds must be greater than zero",
-      }),
+      .refine(
+        (num) =>
+          num === undefined ||
+          (num > 0 && num <= MAX_SIGNED_URL_TTL_SECONDS),
+        {
+          message: `expirationTimeInSeconds must be between 1 and ${MAX_SIGNED_URL_TTL_SECONDS} (7 days)`,
+        },
+      ),
   }),
 });
 
@@ -105,6 +133,13 @@ export const RollBackToPreviousVersionSchema = GetBufferSchema.extend({
       .min(0, { message: 'version must be >= 0' })
       .optional(),
   }),
+});
+
+export const ConnectorIdParams = z.object({
+  params: z.object({
+    connectorId: z.string().min(1),
+  }),
+  headers: Headers,
 });
 
 export const CreateDocumentSchema = z.object({

@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import logging
+import random
 from contextlib import asynccontextmanager
 from logging import Logger
 from typing import AsyncContextManager, Optional
@@ -38,8 +39,20 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-_TRANSACTION_RETRY_ATTEMPTS = 3
-_TRANSACTION_RETRY_BASE_DELAY = 0.5
+# An ArangoDB write-write conflict (1200) clears only once the other transaction
+# commits, and an indexing stream transaction can hold a record for seconds. So
+# the waits are 0.5, 1, 2, 4, 4s, each +/-20% so colliding writers drift apart:
+# 9.2s to 13.8s across six attempts. Neo4j deadlocks share the schedule.
+_RETRY_ATTEMPTS = 6
+_RETRY_BASE_DELAY = 0.5
+_RETRY_MAX_DELAY = 4.0
+_RETRY_JITTER = 0.2
+
+
+def _retry_delay(failed_attempt: int) -> float:
+    """Seconds to wait after the failed attempt with this 0-based number."""
+    nominal = min(_RETRY_MAX_DELAY, _RETRY_BASE_DELAY * (2 ** failed_attempt))
+    return nominal * random.uniform(1 - _RETRY_JITTER, 1 + _RETRY_JITTER)
 
 
 def _is_deadlock_error(exception: Exception) -> bool:
@@ -59,20 +72,32 @@ def _is_deadlock_error(exception: Exception) -> bool:
     )
 
 
-def retry_on_deadlock(max_retries: int = 3):
+def _is_retryable(instance: object, exception: Exception) -> bool:
+    """A Neo4j deadlock, or a failure the instance's data store calls transient
+    (an ArangoDB write-write conflict, which never says "deadlock")."""
+    if _is_deadlock_error(exception):
+        return True
+    store = getattr(instance, "data_store_provider", None)
+    # `is True`: a mocked provider answers with a truthy mock, which is not a yes.
+    return isinstance(store, DataStoreProvider) and store.is_transient_error(exception) is True
+
+
+def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
     """
-    Decorator that retries an async function on Neo4j deadlock errors.
+    Decorator that retries an async function on deadlocks and write conflicts.
 
-    When a deadlock is detected, the entire function is re-executed from scratch,
-    which naturally creates a fresh transaction on retry.
+    When one is detected, the entire function is re-executed from scratch,
+    which naturally creates a fresh transaction on retry. Besides Neo4j's
+    deadlock error, it retries whatever the decorated object's
+    ``data_store_provider`` reports as transient.
 
-    Uses exponential backoff: 0.1s, 0.2s, 0.4s, ...
+    Waits between attempts follow ``_retry_delay``: about 11.5s in all by default.
 
     Args:
-        max_retries: Maximum number of attempts (default: 3)
+        max_retries: Maximum number of attempts (default: 6)
 
     Usage:
-        @retry_on_deadlock(max_retries=3)
+        @retry_on_deadlock()
         async def on_new_records(self, records):
             async with self.data_store_provider.transaction() as tx_store:
                 # transaction code here
@@ -90,20 +115,21 @@ def retry_on_deadlock(max_retries: int = 3):
                     return await func(*args, **kwargs)
                 except Exception as e:
                     last_exception = e
+                    retryable = _is_retryable(args[0] if args else None, e)
 
-                    if _is_deadlock_error(e) and attempt < max_retries - 1:
-                        backoff = 0.1 * (2 ** attempt)  # 0.1s, 0.2s, 0.4s
+                    if retryable and attempt < max_retries - 1:
+                        backoff = _retry_delay(attempt)
                         logger.warning(
-                            f"Deadlock detected in {func.__name__} "
+                            f"Deadlock or write conflict in {func.__name__} "
                             f"(attempt {attempt + 1}/{max_retries}), "
                             f"retrying in {backoff:.1f}s: {str(e)[:200]}"
                         )
                         await asyncio.sleep(backoff)
                         continue
                     else:
-                        if _is_deadlock_error(e):
+                        if retryable:
                             logger.error(
-                                f"Deadlock persists in {func.__name__} "
+                                f"Deadlock or write conflict persists in {func.__name__} "
                                 f"after {max_retries} attempts: {str(e)[:200]}"
                             )
                         raise
@@ -139,7 +165,7 @@ class GraphTransactionStore(TransactionStore):
     async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> dict | None:
         return await self.graph_provider.get_record_by_path(connector_id, path, external_record_group_id, transaction=self.txn)
 
-    async def get_record_by_key(self, key: str) -> Optional[Record]:
+    async def get_record_by_key(self, key: str) -> Optional[dict]:
         return await self.graph_provider.get_document(key, CollectionNames.RECORDS.value, transaction=self.txn)
 
     async def get_app_by_id(self, connector_id: str) -> Optional[AppMetadata]:
@@ -220,8 +246,12 @@ class GraphTransactionStore(TransactionStore):
     async def get_app_user_by_email(self, email: str, connector_id: str) -> Optional[AppUser]:
         return await self.graph_provider.get_app_user_by_email(email, connector_id, transaction=self.txn)
 
-    async def get_record_owner_source_user_email(self, record_id: str) -> Optional[str]:
-        return await self.graph_provider.get_record_owner_source_user_email(record_id, transaction=self.txn)
+    async def get_record_owner_source_user_email(
+        self, record_id: str, *, raise_on_error: bool = False
+    ) -> str | None:
+        return await self.graph_provider.get_record_owner_source_user_email(
+            record_id, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
         return await self.graph_provider.get_user_by_user_id(user_id)
@@ -230,7 +260,7 @@ class GraphTransactionStore(TransactionStore):
         # Delete the record node from the records collection
         return await self.graph_provider.delete_nodes([key], CollectionNames.RECORDS.value, transaction=self.txn)
 
-    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> None:
+    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> dict | None:
         return await self.graph_provider.delete_record_by_external_id(connector_id, external_id, user_id, transaction=self.txn)
 
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
@@ -278,6 +308,7 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_records_recursive(
         self, record_ids: list[str], connector_id: str, cascade_children: bool = True,
+        within_folder_id: str | None = None,
     ) -> dict:
         """Delete records within the active transaction.
 
@@ -287,6 +318,7 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.delete_records_recursive(
             record_ids, connector_id, transaction=self.txn, cascade_children=cascade_children,
+            within_folder_id=within_folder_id,
         )
 
     async def delete_single_record(self, record_id: str) -> dict:
@@ -319,6 +351,35 @@ class GraphTransactionStore(TransactionStore):
 
     async def batch_upsert_people(self, people: list[Person]) -> None:
         return await self.graph_provider.batch_upsert_people(people, transaction=self.txn)
+
+    async def get_person_by_email(self, email: str, org_id: str) -> Optional[Person]:
+        return await self.graph_provider.get_person_by_email(email, org_id, transaction=self.txn)
+
+    async def upsert_person_by_email(self, person: Person) -> Optional[str]:
+        return await self.graph_provider.upsert_person_by_email(person, transaction=self.txn)
+
+    async def ensure_app_membership(
+        self,
+        principal_id: str,
+        principal_collection: str,
+        connector_id: str,
+        *,
+        is_external: bool,
+        source_user_id: str | None = None,
+    ) -> None:
+        return await self.graph_provider.ensure_app_membership(
+            principal_id,
+            principal_collection,
+            connector_id,
+            is_external=is_external,
+            source_user_id=source_user_id,
+            transaction=self.txn,
+        )
+
+    async def reap_stale_external_app_relations(self, connector_id: str) -> int:
+        return await self.graph_provider.reap_stale_external_app_relations(
+            connector_id, transaction=self.txn
+        )
 
     async def create_user_group_hierarchy(
         self,
@@ -426,8 +487,19 @@ class GraphTransactionStore(TransactionStore):
     async def get_first_user_with_permission_to_node(self, node_id: str, node_collection: str) -> Optional[User]:
         return await self.graph_provider.get_first_user_with_permission_to_node(node_id, node_collection, transaction=self.txn)
 
-    async def get_users_with_permission_to_node(self, node_id: str, node_collection: str) -> list[User]:
-        return await self.graph_provider.get_users_with_permission_to_node(node_id, node_collection, transaction=self.txn)
+    async def get_users_with_permission_to_node(
+        self, node_id: str, node_collection: str, *, raise_on_error: bool = False
+    ) -> list[User]:
+        return await self.graph_provider.get_users_with_permission_to_node(
+            node_id, node_collection, transaction=self.txn, raise_on_error=raise_on_error
+        )
+
+    async def get_groups_with_permission_to_node(
+        self, node_id: str, node_collection: str, *, raise_on_error: bool = False
+    ) -> list[AppUserGroup]:
+        return await self.graph_provider.get_groups_with_permission_to_node(
+            node_id, node_collection, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[dict]:
         return await self.graph_provider.get_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
@@ -467,6 +539,10 @@ class GraphTransactionStore(TransactionStore):
     async def get_record_path(self, record_id: str) -> Optional[str]:
         """Get full hierarchical path for a record by traversing parent-child edges."""
         return await self.graph_provider.get_record_path(record_id, transaction=self.txn)
+
+    async def get_record_path_segments(self, record_id: str) -> list[str]:
+        """Get individual record names from root to this record."""
+        return await self.graph_provider.get_record_path_segments(record_id, transaction=self.txn)
 
     async def get_app_creator_user(self, connector_id:str) ->Optional[User]:
         """Get the creator user for a connector/app by connectorId."""
@@ -675,8 +751,9 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 
     async def delete_sync_point(self, sync_point_key: str) -> None:
-        return await self.graph_provider.remove_sync_point([sync_point_key],
+        return await self.graph_provider.remove_sync_point(sync_point_key,
                     collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+
     async def read_sync_point(self, sync_point_key: str, *, raise_on_error: bool = False) -> Optional[dict]:
         return await self.graph_provider.get_sync_point(
             sync_point_key,
@@ -866,6 +943,9 @@ class GraphDataStore(DataStoreProvider):
         self.logger = logger
         self.graph_provider = graph_provider
 
+    def is_transient_error(self, error: BaseException) -> bool:
+        return self.graph_provider.is_transient_error(error)
+
     async def compare_and_set_indexing_status(
         self, record_ids: list[str], expected: str, new_status: str
     ) -> list[str]:
@@ -938,12 +1018,12 @@ class GraphDataStore(DataStoreProvider):
                 async with self.transaction() as tx_store:
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
-                if attempts >= _TRANSACTION_RETRY_ATTEMPTS or not self.graph_provider.is_transient_error(e):
+                if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_transient_error(e):
                     raise
-                delay = _TRANSACTION_RETRY_BASE_DELAY * attempts
+                delay = _retry_delay(attempts - 1)
                 self.logger.warning(
                     "Transient graph transaction failure (attempt %d/%d), retrying in %.1fs: %s",
-                    attempts, _TRANSACTION_RETRY_ATTEMPTS, delay, e,
+                    attempts, _RETRY_ATTEMPTS, delay, e,
                 )
                 await asyncio.sleep(delay)
 

@@ -37,7 +37,7 @@ class TestSandboxSettingsDefaults:
     def test_default_settings(self) -> None:
         s = SandboxSettings()
         assert s.backend == "local"
-        assert s.allow_network is True
+        assert s.allow_network is False
         assert s.max_concurrent_per_request == 5
 
     def test_governor_settings_defaults(self) -> None:

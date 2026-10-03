@@ -83,11 +83,13 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    USER_EMAIL_PLACEHOLDER,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient, configure_google_http_timeout
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
+from app.utils.filename_utils import temp_path_for
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -531,7 +533,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_created_at,
                 mime_type=MimeTypes.GMAIL.value,
-                weburl=f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
                 preview_renderable=False,
                 subject=subject,
                 from_email=from_email,
@@ -887,7 +889,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 source_created_at=get_epoch_timestamp_in_ms(),
                 source_updated_at=get_epoch_timestamp_in_ms(),
                 mime_type=mime_type,
-                weburl=f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
                 size_in_bytes=size,
                 extension=extension,
                 is_file=True,
@@ -1217,7 +1219,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             if convertTo == MimeTypes.PDF.value:
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_file_path = os.path.join(temp_dir, file_name)
+                    temp_file_path = temp_path_for(temp_dir, file_name)
 
                     # Download from Drive to temp file
                     with open(temp_file_path, "wb") as f:
@@ -1504,7 +1506,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             if convertTo == MimeTypes.PDF.value:
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_file_path = os.path.join(temp_dir, file_name)
+                    temp_file_path = temp_path_for(temp_dir, file_name)
 
                     # Write attachment data to temp file
                     with open(temp_file_path, "wb") as f:

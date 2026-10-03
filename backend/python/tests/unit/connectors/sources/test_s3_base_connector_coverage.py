@@ -473,12 +473,15 @@ class TestProcessS3Object:
     async def test_move_detected(self, s3_connector):
         existing = MagicMock()
         existing.id = "moved-id"
+        existing.external_record_group_id = "mybucket"
         existing.external_record_id = "mybucket/old/path/file.txt"
         existing.external_revision_id = "mybucket/same_etag"
         existing.version = 0
         existing.source_created_at = 1700000000000
         s3_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         s3_connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
+        # The old key is gone from the bucket, so equal content at the new key is a move.
+        s3_connector.data_source = MagicMock(list_objects_v2=AsyncMock(return_value=MagicMock(success=True, data={"KeyCount": 0})))
         s3_connector.scope = ConnectorScope.TEAM.value
 
         obj = {

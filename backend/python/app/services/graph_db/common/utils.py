@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional
 
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import Connectors, RecordRelations
 
 # Connectors whose record groups are scoped by their root instead of by the full
 # descendant closure. Slack qualifies because grants sit on the channel and every
@@ -39,11 +39,81 @@ CONTAINER_FILTER_MAX_TERMS = 25_000
 # omitted is unrecoverable recall loss with nothing to notice.
 CONTAINER_INHERIT_MAX_DEPTH = 20
 
+# A user reaching one KB through several grants (direct, or more than one team)
+# acts with the strongest of them: the ranking both providers already use to pick
+# the highest permission on a record. Roles not listed rank below all of these.
+KB_ROLE_PRIORITY: dict[str, int] = {
+    "OWNER": 6,
+    "ORGANIZER": 5,
+    "FILEORGANIZER": 4,
+    "WRITER": 3,
+    "COMMENTER": 2,
+    "READER": 1,
+}
+
+# How deep a delete follows containment (PARENT_CHILD / ATTACHMENT) from a
+# folder or record. Folder nesting has no enforced limit, so this is a guard
+# against a cycle, not a product limit: a cascade that stopped at 20 left
+# anything deeper behind.
+CONTAINMENT_MAX_DEPTH = 1000
+
 # Records considered per entity when listing an entity's records, taken
 # before the newest-first sort. Without a bound, a language or broad category
 # linked to most of an org's records is sorted in full on every page. Past the
 # cap the order is newest among the first records found, and paging ends.
 ENTITY_CANDIDATE_SCAN_CAP = 10_000
+
+# Edge types that make one record the storage/display parent of another.
+CANONICAL_PARENT_RELATION_TYPES = (
+    RecordRelations.PARENT_CHILD.value,
+    RecordRelations.ATTACHMENT.value,
+)
+
+# Chains only branch on graph anomalies (duplicate parent edges, two nodes with
+# the same externalRecordId, several BELONGS_TO parents), so this caps result
+# size; it is not a tuning knob.
+PATH_MAX_CANDIDATES = 64
+
+# Deepest a knowledge-base folder may sit; a folder directly in the collection is
+# depth 1. Enforced on folder create, upload and move.
+KB_MAX_FOLDER_DEPTH = 20
+
+
+def select_canonical_chain_names(
+    rows: list[Any] | None,
+    name_fields: tuple[str, ...],
+) -> list[str]:
+    """Pick one ancestor chain from path-query candidates; return names root-first.
+
+    Each row is ``{"ids": [start, parent, ..., ancestor], <name_field>: [...]}``
+    with lists aligned by position. Arango and Neo4j both return every
+    canonical chain and this picks the same one for both: the longest, ties
+    broken by the lexicographically smallest id sequence. A node's name is the
+    first non-empty string among *name_fields*; nodes without one are dropped.
+    """
+    best_key: tuple[int, list[str]] | None = None
+    best_row: dict[str, Any] | None = None
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        ids = row.get("ids")
+        if not isinstance(ids, list) or not ids:
+            continue
+        key = (-len(ids), [str(i) for i in ids])
+        if best_key is None or key < best_key:
+            best_key, best_row = key, row
+    if best_row is None:
+        return []
+    names: list[str] = []
+    for index in range(len(best_row["ids"])):
+        for name_field in name_fields:
+            values = best_row.get(name_field)
+            value = values[index] if isinstance(values, list) and index < len(values) else None
+            if isinstance(value, str) and value:
+                names.append(value)
+                break
+    names.reverse()
+    return names
 
 
 def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:
