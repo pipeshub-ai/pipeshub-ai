@@ -26,6 +26,7 @@ from app.config.constants.ai_models import (
     DEFAULT_REASONING_EFFORT,
     EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
     OPENROUTER_BASE_URL,
+    REASONING_EFFORT_VALUES,
     REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS,
     AzureOpenAILLM,
 )
@@ -1163,6 +1164,32 @@ def _default_temperature(
     return 1 if is_reasoning_model else configuration.get("temperature", 0.2)
 
 
+MODEL_DEFAULT_REASONING_EFFORT_KEY = "defaultReasoningEffort"
+
+
+def model_default_reasoning_effort(config: dict[str, Any]) -> str | None:
+    """The reasoning effort an admin set on this model, or ``None`` if none is set.
+
+    The AI models settings API saves it inside ``configuration``, the only
+    part of a model entry that keeps fields it does not list. A top-level
+    key is read only when ``configuration`` has none.
+    """
+    configuration = config.get("configuration")
+    raw = configuration.get(MODEL_DEFAULT_REASONING_EFFORT_KEY) if isinstance(configuration, dict) else None
+    if raw is None or not str(raw).strip():
+        raw = config.get(MODEL_DEFAULT_REASONING_EFFORT_KEY)
+    if raw is None or not str(raw).strip():
+        return None
+    value = str(raw).strip()
+    if value not in REASONING_EFFORT_VALUES:
+        raise ValueError(
+            f"This model's default reasoning effort is '{value}', which isn't a valid "
+            "choice. Set it to low, medium, high or max, or remove it to use the "
+            "platform default."
+        )
+    return value
+
+
 def _reasoning_effort_kwargs(
     reasoning_effort: str | None,
     config: dict[str, Any],
@@ -1181,7 +1208,8 @@ def _reasoning_effort_kwargs(
     in LangChain, so callers must never pass it unconditionally.
 
     When ``reasoning_effort`` is absent (no explicit user choice and no agent
-    default), a reasoning-capable model defaults to ``DEFAULT_REASONING_EFFORT``
+    default), a reasoning-capable model uses the default set on the model
+    itself (``model_default_reasoning_effort``), else ``DEFAULT_REASONING_EFFORT``
     ("high") rather than silently omitting the parameter and letting each
     provider fall back to its own default — those vary per provider/model and
     are often a lower, cheaper tier than a user picking a "reasoning" model
@@ -1281,7 +1309,7 @@ def _reasoning_effort_kwargs(
     if api_mode == LLMApiMode.NO_REASONING_WITH_TOOLS.value:
         return {}
 
-    effort_input = reasoning_effort or DEFAULT_REASONING_EFFORT
+    effort_input = reasoning_effort or model_default_reasoning_effort(config) or DEFAULT_REASONING_EFFORT
     if effort_input == "none":
         # "none" is no longer offered as a UI choice (see the docstring
         # above) — floor it unconditionally rather than only when a
@@ -1455,14 +1483,15 @@ def _bedrock_anthropic_uses_adaptive_thinking(model_name: str | None) -> bool:
     return bool(re.search(r"claude.*4[-_.]([67]|[6-9]\d)", lowered))
 
 
-def _resolve_bedrock_effort_input(reasoning_effort: str | None) -> str:
+def _resolve_bedrock_effort_input(reasoning_effort: str | None, config: dict[str, Any]) -> str:
     """Normalize UI effort for Bedrock, flooring explicit ``none`` to low.
 
-    Matches the platform-wide policy in ``_reasoning_effort_kwargs``: ``none``
-    is no longer offered in the UI and must not fully disable reasoning when
-    the model is flagged ``isReasoning``.
+    Matches the platform-wide policy in ``_reasoning_effort_kwargs``: the
+    model's own default fills in for a missing effort, and ``none`` is no
+    longer offered in the UI and must not fully disable reasoning when the
+    model is flagged ``isReasoning``.
     """
-    effort_input = reasoning_effort or DEFAULT_REASONING_EFFORT
+    effort_input = reasoning_effort or model_default_reasoning_effort(config) or DEFAULT_REASONING_EFFORT
     if effort_input == "none":
         return REASONING_MANDATORY_FALLBACK_EFFORT
     return effort_input
@@ -1487,7 +1516,7 @@ def _bedrock_additional_model_request_fields(
     if _bedrock_is_deepseek_r1(model_name):
         return {}
 
-    effort_input = _resolve_bedrock_effort_input(reasoning_effort)
+    effort_input = _resolve_bedrock_effort_input(reasoning_effort, config)
     provider = (provider_in_bedrock or "").lower()
 
     if _bedrock_is_openai(provider, model_name):

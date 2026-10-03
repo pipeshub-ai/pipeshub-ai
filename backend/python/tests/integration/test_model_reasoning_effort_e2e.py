@@ -46,6 +46,9 @@ class _RejectsHighReasoningChatModel:
                 "this model. Accepted values: low, medium."
             )
         self.kwargs = kwargs
+        # The factory turns redirect-following off on ChatOpenAI's SDK clients.
+        self.root_client = SimpleNamespace(_client=SimpleNamespace(follow_redirects=True))
+        self.root_async_client = SimpleNamespace(_client=SimpleNamespace(follow_redirects=True))
 
     def bind_tools(self, *_args: object, **_kwargs: object) -> "_RejectsHighReasoningChatModel":
         return self
@@ -123,6 +126,28 @@ class TestModelDefaultReasoningEffortEndToEnd:
         assert response.status_code == 200
         body = response.body.decode()
         assert '"status":"healthy"' in body.replace(" ", "")
+
+    def test_get_generator_model_uses_the_saved_nested_default(self) -> None:
+        """The settings API saves the default under ``configuration``, so that
+        shape must work end to end, not only the top-level one above."""
+        config = _config()
+        config["configuration"]["defaultReasoningEffort"] = "low"
+
+        with patch("langchain_openai.ChatOpenAI", _RejectsHighReasoningChatModel):
+            model = get_generator_model(
+                LLMProvider.OPENAI_COMPATIBLE.value, config, model_name="hosted-qwen-restricted",
+            )
+
+        assert model.kwargs["reasoning_effort"] == "low"
+
+    async def test_health_check_passes_with_the_saved_nested_default(self) -> None:
+        config = _config()
+        config["configuration"]["defaultReasoningEffort"] = "low"
+
+        with patch("langchain_openai.ChatOpenAI", _RejectsHighReasoningChatModel):
+            response = await perform_llm_health_check(config, MagicMock())
+
+        assert response.status_code == 200
 
     async def test_health_check_explicit_effort_still_overrides_model_default(self) -> None:
         """Per-request/agent effort remains the top of the resolution chain
