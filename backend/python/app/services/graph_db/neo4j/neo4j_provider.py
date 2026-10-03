@@ -17192,18 +17192,23 @@ class Neo4jProvider(IGraphDBProvider):
                 MATCH (n:{label})
                 WHERE n.orgId IS NOT NULL AND size(coalesce(n.normalizedAliases, [])) > 0
                 UNWIND n.normalizedAliases AS normalized
-                WITH n, normalized
-                WHERE NOT EXISTS {{
-                    MATCH (:{TAXONOMY_ALIAS_LABEL} {{orgId: n.orgId, collection: $collection,
-                                                    normalized: normalized}})-[:{TAXONOMY_ALIAS_REL}]->(n)
-                }}
                 CALL {{
                     WITH n, normalized
+                    // Checked here, in the batch's transaction: in the outer
+                    // query the alias uniqueness constraint makes it a locking
+                    // seek, held across every batch, and each batch's MERGE
+                    // then waits on it for ever (an undetected self-deadlock).
+                    OPTIONAL MATCH (existing:{TAXONOMY_ALIAS_LABEL} {{orgId: n.orgId, collection: $collection,
+                                                                     normalized: normalized}})
+                                   -[:{TAXONOMY_ALIAS_REL}]->(n)
+                    WITH n, normalized, existing
+                    WHERE existing IS NULL
                     MERGE (a:{TAXONOMY_ALIAS_LABEL} {{orgId: n.orgId, collection: $collection,
                                                       normalized: normalized}})
                     MERGE (a)-[:{TAXONOMY_ALIAS_REL}]->(n)
+                    RETURN 1 AS created
                 }} IN TRANSACTIONS OF {_ALIAS_HEAL_BATCH} ROWS
-                RETURN count(*) AS healed
+                RETURN count(created) AS healed
                 """,
                 parameters={"collection": collection},
             )
