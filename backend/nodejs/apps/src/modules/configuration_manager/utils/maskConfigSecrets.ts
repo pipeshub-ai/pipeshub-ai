@@ -30,6 +30,7 @@ export const AI_PUBLIC_CONFIG_KEYS = [
   'model',
   'modelFriendlyName',
   'dimensions',
+  'defaultReasoningEffort',
 ] as const;
 
 export function stripAiModelSecrets(entry: AIModelConfiguration): AIModelConfiguration {
