@@ -29,6 +29,7 @@ import pytest_asyncio
 from helper import cleanup_sources as src
 from helper import delete_footprint as fp
 from helper.cleanup_errors import StoreNotEmptied
+from helper.mongo_store import records_folder
 from helper.run_folder import new_run_folder
 
 logger = logging.getLogger("cleanup-connector-deletion")
@@ -38,7 +39,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.cleanup]
 STORAGE_GAP = (
     "A connector delete clears the graph, the vector database and the connector's "
     "config (event_service.py _handle_delete) but never calls the storage service, "
-    "so each record's processed envelope under {orgId}/PipesHub/records/{vrid} stays "
+    "so each record's processed envelope under {orgId}/PipesHub/records/{connectorId}/... stays "
     "in blob storage and its storage document stays in MongoDB."
 )
 
@@ -105,22 +106,24 @@ async def connector_delete(
             f"virtual record id ({twin_records[names['twin_shared']].virtual_record_id} vs "
             f"{shared_vrid}), so this scenario cannot test shared content surviving."
         )
-        vendor = await mongo_store.storage_vendor_under_path(
-            fp.envelope_prefix(test_org_id, shared_vrid)
-        ) or "local"
+        vendor = await fp.storage_vendor(
+            mongo_store, test_org_id, shared_vrid, within=records_folder(test_org_id, doomed)
+        )
 
         doomed_graph = await fp.graph_footprint_of_connector(graph_provider, doomed)
         doomed_unique = [doomed_records[names["doomed_unique"]]]
         doomed_before = await fp.capture_when_stable(
             doomed_graph, vector_store, blob_store, mongo_store,
-            org_id=test_org_id, records=doomed_unique, connector_id=doomed, vendor=vendor,
+            org_id=test_org_id, records=doomed_unique, within=records_folder(test_org_id, doomed),
+            connector_id=doomed, vendor=vendor,
         )
         fp.assert_every_store_holds_it(doomed_before)
 
+        undecided = fp.pending_shared_envelopes(test_org_id, [shared_vrid])
         survivors = {}
-        for label, cid, records in (
-            ("twin", twin, list(twin_records.values())),
-            ("other", other, list(other_records.values())),
+        for label, cid, records, known in (
+            ("twin", twin, list(twin_records.values()), undecided),
+            ("other", other, list(other_records.values()), {}),
         ):
             graph_fp = await fp.graph_footprint_of_connector(graph_provider, cid)
             survivors[label] = {
@@ -128,7 +131,8 @@ async def connector_delete(
                 "records": records,
                 "before": await fp.capture_when_stable(
                     graph_fp, vector_store, blob_store, mongo_store,
-                    org_id=test_org_id, records=records, connector_id=cid, vendor=vendor,
+                    org_id=test_org_id, records=records, within=records_folder(test_org_id, cid),
+                    connector_id=cid, vendor=vendor, envelope_paths=known,
                 ),
             }
         assert survivors["twin"]["before"].points.get(shared_vrid), "The shared content has no embeddings."
@@ -185,22 +189,22 @@ class TestDeletingAConnector:
     @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Connector delete: {STORAGE_GAP}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_files_are_removed_from_blob_storage(
-        self, connector_delete, blob_store, test_org_id
+        self, connector_delete, blob_store
     ) -> None:
         before = connector_delete["before"]
         await fp.assert_blobs_gone(
-            blob_store, before, fp.blob_keys_for(before, test_org_id, connector_delete["unique"]),
+            blob_store, before, fp.blob_keys_for(before, connector_delete["unique"]),
             vendor=connector_delete["vendor"],
         )
 
     @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Connector delete: {STORAGE_GAP}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_storage_documents_are_removed_from_mongodb(
-        self, connector_delete, mongo_store, test_org_id
+        self, connector_delete, mongo_store
     ) -> None:
         await fp.assert_documents_gone(
             mongo_store, connector_delete["before"],
-            fp.document_keys_for(test_org_id, connector_delete["unique"]),
+            fp.document_keys_for(connector_delete["before"], connector_delete["unique"]),
         )
 
 

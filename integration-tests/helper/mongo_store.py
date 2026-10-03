@@ -102,7 +102,7 @@ class MongoStoreProbe:
         files under the flat ``records/<virtualRecordId>`` instead when it
         cannot work out the record's place, so that folder is searched too.
         """
-        flat = f"{org_id}/PipesHub/records/{virtual_record_id}"
+        flat = records_folder(org_id, virtual_record_id)
         query = {
             "orgId": {"$in": _id_forms(org_id)},
             "documentName": f"record_{virtual_record_id}",
@@ -235,6 +235,15 @@ class MongoStoreProbe:
                 f"{remaining} storage document(s) still exist under "
                 f"{path_prefix!r} after {timeout}s."
             )
+
+
+def records_folder(org_id: str, name: str) -> str:
+    """A folder in the org's processed-records storage.
+
+    Named by a collection or connector id, it holds that source's records; named
+    by a virtual record id, it is the flat folder indexing falls back to.
+    """
+    return f"{org_id}/PipesHub/records/{name}"
 
 
 def _escape(value: str) -> str:

@@ -12,14 +12,18 @@ Where a record's data lives:
   are counted by their ends, so an edge left pointing at a deleted node is seen;
   walking out from nodes that still exist would miss it.
 * vector database: points whose ``metadata.virtualRecordId`` is the record's.
-* blob storage and MongoDB: the processed-record envelope under
-  ``{orgId}/PipesHub/records/{virtualRecordId}``, and for a knowledge-base upload
+* blob storage and MongoDB: the processed-record envelope, filed under the
+  record's place in its collection or connector
+  (``{orgId}/PipesHub/records/{connectorId}/<folders>/<name>``, or the flat
+  ``records/{virtualRecordId}`` when indexing cannot work that out) and found the
+  way ``MongoStoreProbe.envelope_path`` finds it; and for a knowledge-base upload
   the original file, a storage document whose id is the record's
   ``externalRecordId`` and whose bytes sit under ``{documentPath}/{id}``.
 
 Records with identical content share one virtual record id (MD5 dedup is
 org-wide), so the vector, blob and envelope data of a shared id belong to every
-record that carries it.
+record that carries it, even though the envelope is filed under the name of the
+copy indexed first.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Iterable
 
 from helper.cleanup_errors import StoreNotEmptied
+from helper.mongo_store import records_folder
 
 if TYPE_CHECKING:
     from helper.blob_store import BlobStoreProbe
@@ -49,7 +54,27 @@ SETTLED_STATUSES = frozenset({
 
 
 def envelope_prefix(org_id: str, virtual_record_id: str) -> str:
-    return f"{org_id}/PipesHub/records/{virtual_record_id}"
+    """The flat folder indexing falls back to; most records are filed elsewhere."""
+    return records_folder(org_id, virtual_record_id)
+
+
+def pending_shared_envelopes(org_id: str, virtual_record_ids: Iterable[str]) -> dict[str, str]:
+    """Envelope folders for a survivor's content that is filed under a deleted record's name.
+
+    Whether that content must stay where it is or end up filed for the survivor
+    is not decided yet, so a survivor check still looks in the flat folder for
+    it, as it did before indexing filed content by place. That folder normally
+    holds nothing, so the shared envelope is not covered until the decision is made.
+    """
+    return {v: envelope_prefix(org_id, v) for v in virtual_record_ids}
+
+
+async def storage_vendor(
+    mongo: "MongoStoreProbe", org_id: str, virtual_record_id: str, *, within: str
+) -> str:
+    """Which backend holds a record's envelope, read from where it was filed."""
+    path = await mongo.envelope_path(org_id, virtual_record_id, within=within)
+    return await mongo.storage_vendor_under_path(path) or "local"
 
 
 @dataclass(frozen=True)
@@ -145,6 +170,8 @@ class StoresFootprint:
     documents: dict[str, int] = field(default_factory=dict)
     # Storage document id -> path of its bytes, read while the document exists.
     upload_paths: dict[str, str] = field(default_factory=dict)
+    # Virtual record id -> folder its envelope was filed in, read before the delete.
+    envelope_paths: dict[str, str] = field(default_factory=dict)
 
 
 async def _upload_path(mongo: "MongoStoreProbe", document_id: str) -> str:
@@ -167,24 +194,38 @@ async def capture(
     *,
     org_id: str,
     records: Iterable[Tracked],
+    within: str | None = None,
     connector_id: str | None = None,
     vendor: str = "local",
     upload_paths: dict[str, str] | None = None,
+    envelope_paths: dict[str, str] | None = None,
 ) -> StoresFootprint:
+    """Count what each store holds for *records*.
+
+    *within* is the collection or connector folder the records' envelopes are
+    filed in; each one's exact folder is read from MongoDB. *envelope_paths*
+    supplies folders already known, as a re-count after a delete must look where
+    the content was before it.
+    """
     records = list(records)
     vrids = sorted({r.virtual_record_id for r in records if r.virtual_record_id})
     paths = dict(upload_paths or {})
     for record in records:
         if record.upload_document_id and record.upload_document_id not in paths:
             paths[record.upload_document_id] = await _upload_path(mongo, record.upload_document_id)
+    envelopes = dict(envelope_paths or {})
+    for vrid in vrids:
+        if vrid not in envelopes:
+            assert within, f"No folder to look for {vrid}'s envelope in; pass the collection or connector folder."
+            envelopes[vrid] = await mongo.envelope_path(org_id, vrid, within=within)
 
     points = {v: await vector.count_for_virtual_record(v) for v in vrids}
-    blob_keys = [envelope_prefix(org_id, v) for v in vrids] + sorted(paths.values())
+    blob_keys = [envelopes[v] for v in vrids] + sorted(paths.values())
     blobs = {p: await blob.count_under(p, vendor) for p in blob_keys}
-    doc_keys = [f"prefix:{envelope_prefix(org_id, v)}" for v in vrids] + [f"id:{d}" for d in sorted(paths)]
+    doc_keys = [f"prefix:{envelopes[v]}" for v in vrids] + [f"id:{d}" for d in sorted(paths)]
     documents = {k: await _document_count(mongo, k) for k in doc_keys}
     connector_points = await vector.count_for_connector(connector_id) if connector_id else None
-    footprint = StoresFootprint(graph_fp, connector_points, points, blobs, documents, paths)
+    footprint = StoresFootprint(graph_fp, connector_points, points, blobs, documents, paths, envelopes)
     logger.info("Captured footprint: %s", footprint)
     return footprint
 
@@ -290,16 +331,16 @@ async def assert_documents_gone(
         raise StoreNotEmptied(f"Storage documents still present {timeout}s after the delete: {left}")
 
 
-def blob_keys_for(fp: StoresFootprint, org_id: str, records: Iterable[Tracked]) -> list[str]:
+def blob_keys_for(fp: StoresFootprint, records: Iterable[Tracked]) -> list[str]:
     records = list(records)
-    return [envelope_prefix(org_id, r.virtual_record_id) for r in records if r.virtual_record_id] + [
+    return [fp.envelope_paths[r.virtual_record_id] for r in records if r.virtual_record_id] + [
         fp.upload_paths[r.upload_document_id] for r in records if r.upload_document_id
     ]
 
 
-def document_keys_for(org_id: str, records: Iterable[Tracked]) -> list[str]:
+def document_keys_for(fp: StoresFootprint, records: Iterable[Tracked]) -> list[str]:
     records = list(records)
-    return [f"prefix:{envelope_prefix(org_id, r.virtual_record_id)}" for r in records if r.virtual_record_id] + [
+    return [f"prefix:{fp.envelope_paths[r.virtual_record_id]}" for r in records if r.virtual_record_id] + [
         f"id:{r.upload_document_id}" for r in records if r.upload_document_id
     ]
 
@@ -323,7 +364,7 @@ async def assert_unchanged(
     after = await capture(
         after_graph, vector, blob, mongo,
         org_id=org_id, records=records, connector_id=connector_id, vendor=vendor,
-        upload_paths=before.upload_paths,
+        upload_paths=before.upload_paths, envelope_paths=before.envelope_paths,
     )
     changes: list[str] = []
     if nodes_now != len(before.graph.handles):

@@ -19,6 +19,7 @@ import pytest_asyncio
 from helper import cleanup_sources as src
 from helper import delete_footprint as fp
 from helper.cleanup_errors import StoreNotEmptied
+from helper.mongo_store import records_folder
 
 logger = logging.getLogger("cleanup-collection-deletion")
 
@@ -119,18 +120,20 @@ async def collection_delete(
         for kb_id, records in ((doomed_kb, [shared, *unique]), (survivor_kb, survivors)):
             await fp.wait_for_connector_records(graph_provider, kb_id, [r.name for r in records])
 
-        prefix = fp.envelope_prefix(test_org_id, shared.virtual_record_id)
-        vendor = await mongo_store.storage_vendor_under_path(prefix) or "local"
+        doomed_folder = records_folder(test_org_id, doomed_kb)
+        vendor = await fp.storage_vendor(mongo_store, test_org_id, shared.virtual_record_id, within=doomed_folder)
         doomed_graph = await fp.graph_footprint_of_connector(graph_provider, doomed_kb)
         before = await fp.capture_when_stable(
             doomed_graph, vector_store, blob_store, mongo_store,
-            org_id=test_org_id, records=[shared, *unique], vendor=vendor,
+            org_id=test_org_id, records=[shared, *unique], within=doomed_folder, vendor=vendor,
         )
         fp.assert_every_store_holds_it(before)
+        undecided = fp.pending_shared_envelopes(test_org_id, [shared.virtual_record_id])
         survivor_before = await fp.capture_when_stable(
             await fp.graph_footprint_of_connector(graph_provider, survivor_kb),
             vector_store, blob_store, mongo_store,
-            org_id=test_org_id, records=survivors, vendor=vendor,
+            org_id=test_org_id, records=survivors, within=records_folder(test_org_id, survivor_kb),
+            vendor=vendor, envelope_paths=undecided,
         )
 
         kb_client.delete_kb(doomed_kb)
@@ -172,20 +175,20 @@ class TestDeletingACollectionWithFoldersAndSharedContent:
     @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Collection delete: {SHARED_CAUSE}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_files_are_removed_from_blob_storage(
-        self, collection_delete, blob_store, test_org_id
+        self, collection_delete, blob_store
     ) -> None:
         """Envelopes of its own content, and every original upload, including the shared file's."""
         before = collection_delete["before"]
-        paths = fp.blob_keys_for(before, test_org_id, collection_delete["unique"])
+        paths = fp.blob_keys_for(before, collection_delete["unique"])
         paths.append(before.upload_paths[collection_delete["shared"].upload_document_id])
         await fp.assert_blobs_gone(blob_store, before, paths, vendor=collection_delete["vendor"])
 
     @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Collection delete: {SHARED_CAUSE}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_storage_documents_are_removed_from_mongodb(
-        self, collection_delete, mongo_store, test_org_id
+        self, collection_delete, mongo_store
     ) -> None:
-        keys = fp.document_keys_for(test_org_id, collection_delete["unique"])
+        keys = fp.document_keys_for(collection_delete["before"], collection_delete["unique"])
         keys.append(f"id:{collection_delete['shared'].upload_document_id}")
         await fp.assert_documents_gone(mongo_store, collection_delete["before"], keys)
 
