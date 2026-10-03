@@ -334,3 +334,124 @@ async def test_a_burst_read_that_fails_part_way_carries_on_from_the_id_it_reache
     assert burst_reads and not any("id:[1000 TO" in q for q in burst_reads), "ranges already read are not read again"
     assert _group_point(world, "Support").get("burst_next_id") == 0
     assert _checkpoint(world, "Support") > epoch_ms(6)
+
+
+async def test_a_window_past_the_search_window_is_split_after_one_probe_not_after_paging_to_its_end(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _search_window(world, monkeypatch, 300)
+    for ticket_id in range(100, 500):
+        world.zammad.add_ticket(ticket_id, 1, day=4, minute=2 * ticket_id)
+
+    world.zammad.search_queries.clear()
+    await world.save_filters({})
+
+    assert all(str(t) in world.db.external_ids() for t in range(100, 500))
+    # The first page, then one read at the window's last slot; not six pages up to it.
+    assert world.zammad.search_queries.count("group_id:1") == 2
+
+
+async def test_a_failed_window_probe_keeps_the_group_checkpoint(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _search_window(world, monkeypatch, 300)
+    before = _checkpoint(world, "Support")
+    for ticket_id in range(100, 500):
+        world.zammad.add_ticket(ticket_id, 1, day=4, minute=2 * ticket_id)
+    world.zammad.fail_search_at_offset = 299
+
+    await world.sync()
+    assert _checkpoint(world, "Support") == before
+
+    world.zammad.fail_search_at_offset = None
+    await world.sync()
+    assert all(str(t) in world.db.external_ids() for t in range(100, 500))
+    assert _checkpoint(world, "Support") > before
+
+
+async def test_a_ticket_that_never_reads_holds_the_checkpoint_for_three_syncs_then_lets_it_move(world: World) -> None:
+    before = _checkpoint(world, "Support")
+    world.zammad.add_ticket(12, 1, day=9, attachments=1)
+    world.zammad.add_ticket(13, 1, day=10)
+    world.zammad.fail_articles_for.add(12)
+
+    await world.sync()
+    await world.sync()
+    assert _checkpoint(world, "Support") == before
+    assert _group_point(world, "Support")["read_failure_counts"] == [2]
+
+    await world.sync()
+    assert "13" in world.db.external_ids() and "12" not in world.db.external_ids()
+    assert _checkpoint(world, "Support") > epoch_ms(10)
+    assert _group_point(world, "Support")["read_failure_versions"] == []
+
+    # An edit in Zammad brings it back into the search, with a fresh count.
+    world.zammad.fail_articles_for.clear()
+    world.zammad.move_ticket(12, 1, day=20)
+    await world.sync()
+    assert {"12", "12_1_1"} <= world.db.external_ids()
+
+
+async def test_a_failed_ticket_in_another_window_does_not_stop_a_burst_read_by_id(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _search_window(world, monkeypatch, 60)
+    world.zammad.add_ticket(12, 1, day=3)
+    world.zammad.fail_articles_for.add(12)
+    for ticket_id in range(1000, 1150):
+        world.zammad.add_ticket(ticket_id, 1, day=5)
+
+    await world.save_filters({})
+
+    assert all(str(t) in world.db.external_ids() for t in range(1000, 1150))
+    assert "12" not in world.db.external_ids()
+
+
+async def test_a_ticket_moved_into_a_group_that_is_not_synced_is_removed(world: World) -> None:
+    world.zammad.groups[3] = "Archive"
+    world.zammad.inactive.add(3)
+    world.zammad.move_ticket(10, 3, day=5)
+
+    await world.sync()
+
+    assert "10" not in world.db.external_ids()
+    assert "10" in world.db.deleted
+    assert not any(r.external_record_group_id == "group_3" for r in world.db.records.values())
+
+
+async def test_an_unchanged_group_is_checked_with_one_count_and_no_listing(world: World) -> None:
+    world.zammad.search_queries.clear()
+    world.zammad.count_calls.clear()
+
+    await world.sync()
+
+    assert len(world.zammad.count_calls) == 2  # one per group holding tickets
+    assert not any(" AND id:[" in q for q in world.zammad.search_queries)
+
+
+async def test_a_deleted_ticket_is_found_by_its_short_count_and_only_its_chunk_is_listed(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(zammad_connector, "TICKET_ID_COUNT_CHUNK", 2)
+    world.zammad.add_ticket(12, 1, day=4)
+    world.zammad.add_ticket(13, 1, day=4)
+    await world.sync()
+    world.zammad.delete_ticket(13)
+    world.zammad.search_queries.clear()
+
+    await world.sync()
+
+    assert "13" not in world.db.external_ids() and {"10", "11", "12"} <= world.db.external_ids()
+    listings = [q for q in world.zammad.search_queries if " AND id:[" in q]
+    assert listings and all("id:[12 TO 13]" in q for q in listings)
+
+
+async def test_a_zammad_that_cannot_count_still_finds_deletions_and_is_asked_once_per_sync(world: World) -> None:
+    world.zammad.supports_count = False
+    world.zammad.count_calls.clear()
+    world.zammad.delete_ticket(11)
+
+    await world.sync()
+
+    assert world.db.external_ids() == {"10", "20"}
+    assert len(world.zammad.count_calls) == 1

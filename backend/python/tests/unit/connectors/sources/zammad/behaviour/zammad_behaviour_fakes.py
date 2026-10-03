@@ -51,6 +51,11 @@ class FakeZammad:
     ticket_read_status: dict[int, int] = field(default_factory=dict)
     search_queries: list[str] = field(default_factory=list)
     ticket_reads: list[int] = field(default_factory=list)
+    # Groups Zammad lists as inactive.
+    inactive: set[int] = field(default_factory=set)
+    # Zammad before 6.5 ignores only_total_count and answers with a page of tickets.
+    supports_count: bool = True
+    count_calls: list[tuple[str, list[int]]] = field(default_factory=list)
 
     def add_ticket(self, ticket_id: int, group_id: int, *, day: int = 0, minute: int = 0,
                    attachments: int = 0) -> None:
@@ -75,7 +80,8 @@ class FakeZammad:
     async def list_groups(self, page: int | None = None, per_page: int | None = None) -> ZammadResponse:
         if self.fail_list_groups:
             return ZammadResponse(success=False, message="list_groups failed", status_code=502)
-        rows = [{"id": gid, "name": name, "active": True} for gid, name in sorted(self.groups.items())]
+        rows = [{"id": gid, "name": name, "active": gid not in self.inactive}
+                for gid, name in sorted(self.groups.items())]
         start = ((page or 1) - 1) * (per_page or 100)
         return ZammadResponse(success=True, data=rows[start:start + (per_page or 100)])
 
@@ -88,6 +94,22 @@ class FakeZammad:
             return ZammadResponse(success=False, message="search failed", status_code=500)
         if (offset or 0) + (limit or 10) > self.result_window:
             return ZammadResponse(success=False, message="search failed", status_code=400)
+        hits = [self._public(t) for t in self._matching(query)]
+        start = offset or 0
+        return ZammadResponse(success=True, data=hits[start:start + (limit or 10)])
+
+    async def count_tickets(self, query: str, ids: list[int] | None = None) -> ZammadResponse:
+        self.count_calls.append((query, list(ids or [])))
+        if self.fail_search(query):
+            return ZammadResponse(success=False, message="count failed", status_code=500)
+        if not self.supports_count:
+            return ZammadResponse(success=True, data=None, status_code=200)
+        wanted = None if ids is None else set(ids)
+        total = sum(1 for t in self._matching(query) if wanted is None or t["id"] in wanted)
+        return ZammadResponse(success=True, data={"total_count": total}, status_code=200)
+
+    def _matching(self, query: str) -> list[dict[str, Any]]:
+        """Indexed tickets a search query matches, in the index's order."""
         group = int(re.search(r"group_id:(\d+)", query).group(1))
         id_range = re.search(r"\bid:\[(\d+) TO (\d+|\*)\]", query)
         bounds = {
@@ -105,14 +127,12 @@ class FakeZammad:
                     return False
             return True
 
-        hits = [
-            self._public(t) for tid, t in sorted(self.tickets.items(), reverse=self.newest_first)
+        return [
+            t for tid, t in sorted(self.tickets.items(), reverse=self.newest_first)
             if t["group_id"] == group and tid not in self.unindexed and matches(t)
             and (id_range is None or (int(id_range.group(1)) <= tid
                                       and (id_range.group(2) == "*" or tid <= int(id_range.group(2)))))
         ]
-        start = offset or 0
-        return ZammadResponse(success=True, data=hits[start:start + (limit or 10)])
 
     async def get_ticket(self, id: int, expand: bool | None = None) -> ZammadResponse:  # noqa: A002 - mirrors the real signature
         self.ticket_reads.append(id)

@@ -1,7 +1,7 @@
 """Zammad Connector Implementation"""
 import base64
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import defaultdict
 from datetime import datetime, timezone
 from logging import Logger
@@ -112,8 +112,16 @@ BATCH_SIZE_KB_ANSWERS = 50
 ATTACHMENT_ID_PARTS_COUNT = 3
 KB_ANSWER_ATTACHMENT_PARTS_COUNT = 2
 TICKET_ID_LISTING_PAGE_SIZE = 50
+# Held tickets counted per call. Elasticsearch's _count is exact at any size; a chunk
+# that comes up short is listed, so bigger means fewer counts but longer listings.
+TICKET_ID_COUNT_CHUNK = 1_000
 # Elasticsearch refuses a search whose offset + limit passes index.max_result_window.
 SEARCH_RESULT_WINDOW = 10_000
+# Syncs in a row one version of a ticket may fail to read before the group checkpoint
+# moves past it. Scheduled syncs run hourly by default, so three spans a few hours:
+# long enough for an outage or rate limit to clear, short enough that one ticket
+# Zammad always refuses doesn't make every sync re-read a growing backlog.
+MAX_TICKET_READ_ATTEMPTS = 3
 # Narrowest updated_at window a group's ticket search is split into (queries use whole seconds).
 MIN_SPLIT_WINDOW_MS = 60_000
 GRAPH_RECORDS_PAGE_SIZE = 500
@@ -132,6 +140,32 @@ class BurstResume:
     low: int
     high: int
     next_id: int
+
+
+@dataclass
+class TicketReadFailures:
+    """Tickets of one group that failed to read, and for how many syncs in a row.
+
+    A version is ``"<ticket id>@<updated_at>"``, so a ticket edited in Zammad
+    starts a fresh count. ``failing`` holds the checkpoint back; a version that
+    reached MAX_TICKET_READ_ATTEMPTS is ``given_up`` and no longer does.
+    """
+
+    earlier: dict[str, int] = field(default_factory=dict)
+    failing: dict[str, str] = field(default_factory=dict)
+    given_up: dict[str, int] = field(default_factory=dict)
+    read: set[str] = field(default_factory=set)
+
+    def counts_to_keep(self, *, listing_complete: bool) -> dict[str, int]:
+        # After a complete read the checkpoint has passed every version not failing now.
+        counts = {} if listing_complete else {
+            version: count for version, count in self.earlier.items() if version not in self.read
+        }
+        for version in self.failing.values():
+            counts[version] = self.earlier.get(version, 0) + 1
+        if not listing_complete:
+            counts.update(dict.fromkeys(self.given_up, MAX_TICKET_READ_ATTEMPTS))
+        return counts
 
 
 class ZammadReadError(Exception):
@@ -305,6 +339,10 @@ class ZammadConnector(BaseConnector):
         # Ids of groups the applied group filter leaves out; None until a complete
         # group listing has been read, so a failed listing removes nothing.
         self._filter_excluded_group_ids: set[str] | None = None
+        # Ids of the groups synced as RecordGroups, under the same rule.
+        self._synced_group_ids: set[str] | None = None
+        # Zammad before 6.5 has no only_total_count; then reconciliation lists every held ticket.
+        self._ticket_count_unsupported = False
 
     async def init(self) -> bool:
         """
@@ -452,6 +490,7 @@ class ZammadConnector(BaseConnector):
             # Store filters for use in sync methods
             self.sync_filters = sync_filters
             self.indexing_filters = indexing_filters
+            self._ticket_count_unsupported = False
 
             # Step 1: Fetch and sync users
             self.logger.info("👤 Step 1: Syncing users...")
@@ -655,7 +694,9 @@ class ZammadConnector(BaseConnector):
         page = 1
         per_page = 100
         self._filter_excluded_group_ids = None
+        self._synced_group_ids = None
         excluded_group_ids: set[str] = set()
+        synced_group_ids: set[str] = set()
         listing_complete = True
 
         while True:
@@ -722,6 +763,7 @@ class ZammadConnector(BaseConnector):
                 ]
 
                 record_groups.append((record_group, permissions))
+                synced_group_ids.add(str(group_id))
 
                 # 2. Create AppUserGroup for membership tracking
                 user_group = AppUserGroup(
@@ -767,6 +809,7 @@ class ZammadConnector(BaseConnector):
 
         if listing_complete:
             self._filter_excluded_group_ids = excluded_group_ids
+            self._synced_group_ids = synced_group_ids
         self.logger.info(
             f"📥 Fetched {len(user_groups)} groups, "
             f"created {len(record_groups)} RecordGroups and {len(user_groups)} UserGroups"
@@ -900,6 +943,7 @@ class ZammadConnector(BaseConnector):
                 # Read group-level sync point (using group name as key)
                 last_sync_time = await self._get_group_sync_checkpoint(group_name)
                 burst_resume = await self._get_burst_resume(group_name)
+                failures = TicketReadFailures(earlier=await self._get_read_failures(group_name))
 
                 if last_sync_time:
                     self.logger.info(f"🔄 Incremental sync for group {group_name} from {last_sync_time}")
@@ -918,6 +962,7 @@ class ZammadConnector(BaseConnector):
                         group_name=group_name,
                         last_sync_time=last_sync_time,
                         burst_resume=burst_resume,
+                        failures=failures,
                     ):
                         if not batch_records:
                             continue
@@ -953,6 +998,12 @@ class ZammadConnector(BaseConnector):
                         await self._update_group_sync_checkpoint(group_name, e.read_until)
                     if e.burst is not None and e.burst != burst_resume:
                         await self._save_burst_resume(group_name, e.burst)
+
+                if failures.given_up:
+                    max_ticket_updated_at = max(max_ticket_updated_at or 0, *failures.given_up.values())
+                kept_failures = failures.counts_to_keep(listing_complete=listing_complete)
+                if kept_failures != failures.earlier:
+                    await self._save_read_failures(group_name, kept_failures)
 
                 # Search results are not ordered by updated_at, so the checkpoint
                 # moves only once every page and every ticket has been read.
@@ -1035,6 +1086,7 @@ class ZammadConnector(BaseConnector):
         group_name: str,
         last_sync_time: Optional[int],
         burst_resume: BurstResume | None = None,
+        failures: TicketReadFailures | None = None,
     ) -> AsyncGenerator[List[Tuple[Record, List[Permission]]], None]:
         """
         Fetch tickets for a specific group with pagination and incremental sync support.
@@ -1045,12 +1097,14 @@ class ZammadConnector(BaseConnector):
         many tickets) is read in ticket-id ranges instead. A failed page or
         ticket raises ``ZammadReadError`` carrying ``read_until``: every ticket
         updated before it has been read, and ``burst``: how far a dense window
-        was read by id, so the next sync carries on from there.
+        was read by id, so the next sync carries on from there. A ticket that
+        has failed on MAX_TICKET_READ_ATTEMPTS syncs no longer holds it back.
 
         Args:
             group_id: Zammad group ID to fetch tickets for
             group_name: Group name for logging
             last_sync_time: Last sync timestamp (epoch ms) or None for full sync
+            failures: The group's ticket read failures, updated in place
 
         Yields:
             Batches of (Record, permissions) tuples (includes TicketRecords and FileRecords)
@@ -1067,7 +1121,7 @@ class ZammadConnector(BaseConnector):
         read_until = last_sync_time
         # Ticket id -> updated_at already written this sync; a split window reads some tickets twice.
         written: dict[str, Any] = {}
-        failed_tickets: set[str] = set()
+        failures = failures if failures is not None else TicketReadFailures()
 
         while windows:
             low, high = windows.pop(0)
@@ -1093,9 +1147,13 @@ class ZammadConnector(BaseConnector):
                     tickets_data = [tickets_data] if tickets_data else []
                 if not tickets_data:
                     break
+                if offset == 0 and len(tickets_data) >= limit:
+                    overflowed = await self._fills_search_window(datasource, query, group_name, read_until)
+                    if overflowed:
+                        break
 
                 self.logger.debug(f"Fetched {len(tickets_data)} tickets for group '{group_name}' from offset {offset}")
-                async for batch_records in self._ticket_batches(tickets_data, written, failed_tickets, batch_size):
+                async for batch_records in self._ticket_batches(tickets_data, written, failures, group_name, batch_size):
                     yield batch_records
                 if len(tickets_data) < limit:
                     break
@@ -1108,38 +1166,68 @@ class ZammadConnector(BaseConnector):
                     continue
                 async for batch_records in self._read_dense_window(
                     datasource, query, group_name, self._window_bounds(low, high), read_until,
-                    resume_from.get((low, high), 0), written, failed_tickets, limit, batch_size,
+                    resume_from.get((low, high), 0), written, failures, limit, batch_size,
                 ):
                     yield batch_records
-            if high is not None and not failed_tickets:
+            if high is not None and not failures.failing:
                 read_until = high
 
-        if failed_tickets:
+        if failures.failing:
             raise ZammadReadError(
-                f"tickets {', '.join(sorted(failed_tickets))} in group '{group_name}' could not be read",
+                f"tickets {', '.join(sorted(failures.failing))} in group '{group_name}' could not be read",
                 read_until=read_until,
             )
+
+    async def _fills_search_window(
+        self, datasource: ZammadDataSource, query: str, group_name: str, read_until: int | None,
+    ) -> bool:
+        """Whether ``query`` matches more tickets than one search can page through.
+
+        One read of the window's last slot answers it, instead of paging up to it.
+        """
+        probe = await datasource.search_tickets(query=query, limit=1, offset=SEARCH_RESULT_WINDOW - 1)
+        if not probe.success:
+            raise ZammadReadError(
+                f"ticket search for group '{group_name}' failed probing the result window: {probe.message}",
+                read_until=read_until,
+            )
+        return bool(probe.data)
 
     async def _ticket_batches(
         self,
         tickets_data: list[dict[str, Any]],
         written: dict[str, Any],
-        failed_tickets: set[str],
+        failures: TicketReadFailures,
+        group_name: str,
         batch_size: int,
     ) -> AsyncGenerator[list[tuple[Record, list[Permission]]], None]:
-        """Records for one page of tickets, in batches. A ticket that fails joins ``failed_tickets``."""
+        """Records for one page of tickets, in batches; a ticket that fails is noted in ``failures``."""
         batch_records: list[tuple[Record, list[Permission]]] = []
         for ticket_data in tickets_data:
             ticket_key = str(ticket_data.get("id", "unknown"))
-            if ticket_key in written and written[ticket_key] == ticket_data.get("updated_at"):
+            updated_at = ticket_data.get("updated_at")
+            if ticket_key in written and written[ticket_key] == updated_at:
                 continue
+            version = f"{ticket_key}@{updated_at}"
             try:
                 batch_records.extend(await self._ticket_records(ticket_data))
-                written[ticket_key] = ticket_data.get("updated_at")
-                failed_tickets.discard(ticket_key)
+                written[ticket_key] = updated_at
+                failures.failing.pop(ticket_key, None)
+                failures.given_up.pop(version, None)
+                failures.read.add(version)
             except Exception as e:
-                failed_tickets.add(ticket_key)
-                self.logger.error(f"❌ Error processing ticket {ticket_key}: {e}", exc_info=True)
+                if failures.earlier.get(version, 0) + 1 >= MAX_TICKET_READ_ATTEMPTS:
+                    failures.failing.pop(ticket_key, None)
+                    failures.given_up[version] = self._parse_zammad_datetime(updated_at or "")
+                    self.logger.error(
+                        f"❌ Ticket {ticket_key} in group '{group_name}' could not be read on "
+                        f"{MAX_TICKET_READ_ATTEMPTS} syncs in a row, so the sync moves past it "
+                        f"and it is read again when it next changes in Zammad. Last error: {e}",
+                        exc_info=True,
+                    )
+                else:
+                    failures.failing[ticket_key] = version
+                    self.logger.error(f"❌ Error processing ticket {ticket_key}: {e}", exc_info=True)
                 continue
             if len(batch_records) >= batch_size:
                 yield batch_records
@@ -1156,7 +1244,7 @@ class ZammadConnector(BaseConnector):
         read_until: int | None,
         next_id: int,
         written: dict[str, Any],
-        failed_tickets: set[str],
+        failures: TicketReadFailures,
         limit: int,
         batch_size: int,
     ) -> AsyncGenerator[list[tuple[Record, list[Permission]]], None]:
@@ -1186,18 +1274,37 @@ class ZammadConnector(BaseConnector):
                 return
             ranged = f"{query} AND id:[{next_id} TO {next_id + span - 1}]"
             offset = 0
+            in_range: set[str] = set()
             while True:
                 response = await datasource.search_tickets(query=ranged, limit=limit, offset=offset)
                 if not response.success or not isinstance(response.data, list):
                     raise stopped("a ticket search failed")
-                async for batch_records in self._ticket_batches(response.data, written, failed_tickets, batch_size):
+                in_range.update(str(t.get("id", "unknown")) for t in response.data)
+                async for batch_records in self._ticket_batches(
+                    response.data, written, failures, group_name, batch_size,
+                ):
                     yield batch_records
                 if len(response.data) < limit:
                     break
                 offset += limit
-            if failed_tickets:
-                raise stopped(f"tickets {', '.join(sorted(failed_tickets))} could not be read")
+            # Only this range's tickets hold it back; one from another window has its own.
+            failed_here = in_range & failures.failing.keys()
+            if failed_here:
+                raise stopped(f"tickets {', '.join(sorted(failed_here))} could not be read")
             next_id += span
+
+    async def _get_read_failures(self, group_name: str) -> dict[str, int]:
+        data = await self.tickets_sync_point.read_sync_point(group_name) or {}
+        versions = data.get("read_failure_versions") or []
+        counts = data.get("read_failure_counts") or []
+        return {str(v): int(c) for v, c in zip(versions, counts)}
+
+    async def _save_read_failures(self, group_name: str, counts: dict[str, int]) -> None:
+        # Two flat lists: a Neo4j property can't hold a map.
+        await self.tickets_sync_point.update_sync_point(group_name, {
+            "read_failure_versions": list(counts),
+            "read_failure_counts": list(counts.values()),
+        })
 
     async def _get_burst_resume(self, group_name: str) -> BurstResume | None:
         data = await self.tickets_sync_point.read_sync_point(group_name) or {}
@@ -1286,29 +1393,56 @@ class ZammadConnector(BaseConnector):
     async def _unlisted_ticket_ids(self, group_id: int, group_name: str, held: list[str]) -> list[str]:
         """The held tickets Zammad's search does not return for this group.
 
-        The search is asked in id ranges around the held tickets, each narrow
-        enough that its pages stay inside Elasticsearch's result window. A range
-        that fails is left out of the answer, so its tickets are kept this sync.
+        Held tickets are first counted in chunks, among their own ids: a chunk
+        whose count matches is fully listed, which is the usual case and costs
+        one call. Only a chunk that comes up short (or a Zammad that can't
+        count) is listed, in id ranges around its tickets, each narrow enough
+        that its pages stay inside Elasticsearch's result window. A range that
+        fails is left out of the answer, so its tickets are kept this sync.
         """
         query = self._build_ticket_search_query(group_id, last_sync_time=None)
         # A range of this many ids holds at most this many tickets, so offset + limit never passes the window.
         span = SEARCH_RESULT_WINDOW - TICKET_ID_LISTING_PAGE_SIZE
         held_ids = sorted(int(t) for t in held)
         unlisted: list[str] = []
-        for low, high in self._id_ranges(held_ids, span):
-            listed = await self._list_ticket_ids_in_range(query, low, high)
-            if listed is None:
-                self.logger.warning(
-                    f"Could not list tickets {low}-{high} of group '{group_name}'; keeping them this sync"
-                )
+        for start in range(0, len(held_ids), TICKET_ID_COUNT_CHUNK):
+            chunk = held_ids[start:start + TICKET_ID_COUNT_CHUNK]
+            if await self._search_returns_all(query, chunk):
                 continue
-            unlisted.extend(str(t) for t in held_ids if low <= t <= high and str(t) not in listed)
+            for low, high in self._id_ranges(chunk, span):
+                listed = await self._list_ticket_ids_in_range(query, low, high)
+                if listed is None:
+                    self.logger.warning(
+                        f"Could not list tickets {low}-{high} of group '{group_name}'; keeping them this sync"
+                    )
+                    continue
+                unlisted.extend(str(t) for t in chunk if low <= t <= high and str(t) not in listed)
         return unlisted
 
+    async def _search_returns_all(self, query: str, ticket_ids: list[int]) -> bool:
+        """Whether Zammad's search matches every one of ``ticket_ids`` for ``query``, by one count.
+
+        The count is taken among these ids only, so it equals their number
+        exactly when none is missing. False when it is lower, or when no count
+        could be had (a failed call, or a Zammad before 6.5): the caller lists.
+        """
+        if self._ticket_count_unsupported:
+            return False
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.count_tickets(query=query, ids=ticket_ids)
+        if not response.success:
+            return False
+        total = response.data.get("total_count") if isinstance(response.data, dict) else None
+        if not isinstance(total, int) or total > len(ticket_ids):
+            # No count, or one the ids didn't narrow: listing is the only safe answer from here on.
+            self._ticket_count_unsupported = True
+            return False
+        return total == len(ticket_ids)
+
     def _passes_date_filters(self, ticket: dict[str, Any]) -> bool:
-        for key, field in ((SyncFilterKey.MODIFIED, "updated_at"), (SyncFilterKey.CREATED, "created_at")):
+        for key, field_name in ((SyncFilterKey.MODIFIED, "updated_at"), (SyncFilterKey.CREATED, "created_at")):
             after, before = self._date_filter_bounds(key)
-            value = self._parse_zammad_datetime(ticket.get(field) or "")
+            value = self._parse_zammad_datetime(ticket.get(field_name) or "")
             if not value:
                 continue
             if (after and value < after) or (before and value > before):
@@ -1336,8 +1470,10 @@ class ZammadConnector(BaseConnector):
         A search listing can miss a ticket that still exists (the index lags
         or is being rebuilt), so the ticket is read back first. It is removed
         only when Zammad says it is gone or an applied filter leaves it out; a
-        ticket now in another synced group is written there. Returns False when
-        a read or a delete failed and the next sync must try again.
+        ticket now in another synced group is written there. One now in a group
+        that isn't synced (inactive or nameless) has no RecordGroup to sit in
+        and no sync that would reach it again, so it is removed too. Returns
+        False when a read or a delete failed and the next sync must try again.
         """
         read, ticket = await self._read_back_ticket(ticket_id)
         if not read:
@@ -1347,8 +1483,15 @@ class ZammadConnector(BaseConnector):
         if ticket is None or not self._is_group_allowed_by_filter(str(ticket["group_id"])) \
                 or not self._passes_date_filters(ticket):
             return await self._delete_ticket_records(record_ids, reason)
-        if f"group_{ticket['group_id']}" != held_in_group:
-            await self.data_entities_processor.on_new_records(await self._ticket_records(ticket))
+        if f"group_{ticket['group_id']}" == held_in_group:
+            return True
+        if self._synced_group_ids is None:
+            return False
+        if str(ticket["group_id"]) not in self._synced_group_ids:
+            return await self._delete_ticket_records(
+                record_ids, f"{reason}; it is now in group {ticket['group_id']}, which is not synced"
+            )
+        await self.data_entities_processor.on_new_records(await self._ticket_records(ticket))
         return True
 
     async def _delete_ticket_records(self, record_ids: list[str], reason: str) -> bool:
@@ -1369,8 +1512,8 @@ class ZammadConnector(BaseConnector):
         """Remove tickets deleted in Zammad, or now outside the sync filters, from a synced group.
 
         The incremental search only returns tickets updated since the checkpoint,
-        so a deleted ticket never appears in it. This compares the graph with an
-        id listing of the group instead. It reads everything afresh each sync,
+        so a deleted ticket never appears in it. This checks the graph's tickets
+        against the group's search instead (see ``_unlisted_ticket_ids``). It reads everything afresh each sync,
         so a failed read or delete is simply repeated next time.
         """
         external_group_id = f"group_{group_id}"
