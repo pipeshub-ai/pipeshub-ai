@@ -46,6 +46,9 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.core.base.data_processor import (
+    data_source_entities_processor as processor_module,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -706,6 +709,26 @@ async def test_a_full_listing_removes_a_trashed_record_the_source_no_longer_has(
     assert await world.graph.get_document(world.ids["trashed"], records) is None
     for name in ("live", "trashed_shared"):
         assert await world.graph.get_document(world.ids[name], records) is not None, name
+
+
+async def test_with_the_trash_on_a_full_listing_leaves_a_trashed_record_for_the_purge(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Passing an already-trashed record on must not count as a failed removal,
+    or the full sync would report failure and retry it every run."""
+    monkeypatch.setattr(processor_module, "is_soft_delete_enabled", AsyncMock(return_value=True))
+    processor = _processor(world)
+    connector = SimpleNamespace(
+        data_entities_processor=processor, connector_id=world.connector_id, logger=logger
+    )
+    listed = {world.ext(name) for name in (*LIVE_CONNECTOR, *TRASHED_CONNECTOR) if name != "trashed"}
+    before = await world.graph.get_document(world.ids["trashed"], CollectionNames.RECORDS.value)
+
+    assert await NextcloudConnector._remove_records_not_listed(connector, listed) is True
+
+    after = await world.graph.get_document(world.ids["trashed"], CollectionNames.RECORDS.value)
+    assert after is not None and after["isDeleted"] is True
+    assert (after["deleteSource"], after["deleteBatchId"]) == (before["deleteSource"], before["deleteBatchId"])
 
 
 async def test_a_record_group_listing_finds_the_trash_only_when_asked(world: _World) -> None:
