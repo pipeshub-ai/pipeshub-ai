@@ -287,6 +287,7 @@ dependencies = [
     "python-dotenv==1.2.2",
     "pyyaml>=6.0",
     "redshift_connector==2.1.8",
+    "regex>=2024.11.6",
     # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
     # Pre-shipping these means offline sandbox hosts don't have to hit PyPI
     # when the agent declares packages=["reportlab"] / ["fpdf2"].
@@ -302,7 +303,7 @@ dependencies = [
     "requests-toolbelt==1.0.0",
     "requests==2.33.0",
     "selectolax>=0.3.21",
-    "sentence-transformers==3.4.1",
+    "sentence-transformers==5.6.0",
     "slack-sdk==3.27.0",
     "smbprotocol==1.17.0",
     "talon==1.4.4",

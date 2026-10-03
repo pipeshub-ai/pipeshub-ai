@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from app.config.constants.arangodb import Connectors
 from app.models.blocks import BlockType
 
 
@@ -1517,7 +1518,10 @@ async def test_delete_chat_attachment_early_and_full():
 
 
 
-    gp.get_document.return_value = {"orgId": "o1"}
+    rr.state.user = {"orgId": "o1", "userId": "u1"}
+    gp.get_document.return_value = {"orgId": "o1", "connectorName": Connectors.ATTACHMENTS.value}
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+    gp.get_edge = AsyncMock(return_value={"role": "OWNER"})
 
 
 

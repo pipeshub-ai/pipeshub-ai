@@ -255,6 +255,7 @@ class FakeRecordsDb:
     def __init__(self, org_id: str = "org-1") -> None:
         self.org_id = org_id
         self.records: dict[str, Any] = {}
+        self.unreadable_file_records: set[str] = set()
         self.record_permissions: dict[str, list[Any]] = {}
         self.record_batches: list[list[Any]] = []
         self.record_groups: dict[str, Any] = {}
@@ -316,9 +317,15 @@ class FakeRecordsDb:
         return children
 
     async def get_file_record_by_id(self, record_id: str) -> Optional[FileRecord]:
-        """A ``FileRecord`` rebuilt from the file and record nodes; None when no file node exists."""
+        """A ``FileRecord`` rebuilt from the file and record nodes; None when no file node exists.
+
+        A read that fails raises ``GraphQueryError``, as both providers do.
+        """
+        from app.exceptions.graph_db_exceptions import GraphQueryError
         from app.models.entities import FileRecord
 
+        if record_id in self.unreadable_file_records:
+            raise GraphQueryError(f"database unavailable for file record {record_id}")
         stored = next((r for r in self.records.values() if r.id == record_id), None)
         if not isinstance(stored, FileRecord):
             return None

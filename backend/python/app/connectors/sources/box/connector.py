@@ -583,11 +583,9 @@ class BoxConnector(BaseConnector):
 
     async def _stored_path(self, existing_record: Record) -> str | None:
         """The stored path of an item, which lives on its file record, not the base Record a lookup returns."""
+        # A read that fails raises rather than answering None, which would erase the item's place in its owner's tree.
         stored = await self.data_entities_processor.get_file_record_by_id(existing_record.id)
-        if stored is None:
-            # Unreadable, not empty: writing None here would erase the item's place in its owner's tree.
-            raise RuntimeError(f"Could not read the stored file record {existing_record.id}")
-        return stored.path
+        return stored.path if stored is not None else None
 
     async def _get_permissions(self, item_id: str, item_type: str) -> list[Permission] | None:
         """

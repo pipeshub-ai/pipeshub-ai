@@ -13,6 +13,7 @@ import * as appConfigModule from '../../../../src/modules/tokens_manager/config/
 import { createSamlRouter } from '../../../../src/modules/auth/routes/saml.routes';
 import { createConnectorRouter } from '../../../../src/modules/tokens_manager/routes/connectors.routes';
 import { createMailServiceRouter } from '../../../../src/modules/mail/routes/mail.routes';
+import { MailSenderService } from '../../../../src/modules/mail/services/mail.sender.service';
 import { createStorageRouter } from '../../../../src/modules/storage/routes/storage.routes';
 import { createSemanticSearchRouter } from '../../../../src/modules/enterprise_search/routes/es.routes';
 import { createUserRouter } from '../../../../src/modules/user_management/routes/users.routes';
@@ -79,6 +80,7 @@ function buildContainer(): Container {
   );
   for (const id of [
     'SessionService',
+    'SamlDesktopHandoffService',
     'IamService',
     'MailService',
     'AuthService',
@@ -99,6 +101,9 @@ function buildContainer(): Container {
   bind('RecordsEventProducer', events);
   bind('KeyValueStoreService', { get: sinon.stub().resolves(null) });
   bind('StorageController', { watchStorageType: noop });
+  container
+    .bind(MailSenderService)
+    .toConstantValue({} as unknown as MailSenderService);
   return container;
 }
 

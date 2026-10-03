@@ -43,7 +43,6 @@ from app.api.routes.toolsets import router as toolsets_router
 # imports these symbols from edition_config (circular). Bind first so a
 # mid-load re-entry finds them on this partially initialized module.
 from app.connectors.api.connector_resolvers import (
-    assert_hard_delete_record_org,
     authorize_connector_stats,
     build_graph_data_store,
     default_connector_scope,

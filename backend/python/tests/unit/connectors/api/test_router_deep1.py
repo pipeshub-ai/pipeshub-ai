@@ -1184,7 +1184,7 @@ class TestDownloadFileDeepPaths:
 
         signed_url_handler = MagicMock()
         signed_url_handler.validate_token = MagicMock(return_value=SimpleNamespace(
-            user_id="u1", record_id="rec-1",
+            user_id="u1", record_id="rec-1", additional_claims={"org_id": "org-1"},
         ))
 
         req = MagicMock()

@@ -1061,11 +1061,14 @@ class TestProcessS3ObjectAdvanced:
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         existing = MagicMock()
         existing.id = "moved-id"
+        existing.external_record_group_id = "mybucket"
         existing.external_revision_id = "mybucket/abc123"
         existing.external_record_id = "mybucket/old/path/file.txt"
         existing.version = 1
         existing.source_created_at = 500
         connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
+        # The old key is gone from the bucket, so equal content at the new key is a move.
+        connector.data_source = MagicMock(list_objects_v2=AsyncMock(return_value=MagicMock(success=True, data={"KeyCount": 0})))
         connector.data_entities_processor.delete_parent_child_edge_to_record = AsyncMock()
         connector._create_s3_permissions = AsyncMock(return_value=[])
         now = datetime.now(timezone.utc)

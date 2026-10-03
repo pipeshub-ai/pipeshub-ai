@@ -235,6 +235,23 @@ class TestSharingAndPermissions:
         assert db.records["file-1"].path == "/All Files/Team/plan.pdf"
         assert checkpoints.cursor() is None
 
+    async def test_a_stored_shared_file_with_no_file_node_does_not_hold_back_the_cursor(
+        self, box_api, db, checkpoints
+    ) -> None:
+        enterprise(box_api, db)
+        box_api.add_folder("fold-t", "Team", ALICE)
+        box_api.add_file("file-1", "plan.pdf", ALICE, parent="fold-t")
+        box_api.collaborate("fold-t", BOB)
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        checkpoints.sync_points.clear()
+        db.missing_file_nodes.add(db.records["file-1"].id)
+
+        await connector.run_sync()
+
+        assert db.records["file-1"].external_record_group_id == ALICE
+        assert checkpoints.cursor() is not None
+
     @pytest.mark.parametrize("fresh_connector", [False, True])
     async def test_a_partial_user_list_does_not_move_a_shared_folder_out_of_its_owners_drive(
         self, box_api, db, checkpoints, fresh_connector

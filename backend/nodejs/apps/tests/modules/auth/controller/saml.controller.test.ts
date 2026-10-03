@@ -201,11 +201,12 @@ describe('SamlController', () => {
         exec: sinon.stub().resolves({ orgId: 'o1', isDeleted: false }),
       };
       sinon.stub(OrgAuthConfig, 'findOne').returns(mockQuery);
-      sinon.stub(passport, 'authenticate').returns(sinon.stub());
+      const authenticate = sinon.stub(passport, 'authenticate').returns(sinon.stub());
 
       await controller.signInViaSAML(req, res, next);
 
-      expect(passport.authenticate.calledOnce).to.be.true;
+      expect(authenticate.calledOnce).to.be.true;
+      expect(authenticate.firstCall.args[1]).to.include({ session: false });
     });
 
     it('should call next(NotFoundError) when certificate is missing in credentials', async () => {

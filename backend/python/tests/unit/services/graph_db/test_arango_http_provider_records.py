@@ -11,6 +11,7 @@ import pytest
 from app.config.constants.arangodb import CollectionNames
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from app.services.graph_db.interface.graph_db_provider import FolderChangedDuringDelete
 
 
 # ---------------------------------------------------------------------------
@@ -694,8 +695,22 @@ class TestGetFileRecordById:
 
     async def test_exception(self, connected_provider):
         connected_provider.http_client.get_document.side_effect = Exception("err")
-        result = await connected_provider.get_file_record_by_id("f1")
-        assert result is None
+        with pytest.raises(GraphQueryError, match="f1"):
+            await connected_provider.get_file_record_by_id("f1")
+
+    async def test_asks_the_client_to_raise_rather_than_answer_none(self, connected_provider) -> None:
+        # The client answers None for a 404, a 503 and a dead connection alike unless told to raise.
+        connected_provider.http_client.get_document.side_effect = [None, None]
+        await connected_provider.get_file_record_by_id("f1")
+        for call in connected_provider.http_client.get_document.await_args_list:
+            assert call.kwargs.get("raise_on_error") is True
+
+    async def test_a_server_error_from_the_client_raises(self, connected_provider) -> None:
+        connected_provider.http_client.get_document.side_effect = GraphQueryError(
+            "Could not read files/f1: ArangoDB answered 503"
+        )
+        with pytest.raises(GraphQueryError):
+            await connected_provider.get_file_record_by_id("f1")
 
 
 # ===================================================================
@@ -1315,7 +1330,7 @@ class TestGetDepartments:
 
 class TestUpdateQueuedDuplicatesStatus:
     async def test_no_duplicates(self, connected_provider):
-        ref_record = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100}
+        ref_record = {"_key": "r1", "orgId": "org-1", "md5Checksum": "abc", "sizeInBytes": 100}
         connected_provider.http_client.execute_aql.side_effect = [
             [ref_record],  # get reference record
             [],            # no queued duplicates
@@ -1341,7 +1356,7 @@ class TestUpdateQueuedDuplicatesStatus:
         assert result == 0
 
     async def test_with_duplicates_completed(self, connected_provider):
-        ref = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100}
+        ref = {"_key": "r1", "orgId": "org-1", "md5Checksum": "abc", "sizeInBytes": 100}
         dup = {"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}
         connected_provider.http_client.execute_aql.side_effect = [
             [ref],   # reference
@@ -1354,7 +1369,7 @@ class TestUpdateQueuedDuplicatesStatus:
         assert result == 1
 
     async def test_with_duplicates_empty_status(self, connected_provider):
-        ref = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100}
+        ref = {"_key": "r1", "orgId": "org-1", "md5Checksum": "abc", "sizeInBytes": 100}
         dup = {"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}
         connected_provider.http_client.execute_aql.side_effect = [
             [ref],
@@ -1367,7 +1382,7 @@ class TestUpdateQueuedDuplicatesStatus:
         assert result == 1
 
     async def test_batch_update_fails(self, connected_provider):
-        ref = {"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100}
+        ref = {"_key": "r1", "orgId": "org-1", "md5Checksum": "abc", "sizeInBytes": 100}
         dup = {"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}
         connected_provider.http_client.execute_aql.side_effect = [
             [ref],
@@ -1486,6 +1501,32 @@ class TestGetUsersWithPermission:
             node_id="r1", node_collection="records",
         )
         assert result == []
+
+
+class TestGetGroupsWithPermission:
+    async def test_returns_the_groups_with_an_edge_to_the_node(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.return_value = [{
+            "_key": "g1", "_id": "groups/g1", "name": "Sales", "externalGroupId": "sales@example.com",
+            "connectorName": "DRIVE WORKSPACE", "connectorId": "c1", "orgId": "o1",
+            "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+        }]
+        groups = await connected_provider.get_groups_with_permission_to_node(
+            node_id="r1", node_collection="records",
+        )
+        assert [(g.id, g.source_user_group_id) for g in groups] == [("g1", "sales@example.com")]
+        bind_vars = _get_bind_vars(connected_provider.http_client.execute_aql)
+        assert bind_vars["node_key"] == "records/r1"
+        assert bind_vars["@group_collection"] == CollectionNames.GROUPS.value
+
+    async def test_a_failed_read_answers_empty_unless_asked_to_raise(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.side_effect = Exception("err")
+        assert await connected_provider.get_groups_with_permission_to_node(
+            node_id="r1", node_collection="records",
+        ) == []
+        with pytest.raises(Exception, match="err"):
+            await connected_provider.get_groups_with_permission_to_node(
+                node_id="r1", node_collection="records", raise_on_error=True,
+            )
 
 
 # ===================================================================
@@ -3767,7 +3808,7 @@ class TestCheckDrivePermissions:
         assert bv["user_key"] == "user1"
         assert "@permission" in bv
         assert "@belongs_to" in bv
-        assert "@anyone" in bv
+        assert "@anyone" not in bv
 
 
 # ===================================================================
@@ -3862,10 +3903,10 @@ class TestGetUserKbPermission:
         result = await connected_provider.get_user_kb_permission("kb1", "u1")
         assert result is None
 
-    async def test_exception_returns_none(self, connected_provider):
+    async def test_a_failed_read_raises(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_user_kb_permission("kb1", "u1")
-        assert result is None
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_user_kb_permission("kb1", "u1")
 
     async def test_correct_bind_vars(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = []
@@ -4126,6 +4167,93 @@ class TestDeleteRecordsRecursive:
         result = await connected_provider.delete_records_recursive(["r1"], "c1")
         assert result["success"] is True
         assert result["eventData"] is None
+
+    def _folder_scoped(self, connected_provider, live_keys, live_keys_after=None) -> None:
+        """Inventory sees sub and s1; the committed tree re-read outside the txn holds *live_keys*,
+        and *live_keys_after* on the re-read after the deletes (the same when not given)."""
+        inventory = [{
+            "valid_root_keys": ["sub"],
+            "records_with_type": [
+                {"record": {"_key": "sub", "recordName": "sub"}, "type_target": None},
+                {"record": {"_key": "s1", "recordName": "s1"}, "type_target": None},
+            ],
+            "guard_edges": ["e1", "e2"],
+        }]
+
+        async def execute_query(query, bind_vars=None, transaction=None) -> list | None:
+            if "valid_root" in query:
+                return inventory
+            if "deleteGuard" in query:
+                return []
+            assert transaction is None, "the moved-in check must read the committed tree"
+            rereads.append(1)
+            return live_keys if len(rereads) == 1 or live_keys_after is None else live_keys_after
+
+        rereads: list[int] = []
+
+        connected_provider._get_all_edge_collections = AsyncMock(return_value=["recordRelations"])
+        connected_provider.execute_query = AsyncMock(side_effect=execute_query)
+        connected_provider._delete_edges_by_node_ids = AsyncMock(return_value=(0, []))
+        connected_provider._delete_nodes_by_keys = AsyncMock(return_value=(2, 0))
+
+    async def test_folder_scoped_delete_stops_when_a_record_was_moved_in(self, connected_provider) -> None:
+        self._folder_scoped(connected_provider, ["sub", "s1", "moved_in"])
+        result = await connected_provider.delete_records_recursive(
+            ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
+        )
+        assert result["success"] is False
+        assert "moved into this folder" in result["reason"]
+        connected_provider._delete_edges_by_node_ids.assert_not_called()
+        connected_provider._delete_nodes_by_keys.assert_not_called()
+
+    async def test_folder_scoped_delete_proceeds_when_the_tree_is_unchanged(self, connected_provider) -> None:
+        self._folder_scoped(connected_provider, ["sub", "s1"])
+        result = await connected_provider.delete_records_recursive(
+            ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
+        )
+        assert result["success"] is True
+        assert {r["record_id"] for r in result["deleted_records"]} == {"sub", "s1"}
+        connected_provider._delete_nodes_by_keys.assert_called_once()
+
+    async def test_a_move_committed_during_the_deletes_rolls_back_the_callers_transaction(
+        self, connected_provider
+    ) -> None:
+        self._folder_scoped(connected_provider, ["sub", "s1"], live_keys_after=["sub", "s1", "moved_in"])
+        with pytest.raises(FolderChangedDuringDelete):
+            await connected_provider.delete_records_recursive(
+                ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
+            )
+        connected_provider._delete_nodes_by_keys.assert_called_once()
+
+    async def test_a_move_committed_during_the_deletes_rolls_back_its_own_transaction(
+        self, connected_provider
+    ) -> None:
+        self._folder_scoped(connected_provider, ["sub", "s1"], live_keys_after=["sub", "s1", "moved_in"])
+        connected_provider.begin_transaction = AsyncMock(return_value="own_txn")
+        connected_provider.commit_transaction = AsyncMock()
+        connected_provider.rollback_transaction = AsyncMock()
+
+        result = await connected_provider.delete_records_recursive(["sub"], "c1", within_folder_id="folder_a")
+
+        assert result["success"] is False and result["code"] == 409
+        connected_provider.rollback_transaction.assert_awaited_once_with("own_txn")
+        connected_provider.commit_transaction.assert_not_called()
+
+    async def test_a_failure_after_writing_reaches_the_callers_transaction(self, connected_provider) -> None:
+        self._folder_scoped(connected_provider, ["sub", "s1"])
+        connected_provider._delete_nodes_by_keys = AsyncMock(side_effect=RuntimeError("node delete failed"))
+        with pytest.raises(RuntimeError, match="node delete failed"):
+            await connected_provider.delete_records_recursive(
+                ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
+            )
+
+    async def test_folder_scoped_delete_fails_when_the_recheck_cannot_read(self, connected_provider) -> None:
+        self._folder_scoped(connected_provider, None)
+        result = await connected_provider.delete_records_recursive(
+            ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
+        )
+        assert result["success"] is False
+        connected_provider._delete_nodes_by_keys.assert_not_called()
 
 
 # ===================================================================

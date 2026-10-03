@@ -912,14 +912,14 @@ class LocalFsConnector(BaseConnector):
         """The storage blob a push-flow record points at, or None.
 
         Only a FileRecord carries ``path``; the external-id lookup answers a base
-        Record, so the file record is read by id. Every Local FS record is a
-        file or folder, so a found record whose file record comes back empty is a
-        read that failed. Deleting it anyway would lose the only pointer to its blob.
+        Record, so the file record is read by id. A read that fails raises, and
+        the caller keeps the id owed. None means the files row itself is gone,
+        and with it the only pointer to a blob, so there is nothing to clean up.
         """
         if not isinstance(record, FileRecord) and record.record_type == RecordType.FILE:
             file_record = await self.data_entities_processor.get_file_record_by_id(record.id)
             if file_record is None:
-                raise LocalFsRecordUnreadableError(record.external_record_id)
+                return None
             record = file_record
         return self._storage_document_id_from_path(getattr(record, "path", None))
 

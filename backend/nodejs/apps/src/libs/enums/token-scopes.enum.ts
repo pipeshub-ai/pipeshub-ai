@@ -11,6 +11,9 @@ export const TokenScopes = Object.freeze({
   ORG_EMAIL_VERIFY: 'org:email:verify',
   EMAIL_VERIFIED: 'email:verified',
   DESKTOP_COMMAND: 'desktop:command',
+  // Held only by the Python services, on their caller-role lookups, so the
+  // global rate limiter can tell those from client traffic (rate-limit.middleware).
+  CALLER_ROLE: 'caller:role',
 } as const);
 
 // Create a type for the TokenScopes keys
