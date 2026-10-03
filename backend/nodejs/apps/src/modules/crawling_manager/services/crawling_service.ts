@@ -911,7 +911,9 @@ export class CrawlingSchedulerService {
 
     try {
       const ofOrg = (jobs: Job[]): Job<CrawlingJobData>[] =>
-        (jobs as Job<CrawlingJobData>[]).filter((job) => job.data.orgId === orgId);
+        (jobs as Job<CrawlingJobData>[]).filter(
+          (job) => job.data.orgId === orgId,
+        );
       const waiting = ofOrg(await this.queue.getWaiting());
       const active = ofOrg(await this.queue.getActive());
       const completed = ofOrg(await this.queue.getCompleted());
@@ -920,13 +922,19 @@ export class CrawlingSchedulerService {
       // A schedule carries no job data: it is the org's when one of the org's
       // queued runs has its name and repeat options. The name matters because
       // orgs often pick the same cron pattern.
-      const orgRuns = ofOrg(await this.queue.getJobs([...PENDING_STATES, 'active']));
+      const orgRuns = ofOrg(
+        await this.queue.getJobs([...PENDING_STATES, 'active']),
+      );
+      const orgRunsByName = new Map<string, Job<CrawlingJobData>[]>();
+      for (const job of orgRuns) {
+        const runs = orgRunsByName.get(job.name);
+        if (runs) runs.push(job);
+        else orgRunsByName.set(job.name, [job]);
+      }
       const repeatableJobs = (await this.queue.getRepeatableJobs()).filter(
         (repeatableJob) =>
-          orgRuns.some(
-            (job) =>
-              job.name === repeatableJob.name &&
-              this.repeatOptsMatch(job.opts.repeat, repeatableJob),
+          (orgRunsByName.get(repeatableJob.name) ?? []).some((job) =>
+            this.repeatOptsMatch(job.opts.repeat, repeatableJob),
           ),
       );
       const paused = [...this.pausedJobs.values()].filter(

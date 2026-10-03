@@ -765,6 +765,28 @@ describe('CrawlingSchedulerService', () => {
       expect(getJobs.firstCall.args[0]).to.have.members(['waiting', 'delayed', 'prioritized', 'active'])
     })
 
+    it('checks every same-named run of the org, not just one', async () => {
+      if (!service) return
+      const q = (service as any).queue
+      for (const method of ['getWaiting', 'getActive', 'getCompleted', 'getFailed', 'getDelayed']) {
+        sinon.stub(q, method).resolves([])
+      }
+      // A connector's one-time runs and its repeating run share its name.
+      sinon.stub(q, 'getJobs').resolves([
+        run('org-1', 'crawl-google-c1'),
+        run('org-1', 'crawl-google-c1', hourly),
+        run('org-1', 'crawl-google-c1'),
+      ])
+      sinon.stub(q, 'getRepeatableJobs').resolves([
+        { key: 'r1', name: 'crawl-google-c1', ...daily },
+        { key: 'r2', name: 'crawl-google-c1', ...hourly },
+      ])
+
+      const stats = await service.getQueueStats('org-1')
+
+      expect(stats.repeatable).to.equal(1)
+    })
+
     it('should throw on queue failure', async () => {
       if (!service) return
       sinon.stub((service as any).queue, 'getWaiting').rejects(new Error('fail'))
