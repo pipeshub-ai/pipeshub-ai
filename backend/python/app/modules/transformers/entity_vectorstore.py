@@ -1235,7 +1235,10 @@ class EntityVectorStore:
                 collection_name=self.collection_name, requests=requests,
             )
         except Exception as exc:
-            self.logger.error("Entity search failed for query '%s': %s", query, exc)
+            self.logger.error(
+                "Entity search failed org=%s passes=%d query_chars=%d: %s",
+                org_id, len(requests), len(query), exc,
+            )
             await self._reset_if_collection_changed()
             raise
         for index, hits in zip(searchable, batch or []):

@@ -149,15 +149,16 @@ class EntityResolution:
         return self.entries.get((collection, normalize_name(name)))
 
     def decisions_for_log(self) -> list[dict[str, Any]]:
+        """What was decided, by id and count: extracted names are document
+        content and stay out of logs."""
         return [
             {
                 "slot": entity.kind.slot,
-                "extracted": list(entity.extracted_names),
+                "extracted": len(entity.extracted_names),
                 "decision": entity.decision,
                 "key": entity.key,
-                "name": entity.name,
                 "new": entity.is_new,
-                "newAliases": list(entity.new_aliases),
+                "newAliases": len(entity.new_aliases),
             }
             for entity in self.entries.values()
         ]
