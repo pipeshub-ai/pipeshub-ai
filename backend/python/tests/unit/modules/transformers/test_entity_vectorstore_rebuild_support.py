@@ -310,3 +310,59 @@ class TestFingerprint:
         with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model_b):
             fb = await b.embedding_fingerprint()
         assert fa != fb
+
+
+class TestARecreatedCollectionReachesRunningServices:
+    """The indexing service recreates the collection when the model's
+    dimension changes. A query or connector service initialised before keeps
+    the old model; its searches fail until it re-initialises."""
+
+    @staticmethod
+    def _searching_store(collection_dimension: int) -> tuple[EntityVectorStore, MagicMock]:
+        db = MagicMock()
+        db.get_capabilities.return_value = MagicMock(supports_sparse_vectors=False)
+        db.filter_collection = AsyncMock(return_value={})
+        db.query_nearest_points = AsyncMock(side_effect=RuntimeError("Vector dimension error"))
+        db.get_collection_info = AsyncMock(return_value=VectorCollectionInfo(
+            name="entities", exists=True, dense_dimension=collection_dimension,
+        ))
+        store, _ = _store(db)
+        store._dense_embeddings.embed_query = MagicMock(return_value=[0.1, 0.2])
+        store._query_vector_cache["pricing"] = ([0.1, 0.2], None)
+        return store, db
+
+    async def test_a_search_failing_on_a_recreated_collection_resets_the_store(self) -> None:
+        store, _ = self._searching_store(collection_dimension=4)
+        with pytest.raises(RuntimeError):
+            await store.search_entities("pricing", ORG, set(), {"c1"})
+        assert store._initialized is False
+        assert not store._query_vector_cache
+
+    async def test_a_matching_failure_with_the_dimension_unchanged_keeps_it(self) -> None:
+        store, _ = self._searching_store(collection_dimension=2)
+        with pytest.raises(RuntimeError):
+            await store.search_entities("pricing", ORG, set(), {"c1"})
+        assert store._initialized is True
+
+    async def test_the_merge_candidate_search_resets_it_too(self) -> None:
+        store, _ = self._searching_store(collection_dimension=4)
+        with pytest.raises(RuntimeError):
+            await store.find_best_matches(["Pricing"], ORG, "topic")
+        assert store._initialized is False
+
+    async def test_after_the_reset_the_next_call_reads_the_new_model(self) -> None:
+        store, db = self._searching_store(collection_dimension=4)
+        with pytest.raises(RuntimeError):
+            await store.search_entities("pricing", ORG, set(), {"c1"})
+
+        async def _new_model() -> None:
+            store._embedding_size = 4
+            store._dense_embeddings.embed_query = MagicMock(return_value=[0.1] * 4)
+
+        db.query_nearest_points = AsyncMock(return_value=[[]])
+        db.create_index = AsyncMock()
+        with patch.object(store, "_init_embeddings", side_effect=_new_model) as reinit:
+            assert await store.search_entities("pricing", ORG, set(), {"c1"}) == []
+        reinit.assert_awaited_once()
+        request = db.query_nearest_points.await_args.kwargs["requests"][0]
+        assert len(request.dense_query) == 4
