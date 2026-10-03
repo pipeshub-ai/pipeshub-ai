@@ -54,18 +54,35 @@ _ALLOWED_SECURITY_OPTS = frozenset(
 _ALLOWED_NETWORK_OPTIONS = frozenset({"com.docker.network.bridge.enable_icc"})
 _ALLOWED_RUNTIMES = frozenset({"", "runc", "runsc"})
 
+_ALLOWED_LOG_DRIVERS = frozenset({"", "json-file", "local"})
+
 # Docker decodes bodies with Go's encoding/json, which matches struct fields
 # case-insensitively, while the checks below read exact keys. So in every object
 # Docker decodes into a struct, the fields the policy reads must be spelled
 # exactly and no two keys may differ only in case.
-_CREATE_FIELDS = frozenset({"Image", "HostConfig", "NetworkingConfig", "Labels"})
+#
+# The create body and its HostConfig are also closed: any other key is refused.
+# Docker has far more host-reaching fields than a deny-list can track (LogConfig
+# with a network log driver, Cgroup, Isolation, ...), and daemons up to v26 copy
+# some top-level fields such as VolumeDriver into HostConfig. The lists are what
+# docker-py sends for the sandbox's containers.create calls, plus the fields the
+# checks below validate.
+_CREATE_FIELDS = frozenset({
+    "Image", "HostConfig", "NetworkingConfig", "Labels",
+    "Hostname", "Domainname", "User", "AttachStdin", "AttachStdout", "AttachStderr",
+    "ExposedPorts", "Tty", "OpenStdin", "StdinOnce", "Env", "Cmd", "Healthcheck",
+    "Volumes", "WorkingDir", "Entrypoint", "NetworkDisabled", "MacAddress",
+    "StopSignal", "StopTimeout", "Runtime",
+})
 _HOST_CONFIG_FIELDS = frozenset({
     "Privileged", "Binds", "VolumesFrom", "Devices", "DeviceRequests",
     "DeviceCgroupRules", "Links", "Sysctls", "PortBindings", "VolumeDriver",
     "PublishAllPorts", "CgroupParent", "MaskedPaths", "ReadonlyPaths", "Mounts",
     "CapAdd", "SecurityOpt", "PidMode", "UTSMode", "UsernsMode", "IpcMode",
-    "CgroupnsMode", "Runtime", "RestartPolicy", "NetworkMode",
+    "CgroupnsMode", "Runtime", "RestartPolicy", "NetworkMode", "LogConfig",
+    "CapDrop", "Memory", "NanoCpus", "PidsLimit", "ReadonlyRootfs", "Tmpfs",
 })
+_LOG_CONFIG_FIELDS = frozenset({"Type", "Config"})
 _RESTART_POLICY_FIELDS = frozenset({"Name"})
 _MOUNT_FIELDS = frozenset({"Type"})
 _NETWORKING_CONFIG_FIELDS = frozenset({"EndpointsConfig"})
@@ -91,8 +108,13 @@ class PolicyDenied(Exception):
     """Request refused by policy; the message is returned to the client."""
 
 
-def _struct_object(obj: object, fields: frozenset[str], where: str) -> dict[str, Any]:
-    """Return ``obj`` as a dict Docker will decode exactly as the policy reads it."""
+def _struct_object(
+    obj: object, fields: frozenset[str], where: str, *, closed: bool = False,
+) -> dict[str, Any]:
+    """Return ``obj`` as a dict Docker will decode exactly as the policy reads it.
+
+    ``closed`` also refuses any key that is not one of ``fields``.
+    """
     if obj is None:
         return {}
     if not isinstance(obj, dict):
@@ -106,7 +128,10 @@ def _struct_object(obj: object, fields: frozenset[str], where: str) -> dict[str,
             raise PolicyDenied(f"{where}: keys {seen[folded]!r} and {key!r} differ only in case")
         seen[folded] = key
         expected = canonical.get(folded)
-        if expected is not None and key != expected:
+        if expected is None:
+            if closed:
+                raise PolicyDenied(f"{where}: field {key!r} is not permitted")
+        elif key != expected:
             raise PolicyDenied(f"{where}: field {key!r} must be spelled {expected!r}")
     return obj
 
@@ -231,12 +256,19 @@ class DockerApiPolicy:
         """Validate a create payload and return it with the ownership label."""
         if not isinstance(body, dict):
             raise PolicyDenied("container create body must be a JSON object")
-        _struct_object(body, _CREATE_FIELDS, "container create body")
+        _struct_object(body, _CREATE_FIELDS, "container create body", closed=True)
         image = body.get("Image") or ""
         if not self.image_allowed(image):
             raise PolicyDenied(f"image {image!r} is not an allowed sandbox image")
+        # docker-py always sends these, as null. Volumes would create anonymous
+        # volumes; Runtime is not a Config field, so only HostConfig's is honoured.
+        for key in ("Volumes", "Runtime"):
+            if body.get(key):
+                raise PolicyDenied(f"{key} is not permitted")
 
-        host = _struct_object(body.get("HostConfig"), _HOST_CONFIG_FIELDS, "HostConfig")
+        host = _struct_object(
+            body.get("HostConfig"), _HOST_CONFIG_FIELDS, "HostConfig", closed=True,
+        )
 
         if host.get("Privileged"):
             raise PolicyDenied("privileged containers are not permitted")
@@ -282,6 +314,15 @@ class DockerApiPolicy:
         restart = restart_policy.get("Name") or "no"
         if restart != "no":
             raise PolicyDenied("restart policies are not permitted")
+        # Network log drivers (syslog, gelf, fluentd, ...) connect from the
+        # daemon's network, whatever the container's NetworkMode is.
+        log_config = _struct_object(
+            host.get("LogConfig"), _LOG_CONFIG_FIELDS, "HostConfig.LogConfig", closed=True,
+        )
+        if (log_config.get("Type") or "") not in _ALLOWED_LOG_DRIVERS:
+            raise PolicyDenied(f"log driver {log_config.get('Type')!r} is not permitted")
+        if log_config.get("Config"):
+            raise PolicyDenied("HostConfig.LogConfig.Config is not permitted")
 
         network_mode = host.get("NetworkMode") or ""
         if network_mode != "none" and network_mode not in self.allowed_networks:
@@ -294,7 +335,10 @@ class DockerApiPolicy:
             if name not in self.allowed_networks:
                 raise PolicyDenied(f"network {name!r} is not permitted")
 
-        labels = dict(body.get("Labels") or {})
+        raw_labels = body.get("Labels") or {}
+        if not isinstance(raw_labels, dict):
+            raise PolicyDenied("Labels must be an object")
+        labels = dict(raw_labels)
         labels[MANAGED_LABEL] = "true"
         return {**body, "Labels": labels}
 
