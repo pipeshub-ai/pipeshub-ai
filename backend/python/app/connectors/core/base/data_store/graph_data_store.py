@@ -346,6 +346,7 @@ class GraphTransactionStore(TransactionStore):
         deleted_by_user_id: str | None = None,
         follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
         within_folder_id: str | None = None,
+        include_trashed_roots: bool = False,
     ) -> dict:
         """Move records to the trash within the active transaction."""
         return await self.graph_provider.soft_delete_records(
@@ -357,6 +358,7 @@ class GraphTransactionStore(TransactionStore):
             follow=follow,
             transaction=self.txn,
             within_folder_id=within_folder_id,
+            include_trashed_roots=include_trashed_roots,
         )
 
     async def restore_records(

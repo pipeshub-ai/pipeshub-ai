@@ -518,3 +518,12 @@ class TestCascadeTakesTheCallersReadOfTheFlag:
         read.assert_not_awaited()
         store.delete_records_recursive.assert_awaited_once()
         store.soft_delete_records.assert_not_called()
+
+    @pytest.mark.parametrize("include", [True, False])
+    async def test_the_soft_path_hands_include_trashed_roots_to_the_store(self, include) -> None:
+        """A removal of what the source no longer has also walks from a root already in the trash."""
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([("a", "va")]))
+        await proc.on_records_deleted_cascade(["f1"], "c1", soft_delete=True, include_trashed_roots=include)
+        assert store.soft_delete_records.await_args.kwargs["include_trashed_roots"] is include

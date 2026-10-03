@@ -13674,6 +13674,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
         transaction: str | None = None,
         within_folder_id: str | None = None,
+        include_trashed_roots: bool = False,
     ) -> dict:
         """See ``IGraphDBProvider.soft_delete_records``."""
         if not record_ids:
@@ -13690,7 +13691,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 LET checked = (
                     FOR rid IN @record_ids
                         LET rec = DOCUMENT(@@records, rid)
-                        FILTER rec != null AND {aql_live_record("rec")}
+                        FILTER rec != null AND (@include_trashed OR {aql_live_record("rec")})
                         FILTER rec.connectorId == @connector_id
                         LET inside = @folder_id == null ? [] : FIRST(
                             FOR anc, edge, path IN 1..{CONTAINMENT_MAX_DEPTH} INBOUND rec._id @@record_relations
@@ -13728,6 +13729,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "connector_id": connector_id,
                     "follow": follow_types,
                     "folder_id": within_folder_id,
+                    "include_trashed": include_trashed_roots,
                     "@records": records,
                     "@record_relations": record_relations,
                 },
