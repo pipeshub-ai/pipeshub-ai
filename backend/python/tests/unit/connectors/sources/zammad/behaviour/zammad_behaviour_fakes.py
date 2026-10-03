@@ -45,11 +45,10 @@ class FakeZammad:
     result_window: int = 10_000
     fail_articles_for: set[int] = field(default_factory=set)
     fail_search_at_offset: int | None = None
-    # Zammad's search does not order by updated_at; newest-id-first shows that.
-    newest_first: bool = False
     fail_list_groups: bool = False
     ticket_read_status: dict[int, int] = field(default_factory=dict)
     search_queries: list[str] = field(default_factory=list)
+    refused_searches: list[tuple[str, int | None, int | None]] = field(default_factory=list)
     ticket_reads: list[int] = field(default_factory=list)
     # Groups Zammad lists as inactive.
     inactive: set[int] = field(default_factory=set)
@@ -89,14 +88,18 @@ class FakeZammad:
         return ZammadResponse(success=True, data={"id": group_id, "user_ids": []})
 
     async def search_tickets(self, query: str, limit: int | None = None, offset: int | None = None) -> ZammadResponse:
+        # ZammadDataSource.search_tickets turns these into page/per_page and refuses what can't be.
+        if not 1 <= (limit or 50) <= 200 or (offset or 0) % (limit or 50):
+            self.refused_searches.append((query, limit, offset))
+            return ZammadResponse(success=False, message="search_tickets failed: invalid limit or offset")
         self.search_queries.append(query)
         if self.fail_search(query) or (offset or 0) == self.fail_search_at_offset:
             return ZammadResponse(success=False, message="search failed", status_code=500)
-        if (offset or 0) + (limit or 10) > self.result_window:
+        if (offset or 0) + (limit or 50) > self.result_window:
             return ZammadResponse(success=False, message="search failed", status_code=400)
         hits = [self._public(t) for t in self._matching(query)]
         start = offset or 0
-        return ZammadResponse(success=True, data=hits[start:start + (limit or 10)])
+        return ZammadResponse(success=True, data=hits[start:start + (limit or 50)])
 
     async def count_tickets(self, query: str, ids: list[int] | None = None) -> ZammadResponse:
         self.count_calls.append((query, list(ids or [])))
@@ -109,7 +112,7 @@ class FakeZammad:
         return ZammadResponse(success=True, data={"total_count": total}, status_code=200)
 
     def _matching(self, query: str) -> list[dict[str, Any]]:
-        """Indexed tickets a search query matches, in the index's order."""
+        """Indexed tickets a search query matches, newest updated_at first, then highest id."""
         group = int(re.search(r"group_id:(\d+)", query).group(1))
         id_range = re.search(r"\bid:\[(\d+) TO (\d+|\*)\]", query)
         bounds = {
@@ -127,12 +130,14 @@ class FakeZammad:
                     return False
             return True
 
-        return [
-            t for tid, t in sorted(self.tickets.items(), reverse=self.newest_first)
+        hits = [
+            t for tid, t in self.tickets.items()
             if t["group_id"] == group and tid not in self.unindexed and matches(t)
             and (id_range is None or (int(id_range.group(1)) <= tid
                                       and (id_range.group(2) == "*" or tid <= int(id_range.group(2)))))
         ]
+        # The sort search_tickets asks for: updated_at desc, id desc.
+        return sorted(hits, key=lambda t: (t["updated_at"], t["id"]), reverse=True)
 
     async def get_ticket(self, id: int, expand: bool | None = None) -> ZammadResponse:  # noqa: A002 - mirrors the real signature
         self.ticket_reads.append(id)

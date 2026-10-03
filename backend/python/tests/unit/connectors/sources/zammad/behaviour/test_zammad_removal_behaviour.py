@@ -6,6 +6,7 @@ in-memory fakes in ``zammad_behaviour_fakes``.
 """
 
 import logging
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -57,14 +58,15 @@ class World:
 
 
 @pytest.fixture
-async def world() -> World:
+async def world() -> AsyncIterator[World]:
     w = World()
     w.zammad.add_ticket(10, 1, day=1)
     w.zammad.add_ticket(11, 1, day=2, attachments=1)
     w.zammad.add_ticket(20, 2, day=3)
     await w.sync()
     assert w.db.external_ids() == {"10", "11", "11_1_1", "20"}
-    return w
+    yield w
+    assert w.zammad.refused_searches == []
 
 
 async def test_a_ticket_deleted_in_zammad_is_removed_on_the_next_incremental_sync(world: World) -> None:
@@ -185,11 +187,10 @@ async def test_a_read_back_that_fails_once_is_repeated_and_the_ticket_goes_on_th
 
 async def test_a_failed_search_page_keeps_the_group_checkpoint_until_a_sync_reads_it_all(world: World) -> None:
     before = _checkpoint(world, "Support")
-    # Two pages of changes; search order is not by updated_at, so the newest lands on page one.
+    # Two pages of changes; search pages come newest first, so the newest lands on page one.
     world.zammad.add_ticket(599, 1, day=20)
     for ticket_id in range(500, 560):
         world.zammad.add_ticket(ticket_id, 1, day=9, minute=ticket_id)
-    world.zammad.newest_first = True
     world.zammad.fail_search_at_offset = 50
 
     await world.sync()

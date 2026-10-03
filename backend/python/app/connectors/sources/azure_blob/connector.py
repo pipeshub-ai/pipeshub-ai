@@ -46,6 +46,7 @@ from app.connectors.core.registry.folder_scope import (
     listed_record_ids,
     path_in_container,
     recorded_ids,
+    remove_deselected_containers,
     remove_records_not_listed,
 )
 from app.connectors.core.registry.connector_builder import (
@@ -563,6 +564,9 @@ class AzureBlobConnector(BaseConnector):
             elif selected_containers:
                 containers_to_sync = selected_containers
                 self.logger.info(f"Using filtered containers: {containers_to_sync}")
+                await remove_deselected_containers(
+                    self.data_entities_processor, self.config_service, self.connector_id, "containers", selected_containers, self.logger
+                )
             else:
                 self.logger.info("Listing all containers...")
                 containers_response = await self.data_source.list_containers()
@@ -1912,6 +1916,9 @@ class AzureBlobConnector(BaseConnector):
             elif selected_containers:
                 containers_to_sync = selected_containers
                 self.logger.info(f"Using filtered containers: {containers_to_sync}")
+                await remove_deselected_containers(
+                    self.data_entities_processor, self.config_service, self.connector_id, "containers", selected_containers, self.logger
+                )
             else:
                 containers_response = await self.data_source.list_containers()
                 if containers_response.success and containers_response.data:

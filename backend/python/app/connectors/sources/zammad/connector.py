@@ -1005,8 +1005,8 @@ class ZammadConnector(BaseConnector):
                 if kept_failures != failures.earlier:
                     await self._save_read_failures(group_name, kept_failures)
 
-                # Search results are not ordered by updated_at, so the checkpoint
-                # moves only once every page and every ticket has been read.
+                # Pages come newest first, so the checkpoint moves only once every
+                # page and every ticket has been read.
                 if listing_complete and burst_resume is not None:
                     await self._save_burst_resume(group_name, None)
                 if listing_complete and max_ticket_updated_at:
@@ -1108,6 +1108,9 @@ class ZammadConnector(BaseConnector):
 
         Yields:
             Batches of (Record, permissions) tuples (includes TicketRecords and FileRecords)
+
+        Raises:
+            ZammadReadError: a search failed or a page repeated, so the listing did not reach its end
         """
         datasource = await self._get_fresh_datasource()
         limit = 50
@@ -1129,6 +1132,7 @@ class ZammadConnector(BaseConnector):
             self.logger.debug(f"Fetching tickets for group '{group_name}' with query: {query}")
             offset = 0
             overflowed = (low, high) in resume_from
+            previous_page_ids: set[str] | None = None
 
             while not overflowed:
                 if offset + limit > SEARCH_RESULT_WINDOW:
@@ -1137,16 +1141,26 @@ class ZammadConnector(BaseConnector):
                 response = await datasource.search_tickets(query=query, limit=limit, offset=offset)
                 if not response.success:
                     raise ZammadReadError(
-                        f"ticket search for group '{group_name}' failed at offset {offset}: {response.message}",
+                        f"ticket search for group '{group_name}' failed at offset {offset}: "
+                        f"{response.error or response.message}",
                         read_until=read_until,
                     )
 
-                # Response.data is a list of ticket objects (already extracted from assets.Ticket)
+                # search_tickets answers with a list of ticket objects, or fails.
                 tickets_data = response.data
                 if not isinstance(tickets_data, list):
                     tickets_data = [tickets_data] if tickets_data else []
                 if not tickets_data:
                     break
+                page_ids = {str(t.get("id")) for t in tickets_data}
+                if page_ids == previous_page_ids:
+                    raise ZammadReadError(
+                        f"Zammad returned the same {len(tickets_data)} tickets for group '{group_name}' "
+                        f"at offset {offset} as on the page before, so it is not paging. Stopped reading "
+                        f"this group's tickets here; the group's sync point stays below the tickets not read.",
+                        read_until=read_until,
+                    )
+                previous_page_ids = page_ids
                 if offset == 0 and len(tickets_data) >= limit:
                     overflowed = await self._fills_search_window(datasource, query, group_name, read_until)
                     if overflowed:
@@ -1275,10 +1289,15 @@ class ZammadConnector(BaseConnector):
             ranged = f"{query} AND id:[{next_id} TO {next_id + span - 1}]"
             offset = 0
             in_range: set[str] = set()
+            previous_page_ids: set[str] | None = None
             while True:
                 response = await datasource.search_tickets(query=ranged, limit=limit, offset=offset)
                 if not response.success or not isinstance(response.data, list):
                     raise stopped("a ticket search failed")
+                page_ids = {str(t.get("id")) for t in response.data}
+                if response.data and page_ids == previous_page_ids:
+                    raise stopped(f"Zammad returned the same {len(response.data)} tickets at offset {offset} as on the page before")
+                previous_page_ids = page_ids
                 in_range.update(str(t.get("id", "unknown")) for t in response.data)
                 async for batch_records in self._ticket_batches(
                     response.data, written, failures, group_name, batch_size,
