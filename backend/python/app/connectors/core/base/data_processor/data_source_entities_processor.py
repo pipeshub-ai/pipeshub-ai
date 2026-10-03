@@ -3624,6 +3624,8 @@ class DataSourceEntitiesProcessor:
         external_group_id: str,
         limit: int,
         after_key: str | None = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Return up to ``limit`` of this connector's records in one record group, ordered by id.
 
@@ -3642,6 +3644,7 @@ class DataSourceEntitiesProcessor:
                 record_group_id=group.id,
                 limit=limit,
                 after_key=after_key,
+                visibility=visibility,
             )
 
     async def get_records_by_status(
