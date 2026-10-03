@@ -105,6 +105,16 @@ class SmbStorageHelper:
             count += 1
         return count
 
+    def write_file(self, share: str, rel: str, data: bytes) -> None:
+        dir_name, _, _name = rel.replace("\\", "/").rpartition("/")
+        if dir_name:
+            self._ensure_dir(share, dir_name)
+        with smbclient.open_file(self._unc(share, rel), mode="wb", **self._kwargs()) as handle:
+            handle.write(data)
+
+    def delete_file(self, share: str, rel: str) -> None:
+        smbclient.remove(self._unc(share, rel), **self._kwargs())
+
     def rename_object(self, share: str, old_path: str, new_path: str) -> None:
         new_dir, _, _name = new_path.replace("\\", "/").rpartition("/")
         if new_dir:

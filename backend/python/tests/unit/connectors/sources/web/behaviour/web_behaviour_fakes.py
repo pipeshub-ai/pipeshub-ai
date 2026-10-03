@@ -31,17 +31,27 @@ from urllib.parse import urljoin, urlparse
 
 from aiohttp import web
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from app.connectors.sources.web.connector import WebConnector
-    from app.models.entities import Record
+    from app.models.entities import FileRecord, Record
 
 STORAGE_HOST = "storage.test"
 HEAD_HANGS_UP = -1  # a ``head_status`` meaning the site drops HEAD requests without answering
 CONNECTOR_ID = "web-1"
 START_URL = "http://site.test/"
+# Every fake host resolves here, except INTRANET_HOST; the fake clients report it as the address they reached.
+SITE_ADDRESS = "93.184.215.14"
+INTRANET_HOST = "intranet.test"
+INTRANET_ADDRESS = "10.0.0.7"
+# What crawl4ai reports for every page once Playwright's driver process has exited.
+DRIVER_GONE = (
+    "Unexpected error in _crawl_web at line 565 in wrap_api_call\n"
+    "Error: BrowserContext.new_page: Connection closed while reading from the driver"
+)
 _real_sleep = asyncio.sleep
 
 
@@ -115,6 +125,9 @@ class FakeWeb:
         self.browser_loaded: list[str] = []  # every address the browser requested, redirect hops included
         self.browser_starts = 0
         self.browser_broken = False
+        self.browser_dies_after: int | None = None  # page loads until the running browser dies, once
+        self.browser_stays_dead = False  # ...and no new one can be launched
+        self._browser_dead_up_to = 0
         self.storage_docs: dict[str, bytes] = {}
         self.storage_uploads: list[str] = []
         self.storage_buffer_updates: list[str] = []
@@ -247,6 +260,18 @@ class FakeWeb:
 
     # -- Browser side ----------------------------------------------------
 
+    def kill_browser(self) -> None:
+        """Every browser launched so far loses its driver process."""
+        self._browser_dead_up_to = self.browser_starts
+        if self.browser_stays_dead:
+            self.browser_broken = True
+
+    def browser_is_dead(self, launch: int) -> bool:
+        if self.browser_dies_after is not None and len(self.browser_visits) >= self.browser_dies_after:
+            self.browser_dies_after = None
+            self.kill_browser()
+        return 0 < launch <= self._browser_dead_up_to  # 0: a crawler that was never started
+
     def render(self, url: str) -> tuple[str, Page]:
         """What a browser ends up showing for ``url``, following redirects."""
         for _ in range(10):
@@ -265,9 +290,11 @@ def browser_crawler_class(site: FakeWeb) -> type:
     class FakeBrowserCrawler:
         def __init__(self, *_, **__) -> None:
             self.started = False
+            self.launch = 0
 
         async def start(self) -> None:
             site.browser_starts += 1
+            self.launch = site.browser_starts
             if site.browser_broken:
                 raise RuntimeError("BrowserType.launch: Executable doesn't exist")
             self.started = True
@@ -276,6 +303,9 @@ def browser_crawler_class(site: FakeWeb) -> type:
             self.started = False
 
         async def arun(self, url: str, config: object = None, **_: object) -> SimpleNamespace:
+            if site.browser_is_dead(self.launch):
+                return SimpleNamespace(url=url, redirected_url=url, html="", success=False, status_code=None,
+                                       error_message=DRIVER_GONE, crawl_stats=None, js_execution_result=None)
             site.browser_visits.append(url)
             final_url, page = site.render(url)
             if page.browser_aborts:
@@ -360,6 +390,7 @@ class FakeRecordsDb:
         self.deleted: list[str] = []
         self.record_groups: list[Any] = []
         self.fail_writes = False
+        self.unreadable_file_records: set[str] = set()
 
     def _store(self, record: Record) -> None:
         existing = self.records.get(record.external_record_id)
@@ -378,9 +409,13 @@ class FakeRecordsDb:
             return None
         return Record.model_validate(stored.model_dump(include=set(Record.model_fields)))
 
-    async def get_file_record_by_id(self, record_id: str) -> Record | None:
+    async def get_file_record_by_id(self, record_id: str) -> FileRecord | None:
+        """None only when no file record is stored; a read that fails raises ``GraphQueryError``, as both providers do."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
         from app.models.entities import FileRecord
 
+        if record_id in self.unreadable_file_records:
+            raise GraphQueryError(f"records database unavailable for {record_id}")
         stored = next((record for record in self.records.values() if record.id == record_id), None)
         return stored.model_copy(deep=True) if isinstance(stored, FileRecord) else None
 
@@ -495,6 +530,7 @@ class FakeResponse:
         self.headers = headers
         self.content = body
         self.url = url
+        self.primary_ip = SITE_ADDRESS
 
     def iter_content(self, chunk_size: int = 65536) -> Iterator[bytes]:
         for start in range(0, len(self.content), chunk_size):
@@ -502,6 +538,21 @@ class FakeResponse:
 
     def close(self) -> None:
         pass
+
+
+def _deliver(response: FakeResponse, content_callback: Callable[[bytes], object]) -> FakeResponse:
+    """What curl_cffi does with a content_callback: the body goes to the callback chunk by chunk and
+    not to ``content``, and a callback that answers CURL_WRITEFUNC_ERROR aborts the transfer, which
+    raises with the response read so far (curl error 23)."""
+    from curl_cffi.curl import CURL_WRITEFUNC_ERROR
+    from curl_cffi.requests.exceptions import RequestException
+
+    chunks = list(response.iter_content(16384))
+    response.content = b""
+    for chunk in chunks:
+        if content_callback(chunk) == CURL_WRITEFUNC_ERROR:
+            raise RequestException("Failure writing output to destination", 23, response)
+    return response
 
 
 class FakeRequestsClient:
@@ -512,6 +563,7 @@ class FakeRequestsClient:
         self.site = site
         self.label = label
         self.cookies: dict[str, str] = {}
+        self.adapters: dict[str, HTTPAdapter] = {"https://": HTTPAdapter()}
 
     def __enter__(self) -> "FakeRequestsClient":
         return self
@@ -521,6 +573,9 @@ class FakeRequestsClient:
 
     def close(self) -> None:
         pass
+
+    def mount(self, prefix: str, adapter: HTTPAdapter) -> None:
+        self.adapters[prefix] = adapter
 
     def _send(self, url: str, headers: dict | None) -> tuple[int, dict, bytes]:
         sent = dict(headers or {})
@@ -538,14 +593,16 @@ class FakeRequestsClient:
         return status, response_headers, body
 
     def get(self, url: str, headers: dict | None = None, timeout: object = None,
-            allow_redirects: bool = True, stream: bool = False) -> FakeResponse:
+            allow_redirects: bool = True, stream: bool = False,
+            content_callback: Callable[[bytes], object] | None = None) -> FakeResponse:
         for _ in range(11):
             status, response_headers, body = self._send(url, headers)
             location = response_headers.get("Location")
             if allow_redirects and status in (301, 302, 303, 307, 308) and location:
                 url = urljoin(url, location)
                 continue
-            return FakeResponse(status, response_headers, body, url)
+            response = FakeResponse(status, response_headers, body, url)
+            return response if content_callback is None else _deliver(response, content_callback)
         raise RuntimeError("too many redirects")
 
 

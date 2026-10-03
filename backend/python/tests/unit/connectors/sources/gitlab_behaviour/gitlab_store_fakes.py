@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import is_live_record
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -57,12 +58,19 @@ class FakeRecordsDb:
         return SimpleNamespace(id=user_id, email=email) if email else None
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
+        """A base Record, as both graph stores rebuild it: no subclass fields."""
+        from app.models.entities import Record
+
         if external_record_id in self.fail_lookup_for:
             raise RuntimeError(f"database unavailable for {external_record_id}")
-        return self.records.get(external_record_id)
+
+        stored = self.records.get(external_record_id)
+        return None if stored is None else Record.model_validate(stored.model_dump(include=set(Record.model_fields)))
 
     async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str, **_: object) -> list[Record]:
-        return [r for r in self.records.values() if r.parent_external_record_id == parent_external_record_id]
+        # Live children only, as the graph stores return them by default.
+        return [r for r in self.records.values()
+                if r.parent_external_record_id == parent_external_record_id and is_live_record(r)]
 
     async def get_record_path(self, record_id: str) -> str | None:
         record = self.record_by_id(record_id)

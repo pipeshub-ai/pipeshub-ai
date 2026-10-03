@@ -195,6 +195,48 @@ class IVectorDBService(ABC):
         """
         raise NotImplementedError
 
+    def scroll_offset_after_delete(
+        self, next_offset: Optional[str], deleted: int,
+    ) -> Optional[str]:
+        """``next_offset`` from ``scroll``, adjusted after the caller deleted
+        ``deleted`` of the points that page returned.
+
+        A key-based cursor (the next id, a ``search_after`` value) is
+        unaffected. A positional one must step back, or the next page skips
+        as many points as were deleted.
+        """
+        return next_offset
+
+    @abstractmethod
+    async def retrieve_points(
+        self,
+        collection_name: str,
+        ids: List[str],
+    ) -> List[VectorPoint]:
+        """Points by id, without vectors; ids with no point are omitted.
+
+        Unlike ``scroll``, this reads writes that are not yet searchable (an
+        OpenSearch index only refreshes every 30s), so a read-modify-write can
+        use it without losing an update made moments earlier.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_payload_by_ids(
+        self,
+        collection_name: str,
+        point_ids: List[str],
+        payload: dict,
+    ) -> None:
+        """Merge ``payload`` into the points with these ids, by id.
+
+        Unlike ``set_payload``, which finds its points with a search (an
+        OpenSearch ``update_by_query`` cannot see a document until the index
+        refreshes), this reaches a point the moment it was written. Ids with
+        no point are ignored.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     async def query_nearest_points(
         self,

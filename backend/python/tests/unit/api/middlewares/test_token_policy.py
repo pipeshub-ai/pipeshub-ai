@@ -28,6 +28,8 @@ class TestAcceptedServiceScopes:
                 "conversation:create",
                 "conversation:permissions",
                 "fetch:config",
+                "document:parse",
+                "document:classify",
             }
         )
 
@@ -39,6 +41,7 @@ class TestAcceptedServiceScopes:
             TokenScopes.SEND_MAIL,
             TokenScopes.STORAGE_TOKEN,
             TokenScopes.USER_LOOKUP,
+            TokenScopes.CALLER_ROLE,
         ],
     )
     def test_node_only_scopes_are_not_accepted(self, user_held_or_node_only_scope):

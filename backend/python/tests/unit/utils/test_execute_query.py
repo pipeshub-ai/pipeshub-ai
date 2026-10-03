@@ -12,7 +12,9 @@ from app.utils.execute_query import (
     _is_query_safe,
     _results_to_markdown,
     agent_knowledge_has_sql_connector,
+    agent_knowledge_sql_connector_ids,
     has_sql_connector_configured,
+    sql_connector_instance_ids,
 )
 
 
@@ -785,7 +787,7 @@ class TestCreateExecuteQueryTool:
     def test_creates_tool(self):
         from app.utils.execute_query import create_execute_query_tool
 
-        tool = create_execute_query_tool(config_service=MagicMock())
+        tool = create_execute_query_tool(config_service=MagicMock(), allowed_connector_ids={"conn-1"})
         assert tool.name == "execute_sql_query"
 
     @pytest.mark.asyncio
@@ -804,7 +806,7 @@ class TestCreateExecuteQueryTool:
                 "raw_rows": [(1,)],
             },
         ):
-            tool = create_execute_query_tool(config_service=MagicMock())
+            tool = create_execute_query_tool(config_service=MagicMock(), allowed_connector_ids={"conn-1"})
             result = await tool.ainvoke({
                 "query": "SELECT 1",
                 "source_name": "PostgreSQL",
@@ -825,7 +827,7 @@ class TestCreateExecuteQueryTool:
             new_callable=AsyncMock,
             return_value={"ok": False, "error": "blocked"},
         ):
-            tool = create_execute_query_tool(config_service=MagicMock())
+            tool = create_execute_query_tool(config_service=MagicMock(), allowed_connector_ids={"conn-1"})
             result = await tool.ainvoke({
                 "query": "DROP TABLE x",
                 "source_name": "PostgreSQL",
@@ -843,7 +845,7 @@ class TestCreateExecuteQueryTool:
             new_callable=AsyncMock,
             side_effect=RuntimeError("unexpected"),
         ):
-            tool = create_execute_query_tool(config_service=MagicMock())
+            tool = create_execute_query_tool(config_service=MagicMock(), allowed_connector_ids={"conn-1"})
             result = await tool.ainvoke({
                 "query": "SELECT 1",
                 "source_name": "PostgreSQL",
@@ -881,6 +883,7 @@ class TestCreateExecuteQueryTool:
                 org_id="org-1",
                 conversation_id="conv-1",
                 blob_store=mock_blob_store,
+                allowed_connector_ids={"conn-1"},
             )
             result = await tool.ainvoke({
                 "query": "SELECT 1",
@@ -928,6 +931,7 @@ class TestCreateExecuteQueryTool:
                 conversation_id="conv-1",
                 blob_store=mock_blob_store,
                 user_id="user-1",
+                allowed_connector_ids={"conn-1"},
             )
             await tool.ainvoke({
                 "query": "SELECT x",
@@ -967,6 +971,7 @@ class TestCreateExecuteQueryTool:
                 config_service=MagicMock(),
                 org_id="org-1",
                 conversation_id=None,
+                allowed_connector_ids={"conn-1"},
             )
             await tool.ainvoke({
                 "query": "SELECT 1",
@@ -975,6 +980,142 @@ class TestCreateExecuteQueryTool:
             })
 
         mock_register.assert_not_called()
+
+
+class TestExecuteQueryToolConnectorAllowlist:
+    """The query runs with the connector's stored credentials, so the tool must
+    refuse any connector_id outside the allowlist without building a client."""
+
+    @staticmethod
+    def _ok_result():
+        return {"ok": True, "markdown_result": "| x |", "row_count": 1, "column_count": 1}
+
+    @pytest.mark.asyncio
+    async def test_unlisted_connector_id_is_rejected_without_running_query(self):
+        from app.utils.execute_query import create_execute_query_tool
+
+        with patch(
+            "app.utils.execute_query._execute_query_impl", new_callable=AsyncMock,
+        ) as mock_impl:
+            tool = create_execute_query_tool(
+                config_service=MagicMock(), allowed_connector_ids={"agent-pg"},
+            )
+            result = await tool.ainvoke({
+                "query": "SELECT * FROM salaries",
+                "source_name": "PostgreSQL",
+                "connector_id": "other-teams-pg",
+            })
+
+        assert result["ok"] is False
+        assert "other-teams-pg" in result["error"]
+        assert "agent-pg" not in result["error"]
+        mock_impl.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_connector_id_is_rejected_without_running_query(self):
+        """An empty ID would otherwise fall through to default config
+        resolution, which picks a connector the agent never named."""
+        from app.utils.execute_query import create_execute_query_tool
+
+        with patch(
+            "app.utils.execute_query._execute_query_impl", new_callable=AsyncMock,
+        ) as mock_impl:
+            tool = create_execute_query_tool(
+                config_service=MagicMock(), allowed_connector_ids={"agent-pg"},
+            )
+            for connector_id in ("", "   "):
+                result = await tool.ainvoke({
+                    "query": "SELECT 1",
+                    "source_name": "PostgreSQL",
+                    "connector_id": connector_id,
+                })
+                assert result["ok"] is False
+
+        mock_impl.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_allowlist_rejects_everything(self):
+        from app.utils.execute_query import create_execute_query_tool
+
+        with patch(
+            "app.utils.execute_query._execute_query_impl", new_callable=AsyncMock,
+        ) as mock_impl:
+            tool = create_execute_query_tool(config_service=MagicMock(), allowed_connector_ids=())
+            result = await tool.ainvoke({
+                "query": "SELECT 1",
+                "source_name": "PostgreSQL",
+                "connector_id": "any-pg",
+            })
+
+        assert result["ok"] is False
+        mock_impl.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_listed_connector_id_runs_against_that_connector(self):
+        from app.utils.execute_query import create_execute_query_tool
+
+        with patch(
+            "app.utils.execute_query._execute_query_impl",
+            new_callable=AsyncMock,
+            return_value=self._ok_result(),
+        ) as mock_impl:
+            tool = create_execute_query_tool(
+                config_service=MagicMock(), allowed_connector_ids={"agent-pg", "agent-sf"},
+            )
+            result = await tool.ainvoke({
+                "query": "SELECT 1",
+                "source_name": "PostgreSQL",
+                "connector_id": "  agent-pg  ",
+            })
+
+        assert result["ok"] is True
+        assert mock_impl.await_args.kwargs["connector_instance_id"] == "agent-pg"
+
+    def test_allowlist_is_required(self):
+        from app.utils.execute_query import create_execute_query_tool
+
+        with pytest.raises(TypeError):
+            create_execute_query_tool(config_service=MagicMock())
+
+
+class TestSqlConnectorInstanceIds:
+    def test_returns_configured_sql_instances_in_org(self):
+        instances = [
+            {"_key": "pg-1", "type": "POSTGRESQL", "isConfigured": True, "orgId": "org-1"},
+            {"_key": "sf-1", "type": "snowflake", "isConfigured": True},
+            {"id": "maria-1", "type": "MARIADB", "isConfigured": True, "orgId": "org-1"},
+        ]
+        assert sql_connector_instance_ids(instances, "org-1") == {"pg-1", "sf-1", "maria-1"}
+
+    def test_excludes_other_orgs_unconfigured_and_non_sql(self):
+        instances = [
+            {"_key": "pg-other-org", "type": "POSTGRESQL", "isConfigured": True, "orgId": "org-2"},
+            {"_key": "pg-unconfigured", "type": "POSTGRESQL", "isConfigured": False},
+            {"_key": "slack-1", "type": "SLACK", "isConfigured": True},
+            {"type": "POSTGRESQL", "isConfigured": True},
+            "not-a-dict",
+        ]
+        assert sql_connector_instance_ids(instances, "org-1") == frozenset()
+
+    def test_none(self):
+        assert sql_connector_instance_ids(None, "org-1") == frozenset()
+
+
+class TestAgentKnowledgeSqlConnectorIds:
+    def test_returns_only_sql_connector_ids(self):
+        knowledge = [
+            {"connectorId": "pg-1", "type": "POSTGRESQL"},
+            {"connectorId": " sf-1 ", "type": "Snowflake"},
+            {"connectorId": "drive-1", "type": "GOOGLE_DRIVE"},
+            {"connectorId": "kb-1", "type": "KB"},
+            {"type": "MARIADB"},
+            {"connectorId": "  ", "type": "MARIADB"},
+            None,
+        ]
+        assert agent_knowledge_sql_connector_ids(knowledge) == {"pg-1", "sf-1"}
+
+    def test_none(self):
+        assert agent_knowledge_sql_connector_ids(None) == frozenset()
 
 
 # ===========================================================================

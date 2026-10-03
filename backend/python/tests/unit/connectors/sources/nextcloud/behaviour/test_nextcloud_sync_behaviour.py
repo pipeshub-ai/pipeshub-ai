@@ -583,6 +583,106 @@ class TestFilters:
         names = await self.run_with(server, db, store, {"file_extensions": {"type": "multiselect", "operator": "not_in", "value": ["pdf"]}})
         assert names == {"notes.txt", "cat.png", "readme.txt", "LICENSE"}
 
+    async def narrow_to(self, server, db, store, filters) -> NextcloudConnector:
+        """Sync everything, then save ``filters``; saving them clears the sync points, so the next run is full."""
+        seed_drive(server)
+        connector = await make_connector(server, db, store)
+        await connector.run_sync()
+        assert "q1.pdf" in db.names()
+        connector.config_service.config = {**connector.config_service.config,
+                                           "filters": {"sync": {"values": filters}}}
+        store.sync_points.clear()
+        return connector
+
+    async def test_a_narrowed_extension_filter_removes_the_files_it_now_leaves_out(self, server, db, store) -> None:
+        connector = await self.narrow_to(server, db, store, {"file_extensions": {"type": "multiselect", "operator": "not_in", "value": ["pdf"]}})
+
+        await connector.run_sync()
+
+        assert db.deleted == ["q1.pdf"]
+        assert db.names() == {"Docs", "Reports", "Photos", "notes.txt", "cat.png", "readme.txt"}
+        assert store.cursor() == str(server.latest_activity_id)
+
+    async def test_a_narrowed_date_filter_removes_the_files_it_now_leaves_out(self, server, db, store) -> None:
+        seed_drive(server)
+        server.add_file("old.txt", modified=datetime(2020, 1, 1, tzinfo=timezone.utc))
+        connector = await make_connector(server, db, store)
+        await connector.run_sync()
+        connector.config_service.config = {**connector.config_service.config, "filters": {"sync": {"values": {
+            "modified": {"type": "datetime", "operator": "is_after", "value": {"start": 1735689600000}}}}}}
+        store.sync_points.clear()
+
+        await connector.run_sync()
+
+        assert db.deleted == ["old.txt"]
+
+    async def test_a_full_sync_removes_a_file_deleted_while_no_cursor_tracked_it(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        server.delete("Photos/cat.png")
+        server.activities.clear()
+        store.sync_points.clear()
+
+        await connector.run_sync()
+
+        assert db.deleted == ["cat.png"]
+
+    async def test_a_full_sync_removes_a_trashed_file_the_drive_no_longer_has(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        db.by_name("cat.png").is_deleted = True
+        server.delete("Photos/cat.png")
+        server.activities.clear()
+        store.sync_points.clear()
+
+        await connector.run_sync()
+
+        assert db.deleted == ["cat.png"], "the record scan must see trashed records, or this one stays forever"
+
+    @pytest.mark.parametrize("bad", BAD_ANSWERS)
+    async def test_a_listing_that_fails_after_a_narrowed_filter_removes_nothing(self, server, db, store, bad) -> None:
+        connector = await self.narrow_to(server, db, store, {"file_extensions": {"type": "multiselect", "operator": "not_in", "value": ["pdf"]}})
+        server.outage("PROPFIND", lambda p: True, bad)
+
+        await connector.run_sync()
+
+        assert db.deleted == []
+        assert "q1.pdf" in db.names()
+        assert store.cursor() is None, "the next run is a full sync again, which finishes the removal"
+
+    async def test_an_entry_that_fails_after_a_narrowed_filter_removes_nothing(self, server, db, store) -> None:
+        connector = await self.narrow_to(server, db, store, {"file_extensions": {"type": "multiselect", "operator": "not_in", "value": ["pdf"]}})
+        db.fail_lookup_for = {ids_of(server)["notes.txt"]}
+
+        await connector.run_sync()
+
+        assert db.deleted == []
+
+    async def test_records_that_cannot_be_read_are_left_alone_and_retried(self, server, db, store) -> None:
+        connector = await self.narrow_to(server, db, store, {"file_extensions": {"type": "multiselect", "operator": "not_in", "value": ["pdf"]}})
+        db.fail_record_scan = True
+
+        await connector.run_sync()
+        assert db.deleted == []
+        assert store.cursor() is None, "no cursor, so the next run is a full sync that tries again"
+
+        db.fail_record_scan = False
+        await connector.run_sync()
+        assert db.deleted == ["q1.pdf"]
+        assert store.cursor() == str(server.latest_activity_id)
+
+    async def test_one_failed_removal_does_not_stop_the_rest(self, server, db, store) -> None:
+        connector = await self.narrow_to(server, db, store, {"file_extensions": {"type": "multiselect", "operator": "in", "value": ["png"]}})
+        db.fail_delete_for = {ids_of(server)["notes.txt"]}
+
+        await connector.run_sync()
+        assert set(db.deleted) == {"q1.pdf", "readme.txt"}
+        assert "notes.txt" in db.names()
+        assert store.cursor() is None
+
+        db.fail_delete_for.clear()
+        await connector.run_sync()
+        assert "notes.txt" not in db.names()
+        assert store.cursor() == str(server.latest_activity_id)
+
     async def test_modified_date_window(self, server, db, store) -> None:
         seed_drive(server)
         server.add_file("old.txt", modified=datetime(2020, 1, 1, tzinfo=timezone.utc))
@@ -1468,6 +1568,19 @@ class TestDownloadAndReindex:
         with pytest.raises(HTTPException) as not_ready:
             await connector.stream_record(db.by_name("cat.png"))
         assert not_ready.value.status_code == 409
+
+    async def test_a_file_record_that_cannot_be_read_is_not_reported_as_missing(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        record = db.by_name("q1.pdf")
+        db.fail_file_record_for.add(record.id)
+        downloads = len(server.calls("GET", WEBDAV_PREFIX))
+
+        with pytest.raises(HTTPException) as failed:
+            await connector.stream_record(record)
+
+        assert failed.value.status_code == 500
+        assert "try again" in failed.value.detail
+        assert len(server.calls("GET", WEBDAV_PREFIX)) == downloads
 
     @pytest.mark.parametrize("name", ["Docs", "Reports"])
     async def test_a_folder_download_is_refused(self, server, db, store, name) -> None:

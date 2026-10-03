@@ -1151,3 +1151,77 @@ class TestRedisScrollCeilingAndFanOut:
 
         await service.query_nearest_points("records", reqs)
         assert active["max"] <= 8, f"fan-out reached {active['max']}"
+
+
+class TestRedisUpdatePayloadByIds:
+    @pytest.mark.asyncio
+    async def test_hsets_only_the_keys_that_exist(self, service, mock_redis_client):
+        pipeline = mock_redis_client.pipeline.return_value
+        pipeline.execute_command = MagicMock()
+        pipeline.execute = AsyncMock(side_effect=[[1, 0], [1]])
+
+        await service.update_payload_by_ids("entities", ["p1", "p2"], {"connectorIds": ["c1", "c2"]})
+
+        issued = [c.args for c in pipeline.execute_command.call_args_list]
+        assert issued[:2] == [("EXISTS", "entities:p1"), ("EXISTS", "entities:p2")]
+        assert issued[2:] == [("HSET", "entities:p1", "connectorIds", "c1,c2")]
+
+    @pytest.mark.asyncio
+    async def test_no_ids_makes_no_call(self, service, mock_redis_client):
+        await service.update_payload_by_ids("entities", [], {"x": 1})
+        mock_redis_client.pipeline.assert_not_called()
+
+
+class TestRedisRetrievePoints:
+    @pytest.mark.asyncio
+    async def test_pipelines_hgetall_and_skips_missing_keys(self, service, mock_redis_client):
+        pipeline = mock_redis_client.pipeline.return_value
+        pipeline.execute_command = MagicMock()
+        pipeline.execute = AsyncMock(return_value=[
+            {b"page_content": b"Legal", b"metadata_entityId": b"e1", b"metadata_level": b"1",
+             b"connectorIds": b"c1,c2", b"dense_embedding": b"\x00\x01"},
+            {},
+        ])
+
+        points = await service.retrieve_points("entities", ["p1", "p2"])
+
+        issued = [c.args for c in pipeline.execute_command.call_args_list]
+        assert issued == [("HGETALL", "entities:p1"), ("HGETALL", "entities:p2")]
+        (point,) = points
+        assert point.id == "p1"
+        assert point.payload["page_content"] == "Legal"
+        assert point.payload["metadata"]["entityId"] == "e1"
+        assert point.payload["connectorIds"] == ["c1", "c2"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reply_raises(self, service, mock_redis_client):
+        pipeline = mock_redis_client.pipeline.return_value
+        pipeline.execute_command = MagicMock()
+        pipeline.execute = AsyncMock(return_value=[RuntimeError("WRONGTYPE")])
+
+        with pytest.raises(RuntimeError):
+            await service.retrieve_points("entities", ["p1"])
+
+    @pytest.mark.asyncio
+    async def test_no_ids_makes_no_call(self, service, mock_redis_client):
+        assert await service.retrieve_points("entities", []) == []
+        mock_redis_client.pipeline.assert_not_called()
+
+
+class TestRedisScrollOffsetAfterDelete:
+    """The offset is a LIMIT position: deleted points free their places."""
+
+    @pytest.mark.parametrize("next_offset,deleted,expected", [
+        ("20", 3, "17"),
+        ("20", 0, "20"),
+        ("2", 5, "0"),
+        (None, 3, None),
+    ])
+    def test_steps_back_by_the_deleted_count(self, next_offset, deleted, expected):
+        assert _make_redis_service().scroll_offset_after_delete(next_offset, deleted) == expected
+
+    def test_key_based_backends_keep_their_cursor(self):
+        from app.services.vector_db.interface.vector_db import IVectorDBService
+
+        svc = MagicMock(spec=IVectorDBService)
+        assert IVectorDBService.scroll_offset_after_delete(svc, "point-id-42", 3) == "point-id-42"

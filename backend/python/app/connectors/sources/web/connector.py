@@ -72,13 +72,16 @@ from app.models.entities import (
     RecordType,
     User,
 )
+from app.connectors.sources.web.address_guard import create_guarded_session, is_unsafe_url
 from app.connectors.sources.web.fetch_strategy import (
     MAX_RATE_LIMIT_BACKOFF,
     FetchResponse,
     build_stealth_headers,
     fetch_url_with_fallback,
     too_many_redirects_response,
+    unsafe_address_response,
 )
+from app.connectors.sources.web.browser_supervisor import BrowserUnavailableError
 from app.connectors.sources.web.crawl4ai_fetcher import Crawl4AIFetcher, FetchResult, get_shared_fetcher, release_shared_fetcher, resolve_fetch_status_code
 from app.connectors.sources.web.robots import RobotsRules
 from app.connectors.sources.web.csr_detection import CSR_PROBE_JS, PRE_HYDRATION_INIT_SCRIPT, analyze_rendering
@@ -177,6 +180,7 @@ TOO_MANY_REDIRECTS_REASON = (
     "This page redirects too many times, so it couldn't be fetched. "
     "Check the address in a browser, then sync again."
 )
+UNSAFE_ADDRESS_REASON = "This address is on a private or internal network, so it wasn't fetched."
 ROBOTS_MAX_BYTES = 512 * 1024
 
 DOCUMENT_MIME_TYPES = {
@@ -484,7 +488,7 @@ class WebConnector(BaseConnector):
 
             # Initialize aiohttp session with realistic browser headers
             timeout = aiohttp.ClientTimeout(total=30)
-            self.session = aiohttp.ClientSession(
+            self.session = create_guarded_session(
                 timeout=timeout,
                 headers={
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -894,6 +898,19 @@ class WebConnector(BaseConnector):
                 message=message + self._robots_summary(),
             )
 
+        except BrowserUnavailableError as e:
+            # Raised before process_retry_urls, so no page is recorded as unreachable for a fault of ours.
+            self.logger.error("❌ Web sync stopped, headless browser unavailable: %s", e)
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="Web crawl stopped",
+                message=(
+                    "The browser that renders this site's pages stopped and could not be restarted. "
+                    f"{self.processed_urls} pages were saved before it stopped. Sync again to continue."
+                ),
+            )
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error during web sync: {e}", exc_info=True)
             raise
@@ -926,6 +943,8 @@ class WebConnector(BaseConnector):
                     await self.data_entities_processor.on_updated_record_permissions(record_update.record, record_update.new_permissions)
                     self.processed_urls += 1
 
+        except BrowserUnavailableError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error crawling single page {url}: {e}", exc_info=True)
 
@@ -1123,13 +1142,15 @@ class WebConnector(BaseConnector):
                     except (asyncio.CancelledError, Exception):
                         pass
 
-            if producer_error is not None:
-                raise producer_error
-
             if batch_records:
                 await self.data_entities_processor.on_new_records(batch_records)
                 self.processed_urls += len(batch_records)
 
+            if producer_error is not None:
+                raise producer_error
+
+        except BrowserUnavailableError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error in recursive crawl: {e}", exc_info=True)
             raise
@@ -1318,7 +1339,7 @@ class WebConnector(BaseConnector):
                                 current_url,
                                 raw_result.status_code if raw_result else "connection error",
                             )
-                            crawl4ai_resp = await self._headless_fetch(current_url)
+                            crawl4ai_resp = await self._headless_fallback_fetch(current_url)
                             if crawl4ai_resp is not None and crawl4ai_resp.success and crawl4ai_resp.status_code < HttpStatusCode.BAD_REQUEST.value:
                                 raw_result = crawl4ai_resp
 
@@ -1387,7 +1408,8 @@ class WebConnector(BaseConnector):
             except Exception:
                 pass
 
-        if self._excluded_by_extension_filter(result):
+        if await self._excluded_by_extension_filter(result):
+            await self._remove_filtered_out(result, requested_url)
             return False
         if redirected:
             self._landed_urls.add(landed)
@@ -1406,7 +1428,7 @@ class WebConnector(BaseConnector):
         # headless won't change the answer.
         if result.status_code in {404, 405, 410, 413}:
             return False
-        if result.headers.get("X-Fetch-Skip-Reason") == "too_many_redirects":
+        if result.headers.get("X-Fetch-Skip-Reason") in {"too_many_redirects", "unsafe_address"}:
             return False  # the browser would follow the same chain, without checking each hop
         return True  # Bot-block, rate-limit, or server error — try headless
 
@@ -1737,6 +1759,14 @@ class WebConnector(BaseConnector):
             self._crawl4ai_result_to_response(result, url), url, no_answer=self._browser_got_no_answer(result),
         )
 
+    async def _headless_fallback_fetch(self, url: str) -> FetchResponse | None:
+        """The browser as a second try after plain HTTP: without one, the plain-HTTP answer stands."""
+        try:
+            return await self._headless_fetch(url)
+        except BrowserUnavailableError as e:
+            self.logger.warning("⚠️ Headless fallback skipped for %s: %s", url, e)
+            return None
+
     async def _headless_fetch_many(self, urls: list[str]) -> list[FetchResponse | None]:
         """Fetch a batch of URLs via crawl4ai concurrently; documents go over plain HTTP."""
         assert self.crawl4ai_fetcher is not None
@@ -1769,6 +1799,8 @@ class WebConnector(BaseConnector):
         if probed[1] == PROBE_UNENDING:
             return too_many_redirects_response(url)
         landing = probed[0]
+        if await is_unsafe_url(landing):
+            return unsafe_address_response(landing)
         return self._out_of_scope_response(landing) if self._outside_crawl(landing) else self._robots_skip_response(landing)
 
     @staticmethod
@@ -1913,6 +1945,8 @@ class WebConnector(BaseConnector):
         if self.session is None:
             return None
         for _ in range(MAX_PROBE_REDIRECTS + 1):
+            if await is_unsafe_url(url):
+                return url, 0, None  # never requested: not a public address
             try:
                 status, location, content_type = await self._probe_hop("HEAD", url)
             except (asyncio.TimeoutError, aiohttp.ClientError, OSError):
@@ -2004,6 +2038,7 @@ class WebConnector(BaseConnector):
                 reason = (
                     self._too_large_reason() if skip == "max_size_exceeded"
                     else TOO_MANY_REDIRECTS_REASON if skip == "too_many_redirects"
+                    else UNSAFE_ADDRESS_REASON if skip == "unsafe_address"
                     else None
                 )
                 self._record_final_failure(
@@ -2076,9 +2111,14 @@ class WebConnector(BaseConnector):
             "Raise the Maximum Size in MB setting to include it, then sync again."
         )
 
-    def _excluded_by_extension_filter(self, result: FetchResponse) -> bool:
+    async def _excluded_by_extension_filter(self, result: FetchResponse) -> bool:
         """Checked after links are extracted: an "only PDFs" filter must still crawl the pages linking to them."""
-        content_type = result.headers.get("Content-Type", "").lower()
+        content_type = (self._header(result.headers, "Content-Type") or "").lower()
+        if not content_type and result.status_code == HTTPStatus.NOT_MODIFIED:
+            # A 304 has no body and often no Content-Type; without one, an extensionless
+            # URL would read as html. The stored copy it vouches for says what the page is.
+            stored = await self._stored_record(result.final_url)
+            content_type = (stored.mime_type or "").lower() if stored else ""
         _, extension = self._determine_mime_type(result.final_url, content_type)
         return not self._pass_extension_filter(extension)
 
@@ -2121,15 +2161,17 @@ class WebConnector(BaseConnector):
                                 url,
                                 raw.status_code if raw else "connection error",
                             )
-                            crawl4ai_resp = await self._headless_fetch(url)
+                            crawl4ai_resp = await self._headless_fallback_fetch(url)
                             if crawl4ai_resp is not None and crawl4ai_resp.success and crawl4ai_resp.status_code < HttpStatusCode.BAD_REQUEST.value:
                                 raw = crawl4ai_resp
                 result = await self._validate_fetch_result(url, depth, referer, raw)
-                if (
-                    result is None
-                    or self._excluded_by_extension_filter(result)
-                    or not await self._robots_allows_landing(url, result)
-                ):
+                if result is None:
+                    return None
+                # Robots first: a landing it refuses was never loaded, so its answer can't remove anything.
+                if not await self._robots_allows_landing(url, result):
+                    return None
+                if await self._excluded_by_extension_filter(result):
+                    await self._remove_filtered_out(result, url)
                     return None
 
             if result.status_code == HTTPStatus.NOT_MODIFIED:
@@ -2151,11 +2193,10 @@ class WebConnector(BaseConnector):
                     timeout=15, max_size_mb=self.max_size_mb, allow_hop=self._hop_allowed,
                 )
                 result = await self._validate_fetch_result(url, depth, referer, refetched)
-                if (
-                    result is None
-                    or result.status_code == HTTPStatus.NOT_MODIFIED
-                    or self._excluded_by_extension_filter(result)
-                ):
+                if result is None or result.status_code == HTTPStatus.NOT_MODIFIED:
+                    return None
+                if await self._excluded_by_extension_filter(result):
+                    await self._remove_filtered_out(result, url)
                     return None
 
             final_url = result.final_url
@@ -2358,6 +2399,8 @@ class WebConnector(BaseConnector):
 
             return record_update
 
+        except BrowserUnavailableError:
+            raise
         except asyncio.TimeoutError:
             self.logger.warning(f"⚠️ Timeout fetching {url}")
             return None
@@ -2625,6 +2668,34 @@ class WebConnector(BaseConnector):
             self._gone_this_sync.add(external_id)
             return
         self.logger.info("Removing %s: gone, or moved to another stored page, on two syncs in a row", url)
+        await self._remove_record(record, url)
+
+    async def _remove_filtered_out(self, result: FetchResponse, requested_url: str) -> None:
+        """Remove what we stored for a page whose answer the file-type filter now leaves out.
+
+        Only a page the site actually answered gets here, so a narrowed filter removes
+        what it excludes, and a fetch that failed removes nothing. The page is the one
+        the answer came from. A requested URL that now redirects to it keeps its own
+        record unless the filter leaves out that record's type too: a landing the
+        filter drops is never kept, so the usual redirect cleanup does not run for it.
+        Folder placeholders stay: they hold the tree
+        together, not content.
+        """
+        record = await self._stored_record(result.final_url)
+        if record is not None and not record.is_internal:
+            self.logger.info("Removing %s: the file-type filter now leaves it out", result.final_url)
+            await self._remove_record(record, result.final_url)
+        if self._normalize_url(requested_url) == self._normalize_url(result.final_url):
+            return
+        old = await self._stored_record(requested_url)
+        if old is None or old.is_internal or (record is not None and old.id == record.id):
+            return
+        _, old_extension = self._determine_mime_type(requested_url, (old.mime_type or "").lower())
+        if not self._pass_extension_filter(old_extension):
+            self.logger.info("Removing %s: the file-type filter now leaves it out", requested_url)
+            await self._remove_record(old, requested_url)
+
+    async def _remove_record(self, record: Record, url: str) -> None:
         await self.data_entities_processor.on_record_deleted(record.id)
         if record.storage_document_id and not await self._delete_storage_document(record.storage_document_id):
             self.logger.warning("Removed %s but could not delete its stored copy %s", url, record.storage_document_id)
@@ -3111,8 +3182,8 @@ class WebConnector(BaseConnector):
                 token = await self._get_storage_token()
                 download_endpoint = f"{storage_url}/api/v1/document/internal/{record.storage_document_id}/download"
 
-                owned_session = self.session is None
-                session = self.session or aiohttp.ClientSession()
+                # Not self.session: the storage service is internal, which the crawl's session refuses.
+                session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
                 try:
                     async with session.get(
                         download_endpoint,
@@ -3126,8 +3197,7 @@ class WebConnector(BaseConnector):
                                 if signed_url:
                                     return signed_url
                 finally:
-                    if owned_session:
-                        await session.close()
+                    await session.close()
             except Exception as e:
                 self.logger.warning("Failed to get storage signed URL for record %s: %s", record.id, e)
 
@@ -3918,7 +3988,12 @@ class WebConnector(BaseConnector):
                 raise connector_not_ready(self.display_name)
 
             if self.use_headless_browser and self.crawl4ai_fetcher:
-                result = await self._headless_fetch(record.weburl, walk_first=False)
+                try:
+                    result = await self._headless_fetch(record.weburl, walk_first=False)
+                except BrowserUnavailableError as e:
+                    # Our browser failed, not the site: the page may be fine, so no site status is reported.
+                    self.logger.warning("Headless browser unavailable for record %s: %s", record.id, e)
+                    raise internal_service_status(HttpStatusCode.SERVICE_UNAVAILABLE.value) from e
             else:
                 result = await fetch_url_with_fallback(
                     url=record.weburl,

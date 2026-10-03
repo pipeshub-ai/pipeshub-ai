@@ -25,6 +25,7 @@ from app.exceptions.fastapi_responses import Status
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import GroupType
 from app.modules.demo_data.access import excluded_demo_connector_ids
+from app.models.entities import substitute_user_email
 from app.modules.retrieval.result_merging import (
     CollectionResults,
     ResultMerger,
@@ -339,11 +340,17 @@ class RetrievalService:
                 config_node_constants.AI_MODELS.value,
                 use_cache=use_cache
             )
-            if ai_models and "embedding" in ai_models and ai_models["embedding"]:
-                for config in ai_models["embedding"]:
-                    # Only one embedding model is supported
-                    if "configuration" in config and "model" in config["configuration"]:
-                        return config["configuration"]["model"]
+            embedding_configs = (ai_models or {}).get("embedding") or []
+            if embedding_configs:
+                # The model that embeds: the default one, else the first, as
+                # get_embedding_model_instance picks it.
+                config = next(
+                    (c for c in embedding_configs if c.get("isDefault", False)),
+                    embedding_configs[0],
+                )
+                model = (config.get("configuration") or {}).get("model")
+                if model:
+                    return model
 
             # Return default model if no embedding config found
             return DEFAULT_EMBEDDING_MODEL
@@ -512,8 +519,17 @@ class RetrievalService:
                     must=must, should=should
                 )
             elif virtual_record_ids_from_tool:
-                filter  = await self.vector_db_service.filter_collection(
-                        must={"orgId": org_id,"virtualRecordId": virtual_record_ids_from_tool},
+                # Intersect before the vector query: rows outside the
+                # accessible set are dropped afterwards anyway, and letting
+                # them into the top-k crowds out the ones that survive.
+                scoped_virtual_ids = [
+                    vid for vid in dict.fromkeys(virtual_record_ids_from_tool)
+                    if vid in accessible_virtual_id_to_record_id
+                ]
+                if not scoped_virtual_ids:
+                    return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                filter = await self.vector_db_service.filter_collection(
+                        must={"orgId": org_id, "virtualRecordId": scoped_virtual_ids},
                     )
             else:
                 filter = await self.vector_db_service.filter_collection(
@@ -581,6 +597,16 @@ class RetrievalService:
                 self.logger.error("Failed to fetch records by record IDs")
                 return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
+            # Resolve the viewer's email here, before the maps below start sharing
+            # these dicts: `virtual_to_record_map` reaches the citation builders via
+            # `get_record`, which copies `webUrl` verbatim onto the blob record.
+            user_email = user.get("email") if user else None
+            for r in fetched_records:
+                if r and r.get("webUrl"):
+                    r["webUrl"] = substitute_user_email(
+                        r["webUrl"], user_email, r.get("connectorName")
+                    )
+
             record_id_to_record_map = {}
             for r in fetched_records:
                 if r:
@@ -600,7 +626,7 @@ class RetrievalService:
 
             if not unique_record_ids:
                 return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
-            self.logger.debug(f"Unique record IDs count: {len(unique_record_ids)}")
+            self.logger.info(f"Unique record IDs count: {len(unique_record_ids)}")
 
             file_record_ids_to_fetch = []
             mail_record_ids_to_fetch = []
@@ -626,10 +652,6 @@ class RetrievalService:
                         result["metadata"]["connectorId"] = record.get("connectorId", None)
                         result["metadata"]["kbId"] = record.get("kbId", None)
                         weburl = record.get("webUrl")
-                        if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
-                            user_email = user.get("email") if user else None
-                            if user_email:
-                                weburl = weburl.replace("{user.email}", user_email)
                         result["metadata"]["webUrl"] = weburl
                         result["metadata"]["recordName"] = record.get("recordName")
                         result["metadata"]["previewRenderable"] = record.get("previewRenderable", True)
@@ -801,14 +823,17 @@ class RetrievalService:
                 elif record_type == "mail" and record_id in mails_map:
                     mail = mails_map[record_id]
                     weburl = mail.get("webUrl")
-                    if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
-                        user_email = user.get("email") if user else None
-                        if user_email:
-                            weburl = weburl.replace("{user.email}", user_email)
                     fallback_mimetype = "text/html"
 
                 if weburl:
-                    result["metadata"]["webUrl"] = weburl
+                    resolved_weburl = substitute_user_email(
+                        weburl, user_email, record.get("connectorName")
+                    )
+                    result["metadata"]["webUrl"] = resolved_weburl
+                    # `record` is the same object virtual_to_record_map holds (see
+                    # record_id_to_record_map / _create_virtual_to_record_mapping),
+                    # so citation building via chat_helpers.get_record() needs this too.
+                    record["webUrl"] = resolved_weburl
 
                 if fallback_mimetype:
                     result["metadata"]["mimeType"] = fallback_mimetype
@@ -898,8 +923,6 @@ class RetrievalService:
             return self._create_empty_response(f"Bad request: {str(e)}", Status.ERROR)
         except Exception as e:
             self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
-            if virtual_record_ids_from_tool:
-                return {}
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
     async def _container_filter_enabled(self) -> bool:

@@ -54,7 +54,11 @@ services:
       - NODE_ENV=${NODE_ENV:-development}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      # The Web and RSS connectors crawl the web-fixtures service, which is on the private Docker network.
+      - WEB_CONNECTOR_ALLOWED_HOSTS=web-fixtures
       - STRICT_MODE=${STRICT_MODE:-false}
+      # The session-revocation checks look within seconds of a sign-out; the product default is 30s.
+      - SESSION_CHECK_CACHE_SECONDS=${SESSION_CHECK_CACHE_SECONDS:-2}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       # Security settings - allow override with custom secret
@@ -127,6 +131,7 @@ services:
       # Rate limit config
       - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-5000}
       - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
+      - MAX_AUTH_REQUESTS_PER_MINUTE=${MAX_AUTH_REQUESTS_PER_MINUTE:-1000}
 
       # Set to true to replace secrets in config API responses with **** markers
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
@@ -137,6 +142,9 @@ services:
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      # One minute rather than twenty, so the expired-link test waits a minute, not
+      # twenty. Only forgot-password links use it; invites have their own lifetime.
+      - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-60s}
       
       # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
@@ -146,6 +154,9 @@ services:
       # Set an explicit integer only to pin a hard ceiling.
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-}
+
+      # Storage config
+      - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-true}
 
       - OPIK_API_KEY=${OPIK_API_KEY:-}
       - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
@@ -250,6 +261,39 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+  # An external MCP server that agent tests register and call, so "an agent
+  # calls an MCP tool" is checked without a third-party service. Its call log
+  # is read through the published port (integration-tests/helper/mcp_fixture.py).
+  mcp-fixture:
+    image: python:3.12.11-alpine3.22@sha256:efcdfa6a6b2fd2afb9c7dfa9a5b288a6f68338b5cfdebe6b637d986067d85757
+    restart: always
+    command: ["python", "/srv/server.py", "--port", "8080"]
+    volumes:
+      - ../../integration-tests/mcp_fixture:/srv:ro
+    ports:
+      - "127.0.0.1:8097:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/__fixture__/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # A local model server for the weekly Ollama run of the AI model tests
+  # (.github/workflows/integration-tests-ollama.yml). Off unless the ollama
+  # profile is on; the job pulls its small models after start-up.
+  ollama:
+    image: ollama/ollama:0.34.4@sha256:8262851b2846b87c649eddf3e76beb270c52f4d1bc94559f47efde16b0841551
+    profiles: ["ollama"]
+    restart: always
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          memory: 4G
 
   # MariaDB, like postgres-source, is a connector *source* for the MariaDB
   # connector's tests, not a store the platform uses.
@@ -674,6 +718,8 @@ volumes:
   pipeshub_data:
     driver: local
   pipeshub_root_local:
+    driver: local
+  ollama_models:
     driver: local
   pipeshub_hf_cache:
     driver: local

@@ -1775,7 +1775,8 @@ class TestStreamAttachmentRecord:
         assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_convert_to_pdf_for_attachment(self, connector):
+    @pytest.mark.parametrize("file_name", ["file.docx", "../../file.docx", "/etc/file.docx"])
+    async def test_convert_to_pdf_for_attachment(self, connector, file_name):
         record = _make_mock_record(
             external_record_id="msg123~1",
             parent_external_record_id="msg123",
@@ -1805,10 +1806,12 @@ class TestStreamAttachmentRecord:
              patch("builtins.open", MagicMock()):
             mock_stream.return_value = MagicMock()
             await connector._stream_attachment_record(
-                gmail_service, "msg123~1", record, "file.docx",
+                gmail_service, "msg123~1", record, file_name,
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 convertTo=MimeTypes.PDF.value
             )
+            path, temp_dir = mock_convert.await_args.args
+            assert os.path.dirname(path) == temp_dir
 
     @pytest.mark.asyncio
     async def test_message_404_during_fetch(self, connector):
@@ -2242,7 +2245,8 @@ class TestStreamFromDrive:
         assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_convert_to_pdf_from_drive(self, connector):
+    @pytest.mark.parametrize("file_name", ["file.docx", "../../file.docx", "/etc/file.docx"])
+    async def test_convert_to_pdf_from_drive(self, connector, file_name):
         record = _make_mock_record()
 
         with patch(
@@ -2267,10 +2271,12 @@ class TestStreamFromDrive:
             mock_stream.return_value = MagicMock()
 
             await connector._stream_from_drive(
-                "drive-id", record, "file.docx", "application/vnd.openxmlformats",
+                "drive-id", record, file_name, "application/vnd.openxmlformats",
                 convertTo=MimeTypes.PDF.value, user_email="u@e.com"
             )
             mock_convert.assert_called_once()
+            path, temp_dir = mock_convert.await_args.args
+            assert os.path.dirname(path) == temp_dir
 
     @pytest.mark.asyncio
     async def test_drive_error_raises_http(self, connector):

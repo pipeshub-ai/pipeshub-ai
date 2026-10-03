@@ -5,7 +5,10 @@ import nock from 'nock'
 import * as cmConfig from '../../../../src/modules/configuration_manager/config/config'
 import * as encryptorModule from '../../../../src/libs/encryptor/encryptor'
 import { CONFIG_SECRET_PLACEHOLDER } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets'
-import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
+import { AIServiceCommand, type AICommandOptions } from '../../../../src/libs/commands/ai_service/ai.service.command'
+import type { AIServiceResponse } from '../../../../src/modules/enterprise_search/types/conversation.interfaces'
+import type { AIModelConfiguration } from '../../../../src/modules/configuration_manager/types/ai-models.types'
+import type { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import * as generateAuthTokenModule from '../../../../src/modules/auth/utils/generateAuthToken'
 import * as s3HealthCheckModule from '../../../../src/modules/storage/utils/s3-health-check.util'
 import {
@@ -14,6 +17,7 @@ import {
   createSmtpConfig,
   getSmtpConfig,
   getSlackBotConfigs,
+  getInternalSlackBotConfigs,
   createSlackBotConfig,
   updateSlackBotConfig,
   deleteSlackBotConfig,
@@ -34,6 +38,7 @@ import {
   getGoogleWorkspaceOauthConfig,
   setGoogleWorkspaceOauthConfig,
   getFrontendUrl,
+  getDesktopFrontendUrl,
   setFrontendUrl,
   getConnectorPublicUrl,
   setConnectorPublicUrl,
@@ -562,6 +567,90 @@ describe('ConfigurationManager Controller', () => {
       expect(response.status).to.equal('success')
       expect(response.configs).to.be.an('array').that.is.empty
     })
+
+    it('should mask the credentials in the admin response', async () => {
+      const stored = {
+        configs: [
+          {
+            id: 'cfg-1',
+            name: 'MyBot',
+            botToken: 'xoxb-real-token',
+            signingSecret: 'real-signing-secret',
+          },
+        ],
+      }
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(mockEncService.encrypt(JSON.stringify(stored))),
+      })
+      const handler = getSlackBotConfigs(kvs)
+      const res = createMockResponse()
+
+      await handler(createMockRequest(), res, createMockNext())
+
+      const config = res.json.firstCall.args[0].configs[0]
+      expect(config.botToken).to.not.equal('xoxb-real-token')
+      expect(config.signingSecret).to.not.equal('real-signing-secret')
+    })
+  })
+
+  describe('getInternalSlackBotConfigs', () => {
+    const storedConfig = {
+      id: 'cfg-1',
+      name: 'MyBot',
+      agentId: 'agent-1',
+      botToken: 'xoxb-real-token',
+      signingSecret: 'real-signing-secret',
+      createdAt: 1700000000000,
+      updatedAt: 1700000000001,
+    }
+
+    function handlerForStoredConfig() {
+      const kvs = createMockKeyValueStore({
+        get: sinon
+          .stub()
+          .resolves(mockEncService.encrypt(JSON.stringify({ configs: [storedConfig] }))),
+      })
+      return getInternalSlackBotConfigs(kvs)
+    }
+
+    // The bot verifies signatures and acts as the bot, so unlike the admin
+    // route it needs the real credentials.
+    it('should return the unmasked credentials the bot needs', async () => {
+      const res = createMockResponse()
+
+      await handlerForStoredConfig()(createMockRequest(), res, createMockNext())
+
+      const config = res.json.firstCall.args[0].configs[0]
+      expect(config.botToken).to.equal('xoxb-real-token')
+      expect(config.signingSecret).to.equal('real-signing-secret')
+      expect(config.id).to.equal('cfg-1')
+      expect(config.agentId).to.equal('agent-1')
+    })
+
+    it('should not return fields verification does not need', async () => {
+      const res = createMockResponse()
+
+      await handlerForStoredConfig()(createMockRequest(), res, createMockNext())
+
+      const config = res.json.firstCall.args[0].configs[0]
+      expect(Object.keys(config)).to.have.members([
+        'id',
+        'agentId',
+        'botToken',
+        'signingSecret',
+      ])
+    })
+
+    it('should call next when the store read fails', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().rejects(new Error('store down')),
+      })
+      const next = createMockNext()
+
+      await getInternalSlackBotConfigs(kvs)(createMockRequest(), createMockResponse(), next)
+
+      expect(next.calledOnce).to.be.true
+    })
   })
 
   describe('createSlackBotConfig', () => {
@@ -1050,6 +1139,61 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0]).to.deep.equal({ url: 'https://app.example.com' })
+    })
+  })
+
+  describe('getDesktopFrontendUrl', () => {
+    let savedFrontendPublicUrl: string | undefined
+
+    beforeEach(() => {
+      savedFrontendPublicUrl = process.env.FRONTEND_PUBLIC_URL
+      delete process.env.FRONTEND_PUBLIC_URL
+    })
+
+    afterEach(() => {
+      if (savedFrontendPublicUrl === undefined) delete process.env.FRONTEND_PUBLIC_URL
+      else process.env.FRONTEND_PUBLIC_URL = savedFrontendPublicUrl
+    })
+
+    it('rejects callers that are not the desktop app, without reading config', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = getDesktopFrontendUrl(kvs)
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(createMockRequest({ user: undefined }), res, next)
+
+      expect(next.firstCall.args[0]).to.have.property('statusCode', 403)
+      expect(res.json.called).to.be.false
+      expect(kvs.get.called).to.be.false
+    })
+
+    it('returns the stored frontend url to the desktop app, without a session', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(JSON.stringify({ frontend: { publicEndpoint: 'https://app.example.com/' } })),
+      })
+      const handler = getDesktopFrontendUrl(kvs)
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(createMockRequest({ user: undefined, headers: { 'client-name': 'desktop' } }), res, next)
+
+      expect(next.called).to.be.false
+      expect(res.json.firstCall.args[0]).to.deep.equal({ frontendUrl: 'https://app.example.com' })
+      expect(kvs.set.called).to.be.false
+    })
+
+    it('prefers FRONTEND_PUBLIC_URL over the stored value, as AppConfig.frontendUrl does', async () => {
+      process.env.FRONTEND_PUBLIC_URL = 'https://env.example.com'
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(JSON.stringify({ frontend: { publicEndpoint: 'https://app.example.com' } })),
+      })
+      const handler = getDesktopFrontendUrl(kvs)
+      const res = createMockResponse()
+
+      await handler(createMockRequest({ headers: { 'client-name': 'desktop' } }), res, createMockNext())
+
+      expect(res.json.firstCall.args[0]).to.deep.equal({ frontendUrl: 'https://env.example.com' })
     })
   })
 
@@ -3175,6 +3319,345 @@ describe('ConfigurationManager Controller', () => {
   // -----------------------------------------------------------------------
   // deleteAIModelProvider - additional tests
   // -----------------------------------------------------------------------
+  describe('embedding models: the vector store follows the model that embeds', () => {
+    const appConfig = { cmBackend: 'http://cm', aiBackend: 'http://ai' } as unknown as AppConfig
+    const IN_USE =
+      'This model is embedding your indexed content. Delete the embeddings in Labs first, then change or delete the model and re-embed.'
+
+    // Records what reaches the AI service and answers the embedding takeover
+    // check with `takeoverStatus` (400 is its answer while vectors are stored).
+    type SentModel = Pick<
+      AIModelConfiguration,
+      'provider' | 'configuration' | 'isMultimodal' | 'isReasoning' | 'isDefault' | 'contextLength'
+    >
+    type HealthCheckPayload = SentModel & { modelType: string; becomesActive?: boolean }
+    // By the time execute() runs, AIServiceCommand holds the body as the JSON string it sends.
+    type QueuedCommand = Pick<AICommandOptions, 'uri'> & { body?: string }
+    interface SentCommand {
+      uri: AICommandOptions['uri']
+      body: unknown
+    }
+    const payload = (c?: SentCommand) => c?.body as HealthCheckPayload | undefined
+    const models = (c?: SentCommand) => c?.body as SentModel[] | undefined
+
+    type AiAnswer = AIServiceResponse<{ status: string; message?: string; error?: string }>
+    const healthy: AiAnswer = { statusCode: 200, data: { status: 'healthy' } }
+    // What /health-check/embedding answers while vectors from another model are stored.
+    const collectionRefusal: AiAnswer = {
+      statusCode: 400,
+      data: { status: 'not healthy', error: 'Remove the indexed documents first', message: 'Remove the indexed documents first' },
+    }
+    const configError: AiAnswer = {
+      statusCode: 400,
+      data: { status: 'error', message: 'The model "text-embedding-nope" was not found. Check the model name.' },
+    }
+
+    function stubAiService(
+      takeoverStatus = 200,
+      healthCheck: AiAnswer = healthy,
+      takeoverRefusal: { status: string; message: string } = { status: 'not healthy', message: 'refused' },
+    ) {
+      const calls: SentCommand[] = []
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function (this: AIServiceCommand<unknown>) {
+        const command = this as unknown as QueuedCommand
+        const uri = command.uri
+        calls.push({ uri, body: command.body ? (JSON.parse(command.body) as unknown) : undefined })
+        if (uri.endsWith('/embedding-health-check')) {
+          return takeoverStatus === 200
+            ? { statusCode: 200, data: { status: 'healthy' } }
+            : { statusCode: takeoverStatus, data: takeoverRefusal }
+        }
+        if (uri.includes('/model-usage/')) {
+          return { statusCode: 200, data: { success: true, agents: [] } }
+        }
+        if (uri.endsWith('/health-check/embedding')) {
+          return healthCheck
+        }
+        return { statusCode: 200, data: { status: 'healthy' } }
+      })
+      return calls
+    }
+
+    const takeoverCalls = (calls: SentCommand[]) =>
+      calls.filter((c) => c.uri.endsWith('/embedding-health-check'))
+
+    type StoredModel = Pick<AIModelConfiguration, 'modelKey' | 'isDefault' | 'provider' | 'configuration'>
+
+    function storedModels(embedding: StoredModel[]) {
+      mockEncService.decrypt.returns(JSON.stringify({ llm: [], embedding }))
+      return createMockKeyValueStore({ get: sinon.stub().resolves('encrypted:data') })
+    }
+
+    const openai: StoredModel = { modelKey: 'k1', isDefault: true, provider: 'openai', configuration: { model: 'text-embedding-3-small' } }
+    const local: StoredModel = { modelKey: 'k2', isDefault: false, provider: 'sentenceTransformers', configuration: { model: 'BAAI/bge-small-en-v1.5' } }
+
+    async function add(kvs: ReturnType<typeof storedModels>, isDefault: boolean) {
+      const req = createMockRequest({
+        body: { modelType: 'embedding', provider: local.provider, configuration: local.configuration, isDefault },
+      })
+      await addAIModelProvider(kvs, createMockEventService(), appConfig)(req, createMockResponse(), createMockNext())
+    }
+
+    it('adding a model that is not the default leaves the vector store alone', async () => {
+      const calls = stubAiService()
+
+      await add(storedModels([openai]), false)
+
+      const check = calls.find((c) => c.uri.endsWith('/health-check/embedding'))
+      expect(payload(check)?.becomesActive).to.equal(false)
+    })
+
+    it('adding the default model lets it reshape the vector store', async () => {
+      const calls = stubAiService()
+
+      await add(storedModels([openai]), true)
+
+      const check = calls.find((c) => c.uri.endsWith('/health-check/embedding'))
+      expect(payload(check)?.becomesActive).to.equal(true)
+    })
+
+    it('adding the first embedding model lets it reshape the store, since it embeds even when not marked default', async () => {
+      const calls = stubAiService()
+
+      await add(storedModels([]), false)
+
+      const check = calls.find((c) => c.uri.endsWith('/health-check/embedding'))
+      expect(payload(check)?.becomesActive).to.equal(true)
+    })
+
+    it('refuses to delete the default embedding model while its vectors are stored', async () => {
+      const calls = stubAiService(400)
+      const kvs = storedModels([openai, local])
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await deleteAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k1' } }),
+        res,
+        next,
+      )
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].statusCode).to.equal(400)
+      expect(next.firstCall.args[0].message).to.equal(IN_USE)
+      expect(kvs.set.called).to.be.false
+      const [takeover] = takeoverCalls(calls)
+      expect(models(takeover)).to.have.length(1)
+      expect(models(takeover)?.[0]?.configuration?.model).to.equal('BAAI/bge-small-en-v1.5')
+    })
+
+    it('deletes the default embedding model when nothing is stored, and the next model takes over', async () => {
+      const calls = stubAiService(200)
+      const kvs = storedModels([openai, local])
+      const res = createMockResponse()
+
+      await deleteAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k1' } }),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(kvs.set.calledOnce).to.be.true
+      expect(takeoverCalls(calls)).to.have.length(1)
+    })
+
+    it('checks the built-in model when the last embedding model is deleted', async () => {
+      const calls = stubAiService(400)
+      const kvs = storedModels([openai])
+      const next = createMockNext()
+
+      await deleteAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k1' } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(models(takeoverCalls(calls)[0])).to.deep.equal([])
+      expect(next.firstCall.args[0].message).to.equal(IN_USE)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it('keeps the setup error when the built-in model the delete falls back to cannot be used', async () => {
+      const setupError = { status: 'error', message: 'The built-in embedding model could not be loaded.' }
+      stubAiService(400, healthy, setupError)
+      const kvs = storedModels([openai])
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await deleteAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k1' } }),
+        res,
+        next,
+      )
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal(setupError.message)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it('deletes an embedding model that is not in use without checking the store', async () => {
+      const calls = stubAiService(400)
+      const kvs = storedModels([openai, local])
+      const res = createMockResponse()
+
+      await deleteAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k2' } }),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(takeoverCalls(calls)).to.have.length(0)
+    })
+
+    async function addAnswering(healthCheck: AiAnswer) {
+      stubAiService(200, healthCheck)
+      const kvs = storedModels([openai])
+      const res = createMockResponse()
+      await addAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({
+          body: { modelType: 'embedding', provider: local.provider, configuration: local.configuration, isDefault: true },
+        }),
+        res,
+        createMockNext(),
+      )
+      return { kvs, res }
+    }
+
+    async function editDefaultModelNameAnswering(healthCheck: AiAnswer) {
+      stubAiService(200, healthCheck)
+      const kvs = storedModels([openai, local])
+      const res = createMockResponse()
+      await updateAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({
+          params: { modelType: 'embedding', modelKey: 'k1' },
+          body: { provider: openai.provider, configuration: { model: 'text-embedding-3-large' }, isDefault: true },
+        }),
+        res,
+        createMockNext(),
+      )
+      return { kvs, res }
+    }
+
+    it('gives the plain refusal when the default model being added meets stored vectors', async () => {
+      const { kvs, res } = await addAnswering(collectionRefusal)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal(IN_USE)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it("keeps the health check's own reason when the model being added is misconfigured", async () => {
+      const { kvs, res } = await addAnswering(configError)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal(configError.data?.message)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it('gives the plain refusal when an edit changes the model name of the default while vectors are stored', async () => {
+      const { kvs, res } = await editDefaultModelNameAnswering(collectionRefusal)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal(IN_USE)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it("keeps the health check's own reason when an edit to the default is misconfigured", async () => {
+      const { kvs, res } = await editDefaultModelNameAnswering(configError)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal(configError.data?.message)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it('checks the model that takes over when an edit takes the default off the model that embeds', async () => {
+      const calls = stubAiService(400)
+      const kvs = storedModels([{ ...local, isDefault: false }, openai])
+      const res = createMockResponse()
+
+      await updateAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({
+          params: { modelType: 'embedding', modelKey: 'k1' },
+          body: { provider: openai.provider, configuration: openai.configuration, isDefault: false },
+        }),
+        res,
+        createMockNext(),
+      )
+
+      const check = calls.find((c) => c.uri.endsWith('/health-check/embedding'))
+      expect(payload(check)?.becomesActive).to.equal(false)
+      expect(models(takeoverCalls(calls)[0])?.[0]?.configuration?.model).to.equal('BAAI/bge-small-en-v1.5')
+      expect(res.status.calledWith(400)).to.be.true
+      expect(kvs.set.called).to.be.false
+    })
+    it('gives the same plain refusal when an edit would hand embedding to another model while vectors are stored', async () => {
+      stubAiService(400)
+      const kvs = storedModels([{ ...local, isDefault: false }, openai])
+      const res = createMockResponse()
+
+      await updateAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({
+          params: { modelType: 'embedding', modelKey: 'k1' },
+          body: { provider: openai.provider, configuration: openai.configuration, isDefault: false },
+        }),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal(IN_USE)
+    })
+
+    it('gives the same plain refusal when setting another default while vectors are stored', async () => {
+      stubAiService(400)
+      const kvs = storedModels([openai, local])
+      const res = createMockResponse()
+
+      await updateDefaultAIModel(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k2' } }),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal(IN_USE)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it("passes on the incoming model's own health failure when setting the default", async () => {
+      stubAiService(500)
+      const kvs = storedModels([openai, local])
+      const res = createMockResponse()
+
+      await updateDefaultAIModel(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k2' } }),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.status.calledWith(500)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal('refused')
+    })
+
+    it('refuses to delete the model in use when the model taking over fails its health check', async () => {
+      stubAiService(500)
+      const kvs = storedModels([openai, local])
+      const res = createMockResponse()
+
+      await deleteAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k1' } }),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.status.calledWith(500)).to.be.true
+      expect(kvs.set.called).to.be.false
+    })
+  })
+
   describe('deleteAIModelProvider (additional)', () => {
     it('should call next on error', async () => {
       const kvs = createMockKeyValueStore({

@@ -2,8 +2,8 @@ import asyncio
 import inspect
 import ipaddress
 import os
-import re
 import shutil
+import socket
 from logging import Logger
 from typing import Any
 from urllib.parse import urlparse
@@ -29,8 +29,10 @@ from app.utils.aimodels import (
     get_image_generation_model,
     get_stt_model,
     get_tts_model,
+    require_public_endpoint,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import provider_error_code
 
 router = APIRouter(dependencies=[Depends(deny_service_tokens)])
 
@@ -92,9 +94,22 @@ def _llm_health_check_needs_outbound(provider: str, configuration: dict[str, Any
 
 
 def _looks_like_connectivity_error(exc: BaseException) -> bool:
+    # SDKs wrap the socket error: openai.APIConnectionError("Connection error.") from httpx.ConnectError.
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if _is_connectivity_error(current):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _is_connectivity_error(exc: BaseException) -> bool:
     if isinstance(
         exc,
-        (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, ConnectionError, OSError),
+        # Not bare OSError: a missing local model file is one too, and is no network fault.
+        (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, ConnectionError, socket.gaierror),
     ):
         return True
     msg = str(exc).lower()
@@ -197,10 +212,6 @@ def _extract_error_message(e: Exception) -> str:
 
     return str(e)
 
-# Provider text that is really our own exception leaking, not something a person can act on.
-_TECHNICAL_REASON = re.compile(
-    r"Traceback|object has no attribute|NoneType|<[\w.]+ object at 0x|^'[^']*'$|^\w+(Error|Exception)\b",
-)
 _SETUP_NEXT_STEP = "Check the API key, model name and endpoint, then try again."
 
 
@@ -211,15 +222,6 @@ def _provider_display_name(provider: str | None) -> str:
     return (meta or {}).get("name") or provider or "the provider"
 
 
-def _short_provider_reason(e: Exception) -> str:
-    """The provider's own one-line reason when it is readable (e.g. "Incorrect API key provided")."""
-    lines = _extract_error_message(e).strip().splitlines()
-    reason = lines[0].strip().rstrip(". ") if lines else ""
-    if not reason or _TECHNICAL_REASON.search(reason):
-        return ""
-    return reason if len(reason) <= 200 else reason[:197].rstrip() + "..."
-
-
 _WEB_SEARCH_NAMES = {"duckduckgo": "DuckDuckGo", "serper": "Serper", "tavily": "Tavily", "exa": "Exa"}
 
 
@@ -227,16 +229,91 @@ def _web_search_name(provider: str | None) -> str:
     return _WEB_SEARCH_NAMES.get(provider or "", provider or "The web search provider")
 
 
-def _embedding_unavailable_message(e: Exception | None) -> str:
-    reason = _short_provider_reason(e) if e is not None else ""
-    lead = f"The embedding model couldn't start: {reason}." if reason else "The embedding model couldn't start."
-    return f"{lead} Check it in Workspace > AI Models, then try again."
+# Failure messages are fixed text: exception and provider text go to the log only, never
+# into a response, where they could carry internals (hosts, request ids, stack frames).
+EMBEDDING_UNAVAILABLE_MESSAGE = (
+    "The embedding model couldn't start. Check it in Workspace > AI Models, then try again."
+)
 
 
-def _model_setup_failed_message(kind: str, provider: str | None, e: Exception) -> str:
-    lead = f"Couldn't connect to {_provider_display_name(provider)} with these {kind} settings"
-    reason = _short_provider_reason(e)
-    return f"{lead}: {reason}. {_SETUP_NEXT_STEP}" if reason else f"{lead}. {_SETUP_NEXT_STEP}"
+def _model_setup_failed_message(kind: str, provider: str | None) -> str:
+    return f"Couldn't connect to {_provider_display_name(provider)} with these {kind} settings. {_SETUP_NEXT_STEP}"
+
+
+# Provider answers that mean the settings are wrong, so the admin has to change them.
+_REJECTED_SETTINGS_CODES = frozenset({"auth_error", "model_not_found", "invalid_request", "request_too_large"})
+
+
+def _rejected_settings_message(code: str, kind: str, model_config: dict, model: str) -> str:
+    provider = _provider_display_name(model_config.get("provider"))
+    configuration = model_config.get("configuration") or {}
+    name = configuration.get("modelFriendlyName") or model_config.get("modelFriendlyName") or model or kind
+    if code == "auth_error":
+        return (
+            f"The API key for {name} was rejected by {provider}. "
+            "Check the key in Workspace > AI Models, then try again."
+        )
+    if code == "model_not_found":
+        # A bare 404 can also mean a wrong endpoint path (an OpenAI-compatible base URL without /v1).
+        return (
+            f"{provider} couldn't find the model \"{model}\" at this endpoint. "
+            "Check the model name (or deployment name) and the endpoint address "
+            "in Workspace > AI Models, then try again."
+        )
+    return (
+        f"{provider} refused these {kind} settings. Check the model name and its options "
+        "(such as reasoning effort or context length), then try again."
+    )
+
+
+async def _model_setup_failed_response(
+    kind: str, model_config: dict, model: str, e: Exception,
+) -> JSONResponse:
+    """What a failed model check returns: 400 when the settings are wrong, 500 otherwise.
+
+    A wrong key, model name or endpoint is the admin's to fix, so it must not
+    read as a PipesHub fault; the dialog shows the message of a 4xx verbatim.
+    Only the classified code and fixed text are returned; callers log ``e``.
+    """
+    provider = model_config.get("provider")
+    configuration = model_config.get("configuration") or {}
+    if not isinstance(configuration, dict):
+        configuration = {}
+    code = provider_error_code(e)
+    if code in _REJECTED_SETTINGS_CODES:
+        return _config_error(
+            _rejected_settings_message(code, kind, model_config, model),
+            model_config, model, error_code=code,
+        )
+    if _looks_like_connectivity_error(e):
+        # With no egress at all, re-typing the endpoint won't help, so say that instead.
+        if _llm_health_check_needs_outbound(provider or "", configuration) and not await _probe_outbound_connectivity():
+            return _outbound_connectivity_error_response(provider or "", model)
+        return _config_error(
+            f"Couldn't reach {_provider_display_name(provider)} at the endpoint in these settings. "
+            "Check the endpoint address and that PipesHub can connect to it, then try again.",
+            model_config, model, error_code="endpoint_unreachable",
+        )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "message": _model_setup_failed_message(kind, provider),
+            "details": {"provider": provider, "model": model, "error_code": "model_check_failed"},
+        },
+    )
+
+
+def _is_settings_failure(e: BaseException) -> bool:
+    """Whether the provider refused the settings or could not be reached at all."""
+    return provider_error_code(e) in _REJECTED_SETTINGS_CODES or _looks_like_connectivity_error(e)
+
+
+def _chosen_embedding_config(embedding_configs: list[dict]) -> dict:
+    """The config `initialize_embedding_model` builds: the default one, else the first."""
+    return next((c for c in embedding_configs if c.get("isDefault", False)), None) or (
+        embedding_configs[0] if embedding_configs else {}
+    )
 
 
 # HTTP statuses that mean "ask again later", never "this model cannot do it".
@@ -259,6 +336,30 @@ _CAPABILITY_ERROR_MARKERS = (
     "unknown parameter",
 )
 
+_IMAGE_EMBEDDING_SETUP_FAILED = (
+    "PipesHub couldn't set up image embedding for this provider. Check its endpoint "
+    "and API key in Workspace → AI Models, then try again."
+)
+
+_IMAGE_EMBEDDING_RETURNED_NOTHING = (
+    "The model returned no embedding for a test image, so images wouldn't be "
+    "indexed. Check its API key and endpoint and that it accepts images, then try again."
+)
+
+
+class _ImageEmbeddingSettingsError(Exception):
+    """Image embedding failed because of the model's settings (endpoint, API
+    key), not because the model cannot embed images.
+
+    Kept apart from a capability failure: telling the admin to uncheck
+    Multimodal would switch off a capability over a wrong endpoint or key.
+    `message` is fixed text; the provider's own error goes to the log only.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
 
 def _is_capability_error(exc: Exception) -> bool:
     """Whether `exc` says the model cannot do the thing, as opposed to the
@@ -278,6 +379,18 @@ def _is_capability_error(exc: Exception) -> bool:
         return False
     message = str(exc).lower()
     return any(marker in message for marker in _CAPABILITY_ERROR_MARKERS)
+
+
+async def _endpoint_refusal(config: dict) -> JSONResponse | None:
+    """A 400 for a config whose endpoint this deployment may not call, else None."""
+    configuration = config.get("configuration")
+    if not isinstance(configuration, dict):
+        return None  # the health check that follows reports the malformed config
+    try:
+        await require_public_endpoint(configuration.get("endpoint"))
+    except ValueError as e:
+        return _config_error(str(e), config, configuration.get("model", ""))
+    return None
 
 
 def _config_error(
@@ -480,7 +593,7 @@ async def llm_health_check(request: Request, llm_configs: list[dict] = Body(...)
         )
 
     for llm_config in llm_configs:
-        response = await perform_llm_health_check(llm_config, logger)
+        response = await _endpoint_refusal(llm_config) or await perform_llm_health_check(llm_config, logger)
         if response.status_code != 200:
             return response
 
@@ -523,21 +636,23 @@ async def initialize_embedding_model(request: Request, embedding_configs: list[d
                 raise HTTPException(status_code=500, detail="No default embedding model found")
     except Exception as e:
         logger.error(f"Failed to initialize embedding model: {str(e)}", exc_info=True)
+        if _is_settings_failure(e):
+            raise
         raise HTTPException(
             status_code=500,
             detail={
                 "status": "not healthy",
-                "error": _embedding_unavailable_message(e),
+                "error": EMBEDDING_UNAVAILABLE_MESSAGE,
                 "timestamp": get_epoch_timestamp_in_ms(),
             }
-        )
+        ) from e
 
     if dense_embeddings is None:
         raise HTTPException(
             status_code=500,
             detail={
                 "status": "not healthy",
-                "error": _embedding_unavailable_message(None),
+                "error": EMBEDDING_UNAVAILABLE_MESSAGE,
                 "details": {
                     "embedding_model": "initialization_failed",
                     "vector_store": "unknown",
@@ -641,7 +756,27 @@ async def handle_model_change(
         )
 
     if existing_vector_size != 0:
-        await recreate_collection(retrieval_service, embedding_size, logger)
+        try:
+            await recreate_collection(retrieval_service, embedding_size, logger)
+        except Exception as e:
+            # Reporting success would let the caller save (or delete) the model.
+            # The rebuild drops each collection before creating it, so the empty
+            # collection may be gone; the manifest keeps it, and the write path
+            # creates it again at the dimension of the model then in use.
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "not healthy",
+                    "error": (
+                        "The vector store could not be rebuilt for the new embedding "
+                        "model, so the model was not changed. The empty collection "
+                        "may already have been removed; it is created again on the "
+                        "next upload. Check that the vector store is reachable and "
+                        "try again."
+                    ),
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            ) from e
 
 async def recreate_collection(retrieval_service, embedding_size, logger) -> None:
     """Rebuild every managed collection for the new embedding dimension.
@@ -775,8 +910,13 @@ async def check_collection_info(
 @router.post("/embedding-health-check")
 async def embedding_health_check(request: Request, embedding_configs: list[dict] = Body(...)) -> JSONResponse:
     """Health check endpoint to validate embedding configurations."""
-    logger = None
+    logger = request.app.container.logger()
     try:
+        for embedding_config in embedding_configs:
+            refusal = await _endpoint_refusal(embedding_config)
+            if refusal is not None:
+                return refusal
+
         # Initialize components
         dense_embeddings, retrieval_service, logger = await initialize_embedding_model(request, embedding_configs)
 
@@ -806,9 +946,12 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
             detail = {**detail, "message": detail["error"]}
         return JSONResponse(status_code=he.status_code, content=detail)
     except Exception as e:
-        if logger:
-            logger.error(f"Embedding health check failed: {str(e)}", exc_info=True)
-        error_msg = _embedding_unavailable_message(e)
+        logger.error(f"Embedding health check failed: {str(e)}", exc_info=True)
+        if _is_settings_failure(e):
+            config = _chosen_embedding_config(embedding_configs)
+            model = (config.get("configuration") or {}).get("model") or ""
+            return await _model_setup_failed_response("embedding model", config, model, e)
+        error_msg = EMBEDDING_UNAVAILABLE_MESSAGE
         return JSONResponse(
             status_code=500,
             content={
@@ -1106,27 +1249,7 @@ async def perform_llm_health_check(
             "LLM health check failed for %s model %s (%s): %s",
             provider, model_string, friendly_name, e,
         )
-        # A refused connection from a cloud provider usually means the
-        # container has no egress at all, which no amount of re-typing the API
-        # key will fix -- so say that instead of relaying the socket error.
-        if (
-            _looks_like_connectivity_error(e)
-            and _llm_health_check_needs_outbound(provider, configuration)
-            and not await _probe_outbound_connectivity()
-        ):
-            return _outbound_connectivity_error_response(provider, model_name or model_string)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("chat model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name or model_string,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+        return await _model_setup_failed_response("chat model", llm_config, model_name or model_string, e)
 
 
 async def _check_one_llm(
@@ -1189,7 +1312,7 @@ async def _probe_vision(llm_model: BaseChatModel, logger: Logger) -> str | None:
     except Exception as image_error:
         if _is_capability_error(image_error):
             logger.info("Model rejected image input: %s", image_error)
-            return f"Model doesn't support images/vision: {_extract_error_message(image_error)}"
+            return "Model doesn't support images/vision."
         # Rate limit, gateway 5xx, auth: says nothing about vision support, so
         # reporting "no vision" here would tell the admin to disable a
         # capability the model may well have.
@@ -1214,7 +1337,8 @@ def _is_multimodal(config: dict) -> bool:
 async def _probe_image_embedding(
     embedding_config: dict, model_name: str, text_dimension: int, logger: Logger,
 ) -> str | None:
-    """None when this model really can embed an image, else why not.
+    """None when this model really can embed an image, else why it cannot.
+    Raises `_ImageEmbeddingSettingsError` when the settings are at fault.
 
     Uses the same `MultimodalEmbeddingFactory` the indexing pipeline uses, so a
     provider with no implementation is caught here rather than by images
@@ -1241,7 +1365,7 @@ async def _probe_image_embedding(
         )
     except Exception as exc:
         logger.warning("Could not build a multimodal embedding provider: %s", exc)
-        return f"This provider cannot embed images: {_extract_error_message(exc)}"
+        raise _ImageEmbeddingSettingsError(_IMAGE_EMBEDDING_SETUP_FAILED) from exc
 
     if multimodal_provider is None or not multimodal_provider.supports_multimodal():
         return (
@@ -1258,14 +1382,16 @@ async def _probe_image_embedding(
         raise
     except Exception as exc:
         if _is_capability_error(exc):
-            return f"Model cannot embed images: {_extract_error_message(exc)}"
+            logger.info("Model rejected image embedding: %s", exc)
+            return "Model cannot embed images."
         raise
 
     first = results[0] if results else None
     embedding = getattr(first, "embedding", None)
     if not embedding:
-        error = getattr(first, "error", None)
-        return f"Image embedding returned nothing{f': {error}' if error else ''}"
+        # Providers report failed calls here (a 401, a bad endpoint), not only refusals.
+        logger.warning("Image embedding probe returned no embedding: %s", getattr(first, "error", None))
+        raise _ImageEmbeddingSettingsError(_IMAGE_EMBEDDING_RETURNED_NOTHING)
     if len(embedding) != text_dimension:
         # A collection holds one vector width; text and image points must agree.
         return (
@@ -1378,9 +1504,12 @@ async def perform_embedding_health_check(
             # images silently never get indexed
             # (`vectorstore._process_image_embeddings` warns and returns []).
             if _is_multimodal(embedding_config):
-                image_error = await _probe_image_embedding(
-                    embedding_config, model_name, embedding_dimension, logger,
-                )
+                try:
+                    image_error = await _probe_image_embedding(
+                        embedding_config, model_name, embedding_dimension, logger,
+                    )
+                except _ImageEmbeddingSettingsError as exc:
+                    return _config_error(exc.message, embedding_config, model_name)
                 if image_error is not None:
                     return _config_error(
                         image_error, embedding_config, model_name,
@@ -1389,12 +1518,16 @@ async def perform_embedding_health_check(
 
             # The same collection-compatibility guard the bulk route runs. Without
             # it, changing dimensions from the model dialog reports healthy and is
-            # discovered when queries start returning nothing.
-            collection_error = await _check_collection_compatibility(
-                request, embedding_model, embedding_dimension, logger,
-            )
-            if collection_error is not None:
-                return collection_error
+            # discovered when queries start returning nothing. Only for the model
+            # that will embed once saved: the guard rebuilds an empty store at the
+            # checked model's size, and a model that is not the default would
+            # leave the store at a size the default does not produce.
+            if embedding_config.get("becomesActive", True):
+                collection_error = await _check_collection_compatibility(
+                    request, embedding_model, embedding_dimension, logger,
+                )
+                if collection_error is not None:
+                    return collection_error
 
             return JSONResponse(
                 status_code=200,
@@ -1436,19 +1569,9 @@ async def perform_embedding_health_check(
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
         logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with model {embedding_config.get('configuration', {}).get('model', '')} ({embedding_config.get('modelFriendlyName', '')}): {str(e)}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message(
-                    "embedding model", embedding_config.get("provider"), e
-                ),
-                "details": {
-                    "provider": embedding_config.get("provider"),
-                    "model": embedding_config.get("configuration", {}).get("model"),
-                    "error_type": type(e).__name__
-                },
-            },
+        return await _model_setup_failed_response(
+            "embedding model", embedding_config,
+            (embedding_config.get("configuration") or {}).get("model") or "", e,
         )
 
 
@@ -1493,18 +1616,7 @@ async def perform_image_generation_health_check(
             "Image generation health check failed to build adapter for "
             f"{provider}/{model_name}: {e}", exc_info=True,
         )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("image model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+        return await _model_setup_failed_response("image model", model_config, model_name, e)
 
     try:
         if provider == ImageGenerationProvider.OPENAI.value:
@@ -1572,18 +1684,7 @@ async def perform_image_generation_health_check(
             f"Image generation health check failed for {provider}/{model_name}: {e}",
             exc_info=True,
         )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("image model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+        return await _model_setup_failed_response("image model", model_config, model_name, e)
 
 
 async def perform_tts_health_check(
@@ -1622,18 +1723,7 @@ async def perform_tts_health_check(
             f"TTS health check failed to build adapter for {provider}/{model_name}: {e}",
             exc_info=True,
         )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("speech model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+        return await _model_setup_failed_response("speech model", model_config, model_name, e)
 
     try:
         if provider == TTSProvider.OPENAI.value:
@@ -1695,18 +1785,7 @@ async def perform_tts_health_check(
             f"TTS health check failed for {provider}/{model_name}: {e}",
             exc_info=True,
         )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("speech model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+        return await _model_setup_failed_response("speech model", model_config, model_name, e)
 
 
 async def perform_stt_health_check(
@@ -1748,18 +1827,7 @@ async def perform_stt_health_check(
             f"STT health check failed to build adapter for {provider}/{model_name}: {e}",
             exc_info=True,
         )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("speech-to-text model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+        return await _model_setup_failed_response("speech-to-text model", model_config, model_name, e)
 
     try:
         if provider == STTProvider.OPENAI.value:
@@ -1867,18 +1935,7 @@ async def perform_stt_health_check(
             f"STT health check failed for {provider}/{model_name}: {e}",
             exc_info=True,
         )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("speech-to-text model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+        return await _model_setup_failed_response("speech-to-text model", model_config, model_name, e)
 
 
 @router.post("/health-check/{model_type}")
@@ -1888,6 +1945,10 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
     logger = request.app.container.logger()
     try:
         logger.info(f"Health check endpoint called for {model_type}")
+
+        refusal = await _endpoint_refusal(model_config)
+        if refusal is not None:
+            return refusal
 
         if model_type == "embedding":
             logger.info(f"Performing embedding health check for {model_config.get('provider')} with configuration model {model_config.get('configuration', {}).get('model', '')}")
@@ -1938,7 +1999,7 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
             status_code=500,
             content={
                 "status": "not healthy",
-                "error": f"Health check failed: {str(e)}",
+                "error": f"Health check failed: {type(e).__name__}",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )

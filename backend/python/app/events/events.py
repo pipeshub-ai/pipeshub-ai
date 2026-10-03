@@ -205,6 +205,48 @@ class EventProcessor:
                 "Failed to rewrite/delete vectors for %s: %s", virtual_record_id, e
             )
 
+    async def _cleanup_abandoned_vrid_storage(
+        self, org_id: str, virtual_record_id: str
+    ) -> None:
+        """Delete blob storage documents and the VRID mapping for an abandoned VRID.
+
+        Retries up to 3 times with exponential backoff on transient failures
+        (HTTP timeouts, connection errors) to prevent orphaned storage docs
+        from accumulating when the Node.js service is momentarily unavailable.
+        """
+        blob_storage = getattr(
+            getattr(self.processor, "sink_orchestrator", None),
+            "blob_storage",
+            None,
+        )
+        if blob_storage is None:
+            self.logger.error(
+                "No blob storage available — storage docs for abandoned VRID %s "
+                "were not cleaned up",
+                virtual_record_id,
+            )
+            return
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await blob_storage.delete_storage_docs_for_vrid(org_id, virtual_record_id)
+                return
+            except Exception as e:
+                if attempt < max_attempts:
+                    delay = 2 ** attempt
+                    self.logger.warning(
+                        "Cleanup attempt %d/%d for abandoned VRID %s failed: %s — "
+                        "retrying in %ds",
+                        attempt, max_attempts, virtual_record_id, e, delay,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    self.logger.error(
+                        "Failed to clean up storage docs for abandoned VRID %s "
+                        "after %d attempts: %s",
+                        virtual_record_id, max_attempts, e,
+                    )
+
     async def _pdf_needs_ocr(self, file_content: bytes) -> bool:
         if PDF_OCR_DETECTION_WORKERS <= 1:
             return await asyncio.to_thread(_detect_pdf_needs_ocr, file_content)
@@ -460,9 +502,15 @@ class EventProcessor:
                     block_container=block_container,
                     org_id=org_id,
                     departments=departments or [],
+                    record_name=record.record_name,
+                    record_type=record.record_type.value,
                 )
 
                 record.semantic_metadata = semantic_metadata
+                if semantic_metadata:
+                    # Canonical taxonomy names must be decided before the
+                    # summary, blob and graph writes below all consume them.
+                    await self.sink_orchestrator.resolve_entities(ctx)
                 if semantic_metadata and (semantic_metadata.summary or "").strip():
                     await self.sink_orchestrator.vector_store.index_record_summary(
                         record_id,
@@ -471,9 +519,6 @@ class EventProcessor:
                         semantic_metadata,
                         record,
                     )
-
-                if semantic_metadata:
-                    await self.sink_orchestrator.blob_storage.apply(ctx)
 
                 await self.sink_orchestrator.enrich(ctx)
                 self.logger.info(
@@ -493,6 +538,15 @@ class EventProcessor:
                         "reason": ENRICHMENT_FAILED,
                     },
                 )
+
+        try:
+            await self.sink_orchestrator.blob_storage.apply(ctx)
+        except Exception as blob_exc:
+            self.logger.error(
+                "❌ Blob storage status update failed for record %s (document remains searchable): %s",
+                record_id,
+                blob_exc,
+            )
 
         yield PipelineEvent(
             event=IndexingEvent.INDEXING_COMPLETE,
@@ -684,6 +738,15 @@ class EventProcessor:
             return False
         return self._resolve_write_collection(duplicate_doc) == current_collection
 
+    async def _vrid_has_stored_content(self, org_id: str, virtual_record_id: str) -> bool:
+        blob_storage = getattr(
+            getattr(self.processor, "sink_orchestrator", None), "blob_storage", None
+        )
+        if blob_storage is None:
+            # Cannot check; keep reusing the duplicate as before.
+            return True
+        return await blob_storage.get_actual_content_path(org_id, virtual_record_id) is not None
+
     async def _check_duplicate_by_md5(
         self,
         content: bytes | str | dict | list | None,
@@ -760,6 +823,25 @@ class EventProcessor:
 
         attached_vrid = match.record.get("virtualRecordId")
 
+        if (
+            match.is_processed
+            and attached_vrid
+            and match.record.get("indexingStatus") == ProgressStatus.COMPLETED.value
+            and not await self._vrid_has_stored_content(doc.get("orgId") or "", attached_vrid)
+        ):
+            # The twin's stored content is gone (e.g. deleted with the connector
+            # that indexed it first). Reusing its VRID would leave this record
+            # unreadable, and every re-index would skip against the same twin.
+            # Indexing instead rewrites the content and re-points the mapping,
+            # which heals every record sharing that VRID.
+            self.logger.warning(
+                "Duplicate %s has no stored content for VRID %s; indexing %s instead of reusing it",
+                _record_key(match.record), attached_vrid, _record_key(doc),
+            )
+            return DedupDecision(
+                rebuild_shared_vrid=doc.get("virtualRecordId") == attached_vrid
+            )
+
         if match.is_processed:
             if match.same_collection:
                 # The vectors this record needs already exist. Take the
@@ -808,6 +890,25 @@ class EventProcessor:
             )
             if attached_vrid and match.same_collection:
                 await self.sync_vector_membership(attached_vrid)
+            if match.same_collection and self.sink_orchestrator is not None:
+                # The copy above only touched the graph — this record still
+                # has no `record`/`record_group` point, and the taxonomy
+                # points it now shares carry only the other record's
+                # connectorId/recordGroupId. Different-collection duplicates
+                # skip this: they continue to full indexing and get entity
+                # sync from SinkOrchestrator.index()/enrich() there instead.
+                # sync_entities_for_duplicate is already best-effort
+                # internally; caught again here so a mock/mis-wired sink in
+                # a caller can never turn dedup's own bookkeeping into a
+                # failed event.
+                try:
+                    await self.sink_orchestrator.sync_entities_for_duplicate(doc)
+                except Exception as exc:
+                    self.logger.warning(
+                        "Entity vector sync failed for duplicate %s (non-fatal): %s",
+                        _record_key(doc),
+                        exc,
+                    )
             self.logger.debug(
                 "✅ Duplicate record %s resolved (same_collection=%s)",
                 _record_key(match.record),
@@ -961,6 +1062,7 @@ class EventProcessor:
             self.logger.debug(f"file_content type: {type(file_content)} length: {content_len}")
             record_type = doc.get("recordType")
 
+            rebuild_shared_vrid = False
             # Calculate MD5 hash and check for duplicates for ALL record types
             try:
                 dedup_decision = await self._check_duplicate_by_md5(file_content, doc)
@@ -975,6 +1077,7 @@ class EventProcessor:
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
+                rebuild_shared_vrid = dedup_decision.rebuild_shared_vrid
                 if dedup_decision.virtual_record_id:
                     # Different-collection duplicate: content identity was copied
                     # onto `doc` inside _check_duplicate_by_md5; pick it up here
@@ -1003,6 +1106,18 @@ class EventProcessor:
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
+
+            if self._use_service_pipeline():
+                # The parsing and extraction services act for the org named in
+                # the service token, and refuse a token that names none.
+                org_id = org_id or doc.get("orgId")
+                if not org_id:
+                    raise ProcessingError(
+                        f"Record {record_id} has no organisation: neither the event "
+                        "nor the stored record carries an orgId",
+                        record_id=record_id,
+                        details={"event_type": event_type},
+                    )
 
             # Fail fast, before writing IN_PROGRESS, if the parsing service's
             # circuit breaker is already open. This is an in-memory check (no
@@ -1041,7 +1156,16 @@ class EventProcessor:
 
             prev_virtual_record_id = None
             abandoned_virtual_record_id = None
-            if event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
+            if rebuild_shared_vrid:
+                # Identical content under a VRID that lost its stored content:
+                # isolating would fix only this record and leave the others
+                # sharing that VRID unreadable, so rebuild it in place.
+                virtual_record_id = doc.get("virtualRecordId")
+                self.logger.info(
+                    f"📊 Rebuilding shared vrid {virtual_record_id} whose stored content is missing"
+                )
+                prev_virtual_record_id = virtual_record_id
+            elif event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
                 # For reconciliation-enabled types, decide whether to keep or generate new vrid
                 from app.config.constants.arangodb import (
                     RECONCILIATION_ENABLED_EXTENSIONS,
@@ -1096,6 +1220,9 @@ class EventProcessor:
                 abandoned_virtual_record_id
                 and abandoned_virtual_record_id != virtual_record_id
             ):
+                await self._cleanup_abandoned_vrid_storage(
+                    org_id, abandoned_virtual_record_id
+                )
                 await self._rewrite_or_delete_vrid_vectors(abandoned_virtual_record_id)
 
             # Ask the consumer for a nested parsing slot only after the record

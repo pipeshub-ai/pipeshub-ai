@@ -638,6 +638,8 @@ class TestBuildOAuthFlowConfig:
         config_service.get_config = AsyncMock(return_value=[
             {
                 "_id": "oa1",
+                "authorizeUrl": "https://auth.test",
+                "tokenUrl": "https://token.test",
                 "orgId": "o1",
                 "scopes": {"team_sync": ["shared_scope"]},
                 "config": {},
@@ -666,6 +668,8 @@ class TestBuildOAuthFlowConfig:
         config_service.get_config = AsyncMock(return_value=[
             {
                 "_id": "oa1",
+                "authorizeUrl": "https://auth.test",
+                "tokenUrl": "https://token.test",
                 "orgId": "o1",
                 "scopes": {"personal_sync": ["ps1"], "team_sync": ["ts1"]},
                 "config": {},
@@ -694,6 +698,8 @@ class TestBuildOAuthFlowConfig:
         config_service.get_config = AsyncMock(return_value=[
             {
                 "_id": "oa1",
+                "authorizeUrl": "https://auth.test",
+                "tokenUrl": "https://token.test",
                 "orgId": "o1",
                 "scopes": {"agent": ["agent_s1"]},
                 "config": {},
@@ -722,6 +728,8 @@ class TestBuildOAuthFlowConfig:
         config_service.get_config = AsyncMock(return_value=[
             {
                 "_id": "oa1",
+                "authorizeUrl": "https://auth.test",
+                "tokenUrl": "https://token.test",
                 "orgId": "o1",
                 "scopes": ["scope_a", "scope_b"],
                 "config": {},
@@ -747,6 +755,8 @@ class TestBuildOAuthFlowConfig:
         config_service.get_config = AsyncMock(return_value=[
             {
                 "_id": "oa1",
+                "authorizeUrl": "https://auth.test",
+                "tokenUrl": "https://token.test",
                 "orgId": "o1",
                 "config": {"client_id": "cid", "client_secret": "cs"},
             }

@@ -212,7 +212,9 @@ dependencies = [
     "docx2python==3.5.0",
     "etcd3 @ git+https://github.com/kragniz/python-etcd3.git@e58a899579ba416449c4e225b61f039457c8072a",
     "evernote3>=1.25.14",
-    "fastapi==0.115.6",
+    "fastapi==0.136.3",
+    # Starlette comes in through FastAPI, whose range admits releases with known advisories.
+    "starlette==1.7.0",
     "fastmcp==3.2.0",
     "fastembed==0.5.1",
     "faster-whisper>=1.0.0",
@@ -287,6 +289,7 @@ dependencies = [
     "python-dotenv==1.2.2",
     "pyyaml>=6.0",
     "redshift_connector==2.1.8",
+    "regex>=2024.11.6",
     # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
     # Pre-shipping these means offline sandbox hosts don't have to hit PyPI
     # when the agent declares packages=["reportlab"] / ["fpdf2"].
@@ -302,7 +305,7 @@ dependencies = [
     "requests-toolbelt==1.0.0",
     "requests==2.33.0",
     "selectolax>=0.3.21",
-    "sentence-transformers==3.4.1",
+    "sentence-transformers==5.6.0",
     "slack-sdk==3.27.0",
     "smbprotocol==1.17.0",
     "talon==1.4.4",

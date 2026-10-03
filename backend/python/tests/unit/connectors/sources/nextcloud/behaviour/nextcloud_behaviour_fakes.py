@@ -23,6 +23,12 @@ from xml.sax.saxutils import escape
 
 import httpx
 
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+    matches_visibility,
+)
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
@@ -393,9 +399,11 @@ class FakeRecordsDb:
         self.deleted: list[str] = []
         self.content_updates: list[Any] = []
         self.fail_lookup_for: set[str] = set()
+        self.fail_file_record_for: set[str] = set()
         self.fail_write_for: set[str] = set()
         self.fail_delete_for: set[str] = set()
         self.unreadable_paths: set[str] = set()
+        self.fail_record_scan = False
         self.messaging_producer: Any = None
 
     def _by_id(self, record_id: str) -> Optional[FileRecord]:
@@ -504,10 +512,24 @@ class FakeRecordsDb:
         return {"success": True, "deleted_records": doomed, "failed_records": [],
                 "successfully_deleted": len(doomed), "failed_count": 0}
 
+    async def get_records_by_status(self, connector_id: str, status_filters: list[str] | None,
+                                    limit: int | None = None, offset: int = 0,
+                                    after_key: str | None = None,
+                                    visibility: RecordVisibility = RecordVisibility.LIVE,
+                                    **_: object) -> list[FileRecord]:
+        """Keyset pages ordered by record id, live only unless asked, and an unreadable listing raises, as both graph stores do."""
+        if self.fail_record_scan:
+            raise RuntimeError("database unavailable")
+        ordered = sorted((r for r in self.records.values() if matches_visibility(r, visibility)), key=lambda r: r.id)
+        if after_key is not None:
+            ordered = [r for r in ordered if r.id > after_key]
+        page = ordered[offset:offset + limit] if limit else ordered[offset:]
+        return [r.model_copy(deep=True) for r in page]
+
     async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str,
                                     record_type: str | None = None) -> list[FileRecord]:
         return [r.model_copy(deep=True) for r in self.records.values()
-                if r.parent_external_record_id == parent_external_record_id]
+                if r.parent_external_record_id == parent_external_record_id and is_live_record(r)]
 
     async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
         return 1 if self.edges.pop(record_id, None) else 0
@@ -524,7 +546,19 @@ class FakeRecordsDb:
         return self.record_groups.get(external_id)
 
     async def get_file_record_by_id(self, record_id: str) -> Optional[FileRecord]:
-        return self._by_id(record_id)
+        """A copy rebuilt as a ``FileRecord``, so changing it does not change what is stored.
+
+        None only when nothing is stored; a read that fails raises ``GraphQueryError``, as both providers do.
+        """
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+        from app.models.entities import FileRecord
+
+        if record_id in self.fail_file_record_for:
+            raise GraphQueryError(f"database unavailable for file record {record_id}")
+        stored = self._by_id(record_id)
+        if not isinstance(stored, FileRecord):
+            return None
+        return FileRecord.from_arango_record(stored.to_arango_record(), stored.to_arango_base_record())
 
     def _path(self, record_id: str) -> Optional[str]:
         record = self._by_id(record_id)

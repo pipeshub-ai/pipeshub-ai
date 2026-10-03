@@ -29,6 +29,7 @@ pytestmark = pytest.mark.unit
 
 ORG = "org-1"
 VRID = "virtual-abc"
+ENVELOPE = f"{ORG}/PipesHub/records/conn-1/bucket/report.pdf"
 
 
 def _footprint(**overrides: object) -> RecordFootprint:
@@ -36,6 +37,7 @@ def _footprint(**overrides: object) -> RecordFootprint:
         "record_name": "report.pdf",
         "virtual_record_id": VRID,
         "org_id": ORG,
+        "storage_prefix": ENVELOPE,
         "connector_id": "conn-1",
         "embedding_count": 3,
         "blob_file_count": 2,
@@ -50,8 +52,21 @@ def _footprint(**overrides: object) -> RecordFootprint:
 # --------------------------------------------------------------------- #
 
 
-def test_storage_prefix_is_where_blob_and_mongo_both_file_content() -> None:
-    assert _footprint().storage_prefix == f"{ORG}/PipesHub/records/{VRID}"
+@pytest.mark.asyncio
+async def test_storage_prefix_is_the_folder_mongo_says_the_content_was_filed_in() -> None:
+    graph = MagicMock()
+    graph.get_record_by_name = AsyncMock(return_value={"virtualRecordId": VRID})
+    vector, blob, mongo = _probes()
+
+    footprint = await capture_footprint(
+        graph, vector, blob, mongo,
+        connector_id="conn-1", record_name="report.pdf", org_id=ORG,
+    )
+
+    assert footprint.storage_prefix == ENVELOPE
+    mongo.envelope_path.assert_awaited_once_with(ORG, VRID, within=f"{ORG}/PipesHub/records/conn-1")
+    blob.count_under.assert_awaited_once_with(ENVELOPE, "local")
+    mongo.count_documents_under_path.assert_awaited_once_with(ENVELOPE)
 
 
 @pytest.mark.parametrize(
@@ -88,6 +103,7 @@ def _probes(embeddings: int = 3, files: int = 2, documents: int = 1):
     blob.count_under = AsyncMock(return_value=files)
     mongo = MagicMock()
     mongo.count_documents_under_path = AsyncMock(return_value=documents)
+    mongo.envelope_path = AsyncMock(return_value=ENVELOPE)
     return vector, blob, mongo
 
 
@@ -168,6 +184,9 @@ def _clean_stores():
 async def test_all_four_clean_passes() -> None:
     graph, vector, blob, mongo = _clean_stores()
     await assert_fully_deleted(_footprint(), graph, vector, blob, mongo)
+
+    blob.assert_blobs_gone.assert_awaited_once_with(ENVELOPE, "local", timeout=180)
+    mongo.assert_documents_under_path_gone.assert_awaited_once_with(ENVELOPE, timeout=180)
 
 
 @pytest.mark.asyncio

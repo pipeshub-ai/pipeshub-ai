@@ -20,6 +20,7 @@ from app.models.entities import (
     UserGroup,
 )
 from app.models.permission import Permission
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 if TYPE_CHECKING:
     from app.connectors.core.base.sync_point.sync_point import SyncPoint
@@ -43,6 +44,11 @@ class DataStoreProvider(ABC):
                 # Automatically commits on success, rolls back on exception
         """
         pass
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        """Whether a transaction that failed with *error* rolled back cleanly
+        and can simply be run again (a deadlock or a write-write conflict)."""
+        return False
 
     @abstractmethod
     async def compare_and_set_indexing_status(
@@ -81,7 +87,8 @@ class BaseDataStore(ABC):
     """Base class for all data stores"""
 
     @abstractmethod
-    async def get_record_by_key(self, key: str) -> Optional[Record]:
+    async def get_record_by_key(self, key: str) -> Optional[dict]:
+        """The stored record document, or None. Not a ``Record``."""
         pass
 
     @abstractmethod
@@ -131,6 +138,11 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_record_path_segments(self, record_id: str) -> list[str]:
+        """Return individual record names from root ancestor to this record."""
+        pass
+
+    @abstractmethod
     async def get_records_by_status(
         self,
         org_id: str,
@@ -142,6 +154,7 @@ class BaseDataStore(ABC):
         is_placeholder: Optional[bool] = None,
         after_key: Optional[str] = None,
         exclude_statuses: Optional[list[str]] = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Get records by their indexing status with pagination support. Returns typed Record instances.
 
@@ -229,6 +242,30 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_person_by_email(self, email: str, org_id: str) -> Optional[Person]:
+        pass
+
+    @abstractmethod
+    async def upsert_person_by_email(self, person: Person) -> Optional[str]:
+        pass
+
+    @abstractmethod
+    async def ensure_app_membership(
+        self,
+        principal_id: str,
+        principal_collection: str,
+        connector_id: str,
+        *,
+        is_external: bool,
+        source_user_id: str | None = None,
+    ) -> None:
+        pass
+
+    @abstractmethod
+    async def reap_stale_external_app_relations(self, connector_id: str) -> int:
+        pass
+
+    @abstractmethod
     async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
         pass
 
@@ -245,7 +282,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> None:
+    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> dict | None:
         pass
 
     @abstractmethod
@@ -265,7 +302,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_record_owner_source_user_email(self, record_id: str) -> Optional[str]:
+    async def get_record_owner_source_user_email(
+        self, record_id: str, *, raise_on_error: bool = False
+    ) -> str | None:
         pass
 
     @abstractmethod

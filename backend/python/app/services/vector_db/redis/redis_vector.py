@@ -823,6 +823,27 @@ class RedisVectorService(IVectorDBService):
         self._assert_connected()
         await self._hset_matching(collection_name, payload, filter)
 
+    async def update_payload_by_ids(
+        self,
+        collection_name: str,
+        point_ids: List[str],
+        payload: dict,
+    ) -> None:
+        self._assert_connected()
+        if not point_ids:
+            return
+        # HSET on a missing key would create a bare hash; only touch stored points.
+        pipeline = self.client.pipeline(transaction=False)  # type: ignore
+        for point_id in point_ids:
+            pipeline.execute_command("EXISTS", self._key(collection_name, point_id))
+        present = await pipeline.execute()
+        keys = [
+            self._key(collection_name, point_id)
+            for point_id, exists in zip(point_ids, present)
+            if exists
+        ]
+        await self._hset_keys(collection_name, payload, keys)
+
     async def _hset_matching(
         self,
         collection_name: str,
@@ -832,10 +853,13 @@ class RedisVectorService(IVectorDBService):
         """Merge ``payload`` into every hash matching ``filter_expr``.
 
         Redis HSET is inherently a merge, so overwrite and set share one body.
-        Per-command results are checked for the same reason upsert_points checks
-        them: a pipeline reports failures per command rather than raising.
         """
         keys = await self._keys_matching_filter(collection_name, filter_expr)
+        await self._hset_keys(collection_name, payload, keys)
+
+    async def _hset_keys(self, collection_name: str, payload: dict, keys: List[str]) -> None:
+        """Per-command results are checked for the same reason upsert_points
+        checks them: a pipeline reports failures per command rather than raising."""
         if not keys:
             return
         pipeline = self.client.pipeline(transaction=False)  # type: ignore
@@ -953,6 +977,39 @@ class RedisVectorService(IVectorDBService):
 
         next_offset: Optional[str] = str(next_page_start) if more_available else None
         return ScrollResult(points=points, next_offset=next_offset)
+
+    def scroll_offset_after_delete(
+        self, next_offset: Optional[str], deleted: int,
+    ) -> Optional[str]:
+        # next_offset is an FT.SEARCH LIMIT position; deleting points already
+        # read moves every later match that many places earlier.
+        if next_offset is None or deleted <= 0:
+            return next_offset
+        try:
+            return str(max(0, int(next_offset) - deleted))
+        except (TypeError, ValueError):
+            return next_offset
+
+    async def retrieve_points(
+        self,
+        collection_name: str,
+        ids: List[str],
+    ) -> List[VectorPoint]:
+        self._assert_connected()
+        if not ids:
+            return []
+        pipeline = self.client.pipeline(transaction=False)  # type: ignore
+        for point_id in ids:
+            pipeline.execute_command("HGETALL", self._key(collection_name, point_id))
+        replies = await pipeline.execute()
+        points: List[VectorPoint] = []
+        for point_id, reply in zip(ids, replies):
+            if isinstance(reply, Exception):
+                raise reply
+            doc = decode_hash_doc(reply)
+            if doc:
+                points.append(VectorPoint(id=point_id, payload=hash_doc_to_payload(doc)))
+        return points
 
     async def query_nearest_points(
         self,

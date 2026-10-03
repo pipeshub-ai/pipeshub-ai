@@ -1,20 +1,24 @@
 import asyncio
 import math
-import os
 import re
 import threading
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Coroutine, Optional, TypeVar, Union
+
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode, ProxyConfig
+from crawl4ai.async_dispatcher import SemaphoreDispatcher
+from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
+from crawl4ai.browser_adapter import UndetectedAdapter
+
+from app.connectors.sources.web.address_guard import start_guard_proxy
+from app.connectors.sources.web.browser_supervisor import BrowserSupervisor, BrowserUnavailableError
+from app.utils.env_config import env_int
 
 T = TypeVar("T")
 
 _HTTP_STATUS_RE = re.compile(r"HTTP\s+(\d{3})")
-
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
-from crawl4ai.async_dispatcher import SemaphoreDispatcher
-from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
-from crawl4ai.browser_adapter import UndetectedAdapter
 
 
 class _SharedSemaphoreDispatcher(SemaphoreDispatcher):
@@ -64,6 +68,11 @@ def _content_type(response_headers: object) -> str | None:
     if not isinstance(response_headers, dict):
         return None
     return next((str(v) for k, v in response_headers.items() if str(k).lower() == "content-type"), None)
+
+
+def _crawler_connected(crawler: AsyncWebCrawler) -> bool:
+    # crawl4ai has no liveness check of its own, so this reads the Playwright browser it wraps.
+    return crawler.crawler_strategy.browser_manager.browser.is_connected()
 
 
 def resolve_fetch_status_code(
@@ -263,6 +272,7 @@ for (const p of __panels) {
         js_code: Optional[Union[str, list[str]]] = REVEAL_ALL_TABS_JS,
         js_code_before_wait: Optional[Union[str, list[str]]] = None,
         init_scripts: Optional[list[str]] = None,
+        recycle_after_pages: int = 0,
     ) -> None:
         self._browser_config = BrowserConfig(
             headless=headless,
@@ -299,8 +309,10 @@ for (const p of __panels) {
             magic=True,
         )
         self._concurrency = concurrency
+        self._recycle_after_pages = recycle_after_pages
         self._semaphore: Optional[asyncio.Semaphore] = None
-        self._crawler: Optional[AsyncWebCrawler] = None
+        self._supervisor: Optional[BrowserSupervisor[AsyncWebCrawler]] = None
+        self._proxy: Optional[asyncio.Server] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -321,13 +333,28 @@ for (const p of __panels) {
         self._thread.start()
         started.wait()
 
-        self._crawler = await self._run_in_browser_thread(self._create_and_start_crawler())
+        self._supervisor = await self._run_in_browser_thread(self._start_supervisor())
         self._semaphore = await self._run_in_browser_thread(self._create_semaphore())
 
     async def _create_semaphore(self) -> asyncio.Semaphore:
         return asyncio.Semaphore(self._concurrency)
 
-    async def _create_and_start_crawler(self) -> AsyncWebCrawler:
+    async def _start_supervisor(self) -> BrowserSupervisor[AsyncWebCrawler]:
+        # The proxy outlives every relaunch: closing it cancels all other tasks on this loop.
+        self._proxy = await start_guard_proxy()
+        proxy_port = self._proxy.sockets[0].getsockname()[1]
+        # Playwright also sends loopback through the proxy (<-loopback>), so the proxy refuses it.
+        self._browser_config.proxy_config = ProxyConfig(server=f"http://127.0.0.1:{proxy_port}")
+        supervisor = BrowserSupervisor(
+            self._launch_crawler,
+            lambda crawler: crawler.close(),
+            _crawler_connected,
+            recycle_after_pages=self._recycle_after_pages,
+        )
+        await supervisor.start()
+        return supervisor
+
+    async def _launch_crawler(self) -> AsyncWebCrawler:
         strategy = AsyncPlaywrightCrawlerStrategy(
             browser_config=self._browser_config,
             browser_adapter=UndetectedAdapter(),
@@ -336,24 +363,39 @@ for (const p of __panels) {
         await crawler.start()
         return crawler
 
+    async def _close_proxy(self) -> None:
+        """Stop the proxy and the browser connections it still relays, before the loop stops."""
+        assert self._proxy is not None
+        self._proxy.close()
+        self._proxy = None
+        relays = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        for relay in relays:
+            relay.cancel()
+        await asyncio.gather(*relays, return_exceptions=True)
+
     async def _run_in_browser_thread(self, coro: Coroutine[Any, Any, T]) -> T:
         """Schedule a coroutine on the browser thread's loop and await the result."""
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return await asyncio.wrap_future(future)
 
     async def close(self):
-        if self._crawler and self._loop:
-            await self._run_in_browser_thread(self._crawler.close())
-            self._crawler = None
-        if self._loop:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            self._loop = None
-        if self._thread:
-            thread = self._thread
-            self._thread = None
-            await asyncio.get_running_loop().run_in_executor(
-                None, lambda: thread.join(timeout=5)
-            )
+        try:
+            if self._supervisor and self._loop:
+                supervisor, self._supervisor = self._supervisor, None
+                await self._run_in_browser_thread(supervisor.stop())
+            if self._proxy and self._loop:
+                await self._run_in_browser_thread(self._close_proxy())
+        finally:
+            # Whatever a dead browser does to the steps above, its thread must not outlive the fetcher.
+            if self._loop:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+                self._loop = None
+            if self._thread:
+                thread = self._thread
+                self._thread = None
+                await asyncio.get_running_loop().run_in_executor(
+                    None, lambda: thread.join(timeout=5)
+                )
 
     async def __aenter__(self):
         await self.start()
@@ -372,7 +414,7 @@ for (const p of __panels) {
         js_code_before_wait: Optional[Union[str, list[str]]] = None,
     ) -> FetchResult:
         """Fetch a single URL, returning rendered HTML."""
-        if not self._crawler or not self._loop:
+        if not self._supervisor or not self._loop:
             raise RuntimeError("Fetcher not started. Use 'async with' or call start().")
 
         overrides = {}
@@ -389,13 +431,51 @@ for (const p of __panels) {
         return await self._run_in_browser_thread(self._do_fetch(url, config))
 
     async def _do_fetch(self, url: str, config: CrawlerRunConfig) -> FetchResult:
+        async def run_once(crawler: AsyncWebCrawler, urls: list[str]) -> list[FetchResult]:
+            return [await self._fetch_one(crawler, urls[0], config)]
+
+        return (await self._fetch_with_recovery([url], run_once))[0]
+
+    async def _do_fetch_many(self, urls: list[str], config: CrawlerRunConfig) -> list[FetchResult]:
+        async def run_once(crawler: AsyncWebCrawler, pending: list[str]) -> list[FetchResult]:
+            return await self._fetch_batch(crawler, pending, config)
+
+        return await self._fetch_with_recovery(urls, run_once)
+
+    async def _fetch_with_recovery(
+        self,
+        urls: list[str],
+        run_once: Callable[[AsyncWebCrawler, list[str]], Awaitable[list[FetchResult]]],
+    ) -> list[FetchResult]:
+        """Fetch ``urls``; if the browser died under them, relaunch it and re-fetch the lost ones once.
+
+        Raises ``BrowserUnavailableError`` when the browser can't be brought back, so
+        a dead browser is never reported as pages that failed to load.
+        """
+        supervisor = self._supervisor
+        await supervisor.recycle_if_due(self._semaphore, self._concurrency)
+        await supervisor.ensure_ready()
+        generation = supervisor.generation
+        results = await run_once(supervisor.browser, urls)
+        lost = [i for i, result in enumerate(results) if supervisor.is_dead_error(result.error)]
+        if lost:
+            await supervisor.recover(generation)
+            retried = await run_once(supervisor.browser, [urls[i] for i in lost])
+            if any(supervisor.is_dead_error(result.error) for result in retried):
+                raise BrowserUnavailableError("The headless browser stopped again right after a restart")
+            for i, result in zip(lost, retried):
+                results[i] = result
+        supervisor.note_pages(len(urls))
+        return results
+
+    async def _fetch_one(self, crawler: AsyncWebCrawler, url: str, config: CrawlerRunConfig) -> FetchResult:
         page_timeout_s = (config.page_timeout or 15000) / 1000
         timeout = page_timeout_s * 2 + 10
 
         try:
             async with self._semaphore:
                 result = await asyncio.wait_for(
-                    self._crawler.arun(url, config=config),
+                    crawler.arun(url, config=config),
                     timeout=timeout,
                 )
             js_result = None
@@ -431,7 +511,7 @@ for (const p of __panels) {
         js_code_before_wait: Optional[Union[str, list[str]]] = None,
     ) -> list[FetchResult]:
         """Fetch multiple URLs concurrently with rate limiting."""
-        if not self._crawler or not self._loop:
+        if not self._supervisor or not self._loop:
             raise RuntimeError("Fetcher not started. Use 'async with' or call start().")
 
         overrides = {}
@@ -445,7 +525,9 @@ for (const p of __panels) {
 
         return await self._run_in_browser_thread(self._do_fetch_many(urls, config))
 
-    async def _do_fetch_many(self, urls: list[str], config: CrawlerRunConfig) -> list[FetchResult]:
+    async def _fetch_batch(
+        self, crawler: AsyncWebCrawler, urls: list[str], config: CrawlerRunConfig
+    ) -> list[FetchResult]:
         page_timeout_s = (config.page_timeout or 15000) / 1000
         batch_timeout = math.ceil(len(urls) / self._concurrency) * page_timeout_s * 2 + 30
 
@@ -456,7 +538,7 @@ for (const p of __panels) {
 
         try:
             results = await asyncio.wait_for(
-                self._crawler.arun_many(urls, config=config, dispatcher=dispatcher),
+                crawler.arun_many(urls, config=config, dispatcher=dispatcher),
                 timeout=batch_timeout,
             )
             out: list[FetchResult] = []
@@ -503,14 +585,17 @@ def _get_shared_lock() -> asyncio.Lock:
 async def get_shared_fetcher() -> Crawl4AIFetcher:
     """Return the process-wide Crawl4AIFetcher, creating it on first call.
 
-    Concurrency is controlled by the CRAWL4AI_CONCURRENCY env var (default 5).
-    Each caller must pair this with a call to release_shared_fetcher() when done.
+    Concurrency is controlled by the CRAWL4AI_CONCURRENCY env var (default 5), and
+    CRAWL4AI_RECYCLE_AFTER_PAGES (default 1000, 0 to disable) is how many pages the
+    browser serves before it is relaunched. Each caller must pair this with a call to release_shared_fetcher() when done.
     """
     global _shared_instance, _ref_count
     async with _get_shared_lock():
         if _shared_instance is None:
-            concurrency = int(os.environ.get("CRAWL4AI_CONCURRENCY", "5"))
-            _shared_instance = Crawl4AIFetcher(concurrency=concurrency)
+            _shared_instance = Crawl4AIFetcher(
+                concurrency=max(1, env_int("CRAWL4AI_CONCURRENCY", 5)),
+                recycle_after_pages=max(0, env_int("CRAWL4AI_RECYCLE_AFTER_PAGES", 1000)),
+            )
             try:
                 await _shared_instance.start()
             except Exception:

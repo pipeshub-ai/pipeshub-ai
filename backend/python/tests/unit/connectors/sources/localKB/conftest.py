@@ -14,7 +14,13 @@ def mock_logger():
 
 @pytest.fixture
 def mock_graph_provider():
-    return AsyncMock()
+    provider = AsyncMock()
+    # Like the real providers: a list, empty when nothing was uploaded.
+    provider.get_uploaded_document_ids = AsyncMock(return_value=[])
+    # The folder-depth checks compare these with a number; a bare mock can't be compared.
+    provider.get_folder_depth = AsyncMock(return_value=1)
+    provider.get_folder_subtree_height = AsyncMock(return_value=0)
+    return provider
 
 
 @pytest.fixture
@@ -54,6 +60,6 @@ def service(mock_logger, mock_graph_provider, mock_kafka_service, mock_processor
         mock_logger,
         mock_graph_provider,
         mock_kafka_service,
-        processor=mock_processor,
+        processor_for_kb=AsyncMock(return_value=mock_processor),
         config_service=mock_config_service,
     )

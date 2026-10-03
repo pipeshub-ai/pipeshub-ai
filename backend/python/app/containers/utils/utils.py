@@ -5,7 +5,9 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import ExtensionTypes
 from app.events.events import EventProcessor
 from app.events.processor import Processor
+from app.modules.entity_resolution import EntityResolver
 from app.modules.indexing.run import IndexingPipeline
+from app.modules.indexing.stored_content_cleanup import StoredContentCleanup
 from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
@@ -24,6 +26,7 @@ from app.modules.parsers.yaml.yaml_parser import YAMLParser
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.document_extraction import DocumentExtraction
+from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.vectorstore import VectorStore
@@ -148,6 +151,7 @@ class ContainerUtils:
         graph_provider: IGraphDBProvider,
         vector_db_service: IVectorDBService,
         collection_registry: CollectionRegistry,
+        blob_storage: BlobStorage | None = None,
     ) -> IndexingPipeline:
         """Async factory for the legacy IndexingPipeline (collection mgmt, bulk deletes)."""
         pipeline = IndexingPipeline(
@@ -156,6 +160,10 @@ class ContainerUtils:
             graph_provider=graph_provider,
             collection_registry=collection_registry,
             vector_db_service=vector_db_service,
+            stored_content=(
+                StoredContentCleanup(logger, graph_provider, blob_storage)
+                if blob_storage is not None else None
+            ),
         )
         return pipeline
 
@@ -166,14 +174,61 @@ class ContainerUtils:
         vector_store = VectorStore(logger, config_service, graph_provider, collection_registry, vector_db_service)
         return vector_store
 
+    async def create_entity_vector_store(
+        self, logger, config_service, vector_db_service, collection_name: str,
+        recreate_on_dimension_mismatch: bool = False,
+    ) -> EntityVectorStore:
+        """Async factory for EntityVectorStore"""
+        return EntityVectorStore(
+            logger, config_service, vector_db_service, collection_name,
+            recreate_on_dimension_mismatch=recreate_on_dimension_mismatch,
+        )
+
+    async def create_entity_resolver(
+        self,
+        logger: Logger,
+        config_service: ConfigurationService,
+        graph_provider: IGraphDBProvider,
+        entity_vector_store: EntityVectorStore | None = None,
+    ) -> EntityResolver:
+        """Async factory for the taxonomy EntityResolver (indexing service).
+
+        Always on (apply mode) — see ``app.modules.entity_resolution``.
+        """
+        return EntityResolver(
+            logger=logger,
+            config_service=config_service,
+            graph_provider=graph_provider,
+            entity_vector_store=entity_vector_store,
+        )
+
     async def create_graphdb(self, graph_provider, logger) -> GraphDBTransformer:
         """Async factory for GraphDB transformer (uses graph_provider for transactions)"""
         graphdb = GraphDBTransformer(graph_provider, logger)
         return graphdb
 
-    async def create_sink_orchestrator(self, logger: Logger, graphdb: GraphDBTransformer, blob_storage: BlobStorage, vector_store: VectorStore, graph_provider: IGraphDBProvider, config_service) -> SinkOrchestrator:
+    async def create_sink_orchestrator(
+        self,
+        logger: Logger,
+        graphdb: GraphDBTransformer,
+        blob_storage: BlobStorage,
+        vector_store: VectorStore,
+        graph_provider: IGraphDBProvider,
+        config_service: ConfigurationService,
+        entity_vector_store: EntityVectorStore | None = None,
+        entity_resolver: EntityResolver | None = None,
+    ) -> SinkOrchestrator:
         """Async factory for SinkOrchestrator"""
-        orchestrator = SinkOrchestrator(graphdb=graphdb, blob_storage=blob_storage, vector_store=vector_store, graph_provider=graph_provider, logger=logger, config_service=config_service)
+        orchestrator = SinkOrchestrator(
+            graphdb=graphdb,
+            blob_storage=blob_storage,
+            vector_store=vector_store,
+            graph_provider=graph_provider,
+            logger=logger,
+            config_service=config_service,
+            entity_vector_store=entity_vector_store,
+            entity_resolver=entity_resolver,
+        )
         return orchestrator
 
     async def create_document_extractor(self, logger, graph_provider: IGraphDBProvider, config_service) -> DocumentExtraction:
@@ -287,10 +342,12 @@ class ContainerUtils:
         from app.services.parsing.client import ParsingClient  # noqa: PLC0415
         return ParsingClient(config_service=config_service)
 
-    async def create_extraction_client(self) -> "ExtractionClient":  # type: ignore[name-defined]
+    async def create_extraction_client(
+        self, config_service: ConfigurationService
+    ) -> "ExtractionClient":  # type: ignore[name-defined]
         """Async factory for ExtractionClient."""
         from app.services.extraction.client import ExtractionClient  # noqa: PLC0415
-        return ExtractionClient()
+        return ExtractionClient(config_service=config_service)
 
     async def create_retrieval_service(
         self,

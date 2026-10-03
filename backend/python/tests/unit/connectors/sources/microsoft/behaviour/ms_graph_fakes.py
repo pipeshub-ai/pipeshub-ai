@@ -29,6 +29,8 @@ from msgraph_core.middleware.async_graph_transport import AsyncGraphTransport
 from packaging.version import Version
 from requests.structures import CaseInsensitiveDict
 
+from app.services.graph_db.common.record_visibility import is_live_record
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -255,6 +257,7 @@ class FakeRecordsDb:
     def __init__(self, org_id: str = "org-1") -> None:
         self.org_id = org_id
         self.records: dict[str, Any] = {}
+        self.unreadable_file_records: set[str] = set()
         self.record_permissions: dict[str, list[Any]] = {}
         self.record_batches: list[list[Any]] = []
         self.record_groups: dict[str, Any] = {}
@@ -307,7 +310,7 @@ class FakeRecordsDb:
 
         children = []
         for stored in self.records.values():
-            if stored.parent_external_record_id != parent_external_record_id:
+            if stored.parent_external_record_id != parent_external_record_id or not is_live_record(stored):
                 continue
             stored_type = getattr(stored.record_type, "value", stored.record_type)
             if record_type and stored_type != record_type:
@@ -316,9 +319,15 @@ class FakeRecordsDb:
         return children
 
     async def get_file_record_by_id(self, record_id: str) -> Optional[FileRecord]:
-        """A ``FileRecord`` rebuilt from the file and record nodes; None when no file node exists."""
+        """A ``FileRecord`` rebuilt from the file and record nodes; None when no file node exists.
+
+        A read that fails raises ``GraphQueryError``, as both providers do.
+        """
+        from app.exceptions.graph_db_exceptions import GraphQueryError
         from app.models.entities import FileRecord
 
+        if record_id in self.unreadable_file_records:
+            raise GraphQueryError(f"database unavailable for file record {record_id}")
         stored = next((r for r in self.records.values() if r.id == record_id), None)
         if not isinstance(stored, FileRecord):
             return None

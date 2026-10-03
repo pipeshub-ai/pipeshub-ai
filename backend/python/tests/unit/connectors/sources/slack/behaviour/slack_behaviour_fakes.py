@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from app.models.entities import MessageRecord, Record, RecordGroup
+from app.services.graph_db.common.record_visibility import is_live_record
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -440,7 +441,9 @@ class FakeSlackStore:
             self.records[record.external_record_id] = record
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
-        return self.records.get(external_record_id)
+        """A base Record, as both graph stores rebuild it: no subclass fields."""
+        stored = self.records.get(external_record_id)
+        return None if stored is None else Record.model_validate(stored.model_dump(include=set(Record.model_fields)))
 
     async def get_record_by_weburl(self, weburl: str) -> Optional[Record]:
         return None
@@ -452,6 +455,7 @@ class FakeSlackStore:
             r for r in self.records.values()
             if r.parent_external_record_id == parent_external_record_id
             and (record_type is None or r.record_type.value == record_type)
+            and is_live_record(r)
         ]
 
     async def on_record_content_update(self, record: Record) -> None:

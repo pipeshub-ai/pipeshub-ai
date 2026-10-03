@@ -119,6 +119,16 @@ telemetry:
       enabled: false
       insecure: false
 
+# Express `trust proxy` (TRUST_PROXY): how many proxies in front of the app
+# may set X-Forwarded-For, or a comma-separated list of their CIDRs. Empty
+# means "1" when ingress.enabled, otherwise trust no proxy. Use "2" when an L7
+# load balancer sits in front of the ingress controller (e.g. GCE, which adds
+# its own X-Forwarded-For entry). Never "true".
+trustProxy: ""
+
+# Per-IP limit for login, OTP and password endpoints.
+maxAuthRequestsPerMinute: 10
+
 ingress:
   enabled: false
   className: "" # Fill
@@ -324,12 +334,31 @@ config:
   # daemon error — set sandboxMode to "local" deliberately if that is what
   # you want on this cluster, and understand the isolation you are giving up.
   sandboxMode: "docker"
+  # Required alongside sandboxMode "local", which the service refuses
+  # otherwise: local runs generated code with this pod's identity, network
+  # and filesystem. Development clusters only.
+  sandboxAllowLocal: false
   # Image `run_code` containers are started from (SANDBOX_MODE=docker only).
   sandboxDockerImage: "pipeshubai/pipeshub-sandbox:latest"
-  # false: user code has no network, and package installs are skipped.
-  # true: a short-lived install container may reach the public package indexes.
-  sandboxAllowNetwork: true
+  # false: generated code runs with no network. Allowlisted package installs
+  # still reach the configured registries from a separate install container.
+  # true: generated code may reach public internet addresses only. Each
+  # sandbox container firewalls private, CGNAT, link-local (cloud metadata)
+  # and bridge addresses before the code starts; if the image can't, the
+  # code runs offline instead.
+  sandboxAllowNetwork: false
+  # Comma-separated IPv4 CIDRs exempt from that firewall, e.g. a private
+  # package mirror. Link-local and metadata addresses stay blocked.
+  sandboxEgressAllowCidrs: ""
   sandboxEgressNetwork: "pipeshub_sandbox_egress"
+  # Writable-layer cap for EACH docker-mode sandbox container (default 10g;
+  # 0/off disables), so one run cannot fill the daemon's storage. This is a
+  # per-container limit, not an aggregate cap: many containers and image layers
+  # can still exhaust the daemon's storage (under the DinD sidecar, the
+  # sidecar's storage). Enforced only where the daemon's storage driver
+  # supports it (overlay2 on xfs+pquota, or btrfs/zfs/devicemapper); otherwise
+  # the service logs a warning once and runs continue uncapped.
+  sandboxDiskQuota: "10g"
   # Address of the Docker daemon for SANDBOX_MODE=docker. Leave empty to use
   # the DinD sidecar (see `sandbox.dind`) when it is enabled, or set it to
   # reach a daemon you run yourself, e.g. "tcp://docker-daemon.svc:2375".
@@ -384,6 +413,15 @@ config:
 
 # --- Coding sandbox execution ------------------------------------------------
 sandbox:
+  # Pod-level RuntimeClass (empty = cluster default). It applies to the whole
+  # pod, including the privileged DinD sidecar, so an escape lands in the
+  # sandboxed runtime rather than on the node. The RuntimeClass must already
+  # exist in the cluster; left empty nothing changes. This chart does NOT
+  # configure gVisor's required DinD daemon flags or nested-container
+  # networking, so do not combine gVisor with sandbox.dind.enabled until that
+  # is set up and smoke-tested; a VM runtime (Kata) or e2b avoids that gap.
+  runtimeClassName: ""
+
   # Docker-in-Docker sidecar, so SANDBOX_MODE=docker has a daemon to talk to.
   #
   # Off by default, and that is deliberate. DinD needs a PRIVILEGED container,

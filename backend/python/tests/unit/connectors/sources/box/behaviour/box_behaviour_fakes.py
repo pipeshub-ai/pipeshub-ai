@@ -21,6 +21,8 @@ import requests
 from requests.adapters import BaseAdapter
 from requests.structures import CaseInsensitiveDict
 
+from app.services.graph_db.common.record_visibility import is_live_record
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -410,6 +412,8 @@ class FakeBoxRecordsDb:
         self.fail_lookup_for: set[str] = set()
         self.fail_active_users = False
         self.failing: set[str] = set()
+        # Record ids whose record node is stored but whose file node is not.
+        self.missing_file_nodes: set[str] = set()
         self.fail_write_for: set[str] = set()
         self.fail_group_write_for: set[str] = set()
         self.shared_links: dict[str, set[str]] = {}
@@ -440,17 +444,24 @@ class FakeBoxRecordsDb:
         return Record.from_arango_base_record(stored.to_arango_base_record())
 
     async def get_file_record_by_id(self, record_id: str) -> FileRecord | None:
-        """A ``FileRecord`` rebuilt from the file and record nodes; None when it can't be read, as the providers do."""
+        """A ``FileRecord`` rebuilt from the file and record nodes; None only when no file node is stored.
+
+        A read that fails raises ``GraphQueryError``, as both providers do.
+        """
+        from app.exceptions.graph_db_exceptions import GraphQueryError
         from app.models.entities import FileRecord
 
+        if "get_file_record_by_id" in self.failing:
+            raise GraphQueryError(f"database unavailable (get_file_record_by_id {record_id})")
         stored = next((r for r in self.records.values() if r.id == record_id), None)
-        if "get_file_record_by_id" in self.failing or not isinstance(stored, FileRecord):
+        if not isinstance(stored, FileRecord) or record_id in self.missing_file_nodes:
             return None
         return FileRecord.from_arango_record(stored.to_arango_record(), stored.to_arango_base_record())
 
     async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str) -> list[Any]:
         self._check("get_records_by_parent")
-        return [r for r in self.records.values() if r.parent_external_record_id == parent_external_record_id]
+        return [r for r in self.records.values()
+                if r.parent_external_record_id == parent_external_record_id and is_live_record(r)]
 
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
         if any(rec.external_record_id in self.fail_write_for for rec, _ in records_with_permissions):

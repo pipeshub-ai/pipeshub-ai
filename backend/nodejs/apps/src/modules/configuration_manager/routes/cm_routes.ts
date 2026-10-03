@@ -27,6 +27,7 @@ import {
   deleteGoogleWorkspaceCredentials,
   getGoogleWorkspaceBusinessCredentials,
   getFrontendUrl,
+  getDesktopFrontendUrl,
   setFrontendUrl,
   getConnectorPublicUrl,
   setConnectorPublicUrl,
@@ -63,6 +64,7 @@ import {
   deleteWebSearchProvider,
   updateDefaultWebSearchProvider,
   getSlackBotConfigs,
+  getInternalSlackBotConfigs,
   createSlackBotConfig,
   updateSlackBotConfig,
   deleteSlackBotConfig,
@@ -535,8 +537,8 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
   router.get(
     '/internal/slack-bot',
-    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getSlackBotConfigs(keyValueStoreService),
+    authMiddleware.scopedTokenValidator(TokenScopes.SLACK_BOT_VERIFY),
+    getInternalSlackBotConfigs(keyValueStoreService),
   );
 
   router.post(
@@ -1074,6 +1076,14 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     getFrontendUrl(keyValueStoreService),
+  );
+
+  // The only unauthenticated route in this router: the desktop app calls it
+  // from the sign-in screen before any session exists. Do not put router-wide
+  // auth in front of it.
+  router.get(
+    '/public/desktopFrontendUrl',
+    getDesktopFrontendUrl(keyValueStoreService),
   );
 
   router.post(

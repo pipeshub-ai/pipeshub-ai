@@ -1,4 +1,14 @@
 import { z } from 'zod';
+import { MAX_SIGNED_URL_TTL_SECONDS } from '../constants/constants';
+
+const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
+
+// Mongoose casts a malformed id deep inside the query and answers 500, so it is
+// refused here, before any handler runs.
+const documentIdSchema = z.string().regex(OBJECT_ID_REGEX, {
+  message:
+    "The document id in the address isn't valid. Use the 24-character id PipesHub returned when the document was uploaded or created, then try again.",
+});
 
 // Common Schema Components
 export const Headers = z.object({
@@ -7,7 +17,7 @@ export const Headers = z.object({
 
 export const DocumentIdParams = z.object({
   params: z.object({
-    documentId: z.string(),
+    documentId: documentIdSchema,
   }),
   headers: Headers,
   body: z.object({
@@ -15,9 +25,46 @@ export const DocumentIdParams = z.object({
   }),
 });
 
+// Purges delete for good, so only a well-formed id may reach the query.
+export const PurgeDocumentParams = z.object({
+  params: z.object({
+    documentId: z.string().regex(/^[0-9a-f]{24}$/i, 'Not a document id'),
+  }),
+});
+
+export const PurgeVirtualRecordParams = z.object({
+  params: z.object({
+    virtualRecordId: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{1,128}$/, 'Not a virtual record id'),
+  }),
+});
+
+const treePath = z
+  .string()
+  .min(1)
+  .refine(
+    (p) => !p.split('/').includes('..') && !p.startsWith('/'),
+    'path must be relative and must not contain ".." segments',
+  );
+
+export const MoveTreeSchema = z.object({
+  headers: Headers,
+  body: z
+    .object({
+      oldPath: treePath,
+      newPath: treePath,
+      virtualRecordId: z.string().min(1).optional(),
+      virtualRecordIds: z.array(z.string().min(1)).optional(),
+    })
+    .refine(({ oldPath, newPath }) => !newPath.startsWith(`${oldPath}/`), {
+      message: 'newPath must not be a descendant of oldPath',
+    }),
+});
+
 export const DocumentIdParamsWithVersion = z.object({
   params: z.object({
-    documentId: z.string(),
+    documentId: documentIdSchema,
   }),
   headers: Headers,
   query: z.object({
@@ -30,16 +77,21 @@ export const DocumentIdParamsWithVersion = z.object({
     expirationTimeInSeconds: z.string()
       .optional()
       .transform((val) => (val ? Number(val) : undefined))
-      .refine((num) => num === undefined || num > 0, {
-        message: "expirationTimeInSeconds must be greater than zero",
-      }),
+      .refine(
+        (num) =>
+          num === undefined ||
+          (num > 0 && num <= MAX_SIGNED_URL_TTL_SECONDS),
+        {
+          message: `expirationTimeInSeconds must be between 1 and ${MAX_SIGNED_URL_TTL_SECONDS} (7 days)`,
+        },
+      ),
   }),
 });
 
 export const DirectUploadSchema = z.object({
   query: z.object({}),
   params: z.object({
-    documentId: z.string(),
+    documentId: documentIdSchema,
   }),
   headers: Headers,
 });
@@ -71,7 +123,7 @@ export const UploadNewSchema = z.object({
 
 export const UploadNextVersionSchema = z.object({
   params: z.object({
-    documentId: z.string(),
+    documentId: documentIdSchema,
   }),
   body: z.object({
     currentVersionNote: z.string().optional(),
@@ -91,7 +143,7 @@ export const GetBufferSchema = z.object({
       .pipe(z.number().min(0).optional()),
   }),
   params: z.object({
-    documentId: z.string(),
+    documentId: documentIdSchema,
   }),
   headers: Headers,
 });
@@ -105,6 +157,13 @@ export const RollBackToPreviousVersionSchema = GetBufferSchema.extend({
       .min(0, { message: 'version must be >= 0' })
       .optional(),
   }),
+});
+
+export const ConnectorIdParams = z.object({
+  params: z.object({
+    connectorId: z.string().min(1),
+  }),
+  headers: Headers,
 });
 
 export const CreateDocumentSchema = z.object({

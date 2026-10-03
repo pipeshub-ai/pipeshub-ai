@@ -1,5 +1,5 @@
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -15,6 +15,7 @@ from app.models.blocks import (
 from app.models.entities import Record, RecordGroupType
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.image_description import ImageDescriber, harvest_descriptions
+from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
@@ -26,16 +27,31 @@ from app.exceptions.indexing_exceptions import IndexingError
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
+    from app.modules.entity_resolution import EntityResolver
 
 
 class SinkOrchestrator(Transformer):
-    def __init__(self, graphdb: GraphDBTransformer, blob_storage: BlobStorage, vector_store: VectorStore, graph_provider: IGraphDBProvider, logger, config_service: "ConfigurationService") -> None:
+    def __init__(
+        self,
+        graphdb: GraphDBTransformer,
+        blob_storage: BlobStorage,
+        vector_store: VectorStore,
+        graph_provider: IGraphDBProvider,
+        logger,
+        config_service: "ConfigurationService",
+        entity_vector_store: Optional[EntityVectorStore] = None,
+        entity_resolver: Optional["EntityResolver"] = None,
+    ) -> None:
         super().__init__()
         self.graphdb = graphdb
         self.logger = logging.getLogger(__name__)
         self.blob_storage = blob_storage
         self.vector_store = vector_store
         self.graph_provider = graph_provider
+        self.entity_vector_store = entity_vector_store
+        # Canonicalises taxonomy names between classification and the graph
+        # write; optional so the sink stays constructible without it.
+        self.entity_resolver = entity_resolver
         self.logger = logger
         # Runs before the blob write below, which is the only reason it lives
         # here: a description generated later would never reach the stored
@@ -203,6 +219,180 @@ class SinkOrchestrator(Transformer):
             await self._update_indexing_status(ctx)
             # await self.graphdb.apply(ctx)
             await self._save_reconciliation_metadata(ctx)
+            await self._sync_record_name_entity(ctx)
+            await self._sync_record_group_entity(ctx)
+
+    async def _sync_record_group_entity(self, ctx: TransformContext) -> None:
+        """Sync the record's RecordGroup (e.g. Jira project, Drive folder) into
+        the entities vector collection as a Layer-0 deterministic entity.
+
+        Runs for every record regardless of connector, rather than being
+        wired per-connector, since ``record_group_id`` is a generic field on
+        every ``Record`` once ``_handle_record_group``/connector sync has
+        resolved it. Best-effort.
+        """
+        if not self.entity_vector_store:
+            return
+        record = ctx.record
+        if not record.record_group_id:
+            return
+        try:
+            group_doc = await self.graph_provider.get_record_group_by_id(
+                record.record_group_id
+            )
+            if not group_doc:
+                return
+            group_name = group_doc.get("groupName") or group_doc.get("name")
+            if not group_name or not group_name.strip():
+                return
+
+            from app.models.entities import EntityRecord
+
+            # Always this connector and the group itself, so membership is
+            # replaced rather than merged; an unchanged point is not rewritten.
+            await self.entity_vector_store.upsert_entities_batch([
+                EntityRecord.for_record_group(
+                    record.record_group_id, group_name, record.org_id, record.connector_id,
+                )
+            ], merge_membership=False)
+        except Exception as exc:
+            self.logger.warning(
+                "Record group entity sync failed for record %s (non-fatal): %s",
+                record.id,
+                exc,
+            )
+
+    async def _sync_record_name_entity(self, ctx: TransformContext) -> None:
+        """Sync the record's name into the entities vector collection.
+
+        Runs after successful vector-store indexing so the record's name is
+        resolvable as a filter facet (entityType=record) alongside categories,
+        topics, etc. Best-effort: failures here must not fail the record
+        pipeline since the record is already searchable via the records
+        collection.
+        """
+        if not self.entity_vector_store:
+            return
+        record = ctx.record
+        if not record.record_name or not record.record_name.strip():
+            return
+        try:
+            from app.models.entities import EntityRecord
+
+            # A record has one connector and one group; a union kept the old
+            # group after the record moved, so its old group's users kept
+            # matching it.
+            await self.entity_vector_store.upsert_entities_batch([
+                EntityRecord.for_record(
+                    record.id, record.record_name, record.org_id, record.connector_id,
+                    record.record_group_id,
+                )
+            ], merge_membership=False)
+        except Exception as exc:
+            self.logger.warning(
+                "Record name entity sync failed for record %s (non-fatal): %s",
+                record.id,
+                exc,
+            )
+
+    async def sync_entities_for_duplicate(self, record_doc: dict) -> None:
+        """Re-project a deduplicated record's taxonomy into the entities
+        vector collection, and create its own record / record_group points.
+
+        Called from the MD5-dedup short-circuit
+        (``EventProcessor._check_duplicate_by_md5`` and the QUEUED-promotion
+        path in the record Kafka handler) after ``copy_document_relationships``
+        has copied this record's taxonomy edges from the primary/duplicate it
+        was matched against. That copy only touches the graph — the shared
+        category/topic/etc. points in the entities collection still carry
+        only the *other* record's connectorId/recordGroupId, and this record
+        has no ``record``/``record_group`` point at all, since the dedup
+        path skips ``index()``/``enrich()`` (and therefore
+        ``_sync_record_name_entity``/``_sync_record_group_entity``) entirely.
+
+        ``upsert_entities_batch`` merges membership rather than replacing it,
+        so this appends this record's connectorId/recordGroupId to whatever
+        is already stored.
+
+        Takes the raw graph record document (not a parsed ``Record``/
+        ``TransformContext``) since the dedup path never parses one.
+        """
+        if not self.entity_vector_store:
+            return
+        record_key = record_doc.get("_key") or record_doc.get("id")
+        org_id = record_doc.get("orgId")
+        if not record_key or not org_id:
+            return
+        connector_id = record_doc.get("connectorId")
+        record_group_id = record_doc.get("recordGroupId")
+        connector_ids = [connector_id] if connector_id else []
+        record_group_ids = [record_group_id] if record_group_id else []
+
+        try:
+            from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
+
+            taxonomy_rows = await self.graph_provider.get_taxonomy_entities_for_record(
+                record_key
+            )
+            valid_types = {e.value for e in EntityType}
+            entities: list[EntityRecord] = []
+            for row in taxonomy_rows:
+                entity_id = row.get("entityId")
+                entity_type = row.get("entityType")
+                if not entity_id or entity_type not in valid_types:
+                    continue
+                entities.append(
+                    EntityRecord(
+                        entity_id=str(entity_id),
+                        entity_type=EntityType(entity_type),
+                        name=str(row.get("name") or entity_id),
+                        org_id=org_id,
+                        level=row.get("level"),
+                        aliases=[str(a) for a in (row.get("aliases") or []) if a],
+                        connector_ids=connector_ids,
+                        record_group_ids=record_group_ids,
+                        # Matches GraphDBTransformer.save_metadata_to_db —
+                        # taxonomy entities are schema-free, not part of a
+                        # fixed ontology.
+                        type_category=EntityTypeCategory.GENERIC_SCHEMA_FREE,
+                    )
+                )
+
+            # A record and its group are written like on the index path:
+            # their membership is replaced, never unioned.
+            identities: list[EntityRecord] = []
+            record_name = record_doc.get("recordName")
+            if record_name and record_name.strip():
+                identities.append(EntityRecord.for_record(
+                    str(record_key), record_name, org_id, connector_id, record_group_id,
+                ))
+
+            if record_group_id:
+                group_doc = await self.graph_provider.get_record_group_by_id(
+                    record_group_id
+                )
+                group_name = (
+                    (group_doc.get("groupName") or group_doc.get("name"))
+                    if group_doc
+                    else None
+                )
+                if group_name and group_name.strip():
+                    identities.append(EntityRecord.for_record_group(
+                        record_group_id, group_name, org_id, connector_id,
+                    ))
+
+            if entities:
+                await self.entity_vector_store.upsert_entities_batch(entities)
+            if identities:
+                await self.entity_vector_store.upsert_entities_batch(
+                    identities, merge_membership=False,
+                )
+        except Exception as exc:
+            self.logger.warning(
+                "Entity vector sync failed for deduplicated record %s (non-fatal): %s",
+                record_key,
+                exc,
+            )
 
     # A record with a handful of images is cheaper to describe outright than
     # to fetch its previous version for; past this many, the fetch pays for
@@ -257,6 +447,8 @@ class SinkOrchestrator(Transformer):
             ],
             CollectionNames.RECORDS.value,
         )
+        record.record_status = ProgressStatus.COMPLETED
+        record.indexing_status = ProgressStatus.COMPLETED.value
         self.logger.debug(
             "✅ indexingStatus=COMPLETED recorded for %s", record.id
         )
@@ -274,6 +466,20 @@ class SinkOrchestrator(Transformer):
     # Phase 2: ENRICH — graph DB taxonomy.  Can run later (deferred).
     # ------------------------------------------------------------------
 
+    async def resolve_entities(self, ctx: TransformContext) -> None:
+        """Canonicalise the record's extracted taxonomy names.
+
+        Must run after classification and before the blob write and
+        ``enrich()``, so every store sees the same canonical names. A no-op
+        without a resolver or without semantic metadata; the resolver itself
+        decides between off, shadow and apply.
+        """
+        if self.entity_resolver is None:
+            return
+        if getattr(ctx.record, "semantic_metadata", None) is None:
+            return
+        await self.entity_resolver.resolve(ctx)
+
     async def enrich(self, ctx: TransformContext) -> None:
         """Phase 2: write classification metadata to the graph database.
 
@@ -281,11 +487,26 @@ class SinkOrchestrator(Transformer):
         ``extractionStatus=COMPLETED`` once it finishes.  Callers should
         ensure ``ctx.record.semantic_metadata`` is populated before calling
         this method.
+
+        After graph enrichment, the entities touched during this run are
+        synced to the entity vector store (non-blocking: failures are logged
+        but do not affect the record's extractionStatus).
         """
-        await self.graphdb.apply(ctx)
+        touched_entities = await self.graphdb.apply(ctx)
         self.logger.debug(
             "✅ Graph enrichment completed for record %s", ctx.record.id
         )
+
+        if self.entity_vector_store and touched_entities:
+            try:
+                await self.entity_vector_store.upsert_entities_batch(touched_entities)
+            except Exception as exc:
+                # Entity sync is best-effort; do not fail the record pipeline
+                self.logger.warning(
+                    "Entity vector sync failed for record %s (non-fatal): %s",
+                    ctx.record.id,
+                    exc,
+                )
 
     async def _save_reconciliation_metadata(self, ctx: TransformContext) -> None:
         if ctx.reconciliation_context and ctx.reconciliation_context.new_metadata:
@@ -295,4 +516,7 @@ class SinkOrchestrator(Transformer):
                 record.id,
                 record.virtual_record_id,
                 ctx.reconciliation_context.new_metadata,
+                document_path=ctx.settings.get("storage_path"),
+                connector_id=getattr(record, "connector_id", None),
+                record_group_id=getattr(record, "record_group_id", None),
             )
