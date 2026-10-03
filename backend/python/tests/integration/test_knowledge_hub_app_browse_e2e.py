@@ -331,3 +331,20 @@ async def test_app_browse_plans_in_bounded_memory(world: _World) -> None:
         stats = (await resp.json())["stats"]
     assert stats["plansCreated"] == 1, stats
     assert stats["peakMemoryUsage"] < 64 * 1024 * 1024, stats
+
+
+
+@pytest.mark.parametrize("world", ["arango"], indirect=True)
+async def test_app_browse_takes_a_hoisted_files_size_from_its_file_node(world: _World) -> None:
+    """Older file docs carry ``sizeInBytes`` (deprecated there now); a record without its own size falls back to it."""
+    await world.graph.update_node(
+        world.ids["orphan_direct"], CollectionNames.RECORDS.value, {"sizeInBytes": None},
+    )
+    await world.graph.update_node(
+        world.ids["orphan_direct"], CollectionNames.FILES.value, {"sizeInBytes": 4096},
+    )
+    got = await world.graph.get_knowledge_hub_children(
+        world.app_id, "app", world.org_id, world.ids["external"], 0, 100, "name", "ASC",
+    )
+    sizes = {n["id"]: n.get("sizeInBytes") for n in got["nodes"]}
+    assert sizes[world.ids["orphan_direct"]] == 4096, got["nodes"]

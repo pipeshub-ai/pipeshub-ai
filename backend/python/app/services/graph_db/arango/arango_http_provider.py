@@ -18961,7 +18961,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         reason: orphan_record.reason,
                         createdAt: orphan_record.sourceCreatedAtTimestamp != null ? orphan_record.sourceCreatedAtTimestamp : (orphan_record.createdAtTimestamp != null ? orphan_record.createdAtTimestamp : 0),
                         updatedAt: orphan_record.sourceLastModifiedTimestamp != null ? orphan_record.sourceLastModifiedTimestamp : (orphan_record.updatedAtTimestamp != null ? orphan_record.updatedAtTimestamp : 0),
-                        sizeInBytes: orphan_record.sizeInBytes != null ? orphan_record.sizeInBytes : rec_file_info.fileSizeInBytes,
+                        sizeInBytes: orphan_record.sizeInBytes != null ? orphan_record.sizeInBytes : rec_file_info.sizeInBytes,
                         mimeType: orphan_record.mimeType,
                         extension: rec_file_info.extension,
                         webUrl: orphan_record.webUrl,
