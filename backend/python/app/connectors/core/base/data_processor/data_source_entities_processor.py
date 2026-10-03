@@ -1032,6 +1032,25 @@ class DataSourceEntitiesProcessor:
         ):
             record.queued_at = get_epoch_timestamp_in_ms()
 
+    @staticmethod
+    def _reindexes_on_restore(record: Record, existing_record: Record) -> bool:
+        """Whether a record a sync brings back from the trash is indexed again.
+
+        It is even when unchanged, since the delete took its vectors. A
+        manual-only item that was never indexed stays so. Decided before the
+        restore's write from the status the upsert would otherwise store.
+        """
+        status = record.indexing_status
+        if (
+            record.origin == OriginTypes.UPLOAD
+            and record.external_revision_id == existing_record.external_revision_id
+        ):
+            status = existing_record.indexing_status
+        return not (
+            status == ProgressStatus.AUTO_INDEX_OFF.value
+            and existing_record.indexing_status != ProgressStatus.COMPLETED.value
+        )
+
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         self.logger.debug("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
@@ -1409,7 +1428,7 @@ class DataSourceEntitiesProcessor:
                     "Skipping %s (%s): its id belongs to a record in the trash", record.record_name, record.id
                 )
                 return None, []
-        restored_from_trash = False
+        restored_from_trash = reindex_restored = False
         if existing_record is not None and not is_live_record(existing_record):
             # A user's delete holds until the purge even though the source still
             # has the item. An item the connector deleted and the source has
@@ -1423,9 +1442,17 @@ class DataSourceEntitiesProcessor:
                     getattr(existing_record.delete_source, "value", existing_record.delete_source),
                 )
                 return None, []
-            restored = await tx_store.restore_records(
-                [{"id": existing_record.id}], existing_record.delete_batch_id
-            )
+            reindex_restored = self._reindexes_on_restore(record, existing_record)
+            restore: dict = {"id": existing_record.id}
+            if reindex_restored:
+                # In the restore's own write, which commits on its own on Neo4j: if this
+                # upsert fails later, the stranded sweep finds the record and indexes it,
+                # where a stored COMPLETED would keep it out of search with no vectors.
+                restore["set"] = {
+                    "indexingStatus": ProgressStatus.NOT_STARTED.value,
+                    "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
+                }
+            restored = await tx_store.restore_records([restore], existing_record.delete_batch_id)
             if restored != [existing_record.id]:
                 raise RuntimeError(f"Could not bring record {existing_record.id} back from the trash")
             existing_record = existing_record.model_copy(update={"is_deleted": False})
@@ -1548,12 +1575,7 @@ class DataSourceEntitiesProcessor:
             if record.external_revision_id != existing_record.external_revision_id:
                 if publishes_event:
                     self._stamp_queued_at(record)
-            if restored_from_trash and not (
-                record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
-                and existing_record.indexing_status != ProgressStatus.COMPLETED.value
-            ):
-                # Indexed again even when unchanged, since the delete took its
-                # vectors. A manual-only item that was never indexed stays so.
+            if restored_from_trash and reindex_restored:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
                 self._stamp_queued_at(record)
 

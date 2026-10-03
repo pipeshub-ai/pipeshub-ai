@@ -265,7 +265,13 @@ class TestSyncBringsBackWhatTheConnectorDeleted:
 
         processed, _ = await proc._process_record(_incoming(), [], store)
 
-        store.restore_records.assert_awaited_once_with([{"id": "stored-1"}], "b-9")
+        ((restores, batch), _) = store.restore_records.await_args
+        assert batch == "b-9"
+        # Stored with the restore itself, so a failure later in the upsert leaves it for the sweep.
+        assert [(r["id"], r["set"]["indexingStatus"]) for r in restores] == [
+            ("stored-1", ProgressStatus.NOT_STARTED.value)
+        ]
+        assert restores[0]["set"]["queuedAtTimestamp"] > 0
         assert processed is not None and processed.id == "stored-1"
         # Unchanged content would stay COMPLETED and publish nothing; its vectors are gone.
         assert processed.indexing_status == ProgressStatus.NOT_STARTED.value
@@ -277,10 +283,12 @@ class TestSyncBringsBackWhatTheConnectorDeleted:
             "stored-1", external_record_id="ext-1", is_deleted=True, delete_source=DeleteSource.CONNECTOR,
             delete_batch_id="b-9", indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
         )
+        store = _sync_store(existing)
         processed, _ = await proc._process_record(
-            _incoming(indexing_status=ProgressStatus.AUTO_INDEX_OFF.value), [], _sync_store(existing)
+            _incoming(indexing_status=ProgressStatus.AUTO_INDEX_OFF.value), [], store
         )
         assert processed.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        store.restore_records.assert_awaited_once_with([{"id": "stored-1"}], "b-9")
 
     async def test_the_restored_item_is_published_for_indexing(self) -> None:
         proc = _processor()

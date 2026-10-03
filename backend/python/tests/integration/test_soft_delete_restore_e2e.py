@@ -17,7 +17,10 @@ provider, with the KB's ``DataSourceEntitiesProcessor`` on a real
   in the graph and in its type doc.
 - A record that gave its external id up gets it back when it is free, and is
   refused, unchanged, while a live record holds it.
-- A sync that sees again an item the connector deleted restores it.
+- A sync that sees again an item the connector deleted restores it, and ends
+  on the indexing status it always did. The restore's own write puts it in
+  line for indexing, so a sync that fails after it on Neo4j, where that write
+  has already committed, leaves a record the stranded sweep picks up.
 - ``restore_records`` touches only records still in the trash under the batch
   named, and brings back all of the items it is given or none of them, also
   when the graph refuses one of the writes.
@@ -488,6 +491,71 @@ async def test_a_sync_restores_an_item_the_connector_deleted(world: _World) -> N
     doc = await world.stored("drive_file")
     assert doc["isDeleted"] is False and doc.get("deleteBatchId") is None
     assert await world.graph.get_document(minted, CollectionNames.RECORDS.value) is None
+    assert [e["payload"]["recordId"] for e in world.producer.of_type(EventTypes.NEW_RECORD.value)] == [
+        world.ids["drive_file"]
+    ]
+
+
+async def _sync_sees_drive_file_again(world: _World, **extra: object) -> None:
+    seen_again = _file(world, "drive_file", kb=False, external_revision_id="rev-1", **extra)
+    seen_again.id = str(uuid.uuid4())
+    await world.processor.on_new_records([(seen_again, [])])
+
+
+@pytest.mark.parametrize(
+    ("stored", "after", "published"),
+    [
+        (ProgressStatus.COMPLETED.value, ProgressStatus.QUEUED.value, True),
+        (ProgressStatus.AUTO_INDEX_OFF.value, ProgressStatus.AUTO_INDEX_OFF.value, False),
+    ],
+    ids=["indexed", "manual-only-never-indexed"],
+)
+async def test_a_sync_restore_ends_on_the_indexing_status_it_always_did(
+    world: _World, stored: str, after: str, published: bool,
+) -> None:
+    await world.graph.update_node(world.ids["drive_file"], CollectionNames.RECORDS.value, {"indexingStatus": stored})
+    await world.processor.on_record_deleted(world.ids["drive_file"])
+    world.producer.events.clear()
+
+    await _sync_sees_drive_file_again(world, indexing_status=stored)
+
+    doc = await world.stored("drive_file")
+    assert (doc["isDeleted"], doc["indexingStatus"]) == (False, after)
+    assert bool(world.producer.of_type(EventTypes.NEW_RECORD.value)) is published
+
+
+# Neo4j only: Arango runs the sync in one stream transaction, so the failure rolls the
+# restore back with it, and the graph jobs fail on any skip.
+@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
+async def test_a_sync_restore_that_fails_after_its_write_leaves_the_item_for_the_stranded_sweep(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The restore's write commits on its own; it used to leave the item live and COMPLETED with no vectors."""
+    await world.processor.on_record_deleted(world.ids["drive_file"])
+    world.producer.events.clear()
+    original = world.processor._handle_parent_record
+
+    async def parent_lookup_fails(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("parent lookup failed")
+
+    monkeypatch.setattr(world.processor, "_handle_parent_record", parent_lookup_fails)
+    with pytest.raises(RuntimeError, match="parent lookup failed"):
+        await _sync_sees_drive_file_again(world)
+    monkeypatch.setattr(world.processor, "_handle_parent_record", original)
+
+    doc = await world.stored("drive_file")
+    assert (doc["isDeleted"], doc["indexingStatus"]) == (False, ProgressStatus.NOT_STARTED.value)
+    assert doc["queuedAtTimestamp"] > 0
+    assert world.producer.events == []
+    # The read the stranded sweep pages through, by status, finds it.
+    waiting = await world.graph.get_documents_paginated(
+        CollectionNames.RECORDS.value, limit=1000,
+        filters={"indexingStatus": ProgressStatus.NOT_STARTED.value}, raise_on_error=True,
+    )
+    assert world.ids["drive_file"] in {d.get("_key") or d.get("id") for d in waiting}
+
+    # The sync's next attempt sees a live record and sends it for indexing.
+    await _sync_sees_drive_file_again(world, indexing_status=ProgressStatus.QUEUED.value)
     assert [e["payload"]["recordId"] for e in world.producer.of_type(EventTypes.NEW_RECORD.value)] == [
         world.ids["drive_file"]
     ]
