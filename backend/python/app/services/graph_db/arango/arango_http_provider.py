@@ -188,6 +188,7 @@ from app.services.graph_db.taxonomy import (
     subcategory_level,
 )
 from app.services.graph_db.entity_index_queries import (
+    ENTITY_INDEX_SOURCES,
     build_entity_index_candidate_aql,
     build_entity_index_source_page_aql,
     entity_index_source,
@@ -749,6 +750,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 taxonomy_collection,
                 ["orgId", "normalizedAliases[*]"],
             )
+
+        # ==================== ENTITY INDEX SOURCES ====================
+        # The entity index rebuild pages each source by scope, then key; without
+        # _key trailing the scope every page re-sorts the whole scope. Records'
+        # (connectorId, _key) is created below.
+        for spec in ENTITY_INDEX_SOURCES.values():
+            if spec.collection != CollectionNames.RECORDS.value:
+                await self.http_client.ensure_persistent_index(
+                    spec.collection, [spec.scope_field, "_key"],
+                )
 
         # ==================== RECORD INDEXES (Highest Priority) ====================
         # Records are the most queried entity, especially in permission checks
