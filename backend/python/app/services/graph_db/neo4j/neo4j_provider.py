@@ -2680,7 +2680,10 @@ class Neo4jProvider(IGraphDBProvider):
         if not expected:
             raise ValueError("update_node_fields_if_match needs an expectation")
         label = collection_to_label(collection)
-        parameters: dict[str, Any] = {"key": key, "updates": dict(updates)}
+        # As update_node: _key becomes id, and the schema checks the fields.
+        neo4j_updates = self._arango_to_neo4j_node(updates, collection)
+        self.validator.validate_node_update(collection, neo4j_updates)
+        parameters: dict[str, Any] = {"key": key, "updates": neo4j_updates}
         conditions = []
         for i, (field, value) in enumerate(expected.items()):
             parameters[f"f{i}"] = field
