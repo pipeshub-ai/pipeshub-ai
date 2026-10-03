@@ -340,6 +340,35 @@ class TestImageEmbeddingProbe:
         assert body["details"]["hint"].startswith("Uncheck Multimodal")
         assert "sk-secret" not in resp.body.decode()
 
+    async def test_an_empty_image_embedding_keeps_the_provider_error_in_the_log(
+        self, mock_request,
+    ) -> None:
+        """Several providers put `str(e)` in the result's error field."""
+        provider = MagicMock()
+        provider.supports_multimodal.return_value = True
+        provider.embed_images = AsyncMock(return_value=[MagicMock(
+            embedding=None, error="401 Unauthorized: invalid api key sk-secret",
+        )])
+        logger = MagicMock()
+
+        with self._patch_text_embedding(), \
+             patch(FACTORY) as factory:
+            factory.create.return_value = provider
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(
+                mock_request, _embedding_config(isMultimodal=True), logger,
+            )
+
+        body = json.loads(resp.body)
+        assert resp.status_code == 400
+        assert body["message"] == (
+            "The model returned no embedding for a test image, so images wouldn't be "
+            "indexed. Check its API key and endpoint and that it accepts images, then try again."
+        )
+        assert "sk-secret" not in resp.body.decode()
+        logged = " ".join(str(arg) for c in logger.warning.call_args_list for arg in c.args)
+        assert "sk-secret" in logged
+
     async def test_a_text_only_model_is_not_probed_for_images(self, mock_request) -> None:
         with self._patch_text_embedding(), \
              patch(FACTORY) as factory:

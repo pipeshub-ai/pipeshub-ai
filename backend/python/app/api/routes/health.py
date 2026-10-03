@@ -341,6 +341,11 @@ _IMAGE_EMBEDDING_SETUP_FAILED = (
     "and API key in Workspace → AI Models, then try again."
 )
 
+_IMAGE_EMBEDDING_RETURNED_NOTHING = (
+    "The model returned no embedding for a test image, so images wouldn't be "
+    "indexed. Check its API key and endpoint and that it accepts images, then try again."
+)
+
 
 class _ImageEmbeddingSetupError(Exception):
     """The image-embedding provider could not be built from these settings.
@@ -1357,8 +1362,8 @@ async def _probe_image_embedding(
     first = results[0] if results else None
     embedding = getattr(first, "embedding", None)
     if not embedding:
-        error = getattr(first, "error", None)
-        return f"Image embedding returned nothing{f': {error}' if error else ''}"
+        logger.warning("Image embedding probe returned no embedding: %s", getattr(first, "error", None))
+        return _IMAGE_EMBEDDING_RETURNED_NOTHING
     if len(embedding) != text_dimension:
         # A collection holds one vector width; text and image points must agree.
         return (
