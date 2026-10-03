@@ -11712,12 +11712,13 @@ class Neo4jProvider(IGraphDBProvider):
         follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
         transaction: str | None = None,
         within_folder_id: str | None = None,
+        include_trashed_roots: bool = False,
     ) -> dict:
         """See ``IGraphDBProvider.soft_delete_records``."""
         if not record_ids:
             return empty_soft_delete_result(batch_id)
         root_check = f"""
-            {cypher_live_record("rec")} AND rec.connectorId = $connector_id
+            ($include_trashed OR {cypher_live_record("rec")}) AND rec.connectorId = $connector_id
             AND ($folder_id IS NULL OR EXISTS {{
                 MATCH (:Record {{id: $folder_id}})
                       (()-[c:RECORD_RELATION WHERE c.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->()){{1,{CONTAINMENT_MAX_DEPTH}}}
@@ -11735,7 +11736,10 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE {root_check}
                 RETURN collect(DISTINCT rec.id) AS root_keys
                 """,
-                parameters={"record_ids": record_ids, "connector_id": connector_id, "folder_id": within_folder_id},
+                parameters={
+                    "record_ids": record_ids, "connector_id": connector_id, "folder_id": within_folder_id,
+                    "include_trashed": include_trashed_roots,
+                },
                 txn_id=txn_id,
             )
             root_keys = (checked[0] if checked else {}).get("root_keys") or []
@@ -11770,6 +11774,7 @@ class Neo4jProvider(IGraphDBProvider):
                         "root_ids": root_keys,
                         "connector_id": connector_id,
                         "folder_id": within_folder_id,
+                        "include_trashed": include_trashed_roots,
                         "follow": list(follow),
                         "now": get_epoch_timestamp_in_ms(),
                         "source": delete_source,

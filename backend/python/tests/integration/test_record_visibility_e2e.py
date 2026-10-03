@@ -866,7 +866,6 @@ async def test_confluence_dc_removes_a_trashed_page_and_its_trashed_comment(worl
     connector = SimpleNamespace(
         data_entities_processor=processor, connector_id=world.connector_id, logger=logger,
         _cascade_succeeded=ConfluenceDataCenterConnector._cascade_succeeded,
-        _trashed_ids=ConfluenceDataCenterConnector._trashed_ids,
     )
 
     assert await ConfluenceDataCenterConnector._delete_content_records(connector, [page]) is True
@@ -876,23 +875,59 @@ async def test_confluence_dc_removes_a_trashed_page_and_its_trashed_comment(worl
     assert await world.graph.get_document(world.ids["live_shared"], records) is not None
 
 
-async def test_with_the_trash_on_confluence_dc_leaves_a_trashed_page_for_the_purge(
+async def _attach(world: _World, parent: str, child: str) -> None:
+    now = get_epoch_timestamp_in_ms()
+    records = CollectionNames.RECORDS.value
+    await world.graph.batch_create_edges(
+        [{"from_id": world.ids[parent], "from_collection": records, "to_id": world.ids[child],
+          "to_collection": records, "relationshipType": "ATTACHMENT",
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+        collection=CollectionNames.RECORD_RELATIONS.value,
+    )
+
+
+async def test_the_trash_walks_from_a_trashed_root_only_when_asked(world: _World) -> None:
+    """A trashed root keeps its batch; with include_trashed_roots its live attachment is trashed too."""
+    g, records = world.graph, CollectionNames.RECORDS.value
+    await _attach(world, "trashed_shared", "live")
+    before = await g.get_document(world.ids["trashed_shared"], records)
+
+    refused = await g.soft_delete_records(
+        [world.ids["trashed_shared"]], world.connector_id, delete_source="CONNECTOR", batch_id="b-refused",
+    )
+    assert refused["successfully_deleted"] == 0 and refused["soft_deleted_records"] == []
+    assert (await g.get_document(world.ids["live"], records)).get("isDeleted") is not True
+
+    taken = await g.soft_delete_records(
+        [world.ids["trashed_shared"]], world.connector_id, delete_source="CONNECTOR", batch_id="b-taken",
+        follow=("ATTACHMENT",), include_trashed_roots=True,
+    )
+
+    assert taken["failed_records"] == [] and taken["successfully_deleted"] == 1, taken
+    assert [r["record_id"] for r in taken["soft_deleted_records"]] == [world.ids["live"]]
+    attachment = await g.get_document(world.ids["live"], records)
+    assert attachment["isDeleted"] is True and attachment["deleteBatchId"] == "b-taken"
+    root = await g.get_document(world.ids["trashed_shared"], records)
+    assert root["deleteBatchId"] == before["deleteBatchId"], "the trashed root keeps its own batch"
+
+
+async def test_with_the_trash_on_confluence_dc_trashes_what_hangs_under_a_trashed_page(
     world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A page already in the trash stays there, and its removal still counts as done."""
+    """A trashed page the space no longer lists takes its live attachment to the trash, and the removal is done."""
     monkeypatch.setattr(processor_module, "is_soft_delete_enabled", AsyncMock(return_value=True))
     records = CollectionNames.RECORDS.value
+    await _attach(world, "trashed_shared", "live")
     processor = _processor(world)
     stored = await processor.get_records_by_status(world.connector_id, None, visibility=RecordVisibility.ALL)
     pages = [r for r in stored if r.id in (world.ids["trashed_shared"], world.ids["live_shared"])]
     connector = SimpleNamespace(
         data_entities_processor=processor, connector_id=world.connector_id, logger=logger,
         _cascade_succeeded=ConfluenceDataCenterConnector._cascade_succeeded,
-        _trashed_ids=ConfluenceDataCenterConnector._trashed_ids,
     )
 
     assert await ConfluenceDataCenterConnector._delete_content_records(connector, pages) is True
 
-    for name in ("trashed_shared", "live_shared"):
+    for name in ("trashed_shared", "live_shared", "live"):
         doc = await world.graph.get_document(world.ids[name], records)
         assert doc is not None and doc["isDeleted"] is True, name

@@ -4286,6 +4286,7 @@ class IGraphDBProvider(ABC):
         follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
         transaction: str | None = None,
         within_folder_id: str | None = None,
+        include_trashed_roots: bool = False,
     ) -> dict:
         """Move live records, and their live descendants, to the trash.
 
@@ -4295,7 +4296,9 @@ class IGraphDBProvider(ABC):
         restored as it was.
 
         Roots are scoped by ``connector_id`` (the KB id for a KB) and must be
-        live. Descendants are reached through ``RECORD_RELATION`` edges whose
+        live, unless *include_trashed_roots*: a caller removing what the source
+        no longer has also walks from a root already in the trash, which keeps
+        its own batch while its live descendants are marked. Descendants are reached through ``RECORD_RELATION`` edges whose
         ``relationshipType`` is in ``follow``: both kinds for a folder subtree,
         ``("ATTACHMENT",)`` to leave PARENT_CHILD children alone, ``()`` for the
         roots only. A descendant already in the trash keeps its own batch.

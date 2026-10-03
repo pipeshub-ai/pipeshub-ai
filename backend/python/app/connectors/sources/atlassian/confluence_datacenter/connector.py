@@ -1671,22 +1671,23 @@ class ConfluenceDataCenterConnector(BaseConnector):
         failed = 0
         for record in records:
             try:
-                children = await self.data_entities_processor.get_records_by_parent(
-                    self.connector_id, record.external_record_id, visibility=RecordVisibility.ALL
-                )
-                comments = [c for c in children if c.record_type in comment_types]
+                comments = [
+                    c.id for c in await self.data_entities_processor.get_records_by_parent(
+                        self.connector_id, record.external_record_id, visibility=RecordVisibility.ALL
+                    )
+                    if c.record_type in comment_types
+                ]
                 if comments:
                     result = await self.data_entities_processor.on_records_deleted_cascade(
-                        [c.id for c in comments], self.connector_id, cascade_children=True,
-                        include_trashed_roots=True,
+                        comments, self.connector_id, cascade_children=True, include_trashed_roots=True
                     )
-                    if not self._cascade_succeeded(result, self._trashed_ids(comments)):
+                    if not self._cascade_succeeded(result):
                         raise RuntimeError(f"its comments could not all be deleted: {result}")
                 # Removing what the source no longer has, so a root already in the trash goes too.
                 result = await self.data_entities_processor.on_records_deleted_cascade(
                     [record.id], self.connector_id, cascade_children=False, include_trashed_roots=True
                 )
-                if not self._cascade_succeeded(result, self._trashed_ids([record])):
+                if not self._cascade_succeeded(result):
                     raise RuntimeError(f"delete failed: {result}")
             except Exception as e:
                 failed += 1
@@ -1696,19 +1697,8 @@ class ConfluenceDataCenterConnector(BaseConnector):
         return not failed
 
     @staticmethod
-    def _cascade_succeeded(result: object, already_trashed: frozenset[str] = frozenset()) -> bool:
-        if not isinstance(result, dict) or not result.get("success", True):
-            return False
-        if not result.get("failed_count"):
-            return True
-        # With the trash on, a root already in it stays there for the purge; that is not a failure.
-        return bool(result.get("softDeleted")) and all(
-            isinstance(f, dict) and f.get("record_id") in already_trashed for f in result.get("failed_records") or []
-        )
-
-    @staticmethod
-    def _trashed_ids(records: list[Record]) -> frozenset[str]:
-        return frozenset(r.id for r in records if r.is_deleted)
+    def _cascade_succeeded(result: object) -> bool:
+        return isinstance(result, dict) and bool(result.get("success", True)) and not result.get("failed_count")
 
     async def _remove_spaces_out_of_scope(self, spaces: list[RecordGroup]) -> None:
         """Delete the stored spaces this sync no longer lists, with their records and checkpoints.
@@ -1788,7 +1778,6 @@ class ConfluenceDataCenterConnector(BaseConnector):
             return False
         deleted: set[str] = set()
         ids = [r.id for r in records]
-        trashed = self._trashed_ids(records)
         for start in range(0, len(ids), RECORD_DELETE_CHUNK):
             # An id a full cascade already took counts as a failed root if passed again.
             chunk = [i for i in ids[start:start + RECORD_DELETE_CHUNK] if i not in deleted]
@@ -1797,7 +1786,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
             result = await self.data_entities_processor.on_records_deleted_cascade(
                 chunk, self.connector_id, cascade_children=True, include_trashed_roots=True
             )
-            if not self._cascade_succeeded(result, trashed):
+            if not self._cascade_succeeded(result):
                 self.logger.warning(f"Could not delete the records of space {space_id}; retrying next sync: {result}")
                 return False
             deleted.update(

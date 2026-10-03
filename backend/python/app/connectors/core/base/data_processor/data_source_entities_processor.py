@@ -2386,7 +2386,9 @@ class DataSourceEntitiesProcessor:
         With ``ENABLE_SOFT_DELETE`` on, the same set goes to the trash instead
         (``on_records_soft_deleted``); ``delete_source`` and
         ``deleted_by_user_id`` say who sent it there. A root already in the
-        trash stays there for the purge, and is reported in ``failed_records``.
+        trash stays there for the purge, and is reported in ``failed_records``
+        unless *include_trashed_roots*: then its live descendants are trashed
+        too and it counts as done.
         A caller that has already read the flag passes it as *soft_delete*, so
         both act on the same answer.
         """
@@ -2410,6 +2412,7 @@ class DataSourceEntitiesProcessor:
                     deleted_by_user_id=deleted_by_user_id,
                     follow=("PARENT_CHILD", "ATTACHMENT") if cascade_children else ("ATTACHMENT",),
                     within_folder_id=within_folder_id,
+                    include_trashed_roots=include_trashed_roots,
                 )
             async with self.data_store_provider.transaction() as tx_store:
                 result = await tx_store.delete_records_recursive(
@@ -2448,6 +2451,7 @@ class DataSourceEntitiesProcessor:
         deleted_by_user_id: str | None = None,
         follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
         within_folder_id: str | None = None,
+        include_trashed_roots: bool = False,
     ) -> dict:
         """Move records and their subtree to the trash, as one batch.
 
@@ -2466,6 +2470,7 @@ class DataSourceEntitiesProcessor:
                 deleted_by_user_id=deleted_by_user_id,
                 follow=follow,
                 within_folder_id=within_folder_id,
+                include_trashed_roots=include_trashed_roots,
             )
         result = dict(result)
         result["deleted_records"] = result.get("soft_deleted_records", [])
