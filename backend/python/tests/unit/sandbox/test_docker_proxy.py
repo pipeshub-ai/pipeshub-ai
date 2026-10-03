@@ -241,6 +241,8 @@ class TestContainerCreate:
         {"Image": IMAGE, "Binds": ["/:/host"], "Privileged": True, "HostConfig": {"NetworkMode": "none"}},
         {"Image": IMAGE, "Runtime": "nvidia", "HostConfig": {"NetworkMode": "none"}},
         {"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}, "Labels": ["a=1"]},
+        {"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}, "Labels": []},
+        {"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}, "Labels": ""},
         [],
     ])
     def test_refuses_raw_payloads(self, policy: DockerApiPolicy, body: object) -> None:

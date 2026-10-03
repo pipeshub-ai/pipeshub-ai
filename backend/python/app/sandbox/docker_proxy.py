@@ -335,7 +335,9 @@ class DockerApiPolicy:
             if name not in self.allowed_networks:
                 raise PolicyDenied(f"network {name!r} is not permitted")
 
-        raw_labels = body.get("Labels") or {}
+        raw_labels = body.get("Labels")
+        if raw_labels is None:
+            raw_labels = {}
         if not isinstance(raw_labels, dict):
             raise PolicyDenied("Labels must be an object")
         labels = dict(raw_labels)
