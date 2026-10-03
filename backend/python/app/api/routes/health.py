@@ -347,12 +347,18 @@ _IMAGE_EMBEDDING_RETURNED_NOTHING = (
 )
 
 
-class _ImageEmbeddingSetupError(Exception):
-    """The image-embedding provider could not be built from these settings.
+class _ImageEmbeddingSettingsError(Exception):
+    """Image embedding failed because of the model's settings (endpoint, API
+    key), not because the model cannot embed images.
 
     Kept apart from a capability failure: telling the admin to uncheck
-    Multimodal would switch off a capability over a wrong endpoint.
+    Multimodal would switch off a capability over a wrong endpoint or key.
+    `message` is fixed text; the provider's own error goes to the log only.
     """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
 
 
 def _is_capability_error(exc: Exception) -> bool:
@@ -1311,7 +1317,8 @@ def _is_multimodal(config: dict) -> bool:
 async def _probe_image_embedding(
     embedding_config: dict, model_name: str, text_dimension: int, logger: Logger,
 ) -> str | None:
-    """None when this model really can embed an image, else why not.
+    """None when this model really can embed an image, else why it cannot.
+    Raises `_ImageEmbeddingSettingsError` when the settings are at fault.
 
     Uses the same `MultimodalEmbeddingFactory` the indexing pipeline uses, so a
     provider with no implementation is caught here rather than by images
@@ -1338,7 +1345,7 @@ async def _probe_image_embedding(
         )
     except Exception as exc:
         logger.warning("Could not build a multimodal embedding provider: %s", exc)
-        raise _ImageEmbeddingSetupError from exc
+        raise _ImageEmbeddingSettingsError(_IMAGE_EMBEDDING_SETUP_FAILED) from exc
 
     if multimodal_provider is None or not multimodal_provider.supports_multimodal():
         return (
@@ -1362,8 +1369,9 @@ async def _probe_image_embedding(
     first = results[0] if results else None
     embedding = getattr(first, "embedding", None)
     if not embedding:
+        # Providers report failed calls here (a 401, a bad endpoint), not only refusals.
         logger.warning("Image embedding probe returned no embedding: %s", getattr(first, "error", None))
-        return _IMAGE_EMBEDDING_RETURNED_NOTHING
+        raise _ImageEmbeddingSettingsError(_IMAGE_EMBEDDING_RETURNED_NOTHING)
     if len(embedding) != text_dimension:
         # A collection holds one vector width; text and image points must agree.
         return (
@@ -1480,10 +1488,8 @@ async def perform_embedding_health_check(
                     image_error = await _probe_image_embedding(
                         embedding_config, model_name, embedding_dimension, logger,
                     )
-                except _ImageEmbeddingSetupError:
-                    return _config_error(
-                        _IMAGE_EMBEDDING_SETUP_FAILED, embedding_config, model_name,
-                    )
+                except _ImageEmbeddingSettingsError as exc:
+                    return _config_error(exc.message, embedding_config, model_name)
                 if image_error is not None:
                     return _config_error(
                         image_error, embedding_config, model_name,

@@ -365,6 +365,8 @@ class TestImageEmbeddingProbe:
             "The model returned no embedding for a test image, so images wouldn't be "
             "indexed. Check its API key and endpoint and that it accepts images, then try again."
         )
+        # The error is a key/endpoint failure; unchecking Multimodal would not fix it.
+        assert "hint" not in body["details"]
         assert "sk-secret" not in resp.body.decode()
         logged = " ".join(str(arg) for c in logger.warning.call_args_list for arg in c.args)
         assert "sk-secret" in logged
