@@ -1083,14 +1083,17 @@ class EventProcessor:
                 # The extracting record may have finished, and read its flag,
                 # before the flag was written. Then its edges exist by now:
                 # take them here, from whichever record on the VRID has them.
-                finished = next(
+                # A successful extraction first: a failed one has no edges to
+                # give, and another record may still be producing them.
+                finished = min(
                     (
                         r for r in await find_duplicates(raise_on_error=True)
                         if r.get("virtualRecordId") == vrid
                         and r.get("indexingStatus") == ProgressStatus.COMPLETED.value
                         and extraction_finished(r)
                     ),
-                    None,
+                    key=lambda r: r.get("extractionStatus") != ProgressStatus.COMPLETED.value,
+                    default=None,
                 )
                 if finished is not None:
                     await self._copy_twin_edges(finished, doc)

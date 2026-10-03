@@ -166,6 +166,22 @@ class TestSettledTwinPreferred:
         match = _select([_rec("inflight", IN_PROGRESS, DRIVE), waiting])
         assert match.record["_key"] == "waiting-copy" and match.is_processed
 
+    def test_a_failed_extraction_comes_after_one_still_running(self):
+        """The running one may yet produce edges; the failed one never will.
+        Attaching to the running one flags it, so its edges arrive later."""
+        failed = {**_rec("failed", COMPLETED, DRIVE), "extractionStatus": "FAILED"}
+        running = {**_rec("running", COMPLETED, DRIVE), "extractionStatus": "NOT_STARTED"}
+        done = {**_rec("done", COMPLETED, DRIVE), "extractionStatus": "COMPLETED"}
+        assert _select([failed, running]).record["_key"] == "running"
+        assert _select([failed, running, done]).record["_key"] == "done"
+
+    def test_a_failed_extraction_is_still_reused_when_nothing_better_exists(self):
+        """Its vectors are fine: indexing the same content again would only
+        fail the same classification."""
+        failed = {**_rec("failed", COMPLETED, DRIVE), "extractionStatus": "FAILED"}
+        match = _select([_rec("inflight", IN_PROGRESS, DRIVE), failed])
+        assert match.record["_key"] == "failed" and match.is_processed
+
     def test_an_empty_record_counts_as_settled(self):
         waiting = {**_rec("waiting-copy", COMPLETED, DRIVE), "extractionStatus": "NOT_STARTED"}
         assert _select([waiting, _rec("empty", EMPTY, DRIVE, vrid=None)]).record["_key"] == "empty"

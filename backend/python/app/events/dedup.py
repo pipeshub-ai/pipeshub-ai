@@ -93,12 +93,25 @@ def _is_processed(record: Mapping[str, Any]) -> bool:
 
 
 def _is_settled(record: Mapping[str, Any]) -> bool:
-    """Processed, and nothing about it is still going to change."""
+    """Processed, and its taxonomy edges exist: nothing left to wait for."""
     if not _is_processed(record):
         return False
-    return (
-        record.get("indexingStatus") == ProgressStatus.EMPTY.value
-        or extraction_finished(record)
+    return record.get("indexingStatus") == ProgressStatus.EMPTY.value or (
+        extraction_finished(record)
+        and record.get("extractionStatus") == ProgressStatus.COMPLETED.value
+    )
+
+
+def _is_processed_and_not_failed(record: Mapping[str, Any]) -> bool:
+    """Processed, and not settled on a failed extraction.
+
+    A record still extracting may yet produce the edges a failed one never
+    will, so it is the better twin: attaching to it flags it, and its
+    reconcile brings them over when it finishes.
+    """
+    return _is_processed(record) and not (
+        extraction_finished(record)
+        and record.get("extractionStatus") == ProgressStatus.FAILED.value
     )
 
 
@@ -152,13 +165,16 @@ def select_duplicate(
 
     for pool, same_collection in ((same, True), (other, False)):
         for predicate, is_processed in (
-            (_is_settled, True), (_is_processed, True), (_is_in_progress, False),
+            (_is_settled, True),
+            (_is_processed_and_not_failed, True),
+            (_is_processed, True),
+            (_is_in_progress, False),
         ):
             # Within a pool, finished beats in-flight; across pools, same
             # collection beats other. Hence pool first, status second.
-            # Among finished ones, a record whose extraction is done comes
-            # first: its taxonomy edges exist, while a copy that attached to
-            # it a moment ago may still be waiting for them.
+            # Among finished ones, a record whose extraction succeeded comes
+            # first, then one still extracting, and a failed extraction last:
+            # its vectors are still worth reusing, its edges are not coming.
             match = next((r for r in pool if predicate(r)), None)
             if match is not None:
                 return DuplicateMatch(

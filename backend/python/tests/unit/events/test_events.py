@@ -2774,6 +2774,20 @@ class TestAttachDuringTwinExtraction:
         assert fields_of[("status", "r1")]["extractionStatus"] == ProgressStatus.FAILED.value
 
     @pytest.mark.asyncio
+    async def test_the_second_look_prefers_a_successful_extraction_to_a_failed_one(self):
+        ep, _, _, gp = _make_event_processor()
+        extracting = _twin(extractionStatus=ProgressStatus.NOT_STARTED.value)
+        failed = _twin(_key="failed", extractionStatus=ProgressStatus.FAILED.value)
+        succeeded = _twin(_key="succeeded")
+        steps, fields_of, sync = _record_attach(ep, gp, [[extracting], [failed, succeeded]])
+
+        with sync:
+            await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert steps[-3:] == [("find", "raises"), ("edges", "succeeded->r1"), ("status", "r1")]
+        assert fields_of[("status", "r1")]["extractionStatus"] == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
     async def test_edges_come_from_the_record_that_has_them_not_a_copy_still_waiting(self):
         """A copy that attached a moment ago is a valid twin too, with no edges
         yet. Which one the graph lists first must not decide."""
