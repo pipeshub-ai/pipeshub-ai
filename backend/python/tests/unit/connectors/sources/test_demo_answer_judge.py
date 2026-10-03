@@ -298,6 +298,20 @@ def test_a_conflicting_sentence_the_answer_does_not_have_is_unverified() -> None
     assert claim.verdict == "unverified" and not claim.passed
 
 
+def test_an_unverified_claim_names_the_sentence_that_is_not_in_the_answer() -> None:
+    judge, _ = judge_with(reply_with_conflicts("supported", [2], [5]))
+    claim = judge.judge(CONTRADICTS_ITSELF, [NO_APPROVAL]).claims[0]
+    assert claim.out_of_range_ids == [5]
+    rendered = claim.render()
+    assert "cited sentences=[2] conflicting sentences=[5]" in rendered
+    assert rendered.endswith("(not in the answer: [5])")
+
+
+def test_an_unverified_claim_that_cites_nothing_says_so() -> None:
+    judge, _ = judge_with(reply(("supported", [])))
+    assert judge.judge(ANSWER, [NO_APPROVAL]).claims[0].render().endswith("(no sentence cited)")
+
+
 def test_a_forbidden_claim_the_answer_states_fails_even_with_a_conflicting_sentence() -> None:
     forbidden = "Purchases of up to $250 need your manager's approval."
     judge, _ = judge_with(reply_with_conflicts("supported", [1], [2]))

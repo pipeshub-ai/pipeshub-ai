@@ -136,6 +136,8 @@ class ClaimResult(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     conflicting_ids: list[int] = Field(default_factory=list)
     conflicting: list[str] = Field(default_factory=list)
+    # Cited numbers, from either list, that the answer has no sentence for.
+    out_of_range_ids: list[int] = Field(default_factory=list)
     reasoning: str = ""
     passed: bool
 
@@ -143,7 +145,9 @@ class ClaimResult(BaseModel):
         want = "state" if self.kind == "must_state" else "not state"
         head = f"{'ok' if self.passed else 'FAIL'} {self.verdict} (must {want}): {self.claim!r}"
         if self.verdict == "unverified":
-            return f"{head} cited sentences={self.evidence_ids} (none, or not in the answer)"
+            cited = f"cited sentences={self.evidence_ids} conflicting sentences={self.conflicting_ids}"
+            why = f"not in the answer: {self.out_of_range_ids}" if self.out_of_range_ids else "no sentence cited"
+            return f"{head} {cited} ({why})"
         if self.passed:
             return head
         if self.evidence:
@@ -309,7 +313,8 @@ class AnswerJudge:
             got = by_id[i]
             ids = got.evidence_sentence_ids
             conflicts = got.conflicting_sentence_ids
-            valid = all(1 <= n <= len(sentences) for n in [*ids, *conflicts])
+            out_of_range = sorted({n for n in [*ids, *conflicts] if not 1 <= n <= len(sentences)})
+            valid = not out_of_range
             outcome: Outcome = got.verdict
             # Only for must-state: a forbidden claim the judge says is stated still fails
             # however much else the answer says against it.
@@ -323,6 +328,7 @@ class AnswerJudge:
                 evidence=[sentences[n - 1] for n in ids] if valid else [],
                 conflicting_ids=conflicts,
                 conflicting=[sentences[n - 1] for n in conflicts] if valid else [],
+                out_of_range_ids=out_of_range,
                 reasoning=got.reasoning, passed=passed,
             ))
         return JudgeResult(status="judged", passed=all(r.passed for r in results), claims=results)

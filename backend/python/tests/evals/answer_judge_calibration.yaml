@@ -190,9 +190,9 @@ cases:
       - state: "A purchase of up to and including $250 needs no approval."
         expect: contradicted
 
-  - id: self-contradiction-cant-submit
-    about: no approval, yet it can't be submitted without sign-off
-    answer: "You can spend up to $250 with no approval. You can't submit it without your manager's sign-off."
+  - id: self-contradiction-sign-off-before-buying
+    about: no approval, yet the manager signs off before you buy
+    answer: "You can spend up to $250 with no approval. You can't buy anything until your manager has signed it off."
     claims:
       - state: "A purchase of up to and including $250 needs no approval."
         expect: contradicted
@@ -254,8 +254,8 @@ cases:
         expect: supported
 
   - id: consistent-glued-preamble
-    about: the chat's tool-call preamble glued to the answer, as a live run gave it
-    answer: "I’ll check the internal policy for purchase approval thresholds.You can spend up to **$250** on a purchase without your manager’s approval; **more than $250 up to $2,500** needs manager approval [source](ref9)."
+    about: the chat's tool-call preamble glued to the answer, shaped like a live run's
+    answer: "I’ll check the internal policy for purchase approval thresholds.You can spend up to **$250** on a purchase without any approval; **more than $250 up to $2,500** needs manager approval [source](ref9)."
     claims:
       - state: "A purchase of up to and including $250 needs no approval."
         expect: supported
