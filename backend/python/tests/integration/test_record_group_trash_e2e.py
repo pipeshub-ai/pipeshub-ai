@@ -9,7 +9,8 @@ it, and the purge removes the group later. With the flag off, it is deleted
 as on main.
 
 - PostgreSQL: a schema dropped at the source, on full and incremental sync.
-- Dropbox: a team folder permanently deleted.
+- Dropbox: a team folder permanently deleted, before the drive sync reaches its
+  files (the order ``run_sync`` uses) and after.
 - With the trash on, a group holding only live records is still deleted.
 
 Writes records through ``DataSourceEntitiesProcessor.on_new_records`` over a
@@ -257,10 +258,12 @@ def _team_folder_deleted(team_folder_id: str) -> SimpleNamespace:
     return SimpleNamespace(assets=[SimpleNamespace(is_folder=lambda: True, get_folder=lambda: folder)])
 
 
+@pytest.mark.parametrize("file_deleted_first", [False, True], ids=["sync-order", "file-first"])
 @pytest.mark.parametrize("trash_on", [True, False])
-async def test_a_deleted_dropbox_team_folder_keeps_its_group_while_its_file_is_in_the_trash(
-    world: _World, monkeypatch: pytest.MonkeyPatch, trash_on: bool,
+async def test_a_deleted_dropbox_team_folder_keeps_its_group_with_its_file_in_the_trash(
+    world: _World, monkeypatch: pytest.MonkeyPatch, trash_on: bool, file_deleted_first: bool,
 ) -> None:
+    """run_sync handles team folder events before the drive sync reaches the folder's files ("sync-order")."""
     _trash(monkeypatch, trash_on)
     team_folder_id = f"ns-{uuid.uuid4().hex[:8]}"
     file = _dropbox_file(world, team_folder_id)
@@ -270,12 +273,19 @@ async def test_a_deleted_dropbox_team_folder_keeps_its_group_while_its_file_is_i
         connector, event
     )
 
-    await DropboxConnector._handle_record_updates(
-        connector, SimpleNamespace(is_deleted=True, external_record_id=file.external_record_id)
-    )
+    if file_deleted_first:
+        await DropboxConnector._handle_record_updates(
+            connector, SimpleNamespace(is_deleted=True, external_record_id=file.external_record_id)
+        )
     await DropboxConnector._handle_record_group_deleted_event(connector, _team_folder_deleted(team_folder_id))
 
-    await _assert_kept_or_gone(world, file.id, group, team_folder_id, trash_on)
+    if trash_on or file_deleted_first:
+        await _assert_kept_or_gone(world, file.id, group, team_folder_id, trash_on)
+    else:
+        # As on main: the group and its edges go, and the file stays until the drive sync deletes it.
+        assert await world.group(team_folder_id) is None
+        assert await world.belongs_to(file.id, group.get("_key") or group["id"]) is None
+        assert (await world.graph.get_document(file.id, RECORDS))["isDeleted"] is not True
 
 
 async def test_with_the_trash_on_a_group_holding_only_live_records_is_still_deleted(
