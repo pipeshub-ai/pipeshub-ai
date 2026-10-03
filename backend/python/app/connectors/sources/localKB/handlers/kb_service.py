@@ -316,6 +316,15 @@ class KnowledgeBaseService:
             }
         return None
 
+    @staticmethod
+    def _file_mime_type(record_doc: dict, file_doc: dict) -> str:
+        """The file's type, matching what the duplicate-name queries compare against.
+
+        The processor stores it on the record only; older file nodes also carry it.
+        """
+        mime_type = record_doc.get("mimeType")
+        return mime_type if mime_type is not None else file_doc.get("mimeType", "")
+
     async def _assert_no_file_sibling_conflict(
         self,
         kb_id: str,
@@ -1312,8 +1321,7 @@ class KnowledgeBaseService:
                         parent_info = await self.graph_provider.get_record_parent_info(record_id)
                         parent_folder_id = parent_info.get("id") if parent_info and parent_info.get("type") == "record" else None
                         
-                        # Check for sibling file with same name + mime
-                        mime_type = file_doc.get("mimeType", "")
+                        mime_type = self._file_mime_type(current_record, file_doc)
                         existing_file = await self.graph_provider.find_file_by_name_in_parent(
                             kb_id=kb_context.get("kb_id"),
                             file_name=new_name,
@@ -2512,7 +2520,7 @@ class KnowledgeBaseService:
                 file_rec = file_data.get("fileRecord") or {}
                 record = file_data.get("record") or {}
                 file_name = gp._normalize_name(file_rec.get("name") or record.get("recordName")) or ""
-                mime_type = file_rec.get("mimeType")
+                mime_type = self._file_mime_type(record, file_rec)
                 key = (file_name.lower(), str(mime_type or ""))
                 variants = gp._normalized_name_variants_lower(file_name)
                 conflict = any((v, str(mime_type or "")) in existing_name_mime for v in variants) or key in seen
@@ -2730,7 +2738,7 @@ class KnowledgeBaseService:
                 # Check for file name conflict in destination
                 file_doc = await self.graph_provider.get_document(record_id, "files")
                 if file_doc and file_doc.get("isFile"):
-                    mime_type = file_doc.get("mimeType", "")
+                    mime_type = self._file_mime_type(moving_record, file_doc)
                     conflict_err = await self._assert_no_file_sibling_conflict(
                         kb_id=kb_id,
                         parent_folder_id=new_parent_id,
