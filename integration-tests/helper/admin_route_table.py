@@ -301,6 +301,7 @@ PYTHON_CONDITIONAL_ADMIN = {
     "connectors/api/router.py::get_all_oauth_configs": "secrets are masked for members",
     "connectors/api/router.py::list_oauth_configs": "secrets are masked for members",
     "connectors/api/router.py::get_oauth_config_by_id": "secrets are masked for members",
+    "api/routes/toolsets.py::get_toolset_instances": "secrets are masked for members",
     "api/routes/toolsets.py::get_toolset_instance": "secrets are masked for members",
     "api/routes/toolsets.py::list_toolset_oauth_configs": "secrets are masked for members",
     # Record reads: an admin may reach a team connector's records; members need a permission.
