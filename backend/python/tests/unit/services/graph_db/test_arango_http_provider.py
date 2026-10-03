@@ -24,6 +24,7 @@ Tests cover:
 
 import asyncio
 import logging
+import re
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
@@ -15944,60 +15945,116 @@ class TestGetAppChildrenSubquery:
         sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
         assert "reason: record.reason" in sub_query
 
-    def test_external_hoisting_is_gated(self, connected_provider):
-        """Both hoisting arms must be behind the isExternalUser flag: an internal user
-        with 50k direct permission edges must not pay for candidate collection."""
+    def test_external_hoisting_is_gated(self, connected_provider) -> None:
+        """Both candidate lookups must be behind the isExternalUser flag: an internal user
+        with 50k direct permission edges must not pay for candidate collection. AQL runs a
+        subquery inside a ternary whatever the condition, so the gate has to be a FILTER."""
         sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
-        assert sub_query.count("!is_external_user ? [] :") == 2
+        assert sub_query.count("FILTER is_external_user\n") == 2
         assert "rel.isExternalUser == true" in sub_query
+        assert "!is_external_user ? [] :" not in sub_query
 
-    def test_hoisting_arms_are_bound_before_union(self, connected_provider):
+    def test_hoisting_arms_are_bound_before_union(self, connected_provider) -> None:
         """UNION must receive plain variables. Passing subqueries (let alone ternaries
         wrapping subqueries) as function arguments is a shape this file does not
         otherwise rely on."""
         sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
         assert "UNION(connector_rgs, hoisted_records, hoisted_groups)" in sub_query
 
-    def test_permission_role_never_redeclared_in_one_scope(self, connected_provider):
-        """AQL rejects two `LET permission_role` in the same scope, and the hoisting
-        arms need several permission lookups each. Every one must sit inside its own
-        subquery -- this walks the parens rather than trusting indentation."""
+    async def test_no_variable_is_declared_twice_in_reach(self, connected_provider) -> None:
+        """AQL refuses a query that declares a name again while the first is in scope,
+        including inside a nested subquery. The inlined permission lookups declare
+        `permission_role`, `parent_rgs` and more, so the app browse query is checked whole."""
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[{"nodes": [], "total": 0}])
+        await connected_provider.get_knowledge_hub_children("app1", "app", "org1", "uk1", 0, 10, "name", "ASC")
+        query = connected_provider.http_client.execute_aql.call_args.args[0]
+
+        assert _aql_redeclarations(query) == []
+
+    def test_redeclaration_check_catches_a_nested_shadow(self) -> None:
+        """The check itself: the shape #3115 shipped, an outer LET repeated inside a subquery."""
+        shadowed = "FOR a IN xs LET parent_rgs = [] LET r = (LET parent_rgs = [1] RETURN 1) RETURN r"
+        siblings = "LET x = (LET y = 1 RETURN y) LET z = (LET y = 2 RETURN y) RETURN [x, z]"
+        assert _aql_redeclarations(shadowed) == ["parent_rgs"]
+        assert _aql_redeclarations(siblings) == []
+
+    async def test_app_browse_plans_without_loop_reordering(self, connected_provider) -> None:
+        """Every inlined permission lookup multiplies the plans the optimizer tries; with
+        three of them app browse needed over 1 GB just to plan on ArangoDB 3.12."""
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[{"nodes": [], "total": 0}])
+        await connected_provider.get_knowledge_hub_children("app1", "app", "org1", "uk1", 0, 10, "name", "ASC")
+        options = connected_provider.http_client.execute_aql.call_args.kwargs["options"]
+        assert options == {"optimizer": {"rules": ["-interchange-adjacent-enumerations"]}}
+
+        connected_provider._get_record_children_subquery = MagicMock(return_value=("LET raw_children = []", {}))
+        await connected_provider.get_knowledge_hub_children("r1", "folder", "org1", "uk1", 0, 10, "name", "ASC")
+        assert connected_provider.http_client.execute_aql.call_args.kwargs["options"] is None
+
+    def test_permission_lookups_run_once_per_node_outside_the_candidate_loops(self, connected_provider) -> None:
+        """Two lookups in flat LETs, not one per parent inside each candidate's loop."""
         sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
+        hoisting = sub_query[sub_query.index("LET direct_targets"):]
+        assert hoisting.count("LET permission_role =") == 2
+        assert "FOR hoist_record IN DOCUMENT(" in hoisting
+        assert "FOR hoist_group IN DOCUMENT(" in hoisting
 
-        stack, scopes, i = [], [], 0
-        while i < len(sub_query):
-            ch = sub_query[i]
-            if ch == "(":
-                stack.append(i)
-            elif ch == ")":
-                if stack:
-                    stack.pop()
-            elif sub_query.startswith("LET permission_role =", i):
-                scopes.append(stack[-1] if stack else None)
-                i += 20
-                continue
-            i += 1
-
-        assert len(scopes) > 1, "expected several permission lookups"
-        assert len(set(scopes)) == len(scopes), "permission_role redeclared in one scope"
-
-    def test_orphan_records_check_both_parent_directions(self, connected_provider):
+    def test_orphan_records_check_both_parent_directions(self, connected_provider) -> None:
         """A parent folder is found by walking recordRelations backwards; a record group
         by walking belongsTo forwards. Checking only one direction hoists records that
         are already reachable, duplicating them."""
         sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
         assert "FILTER rel._to == orphan_record._id" in sub_query
         assert "FILTER be._from == orphan_record._id" in sub_query
-        assert (
-            "FILTER LENGTH(visible_parent_recs) == 0 AND LENGTH(visible_parent_rgs) == 0"
-            in sub_query
-        )
+        assert "FILTER entry.records NONE IN visible_record_ids" in sub_query
+        assert "FILTER entry.groups NONE IN visible_group_ids" in sub_query
 
-    def test_orphan_groups_skip_top_level(self, connected_provider):
+    def test_orphan_groups_skip_top_level(self, connected_provider) -> None:
         """A top-level RG has no parent RG and is branch 1's job; hoisting it too would
         return it twice."""
         sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
-        assert "FILTER LENGTH(rg_parents) > 0" in sub_query
+        assert "FILTER LENGTH(group_parent_ids) > 0" in sub_query
+
+
+_AQL_LET = re.compile(r"\bLET\s+([A-Za-z_]\w*)\s*=")
+_AQL_FOR = re.compile(r"\bFOR\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s+IN\b")
+_AQL_COLLECT = re.compile(r"\bCOLLECT\s+([A-Za-z_]\w*)\s*=")
+_AQL_INTO = re.compile(r"\bCOLLECT\b[^\n]*?\bINTO\s+([A-Za-z_]\w*)")
+
+
+def _aql_redeclarations(query: str) -> list[str]:
+    """Names declared while an earlier declaration of the same name is still in scope.
+
+    Scope is approximated by parentheses: a subquery sits in its own parens, and a
+    declaration reaches everything after it inside the parens it was made in.
+    """
+    query = re.sub(r"//[^\n]*", "", query)
+    found = sorted(
+        (match.start(1), name.strip())
+        for pattern in (_AQL_LET, _AQL_FOR, _AQL_COLLECT, _AQL_INTO)
+        for match in pattern.finditer(query)
+        for name in match.group(1).split(",")
+    )
+
+    scopes: list[tuple[int, ...]] = []
+    stack: list[int] = []
+    positions = iter(found)
+    nxt = next(positions, None)
+    for i, ch in enumerate(query):
+        while nxt is not None and nxt[0] == i:
+            scopes.append(tuple(stack))
+            nxt = next(positions, None)
+        if ch == "(":
+            stack.append(i)
+        elif ch == ")" and stack:
+            stack.pop()
+
+    clashes = []
+    seen: dict[str, list[tuple[int, ...]]] = {}
+    for (_, name), scope in zip(found, scopes):
+        if any(scope[: len(earlier)] == earlier for earlier in seen.get(name, [])):
+            clashes.append(name)
+        seen.setdefault(name, []).append(scope)
+    return clashes
 
 
 # ---------------------------------------------------------------------------
@@ -22839,8 +22896,7 @@ class TestArangoPersonMigrationAndReaper:
         # Soft-deleted grants must not keep membership alive — browse already drops them.
         assert "n.isDeleted != true" in reaper
         assert "n2.isDeleted != true" in reaper
-        assert "r.isDeleted != true" in browse
-        assert "g.isDeleted != true" in browse
+        assert "candidate.isDeleted != true" in browse
 
     # -- executing tests -----------------------------------------------------------
     #

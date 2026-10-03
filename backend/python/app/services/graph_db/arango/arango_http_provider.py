@@ -244,6 +244,12 @@ NODE_COLLECTIONS = [
 _WRITE_CONFLICT_ATTEMPTS = 6
 _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
 
+# Each inlined permission lookup gives this rule 16 loop orders to try, and the
+# orders multiply across lookups. App browse inlines three, so the optimizer hits
+# its 128-plan cap and needs over 1 GB to plan. Written order costs a few extra
+# edge lookups per permission target.
+_APP_CHILDREN_QUERY_OPTIONS = {"optimizer": {"rules": ["-interchange-adjacent-enumerations"]}}
+
 
 def _is_write_conflict(exc: Exception) -> bool:
     """ArangoDB errorNum 1200: a write-write conflict or a lock timeout."""
@@ -15272,7 +15278,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
         RETURN {{ nodes: paginated_children, total: total_count }}
         """
 
-        result = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
+        result = await self.http_client.execute_aql(
+            query,
+            bind_vars=bind_vars,
+            txn_id=transaction,
+            options=_APP_CHILDREN_QUERY_OPTIONS if parent_type == "app" else None,
+        )
         elapsed = time.perf_counter() - start
         self.logger.debug(f"get_knowledge_hub_children finished in {elapsed * 1000} ms")
         return result[0] if result else {"nodes": [], "total": 0}
@@ -18666,13 +18677,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         permission_role_aql = self._get_permission_role_aql("recordGroup", "node", "u")
         app_permission_role_aql = self._get_permission_role_aql("app", "app", "u")
-        # Parent-visibility probes and candidate roles for the external-collaborator
-        # branches. Distinct node variables so each helper's internal `permission_role`
-        # stays in its own scope - two of them in one scope is a redeclaration error.
-        parent_record_perm_aql = self._get_permission_role_aql("record", "parent_record", "u")
-        parent_group_perm_aql = self._get_permission_role_aql("recordGroup", "parent_group", "u")
-        orphan_record_perm_aql = self._get_permission_role_aql("record", "orphan_record", "u")
-        orphan_group_perm_aql = self._get_permission_role_aql("recordGroup", "orphan_group", "u")
+        hoist_record_perm_aql = self._get_permission_role_aql("record", "hoist_record", "u")
+        hoist_group_perm_aql = self._get_permission_role_aql("recordGroup", "hoist_group", "u")
 
         sub_query = f"""
         LET app = DOCUMENT("apps", @app_id)
@@ -18815,229 +18821,201 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }})
             )
 
-            // Orphaned records: shared with this collaborator, container invisible.
-            // Candidates are direct grants plus grants via a group/role/team. Org-wide
-            // grants are excluded on purpose - they apply to everyone and would flood
-            // the view.
-            LET hoisted_records = !is_external_user ? [] : (
-                    LET direct_recs = (
-                        FOR perm IN {CollectionNames.PERMISSION.value}
-                            FILTER perm._from == u._id AND perm.type == "USER"
-                            FILTER STARTS_WITH(perm._to, "{CollectionNames.RECORDS.value}/")
-                            LET r = DOCUMENT(perm._to)
-                            FILTER r != null AND r.isDeleted != true AND r.connectorId == app._key
-                            RETURN r
-                    )
-                    LET shared_recs = (
-                        FOR perm IN {CollectionNames.PERMISSION.value}
-                            FILTER perm._from == u._id AND perm.type == "USER"
-                            FILTER STARTS_WITH(perm._to, "{CollectionNames.GROUPS.value}/")
-                                OR STARTS_WITH(perm._to, "{CollectionNames.ROLES.value}/")
-                                OR STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
-                            FOR perm2 IN {CollectionNames.PERMISSION.value}
-                                FILTER perm2._from == perm._to
-                                FILTER STARTS_WITH(perm2._to, "{CollectionNames.RECORDS.value}/")
-                                LET r2 = DOCUMENT(perm2._to)
-                                FILTER r2 != null AND r2.isDeleted != true AND r2.connectorId == app._key
-                                RETURN r2
-                    )
-                    LET candidate_recs = (
-                        FOR r IN UNION(direct_recs, shared_recs)
-                            COLLECT rec_key = r._key INTO grouped
-                            RETURN grouped[0].r
-                    )
-                    FOR orphan_record IN candidate_recs
-                        // Immediate parents in both directions: a parent folder is found
-                        // by following recordRelations *backwards*, a record group by
-                        // following belongsTo *forwards*.
-                        LET parent_recs = (
-                            FOR rel IN recordRelations
-                                FILTER rel._to == orphan_record._id
-                                AND rel.relationshipType == "PARENT_CHILD"
-                                LET pr = DOCUMENT(rel._from)
-                                FILTER pr != null
-                                RETURN pr
-                        )
-                        LET parent_rgs = (
-                            FOR be IN belongsTo
-                                FILTER be._from == orphan_record._id
-                                AND STARTS_WITH(be._to, "{CollectionNames.RECORD_GROUPS.value}/")
-                                LET prg = DOCUMENT(be._to)
-                                FILTER prg != null
-                                RETURN prg
-                        )
-                        // Never hoist a container-less node; that also excludes top-level
-                        // nodes, which the first branch already owns.
-                        FILTER LENGTH(parent_recs) > 0 OR LENGTH(parent_rgs) > 0
-
-                        LET visible_parent_recs = (
-                            FOR parent_record IN parent_recs
-                                {parent_record_perm_aql}
-                                LET pr_role = IS_ARRAY(permission_role)
-                                    ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
-                                    : permission_role
-                                FILTER pr_role != null AND pr_role != ""
-                                RETURN pr_role
-                        )
-                        LET visible_parent_rgs = (
-                            FOR parent_group IN parent_rgs
-                                {parent_group_perm_aql}
-                                LET pg_role = IS_ARRAY(permission_role)
-                                    ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
-                                    : permission_role
-                                FILTER pg_role != null AND pg_role != ""
-                                RETURN pg_role
-                        )
-                        // If any parent is visible the user reaches this record by
-                        // drilling into that parent; hoisting it would duplicate it.
-                        FILTER LENGTH(visible_parent_recs) == 0 AND LENGTH(visible_parent_rgs) == 0
-
-                        LET orphan_role = FIRST(
-                            {orphan_record_perm_aql}
-                            LET own_role = IS_ARRAY(permission_role)
-                                ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
-                                : permission_role
-                            RETURN own_role
-                        )
-                        FILTER orphan_role != null AND orphan_role != ""
-
-                        LET rec_file_info = FIRST(
-                            FOR fe IN isOfType FILTER fe._from == orphan_record._id
-                            RETURN DOCUMENT(fe._to)
-                        )
-                        LET rec_is_folder = orphan_record.mimeType == "application/vnd.folder"
-                        LET rec_has_children = LENGTH(
-                            FOR rel IN recordRelations
-                                FILTER rel._from == orphan_record._id
-                                AND rel.relationshipType == "PARENT_CHILD"
-                                LIMIT 1
-                                RETURN 1
-                        ) > 0
-                        RETURN {{
-                            id: orphan_record._key,
-                            name: orphan_record.recordName,
-                            nodeType: rec_is_folder ? "folder" : "record",
-                            parentId: CONCAT("apps/", @app_id),
-                            origin: "CONNECTOR",
-                            connector: orphan_record.connectorName,
-                            connectorId: orphan_record.connectorId,
-                            externalGroupId: orphan_record.externalGroupId,
-                            recordType: orphan_record.recordType,
-                            recordGroupType: null,
-                            indexingStatus: orphan_record.indexingStatus,
-                            reason: orphan_record.reason,
-                            createdAt: orphan_record.sourceCreatedAtTimestamp != null ? orphan_record.sourceCreatedAtTimestamp : (orphan_record.createdAtTimestamp != null ? orphan_record.createdAtTimestamp : 0),
-                            updatedAt: orphan_record.sourceLastModifiedTimestamp != null ? orphan_record.sourceLastModifiedTimestamp : (orphan_record.updatedAtTimestamp != null ? orphan_record.updatedAtTimestamp : 0),
-                            sizeInBytes: orphan_record.sizeInBytes != null ? orphan_record.sizeInBytes : (rec_file_info != null ? rec_file_info.sizeInBytes : null),
-                            mimeType: orphan_record.mimeType,
-                            extension: rec_file_info != null ? rec_file_info.extension : null,
-                            webUrl: orphan_record.webUrl,
-                            hasChildren: rec_has_children,
-                            userRole: orphan_role,
-                            sharingStatus: null,
-                            isInternal: orphan_record.isInternal ? true : false
-                        }}
+            // Records and nested groups shared with this collaborator whose container
+            // they cannot see. The rule matches Neo4j's: hoist N iff the user has a role
+            // on N and on none of N's immediate parents. Candidates are direct grants
+            // plus grants via a group/role/team; org-wide grants are excluded on purpose,
+            // they apply to everyone and would flood the view.
+            //
+            // Each permission lookup runs once per distinct node in a flat LET. Nested in
+            // the per-candidate loop, the optimizer permutes every FOR it splices in from
+            // the lookups and runs out of memory while still planning the query.
+            //
+            // AQL evaluates a subquery inside a ternary whatever the condition, so the
+            // gate is a FILTER at the head of the candidate subqueries.
+            LET direct_targets = (
+                FILTER is_external_user
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == u._id AND perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.RECORDS.value}/")
+                        OR STARTS_WITH(perm._to, "{CollectionNames.RECORD_GROUPS.value}/")
+                    RETURN perm._to
+            )
+            LET shared_targets = (
+                FILTER is_external_user
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == u._id AND perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.GROUPS.value}/")
+                        OR STARTS_WITH(perm._to, "{CollectionNames.ROLES.value}/")
+                        OR STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                    FOR perm2 IN {CollectionNames.PERMISSION.value}
+                        FILTER perm2._from == perm._to
+                        FILTER STARTS_WITH(perm2._to, "{CollectionNames.RECORDS.value}/")
+                            OR STARTS_WITH(perm2._to, "{CollectionNames.RECORD_GROUPS.value}/")
+                        RETURN perm2._to
+            )
+            LET candidates = (
+                FOR candidate IN DOCUMENT(APPEND(direct_targets, shared_targets, true))
+                    FILTER candidate.isDeleted != true AND candidate.connectorId == app._key
+                    RETURN candidate
             )
 
-            // Orphaned nested recordGroups. Needed because on_new_record_groups only
-            // creates the RG->App edge when the RG has no parent RG, so a nested RG's
-            // belongsTo points at its parent and the first branch never returns it.
-            LET hoisted_groups = !is_external_user ? [] : (
-                    LET direct_rgs = (
-                        FOR perm IN {CollectionNames.PERMISSION.value}
-                            FILTER perm._from == u._id AND perm.type == "USER"
-                            FILTER STARTS_WITH(perm._to, "{CollectionNames.RECORD_GROUPS.value}/")
-                            LET g = DOCUMENT(perm._to)
-                            FILTER g != null AND g.isDeleted != true AND g.connectorId == app._key
-                            RETURN g
+            // Immediate parents in both directions: a parent folder is found by following
+            // recordRelations *backwards*, a record group by following belongsTo
+            // *forwards*. A node with no parent is never hoisted; top-level groups are
+            // connector_rgs' job.
+            LET record_parents = (
+                FOR orphan_record IN candidates
+                    FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", orphan_record)
+                    LET parent_record_ids = (
+                        FOR rel IN recordRelations
+                            FILTER rel._to == orphan_record._id
+                            AND rel.relationshipType == "PARENT_CHILD"
+                            FILTER DOCUMENT(rel._from) != null
+                            RETURN DISTINCT rel._from
                     )
-                    LET shared_rgs = (
-                        FOR perm IN {CollectionNames.PERMISSION.value}
-                            FILTER perm._from == u._id AND perm.type == "USER"
-                            FILTER STARTS_WITH(perm._to, "{CollectionNames.GROUPS.value}/")
-                                OR STARTS_WITH(perm._to, "{CollectionNames.ROLES.value}/")
-                                OR STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
-                            FOR perm2 IN {CollectionNames.PERMISSION.value}
-                                FILTER perm2._from == perm._to
-                                FILTER STARTS_WITH(perm2._to, "{CollectionNames.RECORD_GROUPS.value}/")
-                                LET g2 = DOCUMENT(perm2._to)
-                                FILTER g2 != null AND g2.isDeleted != true AND g2.connectorId == app._key
-                                RETURN g2
+                    LET parent_group_ids = (
+                        FOR be IN belongsTo
+                            FILTER be._from == orphan_record._id
+                            AND STARTS_WITH(be._to, "{CollectionNames.RECORD_GROUPS.value}/")
+                            FILTER DOCUMENT(be._to) != null
+                            RETURN DISTINCT be._to
                     )
-                    LET candidate_rgs = (
-                        FOR g IN UNION(direct_rgs, shared_rgs)
-                            COLLECT rg_key = g._key INTO rg_grouped
-                            RETURN rg_grouped[0].g
+                    FILTER LENGTH(parent_record_ids) > 0 OR LENGTH(parent_group_ids) > 0
+                    RETURN {{ node: orphan_record, records: parent_record_ids, groups: parent_group_ids }}
+            )
+            LET group_parents = (
+                FOR orphan_group IN candidates
+                    FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", orphan_group)
+                    LET group_parent_ids = (
+                        FOR be IN belongsTo
+                            FILTER be._from == orphan_group._id
+                            AND STARTS_WITH(be._to, "{CollectionNames.RECORD_GROUPS.value}/")
+                            FILTER DOCUMENT(be._to) != null
+                            RETURN DISTINCT be._to
                     )
-                    FOR orphan_group IN candidate_rgs
-                        LET rg_parents = (
-                            FOR be IN belongsTo
-                                FILTER be._from == orphan_group._id
-                                AND STARTS_WITH(be._to, "{CollectionNames.RECORD_GROUPS.value}/")
-                                LET prg = DOCUMENT(be._to)
-                                FILTER prg != null
-                                RETURN prg
-                        )
-                        // A top-level RG has no parent RG and belongs to the first branch.
-                        FILTER LENGTH(rg_parents) > 0
+                    FILTER LENGTH(group_parent_ids) > 0
+                    RETURN {{ node: orphan_group, groups: group_parent_ids }}
+            )
 
-                        LET visible_rg_parents = (
-                            FOR parent_group IN rg_parents
-                                {parent_group_perm_aql}
-                                LET pg_role2 = IS_ARRAY(permission_role)
-                                    ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
-                                    : permission_role
-                                FILTER pg_role2 != null AND pg_role2 != ""
-                                RETURN pg_role2
-                        )
-                        FILTER LENGTH(visible_rg_parents) == 0
+            // The user's role on every candidate and every parent, one lookup per node.
+            LET record_role_rows = (
+                FOR hoist_record IN DOCUMENT(APPEND(FLATTEN(record_parents[*].records), record_parents[*].node._id, true))
+                    {hoist_record_perm_aql}
+                    LET record_role = IS_ARRAY(permission_role)
+                        ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                        : permission_role
+                    FILTER record_role != null AND record_role != ""
+                    RETURN {{ id: hoist_record._id, role: record_role }}
+            )
+            LET group_role_rows = (
+                FOR hoist_group IN DOCUMENT(APPEND(
+                    APPEND(FLATTEN(record_parents[*].groups), FLATTEN(group_parents[*].groups), true),
+                    group_parents[*].node._id,
+                    true
+                ))
+                    {hoist_group_perm_aql}
+                    LET group_role = IS_ARRAY(permission_role)
+                        ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                        : permission_role
+                    FILTER group_role != null AND group_role != ""
+                    RETURN {{ id: hoist_group._id, role: group_role }}
+            )
+            LET visible_record_ids = record_role_rows[*].id
+            LET visible_group_ids = group_role_rows[*].id
+            LET record_roles = ZIP(visible_record_ids, record_role_rows[*].role)
+            LET group_roles = ZIP(visible_group_ids, group_role_rows[*].role)
 
-                        LET orphan_group_role = FIRST(
-                            {orphan_group_perm_aql}
-                            LET own_group_role = IS_ARRAY(permission_role)
-                                ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
-                                : permission_role
-                            RETURN own_group_role
-                        )
-                        FILTER orphan_group_role != null AND orphan_group_role != ""
-
-                        LET og_has_child_rgs = LENGTH(
-                            FOR c_edge IN belongsTo
-                                FILTER c_edge._to == orphan_group._id
-                                AND STARTS_WITH(c_edge._from, "{CollectionNames.RECORD_GROUPS.value}/")
-                                AND c_edge.isDeleted != true
-                                LIMIT 1
-                                RETURN 1
-                        ) > 0
-                        LET og_has_records = LENGTH(
-                            FOR r_edge IN belongsTo
-                                FILTER r_edge._to == orphan_group._id
-                                AND STARTS_WITH(r_edge._from, "{CollectionNames.RECORDS.value}/")
-                                AND r_edge.isDeleted != true
-                                LIMIT 1
-                                RETURN 1
-                        ) > 0
-                        RETURN {{
-                            id: orphan_group._key,
-                            name: orphan_group.groupName,
-                            nodeType: "recordGroup",
-                            parentId: CONCAT("apps/", @app_id),
-                            origin: "CONNECTOR",
-                            connector: orphan_group.connectorName,
-                            recordType: null,
-                            recordGroupType: orphan_group.groupType,
-                            indexingStatus: null,
-                            createdAt: orphan_group.sourceCreatedAtTimestamp != null ? orphan_group.sourceCreatedAtTimestamp : (orphan_group.createdAtTimestamp != null ? orphan_group.createdAtTimestamp : 0),
-                            updatedAt: orphan_group.sourceLastModifiedTimestamp != null ? orphan_group.sourceLastModifiedTimestamp : (orphan_group.updatedAtTimestamp != null ? orphan_group.updatedAtTimestamp : 0),
-                            sizeInBytes: null,
-                            mimeType: null,
-                            extension: null,
-                            webUrl: orphan_group.webUrl,
-                            hasChildren: og_has_child_rgs OR og_has_records,
-                            userRole: orphan_group_role,
-                            sharingStatus: null,
-                            isInternal: orphan_group.isInternal ? true : false
-                        }}
+            // A visible parent means the user reaches the node by drilling into it;
+            // hoisting it as well would show it twice.
+            LET hoisted_records = (
+                FOR entry IN record_parents
+                    FILTER entry.records NONE IN visible_record_ids
+                    FILTER entry.groups NONE IN visible_group_ids
+                    LET orphan_record = entry.node
+                    LET orphan_role = record_roles[orphan_record._id]
+                    FILTER orphan_role != null
+                    LET rec_file_info = FIRST(
+                        FOR fe IN isOfType FILTER fe._from == orphan_record._id
+                        RETURN DOCUMENT(fe._to)
+                    )
+                    LET rec_has_children = LENGTH(
+                        FOR rel IN recordRelations
+                            FILTER rel._from == orphan_record._id
+                            AND rel.relationshipType == "PARENT_CHILD"
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0
+                    RETURN {{
+                        id: orphan_record._key,
+                        name: orphan_record.recordName,
+                        nodeType: rec_file_info != null AND rec_file_info.isFile == false ? "folder" : "record",
+                        parentId: CONCAT("apps/", @app_id),
+                        origin: "CONNECTOR",
+                        connector: orphan_record.connectorName,
+                        connectorId: orphan_record.connectorId,
+                        externalGroupId: orphan_record.externalGroupId,
+                        recordType: orphan_record.recordType,
+                        recordGroupType: null,
+                        indexingStatus: orphan_record.indexingStatus,
+                        reason: orphan_record.reason,
+                        createdAt: orphan_record.sourceCreatedAtTimestamp != null ? orphan_record.sourceCreatedAtTimestamp : (orphan_record.createdAtTimestamp != null ? orphan_record.createdAtTimestamp : 0),
+                        updatedAt: orphan_record.sourceLastModifiedTimestamp != null ? orphan_record.sourceLastModifiedTimestamp : (orphan_record.updatedAtTimestamp != null ? orphan_record.updatedAtTimestamp : 0),
+                        sizeInBytes: orphan_record.sizeInBytes != null ? orphan_record.sizeInBytes : rec_file_info.fileSizeInBytes,
+                        mimeType: orphan_record.mimeType,
+                        extension: rec_file_info.extension,
+                        webUrl: orphan_record.webUrl,
+                        hasChildren: rec_has_children,
+                        previewRenderable: orphan_record.previewRenderable != null ? orphan_record.previewRenderable : true,
+                        userRole: orphan_role,
+                        sharingStatus: null,
+                        isInternal: orphan_record.isInternal ? true : false,
+                        isPlaceholder: orphan_record.isPlaceholder ? true : false
+                    }}
+            )
+            LET hoisted_groups = (
+                FOR entry IN group_parents
+                    FILTER entry.groups NONE IN visible_group_ids
+                    LET orphan_group = entry.node
+                    LET orphan_group_role = group_roles[orphan_group._id]
+                    FILTER orphan_group_role != null
+                    LET og_has_child_rgs = LENGTH(
+                        FOR c_edge IN belongsTo
+                            FILTER c_edge._to == orphan_group._id
+                            AND STARTS_WITH(c_edge._from, "{CollectionNames.RECORD_GROUPS.value}/")
+                            AND c_edge.isDeleted != true
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0
+                    LET og_has_records = LENGTH(
+                        FOR r_edge IN belongsTo
+                            FILTER r_edge._to == orphan_group._id
+                            AND STARTS_WITH(r_edge._from, "{CollectionNames.RECORDS.value}/")
+                            AND r_edge.isDeleted != true
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0
+                    RETURN {{
+                        id: orphan_group._key,
+                        name: orphan_group.groupName,
+                        nodeType: "recordGroup",
+                        parentId: CONCAT("apps/", @app_id),
+                        origin: "CONNECTOR",
+                        connector: orphan_group.connectorName,
+                        recordType: null,
+                        recordGroupType: orphan_group.groupType,
+                        indexingStatus: null,
+                        createdAt: orphan_group.sourceCreatedAtTimestamp != null ? orphan_group.sourceCreatedAtTimestamp : (orphan_group.createdAtTimestamp != null ? orphan_group.createdAtTimestamp : 0),
+                        updatedAt: orphan_group.sourceLastModifiedTimestamp != null ? orphan_group.sourceLastModifiedTimestamp : (orphan_group.updatedAtTimestamp != null ? orphan_group.updatedAtTimestamp : 0),
+                        sizeInBytes: null,
+                        mimeType: null,
+                        extension: null,
+                        webUrl: orphan_group.webUrl,
+                        hasChildren: og_has_child_rgs OR og_has_records,
+                        userRole: orphan_group_role,
+                        sharingStatus: null,
+                        isInternal: orphan_group.isInternal ? true : false
+                    }}
             )
 
             FOR child IN UNION(connector_rgs, hoisted_records, hoisted_groups)
