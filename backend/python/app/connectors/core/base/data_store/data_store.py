@@ -45,6 +45,11 @@ class DataStoreProvider(ABC):
         """
         pass
 
+    def is_transient_error(self, error: BaseException) -> bool:
+        """Whether a transaction that failed with *error* rolled back cleanly
+        and can simply be run again (a deadlock or a write-write conflict)."""
+        return False
+
     @abstractmethod
     async def compare_and_set_indexing_status(
         self, record_ids: list[str], expected: str, new_status: str
@@ -296,7 +301,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_record_owner_source_user_email(self, record_id: str) -> Optional[str]:
+    async def get_record_owner_source_user_email(
+        self, record_id: str, *, raise_on_error: bool = False
+    ) -> str | None:
         pass
 
     @abstractmethod

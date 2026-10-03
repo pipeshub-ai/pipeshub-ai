@@ -28,12 +28,12 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import httplib2
 
+from app.models.entities import Record
+from app.models.permission import EntityType, PermissionType
 from app.services.graph_db.common.record_visibility import is_live_record
 
 if TYPE_CHECKING:
     import pytest
-
-    from app.models.entities import Record
 
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 TOKEN_HOST = "oauth2.googleapis.com"
@@ -300,6 +300,10 @@ class FakeEntitiesProcessor:
         self.relations: list[tuple[str, str, str]] = []
         self.new_record_batches: list[list[str]] = []
         self.fail_writes_for: set[str] = set()
+        self.fail_record_listing = False
+        self.fail_owner_lookup = False
+        self.fail_permission_lookup = False
+        self.fail_group_permission_lookup = False
 
     def _check_write(self, external_id: Optional[str]) -> None:
         if external_id in self.fail_writes_for:
@@ -312,20 +316,65 @@ class FakeEntitiesProcessor:
         return {p.email for p in self.permissions.get(external_id, []) if p.email}
 
     # lookups
-    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
-        """A base Record, as both graph stores rebuild it: no subclass fields."""
-        from app.models.entities import Record
+    @staticmethod
+    def _plain(record: Record) -> Record:
+        """Both graph stores answer these lookups with a plain Record, never a FileRecord."""
+        return Record.model_validate(record.model_dump(include=set(Record.model_fields)))
 
+    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
         stored = self.records.get(external_record_id)
-        return None if stored is None else Record.model_validate(stored.model_dump(include=set(Record.model_fields)))
+        return self._plain(stored) if stored is not None else None
 
     async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str, record_type: Optional[str] = None) -> list[Any]:
         return [
-            r for r in self.records.values()
+            self._plain(r) for r in self.records.values()
             if r.parent_external_record_id == parent_external_record_id
             and (record_type is None or str(getattr(r.record_type, "value", r.record_type)) == str(getattr(record_type, "value", record_type)))
             and is_live_record(r)
         ]
+
+    async def get_records_by_status(
+        self,
+        connector_id: str,
+        status_filters: list[str] | None,
+        limit: int | None = None,
+        offset: int = 0,
+        record_group_id: str | None = None,
+        is_placeholder: bool | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
+    ) -> list[Any]:
+        """Keyset pages ordered by id, typed as stored, as both graph stores return them."""
+        assert record_group_id is None and not offset and not exclude_statuses, "not modelled"
+        if self.fail_record_listing:
+            raise RuntimeError("graph unavailable while listing records")
+        found = sorted(
+            (
+                r for r in self.records.values()
+                if (not status_filters or r.indexing_status in status_filters)
+                and (is_placeholder is None or bool(getattr(r, "is_placeholder", False)) == is_placeholder)
+                and (after_key is None or r.id > after_key)
+            ),
+            key=lambda r: r.id,
+        )
+        return found[:limit] if limit else found
+
+    async def get_record_owner_source_user_email(self, record_id: str, *, raise_on_error: bool = False) -> str | None:
+        if self.fail_owner_lookup:
+            # Both stores log the failure and answer None unless asked to raise.
+            if raise_on_error:
+                raise RuntimeError("graph unavailable while reading the record's owner")
+            return None
+        record = self.by_id(record_id)
+        if record is None:
+            return None
+        return next(
+            (
+                p.email for p in self.permissions.get(record.external_record_id, [])
+                if p.type == PermissionType.OWNER and p.entity_type == EntityType.USER and p.email
+            ),
+            None,
+        )
 
     async def get_placeholder_records(self, connector_id: str, *_: object, **__: object) -> list[Any]:
         return [r for r in self.records.values() if getattr(r, "is_placeholder", False)]
@@ -336,12 +385,36 @@ class FakeEntitiesProcessor:
     async def get_user_by_user_id(self, user_id: str) -> Optional[object]:
         return next((u for u in self.active_users if getattr(u, "id", None) == user_id), None)
 
-    async def get_users_with_permission_to_node(self, node_id: str, node_collection: str) -> list[Any]:
+    async def get_users_with_permission_to_node(
+        self, node_id: str, node_collection: str, *, raise_on_error: bool = False
+    ) -> list[Any]:
+        if self.fail_permission_lookup:
+            # Both stores log the failure and answer [] unless asked to raise.
+            if raise_on_error:
+                raise RuntimeError("graph unavailable while reading the record's permissions")
+            return []
         record = self.by_id(node_id)
         if record is None:
             return []
         emails = self.perm_emails(record.external_record_id)
         return [u for u in self.active_users if u.email in emails]
+
+    async def get_groups_with_permission_to_node(
+        self, node_id: str, node_collection: str, *, raise_on_error: bool = False
+    ) -> list[Any]:
+        if self.fail_group_permission_lookup:
+            if raise_on_error:
+                raise RuntimeError("graph unavailable while reading the record's group grants")
+            return []
+        record = self.by_id(node_id)
+        if record is None:
+            return []
+        # A group grant only has an edge when the group was stored, as both stores write them.
+        granted = {
+            p.external_id for p in self.permissions.get(record.external_record_id, [])
+            if p.entity_type == EntityType.GROUP and p.external_id
+        }
+        return [group for key, (group, _) in self.user_groups.items() if key in granted]
 
     # writes
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:

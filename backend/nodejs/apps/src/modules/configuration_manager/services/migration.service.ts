@@ -15,6 +15,7 @@ import { ChatKbFiltersMigration } from './migrations/chat_kb_filters.migration';
 import { AdminRoleMigration } from './migrations/admin_role.migration';
 import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_backfill.migration';
 import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
+import { UserGroupNameIndexMigration } from './migrations/user_group_name_index.migration';
 import { Org } from '../../user_management/schema/org.schema';
 
 const DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE = 10;
@@ -46,6 +47,7 @@ export class MigrationService {
     await this.chatKbFiltersMigration();
     await this.chatSessionsMigration();
     await this.adminRoleMigration();
+    await this.userGroupNameIndexMigration();
     await this.documentOrgIdMigration();
     this.logger.info('✅ Migration completed');
   }
@@ -71,6 +73,11 @@ export class MigrationService {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
+  }
+
+  async userGroupNameIndexMigration(): Promise<void> {
+    // run() logs its own outcome and never throws.
+    await new UserGroupNameIndexMigration(this.logger).run();
   }
 
   async chatKbFiltersMigration(): Promise<void> {

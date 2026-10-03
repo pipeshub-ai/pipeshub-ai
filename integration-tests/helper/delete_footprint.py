@@ -12,14 +12,27 @@ Where a record's data lives:
   are counted by their ends, so an edge left pointing at a deleted node is seen;
   walking out from nodes that still exist would miss it.
 * vector database: points whose ``metadata.virtualRecordId`` is the record's.
-* blob storage and MongoDB: the processed-record envelope under
-  ``{orgId}/PipesHub/records/{virtualRecordId}``, and for a knowledge-base upload
+* blob storage and MongoDB: the processed-record envelope, filed under the
+  record's place in its collection or connector
+  (``{orgId}/PipesHub/records/{connectorId}/<folders>/<name>``, or the flat
+  ``records/{virtualRecordId}`` when indexing cannot work that out) and found the
+  way ``MongoStoreProbe.envelope_path`` finds it; and for a knowledge-base upload
   the original file, a storage document whose id is the record's
   ``externalRecordId`` and whose bytes sit under ``{documentPath}/{id}``.
 
 Records with identical content share one virtual record id (MD5 dedup is
 org-wide), so the vector, blob and envelope data of a shared id belong to every
-record that carries it.
+record that carries it, even though the envelope is filed under the name of the
+copy indexed first. What a survivor check expects of that envelope depends on
+the delete:
+
+* a record or folder delete leaves storage alone, so ``assert_unchanged``
+  counts the envelope where it was before the delete: "unchanged" means those
+  bytes are still there.
+* a connector or collection delete removes its whole ``records/{id}`` tree,
+  shared envelope included, then re-indexes one surviving holder
+  (``repair_shared_records``), which files a new envelope under the holder's
+  own place. ``assert_rebuilt`` checks the content is whole again there.
 """
 
 from __future__ import annotations
@@ -30,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Iterable
 
 from helper.cleanup_errors import StoreNotEmptied
+from helper.mongo_store import is_within, records_folder
 
 if TYPE_CHECKING:
     from helper.blob_store import BlobStoreProbe
@@ -48,8 +62,19 @@ SETTLED_STATUSES = frozenset({
 })
 
 
-def envelope_prefix(org_id: str, virtual_record_id: str) -> str:
-    return f"{org_id}/PipesHub/records/{virtual_record_id}"
+async def envelope_location(
+    mongo: "MongoStoreProbe", org_id: str, virtual_record_id: str, *, within: str
+) -> tuple[str, str]:
+    """The folder a record's envelope was filed in, and which backend holds it."""
+    path = await mongo.envelope_path(org_id, virtual_record_id, within=within)
+    return path, await mongo.storage_vendor_under_path(path) or "local"
+
+
+async def storage_vendor(
+    mongo: "MongoStoreProbe", org_id: str, virtual_record_id: str, *, within: str
+) -> str:
+    """Which backend holds a record's envelope, read from where it was filed."""
+    return (await envelope_location(mongo, org_id, virtual_record_id, within=within))[1]
 
 
 @dataclass(frozen=True)
@@ -113,11 +138,16 @@ class GraphFootprint:
 
 
 async def graph_footprint_of_connector(
-    graph: "GraphProviderProtocol", connector_id: str
+    graph: "GraphProviderProtocol", connector_id: str, *, excluding_records: Iterable[str] = ()
 ) -> GraphFootprint:
-    handles = tuple(await graph.connector_node_handles(connector_id))
+    """*excluding_records* leaves out records checked on their own, with their type nodes."""
+    handles = await graph.connector_node_handles(connector_id)
     assert handles, f"Nothing in the graph belongs to {connector_id}; a delete test must start from something."
-    return GraphFootprint(handles, await graph.count_edges_touching(handles))
+    excluded = sorted(set(excluding_records))
+    skip = set(await graph.record_node_handles(excluded)) if excluded else set()
+    kept = tuple(h for h in handles if h not in skip)
+    assert kept, f"Excluding {excluded} leaves nothing of {connector_id} to check."
+    return GraphFootprint(kept, await graph.count_edges_touching(kept))
 
 
 async def graph_footprint_of_records(
@@ -145,6 +175,8 @@ class StoresFootprint:
     documents: dict[str, int] = field(default_factory=dict)
     # Storage document id -> path of its bytes, read while the document exists.
     upload_paths: dict[str, str] = field(default_factory=dict)
+    # Virtual record id -> folder its envelope was filed in, read before the delete.
+    envelope_paths: dict[str, str] = field(default_factory=dict)
 
 
 async def _upload_path(mongo: "MongoStoreProbe", document_id: str) -> str:
@@ -167,24 +199,38 @@ async def capture(
     *,
     org_id: str,
     records: Iterable[Tracked],
+    within: str | None = None,
     connector_id: str | None = None,
     vendor: str = "local",
     upload_paths: dict[str, str] | None = None,
+    envelope_paths: dict[str, str] | None = None,
 ) -> StoresFootprint:
+    """Count what each store holds for *records*.
+
+    *within* is the collection or connector folder the records' envelopes are
+    filed in; each one's exact folder is read from MongoDB. *envelope_paths*
+    supplies folders already known, as a re-count after a delete must look where
+    the content was before it.
+    """
     records = list(records)
     vrids = sorted({r.virtual_record_id for r in records if r.virtual_record_id})
     paths = dict(upload_paths or {})
     for record in records:
         if record.upload_document_id and record.upload_document_id not in paths:
             paths[record.upload_document_id] = await _upload_path(mongo, record.upload_document_id)
+    envelopes = dict(envelope_paths or {})
+    for vrid in vrids:
+        if vrid not in envelopes:
+            assert within, f"No folder to look for {vrid}'s envelope in; pass the collection or connector folder."
+            envelopes[vrid] = await mongo.envelope_path(org_id, vrid, within=within)
 
     points = {v: await vector.count_for_virtual_record(v) for v in vrids}
-    blob_keys = [envelope_prefix(org_id, v) for v in vrids] + sorted(paths.values())
+    blob_keys = [envelopes[v] for v in vrids] + sorted(paths.values())
     blobs = {p: await blob.count_under(p, vendor) for p in blob_keys}
-    doc_keys = [f"prefix:{envelope_prefix(org_id, v)}" for v in vrids] + [f"id:{d}" for d in sorted(paths)]
+    doc_keys = [f"prefix:{envelopes[v]}" for v in vrids] + [f"id:{d}" for d in sorted(paths)]
     documents = {k: await _document_count(mongo, k) for k in doc_keys}
     connector_points = await vector.count_for_connector(connector_id) if connector_id else None
-    footprint = StoresFootprint(graph_fp, connector_points, points, blobs, documents, paths)
+    footprint = StoresFootprint(graph_fp, connector_points, points, blobs, documents, paths, envelopes)
     logger.info("Captured footprint: %s", footprint)
     return footprint
 
@@ -199,6 +245,21 @@ async def capture_when_stable(*args: Any, attempts: int = 12, **kwargs: Any) -> 
             return current
         previous = current
     raise AssertionError(f"Store counts kept changing; last read: {previous}")
+
+
+def assert_shared_envelope_counted(fp: StoresFootprint, virtual_record_id: str) -> None:
+    """Precondition: shared content counted as zero before the delete would pass "unchanged" with nothing there."""
+    path = fp.envelope_paths.get(virtual_record_id)
+    counts = {
+        "embeddings": fp.points.get(virtual_record_id, 0),
+        "blob files": fp.blobs.get(path, 0) if path else 0,
+        "storage documents": fp.documents.get(f"prefix:{path}", 0) if path else 0,
+    }
+    empty = [store for store, count in counts.items() if not count]
+    assert path and not empty, (
+        f"The shared content {virtual_record_id} has nothing in {empty or 'any store'} "
+        f"under {path!r} before the delete, so checking it is unchanged would prove nothing."
+    )
 
 
 def assert_every_store_holds_it(fp: StoresFootprint) -> None:
@@ -290,16 +351,16 @@ async def assert_documents_gone(
         raise StoreNotEmptied(f"Storage documents still present {timeout}s after the delete: {left}")
 
 
-def blob_keys_for(fp: StoresFootprint, org_id: str, records: Iterable[Tracked]) -> list[str]:
+def blob_keys_for(fp: StoresFootprint, records: Iterable[Tracked]) -> list[str]:
     records = list(records)
-    return [envelope_prefix(org_id, r.virtual_record_id) for r in records if r.virtual_record_id] + [
+    return [fp.envelope_paths[r.virtual_record_id] for r in records if r.virtual_record_id] + [
         fp.upload_paths[r.upload_document_id] for r in records if r.upload_document_id
     ]
 
 
-def document_keys_for(org_id: str, records: Iterable[Tracked]) -> list[str]:
+def document_keys_for(fp: StoresFootprint, records: Iterable[Tracked]) -> list[str]:
     records = list(records)
-    return [f"prefix:{envelope_prefix(org_id, r.virtual_record_id)}" for r in records if r.virtual_record_id] + [
+    return [f"prefix:{fp.envelope_paths[r.virtual_record_id]}" for r in records if r.virtual_record_id] + [
         f"id:{r.upload_document_id}" for r in records if r.upload_document_id
     ]
 
@@ -323,24 +384,93 @@ async def assert_unchanged(
     after = await capture(
         after_graph, vector, blob, mongo,
         org_id=org_id, records=records, connector_id=connector_id, vendor=vendor,
-        upload_paths=before.upload_paths,
+        upload_paths=before.upload_paths, envelope_paths=before.envelope_paths,
     )
-    changes: list[str] = []
-    if nodes_now != len(before.graph.handles):
-        changes.append(f"graph nodes {len(before.graph.handles)} -> {nodes_now}")
+    changes = [] if nodes_now == len(before.graph.handles) else [
+        f"graph nodes {len(before.graph.handles)} -> {nodes_now}"
+    ]
     if after.graph.edges != before.graph.edges:
         changes.append(f"graph edges {before.graph.edges} -> {after.graph.edges}")
     if after.connector_points != before.connector_points:
         changes.append(f"connector points {before.connector_points} -> {after.connector_points}")
+    changes += store_changes(before, after)
+    assert not changes, f"The delete changed {what}: " + "; ".join(changes)
+
+
+def store_changes(
+    before: StoresFootprint, after: StoresFootprint, moved: dict[str, str] | None = None
+) -> list[str]:
+    """Each embedding, blob and document count that differs, reading a *moved* folder's count at its new place."""
+    moved = moved or {}
+    renamed = {**moved, **{f"prefix:{old}": f"prefix:{new}" for old, new in moved.items()}}
+    changes: list[str] = []
     for store, was, now in (
         ("embeddings", before.points, after.points),
         ("blob files", before.blobs, after.blobs),
         ("storage documents", before.documents, after.documents),
     ):
         for key in was:
-            if was[key] != now.get(key):
-                changes.append(f"{store} {key}: {was[key]} -> {now.get(key)}")
-    assert not changes, f"The delete changed {what}: " + "; ".join(changes)
+            new_key = renamed.get(key, key)
+            if was[key] != now.get(new_key):
+                where = key if new_key == key else f"{key} (now {new_key})"
+                changes.append(f"{store} {where}: {was[key]} -> {now.get(new_key)}")
+    return changes
+
+
+async def wait_for_rebuild(
+    graph: "GraphProviderProtocol",
+    mongo: "MongoStoreProbe",
+    *,
+    org_id: str,
+    connector_id: str,
+    holder: Tracked,
+    timeout: int = 480,
+) -> str:
+    """The folder the survivor's re-index filed the shared content in, once that re-index has settled."""
+    folder = records_folder(org_id, connector_id)
+    path = await mongo.envelope_path(org_id, str(holder.virtual_record_id), within=folder, timeout=timeout)
+    assert is_within(path, folder), (
+        f"The shared content {holder.virtual_record_id} was rebuilt at {path!r}, not under "
+        f"{folder!r} where its surviving holder {holder.name} lives."
+    )
+    await wait_for_connector_records(graph, connector_id, [holder.name], timeout=timeout)
+    return path
+
+
+async def assert_rebuilt(
+    before: StoresFootprint,
+    graph: "GraphProviderProtocol",
+    vector: "VectorStoreProbe",
+    blob: "BlobStoreProbe",
+    mongo: "MongoStoreProbe",
+    *,
+    org_id: str,
+    connector_id: str,
+    holder: Tracked,
+    vendor: str = "local",
+    what: str,
+) -> None:
+    """Shared content whose envelope went with a connector or collection is whole again under *holder*.
+
+    *before* counted it where it was filed before the delete. Edges are not
+    compared: the re-index re-runs extraction, which reconciles the record's
+    category and topic edges afresh.
+    """
+    vrid = str(holder.virtual_record_id)
+    old = before.envelope_paths.get(vrid)
+    assert old, f"{what}: no envelope of {vrid} was counted before the delete, so there is nothing to compare."
+    new = await wait_for_rebuild(graph, mongo, org_id=org_id, connector_id=connector_id, holder=holder)
+    nodes_now = await graph.count_existing_nodes(before.graph.handles)
+    after = await capture_when_stable(
+        before.graph, vector, blob, mongo,
+        org_id=org_id, records=[holder], vendor=vendor,
+        upload_paths=before.upload_paths, envelope_paths={vrid: new},
+    )
+    changes = [] if nodes_now == len(before.graph.handles) else [
+        f"graph nodes {len(before.graph.handles)} -> {nodes_now}"
+    ]
+    changes += store_changes(before, after, moved={old: new})
+    assert not changes, f"{what} was not rebuilt whole under {new!r}: " + "; ".join(changes)
 
 
 async def settle(check, what: str) -> None:

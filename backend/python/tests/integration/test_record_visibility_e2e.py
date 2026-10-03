@@ -549,17 +549,12 @@ async def test_content_shared_outside_a_deleted_connector(world: _World) -> None
 
 
 async def test_knowledge_hub_browse(world: _World) -> None:
-    browse = world.graph.get_knowledge_hub_children(
+    got = await world.graph.get_knowledge_hub_children(
         world.kb_id, "app", world.org_id, world.user_key, 0, 50, "name", "asc",
     )
-    if isinstance(world.graph, ArangoHTTPProvider):
-        with pytest.raises(Exception, match=ARANGO_APP_BROWSE_FAILS):
-            await browse
-        return
-    got = await browse
     ids = {n.get("id") for n in got.get("nodes", [])}
-    assert world.ids["kb_live"] in ids
-    assert world.ids["kb_trashed"] not in ids
+    assert ids == {world.ids["kb_live"], world.ids["kb_folder"]}, got
+    assert got["total"] == 2, got
 
 
 async def test_knowledge_hub_search(world: _World) -> None:
@@ -607,32 +602,17 @@ async def test_linked_records(world: _World) -> None:
     assert world.ids["live_shared"] in got and world.ids["trashed_shared"] not in got
 
 
-# Pre-existing faults these listings hit, which make the answer empty. Pinned so
-# the day one is fixed this file is updated and the LIVE claim is checked there too.
-ARANGO_LIST_ALL_RECORDS_FAILS = "bind parameter 'limit' was not declared in the query"
-ARANGO_LIST_KB_RECORDS_FAILS = "collection or view not found: user_permission"
-# Main's external-collaborator branch (#3115) declares parent_rgs again inside the
-# record permission probe, so Arango refuses to parse app browse. Renaming it is not
-# the fix: the query then runs out of memory while the optimizer plans it.
-ARANGO_APP_BROWSE_FAILS = "variable 'parent_rgs' is assigned multiple times"
-
-
 async def test_all_records_list(world: _World) -> None:
     g = world.graph
     args = (world.org_id, 0, 200, None, None, None, None, None, None, None, None, "recordName", "asc", "all")
-    records, total, _ = await g.list_all_records(world.user_key, *args)
-    if isinstance(g, ArangoHTTPProvider):
-        assert (records, total) == ([], 0), ARANGO_LIST_ALL_RECORDS_FAILS
-        records, _, _ = await g.get_records(world.user_id, *args)
-        assert records == [], ARANGO_LIST_ALL_RECORDS_FAILS
-        return
-    got = {r["id"] for r in records}
     live = {world.ids[n] for n in (*LIVE_CONNECTOR, "kb_live", "kb_child_live")}
     trashed = {world.ids[n] for n in (*TRASHED_CONNECTOR, "kb_trashed", "kb_child_trashed")}
+    records, total, _ = await g.list_all_records(world.user_key, *args)
+    got = {r["id"] for r in records}
     assert live <= got and not trashed & got and total == len(records)
-    # Neo4j's get_records takes record ids, not the interface's arguments.
-    with pytest.raises(TypeError):
-        await g.get_records(world.user_id, *args)
+    records, _, _ = await g.get_records(world.user_key, *args)
+    got = {r["id"] for r in records}
+    assert live <= got and not trashed & got
 
 
 async def test_kb_listings(world: _World) -> None:
@@ -642,11 +622,8 @@ async def test_kb_listings(world: _World) -> None:
         None, None, None, None, None, None, None, "recordName", "asc",
     )
     got = _ids_anywhere(kb_records)
-    if isinstance(g, ArangoHTTPProvider):
-        assert kb_records == [], ARANGO_LIST_KB_RECORDS_FAILS
-    else:
-        assert world.ids["kb_live"] in got and world.ids["kb_child_live"] in got
-        assert not {world.ids["kb_trashed"], world.ids["kb_child_trashed"]} & got
+    assert world.ids["kb_live"] in got and world.ids["kb_child_live"] in got
+    assert not {world.ids["kb_trashed"], world.ids["kb_child_trashed"]} & got
 
     root = _ids_anywhere(await g.get_kb_children(world.kb_id, 0, 100))
     assert world.ids["kb_live"] in root and world.ids["kb_trashed"] not in root
