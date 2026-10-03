@@ -224,8 +224,21 @@ Hedged ("I think", "usually"), partial and edge-wrong statements ("under $250"
 for "up to and including $250") are not support. The judge is told to judge
 only what the answer says, not what is true.
 
+The judge also lists, for each claim, every sentence that says something
+incompatible with it, and is told to check every sentence rather than stop at
+the one that states the claim. A must-state claim with any such sentence is
+`contradicted`, whatever verdict the judge gave: "You can spend up to $250 with
+no approval" does not count when the same answer says "your manager must
+approve it, including the $250 purchase". The conflicting sentences are shown
+in failure messages. A must-not-state claim the judge says is stated still
+fails, however much else the answer says against it.
+
 **Evidence is a sentence number, not a quote.** Before the call, the answer is
-split into numbered sentences, and each line and bullet counts as one. For a
+split into numbered sentences, and each line and bullet counts as one. A full
+stop glued straight onto a capital ("...approval thresholds.You can spend") ends
+a sentence too, because the chat often runs its tool-call preamble into the
+answer; it needs two lower-case letters, a digit or closing markup before the
+stop, so "U.S.A", "e.g.Foo", "Mr.Smith", "$2.50" and "v1.2" stay whole. For a
 `supported` or `contradicted` verdict the judge must cite at least one of those
 numbers. The check is exact: every cited number must exist, and at least one is
 required. Otherwise the verdict becomes `unverified`, which fails. The cited
@@ -291,10 +304,12 @@ the `JUDGE_*` settings. The calibration summary and its JSON (`provider`,
 
 ### Calibration
 
-`answer_judge_calibration.yaml` holds 54 hand-labelled hard cases (65 claims):
+`answer_judge_calibration.yaml` holds 71 hand-labelled hard cases (83 claims):
 negation, "under" against "up to and including", the right amount on the
 wrong subject, time phrases ("will sign off on Monday"), hedging, a fact buried
-in a long answer, an answer that states a fact and then contradicts it, an
+in a long answer, answers that state a fact and also something incompatible
+with it (with consistent answers next to them that pass), a tool-call preamble
+glued to the answer, an
 instruction to the grader hidden in the answer, and numbers written in unusual
 ways ("$250-million", "$250 (million)", "$250 000", "250 %", "- $250",
 "10 - 15 days"). Most are around the expense
@@ -324,10 +339,10 @@ good material for more cases.
 
 ### Cost
 
-The judge's instructions are about 470 tokens; with the claims and a typical
+The judge's instructions are about 620 tokens; with the claims and a typical
 answer a call is roughly 1,000 to 1,500 tokens in and 100 to 300 out. On a
 GPT-4o-class model that is about half a cent per call, so the nightly
-calibration (one call per case) costs around 25 cents, and a tenth of that on a
+calibration (one call per case) costs around 35 cents, and a tenth of that on a
 mini model. In the demo test, only answers to questions that list facts are
 judged, one call each; today no golden question lists any, so it costs
 nothing until questions are converted. The calibration run prints its token
