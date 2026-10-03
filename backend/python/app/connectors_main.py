@@ -35,6 +35,7 @@ from app.config.constants.service import config_node_constants
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
+from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.sync_dispatcher import (
     SyncSpec,
@@ -318,6 +319,10 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                 scope = app.get("scope", "personal")
                 created_by = app.get("createdBy", "")
                 connector_name = app["type"].lower().replace(" ", "")
+                # Only the event path runs a full sync and clears the flag; started
+                # here, a connector owed one (queued at capacity before a restart)
+                # would sync incrementally and stay flagged.
+                publish = external or bool(app.get(ConnectorStateKeys.PENDING_FULL_SYNC))
                 # Same lock the lazy-init paths use, and publish as soon as the
                 # instance exists rather than after the whole gather: startup can
                 # take seconds, and a request arriving in that window used to build
@@ -337,7 +342,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                             org_id=org_id,
                             data_entities_processor_cls=get_data_entities_processor_cls(),
                             notification_service=app_container.connector_notification_service(),
-                            start_sync=not external,
+                            start_sync=not publish,
                         )
                     except Exception as e:
                         logger.error(
@@ -350,7 +355,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
 
                 # Outside the init lock: publishing goes to the broker, and the
                 # lock only needs to cover instance construction.
-                if external and connector:
+                if publish and connector:
                     await _publish_startup_resync(
                         app_container,
                         config_service,

@@ -212,6 +212,37 @@ class TestResumeSyncServices:
         assert mock_container.connectors_map["app1"] is mock_connector
         assert mock_container.connectors_map["app2"] is mock_connector
 
+    async def test_connector_owed_a_full_sync_is_published_not_started(self) -> None:
+        """Started here it would sync incrementally; only the event path runs
+        the full sync its pendingFullSync flag asks for."""
+        from app.connectors_main import resume_sync_services
+
+        mock_container = _make_container()
+        mock_container.connectors_map = {}
+        gp = _make_graph_provider()
+        gp.get_all_orgs = AsyncMock(return_value=[{"_key": "org1"}])
+        gp.get_org_apps = AsyncMock(return_value=[
+            {"_key": "owed", "type": "Slack", "pendingFullSync": True},
+            {"_key": "plain", "type": "Slack"},
+        ])
+        gp.get_users = AsyncMock(return_value=[{"_key": "user1"}])
+        ds = _make_data_store(gp)
+
+        with (
+            patch("app.connectors_main.sync_executor_enabled", return_value=False),
+            patch(
+                "app.connectors_main.ConnectorFactory.create_and_start_sync",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as create,
+            patch("app.connectors_main._publish_startup_resync", new_callable=AsyncMock) as publish,
+        ):
+            assert await resume_sync_services(mock_container, ds) is True
+
+        started = {c.kwargs["connector_id"]: c.kwargs["start_sync"] for c in create.await_args_list}
+        assert started == {"owed": False, "plain": True}
+        assert [c.kwargs["connector_id"] for c in publish.await_args_list] == ["owed"]
+
     async def test_connector_none_not_stored(self):
         """If ConnectorFactory returns None, it should not be stored."""
         from app.connectors_main import resume_sync_services
