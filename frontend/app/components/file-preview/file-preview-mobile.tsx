@@ -9,6 +9,7 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { FilePreviewRenderer } from './renderers/file-preview-renderer';
 import { FileDetailsTab } from './file-details-tab';
 import { CitationCard } from './citations-panel';
+import { VersionSwitcher } from './version-switcher';
 import { useTranslation } from 'react-i18next';
 import { useCitationSync } from './use-citation-sync';
 import { usePdfZoom } from './use-pdf-zoom';
@@ -33,6 +34,9 @@ export function FilePreviewMobile({
   initialCitationId,
   hideFileDetails,
   showDownload,
+  latestVersion,
+  onVersionChange,
+  isSwitchingVersion,
 }: FilePreviewProps) {
   const { t } = useTranslation();
   const hasCitations = citations && citations.length > 0;
@@ -173,6 +177,14 @@ export function FilePreviewMobile({
           >
             {file.name}
           </Text>
+          {file.version !== undefined && onVersionChange && (
+            <VersionSwitcher
+              version={file.version}
+              latestVersion={latestVersion ?? file.version}
+              onVersionChange={onVersionChange}
+              isSwitching={isSwitchingVersion}
+            />
+          )}
           {!hideFileDetails && (
             <IconButton
               variant="ghost"

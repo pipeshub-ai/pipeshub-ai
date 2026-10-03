@@ -306,7 +306,9 @@ permissions_schema = {
             "_from": {"type": "string", "minLength": 1},
             "_to": {"type": "string", "minLength": 1},
             "externalPermissionId": {"type": ["string", "null"]},
-            "type": {"type": ["string", "null"], "enum": ["USER", "GROUP", "DOMAIN","TEAM", "ORG", "ROLE"]},
+            # ORGANIZATION: the org's read grant on a service account's chat upload
+            # (utils/record_access.py), kept apart from ORG so it grants nothing else.
+            "type": {"type": ["string", "null"], "enum": ["USER", "GROUP", "DOMAIN", "TEAM", "ORG", "ROLE", "ORGANIZATION"]},
             "role": {
                 "type": "string",
                 "enum": [
@@ -340,6 +342,9 @@ user_app_relation_schema = {
             },
             "lastSyncUpdate": {"type": "number"},
             "sourceUserId": {"type": "string"},
+            # Set on principals who reached this app only through a share, not through
+            # app membership. Gates the browse-hoisting branches.
+            "isExternalUser": {"type": "boolean"},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
         },
@@ -384,6 +389,24 @@ basic_edge_schema = {
     },
     "level": "strict",
     "message": "Document does not match the basic edge schema.",
+}
+
+# Record -> category / subcategory / language / topic. Carries the raw name the
+# model extracted for that record, so a wrong merge can be undone per record.
+taxonomy_edge_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "createdAtTimestamp": {"type": "number"},
+            "extractedName": {"type": ["string", "null"]},
+        },
+        "required": ["createdAtTimestamp"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the taxonomy edge schema.",
 }
 
 # User -> Agent

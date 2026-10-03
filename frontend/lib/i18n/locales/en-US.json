@@ -234,6 +234,7 @@
   "nav": {
     "collections": "Collections",
     "allRecords": "All Records",
+    "allArtifacts": "All Artifacts",
     "workspace": "Workspace",
     "shared": "Shared with me",
     "private": "My collections",
@@ -247,6 +248,31 @@
     "searchChats": "Search Chats",
     "inbox": "Inbox",
     "notifications": "Notifications"
+  },
+  "artifacts": {
+    "title": "All Artifacts",
+    "empty": "No artifacts yet",
+    "emptyHint": "Files your agents create in chat will show up here.",
+    "loadFailed": "Couldn't load artifacts",
+    "previewFailed": "Couldn't preview this file",
+    "downloadFailed": "Couldn't download this file",
+    "openInChat": "Open in chat",
+    "searchPlaceholder": "Search artifacts",
+    "conversation": "Conversation",
+    "untitledChat": "—",
+    "name": "Name",
+    "size": "Size",
+    "showing": "Showing {{start}}-{{end}} of {{total}}",
+    "types": {
+      "IMAGE": "Image",
+      "CHART": "Chart",
+      "DOCUMENT": "Document",
+      "SPREADSHEET": "Spreadsheet",
+      "PRESENTATION": "Presentation",
+      "DATA_FILE": "Data file",
+      "CODE": "Code",
+      "CODE_OUTPUT": "Code output"
+    }
   },
   "notifications": {
     "title": "Notifications",
@@ -1234,6 +1260,8 @@
         "send": "Send Invite",
         "successTitle": "Invite sent!",
         "successDescription": "{{email}} has been invited",
+        "queuedTitle": "Invites queued",
+        "queuedDescription": "Emails to {{email}} are being sent in the background. You'll get a notification if any can't be delivered.",
         "invalidEmail": "Invalid email address",
         "errorGeneric": "Failed to send invite",
         "importNoEmails": "No email addresses found in the file",
@@ -4101,7 +4129,10 @@
       "orgEmailVerifiedTitle": "Organization verified",
       "orgEmailVerifiedDescription": "Your organization is now active. Sign in to continue.",
       "orgEmailVerifyFailedTitle": "Verification failed",
-      "orgEmailVerifyFailedDescription": "The link may be invalid or expired. Please sign up again."
+      "orgEmailVerifyFailedDescription": "The link may be invalid or expired. Please sign up again.",
+      "loadFailedTitle": "Couldn't load sign-in",
+      "loadFailedDescription": "PipesHub couldn't reach the server to load sign-in options. Check your connection or server address and try again.",
+      "retry": "Try again"
     },
     "common": {
       "signIn": "Sign In",
@@ -4135,6 +4166,11 @@
       "hidePassword": "Hide password",
       "accountDisabled": "Your account has been disabled.",
       "tooManyIncorrectCredentials": "You have entered incorrect credentials too many times"
+    },
+    "desktopHandoff": {
+      "title": "Sign-in sent to PipesHub",
+      "description": "You can close this tab and return to the PipesHub app.",
+      "openApp": "Open PipesHub"
     }
   },
   "healthGate": {

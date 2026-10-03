@@ -552,3 +552,37 @@ class TestSignedUrlHandler:
                 handler.validate_token("some-token")
             assert exc_info.value.status_code == 400
             assert "Invalid token payload" in exc_info.value.detail
+
+
+class TestSignedUrlHardening:
+    """GHSA-cf48: tokens must expire, and the handler must not log who they were minted for."""
+
+    def _handler(self):
+        logger = MagicMock()
+        handler = SignedUrlHandler(
+            logger=logger,
+            config=SignedUrlConfig(private_key="secret"),
+            config_service=AsyncMock(),
+        )
+        return handler, logger
+
+    def test_token_without_exp_is_rejected(self):
+        handler, _ = self._handler()
+        token = jwt.encode(
+            {"record_id": "rec1", "user_id": "user1", "additional_claims": {}},
+            "secret",
+            algorithm="HS256",
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            handler.validate_token(token)
+        assert exc_info.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_get_signed_url_does_not_log_user_id(self):
+        handler, logger = self._handler()
+        handler.config_service.get_config = AsyncMock(
+            return_value={"connectors": {"endpoint": "http://c"}}
+        )
+        await handler.get_signed_url("rec1", "org1", "secret-user-id", connector="drive")
+        logged = " ".join(str(c) for c in logger.info.call_args_list + logger.debug.call_args_list)
+        assert "secret-user-id" not in logged

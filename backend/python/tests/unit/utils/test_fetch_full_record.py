@@ -248,8 +248,8 @@ class TestFetchMultipleRecordsImpl:
         from app.utils.fetch_full_record import _fetch_multiple_records_impl
 
         records_map = {
-            "vr1": {"id": "r1", "content": "Record 1 data"},
-            "vr2": {"id": "r2", "content": "Record 2 data"},
+            "vr1": {"id": "r1", "record_name": "test1", "content": "Record 1 data"},
+            "vr2": {"id": "r2", "record_name": "test2", "content": "Record 2 data"},
         }
         result = await _fetch_multiple_records_impl(["r1", "r2"], records_map)
         assert result["ok"] is True
@@ -262,6 +262,7 @@ class TestFetchMultipleRecordsImpl:
         records_map = {
             "vr1": {
                 "id": "r1",
+                "record_name": "test",
                 "record_type": "TICKET",
                 "context_metadata": "graph-only",
             },
@@ -336,7 +337,7 @@ class TestFetchMultipleRecordsImpl:
         from app.utils.fetch_full_record import _fetch_multiple_records_impl
 
         records_map = {
-            "vr1": {"id": "r1", "content": "data"},
+            "vr1": {"id": "r1", "record_name": "test", "content": "data"},
         }
         result = await _fetch_multiple_records_impl(["r1", "r_missing"], records_map)
         assert result["ok"] is True
@@ -374,7 +375,7 @@ class TestFetchMultipleRecordsImpl:
 
         records_map = {
             "vr1": None,
-            "vr2": {"id": "r2", "content": "data"},
+            "vr2": {"id": "r2", "record_name": "test", "content": "data"},
         }
         result = await _fetch_multiple_records_impl(["r2"], records_map)
         assert result["ok"] is True
@@ -385,7 +386,7 @@ class TestFetchMultipleRecordsImpl:
         from app.utils.fetch_full_record import _fetch_multiple_records_impl
 
         records_map = {
-            "vr1": {"id": "r1", "record_type": "SQL_TABLE"},
+            "vr1": {"id": "r1", "record_name": "test", "record_type": "SQL_TABLE"},
         }
         graph_provider = AsyncMock()
         graph_provider.get_child_record_ids_by_relation_type = AsyncMock(return_value=["c1"])
@@ -407,7 +408,7 @@ class TestFetchMultipleRecordsImpl:
         from app.utils.fetch_full_record import _fetch_multiple_records_impl
 
         records_map = {
-            "vr1": {"id": "r1", "record_type": "SQL_TABLE"},
+            "vr1": {"id": "r1", "record_name": "test", "record_type": "SQL_TABLE"},
         }
         result = await _fetch_multiple_records_impl(["r1"], records_map)
 
@@ -420,7 +421,7 @@ class TestFetchMultipleRecordsImpl:
         from app.utils.fetch_full_record import _fetch_multiple_records_impl
 
         records_map = {
-            "vr1": {"id": "r1", "record_type": "DOCUMENT"},
+            "vr1": {"id": "r1", "record_name": "test", "record_type": "DOCUMENT"},
         }
         graph_provider = AsyncMock()
 
@@ -519,7 +520,7 @@ class TestFetchMultipleRecordsImpl:
         from app.utils.fetch_full_record import _fetch_multiple_records_impl
 
         records_map = {
-            "vr1": {"id": "r1", "recordType": "SQL_TABLE"},
+            "vr1": {"id": "r1", "record_name": "test", "recordType": "SQL_TABLE"},
         }
         graph_provider = AsyncMock()
         graph_provider.get_child_record_ids_by_relation_type = AsyncMock(return_value=[])
@@ -784,7 +785,7 @@ class TestColdPathAccessControl:
         graph_provider = self._graph_provider(access=True)
 
         result = await ffr._fetch_multiple_records_impl(
-            ["r1"], {"vr1": {"id": "r1", "content": "data"}},
+            ["r1"], {"vr1": {"id": "r1", "record_name": "test", "content": "data"}},
             org_id="org-1", graph_provider=graph_provider, user_id="u1",
         )
 
@@ -815,7 +816,7 @@ class TestCreateFetchFullRecordTool:
     async def test_tool_invocation_success(self):
         from app.utils.fetch_full_record import create_fetch_full_record_tool
 
-        records_map = {"vr1": {"id": "r1", "content": "data"}}
+        records_map = {"vr1": {"id": "r1", "record_name": "test", "content": "data"}}
         tool = create_fetch_full_record_tool(records_map)
         result = await tool.ainvoke({"record_ids": ["r1"], "reason": "test"})
         assert result["ok"] is True

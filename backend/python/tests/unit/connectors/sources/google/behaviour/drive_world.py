@@ -7,7 +7,8 @@ position in the log, a page of changes carries each file once in its latest stat
 and a file the caller can no longer reach comes back as ``removed``.
 
 Visibility is per caller, the way Drive does it: owners and direct or group grants
-(inherited down folders) see a file; shared drive members see the drive's files;
+(inherited down folders, nested groups included) see a file; shared drive members,
+directly or through a group, see the drive's files;
 ``sharedWithMe`` is only the item that carries the grant itself; domain and
 anyone-with-link grants let a caller open a file but never list it. ``fields``
 masks are honoured, so a connector only gets the fields it asked for.
@@ -244,7 +245,23 @@ class DriveWorld:
         return self.aliases.get(identity, identity)
 
     def _group_emails_of(self, email: str) -> set[str]:
-        return {g for g, data in self.groups.items() if email in data["members"]}
+        """Every group the email is in, through nested groups too, as Drive resolves access."""
+        found: set[str] = set()
+        pending = [email]
+        while pending:
+            member = pending.pop()
+            for group, data in self.groups.items():
+                if member in data["members"] and group not in found:
+                    found.add(group)
+                    pending.append(group)
+        return found
+
+    def drive_role(self, drive_id: str, email: str) -> Optional[str]:
+        """A shared drive member's role, held directly or through a (nested) group."""
+        members = self.drives.get(drive_id, {}).get("members", {})
+        if email in members:
+            return members[email]
+        return next((members[g] for g in self._group_emails_of(email) if g in members), None)
 
     def _chain(self, file_id: str) -> list[FileState]:
         chain, seen = [], set()
@@ -283,8 +300,7 @@ class DriveWorld:
         state = self.files.get(file_id)
         if state is None or state.deleted:
             return None
-        drive = self.drives.get(state.meta.get("driveId") or "")
-        return drive["members"].get(email) if drive else None
+        return self.drive_role(state.meta.get("driveId") or "", email)
 
     def can_open(self, file_id: str, email: str) -> bool:
         state = self.files.get(file_id)
@@ -376,6 +392,8 @@ class DriveWorld:
         compact = atom.replace(" ", "")
         if compact == "trashed=false":
             return not state.meta.get("trashed")
+        if compact == "trashed=true":
+            return bool(state.meta.get("trashed"))
         if compact == "sharedWithMe=true":
             return self._shared_with_me(state, email)
         if m := re.fullmatch(r"mimeType='([^']+)'", compact):
@@ -390,7 +408,7 @@ class DriveWorld:
         drive_id = req.query.get("driveId") if req.query.get("corpora") == "drive" else None
         if drive_id and drive_id not in self.drives:
             return google_error(404, "notFound", f"Shared drive not found: {drive_id}")
-        if drive_id and email not in self.drives[drive_id]["members"]:
+        if drive_id and not self.drive_role(drive_id, email):
             return google_error(403, "teamDriveMembershipRequired")
         all_drives = req.query.get("includeItemsFromAllDrives") == "true"
         roots = {u.root_id for u in self.users.values()} | set(self.drives)
@@ -467,7 +485,7 @@ class DriveWorld:
         email = self._caller(req)
         base, _, offset = req.query["pageToken"].partition(":")
         drive_id = req.query.get("driveId")
-        if drive_id and email not in self.drives.get(drive_id, {}).get("members", {}):
+        if drive_id and not self.drive_role(drive_id, email):
             return google_error(403, "teamDriveMembershipRequired")
         all_drives = req.query.get("includeItemsFromAllDrives") == "true"
         latest: dict[str, _Change] = {}
@@ -489,6 +507,9 @@ class DriveWorld:
             state = self.files[change.file_id]
             reachable = not state.deleted and bool(self.direct_role(change.file_id, email) or self.member_role(change.file_id, email))
             item: dict[str, Any] = {"changeType": "file", "fileId": change.file_id, "removed": not reachable}
+            # Like Drive, driveId is on the change itself (kept when `removed` drops the file), only when asked for.
+            if change.drive_id and "driveId" in (req.query.get("fields") or "").split("file(")[0]:
+                item["driveId"] = change.drive_id
             if reachable:
                 item["file"] = _project(state.meta, names)
             changes.append(item)
@@ -506,7 +527,7 @@ class DriveWorld:
             return google_error(403, "forbidden")
         drives = [
             {"id": d["id"], "name": d["name"], "createdTime": d["createdTime"]}
-            for d in self.drives.values() if admin or email in d["members"]
+            for d in self.drives.values() if admin or self.drive_role(d["id"], email)
         ]
         if m := re.fullmatch(r"name contains '(.*)'", req.query.get("q", "")):
             drives = [d for d in drives if m.group(1).lower() in d["name"].lower()]
@@ -542,8 +563,13 @@ class DriveWorld:
         group = self.groups.get(group_key)
         if group is None:
             return google_error(404, "notFound")
+        emails = list(group["members"])
+        if req.query.get("includeDerivedMembership") == "true":
+            # Like the directory, members of nested groups are listed alongside the direct ones.
+            for email in emails:
+                emails.extend(m for m in self.groups.get(email, {}).get("members", []) if m not in emails)
         members = [
             {"id": self.users[m].user_id if m in self.users else f"ext-{m}", "email": m, "type": "GROUP" if m in self.groups else "USER", "role": "MEMBER"}
-            for m in group["members"]
+            for m in emails
         ]
         return paginate(members, req.query, default_size=self.admin_page_size, key="members")

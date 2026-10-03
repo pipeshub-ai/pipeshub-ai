@@ -1,0 +1,421 @@
+"""Entity-graph queries against a real Neo4j 5.26 and a real ArangoDB 3.12.
+
+The unit tests mock the database, so they pin query text, not behaviour.
+These check what only a server can show:
+
+- Neo4j's schema setup (``ensure_schema``, run at connector-service start)
+  creates the TaxonomyAlias uniqueness constraint, the server enforces it, and
+  alias lookups are served from it instead of scanning a label.
+- Neo4j concurrent alias writes do not overwrite each other.
+- The Neo4j record-group inheritance walk stays on record groups: it does not
+  continue through the records under a group (and their attachments).
+- On ArangoDB, records that create the same canonical node, and add aliases
+  to it, enrich concurrently without errorNum 1200, and the belongsTo* edges
+  they write (with extractedName) pass the strict edge schema.
+
+Needs the graph services, and skips cleanly when they are not reachable:
+
+  docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
+    up -d --wait neo4j-graph-it arango-graph-it
+  cd backend/python && pytest tests/integration/graph_db/test_entity_graph_real_backends.py -m integration
+
+Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import uuid
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from app.config.constants.arangodb import CollectionNames
+from app.models.blocks import SemanticMetadata
+from app.modules.entity_resolution.keys import taxonomy_node_key
+from app.modules.entity_resolution.models import (
+    TOPIC,
+    EntityResolution,
+    ResolutionMode,
+    ResolvedEntity,
+)
+from app.modules.transformers.graphdb import GraphDBTransformer
+from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
+
+NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
+NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
+ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
+ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
+ARANGO_DB = "entity_graph_it"
+TOPICS = CollectionNames.TOPICS.value
+
+logger = logging.getLogger("entity-graph-it")
+
+
+# ---------------------------------------------------------------------------
+# Neo4j
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def neo4j(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple[Neo4jProvider, str]]:
+    monkeypatch.setenv("NEO4J_URI", NEO4J_URI)
+    monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", NEO4J_PASSWORD)
+    monkeypatch.setenv("NEO4J_DATABASE", "neo4j")
+    provider = Neo4jProvider(logger, MagicMock())
+    try:
+        if not await asyncio.wait_for(provider.connect(), timeout=60):
+            raise ConnectionError("connect returned False")
+    except Exception as exc:
+        pytest.skip(f"Neo4j not available at {NEO4J_URI}: {exc}")
+    # connect() does not create schema; the connector service runs this at start.
+    await provider.ensure_schema()
+    org_id = f"org-it-{uuid.uuid4().hex[:10]}"
+    try:
+        yield provider, org_id
+    finally:
+        await provider.client.execute_query(
+            "MATCH (n) WHERE n.orgId = $org OR n.itOrg = $org DETACH DELETE n",
+            parameters={"org": org_id},
+        )
+        await provider.disconnect()
+
+
+async def _profile(provider: Neo4jProvider, query: str, parameters: dict[str, Any]) -> dict[str, Any]:
+    """Total db hits and the operators a query planned, from PROFILE."""
+    async with provider.client.driver.session(database="neo4j") as session:
+        result = await session.run(f"PROFILE {query}", parameters)
+        await result.data()
+        summary = await result.consume()
+    operators: list[str] = []
+
+    def walk(plan: dict[str, Any]) -> int:
+        operators.append(plan.get("operatorType", ""))
+        return int(plan.get("dbHits", 0)) + sum(walk(child) for child in plan.get("children", []))
+
+    return {"db_hits": walk(summary.profile), "operators": operators}
+
+
+def _capture_queries(provider: Neo4jProvider) -> list[tuple[str, dict[str, Any]]]:
+    captured: list[tuple[str, dict[str, Any]]] = []
+    real = provider.client.execute_query
+
+    async def recording(
+        query: str, parameters: dict[str, Any] | None = None, txn_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        captured.append((query, dict(parameters or {})))
+        return await real(query, parameters=parameters, txn_id=txn_id)
+
+    provider.client.execute_query = recording  # type: ignore[method-assign]
+    return captured
+
+
+class TestNeo4jTaxonomyAliases:
+    async def test_schema_setup_creates_the_alias_uniqueness_constraint(self, neo4j) -> None:
+        provider, _ = neo4j
+        await provider.client.execute_query("DROP CONSTRAINT taxonomyalias_key_unique IF EXISTS")
+
+        await provider.ensure_schema()
+
+        rows = await provider.client.execute_query(
+            "SHOW CONSTRAINTS YIELD name, type, labelsOrTypes, properties "
+            "WHERE name = 'taxonomyalias_key_unique' RETURN type, labelsOrTypes, properties"
+        )
+        assert rows == [{
+            "type": "UNIQUENESS",
+            "labelsOrTypes": ["TaxonomyAlias"],
+            "properties": ["orgId", "collection", "normalized"],
+        }]
+
+    async def test_the_constraint_is_enforced(self, neo4j) -> None:
+        provider, org_id = neo4j
+        create = "CREATE (:TaxonomyAlias {orgId: $org, collection: 'topics', normalized: 'dup'})"
+        await provider.client.execute_query(create, parameters={"org": org_id})
+        with pytest.raises(Exception, match="(?i)already exists|constraint"):
+            await provider.client.execute_query(create, parameters={"org": org_id})
+
+    async def test_alias_lookup_seeks_alias_nodes(self, neo4j) -> None:
+        provider, org_id = neo4j
+        key = taxonomy_node_key(org_id, TOPICS, "onboarding")
+        await provider.create_taxonomy_node_if_absent(TOPICS, {
+            "id": key, "name": "Onboarding", "normalizedName": "onboarding", "orgId": org_id,
+        })
+        await provider.add_taxonomy_aliases(
+            TOPICS, key, ["Onboarding checklist", "New hire onboarding"],
+            ["onboarding checklist", "new hire onboarding"],
+        )
+        captured = _capture_queries(provider)
+
+        rows = await provider.find_taxonomy_nodes(TOPICS, org_id, ["new hire onboarding"])
+
+        assert [r["id"] for r in rows] == [key]
+        query, parameters = captured[-1]
+        profile = await _profile(provider, query, parameters)
+        # The alias branch seeks the constraint's index instead of scanning a label.
+        assert not any(op.startswith("NodeByLabelScan") for op in profile["operators"]), profile
+        assert any("Seek" in op for op in profile["operators"]), profile
+
+    async def test_concurrent_alias_writes_keep_every_alias(self, neo4j) -> None:
+        """Reading the lists without the node lock let the later SET drop the
+        other writer's alias."""
+        provider, org_id = neo4j
+        key = taxonomy_node_key(org_id, TOPICS, "release")
+        await provider.create_taxonomy_node_if_absent(TOPICS, {
+            "id": key, "name": "Release", "normalizedName": "release", "orgId": org_id,
+        })
+        writers = 12
+
+        await asyncio.gather(*(
+            provider.add_taxonomy_aliases(TOPICS, key, [f"Release {i}"], [f"release {i}"])
+            for i in range(writers)
+        ))
+
+        (node,) = await provider.client.execute_query(
+            "MATCH (n:Topics {id: $key}) "
+            "OPTIONAL MATCH (a:TaxonomyAlias)-[:ALIAS_OF]->(n) "
+            "RETURN n.aliases AS aliases, n.normalizedAliases AS normals, count(a) AS alias_nodes",
+            parameters={"key": key},
+        )
+        assert sorted(node["normals"]) == sorted(f"release {i}" for i in range(writers))
+        assert len(node["aliases"]) == len(node["normals"]) == writers
+        assert node["alias_nodes"] == writers
+
+
+class TestNeo4jRecordGroupInheritance:
+    async def _seed(self, provider: Neo4jProvider, org_id: str, records: int) -> dict[str, str]:
+        """A seed group with two nested groups and ``records`` records under it,
+        each record with one attachment inheriting from it."""
+        ids = {name: f"{name}-{uuid.uuid4().hex[:8]}" for name in ("user", "app", "root", "child", "grandchild")}
+        await provider.client.execute_query(
+            """
+            CREATE (u:User {id: $user, userId: $user, orgId: $org})
+            CREATE (app:App {id: $app, name: 'Drive', type: 'DRIVE', orgId: $org, itOrg: $org})
+            CREATE (u)-[:USER_APP_RELATION]->(app)
+            CREATE (root:RecordGroup {id: $root, orgId: $org, connectorId: $app, isDeleted: false})
+            CREATE (child:RecordGroup {id: $child, orgId: $org, connectorId: $app, isDeleted: false})
+            CREATE (grandchild:RecordGroup {id: $grandchild, orgId: $org, connectorId: $app, isDeleted: false})
+            CREATE (u)-[:PERMISSION {type: 'USER'}]->(root)
+            CREATE (child)-[:INHERIT_PERMISSIONS]->(root)
+            CREATE (grandchild)-[:INHERIT_PERMISSIONS]->(child)
+            """,
+            parameters={"org": org_id, **ids},
+        )
+        await provider.client.execute_query(
+            """
+            MATCH (root:RecordGroup {id: $root})
+            UNWIND range(1, $n) AS i
+            CREATE (r:Record {id: $root + '-r' + toString(i), orgId: $org, connectorId: $app})
+            CREATE (r)-[:INHERIT_PERMISSIONS]->(root)
+            CREATE (a:Record {id: $root + '-a' + toString(i), orgId: $org, connectorId: $app})
+            CREATE (a)-[:INHERIT_PERMISSIONS]->(r)
+            """,
+            parameters={"root": ids["root"], "n": records, "org": org_id, "app": ids["app"]},
+        )
+        return ids
+
+    @staticmethod
+    async def _walk(provider: Neo4jProvider, query: str, parameters: dict[str, Any]) -> dict[str, Any]:
+        async with provider.client.driver.session(database="neo4j") as session:
+            result = await session.run(f"PROFILE {query}", parameters)
+            await result.data()
+            summary = await result.consume()
+        found: dict[str, Any] = {"db_hits": 0}
+
+        def visit(plan: dict[str, Any]) -> None:
+            found["db_hits"] += int(plan.get("dbHits", 0))
+            if plan.get("operatorType", "").startswith("VarLengthExpand"):
+                found["operator"] = plan["operatorType"]
+                found["rows"] = int(plan.get("rows", 0))
+            for child in plan.get("children", []):
+                visit(child)
+
+        visit(summary.profile)
+        return found
+
+    async def test_walk_does_not_continue_through_records(self, neo4j) -> None:
+        provider, org_id = neo4j
+        ids = await self._seed(provider, org_id, records=3000)
+        captured = _capture_queries(provider)
+
+        context = await provider.get_entity_access_context(ids["user"], org_id)
+
+        assert set(context["record_group_ids"]) == {ids["root"], ids["child"], ids["grandchild"]}
+        query, parameters = captured[-1]
+        current = await self._walk(provider, query, parameters)
+        # The walk's own output is just the two nested groups: the RecordGroup
+        # predicate prunes the expand instead of filtering 6000 paths after it.
+        assert "Pruning" in current["operator"], current
+        assert current["rows"] == 2, current
+        # The walk as the branch first wrote it: a labelled child and no path
+        # predicate, which expands through every record and attachment.
+        original = query.replace(
+            "MATCH p = (seed)<-[:INHERIT_PERMISSIONS*1..20]-(child)\n"
+            "            WHERE all(n IN nodes(p) WHERE n:RecordGroup)\n"
+            "            WITH child, record_level_app_ids\n"
+            "            WHERE child.orgId",
+            "MATCH (seed)<-[:INHERIT_PERMISSIONS*1..20]-(child:RecordGroup)\n"
+            "            WHERE child.orgId",
+        )
+        assert original != query
+        before = await self._walk(provider, original, parameters)
+        logger.warning("inheritance walk: current=%s original=%s", current, before)
+        assert current["db_hits"] * 2 < before["db_hits"], (current, before)
+
+    async def test_walk_cost_follows_direct_children_not_descendants(self, neo4j) -> None:
+        """Doubling the attachments under each record must not change the
+        walk: only the seed's direct inbound edges are read."""
+        provider, org_id = neo4j
+        ids = await self._seed(provider, org_id, records=2000)
+        await provider.client.execute_query(
+            """
+            MATCH (a:Record)-[:INHERIT_PERMISSIONS]->(r:Record)-[:INHERIT_PERMISSIONS]->(:RecordGroup {id: $root})
+            CREATE (extra:Record {id: a.id + '-x', orgId: $org, connectorId: r.connectorId})
+            CREATE (extra)-[:INHERIT_PERMISSIONS]->(a)
+            """,
+            parameters={"root": ids["root"], "org": org_id},
+        )
+        captured = _capture_queries(provider)
+        await provider.get_entity_access_context(ids["user"], org_id)
+        query, parameters = captured[-1]
+        with_deeper_records = await self._walk(provider, query, parameters)
+
+        # 2000 direct children at roughly two db hits each; 4000 deeper records untouched.
+        assert with_deeper_records["rows"] == 2, with_deeper_records
+        assert with_deeper_records["db_hits"] < 2000 * 3, with_deeper_records
+
+
+# ---------------------------------------------------------------------------
+# ArangoDB
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def arango() -> AsyncIterator[tuple[ArangoHTTPProvider, str]]:
+    config_service = MagicMock()
+    config_service.get_config = AsyncMock(return_value={
+        "url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB,
+    })
+    provider = ArangoHTTPProvider(logger, config_service)
+    try:
+        if not await asyncio.wait_for(provider.connect(), timeout=60):
+            raise ConnectionError("connect returned False")
+        await provider.ensure_schema()
+    except Exception as exc:
+        pytest.skip(f"ArangoDB not available at {ARANGO_URL}: {exc}")
+    org_id = f"org-it-{uuid.uuid4().hex[:10]}"
+    try:
+        yield provider, org_id
+    finally:
+        for collection in (TOPICS, CollectionNames.RECORDS.value):
+            await provider.http_client.execute_aql(
+                f"FOR d IN {collection} FILTER d.orgId == @org REMOVE d IN {collection}",
+                {"org": org_id},
+            )
+        await provider.http_client.execute_aql(
+            f"FOR e IN {CollectionNames.BELONGS_TO_TOPIC.value} "
+            f"FILTER e.itOrg == @org OR STARTS_WITH(e._from, CONCAT('records/', @org)) "
+            f"REMOVE e IN {CollectionNames.BELONGS_TO_TOPIC.value}",
+            {"org": org_id},
+        )
+
+
+def _topic(org_id: str, name: str) -> tuple[str, dict[str, Any]]:
+    normalized = name.casefold()
+    key = taxonomy_node_key(org_id, TOPICS, normalized)
+    return key, {"id": key, "name": name, "normalizedName": normalized, "orgId": org_id}
+
+
+class TestArangoTaxonomyWritesUnderConcurrentTransactions:
+    async def test_the_old_in_transaction_insert_conflicts(self, arango) -> None:
+        """Documents the failure the fix removes: two open stream transactions
+        inserting one deterministic key. Kept so a server change that makes it
+        pass is noticed."""
+        provider, org_id = arango
+        _, node = _topic(org_id, "Onboarding")
+        t1 = await provider.begin_transaction(read=[TOPICS], write=[TOPICS])
+        t2 = await provider.begin_transaction(read=[TOPICS], write=[TOPICS])
+        try:
+            await provider.create_taxonomy_node_if_absent(TOPICS, dict(node), transaction=t1)
+            with pytest.raises(Exception, match="1200"):
+                await provider.create_taxonomy_node_if_absent(TOPICS, dict(node), transaction=t2)
+        finally:
+            for txn in (t1, t2):
+                await provider.commit_transaction(txn)
+
+    async def test_a_no_op_alias_write_takes_no_lock(self, arango) -> None:
+        """Popular nodes get alias writes from many records; writing the same
+        lists back locked the node for the rest of each transaction."""
+        provider, org_id = arango
+        key, node = _topic(org_id, "Release")
+        await provider.create_taxonomy_node_if_absent(TOPICS, node)
+        await provider.add_taxonomy_aliases(TOPICS, key, ["Release notes"], ["release notes"])
+        t1 = await provider.begin_transaction(read=[TOPICS], write=[TOPICS])
+        t2 = await provider.begin_transaction(read=[TOPICS], write=[TOPICS])
+        try:
+            for txn in (t1, t2):
+                await provider.add_taxonomy_aliases(
+                    TOPICS, key, ["Release notes"], ["release notes"], transaction=txn,
+                )
+        finally:
+            for txn in (t1, t2):
+                await provider.commit_transaction(txn)
+
+    async def test_two_records_enriching_the_same_new_topic_both_succeed(self, arango) -> None:
+        """The real transformer: each record resolves the same new canonical
+        topic and enriches in its own graph transaction, concurrently."""
+        provider, org_id = arango
+        key, _ = _topic(org_id, "Quarterly planning")
+        record_ids = [f"{org_id}-rec-{i}" for i in range(4)]
+        await provider.batch_upsert_nodes([
+            {
+                "id": record_id, "orgId": org_id, "recordName": f"Doc {i}",
+                "externalRecordId": record_id, "recordType": "FILE", "origin": "CONNECTOR",
+                "connectorId": f"{org_id}-conn", "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+            for i, record_id in enumerate(record_ids)
+        ], CollectionNames.RECORDS.value)
+
+        def resolution(record_index: int) -> EntityResolution:
+            res = EntityResolution(org_id=org_id, mode=ResolutionMode.APPLY)
+            res.add(ResolvedEntity(
+                kind=TOPIC, key=key, name="Quarterly planning", normalized="quarterly planning",
+                is_new=True, decision="new",
+                aliases=[f"Q planning {record_index}"], new_aliases=[f"Q planning {record_index}"],
+                extracted_names=[f"Q planning {record_index}"],
+            ))
+            return res
+
+        transformer = GraphDBTransformer(graph_provider=provider, logger=logger)
+        metadata = lambda: SemanticMetadata(  # noqa: E731
+            categories=[], topics=["Quarterly planning"], languages=[], departments=[],
+        )
+
+        results = await asyncio.gather(*(
+            transformer.save_metadata_to_db(
+                record_id, metadata(), f"vr-{record_id}", resolution=resolution(i),
+            )
+            for i, record_id in enumerate(record_ids)
+        ), return_exceptions=True)
+
+        assert not [r for r in results if isinstance(r, BaseException)], results
+        nodes = await provider.http_client.execute_aql(
+            f"FOR d IN {TOPICS} FILTER d.orgId == @org RETURN d", {"org": org_id},
+        )
+        assert [n["_key"] for n in nodes] == [key]
+        assert sorted(nodes[0]["normalizedAliases"]) == sorted(f"q planning {i}" for i in range(4))
+        edges = await provider.http_client.execute_aql(
+            f"FOR e IN {CollectionNames.BELONGS_TO_TOPIC.value} "
+            f"FILTER e._to == @to RETURN e._from",
+            {"to": f"{TOPICS}/{key}"},
+        )
+        assert sorted(edges) == sorted(f"records/{r}" for r in record_ids)

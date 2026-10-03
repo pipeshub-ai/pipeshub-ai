@@ -495,7 +495,8 @@ class ArangoHTTPClient:
         query: str,
         bind_vars: Optional[Dict] = None,
         txn_id: Optional[str] = None,
-        batch_size: int = 1000
+        batch_size: int = 1000,
+        options: dict | None = None,
     ) -> List[Dict]:
         """
         Execute AQL query.
@@ -505,6 +506,7 @@ class ArangoHTTPClient:
             bind_vars: Query bind variables
             txn_id: Optional transaction ID
             batch_size: Batch size for cursor
+            options: Cursor options, e.g. optimizer rules for one query
 
         Returns:
             List[Dict]: Query results
@@ -520,6 +522,8 @@ class ArangoHTTPClient:
             "count": True,
             "batchSize": batch_size
         }
+        if options:
+            payload["options"] = options
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
@@ -884,6 +888,7 @@ class ArangoHTTPClient:
         self,
         collection_name: str,
         fields: List[str],
+        unique: bool = False,
     ) -> bool:
         """
         Create a persistent index on a collection (idempotent).
@@ -891,6 +896,8 @@ class ArangoHTTPClient:
         Args:
             collection_name: Collection to index
             fields: List of field names for the compound index
+            unique: Enforce uniqueness. Creation fails outright if the collection
+                already holds duplicates, so callers must tolerate a False return.
 
         Returns:
             bool: True if index exists or was created
@@ -899,6 +906,7 @@ class ArangoHTTPClient:
         payload = {
             "type": "persistent",
             "fields": fields,
+            "unique": unique,
         }
         try:
             session = await self._get_session()

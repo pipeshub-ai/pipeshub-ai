@@ -319,7 +319,7 @@ class TestPerformTtsHealthCheck:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_openrouter_bad_key_returns_500(self):
+    async def test_openrouter_bad_key_is_a_settings_error(self):
         logger = MagicMock()
         mock_adapter = MagicMock()
 
@@ -338,7 +338,7 @@ class TestPerformTtsHealthCheck:
             resp = await perform_tts_health_check(
                 self._cfg("openRouter", model="tts-model"), logger
             )
-        assert resp.status_code == 500
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_litellm_proxy_success(self):
@@ -578,7 +578,7 @@ class TestPerformSttHealthCheck:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_openrouter_bad_key_returns_500(self):
+    async def test_openrouter_bad_key_is_a_settings_error(self):
         logger = MagicMock()
         mock_adapter = MagicMock()
 
@@ -597,7 +597,7 @@ class TestPerformSttHealthCheck:
             resp = await perform_stt_health_check(
                 self._cfg("openRouter", model="stt-model"), logger
             )
-        assert resp.status_code == 500
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_litellm_proxy_success(self):
