@@ -565,9 +565,6 @@ def main() -> int:
     return 1 if failures else 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
-
 
 def test_connector_timeline_reports_start_end_and_records() -> None:
     """Per-connector timing, so an aggregate can never hide an outlier."""
@@ -608,3 +605,7 @@ def test_connector_timeline_falls_back_when_status_is_unavailable() -> None:
     assert entry["completed_s"] is None
     assert entry["duration_s"] == 8.0            # falls back to last_record_s
     assert entry["final_records"] == 50
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

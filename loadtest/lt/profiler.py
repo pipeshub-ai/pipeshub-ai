@@ -408,9 +408,7 @@ def hot_app_frames(doc: dict, top: int = 15) -> list[dict]:
 
 def kill_leftovers(target: Target) -> None:
     """py-spy detaches cleanly on exit; this is belt-and-braces after a timeout."""
-    subprocess.run(
-        [target.docker, "exec", target.container, "sh", "-lc", "pkill -f py-spy || true"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        target.exec(["sh", "-lc", "pkill -f py-spy || true"], timeout=30, check=False)
+    except subprocess.TimeoutExpired:
+        pass  # best effort: an unresponsive daemon must not block the cleanup

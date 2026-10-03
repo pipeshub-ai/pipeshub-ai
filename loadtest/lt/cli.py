@@ -171,8 +171,7 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
 
     print("org created" if result["org_created"] else "org already existed — reused it")
     print(f"  user:      {result['email']}")
-    print(f"  client id: {result['client_id']}")
-    print(f"  written:   {result['env_path']}")
+    print(f"  written:   {result['env_path']} (client id and secret)")
     print("\nnext: python loadtest/run.py doctor --source minio")
     return 0
 
