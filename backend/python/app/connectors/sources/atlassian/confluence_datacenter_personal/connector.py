@@ -6,11 +6,10 @@ Single-user sync without permission APIs. Inherits from BaseConnector directly.
 Authentication: API token (personal access token or HTTP basic with API token).
 """
 
-import json
 import uuid
 import re
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
+from datetime import datetime
 from logging import Logger
 from typing import Any, Literal, Optional
 from urllib.parse import parse_qs, urlparse
@@ -65,6 +64,9 @@ from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterPerso
 from app.connectors.sources.atlassian.core.confluence_dc_removal import (
     ConfluenceDataCenterRemovalMixin,
     ContentListing,
+    item_last_modified_when,
+    item_revision_marker,
+    stored_map,
 )
 from app.connectors.sources.atlassian.core.confluence_html import prepare_streaming_html
 from app.sources.client.http.http_retry import call_with_retry
@@ -94,56 +96,6 @@ from app.connectors.core.base.error.stream_errors import (
 # Time offset (in hours) applied to date filters to handle timezone differences
 # between the application and Confluence server, ensuring no data is missed during sync
 TIME_OFFSET_HOURS = 24
-
-# How many runs the checkpoint is held for pages that failed to save before they
-# are given up on, so one broken page can't stop a space from ever moving on.
-MAX_FAILED_PAGE_ATTEMPTS = 5
-
-
-def _stored_map(value: object) -> dict[str, Any]:
-    """A map kept in a sync point as JSON text (graph stores such as Neo4j can't hold nested maps)."""
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str) and value:
-        try:
-            parsed = json.loads(value)
-        except ValueError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
-
-def _extract_item_last_modified_when(item_data: dict[str, Any]) -> Optional[str]:
-    """Extract last modified timestamp from Confluence item data.
-    
-    Tries history.lastUpdated.when first, then falls back to version.when or version.createdAt.
-    """
-    history = item_data.get("history")
-    if isinstance(history, dict):
-        last_updated = history.get("lastUpdated")
-        if isinstance(last_updated, dict):
-            when = last_updated.get("when")
-            if when:
-                return when
-    version = item_data.get("version")
-    if isinstance(version, dict):
-        return version.get("when") or version.get("createdAt")
-    return None
-
-def _item_revision_marker(item_data: dict[str, Any]) -> str | None:
-    """What identifies this revision of an item: its last-modified time, else its version number.
-
-    None when neither is known, so a given-up item can't be matched and is never skipped.
-    """
-    when = _extract_item_last_modified_when(item_data)
-    if when:
-        return when
-    history = item_data.get("history")
-    last_updated = history.get("lastUpdated") if isinstance(history, dict) else None
-    version = item_data.get("version")
-    number = (last_updated.get("number") if isinstance(last_updated, dict) else None) or (
-        version.get("number") if isinstance(version, dict) else None
-    )
-    return f"version:{number}" if number is not None else None
 
 # Expand parameters for fetching pages and blogposts with required metadata
 # Includes: ancestors, history, space, attachments, and comments
@@ -756,7 +708,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 )
                 if hp_resp and hp_resp.status == HttpStatusCode.SUCCESS.value:
                     hp_data = hp_resp.json()
-                    homepage_last_modified = _extract_item_last_modified_when(hp_data)
+                    homepage_last_modified = item_last_modified_when(hp_data)
                     homepage_title = hp_data.get("title") or homepage_title
             return homepage_id, homepage_title, homepage_last_modified
         except Exception as e:
@@ -940,9 +892,10 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 self.logger.info(f"🔍 Filter: Fetching {content_type}s created before {created_before}")
 
             space_homepage_id: Optional[str] = None
+            homepage_modified: Optional[str] = None
             homepage_seen_in_search = False
             if record_type == RecordType.CONFLUENCE_PAGE and only_ids is None:
-                space_homepage_id, _, _ = await self._fetch_space_homepage_info(space_key)
+                space_homepage_id, _, homepage_modified = await self._fetch_space_homepage_info(space_key)
 
             # Pagination variables
             # Supports both offset-based (start/limit) and cursor-based pagination
@@ -956,7 +909,11 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             # (id, title, last modified) of items that failed to save this run.
             failed_items: list[tuple[str, str, str]] = []
             # Items given up on, id -> last modified then; skipped until it changes.
-            given_up = _stored_map((last_sync_data or {}).get("givenUpPages"))
+            given_up = stored_map((last_sync_data or {}).get("givenUpPages"))
+            if space_homepage_id and homepage_modified and given_up.get(space_homepage_id) == homepage_modified:
+                # Unchanged since it was given up on, so a backfill would only fail again.
+                self.logger.info("Not backfilling space homepage %s: given up on until it changes", space_homepage_id)
+                space_homepage_id = None
 
             if record_type == RecordType.CONFLUENCE_PAGE and space_homepage_id:
                 homepage_in_db = await self.data_entities_processor.get_record_by_external_id(
@@ -1061,7 +1018,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                             homepage_seen_in_search = True
 
                         # After the homepage check, so a skipped homepage isn't mistaken for one missing from search.
-                        item_marker = _item_revision_marker(item_data)
+                        item_marker = item_revision_marker(item_data)
                         if str(item_id) in given_up:
                             if item_marker and given_up[str(item_id)] == item_marker:
                                 continue
@@ -1193,7 +1150,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                         failed_items.append((
                             str(item_data.get("id")),
                             str(item_data.get("title")),
-                            _item_revision_marker(item_data) or "",
+                            item_revision_marker(item_data) or "",
                         ))
                         continue
 
@@ -1247,7 +1204,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 # A given-up item the search didn't return again is unchanged; syncing it by id would only fail again.
                 settled = await self._reconcile_space_content(space, record_type, ContentListing(
                     full=not last_sync_time, complete=listing_complete, seen=frozenset(seen | set(given_up)),
-                    checkpoint_key=sync_point_key, checkpoint_time=None,
+                    checkpoint_key=sync_point_key,
                 ))
             if not listing_complete:
                 self.logger.warning(
@@ -1274,72 +1231,6 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
 
     async def _sync_content_by_ids(self, space: RecordGroup, record_type: RecordType, ids: list[str]) -> bool:
         return await self._sync_content(space.short_name, record_type, only_ids=ids)
-
-    async def _save_content_checkpoint(
-        self,
-        sync_point_key: str,
-        last_sync_data: dict[str, Any] | None,
-        failed_items: list[tuple[str, str, str]],
-        given_up: dict[str, str],
-        content_type: str,
-        space_key: str,
-        *,
-        synced_any: bool,
-        hold: bool = False,
-    ) -> None:
-        """Move the checkpoint to now, or keep it while any item that failed still has attempts left.
-
-        Each failed item has its own count. One that fails ``MAX_FAILED_PAGE_ATTEMPTS`` syncs
-        in a row is given up on and skipped until its last-modified time changes. With
-        ``hold`` the checkpoint stays where it is, but the counts are still saved, so an
-        item that keeps failing is given up on and stops holding it.
-        """
-        stored = last_sync_data or {}
-        attempts_before = _stored_map(stored.get("failedPages"))
-        held: dict[str, int] = {}
-        newly_given_up: list[str] = []
-        for item_id, title, when in failed_items:
-            attempts = int(attempts_before.get(item_id) or 0) + 1
-            if attempts >= MAX_FAILED_PAGE_ATTEMPTS:
-                if when:
-                    given_up[item_id] = when
-                newly_given_up.append(f"'{title}' ({item_id})")
-            else:
-                held[item_id] = attempts
-        if newly_given_up:
-            self.logger.error(
-                f"❌ {content_type.capitalize()}s {', '.join(newly_given_up)} in space {space_key} still could not be "
-                f"saved after {MAX_FAILED_PAGE_ATTEMPTS} syncs; moving on without them. They are read again when "
-                "they next change"
-            )
-
-        counts_changed = bool(
-            failed_items or stored.get("failedPages") or given_up != _stored_map(stored.get("givenUpPages"))
-        )
-        if held or (hold and counts_changed):
-            checkpoint: dict[str, Any] = {}
-            if stored.get("last_sync_time"):
-                checkpoint["last_sync_time"] = stored["last_sync_time"]
-            if held:
-                titles = {item_id: title for item_id, title, _ in failed_items}
-                self.logger.warning(
-                    f"Keeping the {content_type}s checkpoint for space {space_key}: "
-                    + ", ".join(f"'{titles[i]}' ({i}, attempt {n} of {MAX_FAILED_PAGE_ATTEMPTS})" for i, n in held.items())
-                    + " could not be saved and will be read again next sync"
-                )
-        elif not hold and (synced_any or counts_changed):
-            # Given-up items are kept until they change: by-id sync would otherwise retry one the search no longer returns.
-            checkpoint = {"last_sync_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")}
-            self.logger.info(f"Updated {content_type}s sync checkpoint to {checkpoint['last_sync_time']}")
-        else:
-            return
-
-        # Written even when empty: Neo4j merges sync point fields, so an omitted field would keep its old value.
-        if held or stored.get("failedPages"):
-            checkpoint["failedPages"] = json.dumps(held, sort_keys=True)
-        if given_up or stored.get("givenUpPages"):
-            checkpoint["givenUpPages"] = json.dumps(given_up, sort_keys=True)
-        await self.pages_sync_point.update_sync_point(sync_point_key, checkpoint)
 
     async def _fetch_all_attachments(self, content_id: str) -> tuple[list[dict[str, Any]], Optional[str]]:
         """

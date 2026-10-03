@@ -25,6 +25,7 @@ from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     PSEUDO_USER_GROUP_PREFIX,
     TIME_OFFSET_HOURS,
     ConfluenceDataCenterConnector,
+    ContentListing,
 )
 from app.models.entities import (
     AppUser,
@@ -132,7 +133,7 @@ class TestConfluenceRunSync:
             connector._sync_user_groups = AsyncMock()
             rg = _space_rg()
             connector._sync_spaces = AsyncMock(return_value=[rg])
-            connector._sync_content = AsyncMock()
+            connector._sync_content = AsyncMock(return_value=ContentListing(full=True, complete=True, seen=frozenset(), checkpoint_key="k"))
             connector._sync_permission_changes_from_audit_log = AsyncMock()
 
             await connector.run_sync()
@@ -159,7 +160,7 @@ class TestConfluenceRunSync:
             connector._sync_users = AsyncMock()
             connector._sync_user_groups = AsyncMock()
             connector._sync_spaces = AsyncMock(return_value=[_space_rg("S1"), _space_rg("S2")])
-            connector._sync_content = AsyncMock()
+            connector._sync_content = AsyncMock(return_value=ContentListing(full=True, complete=True, seen=frozenset(), checkpoint_key="k"))
             connector._sync_permission_changes_from_audit_log = AsyncMock()
 
             await connector.run_sync()

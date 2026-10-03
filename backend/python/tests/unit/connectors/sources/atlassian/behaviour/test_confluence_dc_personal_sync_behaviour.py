@@ -703,6 +703,40 @@ class TestSpaceHomepage:
         assert not any(r.external_record_id == "500" for b in records_db.record_batches for r in b)
         assert "p1" in saved(records_db, RecordType.CONFLUENCE_PAGE)
 
+    async def test_a_given_up_homepage_that_was_never_saved_is_not_fetched_again(
+        self, atlassian_api, records_db, checkpoints, search, monkeypatch
+    ) -> None:
+        def spaces(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("expand") == "homepage":
+                return json_response({"results": [{**space("ENG", 10), "homepage": {"id": 500, "title": "Home"}}]})
+            return json_response(space_page([space("ENG", 10)]))
+
+        atlassian_api.on("GET", f"{API}/space", spaces)
+        atlassian_api.on("GET", f"{API}/content/500", content("500"))
+        search.add("page", "ENG", 0, listing([content("500"), content("p1")]))
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+        real_process = connector._process_webpage_with_update
+
+        async def fails_for_homepage(item_data: dict[str, Any], *args: object, **kwargs: object) -> object:
+            if str(item_data.get("id")) == "500":
+                raise RuntimeError("could not build the homepage")
+            return await real_process(item_data, *args, **kwargs)
+
+        monkeypatch.setattr(connector, "_process_webpage_with_update", fails_for_homepage)
+        for _ in range(5):
+            await connector.run_sync()
+        assert json.loads(checkpoints.values_for("confluence_pages/ENG")["givenUpPages"]) == {"500": "2024-05-01T10:00:00.000Z"}
+        assert "500" not in records_db.records
+
+        search.add("page", "ENG", 0, listing([content("p1")]))
+        reads_before = len(atlassian_api.calls("GET", f"{API}/content/500"))
+        await connector.run_sync()
+
+        assert len(atlassian_api.calls("GET", f"{API}/content/500")) - reads_before == 1, (
+            "only the space homepage lookup reads it; an unchanged given-up homepage is not backfilled"
+        )
+        assert "500" not in records_db.records
+
 
 class TestSyncStopsLoudlyWhenItCannotStart:
     async def test_space_listing_error_is_not_mistaken_for_an_empty_site(self, atlassian_api, records_db, checkpoints) -> None:

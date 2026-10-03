@@ -6,6 +6,7 @@ The focus is on who ends up able to see what: users, groups, space grants,
 page restrictions, and the audit-log pass that catches restriction changes.
 """
 
+import json
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,8 @@ from atlassian_behaviour_fakes import (
     FakeCheckpointStore,
     FakeConfigService,
     json_response,
+    logged,
+    record_logs,
 )
 from confluence_dc_removal_fakes import RemovalRecordsDb
 from fastapi import HTTPException
@@ -1354,6 +1357,100 @@ class TestRemovalFromSource:
         await connector.run_sync()
         assert "p2" not in db.records
         assert store.values_for("confluence_pages/ENG")["last_sync_time"] != held
+
+    @staticmethod
+    def _search_window(atlassian_api, search, since: str, changed: list[dict[str, Any]]) -> None:
+        """The change search returns ``changed`` only to a sync asking from ``since`` (checkpoint less 24 hours)."""
+
+        def windowed(request: httpx.Request) -> httpx.Response:
+            cql = AtlassianApiStub.query(request)["cql"]
+            search.cql.append(cql)
+            found = changed if cql.startswith("type=page") and f'lastModified > "{since}"' in cql else []
+            return json_response(listing(found))
+
+        atlassian_api.on("GET", f"{API}/content/search", windowed)
+
+    async def test_a_page_that_failed_to_save_is_read_again_next_sync(self, atlassian_api, db, store, search) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        held = self._hold_checkpoint(store)
+        self._search_window(atlassian_api, search, "2023-12-31 00:00", [content("p1", version=2), content("p2", version=2)])
+        db.fail_lookup_for = {"p2"}
+
+        await connector.run_sync()
+
+        stored = store.values_for("confluence_pages/ENG")
+        assert db.records["p2"].external_revision_id == "1"
+        assert stored["last_sync_time"] == held, "a page that failed to save holds the checkpoint"
+        assert json.loads(stored["failedPages"]) == {"p2": 1}
+
+        db.fail_lookup_for = set()
+        await connector.run_sync()
+
+        stored = store.values_for("confluence_pages/ENG")
+        assert db.records["p2"].external_revision_id == "2", "the edit is read again, not lost behind the checkpoint"
+        assert stored["last_sync_time"] > held and json.loads(stored["failedPages"]) == {}
+
+    async def test_a_page_that_keeps_failing_is_given_up_on_and_the_checkpoint_moves_on(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        held = self._hold_checkpoint(store)
+        self._search_window(atlassian_api, search, "2023-12-31 00:00", [content("p1", version=2), content("p2", version=2)])
+        db.fail_lookup_for = {"p2"}
+        logs = record_logs(connector)
+
+        for attempt in range(1, 5):
+            await connector.run_sync()
+            stored = store.values_for("confluence_pages/ENG")
+            assert stored["last_sync_time"] == held
+            assert json.loads(stored["failedPages"]) == {"p2": attempt}
+
+        await connector.run_sync()
+
+        stored = store.values_for("confluence_pages/ENG")
+        assert stored["last_sync_time"] > held, "one broken page does not freeze the space"
+        assert json.loads(stored["failedPages"]) == {}
+        assert json.loads(stored["givenUpPages"]) == {"p2": "2024-05-01T10:00:00.000Z"}
+        assert any("p2" in m and "after 5 syncs" in m for m in logged(logs))
+
+        edited = content("p2", version=3)
+        edited["version"]["when"] = edited["history"]["lastUpdated"]["when"] = "2024-06-01T10:00:00.000Z"
+        search.add("page", 0, listing([edited]))
+        atlassian_api.on("GET", f"{API}/content/search", search)
+        db.fail_lookup_for = set()
+        await connector.run_sync()
+
+        assert db.records["p2"].external_revision_id == "3", "once it changes it is tried afresh"
+        assert json.loads(store.values_for("confluence_pages/ENG")["givenUpPages"]) == {}
+
+    async def test_a_page_that_keeps_failing_when_synced_by_id_is_counted_and_given_up_on(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        del db.records["p2"]
+        db.fail_lookup_for = {"p2"}
+
+        def by_id(request: httpx.Request) -> httpx.Response:
+            cql = AtlassianApiStub.query(request)["cql"]
+            search.cql.append(cql)
+            return json_response(listing([content("p2")] if "id in (p2)" in cql else []))
+
+        atlassian_api.on("GET", f"{API}/content/search", by_id)
+        held = self._hold_checkpoint(store)
+
+        for attempt in range(1, 5):
+            await connector.run_sync()
+            stored = store.values_for("confluence_pages/ENG")
+            assert json.loads(stored["failedPages"]) == {"p2": attempt}
+            assert stored["last_sync_time"] == held
+
+        await connector.run_sync()
+        assert json.loads(store.values_for("confluence_pages/ENG")["givenUpPages"]) == {"p2": "2024-05-01T10:00:00.000Z"}
+
+        search.cql.clear()
+        await connector.run_sync()
+        assert not [c for c in search.cql if "id in (p2)" in c], "an unchanged given-up page is not synced by id again"
+        assert store.values_for("confluence_pages/ENG")["last_sync_time"] > held
 
     async def test_a_narrowed_page_filter_removes_the_page_and_the_pages_below_it(
         self, atlassian_api, db, store, search

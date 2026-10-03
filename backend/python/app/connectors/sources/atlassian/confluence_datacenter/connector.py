@@ -69,6 +69,10 @@ from app.connectors.sources.atlassian.core.confluence_html import prepare_stream
 from app.connectors.sources.atlassian.core.confluence_dc_removal import (
     ConfluenceDataCenterRemovalMixin,
     ContentListing,
+    FailedItem,
+    item_last_modified_when,
+    item_revision_marker,
+    stored_map,
 )
 from app.sources.client.http.http_retry import call_with_retry
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -99,23 +103,6 @@ from app.connectors.core.base.error.stream_errors import (
 # Time offset (in hours) applied to date filters to handle timezone differences
 # between the application and Confluence server, ensuring no data is missed during sync
 TIME_OFFSET_HOURS = 24
-
-def _extract_item_last_modified_when(item_data: dict[str, Any]) -> Optional[str]:
-    """Extract last modified timestamp from Confluence item data.
-    
-    Tries history.lastUpdated.when first, then falls back to version.when or version.createdAt.
-    """
-    history = item_data.get("history")
-    if isinstance(history, dict):
-        last_updated = history.get("lastUpdated")
-        if isinstance(last_updated, dict):
-            when = last_updated.get("when")
-            if when:
-                return when
-    version = item_data.get("version")
-    if isinstance(version, dict):
-        return version.get("when") or version.get("createdAt")
-    return None
 
 # Expand parameters for fetching pages and blogposts with required metadata
 # Includes: ancestors, history, space, attachments, and comments
@@ -375,6 +362,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         self._space_listing_complete = False
         # Spaces this sync wrote to the graph; one whose permissions couldn't be read is listed but not saved.
         self._saved_space_ids: set[str] = set()
+        # Items the by-id syncs of the current space listing failed to save; counted in failedPages.
+        self._id_sync_failed_items: list[FailedItem] = []
         self.audit_log_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
 
         self.sync_filters: FilterCollection = FilterCollection()
@@ -915,7 +904,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 )
                 if hp_resp and hp_resp.status == HttpStatusCode.SUCCESS.value:
                     hp_data = hp_resp.json()
-                    homepage_last_modified = _extract_item_last_modified_when(hp_data)
+                    homepage_last_modified = item_last_modified_when(hp_data)
                     homepage_title = hp_data.get("title") or homepage_title
             return homepage_id, homepage_title, homepage_last_modified
         except Exception as e:
@@ -1015,8 +1004,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         Args:
             space_key: The space key to sync content from
             record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
-            defer_checkpoint: Leave the checkpoint to the caller, which saves it only
-                once the space's removals have succeeded.
+            defer_checkpoint: Leave the checkpoint to the caller, which holds it while
+                the space's removals or re-syncs are unfinished.
             only_ids: Sync only these items, whatever their last modified time, still
                 within the sync filters; the checkpoint is neither read nor moved.
 
@@ -1103,9 +1092,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 self.logger.info(f"🔍 Filter: Fetching {content_type}s created before {created_before}")
 
             space_homepage_id: Optional[str] = None
+            homepage_modified: Optional[str] = None
             homepage_seen_in_search = False
             if record_type == RecordType.CONFLUENCE_PAGE and only_ids is None:
-                space_homepage_id, _, _ = await self._fetch_space_homepage_info(space_key)
+                space_homepage_id, _, homepage_modified = await self._fetch_space_homepage_info(space_key)
 
             # Pagination variables
             # Supports both offset-based (start/limit) and cursor-based pagination
@@ -1117,6 +1107,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             total_permissions_synced = 0
             listing_complete = True
             seen: set[str] = set()
+            failed_items: list[FailedItem] = []
+            # Items given up on, id -> last modified then; skipped until it changes.
+            given_up = stored_map((last_sync_data or {}).get("givenUpPages"))
+            if space_homepage_id and homepage_modified and given_up.get(space_homepage_id) == homepage_modified:
+                # Unchanged since it was given up on, so a backfill would only fail again.
+                self.logger.info("Not backfilling space homepage %s: given up on until it changes", space_homepage_id)
+                space_homepage_id = None
 
             if record_type == RecordType.CONFLUENCE_PAGE and space_homepage_id:
                 homepage_in_db = await self.data_entities_processor.get_record_by_external_id(
@@ -1207,7 +1204,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     try:
                         item_id = item_data.get("id")
                         item_title = item_data.get("title")
-                        # Before anything can skip it: an item that fails to save still exists.
+                        # Before anything can skip it: an item that fails or is given up on still exists.
                         if item_id:
                             seen.add(str(item_id))
 
@@ -1220,6 +1217,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                             and str(item_id) == space_homepage_id
                         ):
                             homepage_seen_in_search = True
+
+                        # After the homepage check, so a skipped homepage isn't mistaken for one missing from search.
+                        item_marker = item_revision_marker(item_data)
+                        if str(item_id) in given_up:
+                            if item_marker and given_up[str(item_id)] == item_marker:
+                                continue
+                            del given_up[str(item_id)]
 
                         self.logger.debug(f"Processing {content_type}: {item_title} ({item_id})")
 
@@ -1360,6 +1364,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                     except Exception as item_error:
                         self.logger.error(f"❌ Failed to process {content_type} {item_data.get('title')}: {item_error}")
+                        failed_items.append((
+                            str(item_data.get("id")),
+                            str(item_data.get("title")),
+                            item_revision_marker(item_data) or "",
+                        ))
                         continue
 
                 # Save batch to database
@@ -1399,24 +1408,23 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     total_synced += backfilled
 
 
-            # Update sync checkpoint with current time (only if we synced something)
-            # Using current time instead of last item's time avoids re-fetching due to the 24-hour offset
-            current_sync_time = None
             if not listing_complete:
                 self.logger.warning(
                     f"Keeping the {content_type}s checkpoint for space {space_key}: not everything in "
                     "this window could be read, so the next sync reads it again"
                 )
-            elif total_synced > 0 and only_ids is None:
-                current_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-                if not defer_checkpoint:
-                    await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": current_sync_time})
-                    self.logger.info(f"Updated {content_type}s sync checkpoint to {current_sync_time}")
+            elif only_ids is None and not defer_checkpoint:
+                await self._save_content_checkpoint(
+                    sync_point_key, last_sync_data, failed_items, given_up, content_type, space_key,
+                    synced_any=total_synced > 0,
+                )
 
             self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}, Permissions: {total_permissions_synced}")
+            # A given-up item the search didn't return again is unchanged; syncing it by id would only fail again.
             return ContentListing(
-                full=not last_sync_time, complete=listing_complete, seen=frozenset(seen),
-                checkpoint_key=sync_point_key, checkpoint_time=current_sync_time,
+                full=not last_sync_time, complete=listing_complete, seen=frozenset(seen | set(given_up)),
+                checkpoint_key=sync_point_key, last_sync_data=last_sync_data, failed=tuple(failed_items),
+                given_up=given_up, synced_any=total_synced > 0,
             )
 
         except Exception as e:
@@ -1428,28 +1436,33 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
         A space's page or blog post checkpoint moves only once that space's
         removals for that type have succeeded, so a failed read or delete is
-        repeated by the next sync.
+        repeated by the next sync. An item that failed to save holds it too, for
+        at most ``MAX_FAILED_PAGE_ATTEMPTS`` syncs before it is given up on.
         """
         for space in spaces:
             for record_type in (RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST):
                 self.logger.info(f"Syncing {record_type.value} records for space: {space.name} ({space.short_name})")
                 listing = await self._sync_content(space.short_name, record_type, defer_checkpoint=True)
+                self._id_sync_failed_items = []
                 settled = await self._reconcile_space_content(space, record_type, listing)
-                if not listing.checkpoint_time:
+                if not listing.complete:
                     continue
-                if settled:
-                    await self.pages_sync_point.update_sync_point(
-                        listing.checkpoint_key, {"last_sync_time": listing.checkpoint_time}
-                    )
-                else:
+                content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
+                if not settled:
                     self.logger.warning(
-                        f"Keeping the {record_type.value} checkpoint for space {space.short_name}: some removals "
-                        "could not be checked or made, so the next sync repeats them"
+                        f"Keeping the {content_type}s checkpoint for space {space.short_name}: some removals or "
+                        "re-syncs could not be checked or made, so the next sync repeats them"
                     )
+                await self._save_content_checkpoint(
+                    listing.checkpoint_key, listing.last_sync_data, [*listing.failed, *self._id_sync_failed_items],
+                    dict(listing.given_up or {}), content_type, space.short_name,
+                    synced_any=listing.synced_any, hold=not settled,
+                )
 
     async def _sync_content_by_ids(self, space: RecordGroup, record_type: RecordType, ids: list[str]) -> bool:
         result = await self._sync_content(space.short_name, record_type, defer_checkpoint=True, only_ids=ids)
-        return result.complete
+        self._id_sync_failed_items.extend(result.failed)
+        return result.complete and not result.failed
 
     async def _sync_permission_changes_from_audit_log(self) -> None:
         """
