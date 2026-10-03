@@ -210,6 +210,11 @@ def listed_record_ids(container_name: str, path: str) -> set[str]:
     return ids
 
 
+def _under_prefix(path: str, prefix: str) -> bool:
+    # A listed prefix "reports/" also covers its own folder record, stored as "reports".
+    return path.startswith(prefix) or (bool(prefix) and path == prefix.rstrip("/"))
+
+
 async def remove_records_not_listed(
     data_entities_processor: DataSourceEntitiesProcessor,
     connector_id: str,
@@ -230,7 +235,7 @@ async def remove_records_not_listed(
     """
     return await _remove_records(
         data_entities_processor, connector_id, container_name,
-        lambda record, path: any(path.startswith(p) for p in prefixes)
+        lambda record, path: any(_under_prefix(path, p) for p in prefixes)
         and f"{container_name}/{path}" not in listed,
         "missing from the latest listing", logger,
     )
