@@ -998,6 +998,7 @@ class ZammadConnector(BaseConnector):
         query = " AND ".join(query_parts)
         self.logger.debug(f"Fetching tickets for group '{group_name}' with query: {query}")
 
+        previous_page_ids: Optional[set] = None
         while True:
             # Use search_tickets for fetching
             response = await datasource.search_tickets(
@@ -1007,14 +1008,13 @@ class ZammadConnector(BaseConnector):
             )
 
             if not response.success:
-                self.logger.warning(f"Failed to fetch tickets for group '{group_name}' (offset {offset}): {response.message if hasattr(response, 'message') else 'Unknown error'}")
+                self.logger.warning(f"Failed to fetch tickets for group '{group_name}' (offset {offset}): {response.error or response.message or 'Unknown error'}")
                 break
 
             if not response.data:
                 self.logger.debug(f"No ticket data returned for group '{group_name}' at offset {offset}")
                 break
 
-            # Response.data is now a list of ticket objects (already extracted from assets.Ticket)
             tickets_data = response.data
             if not isinstance(tickets_data, list):
                 tickets_data = [tickets_data] if tickets_data else []
@@ -1022,6 +1022,16 @@ class ZammadConnector(BaseConnector):
             if not tickets_data:
                 self.logger.debug(f"Empty tickets list for group '{group_name}' at offset {offset}")
                 break
+
+            page_ids = {ticket.get("id") for ticket in tickets_data}
+            if page_ids == previous_page_ids:
+                self.logger.error(
+                    f"❌ Zammad returned the same {len(tickets_data)} tickets for group '{group_name}' "
+                    f"at offset {offset} as on the page before, so it is not paging. Stopped reading "
+                    f"this group's tickets here; tickets past offset {offset} were not read this sync."
+                )
+                break
+            previous_page_ids = page_ids
 
             self.logger.debug(f"Fetched {len(tickets_data)} tickets for group '{group_name}' from offset {offset}")
 
