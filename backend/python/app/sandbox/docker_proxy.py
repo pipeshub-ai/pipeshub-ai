@@ -54,7 +54,7 @@ _ALLOWED_SECURITY_OPTS = frozenset(
 _ALLOWED_NETWORK_OPTIONS = frozenset({"com.docker.network.bridge.enable_icc"})
 _ALLOWED_RUNTIMES = frozenset({"", "runc", "runsc"})
 
-_ALLOWED_LOG_DRIVERS = frozenset({"", "json-file", "local"})
+_ALLOWED_LOG_DRIVERS = frozenset({"json-file", "local"})
 
 # Docker decodes bodies with Go's encoding/json, which matches struct fields
 # case-insensitively, while the checks below read exact keys. So in every object
@@ -315,12 +315,16 @@ class DockerApiPolicy:
         if restart != "no":
             raise PolicyDenied("restart policies are not permitted")
         # Network log drivers (syslog, gelf, fluentd, ...) connect from the
-        # daemon's network, whatever the container's NetworkMode is.
+        # daemon's network, whatever the container's NetworkMode is. An unset
+        # Type takes the daemon's default driver, which may be one of them, so
+        # pin it; "local" also rotates by default, bounding a chatty sandbox's
+        # disk use.
         log_config = _struct_object(
             host.get("LogConfig"), _LOG_CONFIG_FIELDS, "HostConfig.LogConfig", closed=True,
         )
-        if (log_config.get("Type") or "") not in _ALLOWED_LOG_DRIVERS:
-            raise PolicyDenied(f"log driver {log_config.get('Type')!r} is not permitted")
+        log_driver = log_config.get("Type") or "local"
+        if log_driver not in _ALLOWED_LOG_DRIVERS:
+            raise PolicyDenied(f"log driver {log_driver!r} is not permitted")
         if log_config.get("Config"):
             raise PolicyDenied("HostConfig.LogConfig.Config is not permitted")
 
@@ -342,7 +346,11 @@ class DockerApiPolicy:
             raise PolicyDenied("Labels must be an object")
         labels = dict(raw_labels)
         labels[MANAGED_LABEL] = "true"
-        return {**body, "Labels": labels}
+        return {
+            **body,
+            "HostConfig": {**host, "LogConfig": {"Type": log_driver, "Config": {}}},
+            "Labels": labels,
+        }
 
     def check_network_create(self, body: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(body, dict):

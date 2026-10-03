@@ -267,12 +267,26 @@ class TestContainerCreate:
         with pytest.raises(PolicyDenied):
             policy.check_container_create(json.loads(json.dumps(body)))
 
-    @pytest.mark.parametrize("log_config", [
-        {"Type": "json-file", "Config": {}}, {"Type": "local"}, {"Type": "", "Config": None},
+    @pytest.mark.parametrize("log_config,driver", [
+        ({"Type": "json-file", "Config": {}}, "json-file"),
+        ({"Type": "local"}, "local"),
+        ({"Type": "", "Config": None}, "local"),
+        ({}, "local"),
+        (None, "local"),
     ])
-    def test_admits_local_log_drivers(self, policy: DockerApiPolicy, log_config: dict[str, Any]) -> None:
-        body = {"Image": IMAGE, "HostConfig": {"NetworkMode": "none", "LogConfig": log_config}}
-        assert policy.check_container_create(body)["Labels"][MANAGED_LABEL] == "true"
+    def test_log_driver_is_local_or_pinned(
+        self, policy: DockerApiPolicy, log_config: dict[str, Any] | None, driver: str,
+    ) -> None:
+        host: dict[str, Any] = {"NetworkMode": "none"}
+        if log_config is not None:
+            host["LogConfig"] = log_config
+        out = policy.check_container_create({"Image": IMAGE, "HostConfig": host})
+        # An unset driver would fall back to the daemon default, which may ship logs off-host.
+        assert out["HostConfig"]["LogConfig"] == {"Type": driver, "Config": {}}
+
+    def test_sdk_create_is_pinned_to_local_logs(self, policy: DockerApiPolicy) -> None:
+        out = policy.check_container_create(_sdk_create_body(**_FIREWALLED_INSTALL))
+        assert out["HostConfig"]["LogConfig"] == {"Type": "local", "Config": {}}
 
     def test_label_keys_are_a_map_and_keep_their_case(self, policy: DockerApiPolicy) -> None:
         body = {"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}, "Labels": {"a": "1", "A": "2"}}
