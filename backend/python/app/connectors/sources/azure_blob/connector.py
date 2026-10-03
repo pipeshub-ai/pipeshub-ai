@@ -46,6 +46,7 @@ from app.connectors.core.registry.folder_scope import (
     listed_record_ids,
     path_in_container,
     recorded_ids,
+    remove_deselected_containers,
     remove_records_not_listed,
 )
 from app.connectors.core.registry.connector_builder import (
@@ -68,7 +69,9 @@ from app.connectors.core.registry.filters import (
     MultiselectOperator,
     OptionSourceType,
     SyncFilterKey,
+    included_names,
     load_connector_filters,
+    name_passes_filter,
 )
 from app.connectors.sources.azure_blob.common.apps import AzureBlobApp
 from app.models.entities import (
@@ -551,8 +554,11 @@ class AzureBlobConnector(BaseConnector):
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
 
             # Get container filter if specified
-            container_filter = sync_filters.get("containers")
-            selected_containers = container_filter.value if container_filter and container_filter.value else []
+            selected_containers = included_names(sync_filters, "containers")
+            if not self.container_name:
+                await remove_deselected_containers(
+                    self.data_entities_processor, self.config_service, self.connector_id, "containers", sync_filters, self.logger
+                )
 
             # List all containers or use configured container
             containers_to_sync: list[str] = []
@@ -573,7 +579,10 @@ class AzureBlobConnector(BaseConnector):
                 containers_data = containers_response.data
                 if containers_data:
                     containers_list_payload = containers_data
-                    containers_to_sync = self._extract_container_names(containers_data)
+                    containers_to_sync = [
+                        name for name in self._extract_container_names(containers_data)
+                        if name_passes_filter(sync_filters, "containers", name)
+                    ]
 
                     if containers_to_sync:
                         self.logger.info(f"Found {len(containers_to_sync)} container(s) to sync: {containers_to_sync}")
@@ -1902,8 +1911,11 @@ class AzureBlobConnector(BaseConnector):
 
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
 
-            container_filter = sync_filters.get("containers")
-            selected_containers = container_filter.value if container_filter and container_filter.value else []
+            selected_containers = included_names(sync_filters, "containers")
+            if not self.container_name:
+                await remove_deselected_containers(
+                    self.data_entities_processor, self.config_service, self.connector_id, "containers", sync_filters, self.logger
+                )
 
             containers_to_sync = []
             if self.container_name:
@@ -1915,7 +1927,10 @@ class AzureBlobConnector(BaseConnector):
             else:
                 containers_response = await self.data_source.list_containers()
                 if containers_response.success and containers_response.data:
-                    containers_to_sync = self._extract_container_names(containers_response.data)
+                    containers_to_sync = [
+                        name for name in self._extract_container_names(containers_response.data)
+                        if name_passes_filter(sync_filters, "containers", name)
+                    ]
 
                     if not containers_to_sync:
                         self.logger.warning("No valid container names found in response")

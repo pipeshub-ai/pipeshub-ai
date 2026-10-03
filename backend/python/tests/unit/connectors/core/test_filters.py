@@ -26,6 +26,8 @@ from app.connectors.core.registry.filters import (
     SelectOperator,
     SyncFilterKey,
     extension_passes_filter,
+    included_names,
+    name_passes_filter,
     sync_filter_selection_problems,
     TYPE_OPERATORS,
     get_operator_enum_class,
@@ -1149,6 +1151,30 @@ class TestExtensionPassesFilter:
     def test_no_filter_keeps_everything(self) -> None:
         assert extension_passes_filter(FilterCollection(), "log")
         assert extension_passes_filter(None, None)
+
+
+class TestNamePassesFilter:
+    @staticmethod
+    def buckets(operator: MultiselectOperator, value: list[str]) -> FilterCollection:
+        return FilterCollection(filters=[
+            Filter(key="buckets", value=value, type=FilterType.MULTISELECT, operator=operator),
+        ])
+
+    def test_not_in_keeps_every_name_but_the_listed_ones(self) -> None:
+        filters = self.buckets(MultiselectOperator.NOT_IN, ["logs"])
+        assert not name_passes_filter(filters, "buckets", "logs")
+        assert name_passes_filter(filters, "buckets", "docs")
+        assert included_names(filters, "buckets") == []
+
+    def test_in_keeps_only_the_listed_names(self) -> None:
+        filters = self.buckets(MultiselectOperator.IN, ["docs", "Docs2"])
+        assert name_passes_filter(filters, "buckets", "docs")
+        assert not name_passes_filter(filters, "buckets", "docs2")
+        assert included_names(filters, "buckets") == ["docs", "Docs2"]
+
+    def test_no_filter_keeps_every_name(self) -> None:
+        assert name_passes_filter(FilterCollection(), "buckets", "docs")
+        assert included_names(None, "buckets") == []
 
 
 class TestSyncFilterSelectionProblems:

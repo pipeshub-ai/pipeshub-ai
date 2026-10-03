@@ -1153,6 +1153,29 @@ class TestZammadFetchTicketsForGroupBatch:
         assert len(batches) == 0
         assert raised.value.read_until is None
 
+    async def test_a_repeated_page_raises_so_the_checkpoint_stays(self, zammad_connector) -> None:
+        zammad_connector.sync_filters = None
+        zammad_connector.indexing_filters = None
+        zammad_connector._ticket_records = AsyncMock(side_effect=lambda t: [(MagicMock(), [])])
+        page = [{"id": i, "updated_at": "2024-01-01T00:00:00Z"} for i in range(1, 51)]
+
+        async def search(query: str, limit: int, offset: int) -> MagicMock:
+            # The window probe finds nothing past the window; every page is the first one.
+            return _make_response(success=True, data=[] if limit == 1 else page)
+
+        mock_ds = MagicMock()
+        mock_ds.search_tickets = AsyncMock(side_effect=search)
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        with pytest.raises(ZammadReadError, match="as on the page before") as raised:
+            async for _ in zammad_connector._fetch_tickets_for_group_batch(
+                group_id=5, group_name="Support", last_sync_time=None
+            ):
+                pass
+
+        assert raised.value.read_until is None
+        assert [c.kwargs["offset"] for c in mock_ds.search_tickets.await_args_list] == [0, 9999, 50]
+
     async def test_ticket_transform_error_continues(self, zammad_connector):
         zammad_connector.sync_filters = MagicMock()
         zammad_connector.sync_filters.get.return_value = None

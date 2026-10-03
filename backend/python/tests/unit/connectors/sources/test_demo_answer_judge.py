@@ -160,6 +160,50 @@ def test_the_answer_is_split_into_lines_and_sentences(answer: str, sentences: li
     assert split_sentences(answer) == sentences
 
 
+# The chat runs its tool-call preamble into the answer with no space after the full stop.
+GLUED = (
+    "I\u2019ll check the internal policy for purchase approval thresholds.You can spend up to **$250** "
+    "on a purchase without your manager\u2019s approval; **more than $250 up to $2,500** needs manager "
+    "approval [source](ref9)."
+)
+
+
+@pytest.mark.parametrize(("answer", "sentences"), [
+    (GLUED, [
+        "I\u2019ll check the internal policy for purchase approval thresholds.",
+        GLUED.split("thresholds.", 1)[1],
+    ]),
+    ("Up to $250.Your manager approves above that.", ["Up to $250.", "Your manager approves above that."]),
+    ("See [the policy](ref9).Then file it.", ["See [the policy](ref9).", "Then file it."]),
+    ("It is **$250**.**Above** that, ask.", ["It is **$250**.", "**Above** that, ask."]),
+    ("Done!Next? Yes.", ["Done!", "Next?", "Yes."]),
+])
+def test_a_full_stop_glued_to_a_capital_still_ends_the_sentence(answer: str, sentences: list[str]) -> None:
+    assert split_sentences(answer) == sentences
+
+
+@pytest.mark.parametrize("first", [
+    "Shipped from the U.S.A last week.",
+    "Some tools, e.g.Foo and i.e.Bar, need setup.",
+    "Mr.Smith and Dr.Jones approved it.",
+    "It costs $2.50 a month.",
+    "Upgrade to v1.2 before Friday.",
+    "Run it from ~/.Config first.",
+])
+def test_initials_abbreviations_and_numbers_inside_a_sentence_stay_whole(first: str) -> None:
+    # Glued to a second sentence, so the break has to be found and the dots before it skipped.
+    assert split_sentences(first + "Then it shipped.") == [first, "Then it shipped."]
+
+
+def test_a_citation_of_the_sentence_after_a_glued_preamble_is_accepted() -> None:
+    judge, client = judge_with(reply(("supported", [2])))
+    result = judge.judge(GLUED, [NO_APPROVAL])
+    assert result.passed
+    assert result.claims[0].verdict == "supported"
+    assert result.claims[0].evidence == [GLUED.split("thresholds.", 1)[1]]
+    assert "[2] You can spend up to **$250**" in client.calls[0][1]
+
+
 @pytest.mark.parametrize("raw", [
     "not json at all",
     '{"claims": [{"id": 1, "verdict": "probably", "evidence_sentence_ids": []}]}',
@@ -212,6 +256,107 @@ def test_a_must_not_state_claim_fails_only_when_the_answer_states_it() -> None:
     ]:
         judge, _ = judge_with(reply((verdict, ids)))
         assert judge.judge(ANSWER, [], [forbidden]).passed is passed, verdict
+
+
+def reply_with_conflicts(verdict: str, ids: list[int], conflicts: list[int]) -> str:
+    return json.dumps({"claims": [{
+        "id": 1, "reasoning": "because", "conflicting_sentence_ids": conflicts,
+        "verdict": verdict, "evidence_sentence_ids": ids,
+    }]})
+
+
+CONTRADICTS_ITSELF = "Up to $250, but your manager's approval is required. You can spend up to $250 with no approval."
+
+
+def test_the_prompt_keeps_stating_a_claim_apart_from_conflicting_with_it() -> None:
+    prompt = " ".join(aj.SYSTEM_PROMPT.split())
+    # A stated claim stays "supported", so a forbidden claim taken back still reads as stated.
+    assert 'Give "supported" even when another sentence says something incompatible with the claim' in prompt
+    assert '"contradicted": no sentence asserts the claim' in prompt
+    assert "never \"supported\"" not in prompt
+    assert "Check every sentence against every claim" in prompt
+    assert '"conflicting_sentence_ids": []' in prompt
+
+
+def test_a_must_state_claim_with_a_conflicting_sentence_is_contradicted_whatever_the_verdict() -> None:
+    judge, _ = judge_with(reply_with_conflicts("supported", [2], [1]))
+    claim = judge.judge(CONTRADICTS_ITSELF, [NO_APPROVAL]).claims[0]
+    assert claim.verdict == "contradicted" and not claim.passed
+    assert claim.conflicting_ids == [1]
+    assert claim.conflicting == ["Up to $250, but your manager's approval is required."]
+    rendered = claim.render()
+    assert "conflicts=" in rendered and "Up to $250, but your manager" in rendered.split("conflicts=", 1)[1]
+
+
+def test_a_contradicted_claim_may_cite_only_its_conflicting_sentences() -> None:
+    judge, _ = judge_with(reply_with_conflicts("contradicted", [], [1]))
+    claim = judge.judge(CONTRADICTS_ITSELF, [NO_APPROVAL]).claims[0]
+    assert claim.verdict == "contradicted"
+
+
+def test_a_conflicting_sentence_the_answer_does_not_have_is_unverified() -> None:
+    judge, _ = judge_with(reply_with_conflicts("supported", [2], [5]))
+    claim = judge.judge(CONTRADICTS_ITSELF, [NO_APPROVAL]).claims[0]
+    assert claim.verdict == "unverified" and not claim.passed
+
+
+def test_an_unverified_claim_names_the_sentence_that_is_not_in_the_answer() -> None:
+    judge, _ = judge_with(reply_with_conflicts("supported", [2], [5]))
+    claim = judge.judge(CONTRADICTS_ITSELF, [NO_APPROVAL]).claims[0]
+    assert claim.out_of_range_ids == [5]
+    rendered = claim.render()
+    assert "cited sentences=[2] conflicting sentences=[5]" in rendered
+    assert rendered.endswith("(not in the answer: [5])")
+
+
+def test_an_unverified_claim_that_cites_nothing_says_so() -> None:
+    judge, _ = judge_with(reply(("supported", [])))
+    assert judge.judge(ANSWER, [NO_APPROVAL]).claims[0].render().endswith("(no sentence cited)")
+
+
+FORBIDDEN = "Every purchase needs manager approval."
+STATED_THEN_TAKEN_BACK = "Every purchase needs your manager's approval. Actually, up to $250 needs no approval."
+
+
+def test_a_forbidden_claim_stated_then_taken_back_fails_when_the_judge_calls_it_contradicted() -> None:
+    # Evidence [1] states the claim; [2] is the conflict. The older prompt asked for exactly this.
+    judge, _ = judge_with(reply_with_conflicts("contradicted", [1, 2], [2]))
+    claim = judge.judge(STATED_THEN_TAKEN_BACK, [], [FORBIDDEN]).claims[0]
+    assert claim.verdict == "contradicted"
+    assert claim.stated_ids == [1]
+    assert not claim.passed
+
+
+def test_a_forbidden_claim_stated_then_taken_back_fails_when_the_judge_calls_it_supported() -> None:
+    judge, _ = judge_with(reply_with_conflicts("supported", [1], [2]))
+    claim = judge.judge(STATED_THEN_TAKEN_BACK, [], [FORBIDDEN]).claims[0]
+    assert claim.stated_ids == [1] and not claim.passed
+
+
+@pytest.mark.parametrize(("verdict", "ids", "conflicts"), [
+    ("contradicted", [1], [1]),
+    ("contradicted", [1], []),
+    ("missing", [], []),
+])
+def test_a_forbidden_claim_the_answer_never_states_passes(verdict: str, ids: list[int], conflicts: list[int]) -> None:
+    answer = "Up to $250 needs no approval; your manager approves above that."
+    judge, _ = judge_with(reply_with_conflicts(verdict, ids, conflicts))
+    claim = judge.judge(answer, [], [FORBIDDEN]).claims[0]
+    assert claim.stated_ids == [] and claim.passed
+
+
+def test_a_must_state_claim_the_judge_calls_contradicted_with_its_statement_cited_fails() -> None:
+    judge, _ = judge_with(reply_with_conflicts("contradicted", [2, 1], [1]))
+    claim = judge.judge(CONTRADICTS_ITSELF, [NO_APPROVAL]).claims[0]
+    assert claim.verdict == "contradicted" and claim.stated_ids == [2] and not claim.passed
+
+
+def test_a_forbidden_claim_the_answer_states_fails_even_with_a_conflicting_sentence() -> None:
+    forbidden = "Purchases of up to $250 need your manager's approval."
+    judge, _ = judge_with(reply_with_conflicts("supported", [1], [2]))
+    claim = judge.judge(CONTRADICTS_ITSELF, [], [forbidden]).claims[0]
+    assert claim.verdict == "supported" and not claim.passed
+    assert claim.conflicting_ids == [2]
 
 
 def test_not_judged_passes_unless_the_judge_is_required(monkeypatch: pytest.MonkeyPatch) -> None:

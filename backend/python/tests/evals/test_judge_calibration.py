@@ -63,6 +63,35 @@ def test_the_set_is_big_enough_to_mean_something(cases: CalibrationSet) -> None:
     assert outcomes == {True, False}
 
 
+LIVE_SELF_CONTRADICTIONS = [
+    "Up to $250, but your manager's approval is required. You can spend up to $250 with no approval.",
+    "You can spend up to $250 without approval. Above that your manager must approve it, including the $250 purchase.",
+]
+
+
+def test_answers_that_also_contradict_the_fact_are_labelled_not_supported(cases: CalibrationSet) -> None:
+    contradicting = [c for c in cases.cases if c.id.startswith("self-contradiction-")]
+    assert len(contradicting) >= 10
+    for case in contradicting:
+        assert all(not claim.should_pass for claim in case.claims), case.id
+    answers = {c.answer.strip() for c in contradicting}
+    assert all(a in answers for a in LIVE_SELF_CONTRADICTIONS)
+    # A forbidden claim stated and then taken back is still stated, so it fails too.
+    assert any(c.kind == "must_not_state" and c.expect == ["supported"] for case in contradicting for c in case.claims)
+
+
+def test_consistent_answers_next_to_them_are_labelled_supported(cases: CalibrationSet) -> None:
+    consistent = [c for c in cases.cases if c.id.startswith("consistent-")]
+    assert len(consistent) >= 5
+    for case in consistent:
+        assert all(claim.expect == ["supported"] and claim.should_pass for claim in case.claims), case.id
+
+
+def test_the_glued_preamble_case_reaches_the_judge_as_two_sentences(cases: CalibrationSet) -> None:
+    case = next(c for c in cases.cases if c.id == "consistent-glued-preamble")
+    assert len(split_sentences(case.answer)) == 2
+
+
 def test_a_judge_that_matches_the_labels_agrees_fully(cases: CalibrationSet) -> None:
     report = calibrate(AnswerJudge(LabelClient(cases)), cases)
     assert report.agreement == 1.0 and report.passed and not report.judge_errors
