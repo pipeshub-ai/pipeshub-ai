@@ -2372,12 +2372,6 @@ class ConfluenceConnector(BaseConnector):
             key, {"pending": unfinished} if unfinished else {"space_ids": in_scope, "pending": []}
         )
 
-    async def _space_holds_trash(self, space_id: str) -> bool:
-        trashed = await self.data_entities_processor.get_records_in_record_group(
-            self.connector_id, space_id, 1, visibility=RecordVisibility.DELETED
-        )
-        return bool(trashed)
-
     async def _remove_space(self, space_id: str, records: list[Record]) -> bool:
         """Delete one space's records, clear its checkpoints, then drop the space; True if all of it worked."""
         self.logger.info(f"Removing space {space_id} and its {len(records)} records: this sync no longer lists it")
@@ -2404,10 +2398,6 @@ class ConfluenceConnector(BaseConnector):
                 generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_blogposts", group.short_name),
             ):
                 await self.pages_sync_point.update_sync_point(checkpoint_key, {"last_sync_time": ""})
-        if group is not None and await self._space_holds_trash(space_id):
-            # Records in the trash keep their space and its edges, so a restore puts them back where they were.
-            self.logger.info(f"Keeping space {space_id}: records in the trash still belong to it")
-            return True
         if group is not None and not await self.data_entities_processor.on_record_group_deleted(
             space_id, self.connector_id
         ):

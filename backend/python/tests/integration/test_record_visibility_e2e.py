@@ -954,7 +954,6 @@ async def test_a_removed_space_keeps_its_group_while_records_in_the_trash_belong
         data_entities_processor=processor, connector_id=world.connector_id, logger=logger,
         pages_sync_point=AsyncMock(), _cascade_succeeded=ConfluenceDataCenterConnector._cascade_succeeded,
     )
-    connector._space_holds_trash = lambda space_id: connector_class._space_holds_trash(connector, space_id)
 
     assert await connector_class._remove_space(connector, "space-vis", in_space) is True
 
