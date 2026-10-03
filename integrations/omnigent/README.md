@@ -23,6 +23,25 @@ Omnigent agent
 
 Minimum tested Omnigent version: **0.7.0** (Antigravity harness tested on 0.8.1).
 
+## Three ways to connect
+
+First, mint a long-lived credential: **workspace → Developer settings →
+Personal Access Tokens → New token**. Pick an expiry (30/90/365 days, or
+never). It runs as *you*, so results respect your own per-user
+permissions, unlike an OAuth app's client-credentials flow.
+
+From least to most setup:
+
+1. **Attach in the Omnigent web UI (fastest, no clone).** Open a session's
+   info panel → Manage MCP Servers → add PipesHub's URL and an
+   `Authorization: Bearer <token>` header → restart the session.
+2. **Run the packaged example agent.** A ready-made agent bundle (tuned
+   prompt + instructions) ships with Omnigent:
+   `PIPESHUB_MCP_URL=... PIPESHUB_MCP_TOKEN=... omnigent run examples/pipeshub/`.
+3. **Use the connect kit in this folder** (`setup.sh` / `run.sh`, below) for
+   CI, service accounts, or password/OAuth client-credentials auth instead of
+   a personal token.
+
 ## Quick start (this repository)
 
 ```bash

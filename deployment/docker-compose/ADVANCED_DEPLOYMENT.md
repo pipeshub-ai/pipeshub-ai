@@ -7,6 +7,7 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 
 ## Contents
 
+- [Installer flags](#installer-flags)
 - [Standalone one-command install](#standalone-one-command-install)
 - [Deployment types (slim vs. full vs. eval)](#deployment-types-slim-vs-full-vs-eval)
 - [Environment overrides for CI / scripted installs](#environment-overrides-for-ci--scripted-installs)
@@ -19,6 +20,20 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 - [Container outbound connectivity](#container-outbound-connectivity)
 - [Developer / local build](#developer--local-build)
 - [Soak-testing adaptive concurrency](#soak-testing-adaptive-concurrency)
+
+---
+
+## Installer flags
+
+`install.sh` (and the one-command installer, which runs it) accepts:
+
+| Flag | Description |
+|------|-------------|
+| `-y` / `--yes` | Accept all defaults; skip interactive prompts (CI-friendly) |
+| `--version TAG` | Pin a specific image tag, e.g. `--version 0.7.0` |
+| `--reconfigure` | Re-run the wizard and overwrite an existing `.env` |
+| `--print-env-only` | Write `.env` and print the compose command without starting containers |
+| `--build` | Build images from your checkout instead of pulling prebuilt ones (cloned repository only) |
 
 ---
 
