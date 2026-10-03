@@ -33,6 +33,7 @@ from app.connectors.sources.github_teams.timestamps import (
 )
 from app.config.constants.arangodb import ProgressStatus
 from app.models.entities import CodeFileRecord
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 from tests.unit.connectors.sources.test_github_teams.conftest import (
     failed_response,
@@ -900,14 +901,21 @@ class TestLargeBlobFallback:
         assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
 
+def _inventory(live: dict[str, str], trashed: dict[str, str] | None = None) -> AsyncMock:
+    """``_list_code_records_by_path``, answering live or trashed records as asked."""
+    return AsyncMock(
+        side_effect=lambda _group, visibility=RecordVisibility.LIVE: dict(
+            live if visibility is RecordVisibility.LIVE else (trashed or {})
+        )
+    )
+
+
 class TestPruneDeletedPaths:
     async def test_prunes_paths_absent_from_the_walk(self) -> None:
         c = make_mock_connector()
         repo = make_repo(repo_id=1)
         sync = ReposSync(c)
-        sync._list_code_records_by_path = AsyncMock(
-            return_value={"a.py": "rec-a", "b.py": "rec-b"}
-        )
+        sync._list_code_records_by_path = _inventory({"a.py": "rec-a", "b.py": "rec-b"})
 
         await sync._prune_deleted_paths(repo, {"a.py"})
 
@@ -963,7 +971,7 @@ class TestPruneDeletedPaths:
         c = make_mock_connector()
         repo = make_repo(repo_id=1)
         sync = ReposSync(c)
-        sync._list_code_records_by_path = AsyncMock(return_value={
+        sync._list_code_records_by_path = _inventory({
             "src": "rec-src",
             "src/sub": "rec-sub",
             "src/sub/c.py": "rec-c",
@@ -980,13 +988,55 @@ class TestPruneDeletedPaths:
         c = make_mock_connector()
         repo = make_repo(repo_id=1)
         sync = ReposSync(c)
-        sync._list_code_records_by_path = AsyncMock(
-            return_value={f"f{i}.py": f"rec-{i}" for i in range(20)}
-        )
+        sync._list_code_records_by_path = _inventory({f"f{i}.py": f"rec-{i}" for i in range(20)})
 
         await sync._prune_deleted_paths(repo, {"f0.py"})
 
         c.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
+
+    async def test_a_trashed_record_the_walk_no_longer_has_is_pruned_too(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(
+            side_effect=lambda *, visibility=RecordVisibility.LIVE, **_kw: [
+                r for r in (
+                    SimpleNamespace(id="rec-a", file_path="a.py", external_record_id="/1/blob/a.py", is_deleted=False),
+                    SimpleNamespace(id="rec-old", file_path="old.py", external_record_id="/1/blob/old.py", is_deleted=True),
+                )
+                if r.is_deleted is (visibility is RecordVisibility.DELETED)
+            ]
+        )
+
+        await sync._prune_deleted_paths(repo, {"a.py"})
+
+        deleted = c.data_entities_processor.on_records_deleted_cascade.call_args.args[0]
+        assert deleted == ["rec-old"]
+
+    async def test_a_trashed_record_on_a_live_records_path_does_not_hide_it(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        sync._list_code_records_by_path = _inventory({"a.py": "rec-a", "b.py": "rec-b"}, {"b.py": "rec-b-old"})
+
+        await sync._prune_deleted_paths(repo, {"a.py"})
+
+        deleted = c.data_entities_processor.on_records_deleted_cascade.call_args.args[0]
+        assert sorted(deleted) == ["rec-b", "rec-b-old"]
+
+    async def test_trashed_records_do_not_count_toward_the_valve(self) -> None:
+        """Records the trash already holds are not evidence of a truncated walk."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        live = {f"f{i}.py": f"rec-{i}" for i in range(20)}
+        trashed = {f"gone/t{i}.py": f"rec-t{i}" for i in range(30)}
+        sync._list_code_records_by_path = _inventory(live, trashed)
+
+        await sync._prune_deleted_paths(repo, set(live) - {"f0.py"})
+
+        deleted = c.data_entities_processor.on_records_deleted_cascade.call_args.args[0]
+        assert sorted(deleted) == sorted(["rec-0", *trashed.values()])
 
 
 class TestRunDispatchEdgeCases:

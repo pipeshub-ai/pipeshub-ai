@@ -29,6 +29,7 @@ from app.connectors.sources.s3.base_connector import (
 )
 from app.connectors.sources.s3.connector import S3Connector
 from app.models.entities import FileRecord, Record, RecordType, User
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
 @pytest.fixture()
@@ -1279,7 +1280,7 @@ class TestFolderFilter:
         assert prefixes == ["reports/"]
         assert self._processed(connector) == ["reports/a.pdf", "reports/2026/b.pdf"]
         connector.data_entities_processor.get_records_in_record_group.assert_awaited_once_with(
-            connector.connector_id, "b1", 500, None
+            connector.connector_id, "b1", 500, None, visibility=RecordVisibility.ALL
         )
 
     @pytest.mark.asyncio
@@ -1352,7 +1353,7 @@ class TestFolderFilter:
         connector.sync_filters = _folder_filter(["reports"])
         self._prepare(connector, {"reports/": []})
         processor = connector.data_entities_processor
-        processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a: [_out_of_scope_record()])
+        processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a, **kw: [_out_of_scope_record()])
         processor.on_record_deleted = AsyncMock(side_effect=[Exception("graph down"), None])
 
         await connector._sync_bucket("b1")

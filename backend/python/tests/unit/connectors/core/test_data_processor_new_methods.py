@@ -262,6 +262,7 @@ class TestDelegateMethods:
             record_group_id="rg-key",
             limit=100,
             after_key="after",
+            visibility=RecordVisibility.LIVE,
         )
 
     @pytest.mark.asyncio
