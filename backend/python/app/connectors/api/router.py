@@ -2281,6 +2281,7 @@ async def delete_record(
             # Retry transient broker hiccups, then flag (rather than silently
             # swallow) a failure so the caller knows vector cleanup is pending.
             vector_cleanup_pending = False
+            failed_record_ids: list[str] = []
             event_data = result.get("eventData")
             has_valid_event_data = (
                 isinstance(event_data, dict)
@@ -2293,26 +2294,31 @@ async def delete_record(
                     f"❌ Malformed eventData for record {record_id}, skipping publish: {event_data!r}"
                 )
                 vector_cleanup_pending = True
+                failed_record_ids.append(record_id)
             elif has_valid_event_data:
                 timestamp = get_epoch_timestamp_in_ms()
-                event = {
-                    "eventType": event_data["eventType"],
-                    "timestamp": timestamp,
-                    "payload": event_data["payload"]
-                }
-                try:
-                    await retry_async(
-                        lambda: kafka_service.publish_event(event_data["topic"], event),
-                        logger=logger,
-                        description=f"publish {event_data['eventType']} event for record {record_id}",
-                    )
-                    logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
-                except Exception as e:
-                    logger.error(
-                        f"❌ Giving up publishing deletion event for record {record_id} "
-                        f"after retries; embeddings are orphaned until reconciliation: {str(e)}"
-                    )
-                    vector_cleanup_pending = True
+                # An email's attachments have vectors of their own.
+                for payload in event_data.get("payloads") or [event_data["payload"]]:
+                    event = {
+                        "eventType": event_data["eventType"],
+                        "timestamp": timestamp,
+                        "payload": payload,
+                    }
+                    try:
+                        await retry_async(
+                            lambda event=event: kafka_service.publish_event(event_data["topic"], event),
+                            logger=logger,
+                            description=f"publish {event_data['eventType']} event for record {record_id}",
+                        )
+                        logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                    except Exception as e:
+                        logger.error(
+                            f"❌ Giving up publishing deletion event for record "
+                            f"{payload.get('recordId') or record_id} after retries; embeddings "
+                            f"are orphaned until reconciliation: {str(e)}"
+                        )
+                        vector_cleanup_pending = True
+                        failed_record_ids.append(payload.get("recordId") or record_id)
 
             # This route deletes directly, bypassing the processor's cascade
             # path, so it owns its own cache invalidation.
@@ -2329,7 +2335,7 @@ async def delete_record(
             }
             if vector_cleanup_pending:
                 response["vectorCleanupPending"] = True
-                response["vectorCleanupFailedRecordIds"] = [record_id]
+                response["vectorCleanupFailedRecordIds"] = failed_record_ids or [record_id]
             return response
         else:
             logger.error("❌ Failed to delete record %s: %s", record_id, result.get("reason"))

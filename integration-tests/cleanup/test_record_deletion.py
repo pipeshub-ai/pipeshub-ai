@@ -21,6 +21,7 @@ import pytest_asyncio
 
 from helper import cleanup_sources as src
 from helper import delete_footprint as fp
+from helper.mongo_store import records_folder
 
 logger = logging.getLogger("cleanup-record-deletion")
 
@@ -133,16 +134,15 @@ async def two_copies(
             f"{second.virtual_record_id}): MD5 dedup did not happen, so there is no shared content to test."
         )
         await fp.wait_for_connector_records(graph_provider, kb_id, [first.name, second.name, neighbour.name])
-        vendor = await mongo_store.storage_vendor_under_path(
-            fp.envelope_prefix(test_org_id, first.virtual_record_id)
-        ) or "local"
+        within = records_folder(test_org_id, kb_id)
+        vendor = await fp.storage_vendor(mongo_store, test_org_id, first.virtual_record_id, within=within)
 
         def graph_of(record):
             return fp.graph_footprint_of_records(graph_provider, [record.record_id])
 
         copies = await fp.capture_when_stable(
             await graph_of(first), vector_store, blob_store, mongo_store,
-            org_id=test_org_id, records=[first, second], vendor=vendor,
+            org_id=test_org_id, records=[first, second], within=within, vendor=vendor,
         )
         fp.assert_every_store_holds_it(copies)
         yield {
@@ -154,7 +154,7 @@ async def two_copies(
             "neighbour": neighbour,
             "neighbour_before": await fp.capture_when_stable(
                 await graph_of(neighbour), vector_store, blob_store, mongo_store,
-                org_id=test_org_id, records=[neighbour], vendor=vendor,
+                org_id=test_org_id, records=[neighbour], within=within, vendor=vendor,
             ),
             "vendor": vendor,
         }
@@ -193,19 +193,19 @@ class TestDeletingOneOfTwoIdenticalRecords:
 
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_shared_embeddings_envelope_and_documents_stay(
-        self, one_copy_deleted, graph_provider, vector_store, blob_store, mongo_store, test_org_id
+        self, one_copy_deleted, graph_provider, vector_store, blob_store, mongo_store
     ) -> None:
         """Checked store by store against the counts from before; only the deleted copy's upload may go."""
         copies = one_copy_deleted["copies"]
         vrid = one_copy_deleted["second"].virtual_record_id
-        prefix = fp.envelope_prefix(test_org_id, vrid)
+        path = copies.envelope_paths[vrid]
         assert await vector_store.count_for_virtual_record(vrid) == copies.points[vrid], (
             "Deleting one copy changed the embeddings the other copy still uses."
         )
-        assert await blob_store.count_under(prefix, one_copy_deleted["vendor"]) == copies.blobs[prefix], (
+        assert await blob_store.count_under(path, one_copy_deleted["vendor"]) == copies.blobs[path], (
             "Deleting one copy changed the shared envelope in blob storage."
         )
-        assert await mongo_store.count_documents_under_path(prefix) == copies.documents[f"prefix:{prefix}"], (
+        assert await mongo_store.count_documents_under_path(path) == copies.documents[f"prefix:{path}"], (
             "Deleting one copy changed the shared envelope's storage documents."
         )
         second_upload = one_copy_deleted["second"].upload_document_id
@@ -266,21 +266,21 @@ class TestDeletingTheLastCopy:
 
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_envelope_and_uploads_are_removed_from_blob_storage(
-        self, last_copy_deleted, blob_store, test_org_id
+        self, last_copy_deleted, blob_store
     ) -> None:
         copies = last_copy_deleted["copies"]
         records = [last_copy_deleted["first"], last_copy_deleted["second"]]
         await fp.assert_blobs_gone(
-            blob_store, copies, fp.blob_keys_for(copies, test_org_id, records), vendor=last_copy_deleted["vendor"]
+            blob_store, copies, fp.blob_keys_for(copies, records), vendor=last_copy_deleted["vendor"]
         )
 
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_storage_documents_are_removed_from_mongodb(
-        self, last_copy_deleted, mongo_store, test_org_id
+        self, last_copy_deleted, mongo_store
     ) -> None:
         records = [last_copy_deleted["first"], last_copy_deleted["second"]]
         await fp.assert_documents_gone(
-            mongo_store, last_copy_deleted["copies"], fp.document_keys_for(test_org_id, records)
+            mongo_store, last_copy_deleted["copies"], fp.document_keys_for(last_copy_deleted["copies"], records)
         )
 
     @pytest.mark.asyncio(loop_scope="session")

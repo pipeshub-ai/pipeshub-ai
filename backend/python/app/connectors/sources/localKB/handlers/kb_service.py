@@ -2087,7 +2087,7 @@ class KnowledgeBaseService:
         """
         try:
             self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+            user = await self.graph_provider.get_user_by_user_id(user_id=user_id, raise_on_error=True)
 
             if not user:
                 self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
@@ -2183,7 +2183,7 @@ class KnowledgeBaseService:
         rely on receiving an empty result when the user has no access to a particular KB.
         """
         try:
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+            user = await self.graph_provider.get_user_by_user_id(user_id=user_id, raise_on_error=True)
             if not user:
                 self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
                 return {

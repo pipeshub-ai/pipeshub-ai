@@ -1,6 +1,7 @@
 """Tests for Azure Blob Storage connector."""
 
 import logging
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
@@ -807,11 +808,19 @@ class TestProcessAzureBlob:
         existing = MagicMock()
         existing.id = "moved-id"
         existing.external_record_id = "container/old/file.txt"
+        existing.external_record_group_id = "container"
         existing.external_revision_id = "same_md5"
         existing.version = 0
         existing.source_created_at = 1700000000000
         azure_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         azure_connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
+
+        async def no_blobs() -> AsyncIterator[dict]:
+            for blob in ():
+                yield blob
+
+        # The old blob is gone from the container, so equal content at the new name is a move.
+        azure_connector.data_source = MagicMock(list_blobs=AsyncMock(return_value=MagicMock(success=True, data=no_blobs())))
         azure_connector.data_entities_processor.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
         azure_connector.scope = ConnectorScope.TEAM.value
         azure_connector.account_name = "testacc"

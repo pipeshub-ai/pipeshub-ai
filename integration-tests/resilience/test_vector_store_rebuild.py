@@ -45,6 +45,7 @@ import pytest_asyncio
 
 from helper.clients.kb_client import KBClient
 from helper.indexing_progress import record_fields, wait_until_finished
+from helper.mongo_store import records_folder
 from helper.vector_rebuild import (
     DELETE_REFUSED_PHRASE,
     LOCAL_MODEL_DIMENSION,
@@ -172,7 +173,9 @@ async def _upload(
     await _wait_for(
         lambda: vector_store.count_for_virtual_record(virtual_id), f"embeddings for {name}"
     )
-    prefix = f"{org_id}/PipesHub/records/{virtual_id}"
+    # Indexing files processed content under the record's place in its collection, not its
+    # virtual record id; the flat folder would count nothing before and after alike.
+    prefix = await mongo_store.envelope_path(org_id, virtual_id, within=records_folder(org_id, kb_id))
     vendor = await mongo_store.storage_vendor_under_path(prefix) or "local"
     return Document(
         name=name,
@@ -340,6 +343,11 @@ async def journey(pipeshub_client, kb_client: KBClient, vector_store, blob_store
         for doc in state.documents:
             state.blob_counts[doc.name] = await blob_store.count_under(doc.storage_prefix, doc.storage_vendor)
             state.mongo_counts[doc.name] = await mongo_store.count_documents_under_path(doc.storage_prefix)
+            # Zero before would make "unchanged after the rebuild" true of nothing.
+            assert state.blob_counts[doc.name] and state.mongo_counts[doc.name], (
+                f"{doc.name} has no stored files ({state.blob_counts[doc.name]}) or storage documents "
+                f"({state.mongo_counts[doc.name]}) under {doc.storage_prefix}; the after-rebuild check would prove nothing."
+            )
         logger.info(
             "Before: default model %s, collection size %d, flag %s",
             default_before.model,

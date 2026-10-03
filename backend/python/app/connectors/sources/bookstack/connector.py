@@ -59,6 +59,7 @@ from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterField,
     FilterOption,
+    FilterOperatorType,
     FilterOptionsResponse,
     FilterType,
     IndexingFilterKey,
@@ -84,6 +85,36 @@ from app.sources.client.bookstack.bookstack import (
 )
 from app.sources.external.bookstack.bookstack import BookStackDataSource
 from app.utils.streaming import create_stream_record_response
+
+
+_AUDIT_LOG_PAGE_SIZE = 500
+_RECORD_SCAN_PAGE_SIZE = 1000
+
+
+def _deleted_page_id(event: dict) -> int | None:
+    """The page id of a page_delete audit event, when it still has one.
+
+    Only loggable_id is trusted. A purge (the recycle bin emptied, or set to
+    keep nothing) clears it and rewrites the detail to the bare page name, and
+    a name can itself look like "(1) Introduction".
+    """
+    loggable_id = event.get("loggable_id")
+    if isinstance(loggable_id, bool):
+        return None
+    if isinstance(loggable_id, int):
+        return loggable_id
+    if isinstance(loggable_id, str) and loggable_id.isdigit():
+        return int(loggable_id)
+    return None
+
+
+def _is_listing(body: object) -> bool:
+    """A BookStack list answer. Errors (429, 500) come back as a JSON body without these keys."""
+    return (
+        isinstance(body, dict)
+        and isinstance(body.get("data"), list)
+        and isinstance(body.get("total"), int)
+    )
 
 
 @dataclass
@@ -1604,22 +1635,26 @@ class BookStackConnector(BaseConnector):
 
         #if no sync point, initialize cursor and run _sync_users else run _sync_users_incremental
         if full_sync or not bookstack_record_sync_point.get('timestamp'):
-            await self._sync_records_full(roles_details, users)
-            await self.record_sync_point.update_sync_point(
-                bookstack_record_sync_key,
-                {"timestamp": current_timestamp}
-            )
+            done = await self._sync_records_full(roles_details, users)
         else:
             last_sync_timestamp = bookstack_record_sync_point.get('timestamp')
-            await self._sync_records_incremental(last_sync_timestamp, roles_details, users)
-            await self.record_sync_point.update_sync_point(
-                bookstack_record_sync_key,
-                {"timestamp": current_timestamp}
-            )
+            done = await self._sync_records_incremental(last_sync_timestamp, roles_details, users)
+        if not done:
+            # Moving the timestamp on would leave the unread or unapplied
+            # changes behind it for good; this way the next sync repeats them.
+            self.logger.warning("Page changes were not all read or applied; the next sync starts from the same point")
+            return
+        await self.record_sync_point.update_sync_point(
+            bookstack_record_sync_key,
+            {"timestamp": current_timestamp}
+        )
 
-    async def _sync_records_full(self, roles_details: Dict[int, Dict], users: List[AppUser]) -> None:
+    async def _sync_records_full(self, roles_details: Dict[int, Dict], users: List[AppUser]) -> bool:
         """
         Sync all pages from BookStack as Record objects, handling new/updated/deleted records.
+
+        Returns True only when the whole listing was read and every page it no
+        longer returns was dealt with.
         """
         self.logger.info("Starting sync for pages as records.")
 
@@ -1639,6 +1674,8 @@ class BookStackConnector(BaseConnector):
 
         batch_records: List[Tuple[FileRecord, List[Permission]]] = []
         offset = 0
+        listed: set[str] = set()
+        listing_complete = False
 
         while True:
             response = await self.data_source.list_pages(
@@ -1658,10 +1695,19 @@ class BookStackConnector(BaseConnector):
                 self.logger.error(f"Failed to fetch pages or malformed response: {response.error}")
                 break
 
-            pages_page = pages_data.get("data", [])
+            # BookStack answers an error (429, 500) with a JSON body and no page
+            # list, which must not read as the end of the listing.
+            if not _is_listing(pages_data):
+                self.logger.error(f"BookStack did not return a page listing: {str(pages_data)[:500]}")
+                break
+
+            pages_page = pages_data["data"]
 
             if not pages_page:
-                self.logger.info("No more pages to sync.")
+                # Complete only if the total says so: an empty page short of it is a cut-off listing.
+                listing_complete = offset >= pages_data.get("total", 0)
+                if not listing_complete:
+                    self.logger.warning("BookStack stopped listing pages before the total it reported")
                 break
 
             # Apply book ID filter
@@ -1675,6 +1721,8 @@ class BookStackConnector(BaseConnector):
 
             # Process each page from the current API response
             for page in pages_page:
+                if page.get("id"):
+                    listed.add(f"page/{page['id']}")
                 record_update = await self._process_bookstack_page(page, roles_details, users)
 
                 if not record_update:
@@ -1707,6 +1755,7 @@ class BookStackConnector(BaseConnector):
 
             offset += len(pages_data.get("data", []))  # Use original count for offset
             if offset >= pages_data.get("total", 0):
+                listing_complete = True
                 break
 
         # Process any remaining records in the final batch
@@ -1714,7 +1763,146 @@ class BookStackConnector(BaseConnector):
             self.logger.info(f"Processing final batch of {len(batch_records)} new page records.")
             await self.data_entities_processor.on_new_records(batch_records)
 
+        if not listing_complete:
+            self.logger.warning(
+                "The page listing stopped early, so no page records are removed this sync"
+            )
+            return False
+
+        removed_all = await self._remove_pages_not_listed(
+            listed, book_ids, book_ids_operator,
+            (modified_after, modified_before, created_after, created_before),
+        )
         self.logger.info("✅ Finished syncing all page records.")
+        return removed_all
+
+    async def _remove_pages_not_listed(
+        self,
+        listed: set[str],
+        book_ids: set[int] | None,
+        book_ids_operator: FilterOperatorType | None,
+        date_filters: tuple[datetime | None, datetime | None, datetime | None, datetime | None],
+    ) -> bool:
+        """Delete the records of pages a complete listing no longer returns.
+
+        A complete listing leaves out pages deleted at the source and pages the
+        sync filters now exclude, so both leave every store. The listing pages
+        by offset, so a delete while it runs can shift a live page past it:
+        each page is looked up by id first, and kept if BookStack still has it
+        within the filters, or if the lookup fails. Returns False when any page
+        was kept for want of an answer, or its delete failed.
+        """
+        stale: list[Record] = []
+        after_key: str | None = None
+        try:
+            while True:
+                batch = await self.data_entities_processor.get_records_by_status(
+                    self.connector_id, None, limit=_RECORD_SCAN_PAGE_SIZE, after_key=after_key
+                )
+                stale.extend(
+                    r for r in batch
+                    if (r.external_record_id or "").startswith("page/")
+                    and r.external_record_id not in listed
+                )
+                if len(batch) < _RECORD_SCAN_PAGE_SIZE:
+                    break
+                after_key = batch[-1].id
+        except Exception as e:
+            self.logger.error(f"Could not read the synced page records, so none are removed: {e}")
+            return False
+
+        if stale:
+            self.logger.info(f"Checking {len(stale)} page records the listing no longer returned")
+        all_done = True
+        for record in stale:
+            try:
+                page_id = int(record.external_record_id.split("/", 1)[1])
+            except ValueError:
+                self.logger.warning(f"Unreadable page id {record.external_record_id}; keeping its record")
+                continue
+            answered, page = await self._fetch_page(page_id)
+            if not answered:
+                all_done = False
+                continue
+            if page is not None and self._page_passes_filters(page, book_ids, book_ids_operator, date_filters):
+                self.logger.info(f"Page {page_id} was missed by the listing but is still in BookStack; keeping it")
+                continue
+            all_done = await self._delete_page_record(record, page_id) and all_done
+        return all_done
+
+    def _page_passes_filters(
+        self,
+        page: dict,
+        book_ids: set[int] | None,
+        book_ids_operator: FilterOperatorType | None,
+        date_filters: tuple[datetime | None, datetime | None, datetime | None, datetime | None],
+    ) -> bool:
+        if book_ids:
+            in_books = page.get("book_id") in book_ids
+            if book_ids_operator.value == "in" and not in_books:
+                return False
+            if book_ids_operator.value == "not_in" and in_books:
+                return False
+        return self._pass_date_filters(page, *date_filters)
+
+    @staticmethod
+    def _page_listing(response: BookStackResponse) -> dict | None:
+        """The decoded body of a list_pages answer, or None when it is not a page listing."""
+        content = response.data.get('content') if response.success and response.data else None
+        try:
+            listing = json.loads(content) if content else None
+        except (ValueError, TypeError):
+            return None
+        return listing if _is_listing(listing) else None
+
+    async def _fetch_page(self, page_id: int) -> tuple[bool, dict | None]:
+        """Look a page up by id: (answered, page). A page BookStack no longer has is (True, None)."""
+        listing = self._page_listing(await self.data_source.list_pages(filter={"id": str(page_id)}))
+        if listing is None:
+            self.logger.warning(f"Could not read BookStack's answer for page ID {page_id}")
+            return False, None
+        return True, (listing["data"][0] if listing["data"] else None)
+
+    async def _remove_pages_no_longer_in_bookstack(self) -> bool:
+        """List every page id within the sync filters, then remove the records of pages not listed.
+
+        For a delete whose event no longer names the page; reads ids only, so
+        it costs one request per 500 pages rather than a full sync.
+        """
+        book_ids, book_ids_operator = self._get_book_id_filter()
+        date_filters = self._get_date_filters()
+        api_filters = self._build_date_filter_params(*date_filters)
+        listed: set[str] = set()
+        offset = 0
+        while True:
+            listing = self._page_listing(await self.data_source.list_pages(
+                count=_AUDIT_LOG_PAGE_SIZE, offset=offset, filter=api_filters,
+            ))
+            if listing is None:
+                self.logger.warning("Could not list BookStack's pages, so purged pages are not removed this sync")
+                return False
+            pages = listing["data"]
+            listed.update(
+                f"page/{page['id']}" for page in pages
+                if page.get("id") and self._page_passes_filters(page, book_ids, book_ids_operator, date_filters)
+            )
+            offset += len(pages)
+            if offset >= listing["total"]:
+                break
+            if not pages:
+                self.logger.warning(
+                    "BookStack stopped listing pages before the total it reported, so purged pages are not removed this sync"
+                )
+                return False
+        return await self._remove_pages_not_listed(listed, book_ids, book_ids_operator, date_filters)
+
+    async def _delete_page_record(self, record: Record, page_id: int) -> bool:
+        try:
+            await self.data_entities_processor.on_record_deleted(record_id=record.id)
+        except Exception as e:
+            self.logger.warning(f"Failed to remove the record of page {page_id}: {e}")
+            return False
+        return True
 
     async def _process_bookstack_page(self, page: Dict, roles_details: Dict[int, Dict], users: List[AppUser]) -> Optional[RecordUpdate]:
         """
@@ -1872,10 +2060,12 @@ class BookStackConnector(BaseConnector):
         last_sync_timestamp: str,
         roles_details: Dict[int, Dict],
         users: List[AppUser]
-    ) -> None:
+    ) -> bool:
         """
         Syncs records (pages) incrementally by processing create, update, and
         delete events from the audit log since the last sync.
+
+        Returns False when a page delete could not be read or applied.
         """
         self.logger.info(f"Starting incremental record (page) sync from: {last_sync_timestamp}")
 
@@ -1891,7 +2081,7 @@ class BookStackConnector(BaseConnector):
             "create": self.data_source.list_audit_log(filter={'type': 'page_create', 'created_at:gte': last_sync_timestamp}),
             "update": self.data_source.list_audit_log(filter={'type': 'page_update', 'created_at:gte': last_sync_timestamp}),
             "permissions_update": self.data_source.list_audit_log(filter={'type': 'permissions_update', 'created_at:gte': last_sync_timestamp}),
-            "delete": self.data_source.list_audit_log(filter={'type': 'page_delete', 'created_at:gte': last_sync_timestamp}),
+            "delete": self._list_page_delete_events(last_sync_timestamp),
             "move": self.data_source.list_audit_log(filter={'type': 'page_move', 'created_at:gte': last_sync_timestamp})
         }
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
@@ -1943,11 +2133,23 @@ class BookStackConnector(BaseConnector):
                     )
 
         # 4. Process Delete Events (no date filter needed - if it was deleted, handle it)
-        delete_response = event_responses.get("delete")
-        if delete_response and delete_response.success and delete_response.data.get('data'):
-            self.logger.info(f"Found {len(delete_response.data['data'])} page(s) to delete.")
-            # for event in delete_response.data['data']:
-            #     await self._handle_page_delete_event(event)
+        deletes_done = False
+        delete_listing = event_responses.get("delete")
+        if isinstance(delete_listing, BaseException):
+            self.logger.error(f"Could not read page deletions from the audit log: {delete_listing}")
+        else:
+            delete_events, deletes_done = delete_listing
+            if delete_events:
+                self.logger.info(f"Found {len(delete_events)} page(s) to delete.")
+            unnamed = False
+            for event in delete_events:
+                page_id = _deleted_page_id(event)
+                if page_id is None:
+                    unnamed = True
+                    continue
+                deletes_done = await self._handle_page_delete_event(page_id) and deletes_done
+            if unnamed:
+                deletes_done = await self._remove_pages_no_longer_in_bookstack() and deletes_done
 
         # 5. Process Move Events
         move_response = event_responses.get("move")
@@ -1956,7 +2158,61 @@ class BookStackConnector(BaseConnector):
             self.logger.warning("!! method not implemented yet !!")
 
         self.logger.info("✅ Finished incremental record sync.")
+        return deletes_done
 
+
+    async def _list_page_delete_events(self, since: str) -> tuple[list[dict], bool]:
+        """Every page_delete audit event since ``since``, reading past the API's page size.
+
+        Returns the events read and whether the whole log was read: a page of
+        the log that cannot be read, including an error body, ends the listing.
+        """
+        events: list[dict] = []
+        offset = 0
+        while True:
+            response = await self.data_source.list_audit_log(
+                count=_AUDIT_LOG_PAGE_SIZE,
+                offset=offset,
+                filter={'type': 'page_delete', 'created_at:gte': since},
+            )
+            if not response.success or not _is_listing(response.data):
+                self.logger.warning(
+                    f"Could not read page deletions from the audit log: {response.error or str(response.data)[:500]}"
+                )
+                return events, False
+            batch = response.data['data']
+            events.extend(batch)
+            offset += len(batch)
+            if offset >= response.data['total']:
+                return events, True
+            if not batch:
+                self.logger.warning("The audit log stopped before the total it reported; page deletions are read again next sync")
+                return events, False
+
+    async def _handle_page_delete_event(self, page_id: int) -> bool:
+        """Remove a page's record once BookStack confirms the page is gone.
+
+        Deleted pages go to BookStack's recycle bin and can be restored under
+        the same id, so the audit event alone is not proof: a page restored
+        before this sync keeps its record. Returns False when the lookup or
+        the delete failed, so the event is read again next sync.
+        """
+        answered, page = await self._fetch_page(page_id)
+        if not answered:
+            self.logger.warning(f"Could not confirm page {page_id} was deleted; keeping its record.")
+            return False
+        if page is not None:
+            self.logger.info(f"Page {page_id} was restored after its delete; keeping its record.")
+            return True
+
+        try:
+            record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, f"page/{page_id}"
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not look up the record of deleted page {page_id}: {e}")
+            return False
+        return record is None or await self._delete_page_record(record, page_id)
 
     async def _handle_page_upsert_event(
         self,
