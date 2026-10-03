@@ -19,6 +19,10 @@ import pytest
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.bookstack.connector import BookStackConnector
 from app.models.entities import FileRecord, Record
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    matches_visibility,
+)
 from app.sources.client.bookstack.bookstack import BookStackResponse
 
 CONNECTOR_ID = "bs-1"
@@ -115,10 +119,13 @@ class FakeRecordStore:
 
     async def get_records_by_status(self, connector_id: str, status_filters: list[str] | None,
                                     limit: int | None = None, offset: int = 0,
-                                    after_key: str | None = None, **_: object) -> list[Record]:
+                                    after_key: str | None = None,
+                                    visibility: RecordVisibility = RecordVisibility.LIVE,
+                                    **_: object) -> list[Record]:
+        """Live records only unless asked, as both graph stores answer."""
         if self.fail_scan:
             raise RuntimeError("graph unavailable")
-        ordered = sorted(self.records.values(), key=lambda r: r.id)
+        ordered = sorted((r for r in self.records.values() if matches_visibility(r, visibility)), key=lambda r: r.id)
         if after_key is not None:
             ordered = [r for r in ordered if r.id > after_key]
         return ordered[:limit] if limit else ordered
@@ -388,6 +395,18 @@ async def test_a_full_sync_removes_a_page_deleted_while_incremental_syncs_missed
     await connector._sync_records()
 
     assert store.deleted == ["page/3"]
+
+
+async def test_a_full_sync_removes_a_trashed_page_bookstack_no_longer_has(world) -> None:
+    source, store, connector = world
+    await connector._sync_records()
+    store.records["page/3"].is_deleted = True
+    source.pages.pop(3)
+
+    _full_sync(connector)
+    await connector._sync_records()
+
+    assert store.deleted == ["page/3"], "the record scan must see trashed records, or this one stays forever"
 
 
 async def test_a_listing_that_fails_part_way_removes_nothing_until_a_full_listing(world) -> None:

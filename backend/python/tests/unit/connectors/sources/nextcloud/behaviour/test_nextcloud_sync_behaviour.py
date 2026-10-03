@@ -626,6 +626,17 @@ class TestFilters:
 
         assert db.deleted == ["cat.png"]
 
+    async def test_a_full_sync_removes_a_trashed_file_the_drive_no_longer_has(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        db.by_name("cat.png").is_deleted = True
+        server.delete("Photos/cat.png")
+        server.activities.clear()
+        store.sync_points.clear()
+
+        await connector.run_sync()
+
+        assert db.deleted == ["cat.png"], "the record scan must see trashed records, or this one stays forever"
+
     @pytest.mark.parametrize("bad", BAD_ANSWERS)
     async def test_a_listing_that_fails_after_a_narrowed_filter_removes_nothing(self, server, db, store, bad) -> None:
         connector = await self.narrow_to(server, db, store, {"file_extensions": {"type": "multiselect", "operator": "not_in", "value": ["pdf"]}})

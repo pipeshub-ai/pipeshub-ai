@@ -1250,6 +1250,20 @@ async def test_narrowing_the_extension_filter_removes_the_excluded_files(ws: Wor
     assert ws.names() == {"notes.txt"}
 
 
+async def test_narrowing_the_filters_removes_a_trashed_file_they_now_leave_out(ws: Workspace) -> None:
+    ws.world.add_item("t1", "notes.txt", parent="root-alice", owner=ALICE)
+    ws.world.add_item("p1", "report.pdf", parent="root-alice", owner=ALICE)
+    await ws.sync()
+    ws.records.records["p1"].is_deleted = True
+    trashed_id = ws.records.records["p1"].id
+
+    narrow(ws, file_extensions={"operator": "in", "type": "multiselect", "value": ["txt"]})
+    await ws.sync()
+
+    assert trashed_id in ws.records.deleted, "the filter cleanup must see trashed records, or this one stays forever"
+    assert ws.names() == {"notes.txt"}
+
+
 async def test_a_file_whose_name_has_no_extension_is_checked_by_its_stored_one(ws: Workspace) -> None:
     ws.world.add_item("q1", "Quarterly Report", parent="root-alice", owner=ALICE)
     ws.world.files["q1"].meta["fileExtension"] = "pdf"

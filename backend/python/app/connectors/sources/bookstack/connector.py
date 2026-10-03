@@ -78,6 +78,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.sources.client.bookstack.bookstack import (
     BookStackClient,
     BookStackResponse,
@@ -1796,8 +1797,10 @@ class BookStackConnector(BaseConnector):
         after_key: str | None = None
         try:
             while True:
+                # Trash included: a trashed page BookStack no longer has is removed too.
                 batch = await self.data_entities_processor.get_records_by_status(
-                    self.connector_id, None, limit=_RECORD_SCAN_PAGE_SIZE, after_key=after_key
+                    self.connector_id, None, limit=_RECORD_SCAN_PAGE_SIZE, after_key=after_key,
+                    visibility=RecordVisibility.ALL,
                 )
                 stale.extend(
                     r for r in batch

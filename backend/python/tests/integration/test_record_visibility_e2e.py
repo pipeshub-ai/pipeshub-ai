@@ -33,6 +33,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -45,6 +46,11 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.models.entities import FileRecord, RecordType
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.common.record_visibility import RecordVisibility
@@ -676,3 +682,22 @@ async def test_connector_delete_collects_the_trash(world: _World) -> None:
     got = await world.graph._collect_connector_entities(world.connector_id)
     keys = set(got["record_keys"])
     assert world.ids["trashed"] in keys and world.ids["live"] in keys
+
+
+async def test_a_full_listing_removes_a_trashed_record_the_source_no_longer_has(world: _World) -> None:
+    """Nextcloud's full-sync removal scan on the real store: a trashed record the
+    listing no longer returns still goes through ``on_record_deleted``."""
+    processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, world.graph), MagicMock())
+    processor.org_id = world.org_id
+    processor.messaging_producer = AsyncMock()
+    connector = SimpleNamespace(
+        data_entities_processor=processor, connector_id=world.connector_id, logger=logger
+    )
+    listed = {world.ext(name) for name in (*LIVE_CONNECTOR, *TRASHED_CONNECTOR) if name != "trashed"}
+
+    assert await NextcloudConnector._remove_records_not_listed(connector, listed) is True
+
+    records = CollectionNames.RECORDS.value
+    assert await world.graph.get_document(world.ids["trashed"], records) is None
+    for name in ("live", "trashed_shared"):
+        assert await world.graph.get_document(world.ids[name], records) is not None, name
