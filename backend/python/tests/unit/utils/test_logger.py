@@ -524,3 +524,9 @@ class TestAccessLogRedactionFilter:
         assert AccessLogRedactionFilter().filter(record) is True
         assert "a.b.c" not in record.getMessage()
         assert "/api/v1/index/o/drive/record/r" in record.getMessage()
+
+    def test_registered_on_uvicorn_access_logger(self):
+        """AccessLogRedactionFilter must be registered on uvicorn.access at module import."""
+        uvicorn_access = logging.getLogger("uvicorn.access")
+        filter_types = [type(f) for f in uvicorn_access.filters]
+        assert AccessLogRedactionFilter in filter_types

@@ -1198,6 +1198,26 @@ class TestSearchWithFilters:
         assert result["status"] == Status.ERROR.value
 
     @pytest.mark.asyncio
+    async def test_search_with_filters_value_error_is_generic(self, retrieval_service, mock_graph_provider):
+        """A ValueError's text is logged, not returned: it can name internals."""
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        error = ValueError("SENTINEL collection records_internal has no dense vectors")
+        retrieval_service._execute_parallel_searches = AsyncMock(side_effect=error)
+        retrieval_service.logger = MagicMock()
+
+        result = await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1"
+        )
+
+        assert result["status"] == Status.ERROR.value
+        assert result["status_code"] == 500
+        assert "SENTINEL" not in result["message"]
+        assert result["message"] == "Unexpected server error during search."
+        log_call = retrieval_service.logger.error.call_args
+        assert log_call.kwargs["exc_info"] is True
+        assert error in log_call.args
+
+    @pytest.mark.asyncio
     async def test_generic_exception_with_tool_ids_returns_error(
         self, retrieval_service, mock_graph_provider
     ):

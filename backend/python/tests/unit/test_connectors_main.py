@@ -1,5 +1,7 @@
 """Comprehensive unit tests for app.connectors_main module."""
 
+import json
+import logging
 import sys
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1561,6 +1563,161 @@ class TestGraphDbHealthNeo4jUnhealthy:
             response = await graph_db_health_check(request)
 
         assert response.status_code == 503
+
+
+SENTINEL = "SENTINEL bolt://neo4j:hunter2@10.0.0.5:7687"
+
+
+class _FakeNeo4jAuthError(Exception):
+    pass
+
+
+class _FakeNeo4jServiceUnavailable(Exception):
+    pass
+
+
+class _Records(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+def _request_with_service_logger() -> tuple[MagicMock, list[logging.LogRecord]]:
+    """A request whose container logger is built like ``create_logger``'s: its own
+    handler and nothing propagated, so a line sent to any other logger is not counted."""
+    handler = _Records()
+    service_logger = logging.Logger("connector_service")
+    service_logger.propagate = False
+    service_logger.addHandler(handler)
+    request = MagicMock()
+    request.app.container = _make_container()
+    request.app.container.logger.return_value = service_logger
+    return request, handler.records
+
+
+def _traceback_text(records: list[logging.LogRecord]) -> str:
+    """Text of the exception the one ERROR line carries as a traceback."""
+    assert [record.levelno for record in records] == [logging.ERROR]
+    return str(records[0].exc_info[1])
+
+
+def _line_without_traceback(records: list[logging.LogRecord], level: int) -> str:
+    assert [record.levelno for record in records] == [level]
+    assert records[0].exc_info is None
+    return records[0].getMessage()
+
+
+class TestHealthProbesReturnFixedText:
+    """These routes skip authentication, so what the driver said goes to the service log only."""
+
+    async def test_arangodb_failure(self):
+        from app.connectors_main import graph_db_health_check
+
+        request, records = _request_with_service_logger()
+        request.app.container.config_service.return_value.get_config = AsyncMock(
+            side_effect=RuntimeError(SENTINEL)
+        )
+
+        with patch("app.connectors_main.os.getenv", return_value="arangodb"):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        body = json.loads(response.body)
+        assert body["status"] == "unhealthy"
+        assert body["error"] == "ArangoDB health check failed"
+        assert "SENTINEL" not in response.body.decode()
+        assert _traceback_text(records) == SENTINEL
+
+    @pytest.mark.parametrize(
+        ("error_type", "expected"),
+        [
+            (_FakeNeo4jAuthError, "Neo4j auth failed"),
+            (_FakeNeo4jServiceUnavailable, "Neo4j unavailable"),
+            (RuntimeError, "Neo4j health check failed"),
+        ],
+    )
+    async def test_neo4j_failure(self, error_type: type[Exception], expected: str):
+        """An outage is polled on every /health call: one line for it, a traceback only for the unexpected."""
+        from app.connectors_main import graph_db_health_check
+
+        request, records = _request_with_service_logger()
+        mock_driver = AsyncMock()
+        mock_driver.verify_connectivity = AsyncMock(side_effect=error_type(SENTINEL))
+        mock_neo4j = MagicMock()
+        mock_neo4j.AsyncGraphDatabase.driver = MagicMock(return_value=mock_driver)
+        neo4j_exceptions = types.ModuleType("neo4j.exceptions")
+        neo4j_exceptions.AuthError = _FakeNeo4jAuthError
+        neo4j_exceptions.ServiceUnavailable = _FakeNeo4jServiceUnavailable
+
+        def _getenv(key, default=None):
+            return {"DATA_STORE": "neo4j"}.get(key, default)
+
+        with patch("app.connectors_main.os.getenv", side_effect=_getenv), \
+             patch.dict("sys.modules", {"neo4j": mock_neo4j, "neo4j.exceptions": neo4j_exceptions}):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        body = json.loads(response.body)
+        assert body["status"] == "unhealthy"
+        assert body["error"] == expected
+        assert "SENTINEL" not in response.body.decode()
+        if error_type is RuntimeError:
+            assert _traceback_text(records) == SENTINEL
+        else:
+            assert _line_without_traceback(records, logging.ERROR) == f"{expected}: {SENTINEL}"
+        mock_driver.close.assert_awaited_once()
+
+    async def test_vector_db_exception(self):
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_health_check
+
+        request, records = _request_with_service_logger()
+        request.app.state = SimpleNamespace()
+
+        with patch("app.connectors_main.os.getenv", return_value="qdrant"), \
+             patch(
+                 "app.services.vector_db.vector_db_provider_factory.VectorDBProviderFactory.create_provider",
+                 new_callable=AsyncMock,
+                 side_effect=RuntimeError(SENTINEL),
+             ):
+            response = await vector_db_health_check(request)
+
+        assert response.status_code == 503
+        body = json.loads(response.body)
+        assert body["provider"] == "qdrant"
+        assert body["error"] == "Vector DB (qdrant) health check failed"
+        assert "SENTINEL" not in response.body.decode()
+        assert _traceback_text(records) == SENTINEL
+
+    async def test_vector_db_unhealthy_result_message(self):
+        """Providers put ``str(e)`` in ``VectorDBHealth.message``."""
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_health_check
+        from app.services.vector_db.models import HealthStatus, VectorDBHealth
+
+        request, records = _request_with_service_logger()
+        request.app.state = SimpleNamespace()
+        mock_provider = AsyncMock()
+        mock_provider.health_check = AsyncMock(return_value=VectorDBHealth(
+            status=HealthStatus.UNHEALTHY,
+            message=SENTINEL,
+        ))
+        request.app.state._vector_db_health_provider = mock_provider
+
+        with patch("app.connectors_main.os.getenv", return_value="qdrant"):
+            response = await vector_db_health_check(request)
+
+        assert response.status_code == 503
+        body = json.loads(response.body)
+        assert body["provider"] == "qdrant"
+        assert body["error"] == "qdrant health check failed"
+        assert "SENTINEL" not in response.body.decode()
+        assert SENTINEL in _line_without_traceback(records, logging.WARNING)
 
 
 class TestRefreshConnectorMetrics:
