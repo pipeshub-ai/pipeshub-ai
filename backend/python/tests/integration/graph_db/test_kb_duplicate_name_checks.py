@@ -62,6 +62,7 @@ class _Kb:
     legacy_file: str
     folder: str
     file_in_folder: str
+    legacy_file_in_folder: str
     other_root_file: str
 
 
@@ -164,23 +165,29 @@ async def kb(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) ->
         legacy_file = await _store(graph, kb_id, _record(kb_id, org_id, "report.txt"), legacy=True)
         folder = await _store(graph, kb_id, _record(kb_id, org_id, "drafts", folder=True))
         file_in_folder = await _store(graph, kb_id, _record(kb_id, org_id, "Report.txt"))
+        legacy_file_in_folder = await _store(graph, kb_id, _record(kb_id, org_id, "Notes.txt"), legacy=True)
         other_root_file = await _store(graph, kb_id, _record(kb_id, org_id, "notes.txt"))
-        ids = [legacy_file, folder, file_in_folder, other_root_file]
+        ids = [legacy_file, folder, file_in_folder, legacy_file_in_folder, other_root_file]
         seeded[CollectionNames.RECORDS.value] += ids
         seeded[CollectionNames.FILES.value] += ids
         now = get_epoch_timestamp_in_ms()
         assert await graph.batch_create_edges(
             [{"from_id": folder, "from_collection": CollectionNames.RECORDS.value,
-              "to_id": file_in_folder, "to_collection": CollectionNames.RECORDS.value,
-              "relationshipType": "PARENT_CHILD", "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+              "to_id": child, "to_collection": CollectionNames.RECORDS.value,
+              "relationshipType": "PARENT_CHILD", "createdAtTimestamp": now, "updatedAtTimestamp": now}
+             for child in (file_in_folder, legacy_file_in_folder)],
             collection=CollectionNames.RECORD_RELATIONS.value,
         )
 
-        stored = await graph.get_document(legacy_file, CollectionNames.RECORDS.value)
-        assert stored is not None and "isDeleted" not in stored, (
-            f"the legacy file was meant to be stored with no isDeleted property: {stored}"
+        for legacy in (legacy_file, legacy_file_in_folder):
+            stored = await graph.get_document(legacy, CollectionNames.RECORDS.value)
+            assert stored is not None and "isDeleted" not in stored, (
+                f"the legacy file was meant to be stored with no isDeleted property: {stored}"
+            )
+        yield _Kb(
+            graph, service, kb_id, user_id, legacy_file, folder, file_in_folder, legacy_file_in_folder,
+            other_root_file,
         )
-        yield _Kb(graph, service, kb_id, user_id, legacy_file, folder, file_in_folder, other_root_file)
 
 
 async def test_the_name_lookup_finds_a_live_file_with_no_deleted_flag(kb: _Kb) -> None:
@@ -199,6 +206,26 @@ async def test_a_rename_onto_its_name_is_refused(kb: _Kb) -> None:
     assert result["success"] is False and result["code"] == 409, result
     renamed = await kb.graph.get_document(kb.other_root_file, CollectionNames.RECORDS.value)
     assert renamed["recordName"] == "notes.txt", renamed
+
+
+async def test_a_rename_onto_its_name_inside_a_folder_is_refused(kb: _Kb) -> None:
+    result = await kb.service.update_record(
+        user_id=kb.user_id, record_id=kb.file_in_folder, updates={"recordName": "notes.txt"},
+    )
+
+    assert result["success"] is False and result["code"] == 409, result
+    renamed = await kb.graph.get_document(kb.file_in_folder, CollectionNames.RECORDS.value)
+    assert renamed["recordName"] == "Report.txt", renamed
+
+
+async def test_a_move_into_its_folder_is_refused(kb: _Kb) -> None:
+    result = await kb.service.move_record(
+        kb_id=kb.kb_id, record_id=kb.other_root_file, new_parent_id=kb.folder, user_id=kb.user_id,
+    )
+
+    assert result["success"] is False and result["code"] == 409, result
+    parent = await kb.graph.get_record_parent_info(kb.other_root_file)
+    assert not parent, f"the refused move still moved the file: {parent}"
 
 
 async def test_a_move_next_to_it_is_refused(kb: _Kb) -> None:
