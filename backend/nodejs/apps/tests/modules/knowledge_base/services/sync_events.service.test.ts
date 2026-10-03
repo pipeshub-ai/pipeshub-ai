@@ -8,6 +8,8 @@ import {
   BaseSyncEvent,
   ReindexEventPayload,
 } from '../../../../src/modules/knowledge_base/services/sync_events.service'
+import { IMessageProducer, StreamMessage } from '../../../../src/libs/types/messaging.types'
+import { Logger } from '../../../../src/libs/services/logger.service'
 
 describe('SyncEventProducer', () => {
   afterEach(() => {
@@ -294,15 +296,25 @@ describe('SyncEventProducer - coverage', () => {
      * sync executor — so adding workers bought nothing. Redis Streams is a
      * shared queue and hides this entirely, which is why it went unnoticed.
      */
-    const publish = async (event: any) => {
-      const producer: any = {
-        publish: sinon.stub().resolves(),
-        isConnected: sinon.stub().returns(true),
-      }
-      const logger: any = { info: sinon.stub(), error: sinon.stub() }
-      const svc = new SyncEventProducer(producer, logger)
+    const producerDouble = (publish: sinon.SinonStub): IMessageProducer => ({
+      connect: sinon.stub().resolves(),
+      disconnect: sinon.stub().resolves(),
+      isConnected: sinon.stub().returns(true),
+      publish,
+      publishBatch: sinon.stub().resolves(),
+      healthCheck: sinon.stub().resolves(true),
+    })
+    const loggerDouble = () => ({ info: sinon.stub(), error: sinon.stub() })
+
+    const publish = async (event: Event): Promise<[string, StreamMessage<string>]> => {
+      const publishStub = sinon.stub().resolves()
+      const svc = new SyncEventProducer(
+        producerDouble(publishStub),
+        loggerDouble() as unknown as Logger,
+      )
       await svc.publishEvent(event)
-      return producer.publish.firstCall?.args ?? []
+      expect(publishStub.calledOnce).to.be.true
+      return publishStub.firstCall.args as [string, StreamMessage<string>]
     }
 
     it('keys by connector so connectors spread across partitions', async () => {
@@ -339,17 +351,16 @@ describe('SyncEventProducer - coverage', () => {
     })
 
     it('does not let a publish failure escape', async () => {
-      const producer: any = {
-        publish: sinon.stub().rejects(new Error('broker down')),
-        isConnected: sinon.stub().returns(true),
-      }
-      const logger: any = { info: sinon.stub(), error: sinon.stub() }
-      const svc = new SyncEventProducer(producer, logger)
+      const logger = loggerDouble()
+      const svc = new SyncEventProducer(
+        producerDouble(sinon.stub().rejects(new Error('broker down'))),
+        logger as unknown as Logger,
+      )
       await svc.publishEvent({
         eventType: 'confluence.resync',
         timestamp: 1,
         payload: { connectorId: 'c1' },
-      } as any)
+      })
       expect(logger.error.called).to.be.true
     })
   })
