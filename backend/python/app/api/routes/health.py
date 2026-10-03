@@ -1268,7 +1268,7 @@ async def _probe_vision(llm_model: BaseChatModel, logger: Logger) -> str | None:
     except Exception as image_error:
         if _is_capability_error(image_error):
             logger.info("Model rejected image input: %s", image_error)
-            return f"Model doesn't support images/vision: {_short_provider_reason(image_error)}".rstrip(": ")
+            return "Model doesn't support images/vision."
         # Rate limit, gateway 5xx, auth: says nothing about vision support, so
         # reporting "no vision" here would tell the admin to disable a
         # capability the model may well have.
@@ -1320,7 +1320,7 @@ async def _probe_image_embedding(
         )
     except Exception as exc:
         logger.warning("Could not build a multimodal embedding provider: %s", exc)
-        return f"This provider cannot embed images: {_short_provider_reason(exc)}".rstrip(": ")
+        return "This provider cannot embed images."
 
     if multimodal_provider is None or not multimodal_provider.supports_multimodal():
         return (
@@ -1337,7 +1337,8 @@ async def _probe_image_embedding(
         raise
     except Exception as exc:
         if _is_capability_error(exc):
-            return f"Model cannot embed images: {_short_provider_reason(exc)}".rstrip(": ")
+            logger.info("Model rejected image embedding: %s", exc)
+            return "Model cannot embed images."
         raise
 
     first = results[0] if results else None
@@ -1945,7 +1946,7 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
             status_code=500,
             content={
                 "status": "not healthy",
-                "error": f"Health check failed: {_short_provider_reason(e) or type(e).__name__}",
+                "error": f"Health check failed: {type(e).__name__}",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
