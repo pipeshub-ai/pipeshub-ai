@@ -21,6 +21,8 @@ file that was already in the trash. A second file sits outside the folder.
 - A move onto an external id a trashed record holds keeps the trash entry: it
   gives the id up (kept in ``trashedExternalRecordId``) and no ``deleteRecord``
   is published.
+  It gives it up in the same write as the move, so a move the graph refuses
+  leaves the id with it.
 - A folder-scoped delete (the folder-records route) takes only ids inside the
   folder, soft or hard.
 - With the flag off, the same cascade still removes the records.
@@ -179,6 +181,8 @@ async def _remove(graph: IGraphDBProvider, w: _World) -> None:
 
 @pytest.fixture(params=["neo4j", "arango"])
 async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_World]:
+    # The default, where each Neo4j statement commits on its own and a rollback undoes nothing.
+    monkeypatch.delenv("NEO4J_EXPLICIT_TRANSACTIONS", raising=False)
     async with contextlib.AsyncExitStack() as cleanup:
         try:
             graph = await (_connect_neo4j(monkeypatch) if request.param == "neo4j" else _connect_arango())
@@ -472,6 +476,48 @@ async def test_a_move_onto_an_id_held_in_the_trash_keeps_the_trash_entry(
     assert await world.graph.get_record_by_external_id(
         world.connector_id, target, visibility=RecordVisibility.DELETED
     ) is None
+    assert world.producer.of_type(EventTypes.DELETE_RECORD.value) == []
+
+
+# Neo4j only, and not collected for Arango at all: the graph jobs fail on any skip, the
+# refusal is Neo4j's, and Arango's move runs inside the caller's stream transaction.
+@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
+async def test_a_move_the_graph_refuses_leaves_the_trashed_record_its_external_id(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each Neo4j statement commits on its own, so a release written before the move's write outlived its refusal."""
+    _flag(monkeypatch, True)
+    monkeypatch.setattr(world.processor, "_get_storage_cleanup", lambda: None)
+    await world.processor.on_record_deleted(world.ids["drive_file"])
+    world.producer.events.clear()
+    target = f"ext-{world.ids['drive_file']}"
+
+    moved = _file(world, "drive_child", kb=False)
+    moved.id = str(uuid.uuid4())
+    moved.external_record_id = target
+    to_neo4j = world.graph._arango_to_neo4j_node
+
+    def refuse_the_moved_record(node: dict, collection: str) -> dict:
+        converted = to_neo4j(node, collection)
+        if collection == CollectionNames.RECORDS.value and converted.get("id") == world.ids["drive_child"]:
+            # Neo4j refuses a map as a property value, failing the statement that writes the move.
+            converted["refusedByTheGraph"] = {"nested": True}
+        return converted
+
+    monkeypatch.setattr(world.graph, "_arango_to_neo4j_node", refuse_the_moved_record)
+    with pytest.raises(Exception, match="(?i)property values|map"):
+        await world.processor.on_records_moved([(f"ext-{world.ids['drive_child']}", moved, [])])
+    monkeypatch.setattr(world.graph, "_arango_to_neo4j_node", to_neo4j)
+
+    trashed = await world.stored("drive_file")
+    assert (trashed["isDeleted"], trashed["externalRecordId"], trashed.get("trashedExternalRecordId")) == (
+        True, target, None,
+    ), "a refused move took the external id away from the record in the trash"
+    assert (await world.stored("drive_child"))["externalRecordId"] == f"ext-{world.ids['drive_child']}"
+    holder = await world.graph.get_record_by_external_id(
+        world.connector_id, target, visibility=RecordVisibility.DELETED
+    )
+    assert holder is not None and holder.id == world.ids["drive_file"]
     assert world.producer.of_type(EventTypes.DELETE_RECORD.value) == []
 
 

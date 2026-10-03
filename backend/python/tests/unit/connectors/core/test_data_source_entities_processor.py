@@ -5502,7 +5502,7 @@ class TestOnRecordsMovedReindex:
         }
         # on_records_moved calls tx_store.get_record_by_external_id(connector_id=..., external_id=...)
         tx_store.get_record_by_external_id = AsyncMock(
-            side_effect=lambda connector_id, external_id: record_map.get(external_id)
+            side_effect=lambda connector_id, external_id, visibility=RecordVisibility.ALL: record_map.get(external_id)
         )
         queued = MagicMock(indexing_status=ProgressStatus.COMPLETED.value)
         tx_store.get_record_by_key = AsyncMock(return_value=queued)

@@ -93,6 +93,7 @@ from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
+    TRASHED_EXTERNAL_ID_PREFIX,
     empty_soft_delete_result,
     soft_delete_request_result,
     soft_delete_result,
@@ -1086,20 +1087,6 @@ class Neo4jProvider(IGraphDBProvider):
 
             label = collection_to_label(collection)
 
-            # Convert nodes to Neo4j format
-            neo4j_nodes = []
-            for node in nodes:
-                neo4j_node = self._arango_to_neo4j_node(node, collection)
-                # Ensure id exists
-                if "id" not in neo4j_node:
-                    if "_key" in neo4j_node:
-                        neo4j_node["id"] = neo4j_node.pop("_key")
-                    else:
-                        neo4j_node["id"] = str(uuid.uuid4())
-                # Validate nodes before writing
-                self.validator.validate_node_update(collection, neo4j_node)
-                neo4j_nodes.append(neo4j_node)
-
             # Use UNWIND for batch upsert
             query = f"""
             UNWIND $nodes AS node
@@ -1110,7 +1097,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             await self.client.execute_query(
                 query,
-                parameters={"nodes": neo4j_nodes},
+                parameters={"nodes": self._nodes_for_upsert(nodes, collection)},
                 txn_id=transaction
             )
 
@@ -1119,6 +1106,54 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Batch upsert nodes failed: {str(e)}")
             raise
+
+    def _nodes_for_upsert(self, nodes: list[dict], collection: str) -> list[dict]:
+        """*nodes* in Neo4j form, each with an ``id``, validated for *collection*."""
+        neo4j_nodes = []
+        for node in nodes:
+            neo4j_node = self._arango_to_neo4j_node(node, collection)
+            if "id" not in neo4j_node:
+                if "_key" in neo4j_node:
+                    neo4j_node["id"] = neo4j_node.pop("_key")
+                else:
+                    neo4j_node["id"] = str(uuid.uuid4())
+            self.validator.validate_node_update(collection, neo4j_node)
+            neo4j_nodes.append(neo4j_node)
+        return neo4j_nodes
+
+    async def _upsert_record_nodes_releasing_trash(
+        self, nodes: list[dict], transaction: str | None = None
+    ) -> None:
+        """Upsert record nodes; records in the trash holding one of their external ids give it up.
+
+        One statement: each statement commits on its own unless explicit
+        transactions are on, so a release written separately outlived a refused upsert.
+        """
+        records = self._nodes_for_upsert(nodes, CollectionNames.RECORDS.value)
+        await self.client.execute_query(
+            """
+            UNWIND $nodes AS node
+            WITH node, COLLECT {
+                MATCH (holder:Record {externalRecordId: node.externalRecordId, connectorId: node.connectorId})
+                WHERE holder.isDeleted = true AND NOT holder.id IN $ids
+                RETURN holder
+            } AS holders
+            FOREACH (holder IN holders |
+                SET holder += {
+                    trashedExternalRecordId: holder.externalRecordId,
+                    externalRecordId: $trashed_prefix + holder.id
+                })
+            MERGE (n:Record {id: node.id})
+            SET n += node
+            RETURN n.id
+            """,
+            parameters={
+                "nodes": records,
+                "ids": [node["id"] for node in records],
+                "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
+            },
+            txn_id=transaction,
+        )
 
     async def delete_nodes(
         self,
@@ -6187,18 +6222,23 @@ class Neo4jProvider(IGraphDBProvider):
     async def batch_upsert_records(
         self,
         records: list[Record],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        release_trashed_external_ids: bool = False,
     ) -> None:
         """Batch upsert records (base + specific type + IS_OF_TYPE edge)"""
         try:
             for record in records:
                 # Upsert base record
                 record_dict = record.to_arango_base_record()
-                await self.batch_upsert_nodes(
-                    [record_dict],
-                    collection=CollectionNames.RECORDS.value,
-                    transaction=transaction
-                )
+                if release_trashed_external_ids:
+                    await self._upsert_record_nodes_releasing_trash([record_dict], transaction)
+                else:
+                    await self.batch_upsert_nodes(
+                        [record_dict],
+                        collection=CollectionNames.RECORDS.value,
+                        transaction=transaction
+                    )
 
                 # Upsert specific type if applicable
                 if record.record_type in RECORD_TYPE_COLLECTION_MAPPING:

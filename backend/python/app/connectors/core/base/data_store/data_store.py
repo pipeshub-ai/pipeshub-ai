@@ -305,7 +305,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_records(self, records: list[Record]) -> None:
+    async def batch_upsert_records(
+        self, records: list[Record], *, release_trashed_external_ids: bool = False
+    ) -> None:
         pass
 
     @abstractmethod

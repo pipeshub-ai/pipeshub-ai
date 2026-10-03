@@ -200,6 +200,9 @@ def build_connector_stats_response(
 # one stream transaction.
 SOFT_DELETE_CHUNK = 1000
 
+# Unique per record and never a source id, so no sync or move can land on it.
+TRASHED_EXTERNAL_ID_PREFIX = "trashed:"
+
 
 def empty_soft_delete_result(batch_id: str) -> dict[str, Any]:
     return soft_delete_result([], [], [], batch_id)

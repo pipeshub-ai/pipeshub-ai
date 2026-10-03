@@ -3125,7 +3125,9 @@ class IGraphDBProvider(ABC):
     async def batch_upsert_records(
         self,
         records: list,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        release_trashed_external_ids: bool = False,
     ) -> None:
         """
         Batch upsert records (base record + specific type + IS_OF_TYPE edge).
@@ -3138,6 +3140,13 @@ class IGraphDBProvider(ABC):
         Args:
             records (List[Record]): List of Record objects
             transaction (Optional[Any]): Optional transaction context
+            release_trashed_external_ids: Records in the trash in the same
+                connector that hold a record's external id give it up, keeping
+                it in ``trashedExternalRecordId`` behind a
+                ``TRASHED_EXTERNAL_ID_PREFIX`` id. This happens in the same
+                statement as the base record's write, so a write the graph
+                refuses leaves them holding it, even where each statement
+                commits on its own (Neo4j by default).
         """
         pass
 

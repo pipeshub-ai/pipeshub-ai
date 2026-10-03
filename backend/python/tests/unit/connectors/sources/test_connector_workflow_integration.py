@@ -54,6 +54,8 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility, matches_visibility
+from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
 
 # ---------------------------------------------------------------------------
 # Constants used across tests
@@ -256,9 +258,15 @@ class MockTransactionStore:
 
     # -- records ---
 
-    async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+    ) -> Optional[Record]:
         for doc in self._s.collections.get(CollectionNames.RECORDS.value, {}).values():
-            if doc.get("connectorId") == connector_id and doc.get("externalRecordId") == external_id:
+            if (
+                doc.get("connectorId") == connector_id
+                and doc.get("externalRecordId") == external_id
+                and matches_visibility(doc, visibility)
+            ):
                 return self._doc_to_record(doc)
         return None
 
@@ -268,9 +276,21 @@ class MockTransactionStore:
             return self._doc_to_record(doc)
         return None
 
-    async def batch_upsert_records(self, records: List[Record]) -> None:
+    async def batch_upsert_records(
+        self, records: List[Record], *, release_trashed_external_ids: bool = False
+    ) -> None:
         for record in records:
             doc = record.to_arango_base_record()
+            if release_trashed_external_ids:
+                for held in self._s.collections.get(CollectionNames.RECORDS.value, {}).values():
+                    if (
+                        held["_key"] != doc["_key"]
+                        and held.get("isDeleted") is True
+                        and held.get("connectorId") == doc.get("connectorId")
+                        and held.get("externalRecordId") == doc.get("externalRecordId")
+                    ):
+                        held["trashedExternalRecordId"] = held["externalRecordId"]
+                        held["externalRecordId"] = f"{TRASHED_EXTERNAL_ID_PREFIX}{held['_key']}"
             self._s.upsert_node(CollectionNames.RECORDS.value, doc)
 
     async def batch_upsert_nodes(self, nodes: List[Dict], collection: str) -> bool:
