@@ -796,7 +796,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             # included. This is a background task, so raising only hid it: the
             # service kept answering /health 200 while consuming nothing.
             logger.critical(f"❌ Sync coordinator init failed: {e}", exc_info=True)
-            app.state.startup_error = f"sync coordinator init failed: {e}"
+            # /health shows this to callers; the cause is in the log line above.
+            app.state.startup_error = "sync coordinator init failed"
             return
 
         # A resumed sync writes SYNCING as its first act, and this sweep must
