@@ -659,7 +659,7 @@ class TestSweep:
 
     async def test_deletes_do_not_make_a_positional_sweep_skip_points(self) -> None:
         graph, store = FakeGraph(), PositionalStore()
-        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: MARKER})
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: ORG_MARKER})
         graph.nodes[TOPICS] = {"t1": {"orgId": "org-1"}, "t4": {"orgId": "org-1"}}
         store.points = [_point("topic", f"t{i}") for i in range(6)]
         rebuilder = _rebuilder(graph, store, sweep_points_per_tick=2)
@@ -831,8 +831,8 @@ class TestSweepScanFailures:
         """A delete one backend always rejects must not keep this org first
         in line for ever, as a scan failure must not."""
         graph, store = FakeGraph(), FakeStore()
-        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: MARKER})
-        graph.docs[ORGS]["org-2"] = _org("org-2", **{EntityIndexState.STATE: MARKER})
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.STATE: ORG_MARKER})
+        graph.docs[ORGS]["org-2"] = _org("org-2", **{EntityIndexState.STATE: ORG_MARKER})
         store.page_entity_points = AsyncMock(return_value=([_point("topic", "t-gone")], None))
         store.delete_entities = AsyncMock(side_effect=RuntimeError("delete-by-query rejected"))
         rebuilder = _rebuilder(graph, store)
