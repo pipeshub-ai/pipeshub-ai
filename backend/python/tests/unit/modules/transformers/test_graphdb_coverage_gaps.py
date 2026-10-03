@@ -27,7 +27,10 @@ from app.config.constants.arangodb import CollectionNames, ProgressStatus
 # ---------------------------------------------------------------------------
 
 def _make_graph_provider():
-    return AsyncMock()
+    provider = AsyncMock()
+    # A sync predicate: an AsyncMock answer would be a truthy coroutine.
+    provider.is_write_conflict = MagicMock(return_value=False)
+    return provider
 
 
 def _make_tx_store():

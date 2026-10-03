@@ -20,7 +20,10 @@ from app.config.constants.arangodb import CollectionNames
 
 def _make_graph_provider():
     """Return a mock IGraphDBProvider."""
-    return AsyncMock()
+    provider = AsyncMock()
+    # A sync predicate: an AsyncMock answer would be a truthy coroutine.
+    provider.is_write_conflict = MagicMock(return_value=False)
+    return provider
 
 
 def _make_tx_store():

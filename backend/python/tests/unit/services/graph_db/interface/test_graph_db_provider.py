@@ -264,6 +264,7 @@ class TestAbstractMethodInventory:
         "find_taxonomy_nodes",
         "create_taxonomy_node_if_absent",
         "add_taxonomy_aliases",
+        "ensure_taxonomy_hierarchy_edge",
         # User operations
         "get_user_by_email",
         "get_user_by_source_id",

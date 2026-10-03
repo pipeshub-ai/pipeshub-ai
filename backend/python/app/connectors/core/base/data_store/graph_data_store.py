@@ -2,9 +2,10 @@ import asyncio
 import functools
 import logging
 import random
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from logging import Logger
-from typing import AsyncContextManager, Optional
+from typing import AsyncContextManager, Optional, TypeVar
 
 # Import Neo4j exceptions with fallback for compatibility
 try:
@@ -38,6 +39,8 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+_T = TypeVar("_T")
 
 # An ArangoDB write-write conflict (1200) clears only once the other transaction
 # commits, and an indexing stream transaction can hold a record for seconds. So
@@ -1025,6 +1028,36 @@ class GraphDataStore(DataStoreProvider):
                 self.logger.warning(
                     "Transient graph transaction failure (attempt %d/%d), retrying in %.1fs: %s",
                     attempts, _RETRY_ATTEMPTS, delay, e,
+                )
+                await asyncio.sleep(delay)
+
+    async def execute_idempotent_in_transaction(
+        self,
+        func: Callable[..., Awaitable[_T]],
+        *args: object,
+        **kwargs: object,
+    ) -> _T:
+        """Run ``func(tx_store, ...)`` in a transaction, re-running it when it
+        collides with a concurrent writer (``is_write_conflict``).
+
+        Unlike :meth:`execute_in_transaction` this retries even where the
+        failed attempt may have partly landed (Neo4j auto-commit), so
+        ``func`` must be safe to run again from the start: read what is
+        there, then write only the difference.
+        """
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                async with self.transaction() as tx_store:
+                    return await func(tx_store, *args, **kwargs)
+            except Exception as e:
+                if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_write_conflict(e):
+                    raise
+                delay = _retry_delay(attempts - 1)
+                self.logger.warning(
+                    "Graph write conflict (attempt %d/%d), retrying in %.1fs: %s",
+                    attempts, _RETRY_ATTEMPTS, delay, str(e)[:200],
                 )
                 await asyncio.sleep(delay)
 

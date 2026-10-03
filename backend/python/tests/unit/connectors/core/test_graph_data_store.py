@@ -1440,3 +1440,67 @@ class TestWriteConflictRetryBudget:
         assert await store.execute_in_transaction(write) == "done"
         assert provider.rollback_transaction.await_count == 4
         provider.commit_transaction.assert_awaited_once()
+
+
+class TestExecuteIdempotentInTransactionRetriesConflicts:
+    """KG-32: an idempotent block is re-run on any write conflict, including
+    where the failed attempt may have partly landed (Neo4j auto-commit)."""
+
+    @staticmethod
+    def _store(conflict: bool) -> tuple[GraphDataStore, MagicMock]:
+        provider = MagicMock()
+        provider.begin_transaction = AsyncMock(side_effect=[f"txn-{i}" for i in range(10)])
+        provider.commit_transaction = AsyncMock()
+        provider.rollback_transaction = AsyncMock()
+        provider.is_transient_error = MagicMock(return_value=False)
+        provider.is_write_conflict = MagicMock(return_value=conflict)
+        return GraphDataStore(MagicMock(), provider), provider
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_is_retried_from_the_start(self, monkeypatch) -> None:
+        store, provider = self._store(conflict=True)
+        sleep = AsyncMock()
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", sleep)
+        calls = 0
+
+        async def flaky(tx_store, value: str) -> str:
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise RuntimeError("[1200] write-write conflict")
+            return value
+
+        assert await store.execute_idempotent_in_transaction(flaky, "done") == "done"
+        assert calls == 3
+        assert provider.rollback_transaction.await_count == 2
+        provider.commit_transaction.assert_awaited_once()
+        assert sleep.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_other_failures_are_not_retried(self) -> None:
+        store, provider = self._store(conflict=False)
+
+        async def failing(tx_store) -> None:
+            raise RuntimeError("record not found")
+
+        with pytest.raises(RuntimeError, match="not found"):
+            await store.execute_idempotent_in_transaction(failing)
+        provider.rollback_transaction.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_retries_follow_the_shared_bounded_schedule(self, monkeypatch) -> None:
+        store, provider = self._store(conflict=True)
+        sleep = AsyncMock()
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", sleep)
+
+        async def always_conflicts(tx_store) -> None:
+            raise RuntimeError("DeadlockDetected")
+
+        with pytest.raises(RuntimeError, match="Deadlock"):
+            await store.execute_idempotent_in_transaction(always_conflicts)
+        from app.connectors.core.base.data_store import graph_data_store as module
+
+        assert provider.rollback_transaction.await_count == module._RETRY_ATTEMPTS
+        delays = [c.args[0] for c in sleep.await_args_list]
+        assert len(delays) == module._RETRY_ATTEMPTS - 1
+        assert all(0 < d <= module._RETRY_MAX_DELAY * (1 + module._RETRY_JITTER) for d in delays)

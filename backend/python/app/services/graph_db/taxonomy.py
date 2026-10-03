@@ -8,6 +8,8 @@ one place keeps the Arango and Neo4j providers in parity.
 
 from __future__ import annotations
 
+import uuid
+
 from app.config.constants.arangodb import CollectionNames
 
 SUBCATEGORY_LEVELS: dict[str, str] = {
@@ -30,6 +32,30 @@ TAXONOMY_COLLECTIONS: frozenset[str] = frozenset(
 MERGED_INTO_FIELD = "mergedInto"
 # A redirect chain longer than this is a corrupt graph, not a real history.
 MAX_MERGE_REDIRECT_HOPS = 16
+
+# Each subcategory level's parent collection over interCategoryRelations.
+CATEGORY_HIERARCHY_PARENTS: dict[str, str] = {
+    CollectionNames.SUBCATEGORIES1.value: CollectionNames.CATEGORIES.value,
+    CollectionNames.SUBCATEGORIES2.value: CollectionNames.SUBCATEGORIES1.value,
+    CollectionNames.SUBCATEGORIES3.value: CollectionNames.SUBCATEGORIES2.value,
+}
+_HIERARCHY_EDGE_NAMESPACE = uuid.UUID("6f6a0f53-1f3e-4c1b-9c55-6c2b2f0e8a11")
+
+
+_DEPARTMENT_NAMESPACE = uuid.UUID("0b7d1c52-8e0f-4f8e-9a3b-5d2a6f1c7e44")
+
+
+def global_department_key(department_name: str) -> str:
+    """Deterministic key of the global (org-less) department seeded for
+    ``department_name``, so services seeding at once create one node."""
+    return str(uuid.uuid5(_DEPARTMENT_NAMESPACE, department_name))
+
+
+def hierarchy_edge_key(child_key: str, parent_key: str) -> str:
+    """Deterministic key of the hierarchy edge from ``child_key`` to
+    ``parent_key``, so concurrent writers of one edge converge on one."""
+    return str(uuid.uuid5(_HIERARCHY_EDGE_NAMESPACE, f"{child_key}->{parent_key}"))
+
 
 # The edge collection a record reaches each taxonomy collection over.
 TAXONOMY_EDGE_COLLECTIONS: dict[str, str] = {

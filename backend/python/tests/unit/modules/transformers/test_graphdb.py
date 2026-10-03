@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.models.blocks import SemanticMetadata
 
 
 # ---------------------------------------------------------------------------
@@ -13,7 +14,10 @@ from app.config.constants.arangodb import CollectionNames
 
 def _make_graph_provider():
     """Return a mock IGraphDBProvider."""
-    return AsyncMock()
+    provider = AsyncMock()
+    # A sync predicate: an AsyncMock answer would be a truthy coroutine.
+    provider.is_write_conflict = MagicMock(return_value=False)
+    return provider
 
 
 def _make_tx_store():
@@ -416,3 +420,62 @@ class TestSaveMetadataToDb:
         metadata = _make_semantic_metadata()
         with pytest.raises(Exception, match="DB connection lost"):
             await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
+
+
+class TestRecordWriteRetriesConflicts:
+    """KG-32: the record's graph write is re-run when it collides with
+    another record's write; every attempt starts from a fresh read."""
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_reruns_the_write_without_duplicating_entities(self, monkeypatch) -> None:
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+        provider = _make_graph_provider()
+        provider.is_write_conflict = MagicMock(side_effect=lambda e: "1200" in str(e))
+        transformer = _make_transformer(graph_provider=provider)
+        store = _make_tx_store()
+        store.batch_create_edges = AsyncMock(side_effect=[RuntimeError("[1200] write-write conflict"), None, None, None])
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_store.graph_data_store.GraphTransactionStore",
+            lambda provider, txn: store,
+        )
+        metadata = SemanticMetadata(categories=["Finance"], topics=["Budget"], languages=[], departments=[])
+
+        entities = await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
+
+        assert store.get_record_by_key.await_count == 2
+        assert sorted(e.name for e in entities) == ["Budget", "Finance"]
+        store.rollback.assert_awaited_once()
+        store.commit.assert_awaited_once()
+
+
+class TestDepartmentLookupIsOrgAware:
+    """KG-23: a department name links to the record's org's department, else
+    the global one, never another org's; ties resolve the same way each time."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("candidates", "expected"),
+        [
+            ([{"_key": "d-other", "orgId": "org-b"}, {"_key": "d-global", "orgId": None}], "d-global"),
+            ([{"_key": "d-global", "orgId": None}, {"_key": "d-mine", "orgId": "org-a"}], "d-mine"),
+            ([{"_key": "d-z", "orgId": None}, {"_key": "d-a", "orgId": None}], "d-a"),
+            ([{"_key": "d-other", "orgId": "org-b"}], None),
+        ],
+    )
+    async def test_the_right_department_is_linked(self, monkeypatch, candidates, expected) -> None:
+        transformer = _make_transformer()
+        store = _make_tx_store()
+        store.get_record_by_key = AsyncMock(return_value={"_key": "rec-1", "orgId": "org-a"})
+        store.get_nodes_by_filters = AsyncMock(
+            side_effect=lambda collection, filters: candidates if collection == "departments" else []
+        )
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_store.graph_data_store.GraphTransactionStore",
+            lambda provider, txn: store,
+        )
+        metadata = SemanticMetadata(categories=[], topics=[], languages=[], departments=["Engineering"])
+
+        entities = await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
+
+        departments = [e.entity_id for e in entities if e.entity_type.value == "department"]
+        assert departments == ([expected] if expected else [])
