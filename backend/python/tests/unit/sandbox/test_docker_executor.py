@@ -300,6 +300,33 @@ class TestExtractContainerDir:
         evil_in_output = os.path.join(output_dir, "etc", "evil.txt")
         assert not os.path.exists(evil_in_output)
 
+    def test_drops_symlink_members(self, tmp_path) -> None:
+        """A symlink output member must be skipped, not extracted (SB-5):
+        otherwise the next run follows it to a host file and leaks it back."""
+        from app.sandbox.docker_executor import _extract_container_dir
+
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            data = b"real artifact"
+            fi = tarfile.TarInfo("output/report.csv")
+            fi.size = len(data)
+            tar.addfile(fi, io.BytesIO(data))
+            link = tarfile.TarInfo("output/leak.txt")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "/etc/hostname"
+            tar.addfile(link)
+        buf.seek(0)
+
+        mock_container = MagicMock()
+        mock_container.get_archive.return_value = (iter([buf.read()]), {})
+
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        _extract_container_dir(mock_container, "/output", output_dir)
+
+        assert os.path.isfile(os.path.join(output_dir, "report.csv"))
+        assert not os.path.lexists(os.path.join(output_dir, "leak.txt"))
+
 
 class TestDockerEnvAllowlist:
     """Security: host env must NOT leak into a Docker sandbox container."""

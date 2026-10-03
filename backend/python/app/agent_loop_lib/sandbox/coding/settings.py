@@ -44,6 +44,8 @@ _FALSY_ENV_VALUES = {"0", "false", "no", "off"}
 _warned_about_host_isolation = False
 
 _ENV_SANDBOX_MODE = "SANDBOX_MODE"
+_ENV_ALLOW_LOCAL = "SANDBOX_ALLOW_LOCAL"
+_TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 
 # `SANDBOX_MODE` value -> backend name. The only accepted spellings; anything
 # else is a misconfiguration rather than a hint to guess from.
@@ -69,9 +71,11 @@ def resolve_sandbox_mode() -> str:
     operator forgot the variable, which is the least isolated option chosen
     by omission. An unknown value is rejected for the same reason, since
     `SANDBOX_MODE=docekr` would otherwise silently downgrade to host
-    execution while the operator believes it is containerised. `local` is
-    accepted only when typed out, and logs once per process that it runs
-    code in-process.
+    execution while the operator believes it is containerised. `local`
+    additionally needs `SANDBOX_ALLOW_LOCAL=true`: it runs code with this
+    service's UID, network and filesystem, and on Linux the bwrap wrapper
+    is absent from every image, so one copied `.env` line must not be
+    enough to turn it on in a shared deployment.
 
     Blank reads as unset rather than invalid, matching how shell and
     Compose `${VAR:-default}` treat an empty value.
@@ -101,8 +105,21 @@ def resolve_sandbox_mode() -> str:
         )
 
     if backend == "local":
+        if not _local_mode_allowed():
+            raise SandboxUnavailableError(
+                f"{_ENV_SANDBOX_MODE}=local runs generated code as a subprocess "
+                f"of this service with no container isolation, so it is refused "
+                f"unless {_ENV_ALLOW_LOCAL}=true is also set. Set that only on a "
+                f"single-user development machine; otherwise use docker or e2b."
+            )
         _warn_about_host_isolation()
     return backend
+
+
+def _local_mode_allowed() -> bool:
+    # Opt-in, so only an explicit truthy value counts; a typo stays refused.
+    raw = os.environ.get(_ENV_ALLOW_LOCAL, "")
+    return raw.strip().lower() in _TRUTHY_ENV_VALUES
 
 
 def _warn_about_host_isolation() -> None:
@@ -110,11 +127,15 @@ def _warn_about_host_isolation() -> None:
     if _warned_about_host_isolation:
         return
     _warned_about_host_isolation = True
+    from app.agent_loop_lib.sandbox.confinement import confinement_available
+
     logger.warning(
-        "%s=local: model-generated code runs as a subprocess of this service "
-        "(isolation=host: no network namespace, no filesystem boundary beyond "
-        "rlimits). Use %s=docker or e2b for container isolation.",
-        _ENV_SANDBOX_MODE, _ENV_SANDBOX_MODE,
+        "%s=local with %s=true: model-generated code runs as a subprocess of "
+        "this service (isolation=host, kernel confinement %s). Development "
+        "only; use %s=docker or e2b for container isolation.",
+        _ENV_SANDBOX_MODE, _ENV_ALLOW_LOCAL,
+        "available" if confinement_available() else "UNAVAILABLE (no bwrap/sandbox-exec)",
+        _ENV_SANDBOX_MODE,
     )
 
 

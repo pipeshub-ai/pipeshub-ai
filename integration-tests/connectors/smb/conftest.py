@@ -39,6 +39,20 @@ def _require_smb_creds() -> dict[str, str]:
     }
 
 
+def smb_connector_config() -> dict[str, Any]:
+    creds = _require_smb_creds()
+    return {
+        "auth": {
+            "server": creds["connector_host"],
+            "username": creds["username"],
+            "password": creds["password"],
+            "share": creds["share"],
+            "port": creds["connector_port"],
+            "domain": creds["domain"],
+        }
+    }
+
+
 @pytest.fixture(scope="session")
 def smb_storage() -> SmbStorageHelper:
     creds = _require_smb_creds()
@@ -59,16 +73,7 @@ async def smb_connector(
     sample_data_root,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     creds = _require_smb_creds()
-    config = {
-        "auth": {
-            "server": creds["connector_host"],
-            "username": creds["username"],
-            "password": creds["password"],
-            "share": creds["share"],
-            "port": creds["connector_port"],
-            "domain": creds["domain"],
-        }
-    }
+    config = smb_connector_config()
     state = await constructor(
         smb_storage,
         pipeshub_client,

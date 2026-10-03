@@ -1206,3 +1206,22 @@ class TestRedisRetrievePoints:
     async def test_no_ids_makes_no_call(self, service, mock_redis_client):
         assert await service.retrieve_points("entities", []) == []
         mock_redis_client.pipeline.assert_not_called()
+
+
+class TestRedisScrollOffsetAfterDelete:
+    """The offset is a LIMIT position: deleted points free their places."""
+
+    @pytest.mark.parametrize("next_offset,deleted,expected", [
+        ("20", 3, "17"),
+        ("20", 0, "20"),
+        ("2", 5, "0"),
+        (None, 3, None),
+    ])
+    def test_steps_back_by_the_deleted_count(self, next_offset, deleted, expected):
+        assert _make_redis_service().scroll_offset_after_delete(next_offset, deleted) == expected
+
+    def test_key_based_backends_keep_their_cursor(self):
+        from app.services.vector_db.interface.vector_db import IVectorDBService
+
+        svc = MagicMock(spec=IVectorDBService)
+        assert IVectorDBService.scroll_offset_after_delete(svc, "point-id-42", 3) == "point-id-42"

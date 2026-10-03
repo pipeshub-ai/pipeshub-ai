@@ -438,14 +438,33 @@ class TestSyncEntitiesForDuplicate:
         orch.graph_provider.get_taxonomy_entities_for_record.assert_awaited_once_with(
             "rec-dup-1"
         )
-        orch.entity_vector_store.upsert_entities_batch.assert_awaited_once()
-        synced = orch.entity_vector_store.upsert_entities_batch.call_args[0][0]
+        taxonomy_call = orch.entity_vector_store.upsert_entities_batch.call_args_list[0]
+        synced = taxonomy_call.args[0]
+        assert taxonomy_call.kwargs.get("merge_membership", True) is True
         taxonomy_entities = [e for e in synced if e.entity_type != EntityType.RECORD]
         assert len(taxonomy_entities) == 2
         for entity in taxonomy_entities:
             assert entity.org_id == "org-9"
             assert entity.connector_ids == ["conn-b"]
             assert entity.record_group_ids == ["rg-2"]
+
+    @pytest.mark.asyncio
+    async def test_record_and_group_points_replace_membership(self) -> None:
+        """Merged with the taxonomy batch they would keep a moved record's old
+        group, and a failed state read would skip them with the batch."""
+        orch = self._make_orchestrator(
+            taxonomy_rows=[{"entityId": "cat-1", "entityType": "category", "name": "Finance"}],
+            group_doc={"groupName": "Finance Drive"},
+        )
+
+        await orch.sync_entities_for_duplicate(self._RECORD_DOC)
+
+        taxonomy_call, identity_call = orch.entity_vector_store.upsert_entities_batch.call_args_list
+        assert {e.entity_type for e in taxonomy_call.args[0]} == {EntityType.CATEGORY}
+        assert {e.entity_type for e in identity_call.args[0]} == {
+            EntityType.RECORD, EntityType.RECORD_GROUP,
+        }
+        assert identity_call.kwargs["merge_membership"] is False
 
     @pytest.mark.asyncio
     async def test_malformed_taxonomy_row_is_skipped(self):

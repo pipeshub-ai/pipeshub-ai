@@ -71,6 +71,27 @@ fields:
   is_vlm_ocr_processed:
     required: false
     type: boolean
+  is_deleted:
+    required: false
+    type: boolean
+  deleted_at:
+    required: false
+    type: integer
+  deleted_by_user_id:
+    required: false
+    type: string
+  delete_source:
+    required: false
+    type: string
+  delete_batch_id:
+    required: false
+    type: string
+  purge_attempts:
+    required: false
+    type: integer
+  purge_last_error:
+    required: false
+    type: string
   md5_hash:
     required: false
     type: string

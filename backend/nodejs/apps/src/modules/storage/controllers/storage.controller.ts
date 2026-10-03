@@ -10,6 +10,7 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import {
   storageEtcdPaths,
   STORAGE_WRITE_FAILED_MESSAGE,
+  MAX_SIGNED_URL_TTL_SECONDS,
 } from '../constants/constants';
 import {
   AzureBlobStorageConfig,
@@ -47,9 +48,11 @@ import {
   getDocumentRootPath,
   extractOrgId,
   extractUserId,
+  toObjectId,
   getBaseUrl,
   getDocumentInfo,
   getFullDocumentPath,
+  storedCopies,
   getStorageVendor,
   getVersionFilePath,
   hasExtension,
@@ -296,9 +299,9 @@ export class StorageController {
         documentName,
         documentPath: fullDocumentPath,
         alternateDocumentName,
-        orgId: new mongoose.Types.ObjectId(orgId),
+        orgId: toObjectId(orgId, 'organization'),
         isVersionedFile: isVersionedFile,
-        initiatorUserId: userId ? new mongoose.Types.ObjectId(userId) : null,
+        initiatorUserId: userId ? toObjectId(userId, 'user') : null,
         permissions: permissions,
         customMetadata,
         storageVendor: storageVendor,
@@ -343,7 +346,7 @@ export class StorageController {
       const orgId = extractOrgId(req);
       const doc = await DocumentModel.findOne({
         _id: documentId,
-        orgId: new mongoose.Types.ObjectId(orgId),
+        orgId: toObjectId(orgId, 'organization'),
       });
 
       if (!doc) {
@@ -368,7 +371,7 @@ export class StorageController {
       const hard = req.query.hard === 'true';
       const document = await DocumentModel.findOne({
         _id: documentId,
-        orgId: new mongoose.Types.ObjectId(orgId),
+        orgId: toObjectId(orgId, 'organization'),
       });
 
       if (!document) {
@@ -401,8 +404,9 @@ export class StorageController {
 
       document.isDeleted = true;
       document.deletedByUserId = userId
-        ? (new mongoose.Types.ObjectId(
+        ? (toObjectId(
             userId,
+            'user',
           ) as unknown as mongoose.Schema.Types.ObjectId)
         : undefined;
 
@@ -413,6 +417,104 @@ export class StorageController {
       next(error);
     }
   }
+
+  /**
+   * Removes a document for good, once the record that owned it is deleted: every
+   * stored copy of its file (current and each version), then its metadata. A
+   * document that is already gone counts as removed, so a retried cleanup
+   * succeeds.
+   */
+  async purgeDocumentById(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = new mongoose.Types.ObjectId(extractOrgId(req));
+      const document = await DocumentModel.findOne({
+        _id: req.params.documentId,
+        orgId,
+      });
+      const documents = document ? [document] : [];
+      await this.purgeDocuments(documents, orgId, req);
+      res.status(HTTP_STATUS.OK).json({ purged: documents.length });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Removes a virtual record's stored documents, `record_{id}` and
+   * `metadata_{id}`, wherever they are filed: under the record's folder path
+   * now, or under the flat `records/{id}` path older records used. Several
+   * records can share one virtual record; the caller purges only once none of
+   * them is left.
+   */
+  async purgeVirtualRecordDocuments(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgIdText = extractOrgId(req);
+      const orgId = new mongoose.Types.ObjectId(orgIdText);
+      const virtualRecordId = String(req.params.virtualRecordId);
+      // orgId sits in each branch so each one can use its own index.
+      const documents = await DocumentModel.find({
+        $or: [
+          {
+            orgId,
+            documentPath: getFullDocumentPath(orgIdText, `records/${virtualRecordId}`),
+          },
+          {
+            orgId,
+            documentName: {
+              $in: [`record_${virtualRecordId}`, `metadata_${virtualRecordId}`],
+            },
+          },
+        ],
+      });
+      await this.purgeDocuments(documents, orgId, req);
+      res.status(HTTP_STATUS.OK).json({ purged: documents.length });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Files first, metadata last: if a file cannot be removed its document is kept,
+   * so the next attempt can still find the file.
+   */
+  private async purgeDocuments(
+    documents: DocumentModel[],
+    orgId: mongoose.Types.ObjectId,
+    req: AuthenticatedServiceRequest,
+  ): Promise<void> {
+    if (documents.length === 0) {
+      return;
+    }
+    const adapter = await this.initializeStorageAdapter(req);
+    for (const document of documents) {
+      for (const copy of storedCopies(document)) {
+        try {
+          await adapter.deleteObject(copy);
+        } catch (error) {
+          this.logger.error(
+            'Could not remove a stored file; its document was kept',
+            {
+              documentId: String(document._id),
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+          throw new ServiceUnavailableError(
+            'Could not remove the stored file; the document was kept so the removal can be retried',
+          );
+        }
+      }
+      await DocumentModel.deleteOne({ _id: document._id, orgId });
+    }
+  }
+
   /**
    * Removes a new document whose direct upload never arrived. Refused unless a
    * signed URL was issued for it and storage confirms its file is absent, so a
@@ -430,7 +532,7 @@ export class StorageController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const orgId = new mongoose.Types.ObjectId(extractOrgId(req));
+      const orgId = toObjectId(extractOrgId(req), 'organization');
       const { documentId } = req.params;
       const document = await DocumentModel.findOne({ _id: documentId, orgId });
       if (!document) {
@@ -1001,7 +1103,10 @@ export class StorageController {
         document,
         resolvedVersion,
         undefined, // fileName is not required for download TODO: fix this usage
-        expirationTimeInSeconds ? Number(expirationTimeInSeconds) : 3600,
+        Math.min(
+          expirationTimeInSeconds ? Number(expirationTimeInSeconds) : 3600,
+          MAX_SIGNED_URL_TTL_SECONDS,
+        ),
       );
 
       if (document.storageVendor === StorageVendor.Local) {
@@ -1113,6 +1218,13 @@ export class StorageController {
       const currentVersionNote = req.body.currentVersionNote;
       const nextVersionNote = req.body.nextVersionNote;
       const userId = extractUserId(req);
+      // Converted before any storage write, so a malformed id can't leave new bytes behind a stale record.
+      const initiatedByUserId = userId
+        ? (toObjectId(
+            userId,
+            'user',
+          ) as unknown as mongoose.Schema.Types.ObjectId)
+        : undefined;
       const orgId = extractOrgId(req);
       const docResult: DocumentInfoResponse | undefined = await getDocumentInfo(
         req,
@@ -1208,11 +1320,7 @@ export class StorageController {
           size: document.sizeInBytes,
           extension: document.extension,
           note: currentVersionNote,
-          initiatedByUserId: userId
-            ? (new mongoose.Types.ObjectId(
-                userId,
-              ) as unknown as mongoose.Schema.Types.ObjectId)
-            : undefined,
+          initiatedByUserId,
           createdAt: Date.now(),
         });
       } else {
@@ -1280,11 +1388,7 @@ export class StorageController {
             size: document.sizeInBytes,
             extension: document.extension,
             note: currentVersionNote,
-            initiatedByUserId: userId
-              ? (new mongoose.Types.ObjectId(
-                  userId,
-                ) as unknown as mongoose.Schema.Types.ObjectId)
-              : undefined,
+            initiatedByUserId,
             createdAt: Date.now(),
           });
         }
@@ -1344,11 +1448,7 @@ export class StorageController {
         mutationCount: document.mutationCount,
         extension: fileExtension,
         note: nextVersionNote,
-        initiatedByUserId: userId
-          ? (new mongoose.Types.ObjectId(
-              userId,
-            ) as unknown as mongoose.Schema.Types.ObjectId)
-          : undefined,
+        initiatedByUserId,
         createdAt: Date.now(),
       });
       if (storageType === StorageVendor.S3 && currentResponse?.data) {
@@ -1378,6 +1478,13 @@ export class StorageController {
         (req.body as { version?: number })?.version;
       const { note } = req.body as { note: string };
       const userId = extractUserId(req);
+      // Converted before any storage write, so a malformed id can't leave new bytes behind a stale record.
+      const initiatedByUserId = userId
+        ? (toObjectId(
+            userId,
+            'user',
+          ) as unknown as mongoose.Schema.Types.ObjectId)
+        : undefined;
       const orgId = extractOrgId(req);
       const docResult: DocumentInfoResponse | undefined = await getDocumentInfo(
         req,
@@ -1485,11 +1592,7 @@ export class StorageController {
         extension: document.extension,
         note: note,
         size: document.versionHistory[versionNum]?.size,
-        initiatedByUserId: userId
-          ? (new mongoose.Types.ObjectId(
-              userId,
-            ) as unknown as mongoose.Schema.Types.ObjectId)
-          : undefined,
+        initiatedByUserId,
         createdAt: Date.now(),
       });
 
@@ -1514,7 +1617,7 @@ export class StorageController {
 
       const document = await DocumentModel.findOne({
         _id: documentId,
-        orgId: new mongoose.Types.ObjectId(orgId),
+        orgId: toObjectId(orgId, 'organization'),
       });
 
       if (!document || !document.documentPath) {

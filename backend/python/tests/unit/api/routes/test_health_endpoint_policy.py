@@ -163,19 +163,16 @@ class TestBulkRoutes:
         initialize.assert_not_awaited()
 
 
-class TestProviderErrorsAreOneShortLine:
-    async def test_unexpected_failure_reports_one_capped_line(self, default_mode: None) -> None:
+class TestProviderErrorsStayInTheLog:
+    async def test_unexpected_failure_returns_fixed_text(self, default_mode: None) -> None:
         upstream_body = "first line of the provider's answer\n" + "internal detail " * 200
         with patch.object(
             health, "perform_llm_health_check", new_callable=AsyncMock, side_effect=RuntimeError(upstream_body)
         ):
             response = await health.health_check(_request(), "llm", _config("https://api.example/v1"))
 
-        error = _body(response)["error"]
         assert response.status_code == 500
-        assert "first line of the provider's answer" in error
-        assert "internal detail" not in error
-        assert "\n" not in error
+        assert _body(response)["error"] == "Health check failed: RuntimeError"
 
     async def test_failure_without_a_message_still_names_what_failed(self, default_mode: None) -> None:
         with patch.object(health, "perform_llm_health_check", new_callable=AsyncMock, side_effect=RuntimeError()):
@@ -183,13 +180,11 @@ class TestProviderErrorsAreOneShortLine:
 
         assert _body(response)["error"] == "Health check failed: RuntimeError"
 
-    async def test_vision_probe_reports_one_capped_line(self) -> None:
+    async def test_vision_probe_returns_fixed_text(self) -> None:
         long_error = RuntimeError("image input is not supported\n" + "x" * 5000)
         with patch.object(health, "_invoke_with_timeout", new_callable=AsyncMock, side_effect=long_error), patch.object(
             health, "_is_capability_error", return_value=True
         ), patch.object(health, "_get_test_image", return_value="aGk="):
             message = await health._probe_vision(MagicMock(), MagicMock())
 
-        assert message.startswith("Model doesn't support images/vision: image input is not supported")
-        assert len(message) < 300
-        assert "\n" not in message
+        assert message == "Model doesn't support images/vision."

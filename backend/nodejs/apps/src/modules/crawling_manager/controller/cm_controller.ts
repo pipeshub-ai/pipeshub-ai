@@ -314,9 +314,10 @@ export const resumeCrawlingJob =
 
 export const getQueueStats =
   (crawlingService: CrawlingSchedulerService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const { orgId } = req.user as { orgId: string };
     try {
-      const stats = await crawlingService.getQueueStats();
+      const stats = await crawlingService.getQueueStats(orgId);
 
       res.status(HTTP_STATUS.OK).json({
         success: true,

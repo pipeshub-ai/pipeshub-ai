@@ -7,6 +7,7 @@ from app.events.events import EventProcessor
 from app.events.processor import Processor
 from app.modules.entity_resolution import EntityResolver
 from app.modules.indexing.run import IndexingPipeline
+from app.modules.indexing.stored_content_cleanup import StoredContentCleanup
 from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
@@ -150,6 +151,7 @@ class ContainerUtils:
         graph_provider: IGraphDBProvider,
         vector_db_service: IVectorDBService,
         collection_registry: CollectionRegistry,
+        blob_storage: BlobStorage | None = None,
     ) -> IndexingPipeline:
         """Async factory for the legacy IndexingPipeline (collection mgmt, bulk deletes)."""
         pipeline = IndexingPipeline(
@@ -158,6 +160,10 @@ class ContainerUtils:
             graph_provider=graph_provider,
             collection_registry=collection_registry,
             vector_db_service=vector_db_service,
+            stored_content=(
+                StoredContentCleanup(logger, graph_provider, blob_storage)
+                if blob_storage is not None else None
+            ),
         )
         return pipeline
 
@@ -169,10 +175,14 @@ class ContainerUtils:
         return vector_store
 
     async def create_entity_vector_store(
-        self, logger, config_service, vector_db_service, collection_name: str
+        self, logger, config_service, vector_db_service, collection_name: str,
+        recreate_on_dimension_mismatch: bool = False,
     ) -> EntityVectorStore:
         """Async factory for EntityVectorStore"""
-        return EntityVectorStore(logger, config_service, vector_db_service, collection_name)
+        return EntityVectorStore(
+            logger, config_service, vector_db_service, collection_name,
+            recreate_on_dimension_mismatch=recreate_on_dimension_mismatch,
+        )
 
     async def create_entity_resolver(
         self,
@@ -332,10 +342,12 @@ class ContainerUtils:
         from app.services.parsing.client import ParsingClient  # noqa: PLC0415
         return ParsingClient(config_service=config_service)
 
-    async def create_extraction_client(self) -> "ExtractionClient":  # type: ignore[name-defined]
+    async def create_extraction_client(
+        self, config_service: ConfigurationService
+    ) -> "ExtractionClient":  # type: ignore[name-defined]
         """Async factory for ExtractionClient."""
         from app.services.extraction.client import ExtractionClient  # noqa: PLC0415
-        return ExtractionClient()
+        return ExtractionClient(config_service=config_service)
 
     async def create_retrieval_service(
         self,

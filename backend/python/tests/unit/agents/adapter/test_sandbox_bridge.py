@@ -142,6 +142,7 @@ class TestBuildCodingSandboxManager:
         self, monkeypatch,
     ) -> None:
         monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
         _, backend = await self._backend()
         assert isinstance(backend, LocalCodingSandbox)
         # The local backend delegates package policy to its EnvironmentManager.
@@ -182,6 +183,7 @@ class TestBuildCodingSandboxManager:
 
     async def test_limits_are_applied_to_registered_factory(self, monkeypatch) -> None:
         monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
         manager = await build_coding_sandbox_manager(max_concurrent=3, max_lifetime_s=60.0)
         entry = manager._factories[SandboxType.CODING]
         assert entry.limits.max_concurrent == 3
@@ -191,6 +193,7 @@ class TestBuildCodingSandboxManager:
         self, monkeypatch,
     ) -> None:
         monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
         manager = await build_coding_sandbox_manager()
         _, backend = await manager.get_or_create(SandboxType.CODING)
         assert isinstance(backend, LocalCodingSandbox)
@@ -217,6 +220,7 @@ class TestBuildCodingSandboxManager:
         depend on the org reaching the sandbox — the tools call
         `get_or_create` with no context of their own."""
         monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
         manager = await build_coding_sandbox_manager(ctx=_make_context())
         entry = manager._factories[SandboxType.CODING]
         assert entry.default_ctx.org_id == "org-1"
@@ -229,6 +233,7 @@ class TestBuildCodingSandboxManager:
         """Per-request managers, one process-wide ceiling — otherwise N
         concurrent chats each get their own quota and nothing is capped."""
         monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
         first = await build_coding_sandbox_manager()
         second = await build_coding_sandbox_manager()
         assert first._governor is second._governor
@@ -240,6 +245,7 @@ class TestBuildCodingSandboxManager:
         time; silently substituting an ungoverned manager would defer the
         failure into the middle of a conversation."""
         monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
         with patch(
             "app.agents.agent_loop.sandbox_bridge.build_default_registry"
         ) as mock_registry:

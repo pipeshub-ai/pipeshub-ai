@@ -47,6 +47,11 @@ START_URL = "http://site.test/"
 SITE_ADDRESS = "93.184.215.14"
 INTRANET_HOST = "intranet.test"
 INTRANET_ADDRESS = "10.0.0.7"
+# What crawl4ai reports for every page once Playwright's driver process has exited.
+DRIVER_GONE = (
+    "Unexpected error in _crawl_web at line 565 in wrap_api_call\n"
+    "Error: BrowserContext.new_page: Connection closed while reading from the driver"
+)
 _real_sleep = asyncio.sleep
 
 
@@ -120,6 +125,9 @@ class FakeWeb:
         self.browser_loaded: list[str] = []  # every address the browser requested, redirect hops included
         self.browser_starts = 0
         self.browser_broken = False
+        self.browser_dies_after: int | None = None  # page loads until the running browser dies, once
+        self.browser_stays_dead = False  # ...and no new one can be launched
+        self._browser_dead_up_to = 0
         self.storage_docs: dict[str, bytes] = {}
         self.storage_uploads: list[str] = []
         self.storage_buffer_updates: list[str] = []
@@ -252,6 +260,18 @@ class FakeWeb:
 
     # -- Browser side ----------------------------------------------------
 
+    def kill_browser(self) -> None:
+        """Every browser launched so far loses its driver process."""
+        self._browser_dead_up_to = self.browser_starts
+        if self.browser_stays_dead:
+            self.browser_broken = True
+
+    def browser_is_dead(self, launch: int) -> bool:
+        if self.browser_dies_after is not None and len(self.browser_visits) >= self.browser_dies_after:
+            self.browser_dies_after = None
+            self.kill_browser()
+        return 0 < launch <= self._browser_dead_up_to  # 0: a crawler that was never started
+
     def render(self, url: str) -> tuple[str, Page]:
         """What a browser ends up showing for ``url``, following redirects."""
         for _ in range(10):
@@ -270,9 +290,11 @@ def browser_crawler_class(site: FakeWeb) -> type:
     class FakeBrowserCrawler:
         def __init__(self, *_, **__) -> None:
             self.started = False
+            self.launch = 0
 
         async def start(self) -> None:
             site.browser_starts += 1
+            self.launch = site.browser_starts
             if site.browser_broken:
                 raise RuntimeError("BrowserType.launch: Executable doesn't exist")
             self.started = True
@@ -281,6 +303,9 @@ def browser_crawler_class(site: FakeWeb) -> type:
             self.started = False
 
         async def arun(self, url: str, config: object = None, **_: object) -> SimpleNamespace:
+            if site.browser_is_dead(self.launch):
+                return SimpleNamespace(url=url, redirected_url=url, html="", success=False, status_code=None,
+                                       error_message=DRIVER_GONE, crawl_stats=None, js_execution_result=None)
             site.browser_visits.append(url)
             final_url, page = site.render(url)
             if page.browser_aborts:
@@ -515,6 +540,21 @@ class FakeResponse:
         pass
 
 
+def _deliver(response: FakeResponse, content_callback: Callable[[bytes], object]) -> FakeResponse:
+    """What curl_cffi does with a content_callback: the body goes to the callback chunk by chunk and
+    not to ``content``, and a callback that answers CURL_WRITEFUNC_ERROR aborts the transfer, which
+    raises with the response read so far (curl error 23)."""
+    from curl_cffi.curl import CURL_WRITEFUNC_ERROR
+    from curl_cffi.requests.exceptions import RequestException
+
+    chunks = list(response.iter_content(16384))
+    response.content = b""
+    for chunk in chunks:
+        if content_callback(chunk) == CURL_WRITEFUNC_ERROR:
+            raise RequestException("Failure writing output to destination", 23, response)
+    return response
+
+
 class FakeRequestsClient:
     """Stands in for a curl_cffi Session (and the base of the cloudscraper fake): a cookie jar and
     a GET that follows redirects unless told not to, answered by the fake site."""
@@ -553,14 +593,16 @@ class FakeRequestsClient:
         return status, response_headers, body
 
     def get(self, url: str, headers: dict | None = None, timeout: object = None,
-            allow_redirects: bool = True, stream: bool = False) -> FakeResponse:
+            allow_redirects: bool = True, stream: bool = False,
+            content_callback: Callable[[bytes], object] | None = None) -> FakeResponse:
         for _ in range(11):
             status, response_headers, body = self._send(url, headers)
             location = response_headers.get("Location")
             if allow_redirects and status in (301, 302, 303, 307, 308) and location:
                 url = urljoin(url, location)
                 continue
-            return FakeResponse(status, response_headers, body, url)
+            response = FakeResponse(status, response_headers, body, url)
+            return response if content_callback is None else _deliver(response, content_callback)
         raise RuntimeError("too many redirects")
 
 

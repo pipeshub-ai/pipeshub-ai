@@ -86,6 +86,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
@@ -2074,11 +2075,14 @@ class LocalFsConnector(BaseConnector):
         listed: dict[str, Record] = {}
         offset = 0
         while True:
+            # Every record, trash included: the retire path decides what a trashed
+            # one needs, and a listing that hid it would leave it behind for good.
             records = await self.data_entities_processor.get_records_by_status(
                 self.connector_id,
                 status_filters,
                 limit=FULL_SYNC_RESET_BATCH_SIZE,
                 offset=offset,
+                visibility=RecordVisibility.ALL,
             )
             if not records:
                 break

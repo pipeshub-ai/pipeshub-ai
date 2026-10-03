@@ -380,9 +380,10 @@ components:
       name: documentId
       in: path
       required: true
-      description: The document's id.
+      description: The document's id, as returned when it was uploaded or created.
       schema:
         type: string
+        pattern: '^[0-9a-fA-F]{24}$'
   headers:
     X-Conversation-Id:
       description: |
@@ -511,6 +512,15 @@ components:
             crawl:write: Create and manage crawling jobs
 
   schemas:
+    StoragePurgeResult:
+      type: object
+      required:
+        - purged
+      properties:
+        purged:
+          type: integer
+          minimum: 0
+          description: Number of documents removed.
     # ==================== COMMON SCHEMAS ====================
 
     ArtifactGalleryItem:
@@ -23298,7 +23308,9 @@ paths:
         '200':
           description: The file was stored and its document record created.
         '400':
-          description: The request was missing the file, or the file was rejected.
+          description: |
+            The request was missing the file, the file was rejected, or the storage
+            token's organization or user id is malformed.
         '401':
           description: The storage scoped token was missing or invalid.
         '503':
@@ -23354,7 +23366,9 @@ paths:
         '200':
           description: The document record was created.
         '400':
-          description: The request body was incomplete.
+          description: |
+            The request body was incomplete, or the storage token's organization or
+            user id is malformed.
         '401':
           description: The storage scoped token was missing or invalid.
   /document/internal/{documentId}:
@@ -23371,6 +23385,10 @@ paths:
       responses:
         '200':
           description: The document record.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23391,10 +23409,85 @@ paths:
       responses:
         '200':
           description: The document was marked deleted.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
           description: No such document.
+  /document/internal/{documentId}/purge:
+    delete:
+      tags:
+        - Internal Storage
+      summary: Remove a document and its stored files (service-to-service)
+      description: |
+        Removes every stored copy of the document's file (the current file and
+        each version), then the document record. Called when the record that
+        owned the document is deleted. A document that is already gone counts
+        as purged, so the call is safe to repeat. If a stored file cannot be
+        removed the record is kept and the call answers 503, so it can be retried.
+      operationId: internalPurgeDocumentById
+      security:
+        - scopedToken: []
+      parameters:
+        - name: documentId
+          in: path
+          required: true
+          description: The document's id, a 24-character hex MongoDB ObjectId.
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+      responses:
+        '200':
+          description: How many documents were removed (0 if it was already gone).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoragePurgeResult'
+        '400':
+          description: The document id is not a 24-character hex id.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '503':
+          description: A stored file could not be removed; the document was kept so the removal can be retried.
+  /document/internal/records/{virtualRecordId}/purge:
+    delete:
+      tags:
+        - Internal Storage
+      summary: Remove a processed record's documents and stored files (service-to-service)
+      description: |
+        Removes the virtual record's processed-content documents
+        (`record_{virtualRecordId}` and `metadata_{virtualRecordId}`) wherever
+        they are filed in the organisation, plus anything at the older flat
+        path `records/{virtualRecordId}`, together with their stored files.
+        Records with identical content share one virtual record id, so the
+        caller purges only once no record uses it. Safe to repeat.
+      operationId: internalPurgeVirtualRecordDocuments
+      security:
+        - scopedToken: []
+      parameters:
+        - name: virtualRecordId
+          in: path
+          required: true
+          description: Virtual record id (letters, digits, `-` and `_`); matched exactly, never as a prefix.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,128}$'
+      responses:
+        '200':
+          description: How many documents were removed (0 if none were filed there).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoragePurgeResult'
+        '400':
+          description: The virtual record id is not valid.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '503':
+          description: A stored file could not be removed; its document was kept so the removal can be retried.
   /document/internal/{documentId}/download:
     get:
       tags:
@@ -23425,6 +23518,10 @@ paths:
       responses:
         '200':
           description: A download link, or the file itself for local storage.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23455,6 +23552,10 @@ paths:
               schema:
                 type: string
                 format: binary
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23483,6 +23584,10 @@ paths:
       responses:
         '200':
           description: The document's bytes were replaced.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23518,6 +23623,10 @@ paths:
       responses:
         '200':
           description: The new version was stored.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23556,7 +23665,10 @@ paths:
         '200':
           description: The document was rolled back.
         '400':
-          description: The note was missing, or the version was not a whole number.
+          description: |
+            The note was missing, the version was not a whole number, the document
+            id is not a 24-character hex id, or the storage token's organization or
+            user id is malformed.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23577,6 +23689,10 @@ paths:
       responses:
         '200':
           description: A time-limited upload link.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23597,6 +23713,10 @@ paths:
       responses:
         '200':
           description: Whether the document has changed since it was stored.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -39537,6 +39657,12 @@ paths:
         Remove an AI model provider configuration. Fails with 409 when agents still
         reference the model. If the deleted entry was default, the first remaining
         entry for that type is promoted to default.
+
+        Deleting the embedding model that embeds (the default one, else the first)
+        hands embedding to the model that would take over, or to the built-in model
+        when none is left. That model goes through the same check as setting a new
+        default: refused with 400 while the vector store holds vectors from the
+        deleted model, and the empty store is rebuilt for the replacement model.
       operationId: deleteAIModelProvider
       security:
         - bearerAuth: []
@@ -39574,14 +39700,28 @@ paths:
         '400':
           description: |
             Model type mismatch — the `modelKey` exists under a different `modelType`
-            than the path parameter.
+            than the path parameter; or the model is the embedding model in use while
+            the vector store holds its vectors (standard error envelope, message
+            "This model is embedding your indexed content. Delete the embeddings in
+            Labs first, then change or delete the model and re-embed.").
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AIModelProviderSimpleError'
-              example:
-                status: error
-                message: "Model key 'f3a4b5b6-5b6c-4e85-9097-3202cfe696fc' belongs to type 'llm', not 'embedding'"
+                oneOf:
+                  - $ref: '#/components/schemas/AIModelProviderSimpleError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                typeMismatch:
+                  summary: Model type mismatch
+                  value:
+                    status: error
+                    message: "Model key 'f3a4b5b6-5b6c-4e85-9097-3202cfe696fc' belongs to type 'llm', not 'embedding'"
+                embeddingInUse:
+                  summary: The embedding model in use, with vectors stored
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "This model is embedding your indexed content. Delete the embeddings in Labs first, then change or delete the model and re-embed."
         '401':
           description: Unauthorized
         '403':
@@ -40871,6 +41011,7 @@ paths:
       summary: Get Slack bot configurations
       description: |
         Retrieve all Slack bot configurations for the organization.
+        Bot tokens and signing secrets are masked in this response.
       operationId: getSlackBotConfigs
       security:
         - bearerAuth: []
@@ -40888,6 +41029,24 @@ paths:
                     type: array
                     items:
                       type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        agentId:
+                          type: string
+                          nullable: true
+                        createdAt:
+                          type: string
+                        updatedAt:
+                          type: string
+                        botToken:
+                          type: string
+                          description: Masked. The stored bot token is not returned.
+                        signingSecret:
+                          type: string
+                          description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
         '403':
@@ -40917,12 +41076,72 @@ paths:
               schema:
                 type: object
                 properties:
-                  message:
+                  status:
                     type: string
+                  config:
+                    type: object
+                    description: The created configuration. botToken and signingSecret are masked.
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      agentId:
+                        type: string
+                        nullable: true
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      botToken:
+                        type: string
+                        description: Masked. The stored bot token is not returned.
+                      signingSecret:
+                        type: string
+                        description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
         '403':
           description: Forbidden - Admin access required
+
+  /configurationManager/internal/slack-bot:
+    get:
+      tags:
+        - Configuration Manager
+      summary: Get Slack bot credentials for signature verification
+      description: |
+        Service-to-service only. Requires the slack-bot:verify scope, which only
+        the Slack bot process mints. Returns the fields that process needs to
+        verify a request signature. Bot tokens and signing secrets are not masked.
+      operationId: getInternalSlackBotConfigs
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Slack bot credentials retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  configs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        agentId:
+                          type: string
+                          nullable: true
+                        botToken:
+                          type: string
+                        signingSecret:
+                          type: string
+        '401':
+          description: The scoped token was missing, invalid, or did not include slack-bot:verify
 
   /configurationManager/slack-bot/{configId}:
     put:
@@ -40955,8 +41174,29 @@ paths:
               schema:
                 type: object
                 properties:
-                  message:
+                  status:
                     type: string
+                  config:
+                    type: object
+                    description: The updated configuration. botToken and signingSecret are masked.
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      agentId:
+                        type: string
+                        nullable: true
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      botToken:
+                        type: string
+                        description: Masked. The stored bot token is not returned.
+                      signingSecret:
+                        type: string
+                        description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
         '403':
@@ -41740,7 +41980,9 @@ paths:
         - Crawling Jobs
       summary: Get all crawling job statuses
       description: |
-        Retrieve the status of all scheduled crawling jobs across the organization.
+        Retrieve the status of all scheduled crawling jobs across the organization,
+        including org-wide connectors and other members' personal connectors.
+        Only an organization admin may call this; a member is refused with 400.
       operationId: getAllCrawlingJobStatus
       security:
         - bearerAuth: []
@@ -41759,8 +42001,16 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/JobStatus'
+        '400':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid JWT token required
+        '403':
+          description: Token lacks the required scope
 
     delete:
       tags:
@@ -41882,6 +42132,7 @@ paths:
       summary: Get queue statistics
       description: |
         Retrieve statistics for the crawling job queue including active, waiting, and completed job counts.
+        Counts cover only the caller's organization.
       operationId: getQueueStats
       security:
         - bearerAuth: []

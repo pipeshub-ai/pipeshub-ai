@@ -84,6 +84,8 @@ def mock_data_entities_processor():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     u = User(
         email="user@test.com",
@@ -1247,6 +1249,8 @@ def mock_dep():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     u = User(
@@ -2118,6 +2122,7 @@ class TestSyncBucketFullCoverage:
         mock_ext_filter = MagicMock()
         mock_ext_filter.is_empty.return_value = False
         mock_ext_filter.value = ["pdf"]
+        mock_ext_filter.operator_value = "in"
         connector.sync_filters = MagicMock()
         connector.sync_filters.get = MagicMock(side_effect=lambda k: mock_ext_filter if k == "file_extensions" else None)
         connector.sync_filters.__bool__ = MagicMock(return_value=True)
@@ -2141,6 +2146,7 @@ class TestSyncBucketFullCoverage:
         mock_ext_filter = MagicMock()
         mock_ext_filter.is_empty.return_value = False
         mock_ext_filter.value = ".pdf"
+        mock_ext_filter.operator_value = "in"
         connector.sync_filters = MagicMock()
         connector.sync_filters.get = MagicMock(side_effect=lambda k: mock_ext_filter if k == "file_extensions" else None)
         connector.sync_filters.__bool__ = MagicMock(return_value=True)
@@ -2226,6 +2232,7 @@ class TestSyncBucketFullCoverage:
         mock_ext_filter = MagicMock()
         mock_ext_filter.is_empty.return_value = False
         mock_ext_filter.value = ["pdf"]
+        mock_ext_filter.operator_value = "in"
         connector.sync_filters = MagicMock()
         connector.sync_filters.get = MagicMock(side_effect=lambda k: mock_ext_filter if k == "file_extensions" else None)
         connector.sync_filters.__bool__ = MagicMock(return_value=True)
@@ -2249,6 +2256,7 @@ class TestSyncBucketFullCoverage:
         mock_ext_filter = MagicMock()
         mock_ext_filter.is_empty.return_value = False
         mock_ext_filter.value = ["pdf"]
+        mock_ext_filter.operator_value = "in"
         connector.sync_filters = MagicMock()
         connector.sync_filters.get = MagicMock(side_effect=lambda k: mock_ext_filter if k == "file_extensions" else None)
         connector.sync_filters.__bool__ = MagicMock(return_value=True)
