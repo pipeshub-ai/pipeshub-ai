@@ -318,8 +318,10 @@ def _pack_cases() -> list[Any]:
 def test_pack_question(
     pipeshub_client: PipeshubClient, demo_connector: str, personas: dict[str, str],
     pack: str, question_id: str, persona: str, chat_mode: str,
+    answer_judge: AnswerJudge | None,
 ) -> None:
-    """A Build Pack question, scored as the standalone harness scores it.
+    """A Build Pack question, scored as the standalone harness scores it, with
+    its plain-sentence facts read by the answer judge.
 
     A question the persona may answer ("cites") needs PACK_MIN_PASS of
     PACK_RUNS. One hinging on a restricted record needs every run, whichever
@@ -336,7 +338,7 @@ def test_pack_question(
     for _ in range(PACK_RUNS):
         answer, cited_names = ask(pipeshub_client.base_url, personas[persona], q["ask"], chat_mode)
         cited = cited_fixture_ids(cited_names, name_to_id, thread_of)
-        ok, verdict = score(q, expect, cited, answer)
+        ok, verdict = score(q, expect, cited, answer, judge=answer_judge)
         passes += int(ok)
         verdicts.append(
             verdict if ok

@@ -1642,7 +1642,8 @@ pack_questions:
       # #deals thread is the at-risk moment, so it can't stand in for the call notes.
       must_cite: [drive-sales-northwind-plan, drive-sales-northwind-call-0416]
       answer_must_mention: ["Northwind"]
-      answer_must_mention_any_of: ["on time", "on track", "no longer at risk", "not at risk", "back on schedule", "no longer evaluating"]
+      answer_must_state:
+        - "The Northwind Traders renewal is no longer at risk."
       must_not_cite: [drive-pricing-2026, drive-billing-resilience]
       personas: { alice: cites, bob: cites }
     - id: s2
@@ -1663,8 +1664,10 @@ pack_questions:
       # SUP-121 is the report and points to finance's tickets for what was done.
       must_cite_any_of: [jira-fin-37, jira-fin-38]
       answer_must_mention: ["Contoso"]
-      answer_must_mention_any_of: ["reissue", "reissuing", "credit note", "new invoice", "corrected invoice"]
-      answer_must_not_mention: ["still open", "remains open"]
+      answer_must_state:
+        - "Contoso's invoice was reissued."
+      answer_must_not_state:
+        - "The Contoso invoice problem is still open."
       must_not_cite: [drive-pricing-2026]
       personas: { alice: cites, bob: cites }
   marketing:
@@ -1674,7 +1677,8 @@ pack_questions:
       # and the engineering change are corroboration, tracked as a stretch.
       must_cite: [drive-mkt-exports-launch-plan]
       stretch_cite_any_of: [slack-launch-0416, gh-pr-211, drive-release-notes-q2]
-      answer_must_mention_any_of: ["21 April", "April 21", "Apr 21", "21 Apr", "21st"]
+      answer_must_state:
+        - "Background exports launched on 21 April."
       personas: { alice: cites, bob: cites }
     - id: m2
       ask: "How did the background exports launch campaign perform?"
@@ -1697,10 +1701,12 @@ pack_questions:
     - id: f2
       ask: "How much can I spend on a purchase without my manager's approval?"
       must_cite: [drive-fin-expense-policy]
-      # Both facts: the band includes $250 itself ("under $250" is wrong at the edge),
-      # and it needs no approval ("up to $250 needs your manager" fits the amount alone).
-      answer_must_mention_any_of: ["up to $250", "$250 or less", "$250 and under", "$250 or under", "up to 250 dollars"]
-      answer_must_mention_any_of_2: ["no approval", "without approval", "without any approval", "without any manager approval", "without manager approval", "without your manager's approval", "without a manager's approval", "without needing approval", "no manager approval", "no need for approval", "don't need approval", "do not need approval", "doesn't need approval", "does not need approval", "approval isn't needed", "approval is not needed", "approval isn't required", "approval is not required"]
+      # The band includes $250 itself ("under $250" is wrong at the edge), and it
+      # needs no approval ("up to $250 needs your manager" names the amount but is wrong).
+      answer_must_state:
+        - "A purchase of up to and including $250 needs no approval."
+      answer_must_not_state:
+        - "Purchases above $250 need no approval."
       personas: { alice: cites, bob: cites }
     - id: f3
       ask: "What rate do we pay for card processing?"
@@ -1714,7 +1720,8 @@ pack_questions:
       ask: "How many days of unused annual leave can I carry over into next year?"
       # Either says the limit is now five days; the handbook's three is out of date.
       must_cite_any_of: [slack-people-0302, sn-hr-1203]
-      answer_must_mention_any_of: ["five", "5"]
+      answer_must_state:
+        - "The limit for carrying over unused annual leave is five days."
       personas: { alice: cites, bob: cites }
     - id: h2
       ask: "What should a new engineer do in their first week?"
