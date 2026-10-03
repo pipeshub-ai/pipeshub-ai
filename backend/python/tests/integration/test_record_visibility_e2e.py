@@ -54,6 +54,9 @@ from app.connectors.core.registry.folder_scope import (
     FolderScope,
     remove_records_outside_scope,
 )
+from app.connectors.sources.atlassian.confluence_datacenter.connector import (
+    ConfluenceDataCenterConnector,
+)
 from app.connectors.sources.github_teams.models import blob_external_id
 from app.connectors.sources.github_teams.repos import ReposSync
 from app.connectors.sources.nextcloud.connector import NextcloudConnector
@@ -772,3 +775,39 @@ async def test_the_cascade_delete_takes_a_trashed_root_only_when_asked(world: _W
     assert taken["failed_records"] == [] and taken["successfully_deleted"] == 1, taken
     assert await g.get_document(rid, CollectionNames.RECORDS.value) is None
     assert await g.get_document(rid, CollectionNames.FILES.value) is None
+
+
+async def test_a_child_listing_finds_the_trash_only_when_asked(world: _World) -> None:
+    """The walk Confluence's page delete uses to collect comments, on the real store."""
+    processor = _processor(world)
+
+    live = await processor.get_records_by_parent(world.connector_id, world.parent_ext)
+    every = await processor.get_records_by_parent(
+        world.connector_id, world.parent_ext, visibility=RecordVisibility.ALL
+    )
+
+    assert world.ids["trashed"] not in _ids(live) and world.ids["live"] in _ids(live)
+    assert {world.ids["trashed"], world.ids["live"]} <= _ids(every)
+
+
+async def test_confluence_dc_removes_a_trashed_page_and_its_trashed_comment(world: _World) -> None:
+    """A page the space no longer lists is deleted even from the trash, with the comments under it."""
+    records = CollectionNames.RECORDS.value
+    page_id, comment_id = world.ids["trashed_shared"], world.ids["trashed"]
+    await world.graph.update_node(
+        comment_id, records,
+        {"externalParentId": world.ext("trashed_shared"), "recordType": RecordType.COMMENT.value},
+    )
+    processor = _processor(world)
+    stored = await processor.get_records_by_status(world.connector_id, None, visibility=RecordVisibility.ALL)
+    page = next(r for r in stored if r.id == page_id)
+    connector = SimpleNamespace(
+        data_entities_processor=processor, connector_id=world.connector_id, logger=logger,
+        _cascade_succeeded=ConfluenceDataCenterConnector._cascade_succeeded,
+    )
+
+    assert await ConfluenceDataCenterConnector._delete_content_records(connector, [page]) is True
+
+    assert await world.graph.get_document(page_id, records) is None
+    assert await world.graph.get_document(comment_id, records) is None
+    assert await world.graph.get_document(world.ids["live_shared"], records) is not None

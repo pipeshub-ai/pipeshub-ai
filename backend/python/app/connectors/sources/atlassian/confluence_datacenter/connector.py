@@ -81,6 +81,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
@@ -1600,8 +1601,10 @@ class ConfluenceDataCenterConnector(BaseConnector):
         stored: list[Record] = []
         after_key: str | None = None
         while True:
+            # The trash too: a removal scan must reach a trashed page the space no longer lists.
             page = await self.data_entities_processor.get_records_in_record_group(
-                self.connector_id, space_id, RECORD_SCAN_PAGE_SIZE, after_key
+                self.connector_id, space_id, RECORD_SCAN_PAGE_SIZE, after_key,
+                visibility=RecordVisibility.ALL,
             )
             stored.extend(r for r in page if r.record_type == record_type and not r.is_placeholder)
             if len(page) < RECORD_SCAN_PAGE_SIZE:
@@ -1670,18 +1673,19 @@ class ConfluenceDataCenterConnector(BaseConnector):
             try:
                 comments = [
                     c.id for c in await self.data_entities_processor.get_records_by_parent(
-                        self.connector_id, record.external_record_id
+                        self.connector_id, record.external_record_id, visibility=RecordVisibility.ALL
                     )
                     if c.record_type in comment_types
                 ]
                 if comments:
                     result = await self.data_entities_processor.on_records_deleted_cascade(
-                        comments, self.connector_id, cascade_children=True
+                        comments, self.connector_id, cascade_children=True, include_trashed_roots=True
                     )
                     if not self._cascade_succeeded(result):
                         raise RuntimeError(f"its comments could not all be deleted: {result}")
+                # Removing what the source no longer has, so a root already in the trash goes too.
                 result = await self.data_entities_processor.on_records_deleted_cascade(
-                    [record.id], self.connector_id, cascade_children=False
+                    [record.id], self.connector_id, cascade_children=False, include_trashed_roots=True
                 )
                 if not self._cascade_succeeded(result):
                     raise RuntimeError(f"delete failed: {result}")
@@ -1730,6 +1734,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
             while True:
                 page = await self.data_entities_processor.get_records_by_status(
                     self.connector_id, None, limit=RECORD_SCAN_PAGE_SIZE, after_key=after_key,
+                    visibility=RecordVisibility.ALL,
                 )
                 for r in page:
                     if r.external_record_group_id and r.external_record_group_id not in wanted:
@@ -1779,7 +1784,7 @@ class ConfluenceDataCenterConnector(BaseConnector):
             if not chunk:
                 continue
             result = await self.data_entities_processor.on_records_deleted_cascade(
-                chunk, self.connector_id, cascade_children=True
+                chunk, self.connector_id, cascade_children=True, include_trashed_roots=True
             )
             if not self._cascade_succeeded(result):
                 self.logger.warning(f"Could not delete the records of space {space_id}; retrying next sync: {result}")

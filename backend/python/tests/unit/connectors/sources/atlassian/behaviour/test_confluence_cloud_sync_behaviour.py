@@ -1021,6 +1021,25 @@ class TestContentGoneFromSource:
         request = api.calls("GET", f"{V2}/spaces/77/pages")[-1]
         assert "status" not in AtlassianApiStub.query(request), "the default lists current and archived pages"
 
+    async def test_a_trashed_page_and_its_trashed_comment_the_source_no_longer_has_are_removed(
+        self, api, db, checkpoints, search
+    ) -> None:
+        """The scans list the trash, so a record already in it does not stay behind for good."""
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        db.records["c1"] = CommentRecord(
+            org_id="org-1", record_name="c", record_type=RecordType.COMMENT, external_record_id="c1",
+            external_record_group_id="77", parent_external_record_id="11", parent_record_type=RecordType.WEBPAGE,
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR,
+            version=0, author_source_id="acc-ana", is_deleted=True,
+        )
+        db.records["11"].is_deleted = True
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10"))
+
+        await connector._sync_spaces_content([ENG])
+
+        assert not {"11", "att2", "c1"} & set(db.records)
+        assert "10" in db.records
+
     async def test_a_page_the_account_can_no_longer_see_is_removed_and_returns_when_visible_again(
         self, api, db, checkpoints, search
     ) -> None:
@@ -1326,6 +1345,19 @@ class TestSpacesOutOfScope:
         assert connector._space_listing_complete is False
         assert {"770", "990"} <= set(db.records) and db.deleted == []
         assert checkpoints.values_for("confluence_pages/HR")["last_sync_time"]
+
+    async def test_a_space_no_longer_listed_takes_its_trashed_records_with_it(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced_in(db, checkpoints, search)
+        db.records["990"].is_deleted = True
+        self._spaces(api, ("77", "ENG"))
+
+        spaces = await connector._sync_spaces()
+        await connector._remove_spaces_out_of_scope(spaces)
+
+        assert "990" not in db.records
+        assert "99" not in db.record_groups
+        scope = checkpoints.values_for("confluence_space_scope/all")
+        assert (scope["space_ids"], scope["pending"]) == (["77"], []), "the removal finished"
 
     async def test_a_failed_delete_keeps_the_space_and_its_checkpoints_until_the_next_sync(
         self, api, db, checkpoints, search
