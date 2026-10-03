@@ -1449,11 +1449,13 @@ class KnowledgeBaseService:
                     "code": 404
                 }
 
-            # Delete through the shared processor — same generic cascade as the KB-root
-            # path (a folder is just a record). folder_id is no longer used to filter the
-            # delete; records are scoped by the KB (connectorId == kb_id).
+            # Containment is checked by the delete query itself: an id from another
+            # folder, the KB root, or moved out since the request began is kept and
+            # reported as failed.
             processor = await self.processor_for_kb(kb_id)
-            result = await processor.on_records_deleted_cascade(record_ids, kb_id)
+            result = await processor.on_records_deleted_cascade(
+                record_ids, kb_id, within_folder_id=folder_id
+            )
             if result and result.get("success"):
                 result.pop("eventData", None)
                 # Bulk-delete best practice: none of the requested ids matched → 404.
@@ -2000,7 +2002,7 @@ class KnowledgeBaseService:
         """
         try:
             self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+            user = await self.graph_provider.get_user_by_user_id(user_id=user_id, raise_on_error=True)
 
             if not user:
                 self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
@@ -2096,7 +2098,7 @@ class KnowledgeBaseService:
         rely on receiving an empty result when the user has no access to a particular KB.
         """
         try:
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+            user = await self.graph_provider.get_user_by_user_id(user_id=user_id, raise_on_error=True)
             if not user:
                 self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
                 return {

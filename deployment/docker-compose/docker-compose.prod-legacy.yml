@@ -144,6 +144,7 @@ services:
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-20m}
 
       # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
       # runtime_threads.py propagates this to OPENBLAS and MKL automatically.
@@ -191,7 +192,16 @@ services:
       - SANDBOX_ALLOW_NETWORK=${SANDBOX_ALLOW_NETWORK:-false}
       - SANDBOX_EGRESS_ALLOW_CIDRS=${SANDBOX_EGRESS_ALLOW_CIDRS:-}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+      - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      # The app never sees the Docker socket; sandbox containers are created
+      # through docker-socket-proxy, which only admits sandbox-shaped requests.
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
     depends_on:
+      docker-socket-proxy:
+        # Not service_healthy: an older image (rollback.sh) has no proxy
+        # module, and that must cost run_code, not the whole app.
+        condition: service_started
+        required: false
       qdrant:
         condition: service_healthy
       kafka-1:
@@ -206,13 +216,17 @@ services:
         condition: service_healthy
       sandbox-image:
         condition: service_completed_successfully
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - default
+      - sandbox-control
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
       # Persist the HuggingFace model cache so models pulled at runtime survive
       # container recreation instead of being re-downloaded on every restart.
       - pipeshub_hf_cache:/root/.cache/huggingface
-      - /var/run/docker.sock:/var/run/docker.sock  # Required for SANDBOX_MODE=docker
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -226,6 +240,43 @@ services:
       timeout: 10s
       retries: 5
       start_period: 300s
+
+  # The only container with the Docker socket. It forwards just the calls the
+  # coding sandbox makes, refuses any container create that would reach the
+  # host (privileged, binds, devices, host namespaces, other images or
+  # networks), and only acts on containers it created. See
+  # backend/python/app/sandbox/docker_proxy.py.
+  docker-socket-proxy:
+    image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
+    restart: always
+    # Root only to open the root-owned socket; it holds no capabilities.
+    user: "0:0"
+    working_dir: /app/python
+    # Bypasses the image entrypoint, which drops privileges for the app and
+    # needs capabilities this container deliberately does not have.
+    entrypoint: ["python", "-m", "app.docker_proxy_main"]
+    environment:
+      - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+      - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - sandbox-control
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2375/_ping', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   mongodb:
     image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
@@ -413,3 +464,10 @@ volumes:
     driver: local
   kafka_data:
     driver: local
+
+networks:
+  # App <-> docker-socket-proxy only. Internal: no route out, and nothing else
+  # can reach the proxy.
+  sandbox-control:
+    driver: bridge
+    internal: true

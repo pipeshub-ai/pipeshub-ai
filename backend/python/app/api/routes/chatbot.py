@@ -67,6 +67,7 @@ from app.utils.attachment_mime_types import (
 )
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
+from app.utils.record_access import service_account_upload_permission_edges
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -214,12 +215,9 @@ def _build_image_blocks(file_content: bytes, mime_type: str) -> BlocksContainer:
 async def _build_text_blocks(file_content: bytes) -> BlocksContainer:
     """Parse a plain-text or markdown file into a BlocksContainer using the default MarkdownParser."""
     from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
-    try:
-        text = file_content.decode("utf-8")
-    except UnicodeDecodeError:
-        text = file_content.decode("latin-1")
+    from app.modules.parsers.text_decoding import decode_text
     parser = MarkdownItParser()
-    return await parser.parse_to_blocks(text.strip())
+    return await parser.parse_to_blocks(decode_text(file_content).strip())
 
 
 async def _build_docx_blocks(
@@ -792,19 +790,9 @@ async def upload_chat_attachments(
             # can be created. Grant an org-scoped permission edge instead so the
             # uploaded file is readable org-wide through the standard ACL path
             # (orgAccessPermissionEdge in check_record_access_with_details).
-            permission_edges = [
-                {
-                    "from_id": org_id,
-                    "from_collection": CollectionNames.ORGS.value,
-                    "to_id": rd["_key"],
-                    "to_collection": CollectionNames.RECORDS.value,
-                    "type": "ORGANIZATION",
-                    "role": "READER",
-                    "createdAtTimestamp": ts,
-                    "updatedAtTimestamp": ts,
-                }
-                for rd in record_docs
-            ]
+            permission_edges = service_account_upload_permission_edges(
+                org_id, [rd["_key"] for rd in record_docs], ts,
+            )
             await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
         else:
             permission_edges = [

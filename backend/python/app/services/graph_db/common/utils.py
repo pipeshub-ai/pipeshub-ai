@@ -39,6 +39,24 @@ CONTAINER_FILTER_MAX_TERMS = 25_000
 # omitted is unrecoverable recall loss with nothing to notice.
 CONTAINER_INHERIT_MAX_DEPTH = 20
 
+# A user reaching one KB through several grants (direct, or more than one team)
+# acts with the strongest of them: the ranking both providers already use to pick
+# the highest permission on a record. Roles not listed rank below all of these.
+KB_ROLE_PRIORITY: dict[str, int] = {
+    "OWNER": 6,
+    "ORGANIZER": 5,
+    "FILEORGANIZER": 4,
+    "WRITER": 3,
+    "COMMENTER": 2,
+    "READER": 1,
+}
+
+# How deep a delete follows containment (PARENT_CHILD / ATTACHMENT) from a
+# folder or record. Folder nesting has no enforced limit, so this is a guard
+# against a cycle, not a product limit: a cascade that stopped at 20 left
+# anything deeper behind.
+CONTAINMENT_MAX_DEPTH = 1000
+
 # Records considered per entity when listing an entity's records, taken
 # before the newest-first sort. Without a bound, a language or broad category
 # linked to most of an org's records is sorted in full on every page. Past the

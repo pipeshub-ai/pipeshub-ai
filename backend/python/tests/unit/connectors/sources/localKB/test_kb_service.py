@@ -1305,7 +1305,41 @@ class TestDeleteRecordsInFolder:
 
         result = await service.delete_records_in_folder("kb1", "f1", ["r1"], "user1")
         assert result["success"] is True
-        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(["r1"], "kb1")
+        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
+            ["r1"], "kb1", within_folder_id="f1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_delete_is_scoped_to_the_folder_in_the_same_query(self, service):
+        """The cascade gets the folder, so containment is checked where the delete runs."""
+        _setup_writer(service)
+        service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+
+        await service.delete_records_in_folder("kb1", "f1", ["in-f1", "in-f2"], "user1")
+
+        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
+            ["in-f1", "in-f2"], "kb1", within_folder_id="f1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_only_ids_outside_the_folder_answers_404(self, service):
+        _setup_writer(service)
+        service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
+        # What the real cascade reports when no root passed the containment check.
+        service.processor_for_kb.return_value.on_records_deleted_cascade = AsyncMock(return_value={
+            "success": True, "deleted_records": [], "total_requested": 2,
+            "successfully_deleted": 0, "failed_count": 2,
+            "failed_records": [
+                {"record_id": "in-f2", "reason": "Validation failed"},
+                {"record_id": "root", "reason": "Validation failed"},
+            ],
+        })
+
+        result = await service.delete_records_in_folder("kb1", "f1", ["in-f2", "root"], "user1")
+
+        assert result["success"] is False
+        assert result["code"] == 404
+        assert {f["record_id"] for f in result["failed_records"]} == {"in-f2", "root"}
 
     @pytest.mark.asyncio
     async def test_insufficient_permission(self, service):
@@ -2423,6 +2457,14 @@ class TestMoveRecord:
 
 class TestListAllRecords:
     @pytest.mark.asyncio
+    async def test_a_failed_user_read_is_an_error_not_a_missing_user(self, service):
+        service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("graph down"))
+        result = await service.list_all_records("user1", "org1")
+        service.graph_provider.get_user_by_user_id.assert_awaited_once_with(user_id="user1", raise_on_error=True)
+        assert result.get("code") != 404
+        assert "error" in result
+
+    @pytest.mark.asyncio
     async def test_success(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.list_all_records = AsyncMock(
@@ -2570,6 +2612,14 @@ class TestListKbRecordsExtended:
 
 
 class TestListKbRecords:
+    @pytest.mark.asyncio
+    async def test_a_failed_user_read_is_an_error_not_a_missing_user(self, service):
+        service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("graph down"))
+        result = await service.list_kb_records("kb1", "user1", "org1")
+        service.graph_provider.get_user_by_user_id.assert_awaited_once_with(user_id="user1", raise_on_error=True)
+        assert result.get("code") != 404
+        assert "error" in result
+
     @pytest.mark.asyncio
     async def test_user_not_found(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)

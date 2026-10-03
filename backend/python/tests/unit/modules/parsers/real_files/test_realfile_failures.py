@@ -214,22 +214,12 @@ async def test_empty_image_is_reported_as_empty(logger) -> None:
     assert caught.value.code == ParseErrorCode.EMPTY_CONTENT
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="csv_parser.py: a CSV saved as 'CSV UTF-8' by Excel starts with a byte-order "
-    "mark, which stays glued to the first column name",
-)
 async def test_csv_byte_order_mark_is_not_part_of_the_first_header() -> None:
     content = "﻿Name,City\nZoë,Zürich\n".encode()
     container = await CSVParser(config_service=MagicMock()).parse_to_blocks_lightweight(content)
     assert table_rows(container) == ["Name: Zoë, City: Zürich"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="csv_parser.py: Windows-1252 files are decoded as Latin-1, which turns curly "
-    "quotes and dashes into invisible control characters",
-)
 async def test_windows_1252_csv_keeps_its_punctuation() -> None:
     content = "item,note\nWidget,“best” – top seller\n".encode("cp1252")
     container = await CSVParser(config_service=MagicMock()).parse_to_blocks_lightweight(content)

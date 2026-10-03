@@ -131,7 +131,7 @@ jobs:
     steps:
       # The base branch's copy on pull_request_target, never the PR's.
       - name: Checkout the picker
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
           sparse-checkout: scripts
@@ -374,7 +374,7 @@ jobs:
 
       - name: Set up Node.js
         if: env.RUN_PLAYWRIGHT == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 
@@ -404,16 +404,16 @@ jobs:
         run: docker compose -f docker-compose.integration.arango.yml build
 
       - name: Set up Python ${{ github.event.inputs.python_version || '3.12' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ github.event.inputs.python_version || '3.12' }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       # The examples suite runs the Go SDK starter; the runner image only caches Go.
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.23'
           cache: false
@@ -568,8 +568,9 @@ jobs:
 
       # Restarts Redis, Qdrant, the graph database and MongoDB, kills the
       # indexing process, cuts the app off from its AI provider and makes blob
-      # storage unwritable on the live stack, which would break any test
-      # running beside it. So it runs alone,
+      # storage unwritable on the live stack, and empties and rebuilds the
+      # vector store (Labs cleanup, embedding model change), which would break
+      # any test running beside it. So it runs alone,
       # after everything else on this stack, and only nightly on the core
       # shard's Neo4j pass: one stack, no extra runner, no time added to a PR.
       # A dispatch with connectors=resilience runs it through the step above.
@@ -937,7 +938,7 @@ jobs:
       - name: Send Slack report
         if: ${{ !cancelled() }}
         id: slack-message
-        uses: slackapi/slack-github-action@v2.1.0
+        uses: slackapi/slack-github-action@b0fa283ad8fea605de13dc3f449259339835fc52 # v2.1.0
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -1168,7 +1169,7 @@ jobs:
 
       - name: Upload reports artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: reports-${{ matrix.graph_db }}-${{ matrix.shard }}
           path: integration-tests/reports/

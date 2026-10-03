@@ -142,6 +142,32 @@ class VectorStoreProbe:
         result = await client.get_collections()
         return sorted(c.name for c in result.collections)
 
+    async def dense_size(self, collection: str = "records") -> int | None:
+        """Width of the collection's dense vectors, or None if it does not exist.
+
+        This is what the product rebuilds on an embedding model change, and
+        what every upsert has to match.
+        """
+        client = await self._conn()
+        try:
+            info = await client.get_collection(collection)
+        except Exception as exc:
+            if _is_missing_collection(exc):
+                return None
+            raise VectorProbeUnavailable(
+                f"Could not read collection {collection!r}: {exc}"
+            ) from exc
+        vectors = info.config.params.vectors
+        if isinstance(vectors, dict):
+            params = vectors.get("dense") or next(iter(vectors.values()), None)
+        else:
+            params = vectors
+        if params is None:
+            raise VectorProbeUnavailable(
+                f"Collection {collection!r} has no dense vector configured: {vectors!r}"
+            )
+        return int(params.size)
+
     async def _count_matching(
         self,
         condition: qmodels.FieldCondition,

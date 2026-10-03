@@ -3,7 +3,6 @@ import { Container } from 'inversify';
 
 import passport from 'passport';
 import { z } from 'zod';
-import session from 'express-session';
 import { attachContainerMiddleware } from '../middlewares/attachContainer.middleware';
 import { AuthSessionRequest } from '../middlewares/types';
 import {
@@ -13,6 +12,7 @@ import {
 import { IamService } from '../services/iam.service';
 import {
   BadRequestError,
+  ForbiddenError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { SessionService } from '../services/session.service';
@@ -22,7 +22,10 @@ import {
   isValidDesktopState,
 } from '../services/samlDesktopHandoff.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
-import { SamlController } from '../controller/saml.controller';
+import {
+  SAML_LOGOUT_UNSUPPORTED_MESSAGE,
+  SamlController,
+} from '../controller/saml.controller';
 import { Logger } from '../../../libs/services/logger.service';
 import { generateAuthToken } from '../utils/generateAuthToken';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
@@ -99,24 +102,9 @@ export function createSamlRouter(container: Container) {
     res.redirect(samlErrorUrl(req, code));
 
   router.use(attachContainerMiddleware(container));
-  router.use(
-    session({
-      secret: config.cookieSecret,
-      resave: true,
-      saveUninitialized: true,
-      cookie: {
-        maxAge: 60 * 60 * 1000, // 1 hour
-        domain: 'localhost',
-        // Not 'auto': the app sets no 'trust proxy', so behind a TLS proxy
-        // req.secure is false and 'auto' would never mark it Secure. Sign-in
-        // state travels in RelayState, so skipping it on plain http is safe.
-        secure: true,
-        sameSite: 'lax',
-      },
-    }),
-  );
+  // No server-side login session: sign-in state travels in RelayState and the
+  // Redis sign-in session, and the callback sets its own token cookies.
   router.use(passport.initialize());
-  router.use(passport.session());
 
   router.get(
     '/signIn',
@@ -143,13 +131,28 @@ export function createSamlRouter(container: Container) {
         // strategy, SAML parse failure before the custom callback fires) we still
         // redirect to /login instead of hitting the global error handler.
         const samlErrorNext = (err?: any) => {
+          if (res.headersSent) {
+            logger.warn('SAML callback continued after its response was sent', {
+              error: err ? err?.message || String(err) : undefined,
+            });
+            return;
+          }
           if (err) {
             logger.error('SAML passport middleware error', { error: err?.message || String(err) });
             return redirectSamlError(req, res, err?.message || String(err));
           }
           next();
         };
-        passport.authenticate("saml", { failureRedirect: samlErrorUrl(req, 'auth_failed') })(req, res, samlErrorNext);
+        const body = req.body as Record<string, unknown> | undefined;
+        if (body?.SAMLRequest !== undefined || req.query.SAMLRequest !== undefined) {
+          logger.warn('Refused a SAML logout request sent to the sign-in callback');
+          redirectSamlError(req, res, SAML_LOGOUT_UNSUPPORTED_MESSAGE);
+          return;
+        }
+        passport.authenticate('saml', {
+          session: false,
+          failureRedirect: samlErrorUrl(req, 'auth_failed'),
+        })(req, res, samlErrorNext);
       } catch (error) {
         logger.error('SAML passport error', { error: error instanceof Error ? error.message : String(error) });
         return redirectSamlError(req, res, 'auth_failed');
@@ -238,6 +241,11 @@ export function createSamlRouter(container: Container) {
         }
 
         if (!user) throw new NotFoundError("User not found");
+        // The assertion was verified against this org's IdP only; the email
+        // lookup above is not org-scoped, so never sign into another org's account.
+        if (String(user.orgId) !== String(orgId)) {
+          throw new ForbiddenError('SAML account does not belong to this organisation');
+        }
 
         await sessionService.completeAuthentication(session);
         // Now 'user' is guaranteed to be available here
