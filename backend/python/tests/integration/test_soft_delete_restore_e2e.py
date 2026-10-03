@@ -15,7 +15,9 @@ provider, with the KB's ``DataSourceEntitiesProcessor`` on a real
 - A record that gave its external id up gets it back when it is free, and is
   refused, unchanged, while a live record holds it.
 - A sync that sees again an item the connector deleted restores it.
-- ``restore_records`` touches only records still in the trash under the batch named.
+- ``restore_records`` touches only records still in the trash under the batch
+  named, and brings back all of the items it is given or none of them, also
+  when the graph refuses one of the writes.
 
 Arango enforces the records schema strictly, so its run also proves restore
 writes only declared fields.
@@ -60,6 +62,7 @@ from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseServ
 from app.models.entities import FileRecord, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.utils import TRASH_STATE_FIELDS
+from app.services.graph_db.neo4j import neo4j_provider as neo4j_provider_module
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.test_record_visibility_e2e import _ids_anywhere
@@ -459,4 +462,56 @@ async def test_a_failed_name_lookup_fails_the_restore_and_keeps_the_record_in_th
     assert failed, "the restore never looked the name up"
     assert result["success"] is False and result["code"] == 500, result
     assert (await world.stored(name))["isDeleted"] is True
+    assert world.reindexed() == set()
+
+
+async def test_restore_records_brings_back_all_of_its_items_or_none(world: _World) -> None:
+    subtree = ("folder", *FOLDER_FILES)
+    await world.trash("folder")
+    await world.trash("solo")
+    batch = (await world.stored("folder"))["deleteBatchId"]
+    ids = [world.ids[n] for n in subtree]
+
+    assert await world.graph.restore_records([{"id": i} for i in [*ids, world.ids["solo"]]], batch) == []
+    assert await world.live((*subtree, "solo")) == set()
+
+    assert sorted(await world.graph.restore_records([{"id": i} for i in ids], batch)) == sorted(ids)
+
+
+# Neo4j only, and not collected for Arango at all: the graph jobs fail on any skip,
+# and Arango's restore runs inside the caller's stream transaction.
+@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
+async def test_a_restore_the_graph_refuses_partway_leaves_the_whole_batch_in_the_trash(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each Neo4j statement commits on its own, so a restore split over statements kept what came before a refusal."""
+    # A restore used to run in chunks, each its own auto-commit; one key per chunk makes
+    # any record restored before the refused one visible here.
+    monkeypatch.setattr(neo4j_provider_module, "SOFT_DELETE_CHUNK", 1, raising=False)
+    subtree = ("folder", *FOLDER_FILES)
+    await world.trash("folder")
+    batch = (await world.stored("folder"))["deleteBatchId"]
+    world.producer.events.clear()
+    client = world.graph.client
+    await client.execute_query(
+        "CREATE CONSTRAINT restore_it_poison IF NOT EXISTS "
+        "FOR (n:RestoreItPoison) REQUIRE n.updatedAtTimestamp IS UNIQUE"
+    )
+    try:
+        # Restore stamps one update time on every record it brings back, so of two records
+        # that may not share one, whichever comes back second is refused.
+        poisoned = [world.ids["file_a"], world.ids["attachment"]]
+        await client.execute_query(
+            "UNWIND range(0, size($ids) - 1) AS i MATCH (r:Record {id: $ids[i]}) "
+            "SET r.updatedAtTimestamp = -1 - i, r:RestoreItPoison",
+            parameters={"ids": poisoned},
+        )
+        result = await world.restore("folder")
+    finally:
+        await client.execute_query("DROP CONSTRAINT restore_it_poison IF EXISTS")
+
+    assert result["success"] is False and result["code"] == 500, result
+    restored = {n for n in subtree if (await world.stored(n)).get("isDeleted") is not True}
+    assert restored == set(), f"a refused restore brought part of the folder back: {restored}"
+    assert {n: (await world.stored(n)).get("deleteBatchId") for n in subtree} == dict.fromkeys(subtree, batch)
     assert world.reindexed() == set()

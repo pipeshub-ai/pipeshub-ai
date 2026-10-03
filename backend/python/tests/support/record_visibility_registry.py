@@ -126,5 +126,5 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "delete_records_recursive": (Rule.WRITE, ""),
     "delete_single_record": (Rule.WRITE, ""),
     "soft_delete_records": (Rule.WRITE, "marks live records only"),
-    "restore_records": (Rule.WRITE, "changes only records still in the trash under the batch named"),
+    "restore_records": (Rule.WRITE, "all or nothing: only records still in the trash under the batch named"),
 }

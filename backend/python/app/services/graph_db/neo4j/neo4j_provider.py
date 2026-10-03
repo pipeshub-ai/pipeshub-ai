@@ -93,7 +93,6 @@ from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
-    SOFT_DELETE_CHUNK,
     TRASH_STATE_FIELDS,
     empty_soft_delete_result,
     soft_delete_request_result,
@@ -11652,24 +11651,27 @@ class Neo4jProvider(IGraphDBProvider):
             return []
         items = [{"id": item["id"], "set": dict(item.get("set") or {})} for item in restores]
         cleared = ", ".join(f"r.{name} = null" for name in TRASH_STATE_FIELDS)
-        restored: list[str] = []
-        now = get_epoch_timestamp_in_ms()
-        for start in range(0, len(items), SOFT_DELETE_CHUNK):
-            rows = await self.client.execute_query(
-                f"""
-                UNWIND $items AS item
-                MATCH (r:Record {{id: item.id}})
-                WHERE r.isDeleted = true
-                  AND (r.deleteBatchId = $batch_id OR ($batch_id IS NULL AND r.deleteBatchId IS NULL))
-                SET r.isDeleted = false, {cleared}, r.updatedAtTimestamp = $now
-                SET r += item.set
-                RETURN r.id AS id
-                """,
-                parameters={"items": items[start:start + SOFT_DELETE_CHUNK], "batch_id": batch_id, "now": now},
-                txn_id=transaction,
-            )
-            restored += [row["id"] for row in rows or []]
-        return restored
+        # Each statement commits on its own unless explicit transactions are on, so a
+        # restore split over statements could stop halfway. One statement re-checks
+        # every item and restores all of them or none.
+        rows = await self.client.execute_query(
+            f"""
+            UNWIND $items AS item
+            OPTIONAL MATCH (r:Record {{id: item.id}})
+            WHERE r.isDeleted = true
+              AND (r.deleteBatchId = $batch_id OR ($batch_id IS NULL AND r.deleteBatchId IS NULL))
+            WITH collect(CASE WHEN r IS NULL THEN null ELSE {{r: r, fields: item.set}} END) AS found
+            WHERE size(found) = size($items)
+            UNWIND found AS row
+            WITH row.r AS r, row.fields AS fields
+            SET r.isDeleted = false, {cleared}, r.updatedAtTimestamp = $now
+            SET r += fields
+            RETURN r.id AS id
+            """,
+            parameters={"items": items, "batch_id": batch_id, "now": get_epoch_timestamp_in_ms()},
+            txn_id=transaction,
+        )
+        return [row["id"] for row in rows or []]
 
     async def delete_single_record(
         self,

@@ -4212,8 +4212,11 @@ class IGraphDBProvider(ABC):
 
         Each item is ``{"id": key, "set": {field: value}}``; ``set`` (optional)
         is written as well, for an external id put back or an indexing status.
-        Only a record still in the trash under ``batch_id`` is touched, so a
-        restore racing a purge or another restore changes nothing twice. The
+        All or nothing: every item must still be in the trash under
+        ``batch_id``, or none is restored and the result is empty, so a restore
+        racing a purge or another restore never brings back part of a batch. A
+        write the graph refuses partway also leaves every item in the trash,
+        even where each statement commits on its own (Neo4j by default). The
         delete fields (``isDeleted``, ``deletedAtTimestamp``, ``deleteSource``,
         ``deleteBatchId``, ``deletedByUserId``, the purge counters and
         ``trashedExternalRecordId``) are cleared. A failure raises.

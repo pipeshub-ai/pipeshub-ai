@@ -13625,28 +13625,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
         items = [{"id": item["id"], "set": dict(item.get("set") or {})} for item in restores]
         # keepNull false drops the cleared fields instead of storing nulls.
         cleared = {"isDeleted": False, **dict.fromkeys(TRASH_STATE_FIELDS)}
-        restored: list[str] = []
-        now = get_epoch_timestamp_in_ms()
-        for start in range(0, len(items), SOFT_DELETE_CHUNK):
-            restored += await self.execute_query(
-                """
+        # Restores all of the items or none, like Neo4j's single statement: one item
+        # gone from the trash leaves the rest of the batch in it.
+        return await self.execute_query(
+            """
+            LET found = (
                 FOR item IN @items
                     LET r = DOCUMENT(@@records, item.id)
                     FILTER r != null AND r.isDeleted == true AND r.deleteBatchId == @batch_id
-                    UPDATE r WITH MERGE(@cleared, { updatedAtTimestamp: @now }, item.set)
-                        IN @@records OPTIONS { keepNull: false }
-                    RETURN NEW._key
-                """,
-                bind_vars={
-                    "items": items[start:start + SOFT_DELETE_CHUNK],
-                    "batch_id": batch_id,
-                    "cleared": cleared,
-                    "now": now,
-                    "@records": CollectionNames.RECORDS.value,
-                },
-                transaction=transaction,
-            ) or []
-        return restored
+                    RETURN { r: r, fields: item.set }
+            )
+            FOR row IN (LENGTH(found) == LENGTH(@items) ? found : [])
+                UPDATE row.r WITH MERGE(@cleared, { updatedAtTimestamp: @now }, row.fields)
+                    IN @@records OPTIONS { keepNull: false }
+                RETURN NEW._key
+            """,
+            bind_vars={
+                "items": items,
+                "batch_id": batch_id,
+                "cleared": cleared,
+                "now": get_epoch_timestamp_in_ms(),
+                "@records": CollectionNames.RECORDS.value,
+            },
+            transaction=transaction,
+        ) or []
 
     async def delete_single_record(
         self,
