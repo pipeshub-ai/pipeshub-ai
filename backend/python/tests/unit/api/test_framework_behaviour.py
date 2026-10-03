@@ -23,6 +23,7 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
+from app.api.middlewares.auth import authMiddleware
 from app.api.routes.parsing import router as parsing_router
 from app.services.parsing.registry import ParserRegistry
 from app.telemetry.middleware import MetricsMiddleware
@@ -319,10 +320,17 @@ async def test_json_body_model_requires_a_json_content_type_but_request_json_doe
     assert raw_with_type.status_code == 200
 
 
+async def _authenticated_as_indexing(request: Request) -> Request:
+    # The parse route needs a service token with the parse scope (#3818).
+    request.state.user = {"token_type": "scoped", "scopes": ["document:parse"], "orgId": "org-123"}
+    return request
+
+
 async def test_parse_route_answers_422_for_an_unknown_provider_without_deprecation_warnings():
     app = FastAPI()
     app.state.parser_registry = MagicMock(spec=ParserRegistry)
     app.include_router(parsing_router)
+    app.dependency_overrides[authMiddleware] = _authenticated_as_indexing
 
     with warnings.catch_warnings():
         warnings.filterwarnings("error", message="'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated")
