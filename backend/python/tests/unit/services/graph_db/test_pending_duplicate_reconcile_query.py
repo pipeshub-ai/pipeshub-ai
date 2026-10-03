@@ -98,7 +98,8 @@ class TestUpdateFieldsIfMatch:
     async def test_neo4j(self) -> None:
         p = _neo4j([{"n": 1}])
         ok = await p.update_node_fields_if_match(
-            "r1", "records", {"a": 1, "b": None}, {"c": True, "d": None},
+            "r1", "records", {"duplicateReconcileAttempts": 1, "duplicateReconcileDueAt": None},
+            {"c": True, "d": None},
         )
         query = p.client.execute_query.await_args.args[0]
         params = p.client.execute_query.await_args.kwargs["parameters"]
@@ -107,7 +108,25 @@ class TestUpdateFieldsIfMatch:
         assert "n[$f0] = $v0" in query and "n[$f1] IS NULL" in query
         assert "SET n += $updates" in query and "SET n = " not in query
         assert params["f0"] == "c" and params["v0"] is True and params["f1"] == "d"
-        assert params["updates"] == {"a": 1, "b": None}
+        assert params["updates"] == {"duplicateReconcileAttempts": 1, "duplicateReconcileDueAt": None}
+
+    async def test_neo4j_writes_updates_as_update_node_does(self) -> None:
+        """A _key becomes id, as on every other Neo4j write; a property of
+        its own would be a second identity the reads never look at."""
+        p = _neo4j([{"n": 1}])
+        await p.update_node_fields_if_match("r1", "records", {"_key": "r1", "duplicateReconcileAttempts": 2}, {"c": True})
+        params = p.client.execute_query.await_args.kwargs["parameters"]
+        assert params["updates"] == {"id": "r1", "duplicateReconcileAttempts": 2}
+
+    async def test_neo4j_rejects_what_the_schema_rejects_before_writing(self) -> None:
+        from app.schema.node_validator import SchemaValidationError
+
+        p = _neo4j([{"n": 1}])
+        with pytest.raises(SchemaValidationError):
+            await p.update_node_fields_if_match(
+                "r1", "records", {"duplicateReconcileAttempts": "three"}, {"c": True},
+            )
+        p.client.execute_query.assert_not_awaited()
 
     async def test_neo4j_no_match(self) -> None:
         p = _neo4j([])
