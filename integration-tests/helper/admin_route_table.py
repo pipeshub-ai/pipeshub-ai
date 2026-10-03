@@ -144,6 +144,7 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("PATCH", f"{_CM}/metricsCollection/pushInterval", admin="invalid"),
     AdminRoute("PATCH", f"{_CM}/metricsCollection/serverUrl", admin="invalid"),
     # crawling_manager/routes/cm_routes.ts
+    AdminRoute("GET", "/api/v1/crawlingManager/schedule/all"),
     _no_admin("DELETE", "/api/v1/crawlingManager/schedule/all",
               "removes every sync schedule in the org"),
     # oauth_provider routes
