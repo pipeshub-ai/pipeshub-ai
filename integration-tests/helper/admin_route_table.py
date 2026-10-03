@@ -36,6 +36,8 @@ INVALID_ID = "not-an-id"
 # ADMIN_ACCESS_REQUIRED_MESSAGE (user_management/services/user-admin.service.ts).
 NODE_REFUSAL_STATUS = 403
 NODE_REFUSAL_MESSAGE = "You need admin access to do this. Ask an admin in your organisation."
+# The wording Node used before #3696 (with HTTP 400); seeing it means that refusal is back.
+OLD_NODE_REFUSAL_MESSAGE = "Admin access required"
 
 
 @dataclass(frozen=True)

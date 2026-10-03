@@ -33,6 +33,7 @@ from helper.admin_route_table import (
     INVALID_ID,
     NODE_ADMIN_ROUTES,
     NODE_REFUSAL_MESSAGE,
+    OLD_NODE_REFUSAL_MESSAGE,
     PYTHON_ADMIN_ROUTES,
     AdminRoute,
 )
@@ -146,7 +147,12 @@ class TestTheAdminGetsThrough:
         )
         if route.handler.startswith("api/routes/mcp_servers.py") and _MCP_DISABLED in text:
             pytest.skip("MCP is switched off on this stack, so its admin check is never reached")
-        refused = status in (401, 403) or NODE_REFUSAL_MESSAGE.lower() in text.lower()
+        lowered = text.lower()
+        refused = (
+            status in (401, 403)
+            or NODE_REFUSAL_MESSAGE.lower() in lowered
+            or OLD_NODE_REFUSAL_MESSAGE.lower() in lowered
+        )
         assert not refused, (
             f"The admin was refused on {route.id}: HTTP {status}. " + _error_excerpt(status, text)
         )
