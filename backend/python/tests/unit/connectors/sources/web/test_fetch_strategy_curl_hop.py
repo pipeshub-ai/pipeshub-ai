@@ -1,10 +1,12 @@
 """The curl_cffi strategy's single hop, on the real library against a local server.
 
 curl_cffi 0.14's stream mode corrupts the heap when a request fails before its headers arrive,
-which aborted the connector service in the nightly integration run. The hop no longer streams.
+which aborted the connector service in the nightly integration run, and hangs forever when the
+transfer ends before its done-callback is attached. The hop no longer streams.
 """
 
 import asyncio
+import concurrent.futures
 import ipaddress
 import logging
 import threading
@@ -186,6 +188,41 @@ def test_requests_refused_before_any_headers_fail_cleanly_every_time() -> None:
         except Exception:
             failures += 1
     assert failures == 2000
+
+
+class _FinishesInsideSubmit:
+    """Runs the work before submit() returns: the order a tiny local response produces by chance."""
+
+    def submit(self, fn, *args, **kwargs) -> concurrent.futures.Future:
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except BaseException as e:
+            future.set_exception(e)
+        return future
+
+
+def test_a_transfer_that_ends_before_curl_attaches_its_callback_still_returns(port: int) -> None:
+    # A streamed request then waits, in the calling thread, on an event only that thread sets.
+    pin = _loopback(port)
+    url, options = _curl_pinned_request(f"http://127.0.0.1:{port}/page", pin)
+    session = Session(impersonate="chrome", timeout=5, trust_env=False)
+    session.curl_options = options
+    session._executor = _FinishesInsideSubmit()
+    outcome: dict = {}
+
+    def run() -> None:
+        outcome["hop"] = _curl_hop(session, threading.Lock(), url, {}, 5, None, pin)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(10)
+    try:
+        assert not thread.is_alive(), "the hop hung after its transfer had already finished"
+        assert (outcome["hop"].status, outcome["hop"].body) == (200, BODY)
+    finally:
+        if not thread.is_alive():
+            session.close()
 
 
 class _BlockingSession:
