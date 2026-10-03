@@ -111,6 +111,11 @@ BATCH_SIZE_KB_ANSWERS = 50
 ATTACHMENT_ID_PARTS_COUNT = 3
 KB_ANSWER_ATTACHMENT_PARTS_COUNT = 2
 
+
+class ZammadReadError(Exception):
+    """A ticket listing stopped before its end, so the group's checkpoint must not move."""
+
+
 # Zammad link type to RecordRelations mapping
 # Zammad supports: normal, parent, child
 ZAMMAD_LINK_TYPE_MAP: Dict[str, RecordRelations] = {
@@ -893,17 +898,13 @@ class ZammadConnector(BaseConnector):
                     else:
                         self.logger.debug(f"📝 Synced batch: {batch_tickets} tickets for group {group_name}")
 
-                    # Update sync point after each batch (fault tolerance)
-                    if max_ticket_updated_at:
-                        await self._update_group_sync_checkpoint(group_name, max_ticket_updated_at + 1000)
-
-                # Final sync point update: Only update to current time if we processed tickets
-                if total_tickets > 0:
-                    # If max_ticket_updated_at wasn't set (edge case), use current time as fallback
-                    if not max_ticket_updated_at:
-                        self.logger.warning(f"Processed {total_tickets} tickets but max_ticket_updated_at not set, using current time")
-                        await self._update_group_sync_checkpoint(group_name)
-                    # else: max_ticket_updated_at was already set above, no need to update again
+                # Pages come newest first, so the checkpoint moves only once the listing has
+                # reached its end; a listing cut short raises ZammadReadError and leaves it.
+                if max_ticket_updated_at:
+                    await self._update_group_sync_checkpoint(group_name, max_ticket_updated_at + 1000)
+                elif total_tickets > 0:
+                    self.logger.warning(f"Processed {total_tickets} tickets but max_ticket_updated_at not set, using current time")
+                    await self._update_group_sync_checkpoint(group_name)
                 else:
                     self.logger.debug(f"No tickets found for group {group_name}, keeping existing checkpoint to avoid skipping older tickets")
 
@@ -939,6 +940,9 @@ class ZammadConnector(BaseConnector):
 
         Yields:
             Batches of (Record, permissions) tuples (includes TicketRecords and FileRecords)
+
+        Raises:
+            ZammadReadError: a search failed or a page repeated, so the listing did not reach its end
         """
         datasource = await self._get_fresh_datasource()
         limit = 50
@@ -1008,8 +1012,11 @@ class ZammadConnector(BaseConnector):
             )
 
             if not response.success:
-                self.logger.warning(f"Failed to fetch tickets for group '{group_name}' (offset {offset}): {response.error or response.message or 'Unknown error'}")
-                break
+                raise ZammadReadError(
+                    f"Failed to fetch tickets for group '{group_name}' (offset {offset}): "
+                    f"{response.error or response.message or 'Unknown error'}. The group's sync point "
+                    f"was left where it was, so the next sync reads these tickets again."
+                )
 
             if not response.data:
                 self.logger.debug(f"No ticket data returned for group '{group_name}' at offset {offset}")
@@ -1025,12 +1032,12 @@ class ZammadConnector(BaseConnector):
 
             page_ids = {ticket.get("id") for ticket in tickets_data}
             if page_ids == previous_page_ids:
-                self.logger.error(
-                    f"❌ Zammad returned the same {len(tickets_data)} tickets for group '{group_name}' "
+                raise ZammadReadError(
+                    f"Zammad returned the same {len(tickets_data)} tickets for group '{group_name}' "
                     f"at offset {offset} as on the page before, so it is not paging. Stopped reading "
-                    f"this group's tickets here; tickets past offset {offset} were not read this sync."
+                    f"this group's tickets here; tickets past offset {offset} were not read this sync, "
+                    f"and the group's sync point was left where it was."
                 )
-                break
             previous_page_ids = page_ids
 
             self.logger.debug(f"Fetched {len(tickets_data)} tickets for group '{group_name}' from offset {offset}")

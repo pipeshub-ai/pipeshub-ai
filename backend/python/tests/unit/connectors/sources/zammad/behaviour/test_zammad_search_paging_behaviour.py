@@ -46,7 +46,9 @@ class FakeHttpResponse:
 class FakeZammad64:
     """The parts of Zammad 6.4.1's REST API the ticket sync calls."""
 
-    def __init__(self, ticket_count: int, *, pages_tickets_search: bool = True) -> None:
+    def __init__(
+        self, ticket_count: int, *, pages_tickets_search: bool = True, fails_from_page: int | None = None,
+    ) -> None:
         self.tickets = [
             {
                 "id": ticket_id,
@@ -64,6 +66,7 @@ class FakeZammad64:
             for ticket_id in range(1, ticket_count + 1)
         ]
         self.pages_tickets_search = pages_tickets_search
+        self.fails_from_page = fails_from_page
         self.search_calls: list[tuple[str, dict[str, str]]] = []
 
     async def execute(self, request: HTTPRequest) -> FakeHttpResponse:
@@ -103,6 +106,8 @@ class FakeZammad64:
         assert (params.get("sort_by"), params.get("order_by")) == ("updated_at,id", "desc,desc")
         per_page = min(int(params.get("per_page", 50)), 200)
         page = int(params.get("page", 1)) if self.pages_tickets_search else 1
+        if self.fails_from_page is not None and page >= self.fails_from_page:
+            return FakeHttpResponse(500, {"error": "search index unavailable"})
         start = (page - 1) * per_page
         rows = self._matching(params["query"])[start:start + per_page]
         # Expanded tickets carry association names next to the ids.
@@ -178,6 +183,32 @@ async def test_every_ticket_in_a_group_larger_than_a_page_is_read_once() -> None
     assert checkpoint == connector._parse_zammad_datetime(newest) + 1000
 
 
+async def test_a_listing_that_ends_on_an_empty_page_moves_the_sync_point() -> None:
+    zammad, records = FakeZammad64(100), FakeRecords()
+    with _connector(zammad, records) as connector:
+        await _sync_group(connector)
+
+    assert [params["page"] for _, params in zammad.search_calls] == ["1", "2", "3"]
+    assert len(records.ticket_ids()) == 100
+    newest = max(t["updated_at"] for t in zammad.tickets)
+    checkpoint = connector.tickets_sync_point.points["Support"]["last_sync_time"]
+    assert checkpoint == connector._parse_zammad_datetime(newest) + 1000
+
+
+async def test_a_search_that_fails_after_one_good_page_leaves_the_sync_point_alone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    zammad, records = FakeZammad64(TICKETS, fails_from_page=2), FakeRecords()
+    with _connector(zammad, records) as connector, caplog.at_level(logging.ERROR):
+        await _sync_group(connector)
+
+    assert len(zammad.search_calls) == 2
+    assert len(records.ticket_ids()) == 50
+    # Page 1 held the newest tickets; a sync point past them would hide the 70 older ones for good.
+    assert "last_sync_time" not in connector.tickets_sync_point.points.get("Support", {})
+    assert any("search index unavailable" in r.getMessage() for r in caplog.records)
+
+
 async def test_a_search_that_keeps_answering_with_the_first_page_stops_with_an_error(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -188,4 +219,5 @@ async def test_a_search_that_keeps_answering_with_the_first_page_stops_with_an_e
     assert len(zammad.search_calls) == 2
     ticket_ids = records.ticket_ids()
     assert len(ticket_ids) == 50 and len(set(ticket_ids)) == 50
+    assert "last_sync_time" not in connector.tickets_sync_point.points.get("Support", {})
     assert any("as on the page before, so it is not paging" in r.getMessage() for r in caplog.records)
