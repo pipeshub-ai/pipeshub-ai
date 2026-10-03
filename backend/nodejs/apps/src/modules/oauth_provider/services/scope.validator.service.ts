@@ -64,6 +64,36 @@ export class ScopeValidatorService {
   }
 
   /**
+   * Resolve the scopes an authorization request is granted: the requested
+   * scopes the app allows. The rest are dropped rather than rejected
+   * (RFC 6749 §3.3), because MCP clients request every scope in
+   * `scopes_supported` and cannot be told to ask for less.
+   */
+  resolveGrantedScopes(
+    requestedScopes: string[],
+    allowedScopes: string[],
+  ): { granted: string[]; notGranted: string[] } {
+    this.validateRequestedScopes(requestedScopes)
+
+    if (requestedScopes.length === 0) {
+      return { granted: [], notGranted: [] }
+    }
+
+    const granted = this.getGrantedScopes(requestedScopes, allowedScopes)
+    if (granted.length === 0) {
+      throw new InvalidScopeError(
+        'None of the requested scopes are allowed for this app',
+        { disallowedScopes: requestedScopes },
+      )
+    }
+
+    const notGranted = requestedScopes.filter(
+      (scope) => !allowedScopes.includes(scope),
+    )
+    return { granted, notGranted }
+  }
+
+  /**
    * Parse scope string into array
    */
   parseScopes(scopeString: string): string[] {

@@ -76,7 +76,10 @@ export class OAuthDeviceService {
     const requested = scope
       ? this.scopeValidatorService.parseScopes(scope)
       : app.allowedScopes
-    this.scopeValidatorService.validateScopesForApp(requested, app.allowedScopes)
+    const { granted } = this.scopeValidatorService.resolveGrantedScopes(
+      requested,
+      app.allowedScopes,
+    )
 
     const deviceCode = crypto.randomBytes(DEVICE_CODE_BYTES).toString('hex')
     const userCode = this.generateUserCode()
@@ -86,7 +89,7 @@ export class OAuthDeviceService {
       deviceCodeHash: this.hashDeviceCode(deviceCode),
       userCode,
       clientId,
-      scopes: requested,
+      scopes: granted,
       status: OAuthDeviceCodeStatus.PENDING,
       interval: POLL_INTERVAL_SECONDS,
       expiresAt,

@@ -65,6 +65,7 @@ describe('OAuthProviderController', () => {
     mockScopeValidatorService = {
       parseScopes: sinon.stub().returns(['org:read']),
       validateScopesForApp: sinon.stub(),
+      resolveGrantedScopes: sinon.stub().returns({ granted: ['org:read'], notGranted: [] }),
       getScopeDefinitions: sinon.stub().returns([{ name: 'org:read', description: 'Read org', category: 'Organization' }]),
     }
     mockOAuthDeviceService = {
@@ -124,6 +125,63 @@ describe('OAuthProviderController', () => {
       expect(mockRes.json.calledOnce).to.be.true
       const response = mockRes.json.firstCall.args[0]
       expect(response.requiresConsent).to.be.true
+    })
+
+    it('asks consent only for allowed scopes and lists the rest as not granted', async () => {
+      const realController = new OAuthProviderController(
+        mockLogger,
+        mockOAuthAppService,
+        mockOAuthTokenService,
+        mockAuthCodeService,
+        new ScopeValidatorService(),
+      )
+      mockOAuthAppService.getAppByClientId.resolves({
+        name: 'App', allowedScopes: ['kb:read', 'conversation:chat'],
+        isConfidential: true, createdBy: { toString: () => 'u1' },
+      })
+      const req = {
+        query: {
+          client_id: 'cid', redirect_uri: 'https://example.com/cb',
+          scope: 'openid offline_access kb:read conversation:chat agent:read',
+          state: 'state1',
+        },
+        user: { userId: 'u1', orgId: 'o1', email: 'u@e.com' },
+      } as any
+
+      await realController.authorize(req, mockRes, mockNext)
+
+      const { consentData } = mockRes.json.firstCall.args[0]
+      expect(consentData.scopes.map((s: any) => s.name))
+        .to.deep.equal(['kb:read', 'conversation:chat'])
+      expect(consentData.notGrantedScopes.map((s: any) => s.name))
+        .to.deep.equal(['openid', 'offline_access', 'agent:read'])
+    })
+
+    it('redirects with invalid_scope when no requested scope is allowed', async () => {
+      const realController = new OAuthProviderController(
+        mockLogger,
+        mockOAuthAppService,
+        mockOAuthTokenService,
+        mockAuthCodeService,
+        new ScopeValidatorService(),
+      )
+      mockOAuthAppService.getAppByClientId.resolves({
+        name: 'App', allowedScopes: ['kb:read'],
+        isConfidential: true, createdBy: { toString: () => 'u1' },
+      })
+      const req = {
+        query: {
+          client_id: 'cid', redirect_uri: 'https://example.com/cb',
+          scope: 'agent:read', state: 'state1',
+        },
+        user: { userId: 'u1', orgId: 'o1', email: 'u@e.com' },
+      } as any
+
+      await realController.authorize(req, mockRes, mockNext)
+
+      const response = mockRes.json.firstCall.args[0]
+      expect(response.requiresConsent).to.be.undefined
+      expect(response.redirectUrl).to.include('error=invalid_scope')
     })
   })
 
@@ -267,7 +325,29 @@ describe('OAuthProviderController', () => {
         )
       })
 
-      it('rejects consent for a scope outside the client registration and issues no code', async () => {
+      it('drops a scope outside the client registration and issues the code without it', async () => {
+        mockOAuthAppService.getAppByClientId.resolves({
+          allowedScopes: ['org:read'],
+          isConfidential: true,
+          createdBy: { toString: () => 'u1' },
+        })
+        mockAuthCodeService.generateCode.resolves('code-1')
+        const req = {
+          body: {
+            client_id: 'cid', redirect_uri: 'https://example.com/cb',
+            scope: 'org:read org:admin', state: 'state1', consent: 'granted',
+          },
+          user: { userId: 'u1', orgId: 'o1', role: 'admin' },
+        } as any
+
+        await realController.authorizeConsent(req, mockRes, mockNext)
+
+        expect(mockNext.called).to.be.false
+        expect(mockAuthCodeService.generateCode.calledOnce).to.be.true
+        expect(mockAuthCodeService.generateCode.firstCall.args[4]).to.deep.equal(['org:read'])
+      })
+
+      it('rejects consent when no requested scope is in the client registration and issues no code', async () => {
         mockOAuthAppService.getAppByClientId.resolves({
           allowedScopes: ['org:read'],
           isConfidential: true,
@@ -276,7 +356,7 @@ describe('OAuthProviderController', () => {
         const req = {
           body: {
             client_id: 'cid', redirect_uri: 'https://example.com/cb',
-            scope: 'org:read org:admin', state: 'state1', consent: 'granted',
+            scope: 'org:admin', state: 'state1', consent: 'granted',
           },
           user: { userId: 'u1', orgId: 'o1', role: 'admin' },
         } as any
