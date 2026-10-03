@@ -59,6 +59,11 @@ def _cleanup_indexing_models_configured(ai_models_configured) -> None:
     del ai_models_configured  # fixture ordering only — the seed is the effect
 
 
+def _collection_storage(org_id: str, kb_id: str) -> str:
+    """Where indexing files the processed content of this collection's records."""
+    return f"{org_id}/PipesHub/records/{kb_id}"
+
+
 @pytest.fixture(scope="module")
 def kb_client(pipeshub_client) -> KBClient:
     return KBClient(pipeshub_client)
@@ -84,7 +89,9 @@ async def _indexed_record(
         virtual_record_id = await _wait_for_virtual_id(kb_client, record_id)
         await _wait_for_embeddings(vector_store, virtual_record_id, record_id)
 
-        prefix = f"{test_org_id}/PipesHub/records/{virtual_record_id}"
+        prefix = await mongo_store.envelope_path(
+            test_org_id, virtual_record_id, within=_collection_storage(test_org_id, kb_id)
+        )
         # Read the vendor rather than assume it: on a stack configured for S3
         # or Azure the blob probe must say it cannot inspect that backend, not
         # look in an empty local directory and call the record cleaned up.
@@ -161,7 +168,9 @@ async def record_in_a_folder(
         virtual_record_id = await _wait_for_virtual_id(kb_client, record_id)
         await _wait_for_embeddings(vector_store, virtual_record_id, record_id)
 
-        prefix = f"{test_org_id}/PipesHub/records/{virtual_record_id}"
+        prefix = await mongo_store.envelope_path(
+            test_org_id, virtual_record_id, within=_collection_storage(test_org_id, kb_id)
+        )
         vendor = await mongo_store.storage_vendor_under_path(prefix) or "local"
         yield {
             "kb_id": kb_id,
