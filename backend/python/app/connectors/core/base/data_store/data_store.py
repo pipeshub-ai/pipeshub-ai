@@ -20,6 +20,7 @@ from app.models.entities import (
     UserGroup,
 )
 from app.models.permission import Permission
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 if TYPE_CHECKING:
     from app.connectors.core.base.sync_point.sync_point import SyncPoint
@@ -153,6 +154,7 @@ class BaseDataStore(ABC):
         is_placeholder: Optional[bool] = None,
         after_key: Optional[str] = None,
         exclude_statuses: Optional[list[str]] = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Get records by their indexing status with pagination support. Returns typed Record instances.
 

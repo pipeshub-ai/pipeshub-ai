@@ -1019,6 +1019,17 @@ class TestEnsurePersistentIndex:
             result = await client.ensure_persistent_index("col", ["field1"])
             assert result is False
 
+    @pytest.mark.asyncio
+    async def test_unique_still_works_as_the_third_positional_argument(self, client) -> None:
+        mock_session = MagicMock()
+        mock_session.post.return_value = MockResponse(200)
+
+        with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=mock_session):
+            assert await client.ensure_persistent_index("col", ["field1"], True) is True
+
+        payload = mock_session.post.call_args.kwargs["json"]
+        assert payload["unique"] is True and "sparse" not in payload
+
 
 # ---------------------------------------------------------------------------
 # update_collection_schema

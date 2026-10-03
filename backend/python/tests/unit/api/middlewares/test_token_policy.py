@@ -28,6 +28,8 @@ class TestAcceptedServiceScopes:
                 "conversation:create",
                 "conversation:permissions",
                 "fetch:config",
+                "document:parse",
+                "document:classify",
             }
         )
 

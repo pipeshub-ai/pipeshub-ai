@@ -102,6 +102,31 @@ def build_connector_vector_cleanup_events(
     ]
 
 
+def build_stored_document_cleanup_events(
+    *, org_id: str, document_ids: Sequence[str] | None, connector_id: str
+) -> list[dict[str, Any]]:
+    """``deleteStoredDocuments`` events for the uploaded files of a knowledge base being deleted.
+
+    Published before the graph delete, so an event is never lost after the only
+    other handle on the files is gone. ``connectorId`` lets the consumer skip
+    (and retry) any file a record of that knowledge base still lists.
+    """
+    ids = _unique_non_empty(document_ids)
+    return [
+        _event(
+            EventTypes.DELETE_STORED_DOCUMENTS.value,
+            {
+                "orgId": org_id,
+                "connectorId": connector_id,
+                "documentIds": chunk,
+                # When the retries for files a record still lists run out.
+                "scheduledAt": get_epoch_timestamp_in_ms(),
+            },
+        )
+        for chunk in _chunks(ids, MAX_VIRTUAL_RECORD_IDS_PER_EVENT)
+    ]
+
+
 def _event(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "eventType": event_type,
@@ -140,6 +165,14 @@ def log_cleanup_publish_failure(
     payload = event.get("payload", {}) or {}
     ids = payload.get("virtualRecordIds")
     event_type = event.get("eventType")
+    if event_type == EventTypes.DELETE_STORED_DOCUMENTS.value:
+        documents = payload.get("documentIds") or []
+        logger.error(
+            f"❌ Failed to publish {event_type} for {subject}: {error}. "
+            f"{len(documents)} uploaded file(s) stay in storage"
+        )
+        logger.debug("Unpublished storage document ids for %s: %s", subject, documents)
+        return
     if ids:
         where = (
             f"chunk {payload.get('chunkIndex', 0) + 1}/"

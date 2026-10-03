@@ -50,6 +50,7 @@ from app.services.cache.invalidation_hooks import (
     notify_connector_sync_completed,
     notify_kb_records_changed,
 )
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     FolderChangedDuringDelete,
@@ -2283,10 +2284,30 @@ class DataSourceEntitiesProcessor:
         )
 
     @retry_on_deadlock()
+    async def on_records_detached_from_parent(self, record_ids: list[str]) -> None:
+        """Clear the parent link of records whose parent is being deleted without them.
+
+        Browse lists a record at its group's root only when it has no parent, so a
+        survivor still pointing at a deleted parent would vanish from it until the
+        source rewrote the record. Raises when any record was not updated.
+        """
+        if not record_ids:
+            return
+        async with self.data_store_provider.transaction() as tx_store:
+            updated = await tx_store.batch_update_nodes(
+                [{"id": record_id, "externalParentId": None} for record_id in record_ids],
+                CollectionNames.RECORDS.value,
+            )
+        if updated is False:
+            raise RuntimeError(f"Could not detach {len(record_ids)} records from their deleted parent")
+
+    @retry_on_deadlock()
     async def on_records_deleted_cascade(
         self, record_ids: list[str], connector_id: str,
         cascade_children: bool = True,
         within_folder_id: str | None = None,
+        *,
+        include_trashed_roots: bool = False,
     ) -> dict:
         """Recursively delete records — the single delete path for files, folders and
         multi-record deletes, generic across KB and connectors.
@@ -2304,6 +2325,9 @@ class DataSourceEntitiesProcessor:
         With *within_folder_id*, only roots contained in that folder are deleted;
         the check runs in the delete's own transaction, so a record moved out in
         the meantime is kept.
+
+        A root in the trash is refused unless *include_trashed_roots*, for a
+        caller removing what the source no longer has.
         """
         if not record_ids:
             return {
@@ -2318,7 +2342,7 @@ class DataSourceEntitiesProcessor:
             async with self.data_store_provider.transaction() as tx_store:
                 result = await tx_store.delete_records_recursive(
                     record_ids, connector_id, cascade_children=cascade_children,
-                    within_folder_id=within_folder_id,
+                    within_folder_id=within_folder_id, include_trashed_roots=include_trashed_roots,
                 )
         except FolderChangedDuringDelete:
             # The transaction rolled back, so nothing was deleted.
@@ -3262,6 +3286,8 @@ class DataSourceEntitiesProcessor:
         external_group_id: str,
         limit: int,
         after_key: str | None = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Return up to ``limit`` of this connector's records in one record group, ordered by id.
 
@@ -3280,6 +3306,7 @@ class DataSourceEntitiesProcessor:
                 record_group_id=group.id,
                 limit=limit,
                 after_key=after_key,
+                visibility=visibility,
             )
 
     async def get_records_by_status(
@@ -3292,6 +3319,7 @@ class DataSourceEntitiesProcessor:
         is_placeholder: bool | None = None,
         after_key: str | None = None,
         exclude_statuses: list[str] | None = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Get records by indexing status, scoped to the current org.
 
@@ -3309,6 +3337,7 @@ class DataSourceEntitiesProcessor:
                 is_placeholder=is_placeholder,
                 after_key=after_key,
                 exclude_statuses=exclude_statuses,
+                visibility=visibility,
             )
 
     async def get_placeholder_records(
@@ -4107,6 +4136,7 @@ class DataSourceEntitiesProcessor:
         is_placeholder: bool | None = None,
         after_key: str | None = None,
         exclude_statuses: list[str] | None = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_records_by_status(
@@ -4119,6 +4149,7 @@ class DataSourceEntitiesProcessor:
                 is_placeholder=is_placeholder,
                 after_key=after_key,
                 exclude_statuses=exclude_statuses,
+                visibility=visibility,
             )
 
     async def get_record_by_external_revision_id(

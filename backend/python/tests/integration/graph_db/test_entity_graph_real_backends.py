@@ -12,6 +12,8 @@ These check what only a server can show:
 - On ArangoDB, records that create the same canonical node, and add aliases
   to it, enrich concurrently without errorNum 1200, and the belongsTo* edges
   they write (with extractedName) pass the strict edge schema.
+- On both, a record whose writes to a new topic arrive while another record's
+  create or alias update of it is still uncommitted completes its enrichment.
 
 Needs the graph services, and skips cleanly when they are not reachable:
 
@@ -24,6 +26,7 @@ Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import uuid
@@ -33,6 +36,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.config.constants.neo4j import collection_to_label
 from app.models.blocks import SemanticMetadata
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.models import (
@@ -47,7 +51,9 @@ from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
+
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
 
@@ -68,6 +74,12 @@ logger = logging.getLogger("entity-graph-it")
 
 @pytest.fixture
 async def neo4j(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple[Neo4jProvider, str]]:
+    async with _neo4j_backend(monkeypatch) as backend:
+        yield backend
+
+
+@contextlib.asynccontextmanager
+async def _neo4j_backend(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple[Neo4jProvider, str]]:
     monkeypatch.setenv("NEO4J_URI", NEO4J_URI)
     monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", NEO4J_PASSWORD)
@@ -301,6 +313,12 @@ class TestNeo4jRecordGroupInheritance:
 
 @pytest.fixture
 async def arango() -> AsyncIterator[tuple[ArangoHTTPProvider, str]]:
+    async with _arango_backend() as backend:
+        yield backend
+
+
+@contextlib.asynccontextmanager
+async def _arango_backend() -> AsyncIterator[tuple[ArangoHTTPProvider, str]]:
     config_service = MagicMock()
     config_service.get_config = AsyncMock(return_value={
         "url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB,
@@ -419,3 +437,197 @@ class TestArangoTaxonomyWritesUnderConcurrentTransactions:
             {"to": f"{TOPICS}/{key}"},
         )
         assert sorted(edges) == sorted(f"records/{r}" for r in record_ids)
+
+
+# ---------------------------------------------------------------------------
+# Both backends
+# ---------------------------------------------------------------------------
+
+# How long the in-flight write keeps Neo4j writes queued behind its lock.
+HOLD_SECONDS = 1.0
+
+
+@pytest.fixture(params=["neo4j", "arango"])
+async def graph(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[tuple[IGraphDBProvider, str]]:
+    backend = _neo4j_backend(monkeypatch) if request.param == "neo4j" else _arango_backend()
+    async with backend as connected:
+        yield connected
+
+
+async def _write_in_flight(
+    provider: IGraphDBProvider, node: dict[str, Any], *, alias_update: bool, alias: str,
+) -> Callable[[], Awaitable[None]]:
+    """Another record's write to ``node``, left uncommitted so it holds the
+    node's lock: its create of the node or, with ``alias_update``, its alias
+    update of the node it already created. Returns the commit."""
+    if alias_update:
+        await provider.create_taxonomy_node_if_absent(TOPICS, dict(node))
+    if isinstance(provider, ArangoHTTPProvider):
+        txn = await provider.begin_transaction(read=[TOPICS], write=[TOPICS])
+        if alias_update:
+            await provider.add_taxonomy_aliases(
+                TOPICS, node["id"], [alias], [alias.casefold()], transaction=txn,
+            )
+        else:
+            await provider.create_taxonomy_node_if_absent(TOPICS, dict(node), transaction=txn)
+        return lambda: provider.commit_transaction(txn)
+
+    # The provider's own transactions are auto-commit unless
+    # NEO4J_EXPLICIT_TRANSACTIONS is set, and those hold no lock.
+    label = collection_to_label(TOPICS)
+    session = provider.client.driver.session(database="neo4j")
+    tx = await session.begin_transaction()
+    if alias_update:
+        await tx.run(
+            f"MATCH (n:{label} {{id: $id}}) SET n.aliases = [$alias], n.normalizedAliases = [$normalized]",
+            id=node["id"], alias=alias, normalized=alias.casefold(),
+        )
+    else:
+        props = {k: v for k, v in node.items() if k != "id"}
+        await tx.run(f"MERGE (n:{label} {{id: $id}}) ON CREATE SET n += $props", id=node["id"], props=props)
+
+    async def commit() -> None:
+        try:
+            await tx.commit()
+        finally:
+            await session.close()
+
+    return commit
+
+
+class _WriteDuringWrite:
+    """Sends the record's writes to the topic while another writer holds it,
+    and releases that writer once one of them fails (ArangoDB refuses a locked
+    key at once) or ``HOLD_SECONDS`` after the first was sent (Neo4j queues
+    them behind the lock)."""
+
+    def __init__(self, release: Callable[[], Awaitable[None]]) -> None:
+        self._release = release
+        self._released = False
+        self._in_flight = 0
+        self._lock = asyncio.Lock()
+        self.sent = asyncio.Event()
+        self.first_error: BaseException | None = None
+        self.queued_behind_lock = False
+
+    async def release(self) -> None:
+        async with self._lock:
+            if not self._released:
+                self._released = True
+                self.queued_behind_lock = self._in_flight > 0
+                await self._release()
+
+    async def release_after_hold(self) -> None:
+        await self.sent.wait()
+        await asyncio.sleep(HOLD_SECONDS)
+        await self.release()
+
+    def install(self, provider: IGraphDBProvider) -> None:
+        if isinstance(provider, ArangoHTTPProvider):
+            owner, name = provider.http_client, "batch_insert_documents"
+
+            def is_topic_write(collection: str, *_: object, txn_id: str | None = None, **__: object) -> bool:
+                return collection == TOPICS and txn_id is None
+        else:
+            # MERGE matches an existing node without locking it, so with the
+            # node already created it is the alias update that queues.
+            owner, name = provider.client, "execute_query"
+            label = collection_to_label(TOPICS)
+            writes = (f"MERGE (n:{label} {{id: $id}})", f"MATCH (n:{label} {{id: $key}})")
+
+            def is_topic_write(query: str, *_: object, txn_id: str | None = None, **__: object) -> bool:
+                return txn_id is None and any(write in query for write in writes)
+
+        real = getattr(owner, name)
+
+        async def watched(*args: object, **kwargs: object) -> object:
+            if self._released or not is_topic_write(*args, **kwargs):
+                return await real(*args, **kwargs)
+            self.sent.set()
+            self._in_flight += 1
+            try:
+                return await real(*args, **kwargs)
+            except Exception as exc:
+                self.first_error = self.first_error or exc
+                raise
+            finally:
+                self._in_flight -= 1
+                if self.first_error is not None:
+                    await self.release()
+
+        setattr(owner, name, watched)
+
+
+class TestConcurrentEnrichmentOfOneNewTopic:
+    @pytest.mark.parametrize("alias_update", [False, True], ids=["during-its-create", "during-its-alias-update"])
+    async def test_a_record_creating_a_topic_another_record_is_writing_succeeds(
+        self, graph, alias_update: bool,
+    ) -> None:
+        """Two records resolve the same new topic and enrich at the same
+        moment: the second record's writes to the topic arrive while the
+        first record's write to it is still in flight. Both enrichments
+        complete, with one topic node linked from both records."""
+        provider, org_id = graph
+        key, node = _topic(org_id, "Quarterly planning")
+        record_ids = [f"{org_id}-rec-{i}" for i in range(2)]
+        await provider.batch_upsert_nodes([
+            {
+                "id": record_id, "orgId": org_id, "recordName": f"Doc {i}",
+                "externalRecordId": record_id, "recordType": "FILE", "origin": "CONNECTOR",
+                "connectorId": f"{org_id}-conn", "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+            for i, record_id in enumerate(record_ids)
+        ], CollectionNames.RECORDS.value)
+
+        def resolution(record_index: int) -> EntityResolution:
+            res = EntityResolution(org_id=org_id, mode=ResolutionMode.APPLY)
+            res.add(ResolvedEntity(
+                kind=TOPIC, key=key, name="Quarterly planning", normalized="quarterly planning",
+                is_new=True, decision="new",
+                aliases=[f"Q planning {record_index}"], new_aliases=[f"Q planning {record_index}"],
+                extracted_names=[f"Q planning {record_index}"],
+            ))
+            return res
+
+        transformer = GraphDBTransformer(graph_provider=provider, logger=logger)
+
+        async def enrich(record_index: int) -> list[Any]:
+            return await transformer.save_metadata_to_db(
+                record_ids[record_index],
+                SemanticMetadata(categories=[], topics=["Quarterly planning"], languages=[], departments=[]),
+                f"vr-{record_ids[record_index]}",
+                resolution=resolution(record_index),
+            )
+
+        overlap = _WriteDuringWrite(
+            await _write_in_flight(provider, node, alias_update=alias_update, alias="Q planning 0"),
+        )
+        overlap.install(provider)
+        try:
+            second, _ = await asyncio.gather(
+                enrich(1), overlap.release_after_hold(), return_exceptions=True,
+            )
+        finally:
+            await overlap.release()
+        first = await enrich(0)
+
+        # The second record's write really ran into the first one's.
+        if isinstance(provider, ArangoHTTPProvider):
+            assert "1200" in str(overlap.first_error), overlap.first_error
+        else:
+            assert overlap.first_error is None and overlap.queued_behind_lock
+        assert not isinstance(second, BaseException), second
+        assert [e.entity_id for e in first] == [key] and [e.entity_id for e in second] == [key]
+
+        nodes = await provider.get_nodes_by_filters(TOPICS, {"orgId": org_id})
+        assert [GraphDBTransformer._node_key(n) for n in nodes] == [key]
+        assert sorted(nodes[0]["normalizedAliases"]) == ["q planning 0", "q planning 1"]
+        for record_id in record_ids:
+            edges = await provider.get_edges_from_node_with_target_name(
+                f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.BELONGS_TO_TOPIC.value,
+            )
+            assert [e["_to"] for e in edges] == [f"{TOPICS}/{key}"]
+            record = await provider.get_document(record_id, CollectionNames.RECORDS.value)
+            assert record["extractionStatus"] == "COMPLETED"

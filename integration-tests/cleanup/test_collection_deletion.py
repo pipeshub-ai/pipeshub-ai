@@ -1,19 +1,20 @@
 """Deleting a whole collection has to clear all four stores too.
 
 Deleting a collection is a different code path from deleting a record. What it
-does today (``kb_service.py`` ``delete_knowledge_base``): it clears the graph
-and the vector database, then, in the background, deletes the collection's
-whole ``records/{kbId}`` storage tree in blob storage and MongoDB
+does (``kb_service.py`` ``delete_knowledge_base``): before any graph write it
+lists the collection's uploaded files and schedules their removal; it then
+clears the graph and the vector database and, in the background, deletes the
+collection's whole ``records/{kbId}`` storage tree in blob storage and MongoDB
 (``_cleanup_kb_storage``), so every processed envelope filed there goes. That
 tree also held any content another collection shares, so the delete then
 re-indexes the other collection's copy (``repair_shared_records``), which files
 a new envelope under that collection's own folder.
 
-What it does not remove is each file as it was uploaded: those sit under the
-uploader's ``KnowledgeBase/private/{userId}`` folder, outside that tree and
-carrying no collection id, so they stay in blob storage and MongoDB. The two
-upload tests are strict expected failures and will turn red, on purpose, when
-that is fixed.
+Each file as it was uploaded sits under the uploader's
+``KnowledgeBase/private/{userId}`` folder, outside that tree, so it is removed
+by its own storage document id (``deleteStoredDocuments``) rather than with the
+tree. Each store is checked on its own, so a failure names the store that kept
+the data.
 """
 
 from __future__ import annotations
@@ -27,21 +28,11 @@ import pytest_asyncio
 
 from helper import cleanup_sources as src
 from helper import delete_footprint as fp
-from helper.cleanup_errors import StoreNotEmptied
 from helper.mongo_store import records_folder
 
 logger = logging.getLogger("cleanup-collection-deletion")
 
 pytestmark = [pytest.mark.integration, pytest.mark.cleanup]
-
-UPLOAD_GAP = (
-    "A collection delete removes the records/{kbId} storage tree "
-    "(kb_service.py _cleanup_kb_storage -> storage.controller.ts deleteByConnector), "
-    "but each original upload is filed under the uploader's "
-    "{orgId}/PipesHub/KnowledgeBase/private/{userId} folder with no connectorId tag "
-    "(knowledge_base/utils/utils.ts createPlaceholderDocument), so its bytes stay in "
-    "blob storage and its storage document stays in MongoDB."
-)
 
 
 class TestDeletingACollection:
@@ -210,7 +201,6 @@ class TestDeletingACollectionWithFoldersAndSharedContent:
         keys = [f"prefix:{before.envelope_paths[r.virtual_record_id]}" for r in collection_delete["unique"]]
         await fp.assert_documents_gone(mongo_store, before, keys)
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Collection delete: {UPLOAD_GAP}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_uploaded_files_are_removed_from_blob_storage(
         self, collection_delete, blob_store
@@ -221,7 +211,6 @@ class TestDeletingACollectionWithFoldersAndSharedContent:
         paths = [before.upload_paths[r.upload_document_id] for r in records]
         await fp.assert_blobs_gone(blob_store, before, paths, vendor=collection_delete["vendor"])
 
-    @pytest.mark.xfail(strict=True, raises=StoreNotEmptied, reason=f"Collection delete: {UPLOAD_GAP}")
     @pytest.mark.asyncio(loop_scope="session")
     async def test_its_uploaded_files_storage_documents_are_removed_from_mongodb(
         self, collection_delete, mongo_store

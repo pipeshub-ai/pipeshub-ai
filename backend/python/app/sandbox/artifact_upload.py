@@ -422,6 +422,12 @@ def _read_file_bytes(path: str, max_bytes: int = MAX_ARTIFACT_BYTES) -> bytes | 
         os.path.realpath(os.path.join(tmp, "pipeshub_sandbox")),
         os.path.realpath(os.path.join(tmp, "pipeshub_sandbox_docker")),
     )
+    if os.path.islink(path):
+        # A symlink artifact could point at a host file; realpath containment
+        # below catches an outside target, but refuse links outright (SB-5).
+        logger.warning("Refusing to read symlinked artifact: %s", path)
+        return None
+
     resolved = os.path.realpath(path)
     if not any(
         resolved.startswith(root + os.sep) or resolved == root

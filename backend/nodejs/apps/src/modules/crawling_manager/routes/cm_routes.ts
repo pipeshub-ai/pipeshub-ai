@@ -47,10 +47,13 @@ export function createCrawlingManagerRouter(container: Container): Router {
   );
 
   // GET /api/v1/crawlingManager/schedule/all - Get all job statuses for organization
+  // Admin only: it lists other members' connectors, which a member cannot
+  // read one at a time either.
   router.get(
     '/schedule/all',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CRAWL_READ),
+    userAdminCheck,
     getAllCrawlingJobStatus(crawlingService),
   );
 

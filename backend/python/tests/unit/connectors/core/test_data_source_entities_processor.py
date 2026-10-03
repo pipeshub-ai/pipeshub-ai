@@ -4445,6 +4445,40 @@ class TestOnRecordContentUpdateFlushBeforePublish:
 # ===========================================================================
 
 
+class TestOnRecordsDetachedFromParent:
+    @pytest.mark.asyncio
+    async def test_clears_each_parent_link_in_one_partial_update(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.batch_update_nodes = AsyncMock(return_value=True)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_detached_from_parent(["a", "b"])
+
+        tx_store.batch_update_nodes.assert_awaited_once_with(
+            [{"id": "a", "externalParentId": None}, {"id": "b", "externalParentId": None}],
+            CollectionNames.RECORDS.value,
+        )
+
+    @pytest.mark.asyncio
+    async def test_raises_when_a_record_was_not_updated(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.batch_update_nodes = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        with pytest.raises(RuntimeError):
+            await proc.on_records_detached_from_parent(["a"])
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_detach_touches_nothing(self) -> None:
+        proc = _make_processor()
+
+        await proc.on_records_detached_from_parent([])
+
+        proc.data_store_provider.transaction.assert_not_called()
+
+
 class TestOnRecordMetadataUpdateAndDelete:
     @pytest.mark.asyncio
     async def test_metadata_update_processes_and_updates(self):
@@ -5757,7 +5791,7 @@ class TestOnRecordsDeletedCascade:
         await proc.on_records_deleted_cascade(["r1"], "kb-123")
 
         tx_store.delete_records_recursive.assert_awaited_once_with(
-            ["r1"], "kb-123", cascade_children=True, within_folder_id=None,
+            ["r1"], "kb-123", cascade_children=True, within_folder_id=None, include_trashed_roots=False,
         )
         proc.messaging_producer.send_message.assert_awaited_once()
         assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
@@ -5863,7 +5897,7 @@ class TestOnRecordsDeletedCascadeAttachmentOnly:
         await proc.on_records_deleted_cascade(["r1"], "conn-123", cascade_children=False)
 
         tx_store.delete_records_recursive.assert_awaited_once_with(
-            ["r1"], "conn-123", cascade_children=False, within_folder_id=None,
+            ["r1"], "conn-123", cascade_children=False, within_folder_id=None, include_trashed_roots=False,
         )
         proc.messaging_producer.send_message.assert_awaited_once()
         assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"

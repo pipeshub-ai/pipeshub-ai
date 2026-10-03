@@ -78,8 +78,8 @@ class _Tree:
     ids: dict[str, str]
     processor: DataSourceEntitiesProcessor
 
-    async def add(self, names: list[str], *, folders: bool) -> None:
-        records = [_record(self.connector_id, name, is_file=not folders) for name in names]
+    async def add(self, names: list[str], *, folders: bool, uploaded: bool = False) -> None:
+        records = [_record(self.connector_id, name, is_file=not folders, uploaded=uploaded) for name in names]
         await self.processor.on_new_records([(record, []) for record in records])
         self.ids.update({record.record_name: record.id for record in records})
 
@@ -103,15 +103,16 @@ class _Tree:
         )
 
 
-def _record(connector_id: str, name: str, *, is_file: bool | None = None) -> FileRecord:
+def _record(connector_id: str, name: str, *, is_file: bool | None = None, uploaded: bool = False) -> FileRecord:
     now = get_epoch_timestamp_in_ms()
     return FileRecord(
         org_id=ORG_ID,
         record_name=name,
         record_type=RecordType.FILE,
-        external_record_id=f"{name}-{uuid.uuid4().hex[:8]}",
+        # An upload's external id names its storage document (24 hex characters).
+        external_record_id=uuid.uuid4().hex[:24] if uploaded else f"{name}-{uuid.uuid4().hex[:8]}",
         version=0,
-        origin=OriginTypes.CONNECTOR,
+        origin=OriginTypes.UPLOAD if uploaded else OriginTypes.CONNECTOR,
         connector_name=Connectors.GOOGLE_DRIVE,
         connector_id=connector_id,
         mime_type="text/plain",
@@ -256,6 +257,21 @@ async def test_containment_deeper_than_twenty_levels_is_followed(tree: _Tree) ->
     await tree.delete(["folder_a"])
     for name in (*levels, "deep_file_2"):
         assert not await tree.exists(name), f"{name} survived its folder's delete"
+
+
+async def test_an_upload_deeper_than_twenty_levels_is_listed_for_removal(tree: _Tree) -> None:
+    """The listing that schedules stored files' removal reaches as deep as the delete does."""
+    levels = [f"up_level_{i}" for i in range(25)]
+    await tree.add(levels, folders=True)
+    await tree.add(["deep_upload"], folders=False, uploaded=True)
+    chain = ["folder_a", *levels, "deep_upload"]
+    for parent, child in zip(chain, chain[1:]):
+        await tree.link(parent, child, "PARENT_CHILD")
+    deep = await tree.graph.get_document(tree.ids["deep_upload"], CollectionNames.RECORDS.value)
+
+    listed = await tree.graph.get_uploaded_document_ids(tree.connector_id, under_record_ids=[tree.ids["folder_a"]])
+
+    assert deep["externalRecordId"] in listed, f"an upload 26 levels down was not listed: {listed}"
 
 
 async def test_what_is_reported_deleted_is_exactly_what_was_deleted(tree: _Tree) -> None:

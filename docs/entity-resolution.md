@@ -42,9 +42,13 @@ pick the nodes.
    new. Every answer is validated: a target must be the offered winner, an
    in-record pointer must be of the same kind, anything else becomes new. A
    cleaned display form for a new name (`canonical_name`) is kept only when it
-   differs from the extracted name in case, punctuation or whitespace alone;
-   one that adds or drops words is ignored (`rejected_canonical`), since it
-   would otherwise merge into an existing node the model was never offered.
+   differs from the extracted name in case, whitespace or punctuation alone
+   (`normalizer.spelling_key`); one that adds or drops words is ignored
+   (`rejected_canonical`), since it would otherwise merge into an existing node
+   the model was never offered. Combining marks, digits and symbols count as
+   spelling ("दिन" is not "दीन", "C++" is not "C#"), and so does punctuation
+   inside a number or at the start of a name, including after an opening
+   bracket or quote ("3.11" is not "311", ".NET" and "(.NET)" are not "NET").
 
 Languages go through a static ISO table and skip tiers 2 and 3. Departments
 keep their exact match against the org's department list. Record and
@@ -74,6 +78,54 @@ Subcategories only resolve within their own level, and per-org nodes never
 link across orgs. Legacy global nodes created before the feature are not
 migrated; a reindex moves a record onto canonical nodes.
 
+## Entity index rebuild
+
+The `entities` collection is a projection of the graph. The indexing service
+rebuilds it in the background (`app/modules/indexing/entity_index_rebuild.py`),
+without extraction or model calls other than embedding:
+
+- **Per connector** (app document): its record groups, then its indexed,
+  non-deleted, named records, written as on the index path.
+- **Per org** (org document): its canonical taxonomy nodes and its
+  departments (including global ones). Membership is read from the graph and
+  replaces the stored one; a node no record reaches has its point deleted.
+- **Sweep, per org every 24 hours:** the org's taxonomy, department and
+  record-group points are checked against the graph in batches. A point is
+  deleted when its node is gone or belongs to another org. Points of legacy
+  nodes without an org are kept, because records still link to them. Record
+  points are not swept; single-record delete removes them.
+
+A document is done when its `entityIndexState` equals
+`v<ENTITY_INDEX_VERSION>:<provider>:<model>:<dimension>`, so changing the
+embedding model re-runs every pass. Each point also records the model that
+embedded it (`metadata.embeddingModel`). A write re-embeds a point from
+another model, or one written before this field existed, even when its text
+is unchanged. Indexing therefore repairs whatever a pass missed. The first
+rebuild after an upgrade re-embeds every entity point once.
+
+When the dimension differs, the indexing service drops and recreates the
+collection on start, and the passes refill it. Until it does, the query and
+connector services fail entity calls with the mismatch, retrying
+initialisation every 30 seconds. Points of legacy nodes without an org are
+not projected, so after a recreate they return only when their records are
+reindexed.
+
+The rebuild runs on one indexing replica at a time (Redis leader
+`entity_index_rebuild:leader`), one page per tick. It resumes from the cursor
+on the document after a restart. The cursor is valid only for the marker in
+`entityIndexTarget`; under a new marker the pass starts over.
+
+- A pass with write failures is retried from the start twice.
+- After that, the document is marked done with `entityIndexExhausted: true`
+  and its failure count kept.
+- A document whose pages raise on 10 consecutive ticks is also given up, so
+  it cannot hold the loop.
+- A sweep that fails 3 times waits for the next interval. On the Redis vector
+  backend, a sweep cannot page past 10,000 points of one org and stops there.
+
+Progress is logged under `entity_index_rebuild:` with the app or org key,
+phase and cursor.
+
 ## Modes
 
 Resolution is always on: the indexing container builds the resolver in
@@ -87,7 +139,8 @@ Shadow decisions are logged as `entity_resolution shadow ... decisions=[...]`.
 | Failure | Behaviour |
 | --- | --- |
 | Vector store unavailable | Names become new nodes; `vector_error` fallback counter |
-| Model unavailable or malformed | Every name in that call becomes new; `model_error` counter |
+| Model unavailable or malformed | Every name in that call becomes new; `model_error` counter; the cached model is rebuilt from config for the next record |
+| Model call slower than 60 s | Same as unavailable. The bound applies to each provider call (and each reflection retry), not to the wait for the shared indexing model slot, which is backpressure |
 | Model returns an id it was not offered | That name becomes new; `rejected_target` counter |
 | Winner check against the graph fails | No winner offered for that kind; `winner_check_error` counter |
 | Graph lookup fails | Apply mode: enrichment fails as today, no point is written. Shadow mode: logged |

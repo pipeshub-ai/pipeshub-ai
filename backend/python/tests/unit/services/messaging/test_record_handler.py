@@ -147,7 +147,7 @@ class TestBulkDeleteEvent:
         assert events[0].data.record_id == "bulk_delete"
         assert events[0].data.count == 3
         assert events[1].event == "indexing_complete"
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1", "vr2", "vr3"])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1", "vr2", "vr3"], org_id=None)
 
     @pytest.mark.asyncio
     async def test_bulk_delete_empty_list(self):
@@ -894,7 +894,7 @@ class TestDeleteRecordEvent:
         assert events[0].event == "parsing_complete"
         assert events[0].data.record_id == "r1"
         assert events[1].event == "indexing_complete"
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id=None)
 
     @pytest.mark.asyncio
     async def test_delete_record_no_virtual_record_id(self):
@@ -910,7 +910,7 @@ class TestDeleteRecordEvent:
         events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
 
         assert len(events) == 2
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with([None])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with([None], org_id=None)
 
     @pytest.mark.asyncio
     async def test_delete_record_also_deletes_record_entity(self):
@@ -1052,6 +1052,48 @@ class TestRecordNotFound:
         payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf"}
         with pytest.raises(RuntimeError):
             await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+
+class TestRecordInTrash:
+    """A record in the trash is drained like a missing one."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("event_type", "extra"),
+        [
+            (EventTypes.NEW_RECORD.value, {}),
+            (EventTypes.UPDATE_RECORD.value, {}),
+            (EventTypes.REINDEX_RECORD.value, {"forceReindex": True}),
+        ],
+    )
+    async def test_a_trashed_record_is_drained_without_indexing(self, event_type, extra) -> None:
+        """Indexing it would put back the vectors its delete removed."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(
+            return_value={
+                "_key": "r1",
+                "virtualRecordId": "vr1",
+                "indexingStatus": ProgressStatus.QUEUED.value,
+                "connectorId": "conn-1",
+                "origin": OriginTypes.CONNECTOR.value,
+                "mimeType": "application/pdf",
+                "isDeleted": True,
+            }
+        )
+        pipeline = handler.event_processor.processor.indexing_pipeline
+
+        payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf", **extra}
+        events = await _collect_events(handler, event_type, payload)
+
+        assert [e.event for e in events] == [
+            IndexingEvent.PARSING_COMPLETE,
+            IndexingEvent.INDEXING_COMPLETE,
+        ]
+        gp.get_document.assert_awaited_once()
+        pipeline.bulk_delete_embeddings.assert_not_called()
+        gp.update_node.assert_not_called()
+        gp.update_queued_duplicates_status.assert_not_called()
 
 
 # ===================================================================

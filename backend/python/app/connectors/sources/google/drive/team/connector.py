@@ -107,6 +107,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.admin.admin import GoogleAdminDataSource
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
@@ -2111,12 +2112,14 @@ class GoogleDriveTeamConnector(BaseConnector):
         try:
             after_key: str | None = None
             while True:
+                # Trash included: a trashed file the filters now leave out is removed too.
                 page = await self.data_entities_processor.get_records_by_status(
                     connector_id=self.connector_id,
                     status_filters=None,
                     limit=FILTER_CLEANUP_PAGE_SIZE,
                     is_placeholder=False,
                     after_key=after_key,
+                    visibility=RecordVisibility.ALL,
                 )
                 for record in page:
                     if self._record_passes_sync_filters(record):

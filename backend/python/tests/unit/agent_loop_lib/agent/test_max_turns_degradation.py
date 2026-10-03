@@ -3,7 +3,12 @@ exhausted, a run that already produced substantive assistant text should
 come back as a degraded SUCCESS carrying that text, not an opaque failure
 — a slower-converging small model hits the turn cap mid-answer far more
 often than a large one does, and throwing away everything it already said
-is strictly worse than handing it back flagged as a partial result."""
+is strictly worse than handing it back flagged as a partial result.
+
+Every run here ends on a tool turn, so the extra answer-only turn runs
+first (see `test_max_turns_final_answer.py`); these scripts make that turn
+produce no answer — the model calls a tool anyway — so the degraded tail
+is what decides the result."""
 
 from __future__ import annotations
 
@@ -65,17 +70,22 @@ def _build_agent(transport: ScriptedTransport, *, max_turns: int = 3) -> Agent:
     return Agent(spec, runtime)
 
 
+_CALL = ToolCall(id="c", name="echo", arguments={"text": "hi"})
+# The answer-only turn after max_turns, ignoring its instruction.
+_FINAL_TURN_CALLS_A_TOOL = ScriptedStep(message=AssistantMessage(content="", tool_calls=[_CALL]))
+
+
 class TestMaxTurnsDegradation:
     async def test_returns_degraded_success_with_last_turns_text(self) -> None:
-        call = ToolCall(id="c", name="echo", arguments={"text": "hi"})
         substantive_text = (
             "I've gathered most of the relevant data; the report should cover "
             "sections on revenue, headcount, and churn, each with a short summary."
         )
         transport = ScriptedTransport(script=[
-            ScriptedStep(message=AssistantMessage(content="", tool_calls=[call])),
-            ScriptedStep(message=AssistantMessage(content="", tool_calls=[call])),
-            ScriptedStep(message=AssistantMessage(content=substantive_text, tool_calls=[call])),
+            ScriptedStep(message=AssistantMessage(content="", tool_calls=[_CALL])),
+            ScriptedStep(message=AssistantMessage(content="", tool_calls=[_CALL])),
+            ScriptedStep(message=AssistantMessage(content=substantive_text, tool_calls=[_CALL])),
+            _FINAL_TURN_CALLS_A_TOOL,
         ])
 
         agent = _build_agent(transport, max_turns=3)
@@ -86,11 +96,11 @@ class TestMaxTurnsDegradation:
         assert substantive_text in result.output
 
     async def test_still_fails_when_no_substantive_text_was_ever_produced(self) -> None:
-        call = ToolCall(id="c", name="echo", arguments={"text": "hi"})
         transport = ScriptedTransport(script=[
-            ScriptedStep(message=AssistantMessage(content="", tool_calls=[call])),
-            ScriptedStep(message=AssistantMessage(content="", tool_calls=[call])),
-            ScriptedStep(message=AssistantMessage(content="", tool_calls=[call])),
+            ScriptedStep(message=AssistantMessage(content="", tool_calls=[_CALL])),
+            ScriptedStep(message=AssistantMessage(content="", tool_calls=[_CALL])),
+            ScriptedStep(message=AssistantMessage(content="", tool_calls=[_CALL])),
+            _FINAL_TURN_CALLS_A_TOOL,
         ])
 
         agent = _build_agent(transport, max_turns=3)
@@ -100,10 +110,10 @@ class TestMaxTurnsDegradation:
         assert "Exceeded max_turns" in result.error
 
     async def test_fragment_shorter_than_threshold_still_fails(self) -> None:
-        call = ToolCall(id="c", name="echo", arguments={"text": "hi"})
         transport = ScriptedTransport(script=[
-            ScriptedStep(message=AssistantMessage(content="", tool_calls=[call])),
-            ScriptedStep(message=AssistantMessage(content="Sure!", tool_calls=[call])),
+            ScriptedStep(message=AssistantMessage(content="", tool_calls=[_CALL])),
+            ScriptedStep(message=AssistantMessage(content="Sure!", tool_calls=[_CALL])),
+            _FINAL_TURN_CALLS_A_TOOL,
         ])
 
         agent = _build_agent(transport, max_turns=2)

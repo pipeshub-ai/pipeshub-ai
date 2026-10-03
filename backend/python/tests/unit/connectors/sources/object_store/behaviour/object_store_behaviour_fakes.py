@@ -14,6 +14,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    matches_visibility,
+)
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -262,12 +267,17 @@ class FakeRecordsDb:
 
     async def get_records_in_record_group(
         self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
+        """Live records only unless asked, as both graph stores answer."""
         self._check("get_records_in_record_group")
         if external_group_id not in self.record_groups:
             return []
         page = sorted(
-            (r for r in self.records.values() if r.external_record_group_id == external_group_id),
+            (
+                r for r in self.records.values()
+                if r.external_record_group_id == external_group_id and matches_visibility(r, visibility)
+            ),
             key=lambda r: r.id,
         )
         return [self._base(r) for r in page if after_key is None or r.id > after_key][:limit]

@@ -20,7 +20,8 @@ import asyncio
 import contextlib
 import logging
 import random
-from dataclasses import dataclass, replace
+import threading
+from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -363,16 +364,10 @@ async def _hops_aiohttp(
     return None
 
 
-def _sync_hop(
-    client: _RequestsLike, url: str, headers: dict, timeout: int, max_bytes: int | None,
-    pin: PublicTarget | None = None,
-) -> _Hop:
-    """One GET on a requests-style client (curl_cffi Session, cloudscraper), redirects not followed.
-    With ``pin``, the answer must have come from that address (curl reports it as ``primary_ip``)."""
+def _sync_hop(client: _RequestsLike, url: str, headers: dict, timeout: int, max_bytes: int | None) -> _Hop:
+    """One GET on a cloudscraper scraper, redirects not followed."""
     response = client.get(url, headers=headers, timeout=timeout, allow_redirects=False, stream=True)
     try:
-        if pin is not None:
-            _require_pinned_peer(response.primary_ip, pin)
         hop_headers = dict(response.headers)
         answered_by = str(response.url) if getattr(response, "url", None) else None
         if response.status_code in _HEAD_REDIRECT_CODES:
@@ -383,6 +378,65 @@ def _sync_hop(
         return _Hop(response.status_code, hop_headers, body, too_large, url=answered_by)
     finally:
         response.close()
+
+
+def _curl_hop(
+    session: _RequestsLike, busy: threading.Lock, url: str, headers: dict, timeout: int,
+    max_bytes: int | None, pin: PublicTarget,
+) -> _Hop:
+    """One GET on a curl_cffi Session, redirects not followed. The answer must have come from
+    ``pin``'s address (curl reports it as ``primary_ip``).
+
+    Not streamed: in curl_cffi 0.14 a streamed request that fails before its headers arrive (a
+    timeout, a refused connection) resets one curl handle from two threads at once, which
+    corrupts the heap and aborts the whole connector service. A declared size past the cap is
+    refused by curl itself at the headers (CURLOPT_MAXFILESIZE); an undeclared one is capped as
+    it arrives.
+    """
+    from curl_cffi.const import CurlECode, CurlOpt
+    from curl_cffi.curl import CURL_WRITEFUNC_ERROR
+
+    body = bytearray()
+    too_large = False
+    options = dict(session.curl_options or {})
+    if max_bytes is None:
+        options.pop(CurlOpt.MAXFILESIZE_LARGE, None)
+    else:
+        options[CurlOpt.MAXFILESIZE_LARGE] = max_bytes
+    session.curl_options = options
+
+    def collect(chunk: bytes) -> int:
+        nonlocal too_large
+        body.extend(chunk)
+        if max_bytes is not None and len(body) > max_bytes:
+            too_large = True
+            return CURL_WRITEFUNC_ERROR  # curl stops the transfer and the request raises
+        return len(chunk)
+
+    with busy:
+        try:
+            response = session.get(
+                url, headers=headers, timeout=timeout, allow_redirects=False, content_callback=collect,
+            )
+        except Exception as e:
+            response = getattr(e, "response", None)
+            too_large = too_large or getattr(e, "code", None) == CurlECode.FILESIZE_EXCEEDED
+            if not too_large or response is None:
+                raise
+        peer_ip = response.primary_ip
+        hop_headers = dict(response.headers)
+        status_code = response.status_code
+    _require_pinned_peer(peer_ip, pin)
+    if status_code in _HEAD_REDIRECT_CODES:
+        return _Hop(status_code, hop_headers)
+    if too_large or _declared_too_large(hop_headers, max_bytes):
+        return _Hop(status_code, hop_headers, too_large=True)
+    return _Hop(status_code, hop_headers, bytes(body))
+
+
+def _close_when_idle(session: _RequestsLike, busy: threading.Lock) -> None:
+    with busy, contextlib.suppress(Exception):
+        session.close()
 
 
 async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) -> FetchResponse | None:
@@ -400,30 +454,33 @@ async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) 
     for profile in random.sample(_CURL_PROFILES, min(3, len(_CURL_PROFILES))):
         # No environment proxy: it would resolve the host again, past the pin.
         session = Session(impersonate=profile, timeout=timeout, trust_env=False)
+        # Held while a request runs on the session's curl handle, so it is never closed under one.
+        busy = threading.Lock()
         # curl keeps a host's connection open across hops, so a host keeps its first address.
         pins: dict[tuple[str, int], PublicTarget] = {}
 
         async def get(
             url: str, headers: dict, pin: PublicTarget | None,
-            session: Any = session, pins: dict[tuple[str, int], PublicTarget] = pins,  # noqa: ANN401
+            session: Any = session, busy: threading.Lock = busy,  # noqa: ANN401
+            pins: dict[tuple[str, int], PublicTarget] = pins,
         ) -> _Hop:
             if pin is None:
                 raise ConnectionError(f"{url} did not resolve")
             pin = pins.setdefault((pin.host, pin.port), pin)
             request_url, session.curl_options = _curl_pinned_request(url, pin)
-            hop = await loop.run_in_executor(
-                None, _sync_hop, session, request_url, headers, timeout, walk.max_bytes, pin,
-            )
             # request_url is only the pinned spelling of url; curl never moves on its own here.
-            return replace(hop, url=None)
+            return await loop.run_in_executor(
+                None, _curl_hop, session, busy, request_url, headers, timeout, walk.max_bytes, pin,
+            )
 
         try:
             return await _walk_hops(walk, get, f"curl_cffi({profile}, h2=True)")
         except Exception:
             continue  # TLS error, connection reset -> next profile, from the start of the chain
         finally:
-            with contextlib.suppress(Exception):
-                session.close()
+            # Off the event loop: a cancelled crawl can leave a request about to start on this
+            # session, and the close waits for it to end.
+            loop.run_in_executor(None, _close_when_idle, session, busy)
     logger.warning(f"⚠️ [curl_cffi(h2=True)] All profiles exhausted for {walk.url}")
     return None
 

@@ -24,7 +24,10 @@ from app.agents.actions.knowledge_graph.ops.entity_records import (
     resolve_entity_virtual_ids,
 )
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
-from app.modules.retrieval.entity_permissions import EntityAccessError
+from app.modules.retrieval.entity_permissions import (
+    SEARCH_SCOPE_MAX_ENTITIES,
+    EntityAccessError,
+)
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.chat_helpers import (
@@ -139,6 +142,7 @@ def _entity_notes(
     filter_dropped: bool,
     record_scope_applied: bool,
     scope_truncated: bool,
+    entities_skipped: int = 0,
 ) -> str:
     notes: list[str] = []
     if unknown_entity_ids:
@@ -158,7 +162,14 @@ def _entity_notes(
     if scope_truncated:
         notes.append(
             "Note: the requested record group/subcategory has more records than one "
-            "search covers; only its newest accessible records were searched."
+            "search can cover, so only part of its accessible records were searched."
+        )
+    if entities_skipped:
+        notes.append(
+            f"Note: only the first {SEARCH_SCOPE_MAX_ENTITIES} record group/subcategory "
+            f"entity_ids scoped this search; {entities_skipped} more record group/subcategory "
+            "entity_ids were not applied. Search them separately. Department, category, "
+            "topic and language entity_ids are not limited."
         )
     return "".join(f"{note}\n\n" for note in notes)
 
@@ -297,6 +308,7 @@ async def execute_search(
         record_scoped_entities = resolve_record_scoped_entities(state, entity_ids)
         virtual_record_ids_from_tool: list[str] | None = None
         entity_scope_truncated = False
+        entities_skipped = 0
         if record_scoped_entities:
             try:
                 entity_scope = await resolve_entity_virtual_ids(
@@ -312,16 +324,23 @@ async def execute_search(
                 })
             virtual_record_ids_from_tool = entity_scope.virtual_ids
             entity_scope_truncated = entity_scope.truncated
+            entities_skipped = entity_scope.entities_skipped
             if not virtual_record_ids_from_tool:
                 # Every requested entity resolved to zero accessible
                 # records — report that plainly rather than silently
                 # falling through to an unscoped, org-wide search.
+                message = (
+                    ENTITY_SCOPE_INCOMPLETE_MESSAGE
+                    if entity_scope_truncated or entities_skipped
+                    else "No accessible records found for the requested entities."
+                )
+                skipped_note = _entity_notes(
+                    unknown_entity_ids=[], filter_dropped=False, record_scope_applied=False,
+                    scope_truncated=False, entities_skipped=entities_skipped,
+                ).strip()
                 return json.dumps({
                     "status": "success",
-                    "message": (
-                        ENTITY_SCOPE_INCOMPLETE_MESSAGE if entity_scope_truncated
-                        else "No accessible records found for the requested entities."
-                    ),
+                    "message": f"{message}\n\n{skipped_note}" if skipped_note else message,
                     "results": [],
                     "result_count": 0,
                 })
@@ -351,6 +370,7 @@ async def execute_search(
                 filter_dropped=False,
                 record_scope_applied=bool(virtual_record_ids_from_tool),
                 scope_truncated=entity_scope_truncated,
+                entities_skipped=entities_skipped,
             )
             if notes:
                 message = f"{message}\n\n{notes.strip()}"
@@ -692,6 +712,7 @@ async def execute_search(
             filter_dropped=entity_filter_dropped,
             record_scope_applied=bool(virtual_record_ids_from_tool),
             scope_truncated=entity_scope_truncated,
+            entities_skipped=entities_skipped,
         )
         has_semantic_blocks = len(final_results) > 0
         if has_semantic_blocks:
