@@ -3286,6 +3286,8 @@ class EntityType(str, Enum):
     RECORD_GROUP = "record_group"
     CONNECTOR = "connector"
     LANGUAGE = "language"
+    # An organisation member named by records (KG-13); keyed by the user id.
+    PERSON = "person"
     RELATIONSHIP = "relationship"
     CUSTOM = "custom"
 
@@ -3372,6 +3374,23 @@ class EntityRecord(BaseModel):
             org_id=org_id,
             connector_ids=[connector_id] if connector_id else [],
             record_group_ids=[group_id],
+            type_category=EntityTypeCategory.PREDEFINED,
+        )
+
+    @classmethod
+    def for_person(
+        cls, user_id: str, name: str, org_id: str, connector_id: str | None, record_group_id: str | None,
+    ) -> "EntityRecord":
+        """A member's point, from one record that names them. Written with
+        ``merge_membership=True``: a person spans many records, connectors
+        and groups."""
+        return cls(
+            entity_id=user_id,
+            entity_type=EntityType.PERSON,
+            name=name,
+            org_id=org_id,
+            connector_ids=[connector_id] if connector_id else [],
+            record_group_ids=[record_group_id] if record_group_id else [],
             type_category=EntityTypeCategory.PREDEFINED,
         )
 

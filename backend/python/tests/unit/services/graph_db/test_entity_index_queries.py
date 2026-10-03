@@ -58,7 +58,7 @@ def test_sources_are_a_fixed_set() -> None:
         RECORDS, GROUPS, DEPARTMENTS, TOPICS,
         CollectionNames.CATEGORIES.value, CollectionNames.LANGUAGES.value,
         CollectionNames.SUBCATEGORIES1.value, CollectionNames.SUBCATEGORIES2.value,
-        CollectionNames.SUBCATEGORIES3.value,
+        CollectionNames.SUBCATEGORIES3.value, CollectionNames.USERS.value,
     }
 
 
@@ -67,7 +67,7 @@ class TestValidation:
     async def test_unknown_source_is_rejected_before_querying(self, make) -> None:
         p = make([])
         with pytest.raises(ValueError):
-            await p.page_entity_index_source("users", "org-1", None, 10)
+            await p.page_entity_index_source("permissions", "org-1", None, 10)
         with pytest.raises(ValueError):
             await p.page_entity_index_source("topics) DETACH DELETE n //", "org-1", None, 10)
 
@@ -83,7 +83,7 @@ class TestValidation:
     async def test_an_unknown_source_is_rejected_whatever_the_scope(self, make) -> None:
         p = make([])
         with pytest.raises(ValueError):
-            await p.page_entity_index_source("users", "", None, 10)
+            await p.page_entity_index_source("permissions", "", None, 10)
 
     async def test_query_failure_raises(self, make) -> None:
         p = make(RuntimeError("db down"))
@@ -195,7 +195,8 @@ async def test_record_group_name_falls_back_like_the_index_path() -> None:
     neo, arango = _neo4j([]), _arango([])
     await neo.page_entity_index_source(GROUPS, "app-1", None, 10)
     await arango.page_entity_index_source(GROUPS, "app-1", None, 10)
-    assert "coalesce(n.groupName, n.name) AS name" in _neo4j_call(neo)[0]
+    # ``or`` skips an empty groupName too, so the Cypher must not stop at "".
+    assert "CASE WHEN coalesce(n.groupName, '') <> '' THEN n.groupName ELSE n.name END AS name" in _neo4j_call(neo)[0]
     assert "name: n.groupName || n.name" in _arango_call(arango)[0]
 
 

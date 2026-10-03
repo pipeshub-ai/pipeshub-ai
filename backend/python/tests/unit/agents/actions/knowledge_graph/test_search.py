@@ -910,7 +910,7 @@ class TestExecuteSearchEntityFilters:
         assert "topics" not in second_kwargs["filter_groups"]
         assert "Fallback content" in result
         assert "NOT limited to it" in result
-        assert "record group/subcategory scope still applies" not in result
+        assert "record group/subcategory/person scope still applies" not in result
 
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))

@@ -17382,7 +17382,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             CollectionNames.BELONGS_TO.value,
             (CollectionNames.RECORD_GROUPS.value,),
         ),
+        EntityType.PERSON.value: (
+            CollectionNames.ENTITY_RELATIONS.value,
+            (CollectionNames.USERS.value,),
+        ),
     }
+    _MEMBERSHIP_ENTITY_TYPES = TAXONOMY_ENTITY_TYPES | {EntityType.PERSON.value}
     _ENTITY_CANDIDATE_RECORD_FIELDS: tuple[str, ...] = (
         "_key", "recordName", "recordType", "connectorId", "virtualRecordId",
         "webUrl", "hideWeburl", "sourceLastModifiedTimestamp", "updatedAtTimestamp",
@@ -17495,6 +17500,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN rec
                 )"""
         scope = f"LET targets = [{targets}]"
+        if entity_type == EntityType.PERSON.value:
+            return "", f"""(
+                    {self._person_records_loop("ref.id")}
+                        FILTER rec.orgId == @org_id AND rec.isDeleted != true
+                        FILTER rec.indexingStatus == @completed
+                        FILTER rec.connectorId IN ref.connectorIds
+                        {record_type_filter}
+                        LIMIT @scan_cap
+                        RETURN rec
+                )"""
         if entity_type == EntityType.RECORD_GROUP.value:
             scope = (
                 f'LET rg = DOCUMENT(CONCAT("{CollectionNames.RECORD_GROUPS.value}/", ref.id))\n                '
@@ -17502,6 +17517,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return scope, f"(rg != null AND rg.orgId == @org_id) ? {scan_subquery} : []"
         return scope, scan_subquery
+
+    @staticmethod
+    def _person_records_loop(user_key: str) -> str:
+        """AQL binding ``rec`` to each record linked to the org member whose
+        key is ``user_key``, over entityRelations in either direction
+        (record_people writes record -> user, Slack mentions user -> record).
+
+        A traversal streams, so a caller's LIMIT stops it early; the user
+        lookup is a loop rather than a ternary, which AQL would hoist and
+        evaluate for a user of another org too."""
+        users, records = CollectionNames.USERS.value, CollectionNames.RECORDS.value
+        return f"""FOR person IN {users}
+                        FILTER person._key == {user_key} AND person.orgId == @org_id
+                        FOR rec IN 1..1 ANY person {CollectionNames.ENTITY_RELATIONS.value}
+                            OPTIONS {{order: "bfs", uniqueVertices: "global"}}
+                            FILTER rec != null AND IS_SAME_COLLECTION("{records}", rec)"""
 
     _ENTITY_CANDIDATE_SORT = (
         "SORT NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) DESC, key ASC"
@@ -17611,6 +17642,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 )
                 RETURN {{id: ref.id, hits: hits, window_size: LENGTH(win), capped: capped}}
             """
+
+    async def get_record_people(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_record_people`."""
+        if not record_id or not org_id:
+            return []
+        rows = await self.http_client.execute_aql(
+            f"""
+            LET rec = CONCAT("{CollectionNames.RECORDS.value}/", @record_id)
+            FOR user_id IN UNION_DISTINCT(
+                (FOR e IN {CollectionNames.ENTITY_RELATIONS.value}
+                    FILTER e._from == rec AND STARTS_WITH(e._to, "{CollectionNames.USERS.value}/")
+                    RETURN e._to),
+                (FOR e IN {CollectionNames.ENTITY_RELATIONS.value}
+                    FILTER e._to == rec AND STARTS_WITH(e._from, "{CollectionNames.USERS.value}/")
+                    RETURN e._from)
+            )
+                LET u = DOCUMENT(user_id)
+                FILTER u != null AND u.orgId == @org_id
+                SORT u._key
+                RETURN {{id: u._key, name: u.fullName, email: u.email}}
+            """,
+            bind_vars={"record_id": record_id, "org_id": org_id},
+        )
+        return [dict(r) for r in rows or [] if r]
 
     async def get_permitted_entity_records(
         self,
@@ -17824,7 +17879,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         ids_by_type: dict[str, list[str]] = defaultdict(list)
         for ref in refs:
             ref_id, ref_type = str(ref.get("id") or ""), ref.get("type")
-            if ref_id and ref_type in TAXONOMY_ENTITY_TYPES and ref_id not in ids_by_type[ref_type]:
+            if (
+                ref_id and ref_type in self._MEMBERSHIP_ENTITY_TYPES
+                and ref_id not in ids_by_type[ref_type]
+            ):
                 ids_by_type[ref_type].append(ref_id)
 
         records = CollectionNames.RECORDS.value
@@ -17832,16 +17890,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
         for ref_type, ref_ids in ids_by_type.items():
             edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[ref_type]
             targets = ", ".join(f'CONCAT("{c}/", ref_id)' for c in target_collections)
+            if ref_type == EntityType.PERSON.value:
+                linked = self._person_records_loop("ref_id")
+            else:
+                linked = f"""FOR edge IN {edge_collection}
+                        FILTER edge._to IN targets
+                        FILTER STARTS_WITH(edge._from, "{records}/")
+                        LET rec = DOCUMENT(edge._from)"""
             query = f"""
             FOR ref_id IN @ref_ids
                 LET targets = [{targets}]
                 // COLLECT inside the subquery keeps memory at the number of
                 // distinct pairs, not the number of records linked to the entity.
                 LET members = (
-                    FOR edge IN {edge_collection}
-                        FILTER edge._to IN targets
-                        FILTER STARTS_WITH(edge._from, "{records}/")
-                        LET rec = DOCUMENT(edge._from)
+                    {linked}
                         FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
                         COLLECT connectorId = rec.connectorId, recordGroupId = rec.recordGroupId
                         RETURN {{connectorId, recordGroupId}}
