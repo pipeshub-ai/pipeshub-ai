@@ -45,6 +45,7 @@ on:
             - mcp
             - zammad
             - demo
+            - ai_agents
             - resilience
             - permissions
             - storage
@@ -171,10 +172,14 @@ jobs:
         # other suite has indexed anything: the demo's prompt differs once the
         # workspace has real data, and core would index plenty. Core leaves the
         # demo marker out, so it runs once.
+        # "ai_agents" runs the AI models, agents, MCP and agent harness suite
+        # against a real model. Each test costs model calls, so it runs on the
+        # nightly and on a full manual run, never on a pull request; core leaves
+        # its marker out everywhere, so on a pull request it does not run at all.
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || '["connectors-1","connectors-2","connectors-3","core","demo"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request_target' && '["connectors-1","connectors-2","connectors-3","core","demo"]') || '["connectors-1","connectors-2","connectors-3","core","demo","ai_agents"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -197,6 +202,9 @@ jobs:
       # cover these connectors — the nightly, and a dispatch that picked one —
       # a missing credential is a failure instead.
       PIPESHUB_REQUIRE_CONNECTOR_SECRETS: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != 'integration')) && '1' || '' }}
+      # The demo's Build Pack questions cost about four times the golden
+      # questions' model calls, so they run nightly and on a demo dispatch only.
+      DEMO_PACK_QUESTIONS: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.connectors == 'demo')) && '1' || '' }}
       ARANGO_PASSWORD: ${{ secrets.TEST_ARANGO_PASSWORD }}
       PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
       PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
@@ -238,6 +246,11 @@ jobs:
       # (which changes pages through its control API) on the published port.
       WEB_FIXTURES_TEST_URL: http://localhost:8089
       WEB_FIXTURES_CONNECTOR_URL: http://web-fixtures:8080
+      # The agent tests register the mcp-fixture service as an external MCP
+      # server: PipesHub reaches it by service name, the test process reads its
+      # call log on the published port.
+      MCP_FIXTURE_TEST_URL: http://localhost:8097
+      MCP_FIXTURE_CONNECTOR_URL: http://mcp-fixture:8080/mcp
       # Nextcloud and BookStack run in the compose stack too, behind the
       # selfhosted-sources profile: only the shard that runs their tests
       # (connectors-1, or a dispatch of just one of them) starts them.
@@ -276,6 +289,9 @@ jobs:
       # local .env run does today.
       TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
       TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
+      # The demo test's answer judge uses the Azure settings above. Without it,
+      # facts a question lists for the judge would go unchecked yet pass.
+      PIPESHUB_REQUIRE_JUDGE: '1'
       CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
       CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
       CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
@@ -350,7 +366,9 @@ jobs:
       # from the same values.
       # Balanced on measured minutes across both graph legs (both legs run in
       # one job, so a shard's wall clock is the sum of the two):
-      # shard 1 ~136 min, shard 2 ~135 min, shard 3 ~132 min. Shard 1 keeps
+      # shard 1 ~194 min, shard 2 ~204 min, shard 3 ~209 min, of which ~60 min
+      # each is the scenario matrix (an estimate until a nightly measures it; it
+      # runs on the Neo4j leg only). Shard 1 keeps
       # nextcloud and bookstack, the only suites needing selfhosted-sources.
       # Rebalance with scripts/shard_balance.py when a suite grows.
       CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
@@ -532,8 +550,9 @@ jobs:
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
+            ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
@@ -717,8 +736,9 @@ jobs:
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
+            ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as

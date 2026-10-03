@@ -72,6 +72,7 @@ from app.connectors.sources.web.address_guard import (
     create_guarded_session,
     is_unsafe_url,
 )
+from app.connectors.sources.web.browser_supervisor import BrowserUnavailableError
 from app.connectors.sources.web.crawl4ai_fetcher import (
     Crawl4AIFetcher,
     FetchResult,
@@ -915,6 +916,19 @@ class WebConnector(BaseConnector):
                 message=message + self._robots_summary(),
             )
 
+        except BrowserUnavailableError as e:
+            # Raised before process_retry_urls, so no page is recorded as unreachable for a fault of ours.
+            self.logger.error("❌ Web sync stopped, headless browser unavailable: %s", e)
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="Web crawl stopped",
+                message=(
+                    "The browser that renders this site's pages stopped and could not be restarted. "
+                    f"{self.processed_urls} pages were saved before it stopped. Sync again to continue."
+                ),
+            )
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error during web sync: {e}", exc_info=True)
             raise
@@ -947,6 +961,8 @@ class WebConnector(BaseConnector):
                     await self.data_entities_processor.on_updated_record_permissions(record_update.record, record_update.new_permissions)
                     self.processed_urls += 1
 
+        except BrowserUnavailableError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error crawling single page {url}: {e}", exc_info=True)
 
@@ -1144,13 +1160,15 @@ class WebConnector(BaseConnector):
                     except (asyncio.CancelledError, Exception):
                         pass
 
-            if producer_error is not None:
-                raise producer_error
-
             if batch_records:
                 await self.data_entities_processor.on_new_records(batch_records)
                 self.processed_urls += len(batch_records)
 
+            if producer_error is not None:
+                raise producer_error
+
+        except BrowserUnavailableError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error in recursive crawl: {e}", exc_info=True)
             raise
@@ -1339,7 +1357,7 @@ class WebConnector(BaseConnector):
                                 current_url,
                                 raw_result.status_code if raw_result else "connection error",
                             )
-                            crawl4ai_resp = await self._headless_fetch(current_url)
+                            crawl4ai_resp = await self._headless_fallback_fetch(current_url)
                             if crawl4ai_resp is not None and crawl4ai_resp.success and crawl4ai_resp.status_code < HttpStatusCode.BAD_REQUEST.value:
                                 raw_result = crawl4ai_resp
 
@@ -1759,6 +1777,14 @@ class WebConnector(BaseConnector):
             self._crawl4ai_result_to_response(result, url), url, no_answer=self._browser_got_no_answer(result),
         )
 
+    async def _headless_fallback_fetch(self, url: str) -> FetchResponse | None:
+        """The browser as a second try after plain HTTP: without one, the plain-HTTP answer stands."""
+        try:
+            return await self._headless_fetch(url)
+        except BrowserUnavailableError as e:
+            self.logger.warning("⚠️ Headless fallback skipped for %s: %s", url, e)
+            return None
+
     async def _headless_fetch_many(self, urls: list[str]) -> list[FetchResponse | None]:
         """Fetch a batch of URLs via crawl4ai concurrently; documents go over plain HTTP."""
         assert self.crawl4ai_fetcher is not None
@@ -2153,7 +2179,7 @@ class WebConnector(BaseConnector):
                                 url,
                                 raw.status_code if raw else "connection error",
                             )
-                            crawl4ai_resp = await self._headless_fetch(url)
+                            crawl4ai_resp = await self._headless_fallback_fetch(url)
                             if crawl4ai_resp is not None and crawl4ai_resp.success and crawl4ai_resp.status_code < HttpStatusCode.BAD_REQUEST.value:
                                 raw = crawl4ai_resp
                 result = await self._validate_fetch_result(url, depth, referer, raw)
@@ -2391,6 +2417,8 @@ class WebConnector(BaseConnector):
 
             return record_update
 
+        except BrowserUnavailableError:
+            raise
         except asyncio.TimeoutError:
             self.logger.warning(f"⚠️ Timeout fetching {url}")
             return None
@@ -3981,7 +4009,12 @@ class WebConnector(BaseConnector):
                 raise connector_not_ready(self.display_name)
 
             if self.use_headless_browser and self.crawl4ai_fetcher:
-                result = await self._headless_fetch(record.weburl, walk_first=False)
+                try:
+                    result = await self._headless_fetch(record.weburl, walk_first=False)
+                except BrowserUnavailableError as e:
+                    # Our browser failed, not the site: the page may be fine, so no site status is reported.
+                    self.logger.warning("Headless browser unavailable for record %s: %s", record.id, e)
+                    raise internal_service_status(HttpStatusCode.SERVICE_UNAVAILABLE.value) from e
             else:
                 result = await fetch_url_with_fallback(
                     url=record.weburl,

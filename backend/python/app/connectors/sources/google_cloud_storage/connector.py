@@ -8,6 +8,7 @@ uses the native GCS API with service account authentication.
 import asyncio
 import mimetypes
 import uuid
+from collections.abc import Container
 from datetime import datetime, timezone
 from itertools import accumulate
 from logging import Logger
@@ -47,7 +48,10 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.folder_scope import (
     FolderScope,
     clean_up_scope,
+    listed_record_ids,
     path_in_container,
+    recorded_ids,
+    remove_records_not_listed,
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
@@ -69,6 +73,7 @@ from app.connectors.core.registry.filters import (
     MultiselectOperator,
     OptionSourceType,
     SyncFilterKey,
+    extension_passes_filter,
     load_connector_filters,
 )
 from app.connectors.sources.google_cloud_storage.common.apps import GCSApp
@@ -848,34 +853,85 @@ class GCSConnector(BaseConnector):
         scope = FolderScope.from_filters(sync_filters)
         if not scope.is_everything:
             self.logger.info(f"Folder filter for bucket {bucket_name}: {scope.describe()}")
+        recorded = await recorded_ids(self.data_entities_processor, self.connector_id, bucket_name)
+        listed: set[str] = set()
+        unrecorded: list[dict] = []
+        complete = True
         for prefix in scope.list_prefixes:
-            await self._sync_bucket_prefix(bucket_name, prefix, scope)
+            prefix_listed, prefix_complete = await self._sync_bucket_prefix(bucket_name, prefix, scope, recorded, unrecorded)
+            listed |= prefix_listed
+            complete = complete and prefix_complete
+        # One pass after every prefix: a rename into a folder listed later is
+        # still stored under its old path until that folder is processed.
+        if complete:
+            await self._claim_records_of_gone_copies(bucket_name, unrecorded, listed)
+            await remove_records_not_listed(
+                self.data_entities_processor, self.connector_id, bucket_name, scope.list_prefixes, listed, self.logger
+            )
+        else:
+            self.logger.info(f"Not removing records in bucket {bucket_name}: a listing did not cover every object")
         await clean_up_scope(
             self.data_entities_processor, self.record_sync_point, self.connector_id, bucket_name, scope, self.logger
         )
 
-    async def _sync_bucket_prefix(self, bucket_name: str, prefix: str, scope: FolderScope) -> None:
-        """Sync objects under one prefix of a bucket ("" for all of it), with pagination and incremental sync."""
+    async def _claim_records_of_gone_copies(self, bucket_name: str, unrecorded: list[dict], listed: set[str]) -> None:
+        """Process the unchanged objects that have no record of their own, when that is safe.
+
+        The connectors take equal content at a new key for a move, so one record can
+        stand for two keys. Before the removal pass deletes a record whose key is gone,
+        a listed copy of its content takes it over. A copy whose content is held by a
+        key that is still listed, or by another bucket, is left alone, so the record
+        does not move back and forth between two live keys.
+        """
+        prefix = f"{bucket_name}/"
+        for obj in unrecorded:
+            key = obj.get("Key", "")
+            holder = None
+            try:
+                revision = self._get_gcs_revision_id(obj)
+                holder = (
+                    await self.data_entities_processor.get_record_by_external_revision_id(self.connector_id, revision)
+                    if revision else None
+                )
+                if holder is not None:
+                    held_at = holder.external_record_id or ""
+                    if not held_at.startswith(prefix) or held_at in listed:
+                        continue
+                segments = get_folder_path_segments_from_key(key)
+                if segments:
+                    await self._ensure_parent_folders_exist(bucket_name, segments)
+                record, permissions = await self._process_gcs_object(obj, bucket_name)
+                if record:
+                    await self._process_records_with_retry([(record, permissions)])
+                elif holder is not None:
+                    listed.add(held_at)
+            except Exception as e:
+                self.logger.error(f"Error giving {key} the record of its content: {e}", exc_info=True)
+                if holder is not None:
+                    # Keep the record rather than delete content that is still listed.
+                    listed.add(holder.external_record_id or "")
+
+    async def _sync_bucket_prefix(
+        self, bucket_name: str, prefix: str, scope: FolderScope, recorded: Container[str], unrecorded: list[dict],
+    ) -> tuple[set[str], bool]:
+        """Sync objects under one prefix of a bucket ("" for all of it), with pagination and incremental sync.
+
+        Returns the record ids the listing keeps, and whether it covered every object.
+        """
         if not self.data_source:
             raise ConnectionError("GCS connector is not initialized.")
 
         sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
 
-        file_extensions_filter = sync_filters.get("file_extensions")
-        allowed_extensions = []
-        if file_extensions_filter and not file_extensions_filter.is_empty():
-            filter_value = file_extensions_filter.value
-            if isinstance(filter_value, list):
-                allowed_extensions = [ext.lower().lstrip('.') for ext in filter_value if ext]
-            elif isinstance(filter_value, str):
-                allowed_extensions = [filter_value.lower().lstrip('.')]
-
-        if allowed_extensions:
+        extensions_filter = sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
+        if extensions_filter and not extensions_filter.is_empty():
             self.logger.info(
-                f"File extensions filter active for bucket {bucket_name}: {allowed_extensions}"
+                f"File extensions filter active for bucket {bucket_name}: "
+                f"operator={extensions_filter.operator_value}, extensions={extensions_filter.value}"
             )
 
-        modified_after_ms, modified_before_ms, created_after_ms, created_before_ms = self._get_date_filters()
+        user_date_filters = self._get_date_filters()
+        modified_after_ms, modified_before_ms, created_after_ms, created_before_ms = user_date_filters
 
         # Each listed prefix keeps its own page token and last sync time.
         sync_point_key = generate_record_sync_point_key(
@@ -884,6 +940,8 @@ class GCSConnector(BaseConnector):
         sync_point = await self.record_sync_point.read_sync_point(sync_point_key)
         page_token = sync_point.get("page_token") if sync_point else None
         last_sync_time = sync_point.get("last_sync_time") if sync_point else None
+        # A run resumed from a saved token never sees the pages before it.
+        resumed = page_token is not None
 
         if last_sync_time:
             user_modified_after_ms = modified_after_ms
@@ -898,6 +956,8 @@ class GCSConnector(BaseConnector):
         listing_failed = False
         failed = FailedItems()
         max_timestamp = last_sync_time if last_sync_time else 0
+        listed: set[str] = set()
+        unjudged = False
 
         while has_more:
             try:
@@ -945,6 +1005,7 @@ class GCSConnector(BaseConnector):
 
                     for obj in objects:
                         obj_ts = cutoff_ts = None
+                        judged = False
                         try:
                             key = obj.get("Key", "")
 
@@ -953,22 +1014,23 @@ class GCSConnector(BaseConnector):
                             if not (scope.includes_folder(key) if is_folder else scope.includes_file(key)):
                                 continue
 
-                            if not is_folder and allowed_extensions:
-                                ext = get_file_extension(key)
-                                if not ext:
-                                    self.logger.debug(
-                                        f"Skipping {key}: no file extension found"
-                                    )
-                                    continue
-                                if ext not in allowed_extensions:
-                                    self.logger.debug(
-                                        f"Skipping {key}: extension '{ext}' not in allowed extensions"
-                                    )
-                                    continue
+                            if not is_folder and not extension_passes_filter(sync_filters, get_file_extension(key)):
+                                self.logger.debug(f"Skipping {key}: excluded by the file extensions filter")
+                                continue
 
-                            if not self._pass_date_filters(
+                            if not self._pass_date_filters(obj, *user_date_filters):
+                                continue
+
+                            # Kept before processing: an object that fails to process still exists.
+                            listed |= listed_record_ids(bucket_name, key)
+                            judged = True
+
+                            if last_sync_time and not self._pass_date_filters(
                                 obj, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
                             ):
+                                if not is_folder and f"{bucket_name}/{key.lstrip('/')}" not in recorded:
+                                    # Its content may be held by another key's record; decided once every prefix is listed.
+                                    unrecorded.append(obj)
                                 continue
 
                             # Track max timestamp for incremental sync (updated time)
@@ -1004,6 +1066,8 @@ class GCSConnector(BaseConnector):
                                 exc_info=True,
                             )
                             failed.add(cutoff_ts)
+                            # An object that errored before it was judged may still be kept.
+                            unjudged = unjudged or not judged
                             continue
 
                     has_more = objects_data.get("IsTruncated", False)
@@ -1045,14 +1109,16 @@ class GCSConnector(BaseConnector):
             )
             # A saved resume token would skip the pages holding the failures.
             await self.record_sync_point.update_sync_point(sync_point_key, {"page_token": None})
+        if listing_failed:
+            return listed, False
         checkpoint = failed.checkpoint(max_timestamp)
-        if checkpoint and checkpoint > 0 and not listing_failed:
-            await self.record_sync_point.update_sync_point(
-                sync_point_key, {
-                    "last_sync_time": checkpoint,
-                    "page_token": None
-                }
-            )
+        # The listing reached its end, so the saved token is spent even when no time was seen.
+        done: dict[str, Any] = {"page_token": None}
+        if checkpoint and checkpoint > 0:
+            done["last_sync_time"] = checkpoint
+        await self.record_sync_point.update_sync_point(sync_point_key, done)
+
+        return listed, not (resumed or unjudged)
 
     async def _ensure_parent_folders_exist(
         self, bucket_name: str, path_segments: list[str]

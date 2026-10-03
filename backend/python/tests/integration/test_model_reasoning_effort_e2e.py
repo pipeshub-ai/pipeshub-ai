@@ -15,6 +15,7 @@ the exact boundary where a real provider would reject an unsupported
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -101,11 +102,15 @@ class TestModelDefaultReasoningEffortEndToEnd:
         default fails its own health check."""
         config = _config()  # no defaultReasoningEffort
 
+        logger = MagicMock()
         with patch("langchain_openai.ChatOpenAI", _RejectsHighReasoningChatModel):
-            response = await perform_llm_health_check(config, MagicMock())
+            response = await perform_llm_health_check(config, logger)
 
         assert response.status_code == 500
-        assert b"reasoning_effort" in response.body
+        assert json.loads(response.body)["details"]["error_code"] == "model_check_failed"
+        # The provider's own text goes to the log, never into the response.
+        assert "reasoning_effort 'high' is not supported" in str(logger.error.call_args_list)
+        assert b"reasoning_effort" not in response.body
 
     async def test_health_check_passes_with_a_matching_model_default(self) -> None:
         """Configuring defaultReasoningEffort="low" on the model fixes the

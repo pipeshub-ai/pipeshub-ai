@@ -16,6 +16,7 @@ from app.connectors.core.base.data_processor.storage_cleanup import StorageClean
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.vector_cleanup_events import (
     build_connector_vector_cleanup_events,
+    build_stored_document_cleanup_events,
     log_cleanup_publish_failure,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import RestoreRefused
@@ -25,6 +26,7 @@ from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.retry import retry_async
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
 
@@ -346,6 +348,15 @@ class KnowledgeBaseService:
                 "reason": f"Folder '{folder_name}' already exists in {location}",
             }
         return None
+
+    @staticmethod
+    def _file_mime_type(record_doc: dict, file_doc: dict) -> str:
+        """The file's type, matching what the duplicate-name queries compare against.
+
+        The processor stores it on the record only; older file nodes also carry it.
+        """
+        mime_type = record_doc.get("mimeType")
+        return mime_type if mime_type is not None else file_doc.get("mimeType", "")
 
     async def _assert_no_file_sibling_conflict(
         self,
@@ -760,6 +771,10 @@ class KnowledgeBaseService:
 
             self.logger.info(f"🔐 User {user_key} has OWNER permission - proceeding with deletion")
 
+            refused = await self._schedule_upload_removal(kb_id, org_id=org_id)
+            if refused:
+                return refused
+
             # Deduplicated content stored under this KB may be read by records in
             # other connectors; only answerable before this KB's records go.
             cleanup_helper = StorageCleanupHelper(
@@ -802,7 +817,7 @@ class KnowledgeBaseService:
             published = 0
             for event in events:
                 try:
-                    await self.kafka_service.publish_event("record-events", event)
+                    await self._publish_with_retry(event, kb_id)
                     published += 1
                 except Exception as e:
                     log_cleanup_publish_failure(self.logger, event, f"KB {kb_id}", e)
@@ -861,6 +876,79 @@ class KnowledgeBaseService:
                 "code": 500,
                 "reason": action_failed("delete this knowledge base")
             }
+
+    async def _schedule_upload_removal(
+        self,
+        kb_id: str,
+        *,
+        org_id: Optional[str] = None,
+        record_ids: Optional[List[str]] = None,
+    ) -> Optional[Dict]:
+        """Publish the removal of the uploaded files a delete will take, before the delete.
+
+        After the graph delete nothing points at these files, so a lost event
+        would strand them for good. The consumer purges only files no record
+        lists any more, and retries while the records are still there. With
+        ``record_ids``, only those records and what they contain count; without
+        it, the whole knowledge base. Returns the 503 to send back when the
+        removal could not be scheduled (nothing is deleted then); None otherwise.
+        """
+        try:
+            files = await self.graph_provider.get_uploaded_document_ids(
+                kb_id, under_record_ids=record_ids
+            )
+            if files and not org_id:
+                org_id = await self._org_of_records(kb_id, record_ids or [])
+        except Exception as e:
+            self.logger.error(
+                "Could not list the uploaded files a delete in knowledge base %s would remove; "
+                "nothing was deleted: %s", kb_id, e,
+            )
+            return {
+                "success": False,
+                "code": 503,
+                "reason": "We couldn't list these files, so nothing was deleted. Please try again.",
+            }
+        for event in build_stored_document_cleanup_events(
+            org_id=org_id, document_ids=files, connector_id=kb_id
+        ):
+            try:
+                await self._publish_with_retry(event, kb_id)
+            except Exception as e:
+                log_cleanup_publish_failure(self.logger, event, f"KB {kb_id}", e)
+                return {
+                    "success": False,
+                    "code": 503,
+                    "reason": (
+                        "We couldn't schedule the removal of these files, so nothing was "
+                        "deleted. Please try again."
+                    ),
+                }
+        return None
+
+    async def _org_of_records(self, kb_id: str, record_ids: List[str]) -> str:
+        # Reads raise: a failed read must stop the delete, not look like "no organisation".
+        for record_id in record_ids:
+            record = await self.graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            if record and record.get("connectorId") == kb_id and record.get("orgId"):
+                return str(record["orgId"])
+        kb = await self.graph_provider.get_document(kb_id, CollectionNames.APPS.value, raise_on_error=True)
+        if kb and kb.get("orgId"):
+            return str(kb["orgId"])
+        raise ValueError(f"No record of knowledge base {kb_id} names its organisation")
+
+    async def _publish_with_retry(self, event: dict, kb_id: str) -> None:
+        async def publish() -> None:
+            if await self.kafka_service.publish_event("record-events", event) is False:
+                raise RuntimeError("the message broker did not accept the event")
+
+        await retry_async(
+            publish,
+            logger=self.logger,
+            description=f"publish {event['eventType']} for KB {kb_id}",
+        )
 
     async def _cleanup_kb_storage(
         self,
@@ -1240,8 +1328,15 @@ class KnowledgeBaseService:
             # edges + files docs) and publishes a deleteRecord event per contained file,
             # so the router does not need to publish eventData for this path.
             processor = await self.processor_for_kb(kb_id)
+            soft_delete = await is_soft_delete_enabled(processor.config_service)
+            if not soft_delete:
+                # The trash keeps uploaded files until the purge.
+                refused = await self._schedule_upload_removal(kb_id, record_ids=[folder_id])
+                if refused:
+                    return refused
             cascade_result = await processor.on_records_deleted_cascade(
-                [folder_id], kb_id, delete_source=DeleteSource.USER, deleted_by_user_id=user_key
+                [folder_id], kb_id, delete_source=DeleteSource.USER, deleted_by_user_id=user_key,
+                soft_delete=soft_delete,
             )
             if not (cascade_result and cascade_result.get("success")):
                 # The recursive delete itself failed (not just the cleanup-event
@@ -1345,8 +1440,7 @@ class KnowledgeBaseService:
                         parent_info = await self.graph_provider.get_record_parent_info(record_id)
                         parent_folder_id = parent_info.get("id") if parent_info and parent_info.get("type") == "record" else None
                         
-                        # Check for sibling file with same name + mime
-                        mime_type = file_doc.get("mimeType", "")
+                        mime_type = self._file_mime_type(current_record, file_doc)
                         existing_file = await self.graph_provider.find_file_by_name_in_parent(
                             kb_id=kb_context.get("kb_id"),
                             file_name=new_name,
@@ -1427,8 +1521,15 @@ class KnowledgeBaseService:
             # subtree, cascades all edges + type docs, publishes a deleteRecord per
             # indexed record (Qdrant cleanup). Returns the provider result for the response.
             processor = await self.processor_for_kb(kb_id)
+            soft_delete = await is_soft_delete_enabled(processor.config_service)
+            if not soft_delete:
+                # The trash keeps uploaded files until the purge.
+                refused = await self._schedule_upload_removal(kb_id, record_ids=record_ids)
+                if refused:
+                    return refused
             result = await processor.on_records_deleted_cascade(
-                record_ids, kb_id, delete_source=DeleteSource.USER, deleted_by_user_id=user_key
+                record_ids, kb_id, delete_source=DeleteSource.USER, deleted_by_user_id=user_key,
+                soft_delete=soft_delete,
             )
             if result and result.get("success"):
                 result.pop("eventData", None)
@@ -1486,11 +1587,19 @@ class KnowledgeBaseService:
 
             # Containment is checked by the delete query itself: an id from another
             # folder, the KB root, or moved out since the request began is kept and
-            # reported as failed.
+            # reported as failed. Its files are safe in the removal scheduled here,
+            # since the consumer skips any file a record still lists.
             processor = await self.processor_for_kb(kb_id)
+            soft_delete = await is_soft_delete_enabled(processor.config_service)
+            if not soft_delete:
+                # The trash keeps uploaded files until the purge.
+                refused = await self._schedule_upload_removal(kb_id, record_ids=record_ids)
+                if refused:
+                    return refused
             result = await processor.on_records_deleted_cascade(
                 record_ids, kb_id, within_folder_id=folder_id,
                 delete_source=DeleteSource.USER, deleted_by_user_id=user_key,
+                soft_delete=soft_delete,
             )
             if result and result.get("success"):
                 result.pop("eventData", None)
@@ -2858,7 +2967,7 @@ class KnowledgeBaseService:
                 file_rec = file_data.get("fileRecord") or {}
                 record = file_data.get("record") or {}
                 file_name = gp._normalize_name(file_rec.get("name") or record.get("recordName")) or ""
-                mime_type = file_rec.get("mimeType")
+                mime_type = self._file_mime_type(record, file_rec)
                 key = (file_name.lower(), str(mime_type or ""))
                 variants = gp._normalized_name_variants_lower(file_name)
                 conflict = any((v, str(mime_type or "")) in existing_name_mime for v in variants) or key in seen
@@ -3076,7 +3185,7 @@ class KnowledgeBaseService:
                 # Check for file name conflict in destination
                 file_doc = await self.graph_provider.get_document(record_id, "files")
                 if file_doc and file_doc.get("isFile"):
-                    mime_type = file_doc.get("mimeType", "")
+                    mime_type = self._file_mime_type(moving_record, file_doc)
                     conflict_err = await self._assert_no_file_sibling_conflict(
                         kb_id=kb_id,
                         parent_folder_id=new_parent_id,

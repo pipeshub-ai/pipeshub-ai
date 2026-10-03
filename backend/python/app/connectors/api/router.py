@@ -107,7 +107,10 @@ from app.connectors.core.registry.filters import sync_filter_selection_problems
 from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
 from app.connectors.services.kafka_service import KafkaService
-from app.connectors.services.vector_cleanup_events import build_soft_delete_events
+from app.connectors.services.vector_cleanup_events import (
+    build_soft_delete_events,
+    build_stored_document_cleanup_events,
+)
 from app.connectors.services.vector_store_rebuild import (
     VectorStoreRebuildBusyError,
     VectorStoreRebuildConflictError,
@@ -2270,6 +2273,10 @@ async def delete_record(
             )
 
         soft_delete = await is_soft_delete_enabled(container.config_service())
+        if not soft_delete:
+            # The trash keeps the uploaded file until the purge.
+            await _schedule_upload_removal(graph_provider, kafka_service, logger, record_id, org_id)
+
         result = await graph_provider.delete_record(
             record_id=record_id,
             user_id=user_id,
@@ -2322,6 +2329,7 @@ async def delete_record(
             # Retry transient broker hiccups, then flag (rather than silently
             # swallow) a failure so the caller knows vector cleanup is pending.
             vector_cleanup_pending = False
+            failed_record_ids: list[str] = []
             event_data = result.get("eventData")
             has_valid_event_data = (
                 isinstance(event_data, dict)
@@ -2334,26 +2342,31 @@ async def delete_record(
                     f"❌ Malformed eventData for record {record_id}, skipping publish: {event_data!r}"
                 )
                 vector_cleanup_pending = True
+                failed_record_ids.append(record_id)
             elif has_valid_event_data:
                 timestamp = get_epoch_timestamp_in_ms()
-                event = {
-                    "eventType": event_data["eventType"],
-                    "timestamp": timestamp,
-                    "payload": event_data["payload"]
-                }
-                try:
-                    await retry_async(
-                        lambda: kafka_service.publish_event(event_data["topic"], event),
-                        logger=logger,
-                        description=f"publish {event_data['eventType']} event for record {record_id}",
-                    )
-                    logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
-                except Exception as e:
-                    logger.error(
-                        f"❌ Giving up publishing deletion event for record {record_id} "
-                        f"after retries; embeddings are orphaned until reconciliation: {str(e)}"
-                    )
-                    vector_cleanup_pending = True
+                # An email's attachments have vectors of their own.
+                for payload in event_data.get("payloads") or [event_data["payload"]]:
+                    event = {
+                        "eventType": event_data["eventType"],
+                        "timestamp": timestamp,
+                        "payload": payload,
+                    }
+                    try:
+                        await retry_async(
+                            lambda event=event: kafka_service.publish_event(event_data["topic"], event),
+                            logger=logger,
+                            description=f"publish {event_data['eventType']} event for record {record_id}",
+                        )
+                        logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                    except Exception as e:
+                        logger.error(
+                            f"❌ Giving up publishing deletion event for record "
+                            f"{payload.get('recordId') or record_id} after retries; embeddings "
+                            f"are orphaned until reconciliation: {str(e)}"
+                        )
+                        vector_cleanup_pending = True
+                        failed_record_ids.append(payload.get("recordId") or record_id)
 
             # This route deletes directly, bypassing the processor's cascade
             # path, so it owns its own cache invalidation.
@@ -2370,7 +2383,7 @@ async def delete_record(
             }
             if vector_cleanup_pending:
                 response["vectorCleanupPending"] = True
-                response["vectorCleanupFailedRecordIds"] = [record_id]
+                response["vectorCleanupFailedRecordIds"] = failed_record_ids or [record_id]
             return response
         else:
             logger.error("❌ Failed to delete record %s: %s", record_id, result.get("reason"))
@@ -2385,6 +2398,53 @@ async def delete_record(
             status_code=500,
             detail=action_failed("delete this file")
         ) from e
+
+async def _schedule_upload_removal(
+    graph_provider: IGraphDBProvider,
+    kafka_service: KafkaService,
+    logger: logging.Logger,
+    record_id: str,
+    org_id: str,
+) -> None:
+    """Publish the removal of an uploaded file (and anything it contains) before its record goes.
+
+    After the graph delete nothing points at the file, so a lost event would
+    strand it. The consumer purges only files no record lists any more and
+    retries while the record is still there. Raises a 503 when the removal
+    cannot be scheduled; nothing has been deleted then.
+    """
+    try:
+        record = await graph_provider.get_document(
+            record_id, CollectionNames.RECORDS.value, raise_on_error=True
+        )
+        connector_id = (record or {}).get("connectorId")
+        if not connector_id or (record or {}).get("origin") != OriginTypes.UPLOAD.value:
+            return
+        files = await graph_provider.get_uploaded_document_ids(
+            connector_id, under_record_ids=[record_id]
+        )
+        for event in build_stored_document_cleanup_events(
+            org_id=org_id, document_ids=files, connector_id=connector_id
+        ):
+            async def publish(event: dict = event) -> None:
+                if await kafka_service.publish_event("record-events", event) is False:
+                    raise RuntimeError("the message broker did not accept the event")
+
+            await retry_async(
+                publish,
+                logger=logger,
+                description=f"publish {event['eventType']} for record {record_id}",
+            )
+    except Exception as e:
+        logger.error(
+            "Could not schedule the removal of record %s's stored files; nothing was deleted: %s",
+            record_id, e,
+        )
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
+            detail="We couldn't schedule the removal of this file, so nothing was deleted. Please try again.",
+        ) from e
+
 
 def _parse_reindex_body(request_body: dict | None) -> tuple[int, list[str] | None]:
     """Parse depth and optional statusFilters from a reindex request body."""

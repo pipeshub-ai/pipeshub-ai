@@ -380,9 +380,10 @@ components:
       name: documentId
       in: path
       required: true
-      description: The document's id.
+      description: The document's id, as returned when it was uploaded or created.
       schema:
         type: string
+        pattern: '^[0-9a-fA-F]{24}$'
   headers:
     X-Conversation-Id:
       description: |
@@ -511,6 +512,15 @@ components:
             crawl:write: Create and manage crawling jobs
 
   schemas:
+    StoragePurgeResult:
+      type: object
+      required:
+        - purged
+      properties:
+        purged:
+          type: integer
+          minimum: 0
+          description: Number of documents removed.
     # ==================== COMMON SCHEMAS ====================
 
     ArtifactGalleryItem:
@@ -1330,11 +1340,11 @@ components:
               description: |
                 Machine-readable error code. For application errors it takes the form `HTTP_<VARIANT>`
                 For unhandled runtime errors (e.g. database unavailable) it is `INTERNAL_ERROR`.
-              example: HTTP_BAD_REQUEST
+              example: HTTP_FORBIDDEN
             message:
               type: string
               description: Human-readable description of the error
-              example: Admin access required
+              example: You need admin access to do this. Ask an admin in your organisation.
             metadata:
               type: object
               description: Additional context (only present in development environments)
@@ -17558,9 +17568,9 @@ paths:
         compromised laptop, where only the token's own creator could
         otherwise see or revoke it.
 
-        Requires org-admin privileges (`userAdminCheck`) — note this returns
-        **`400`**, not `403`, for a non-admin caller (shared middleware
-        behavior across the codebase, not specific to this route).
+        Requires org-admin privileges (`userAdminCheck`): a non-admin caller
+        gets `403` (`ForbiddenError`, message
+        "You need admin access to do this. Ask an admin in your organisation.").
       operationId: adminListPersonalAccessTokens
       x-pipeshub-sdk: true
       security:
@@ -17589,13 +17599,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/AdminPatListResponse'
         '400':
-          description: Invalid query parameters, or the caller is not an org admin
+          description: Invalid query parameters
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -17616,8 +17632,8 @@ paths:
         Revokes a token by id, scoped to the org's PAT client but **not** to
         a specific owning user — the admin counterpart to
         `DELETE /personal-access-tokens/{tokenId}`. Requires org-admin
-        privileges (`userAdminCheck`); returns `400` (not `403`) for a
-        non-admin caller, same as `GET /personal-access-tokens/admin`.
+        privileges (`userAdminCheck`); a non-admin caller gets `403`
+        (`ForbiddenError`), same as `GET /personal-access-tokens/admin`.
       operationId: adminRevokePersonalAccessToken
       x-pipeshub-sdk: true
       security:
@@ -17645,13 +17661,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/RevokePatResponse'
         '400':
-          description: Invalid token ID, or the caller is not an org admin
+          description: Invalid token ID
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -18372,7 +18394,6 @@ paths:
         '400':
           description: |
             Bad request. Possible causes:
-            - User is not an organization admin
             - User not authenticated (token decoded but `req.user` is null)
             - Organization ID missing from token payload
           content:
@@ -18381,6 +18402,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -18483,7 +18510,6 @@ paths:
         '400':
           description: |
             Bad request. Possible causes:
-            - User is not an organization admin
             - `authMethod` field missing from request body
             - Validation failure (duplicate steps, duplicate methods, out-of-range order, empty methods array)
             - `samlSso` used in a policy with more than one step
@@ -18496,6 +18522,12 @@ paths:
             Unauthorized. Possible causes:
             - Invalid or expired access token
             - User not authenticated (token decoded but `req.user` is null)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -18552,13 +18584,18 @@ paths:
         '400':
           description: |
             Bad request. Possible causes:
-            - User is not an organization admin
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -19165,13 +19202,18 @@ paths:
             - Invalid mobile number format
             - `password` given for an address outside `@acme-demo.example`
             - `password` fails the complexity rules or is longer than 72 bytes
-            - Requester does not have admin privileges (`userAdminCheck`)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -19448,7 +19490,6 @@ paths:
             Invalid request. Possible reasons:
 
             - Invalid user ID format (Zod validation)
-            - Requester does not have admin privileges (`userAdminCheck`)
             - Target user is in the admin group and cannot be deleted directly
           content:
             application/json:
@@ -19456,6 +19497,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -19496,8 +19543,8 @@ paths:
         Retrieve the email address for a specific user. Requires admin privileges.
 
         The `id` path parameter is validated as a 24-character hex string. The `userAdminCheck`
-        middleware runs before `userExists`, so missing token context returns `404` before the
-        admin check can throw `400`.
+        middleware runs before `userExists`: missing token context returns `404`, and a
+        non-admin caller gets `403` (`ForbiddenError`).
 
         Returns `{ email }` for the matched user.
       operationId: getUserEmailById
@@ -19533,13 +19580,18 @@ paths:
             Invalid request. Possible reasons:
 
             - Invalid user ID format (Zod validation)
-            - Requester does not have admin privileges (`userAdminCheck`)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -19858,8 +19910,9 @@ paths:
 
         - `smtpConfigCheck` — verifies SMTP host/port/fromEmail are configured; throws `404` if
           missing fields, `500` if config fetch fails.
-        - `userAdminCheck` — requires admin privileges; throws `400` if not admin, `404` if token
-          context is missing.
+        - No admin check on the route: any member of the organization may invite.
+          Members may invite only as `member` and without `groupIds`; inviting as `admin` or
+          assigning groups needs an org admin, and a member asking for either gets `403`.
         - `accountTypeCheck` — rejects `individual` account type; throws `400`.
 
         If all provided emails already have active accounts, returns `200` with
@@ -19936,7 +19989,6 @@ paths:
 
             - Missing or empty `emails` field
             - Invalid email format in array
-            - Requester does not have admin privileges (`userAdminCheck`)
             - Organization is an individual account (`accountTypeCheck`)
             - Inviting as admin would exceed the organization limit of 5 admins
           content:
@@ -19949,12 +20001,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            A member (not an org admin) asked to invite as `admin` or to assign `groupIds`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
             Not found. Possible reasons:
 
             - SMTP configuration missing host, port, or fromEmail (`smtpConfigCheck`)
-            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Requester missing from the token context (controller)
             - Organization not found (`accountTypeCheck`)
           content:
             application/json:
@@ -19994,7 +20053,8 @@ paths:
 
         Optional `groupIds` (a JSON-encoded array of 24-hex-character ObjectIds) adds new/restored
         users to the specified groups. Same middleware chain as `POST /users/bulk/invite`
-        (`smtpConfigCheck`, `userAdminCheck`, `accountTypeCheck`).
+        (`smtpConfigCheck`, `accountTypeCheck`), and the same rule on who may invite: any member,
+        but only an org admin may invite as `admin` or assign `groupIds` (`403` otherwise).
       operationId: bulkInviteUsersFromFile
       security:
         - bearerAuth: []
@@ -20037,7 +20097,7 @@ paths:
             - No email addresses found in the file
             - More than 1000 addresses
             - `groupIds` contains an invalid ObjectId
-            - Requester is not an admin (`userAdminCheck`), or individual account (`accountTypeCheck`)
+            - Individual account (`accountTypeCheck`)
           content:
             application/json:
               schema:
@@ -20048,12 +20108,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            A member (not an org admin) asked to invite as `admin` or to assign `groupIds`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
             Not found. Possible reasons:
 
             - SMTP configuration missing host, port, or fromEmail (`smtpConfigCheck`)
-            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Requester missing from the token context (controller)
             - Organization not found (`accountTypeCheck`)
           content:
             application/json:
@@ -20073,7 +20140,8 @@ paths:
 
         - `smtpConfigCheck` — verifies SMTP is configured; throws `404` if fields missing,
           `500` if config fetch fails.
-        - `userAdminCheck` — admin only; throws `400` if not admin, `404` if token context missing.
+        - No admin check on the route: any member of the organization may resend an invite to a
+          pending user in the same organization, as any member may invite.
         - `accountTypeCheck` — rejects individual account type; throws `400`.
 
         **Controller behavior:**
@@ -20118,7 +20186,6 @@ paths:
 
             - Invalid user ID format (Zod)
             - User has already logged in (`hasLoggedIn: true`)
-            - Requester does not have admin privileges (`userAdminCheck`)
             - Organization is an individual account (`accountTypeCheck`)
           content:
             application/json:
@@ -20139,7 +20206,7 @@ paths:
             Not found. Possible reasons:
 
             - SMTP configuration missing fields (`smtpConfigCheck`)
-            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Requester missing from the token context (controller)
             - Organization not found (`accountTypeCheck`)
           content:
             application/json:
@@ -20253,8 +20320,8 @@ paths:
 
         **Path validation:** `id` must be a 24-character hex MongoDB ObjectId (Zod at route layer).
 
-        **Authorization:** `userAdminCheck` middleware — throws `400` if requester is not admin,
-        `404` if `userId`/`orgId` are missing from the token.
+        **Authorization:** `userAdminCheck` middleware — throws `403` (`ForbiddenError`) if the
+        requester is not an admin, `404` if `userId`/`orgId` are missing from the token.
       operationId: unblockUser
       security:
         - bearerAuth: []
@@ -20288,7 +20355,6 @@ paths:
 
             - Invalid user ID format in path (Zod validation)
             - `userId` or `orgId` missing from request context (controller check)
-            - Requester does not have admin privileges (`userAdminCheck`)
             - User not found or not currently blocked
           content:
             application/json:
@@ -20296,6 +20362,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -20782,8 +20854,8 @@ paths:
         The `{id}` path parameter is validated for ObjectId format but is not used to look up a
         user — the check is performed on `req.user` (the token bearer), not on the target ID.
 
-        Returns `200` if the requester is an admin. Returns `400` if not (from `userAdminCheck`
-        which throws `BadRequestError`, not `ForbiddenError`).
+        Returns `200` if the requester is an admin. Returns `403` if not (from `userAdminCheck`,
+        which throws `ForbiddenError` with the message "You need admin access to do this. Ask an admin in your organisation.").
       operationId: adminCheck
       security:
         - bearerAuth: []
@@ -20815,13 +20887,18 @@ paths:
             Invalid request. Possible reasons:
 
             - Invalid user ID format (Zod)
-            - Requester does not have admin privileges (`userAdminCheck`)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -20930,11 +21007,11 @@ paths:
         '200':
           description: Identity changed
         '400':
-          description: The service account is disabled, or admin access required
+          description: The service account is disabled
         '401':
           description: Not authenticated
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the caller is not an admin of this organization
         '404':
           description: No such application, or no such service account in this organisation
 
@@ -20964,12 +21041,10 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/ServiceAccount'
-        '400':
-          description: Admin access required
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
     post:
       tags:
         - Service Accounts
@@ -21006,11 +21081,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ServiceAccount'
         '400':
-          description: Invalid name, or admin access required
+          description: Invalid name
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '409':
           description: A service account of that name already exists
 
@@ -21041,12 +21116,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ServiceAccount'
-        '400':
-          description: Admin access required
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '404':
           description: No such service account in this organisation
     patch:
@@ -21076,11 +21149,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ServiceAccount'
         '400':
-          description: Empty body, invalid field, or admin access required
+          description: Empty body or invalid field
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '404':
           description: No such service account in this organisation
     delete:
@@ -21098,12 +21171,10 @@ paths:
       responses:
         '204':
           description: Deleted
-        '400':
-          description: Admin access required
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '404':
           description: No such service account in this organisation
 
@@ -21140,12 +21211,10 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/ServiceToken'
-        '400':
-          description: Admin access required
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '404':
           description: No such service account in this organisation
     post:
@@ -21187,11 +21256,11 @@ paths:
           description: |
             No scopes chosen, a scope this instance does not allow,
             `agent:execute` (service tokens are read-only), an expiry over 365
-            days, a disabled service account, or admin access required.
+            days, or a disabled service account.
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '404':
           description: No such service account in this organisation
 
@@ -21233,12 +21302,10 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/OAuthScopeInfo'
-        '400':
-          description: Admin access required
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
 
   /service-tokens/{tokenId}:
     delete:
@@ -21270,12 +21337,10 @@ paths:
       responses:
         '204':
           description: Revoked
-        '400':
-          description: Admin access required
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '404':
           description: No such token for that service account
 
@@ -22111,13 +22176,18 @@ paths:
             Invalid request. Possible reasons:
 
             - Invalid request body (Zod validation — malformed `contactEmail`, wrong types, invalid `permanentAddress` shape)
-            - Requester does not have admin privileges (`userAdminCheck`)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22168,14 +22238,14 @@ paths:
                     example: "Organization marked as deleted successfully"
                   data:
                     $ref: '#/components/schemas/Organization'
-        '400':
-          description: Requester does not have admin privileges
+        '401':
+          description: Unauthorized - Valid bearer token required
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Unauthorized - Valid bearer token required
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22266,13 +22336,18 @@ paths:
             - File type not allowed (must be PNG, JPEG, WebP, GIF, or SVG)
             - File exceeds 2MB size limit
             - SVG contains dangerous content (script tags, event handlers, javascript: protocols, iframe/object/embed tags)
-            - Requester does not have admin privileges
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22373,14 +22448,14 @@ paths:
                     format: ObjectId
                   __v:
                     type: integer
-        '400':
-          description: user is not an admin
+        '401':
+          description: Unauthorized - Valid bearer token required
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Unauthorized - Valid bearer token required
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22502,13 +22577,18 @@ paths:
             Invalid request. Possible reasons:
 
             - Missing or invalid status value (must be one of: configured, notConfigured, skipped)
-            - Requester does not have admin privileges
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22591,13 +22671,18 @@ paths:
             - `type` is not one of: standard, everyone, custom
             - Group name or type `admin` is not allowed
             - A group with the same name already exists in the same organization
-            - Requester does not have admin privileges
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22726,14 +22811,14 @@ paths:
                         type: boolean
                       hasPrevPage:
                         type: boolean
-        '400':
-          description: Requester does not have admin privileges
+        '401':
+          description: Unauthorized - Valid bearer token required
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Unauthorized - Valid bearer token required
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22855,7 +22940,6 @@ paths:
             - Invalid `groupId` format (must be a 24-character hex ObjectId)
             - New name `admin`, `everyone` or `standard` is not allowed
             - Another group with the same name already exists in the same organization
-            - Requester does not have admin privileges
           content:
             application/json:
               schema:
@@ -22867,7 +22951,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Groups of type `admin` or `everyone` cannot be renamed
+          description: Forbidden - Groups of type `admin` or `everyone` cannot be renamed, or the caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22923,7 +23007,6 @@ paths:
             Invalid request. Possible reasons:
 
             - Invalid `groupId` format (must be a 24-character hex ObjectId)
-            - Requester does not have admin privileges
           content:
             application/json:
               schema:
@@ -22935,7 +23018,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Only custom groups can be deleted
+          description: Forbidden - Only custom groups can be deleted, or the caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -23021,13 +23104,18 @@ paths:
 
             - Invalid request body (Zod validation — missing/empty `userIds` or `groupIds`, malformed ObjectIds)
             - No matching groups found or updated
-            - Requester does not have admin privileges
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -23107,13 +23195,18 @@ paths:
 
             - Invalid request body (Zod validation — missing/empty `userIds` or `groupIds`, malformed ObjectIds)
             - No matching groups found or updated
-            - Requester does not have admin privileges
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -23426,7 +23519,9 @@ paths:
         '200':
           description: The file was stored and its document record created.
         '400':
-          description: The request was missing the file, or the file was rejected.
+          description: |
+            The request was missing the file, the file was rejected, or the storage
+            token's organization or user id is malformed.
         '401':
           description: The storage scoped token was missing or invalid.
         '503':
@@ -23482,7 +23577,9 @@ paths:
         '200':
           description: The document record was created.
         '400':
-          description: The request body was incomplete.
+          description: |
+            The request body was incomplete, or the storage token's organization or
+            user id is malformed.
         '401':
           description: The storage scoped token was missing or invalid.
   /document/internal/{documentId}:
@@ -23499,6 +23596,10 @@ paths:
       responses:
         '200':
           description: The document record.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23519,10 +23620,85 @@ paths:
       responses:
         '200':
           description: The document was marked deleted.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
           description: No such document.
+  /document/internal/{documentId}/purge:
+    delete:
+      tags:
+        - Internal Storage
+      summary: Remove a document and its stored files (service-to-service)
+      description: |
+        Removes every stored copy of the document's file (the current file and
+        each version), then the document record. Called when the record that
+        owned the document is deleted. A document that is already gone counts
+        as purged, so the call is safe to repeat. If a stored file cannot be
+        removed the record is kept and the call answers 503, so it can be retried.
+      operationId: internalPurgeDocumentById
+      security:
+        - scopedToken: []
+      parameters:
+        - name: documentId
+          in: path
+          required: true
+          description: The document's id, a 24-character hex MongoDB ObjectId.
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+      responses:
+        '200':
+          description: How many documents were removed (0 if it was already gone).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoragePurgeResult'
+        '400':
+          description: The document id is not a 24-character hex id.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '503':
+          description: A stored file could not be removed; the document was kept so the removal can be retried.
+  /document/internal/records/{virtualRecordId}/purge:
+    delete:
+      tags:
+        - Internal Storage
+      summary: Remove a processed record's documents and stored files (service-to-service)
+      description: |
+        Removes the virtual record's processed-content documents
+        (`record_{virtualRecordId}` and `metadata_{virtualRecordId}`) wherever
+        they are filed in the organisation, plus anything at the older flat
+        path `records/{virtualRecordId}`, together with their stored files.
+        Records with identical content share one virtual record id, so the
+        caller purges only once no record uses it. Safe to repeat.
+      operationId: internalPurgeVirtualRecordDocuments
+      security:
+        - scopedToken: []
+      parameters:
+        - name: virtualRecordId
+          in: path
+          required: true
+          description: Virtual record id (letters, digits, `-` and `_`); matched exactly, never as a prefix.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,128}$'
+      responses:
+        '200':
+          description: How many documents were removed (0 if none were filed there).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoragePurgeResult'
+        '400':
+          description: The virtual record id is not valid.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '503':
+          description: A stored file could not be removed; its document was kept so the removal can be retried.
   /document/internal/{documentId}/download:
     get:
       tags:
@@ -23553,6 +23729,10 @@ paths:
       responses:
         '200':
           description: A download link, or the file itself for local storage.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23583,6 +23763,10 @@ paths:
               schema:
                 type: string
                 format: binary
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23611,6 +23795,10 @@ paths:
       responses:
         '200':
           description: The document's bytes were replaced.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23646,6 +23834,10 @@ paths:
       responses:
         '200':
           description: The new version was stored.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23684,7 +23876,10 @@ paths:
         '200':
           description: The document was rolled back.
         '400':
-          description: The note was missing, or the version was not a whole number.
+          description: |
+            The note was missing, the version was not a whole number, the document
+            id is not a 24-character hex id, or the storage token's organization or
+            user id is malformed.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23705,6 +23900,10 @@ paths:
       responses:
         '200':
           description: A time-limited upload link.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23725,6 +23924,10 @@ paths:
       responses:
         '200':
           description: Whether the document has changed since it was stored.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -35986,6 +36189,8 @@ paths:
           description: Error exchanging authorization code
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
         '404':
           description: Google Workspace configuration missing (client ID or secret)
         '500':
@@ -38776,6 +38981,8 @@ paths:
           description: Storage type not found in stored configuration
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
     post:
       tags:
         - Storage Configuration
@@ -38933,6 +39140,8 @@ paths:
                                   description: Error message when passed is false
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   # -------------------- SMTP Configuration --------------------
   /configurationManager/smtpConfig:
@@ -39022,6 +39231,8 @@ paths:
                 $ref: '#/components/schemas/SMTPConfig'
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   /configurationManager/smtpConfig/status:
     get:
@@ -39097,6 +39308,8 @@ paths:
                 $ref: '#/components/schemas/AzureAdAuthConfig'
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   /configurationManager/authConfig/microsoft:
     post:
@@ -39143,6 +39356,8 @@ paths:
                 $ref: '#/components/schemas/MicrosoftAuthConfig'
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   /configurationManager/authConfig/google:
     post:
@@ -39189,6 +39404,8 @@ paths:
                 $ref: '#/components/schemas/GoogleAuthConfig'
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   /configurationManager/authConfig/sso:
     post:
@@ -39242,6 +39459,8 @@ paths:
                         example: "https://app.example.com"
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   /configurationManager/authConfig/oauth:
     post:
@@ -39288,6 +39507,8 @@ paths:
                 $ref: '#/components/schemas/GenericOAuthConfig'
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   # -------------------- AI Models Configuration --------------------
   /configurationManager/ai-models/{modelType}:
@@ -39318,6 +39539,8 @@ paths:
                 $ref: '#/components/schemas/GetModelsByTypeResponse'
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   /configurationManager/ai-models/available/{modelType}:
     get:
@@ -39779,15 +40002,21 @@ paths:
         '400':
           description: |
             Invalid request body (Zod validation), controller validation (e.g. model type
-            mismatch, missing fields), admin access required, or a health check the
-            provider refused because of these settings: it rejected the API key, could
-            not find the model, or its endpoint could not be reached.
+            mismatch, missing fields), or a health check the provider refused because
+            of these settings: it rejected the API key, could not find the model, or its
+            endpoint could not be reached.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/UpdateAIModelProviderErrorResponse'
         '401':
           description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -39819,6 +40048,12 @@ paths:
         Remove an AI model provider configuration. Fails with 409 when agents still
         reference the model. If the deleted entry was default, the first remaining
         entry for that type is promoted to default.
+
+        Deleting the embedding model that embeds (the default one, else the first)
+        hands embedding to the model that would take over, or to the built-in model
+        when none is left. That model goes through the same check as setting a new
+        default: refused with 400 while the vector store holds vectors from the
+        deleted model, and the empty store is rebuilt for the replacement model.
       operationId: deleteAIModelProvider
       security:
         - bearerAuth: []
@@ -39856,14 +40091,28 @@ paths:
         '400':
           description: |
             Model type mismatch — the `modelKey` exists under a different `modelType`
-            than the path parameter.
+            than the path parameter; or the model is the embedding model in use while
+            the vector store holds its vectors (standard error envelope, message
+            "This model is embedding your indexed content. Delete the embeddings in
+            Labs first, then change or delete the model and re-embed.").
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AIModelProviderSimpleError'
-              example:
-                status: error
-                message: "Model key 'f3a4b5b6-5b6c-4e85-9097-3202cfe696fc' belongs to type 'llm', not 'embedding'"
+                oneOf:
+                  - $ref: '#/components/schemas/AIModelProviderSimpleError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                typeMismatch:
+                  summary: Model type mismatch
+                  value:
+                    status: error
+                    message: "Model key 'f3a4b5b6-5b6c-4e85-9097-3202cfe696fc' belongs to type 'llm', not 'embedding'"
+                embeddingInUse:
+                  summary: The embedding model in use, with vectors stored
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "This model is embedding your indexed content. Delete the embeddings in Labs first, then change or delete the model and re-embed."
         '401':
           description: Unauthorized
         '403':
@@ -39994,9 +40243,7 @@ paths:
           description: |
             Either `model` is missing or fails the
             `^[\w.-]+(\/[\w.-]+)?$` repo-id pattern check performed by
-            Node.js before proxying to the embedding server, or (via the
-            shared `userAdminCheck` middleware) the caller is not an org
-            admin.
+            Node.js before proxying to the embedding server.
           content:
             application/json:
               schema:
@@ -40020,14 +40267,15 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Either the caller's OAuth token lacks the `config:write` scope,
-            or the embedding server rejected the request under its own
-            policy: `model` is not in `EMBEDDING_SERVER_ALLOWED_MODELS`, or
-            `trustRemoteCode: true` was requested while
-            `EMBEDDING_SERVER_ALLOW_REMOTE_CODE` is disabled on the server.
-            The embedding-server rejection is proxied verbatim using
-            FastAPI's `{"detail": ...}` envelope, not the Node.js
-            `ErrorResponse` shape used for the scope failure.
+            The caller is not an admin of this organization, the caller's
+            OAuth token lacks the `config:write` scope, or the embedding
+            server rejected the request under its own policy: `model` is not
+            in `EMBEDDING_SERVER_ALLOWED_MODELS`, or `trustRemoteCode: true`
+            was requested while `EMBEDDING_SERVER_ALLOW_REMOTE_CODE` is
+            disabled on the server. The admin and scope refusals use the
+            Node.js `ErrorResponse` shape. Only the embedding-server
+            rejection is proxied verbatim in FastAPI's `{"detail": ...}`
+            envelope.
           content:
             application/json:
               schema:
@@ -40095,8 +40343,7 @@ paths:
         '400':
           description: |
             `model` query parameter missing or not a valid HuggingFace repo
-            id, or (via the shared `userAdminCheck` middleware) the caller is
-            not an org admin.
+            id.
           content:
             application/json:
               schema:
@@ -40119,7 +40366,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient OAuth scope — token lacks `config:read`
+          description: Insufficient OAuth scope — token lacks `config:read`, or the caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -40603,6 +40850,8 @@ paths:
                 updatedAt: "2024-01-15T10:30:00Z"
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   /configurationManager/platform/feature-flags/available:
     get:
@@ -40716,6 +40965,8 @@ paths:
                 $ref: '#/components/schemas/CustomSystemPrompt'
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   # -------------------- Metrics Collection --------------------
   /configurationManager/metricsCollection:
@@ -41153,6 +41404,7 @@ paths:
       summary: Get Slack bot configurations
       description: |
         Retrieve all Slack bot configurations for the organization.
+        Bot tokens and signing secrets are masked in this response.
       operationId: getSlackBotConfigs
       security:
         - bearerAuth: []
@@ -41170,6 +41422,24 @@ paths:
                     type: array
                     items:
                       type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        agentId:
+                          type: string
+                          nullable: true
+                        createdAt:
+                          type: string
+                        updatedAt:
+                          type: string
+                        botToken:
+                          type: string
+                          description: Masked. The stored bot token is not returned.
+                        signingSecret:
+                          type: string
+                          description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
         '403':
@@ -41199,12 +41469,72 @@ paths:
               schema:
                 type: object
                 properties:
-                  message:
+                  status:
                     type: string
+                  config:
+                    type: object
+                    description: The created configuration. botToken and signingSecret are masked.
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      agentId:
+                        type: string
+                        nullable: true
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      botToken:
+                        type: string
+                        description: Masked. The stored bot token is not returned.
+                      signingSecret:
+                        type: string
+                        description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
         '403':
           description: Forbidden - Admin access required
+
+  /configurationManager/internal/slack-bot:
+    get:
+      tags:
+        - Configuration Manager
+      summary: Get Slack bot credentials for signature verification
+      description: |
+        Service-to-service only. Requires the slack-bot:verify scope, which only
+        the Slack bot process mints. Returns the fields that process needs to
+        verify a request signature. Bot tokens and signing secrets are not masked.
+      operationId: getInternalSlackBotConfigs
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Slack bot credentials retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  configs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        agentId:
+                          type: string
+                          nullable: true
+                        botToken:
+                          type: string
+                        signingSecret:
+                          type: string
+        '401':
+          description: The scoped token was missing, invalid, or did not include slack-bot:verify
 
   /configurationManager/slack-bot/{configId}:
     put:
@@ -41237,8 +41567,29 @@ paths:
               schema:
                 type: object
                 properties:
-                  message:
+                  status:
                     type: string
+                  config:
+                    type: object
+                    description: The updated configuration. botToken and signingSecret are masked.
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      agentId:
+                        type: string
+                        nullable: true
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      botToken:
+                        type: string
+                        description: Masked. The stored bot token is not returned.
+                      signingSecret:
+                        type: string
+                        description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
         '403':
@@ -42022,7 +42373,9 @@ paths:
         - Crawling Jobs
       summary: Get all crawling job statuses
       description: |
-        Retrieve the status of all scheduled crawling jobs across the organization.
+        Retrieve the status of all scheduled crawling jobs across the organization,
+        including org-wide connectors and other members' personal connectors.
+        Only an organization admin may call this; a member is refused with 400.
       operationId: getAllCrawlingJobStatus
       security:
         - bearerAuth: []
@@ -42041,8 +42394,16 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/JobStatus'
+        '400':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid JWT token required
+        '403':
+          description: Token lacks the required scope
 
     delete:
       tags:
@@ -42051,7 +42412,7 @@ paths:
       description: |
         Remove all scheduled crawling jobs for the organization, including
         org-wide connectors and other members' personal connectors.
-        Only an organization admin may call this; a member is refused with 400.
+        Only an organization admin may call this; a member is refused with 403.
       operationId: removeAllCrawlingJob
       security:
         - bearerAuth: []
@@ -42066,16 +42427,10 @@ paths:
                 properties:
                   message:
                     type: string
-        '400':
-          description: Admin access required
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '500':
           description: A schedule or queued run could not be removed, so it may still run
           content:
@@ -42164,6 +42519,7 @@ paths:
       summary: Get queue statistics
       description: |
         Retrieve statistics for the crawling job queue including active, waiting, and completed job counts.
+        Counts cover only the caller's organization.
       operationId: getQueueStats
       security:
         - bearerAuth: []

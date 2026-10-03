@@ -12,6 +12,7 @@ import { groupTypes, UserGroups } from '../schema/userGroup.schema';
 import { UserDisplayPicture } from '../schema/userDp.schema';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
+import { escapeRegExp } from '../../../utils/escape-regexp';
 import type { UserGroupFilter, UserFilter } from '../types/user_management.types';
 
 const RESERVED_GROUP_NAMES = ['admin', 'everyone', 'standard'];
@@ -115,7 +116,7 @@ export class UserGroupController {
 
     const filter: UserGroupFilter = { orgId, isDeleted: false };
     if (search) {
-      filter.name = { $regex: search, $options: 'i' };
+      filter.name = { $regex: escapeRegExp(search), $options: 'i' };
     }
     if (createdAfter || createdBefore) {
       const dateFilter: Record<string, Date> = {};
@@ -350,9 +351,10 @@ export class UserGroupController {
     // Fetch user details with optional search filter
     const userFilter: UserFilter = { _id: { $in: allUserIds }, isDeleted: { $ne: true } };
     if (search) {
+      const escaped = escapeRegExp(search);
       userFilter.$or = [
-        { fullName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
+        { fullName: { $regex: escaped, $options: 'i' } },
+        { email: { $regex: escaped, $options: 'i' } },
       ];
     }
 

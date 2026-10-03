@@ -16,6 +16,8 @@ import {
   maskGithubAuthConfig,
   maskWebSearchProvider,
   mergeWebSearchProviderPlaceholders,
+  maskSlackBotConfig,
+  mergeSlackBotConfigPlaceholders,
 } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets'
 
 const strip = (entry: unknown) => stripAiModelSecrets(entry as any) as any
@@ -229,6 +231,41 @@ describe('maskConfigSecrets', () => {
     })
     it('should return incoming when existing is null', () => {
       expect(mergeWebSearchProviderPlaceholders({ apiKey: CONFIG_SECRET_PLACEHOLDER }, null).apiKey).to.equal(CONFIG_SECRET_PLACEHOLDER)
+    })
+  })
+
+  describe('maskSlackBotConfig', () => {
+    it('should mask botToken and signingSecret but keep the rest readable', () => {
+      const result = maskSlackBotConfig({
+        id: 'bot-1',
+        name: 'Support',
+        botToken: 'xoxb-real-token',
+        signingSecret: 'real-signing-secret',
+      })
+      expect(result.botToken).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.signingSecret).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.id).to.equal('bot-1')
+      expect(result.name).to.equal('Support')
+    })
+  })
+
+  describe('mergeSlackBotConfigPlaceholders', () => {
+    it('should keep the stored credential when the form resubmits the mask', () => {
+      const result = mergeSlackBotConfigPlaceholders(
+        { botToken: CONFIG_SECRET_PLACEHOLDER, signingSecret: CONFIG_SECRET_PLACEHOLDER },
+        { botToken: 'xoxb-real-token', signingSecret: 'real-signing-secret' },
+      )
+      expect(result.botToken).to.equal('xoxb-real-token')
+      expect(result.signingSecret).to.equal('real-signing-secret')
+    })
+
+    it('should accept a genuinely rotated credential', () => {
+      const result = mergeSlackBotConfigPlaceholders(
+        { botToken: 'xoxb-rotated', signingSecret: CONFIG_SECRET_PLACEHOLDER },
+        { botToken: 'xoxb-real-token', signingSecret: 'real-signing-secret' },
+      )
+      expect(result.botToken).to.equal('xoxb-rotated')
+      expect(result.signingSecret).to.equal('real-signing-secret')
     })
   })
 })

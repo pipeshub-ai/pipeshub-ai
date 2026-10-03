@@ -109,8 +109,21 @@ class TestSandboxToolsetGate:
         assert len(warning_calls) == 1
 
     @pytest.mark.usefixtures("_only_coding_sandbox")
+    async def test_local_mode_without_dev_flag_skips_sandbox_toolset(self, monkeypatch) -> None:
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.delenv("SANDBOX_ALLOW_LOCAL", raising=False)
+        context = _make_context()
+
+        registry = await PipesHubToolLoader().load(context)
+
+        assert not any(name.startswith("coding_sandbox") for name in registry.names())
+        warnings = [str(c.args) for c in context.tool_state["logger"].warning.call_args_list]
+        assert any("SANDBOX_ALLOW_LOCAL" in w for w in warnings)
+
+    @pytest.mark.usefixtures("_only_coding_sandbox")
     async def test_explicit_local_mode_loads_sandbox_toolset(self, monkeypatch) -> None:
         monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
         context = _make_context()
 
         registry = await PipesHubToolLoader().load(context)

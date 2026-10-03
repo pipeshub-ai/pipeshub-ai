@@ -11,16 +11,31 @@ GET  /health
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from typing import Any
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.api.middlewares.auth import (
+    authMiddleware,
+    require_service_token,
+    service_token_org,
+)
+from app.config.constants.service import TokenScopes
 from app.models.blocks import BlocksContainer
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/extract", tags=["extraction"])
+require_classify_token = require_service_token(TokenScopes.DOCUMENT_CLASSIFY)
+
+# On the router, not the app, so the checks hold wherever this router is included.
+router = APIRouter(
+    prefix="/api/v1/extract",
+    tags=["extraction"],
+    dependencies=[Depends(authMiddleware), Depends(require_classify_token)],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -30,7 +45,7 @@ router = APIRouter(prefix="/api/v1/extract", tags=["extraction"])
 
 class ClassifyRequest(BaseModel):
     block_container: BlocksContainer
-    org_id: str
+    org_id: str | None = None
     departments: list[str] = []
     record_name: str = ""
     record_type: str = ""
@@ -52,18 +67,23 @@ class ClassifyResponse(BaseModel):
     response_model=ClassifyResponse,
     summary="LLM document classification",
 )
-async def classify(request: Request, body: ClassifyRequest) -> JSONResponse:
+async def classify(
+    request: Request,
+    body: ClassifyRequest,
+    claims: Mapping[str, Any] = Depends(require_classify_token),
+) -> JSONResponse:
     """Classify a document (departments, categories, topics, summary).
 
     ``departments`` should be pre-fetched by the caller (e.g. from the graph
     DB) to avoid introducing a graph connection dependency here.
     """
+    org_id = service_token_org(claims, body.org_id)
     document_extraction = request.app.state.document_extraction
 
     try:
         classification = await document_extraction.classify(
             blocks=body.block_container.blocks,
-            org_id=body.org_id,
+            org_id=org_id,
             departments=body.departments or None,
             record_name=body.record_name,
             record_type=body.record_type,
@@ -84,7 +104,7 @@ async def classify(request: Request, body: ClassifyRequest) -> JSONResponse:
             )
     except Exception as exc:  # noqa: BLE001
         logger.exception(
-            "Unexpected error during classification for org '%s'", body.org_id
+            "Unexpected error during classification for org '%s'", org_id
         )
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

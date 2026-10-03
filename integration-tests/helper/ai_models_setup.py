@@ -50,6 +50,11 @@ provider is tried):
         TEST_GEMINI_API_KEY, TEST_GEMINI_LLM_MODEL
         TEST_GROQ_API_KEY, TEST_GROQ_LLM_MODEL
 
+    Ollama (no key; tried only when TEST_OLLAMA_ENDPOINT is set):
+        TEST_OLLAMA_ENDPOINT          – as the stack reaches it, e.g. http://ollama:11434
+        TEST_OLLAMA_LLM_MODEL         – default: qwen2.5:0.5b
+        TEST_OLLAMA_EMBEDDING_MODEL   – default: nomic-embed-text
+
 Reasoning LLMs for agent ITs use provider-specific model names when no override
 is passed. On OpenAI that is gpt-5.6-luna, and no env var overrides it —
 TEST_OPENAI_LLM_MODEL applies only to the non-reasoning default.
@@ -76,6 +81,7 @@ _PROVIDER_OPENAI = "openAI"
 _PROVIDER_AZURE_OPENAI = "azureOpenAI"
 _PROVIDER_GEMINI = "gemini"
 _PROVIDER_GROQ = "groq"
+_PROVIDER_OLLAMA = "ollama"
 
 _DEFAULT_LLM_MODEL_TYPE = "llm"
 _DEFAULT_EMBEDDING_MODEL_TYPE = "embedding"
@@ -88,10 +94,12 @@ _LLM_PROVIDER_ORDER = (
     _PROVIDER_OPENAI,
     _PROVIDER_GEMINI,
     _PROVIDER_GROQ,
+    _PROVIDER_OLLAMA,
 )
 _EMBEDDING_PROVIDER_ORDER = (
     _PROVIDER_AZURE_OPENAI,
     _PROVIDER_OPENAI,
+    _PROVIDER_OLLAMA,
 )
 
 
@@ -181,6 +189,8 @@ def _provider_credentials_available(provider: str, *, for_embedding: bool) -> bo
         return bool(_openai_api_key())
     if provider == _PROVIDER_AZURE_OPENAI:
         return _azure_credentials_complete(for_embedding=for_embedding)
+    if provider == _PROVIDER_OLLAMA:
+        return bool(_env("TEST_OLLAMA_ENDPOINT"))
     if for_embedding:
         return False
     if provider == _PROVIDER_GEMINI:
@@ -204,6 +214,13 @@ def _provider_order(*, for_embedding: bool) -> List[str]:
 
 def _build_openai_configuration(api_key: str, model_name: str) -> Dict[str, Any]:
     return {"model": model_name, "apiKey": api_key}
+
+
+def _build_ollama_configuration(model_name: str) -> Optional[Dict[str, Any]]:
+    endpoint = _env("TEST_OLLAMA_ENDPOINT")
+    if not endpoint:
+        return None
+    return {"model": model_name, "endpoint": endpoint}
 
 
 def _build_azure_configuration(
@@ -264,6 +281,13 @@ def _build_llm_candidate(
             configuration=_build_openai_configuration(api_key, resolved_name),
         )
 
+    if provider == _PROVIDER_OLLAMA:
+        resolved_name = model_name or _env("TEST_OLLAMA_LLM_MODEL") or "qwen2.5:0.5b"
+        configuration = _build_ollama_configuration(resolved_name)
+        if configuration is None:
+            return None
+        return _ProviderCandidate(provider=provider, model_name=resolved_name, configuration=configuration)
+
     if provider == _PROVIDER_GROQ:
         api_key = _env("TEST_GROQ_API_KEY")
         if not api_key:
@@ -313,6 +337,13 @@ def _build_embedding_candidate(
             ),
         )
 
+    if provider == _PROVIDER_OLLAMA:
+        resolved_name = model_name or _env("TEST_OLLAMA_EMBEDDING_MODEL") or "nomic-embed-text"
+        configuration = _build_ollama_configuration(resolved_name)
+        if configuration is None:
+            return None
+        return _ProviderCandidate(provider=provider, model_name=resolved_name, configuration=configuration)
+
     return None
 
 
@@ -343,6 +374,24 @@ def _embedding_provider_candidates(
         if candidate is not None:
             candidates.append(candidate)
     return candidates
+
+
+def llm_configuration(
+    *,
+    is_reasoning: bool = False,
+    model_name: str | None = None,
+) -> Optional[tuple[str, str, Dict[str, Any]]]:
+    """``(provider, model_name, configuration)`` for the first LLM provider with
+    credentials, as a providers POST sends it; ``None`` when there is none.
+
+    For tests that add a model themselves (a friendly name, a bad key) rather
+    than through :func:`setup_test_llm_model`.
+    """
+    candidates = _llm_provider_candidates(is_reasoning=is_reasoning, model_name=model_name)
+    if not candidates:
+        return None
+    first = candidates[0]
+    return first.provider, first.model_name, dict(first.configuration)
 
 
 def _missing_credentials_message(*, for_embedding: bool) -> str:

@@ -20,7 +20,7 @@ import unicodedata
 import uuid
 from collections import defaultdict
 from logging import Logger
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, TypeVar
 
 from fastapi import Request
 
@@ -163,6 +163,7 @@ from app.services.graph_db.common.utils import (
     SOFT_DELETE_CHUNK,
     TRASH_STATE_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
+    EntityCandidateRows,
     build_connector_stats_response,
     dedupe_agents_by_id,
     empty_soft_delete_result,
@@ -170,6 +171,12 @@ from app.services.graph_db.common.utils import (
     select_canonical_chain_names,
     soft_delete_request_result,
     soft_delete_result,
+    uploaded_document_id,
+)
+from app.services.graph_db.entity_index_queries import (
+    build_entity_index_candidate_aql,
+    build_entity_index_source_page_aql,
+    entity_index_source,
 )
 from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
@@ -201,7 +208,7 @@ from app.services.graph_db.vector_membership_queries import (
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, Callable
 
 # Constants for ArangoDB document ID format
 ARANGO_ID_PARTS_COUNT = 2  # ArangoDB document IDs are in format "collection/key"
@@ -261,6 +268,7 @@ NODE_COLLECTIONS = [
 
 _WRITE_CONFLICT_ATTEMPTS = 6
 _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
+_T = TypeVar("_T")
 
 # Each inlined permission lookup gives this rule 16 loop orders to try, and the
 # orders multiply across lookups. App browse inlines three, so the optimizer hits
@@ -3159,7 +3167,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         field: str,
         values: list[Any],
         return_fields: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get nodes where field value is in list - FULLY ASYNC.
@@ -3170,6 +3180,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             values: List of values
             return_fields: Optional list of fields to return
             transaction: Optional transaction ID
+            raise_on_error: Raise a failed query instead of returning ``[]``
 
         Returns:
             List[Dict]: Matching nodes
@@ -3207,6 +3218,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return results or []
         except Exception as e:
             self.logger.error(f"❌ Get nodes by field in failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def remove_nodes_by_field(
@@ -4156,6 +4169,48 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         self.logger.debug(f"✅ Successfully retrieved {len(typed_records)} typed records for connector {connector_id}")
         return typed_records
+
+    async def get_entity_index_candidate(
+        self,
+        collection: str,
+        marker: str,
+        *,
+        sweep_before: int | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """See :meth:`IGraphDBProvider.get_entity_index_candidate`."""
+        query = build_entity_index_candidate_aql(
+            collection, with_sweep=sweep_before is not None,
+        )
+        bind_vars: dict = {"marker": marker}
+        if sweep_before is not None:
+            bind_vars["sweep_before"] = sweep_before
+        results = await self.http_client.execute_aql(
+            query, bind_vars=bind_vars, txn_id=transaction,
+        )
+        return results[0] if results else None
+
+    async def page_entity_index_source(
+        self,
+        source: str,
+        scope_id: str,
+        after_key: str | None,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """See :meth:`IGraphDBProvider.page_entity_index_source`."""
+        # Validated first, so an unknown source raises whatever the scope.
+        entity_index_source(source)
+        if not scope_id:
+            return []
+        query = build_entity_index_source_page_aql(source, has_after_key=bool(after_key))
+        bind_vars: dict = {"scope_id": scope_id, "limit": max(1, int(limit))}
+        if after_key:
+            bind_vars["after_key"] = after_key
+        results = await self.http_client.execute_aql(
+            query, bind_vars=bind_vars, txn_id=transaction,
+        )
+        return [dict(row) for row in results or []]
 
     async def get_app_needing_vector_membership_backfill(
         self,
@@ -8763,11 +8818,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Check if deletion was successful
             if deletion_result.get("success"):
                 self.logger.debug(f"✅ Record {external_id} deleted from {connector_id}")
+                return deletion_result
             else:
                 error_reason = deletion_result.get("reason", "Unknown error")
                 self.logger.error(f"❌ Failed to delete record {external_id}: {error_reason}")
                 raise Exception(f"Deletion failed: {error_reason}")
-            return deletion_result
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete record {external_id} from {connector_id}: {str(e)}")
@@ -12602,7 +12657,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER child.isDeleted != true
                     LET file_doc = DOCUMENT(@@files_collection, child._key)
                     FILTER file_doc != null AND file_doc.isFile == true
-                    RETURN {name_lower: LOWER(child.recordName), mime_type: file_doc.mimeType}
+                    RETURN {name_lower: LOWER(child.recordName), mime_type: NOT_NULL(child.mimeType, file_doc.mimeType)}
                 """
                 bind_vars: dict[str, Any] = {
                     "parent_from": parent_from,
@@ -12628,7 +12683,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             RETURN 1
                     )
                     FILTER parent_edge == null
-                    RETURN {name_lower: LOWER(child.recordName), mime_type: file_doc.mimeType}
+                    RETURN {name_lower: LOWER(child.recordName), mime_type: NOT_NULL(child.mimeType, file_doc.mimeType)}
                 """
                 bind_vars = {
                     "parent_from": parent_from,
@@ -13053,13 +13108,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER parent_edge == null
                     LET file_doc = DOCUMENT(@@files_collection, file_record._key)
                     FILTER file_doc != null AND file_doc.isFile == true
-                    FILTER file_doc.mimeType == @mime_type
+                    LET mime_type = NOT_NULL(file_record.mimeType, file_doc.mimeType)
+                    FILTER mime_type == @mime_type
                     LET file_name_l = LOWER(file_record.recordName)
                     FILTER file_name_l IN @name_variants
                     RETURN {
                         _key: file_record._key,
                         name: file_record.recordName,
-                        mimeType: file_doc.mimeType
+                        mimeType: mime_type
                     }
                 """
                 bind_vars = {
@@ -13084,13 +13140,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER @exclude_record_id == null OR file_record._key != @exclude_record_id
                     LET file_doc = DOCUMENT(@@files_collection, file_record._key)
                     FILTER file_doc != null AND file_doc.isFile == true
-                    FILTER file_doc.mimeType == @mime_type
+                    LET mime_type = NOT_NULL(file_record.mimeType, file_doc.mimeType)
+                    FILTER mime_type == @mime_type
                     LET file_name_l = LOWER(file_record.recordName)
                     FILTER file_name_l IN @name_variants
                     RETURN {
                         _key: file_record._key,
                         name: file_record.recordName,
-                        mimeType: file_doc.mimeType
+                        mimeType: mime_type
                     }
                 """
                 bind_vars = {
@@ -13276,6 +13333,51 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to validate folder exists in KB: {str(e)}")
             return False
 
+
+    async def get_uploaded_document_ids(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+        *,
+        under_record_ids: list[str] | None = None,
+        among: list[str] | None = None,
+    ) -> list[str]:
+        bind_vars: dict = {
+            "connector_id": connector_id,
+            "upload": OriginTypes.UPLOAD.value,
+            "among": among,
+            "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+        }
+        if under_record_ids is None:
+            source = "FOR r IN @@records FILTER r.connectorId == @connector_id"
+            bind_vars["@records"] = CollectionNames.RECORDS.value
+        else:
+            source = f"""
+            FOR rid IN @roots
+                LET root = DOCUMENT(CONCAT("{CollectionNames.RECORDS.value}/", rid))
+                FILTER root != null AND root.connectorId == @connector_id
+                FOR r, e, p IN 0..{CONTAINMENT_MAX_DEPTH} OUTBOUND root._id @@record_relations
+                    PRUNE e != null AND e.relationshipType NOT IN ['PARENT_CHILD', 'ATTACHMENT']
+                    FILTER p.edges[*].relationshipType ALL IN ['PARENT_CHILD', 'ATTACHMENT']
+                    FILTER r.connectorId == @connector_id
+            """
+            bind_vars["roots"] = under_record_ids
+            bind_vars["@record_relations"] = CollectionNames.RECORD_RELATIONS.value
+        rows = await self.execute_query(
+            source + """
+                FILTER r.origin == @upload
+                FILTER @among == null OR r.externalRecordId IN @among
+                LET t = FIRST(FOR v IN 1..1 OUTBOUND r._id @@is_of_type RETURN v)
+                RETURN DISTINCT {origin: r.origin, externalRecordId: r.externalRecordId, isFile: t.isFile}
+            """,
+            bind_vars=bind_vars,
+            transaction=transaction,
+        )
+        ids = (
+            uploaded_document_id(row, {"isFile": row.get("isFile")})
+            for row in rows or []
+        )
+        return list(dict.fromkeys(i for i in ids if i))
 
     async def delete_records_recursive(
         self,
@@ -15072,6 +15174,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # Delete main record
         await self.delete_nodes([record_key], CollectionNames.RECORDS.value, transaction)
 
+    async def _attachment_delete_payloads(
+        self, attachment_ids: list[str], transaction: str | None
+    ) -> list[dict]:
+        """deleteRecord payloads for an email's attachments, read before they are removed."""
+        payloads: list[dict] = []
+        for attachment_id in attachment_ids:
+            attachment = await self.http_client.get_document(
+                collection=CollectionNames.RECORDS.value, key=attachment_id, txn_id=transaction
+            )
+            if not attachment or not attachment.get("virtualRecordId"):
+                continue
+            file_doc = await self.get_document(attachment_id, CollectionNames.FILES.value, transaction)
+            payload = await self._create_deleted_record_event_payload(attachment, file_doc)
+            if payload:
+                payload["connectorName"] = attachment.get("connectorName")
+                payload["origin"] = attachment.get("origin")
+                payloads.append(payload)
+        return payloads
+
     async def _execute_outlook_record_deletion(
         self,
         record_id: str,
@@ -15081,6 +15202,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Execute Outlook record deletion - deletes email and all attachments."""
         try:
             attachment_ids = await self._direct_attachment_ids(record_id, transaction)
+            # Read before the delete: the payloads carry the virtualRecordIds.
+            mail_record = await self.get_document(record_id, CollectionNames.MAILS.value, transaction)
+            attachment_payloads = await self._attachment_delete_payloads(attachment_ids, transaction)
 
             # Delete all attachments first
             for attachment_id in attachment_ids:
@@ -15100,10 +15224,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             self.logger.debug(f"✅ Deleted Outlook record {record_id} with {len(attachment_ids)} attachments")
 
+            payload = await self._create_deleted_record_event_payload(record, mail_record)
+            event_data = None
+            if payload:
+                payload["connectorName"] = Connectors.OUTLOOK.value
+                payload["origin"] = OriginTypes.CONNECTOR.value
+                event_data = {
+                    "eventType": "deleteRecord",
+                    "topic": "record-events",
+                    "payload": payload,
+                    "payloads": [payload, *attachment_payloads],
+                }
             return {
                 "success": True,
                 "record_id": record_id,
-                "attachments_deleted": len(attachment_ids)
+                "connector": Connectors.OUTLOOK.value,
+                "attachments_deleted": len(attachment_ids),
+                "eventData": event_data,
             }
 
         except Exception as e:
@@ -15384,6 +15521,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             file_record = await self.get_document(record_id, CollectionNames.FILES.value) if record.get("recordType") == "FILE" else None
 
             attachment_ids = await self._direct_attachment_ids(record_id, transaction)
+            attachment_payloads = await self._attachment_delete_payloads(attachment_ids, transaction)
 
             # Delete all attachments first
             for attachment_id in attachment_ids:
@@ -15424,7 +15562,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     event_data = {
                         "eventType": "deleteRecord",
                         "topic": "record-events",
-                        "payload": payload
+                        "payload": payload,
+                        "payloads": [payload, *attachment_payloads],
                     }
                 else:
                     event_data = None
@@ -16391,7 +16530,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if detect_folder:
             size_expr = (
                 "record.sizeInBytes != null ? record.sizeInBytes : "
-                "(file_info ? file_info.fileSizeInBytes : null)"
+                "(file_info ? file_info.sizeInBytes : null)"
             )
 
         return f"""
@@ -16514,7 +16653,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         updatedAt: (record_parent_app != null AND record_parent_app.type == "KB")
                             ? (record.updatedAtTimestamp != null ? record.updatedAtTimestamp : 0)
                             : (record.sourceLastModifiedTimestamp != null ? record.sourceLastModifiedTimestamp : (record.updatedAtTimestamp != null ? record.updatedAtTimestamp : 0)),
-                        sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : (file_info ? file_info.fileSizeInBytes : null),
+                        sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : (file_info ? file_info.sizeInBytes : null),
                         mimeType: record.mimeType,
                         extension: file_info ? file_info.extension : null,
                         webUrl: record.webUrl,
@@ -17631,7 +17770,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_type_filter = (
             "FILTER rec.recordType IN @record_types" if filter_record_types else ""
         )
-        rows_subquery = f"""(
+        scan_subquery = f"""(
                     FOR edge IN {edge_collection}
                         FILTER edge._to IN targets
                         FILTER STARTS_WITH(edge._from, "{records}/")
@@ -17641,26 +17780,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER rec.connectorId IN ref.connectorIds
                         {record_type_filter}
                         LIMIT @scan_cap
-                        COLLECT key = rec._key INTO grouped KEEP rec
-                        LET r = grouped[0].rec
-                        SORT NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) DESC, key ASC
-                        LIMIT @offset, @limit
-                        RETURN {self._entity_candidate_record_projection("r")}
+                        RETURN rec
                 )"""
         if entity_type == EntityType.RECORD_GROUP.value:
             scope = (
                 f'LET rg = DOCUMENT(CONCAT("{CollectionNames.RECORD_GROUPS.value}/", ref.id))'
             )
-            rows_expr = f"(rg != null AND rg.orgId == @org_id) ? {rows_subquery} : []"
+            scan_expr = f"(rg != null AND rg.orgId == @org_id) ? {scan_subquery} : []"
         else:
             scope = ""
-            rows_expr = rows_subquery
+            scan_expr = scan_subquery
         return f"""
             FOR ref IN @refs
                 {scope}
                 LET targets = [{targets}]
-                LET rows = {rows_expr}
-                RETURN {{id: ref.id, rows: rows}}
+                LET scanned = {scan_expr}
+                LET rows = (
+                    FOR rec IN scanned
+                        COLLECT key = rec._key INTO grouped KEEP rec
+                        LET r = grouped[0].rec
+                        SORT NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) DESC, key ASC
+                        LIMIT @offset, @limit
+                        RETURN {self._entity_candidate_record_projection("r")}
+                )
+                RETURN {{id: ref.id, rows: rows, capped: LENGTH(scanned) >= @scan_cap}}
             """
 
     async def get_entity_candidate_records(
@@ -17672,7 +17815,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit_per_entity: int = 20,
         offset: int = 0,
         transaction: str | None = None,
-    ) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    ) -> dict[tuple[str, str], EntityCandidateRows]:
         """See :meth:`IGraphDBProvider.get_entity_candidate_records`."""
         if not refs or not org_id:
             return {}
@@ -17693,10 +17836,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 str(c) for c in ref.get("connectorIds") or [] if c
             ))
 
-        results: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        results: dict[tuple[str, str], EntityCandidateRows] = {}
         for ref_type, connectors_by_id in connectors_by_type.items():
             for ref_id in connectors_by_id:
-                results.setdefault((ref_type, ref_id), [])
+                results.setdefault((ref_type, ref_id), EntityCandidateRows())
             # A ref without connectors can never match a row, so it is not sent.
             query_refs = [
                 {"id": ref_id, "connectorIds": connector_ids}
@@ -17733,7 +17876,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     continue
                 key = (ref_type, str(row.get("id") or ""))
                 if key in results:
-                    results[key] = row.get("rows") or []
+                    results[key] = EntityCandidateRows(
+                        row.get("rows") or [], capped=bool(row.get("capped")),
+                    )
         return results
 
     async def get_taxonomy_entity_membership(
@@ -17849,8 +17994,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
             raise ValueError("taxonomy node needs an id")
         doc = self._translate_node_to_arango(dict(node))
         doc.pop("aliases", None)
-        result = await self.http_client.batch_insert_documents(
-            collection, [doc], txn_id=transaction, overwrite=True, overwrite_mode="ignore",
+        # Records that resolve the same new name create it at once, and the
+        # insert fails with errorNum 1200 while another record's insert or
+        # alias update holds the key, rather than waiting for it.
+        result = await self._retry_write_conflicts(
+            lambda: self.http_client.batch_insert_documents(
+                collection, [doc], txn_id=transaction, overwrite=True, overwrite_mode="ignore",
+            ),
+            transaction,
         )
         if (result or {}).get("errors", 0):
             raise RuntimeError(
@@ -17915,20 +18066,33 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # Records resolving to one popular node add aliases to it at once, and
         # ArangoDB rejects all but one concurrent UPDATE of a document with
         # errorNum 1200 even outside a stream transaction. The merge is
-        # idempotent, so a retry cannot double-apply anything. Inside a
-        # caller's transaction the conflict is the caller's to handle.
-        for attempt in range(_WRITE_CONFLICT_ATTEMPTS):
+        # idempotent, so a retry cannot double-apply anything.
+        await self._retry_write_conflicts(
+            lambda: self.execute_query(query, bind_vars=bind_vars, transaction=transaction),
+            transaction,
+        )
+
+    @staticmethod
+    async def _retry_write_conflicts(
+        write: Callable[[], Awaitable[_T]], transaction: str | None,
+    ) -> _T:
+        """Run an idempotent single write, retrying errorNum 1200 with backoff.
+
+        Inside a caller's transaction the conflict has aborted it, so it is the
+        caller's to handle and is raised at once."""
+        attempt = 0
+        while True:
             try:
-                await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
-                return
+                return await write()
             except Exception as exc:
+                attempt += 1
                 if (
                     transaction is not None
-                    or attempt == _WRITE_CONFLICT_ATTEMPTS - 1
+                    or attempt >= _WRITE_CONFLICT_ATTEMPTS
                     or not _is_write_conflict(exc)
                 ):
                     raise
-                await asyncio.sleep(random.uniform(0.02, 0.1) * (attempt + 1))
+                await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)
 
     async def get_user_app_ids(
         self,
@@ -19581,7 +19745,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     reason: record.reason,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
-                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
+                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.sizeInBytes,
                     mimeType: record.mimeType,
                     extension: file_info.extension,
                     webUrl: record.webUrl,
@@ -19742,7 +19906,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     reason: record.reason,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
-                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
+                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.sizeInBytes,
                     mimeType: record.mimeType,
                     extension: file_info.extension,
                     webUrl: record.webUrl,
@@ -19847,7 +20011,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     reason: record.reason,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
-                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
+                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.sizeInBytes,
                     mimeType: record.mimeType,
                     extension: file_info.extension,
                     webUrl: record.webUrl,
@@ -19988,7 +20152,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     reason: record.reason,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
-                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
+                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.sizeInBytes,
                     mimeType: record.mimeType,
                     extension: file_info.extension,
                     webUrl: record.webUrl,
@@ -20082,7 +20246,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     reason: record.reason,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
-                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
+                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.sizeInBytes,
                     mimeType: record.mimeType,
                     extension: file_info.extension,
                     webUrl: record.webUrl,

@@ -26,6 +26,9 @@ on:
       # the names the connectors register under backend/python/app, so a
       # misspelling on the suite side has to run it too.
       - 'integration-tests/connectors/**'
+      # The admin-route inventory reads the Node and Python route code above
+      # against this table, so a route that gains an admin check fails here.
+      - 'integration-tests/helper/admin_route*.py'
 
   workflow_call:
     inputs:
@@ -163,11 +166,13 @@ jobs:
       # sits behind a reviewer gate, so on a pull request it would not run until
       # someone approved it, and in practice not until the nightly. That is the
       # delay the guard exists to remove, so it runs here too.
-      # Two offline guards over integration-tests: the graph-entity schemas, and
+      # Three offline guards over integration-tests: the graph-entity schemas,
       # the connector types the suites ask for, which must match a registered
-      # @ConnectorBuilder name exactly. The second exists because the SharePoint
-      # suite asked for "SharePointOnline" against "SharePoint Online" and only
-      # a nightly with a real tenant could find out.
+      # @ConnectorBuilder name exactly, and the admin-route inventory. The second
+      # exists because the SharePoint suite asked for "SharePointOnline" against
+      # "SharePoint Online" and only a nightly with a real tenant could find out.
+      # The third is here because a route that gained an admin check without a
+      # table row reached main through a pull request this job did not check.
       - name: Run the integration-suite guards
         run: |
           uv pip install --system pyyaml
@@ -180,6 +185,7 @@ jobs:
             pytest integration-tests/unit/test_graph_entity_schemas.py \
               integration-tests/unit/test_graph_edge_schemas.py \
               integration-tests/unit/test_connector_types_are_registered.py \
+              integration-tests/unit/test_admin_route_inventory.py \
               --noconftest -c backend/python/pytest.ini -v
 
       # The only automated check on agent behaviour: six golden properties the

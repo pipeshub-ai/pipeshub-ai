@@ -80,18 +80,30 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return any(marker in message for marker in _RATE_LIMIT_MARKERS)
 
 
-async def _ainvoke_throttled(llm: BaseChatModel, messages: list[Any]) -> Any:  # noqa: ANN401
+async def _ainvoke_throttled(
+    llm: BaseChatModel,
+    messages: list[Any],
+    *,
+    call_timeout: float | None = None,
+) -> Any:  # noqa: ANN401
     """Invoke *llm*, holding a slot in the process-wide indexing budget.
 
     Retries rate-limit errors with jittered backoff. The jitter matters more than the
     retry: LangChain's own ``max_retries`` has none, so concurrent row batches that get
     429ed all retry in lockstep.
+
+    ``call_timeout`` bounds each provider call once the slot is held; waiting
+    for the slot is backpressure, not a hung call, so it is never timed. A
+    timeout is raised, not retried.
     """
     delay = 0.0
     for attempt in range(MAX_RATE_LIMIT_RETRIES):
         async with indexing_llm_slot():
             try:
-                result = await llm.ainvoke(messages)
+                call = llm.ainvoke(messages)
+                result = await (
+                    asyncio.wait_for(call, timeout=call_timeout) if call_timeout else call
+                )
                 note_llm_call()
                 return result
             except Exception as e:
@@ -1136,6 +1148,8 @@ async def invoke_with_structured_output_and_reflection(
     messages: list,
     schema: type[SchemaT],
     max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
+    *,
+    call_timeout: float | None = None,
 ) -> SchemaT | None:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
@@ -1145,6 +1159,9 @@ async def invoke_with_structured_output_and_reflection(
         messages: List of messages to send to the LLM
         schema: Pydantic model class to validate the response against
         max_retries: Maximum number of reflection retries on parse failure
+        call_timeout: Optional bound, in seconds, on each provider call (the
+            first and every reflection retry), excluding the wait for an
+            indexing slot. A timed-out call counts as a failed attempt.
 
     Returns:
         Validated Pydantic model instance, or None if parsing fails after all retries
@@ -1152,13 +1169,15 @@ async def invoke_with_structured_output_and_reflection(
     llm_with_structured_output = _apply_structured_output(llm, schema=schema)
 
     try:
-        response = await _ainvoke_throttled(llm_with_structured_output, messages)
+        response = await _ainvoke_throttled(
+            llm_with_structured_output, messages, call_timeout=call_timeout,
+        )
     except Exception as e:
         recovered = _recover_structured_json_from_exception(e, schema)
         if recovered is not None:
             logger.info("Recovered schema-valid structured output from invocation error")
             return recovered
-        logger.error(f"LLM invocation failed: {e}")
+        logger.error(f"LLM invocation failed: {type(e).__name__}: {e}")
         return None
 
     # Try to parse the response
@@ -1221,8 +1240,13 @@ Respond only with valid JSON that matches the schema."""
         reflection_messages.append(HumanMessage(content=reflection_prompt))
 
         for attempt in range(max_retries):
+            # Unset when the call itself fails (timeout, network): there is no
+            # reply to show the model on the next attempt.
+            reflection_content = None
             try:
-                reflection_response = await _ainvoke_throttled(llm_with_structured_output, reflection_messages)
+                reflection_response = await _ainvoke_throttled(
+                    llm_with_structured_output, reflection_messages, call_timeout=call_timeout,
+                )
                 if isinstance(reflection_response, dict):
                     if 'content' in reflection_response:
                         # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
@@ -1259,11 +1283,17 @@ Respond only with valid JSON that matches the schema."""
                         "Recovered schema-valid structured output from reflection invocation error"
                     )
                     return recovered
-                logger.warning(f"Reflection attempt {attempt + 1} failed: {reflection_error}")
+                logger.warning(
+                    f"Reflection attempt {attempt + 1} failed: "
+                    f"{type(reflection_error).__name__}: {reflection_error}"
+                )
                 if attempt < max_retries - 1:
                     # Update messages for next retry
-                    reflection_messages.append(AIMessage(content=reflection_content))
-                    reflection_messages.append(HumanMessage(content=f"Still incorrect. Error: {str(reflection_error)}. Please try again."))
+                    if reflection_content is not None:
+                        reflection_messages.append(AIMessage(content=reflection_content))
+                        reflection_messages.append(HumanMessage(content=f"Still incorrect. Error: {str(reflection_error)}. Please try again."))
+                    # A call that failed outright left no reply to correct, and
+                    # the pending request already asks for valid JSON.
 
         logger.error("All reflection attempts failed")
         return None

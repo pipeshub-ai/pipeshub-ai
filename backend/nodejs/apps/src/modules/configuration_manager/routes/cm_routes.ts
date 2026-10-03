@@ -64,6 +64,7 @@ import {
   deleteWebSearchProvider,
   updateDefaultWebSearchProvider,
   getSlackBotConfigs,
+  getInternalSlackBotConfigs,
   createSlackBotConfig,
   updateSlackBotConfig,
   deleteSlackBotConfig,
@@ -536,8 +537,8 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
   router.get(
     '/internal/slack-bot',
-    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getSlackBotConfigs(keyValueStoreService),
+    authMiddleware.scopedTokenValidator(TokenScopes.SLACK_BOT_VERIFY),
+    getInternalSlackBotConfigs(keyValueStoreService),
   );
 
   router.post(

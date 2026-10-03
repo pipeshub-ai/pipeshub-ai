@@ -132,7 +132,7 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     key: 'ENABLE_SOFT_DELETE',
     label: 'Move Deleted Records to the Trash',
     description:
-      'When you delete a record, keep it in the trash instead of removing it straight away. It disappears from search, chat and lists at once, and is removed for good by a scheduled cleanup after the trash period. Disable to delete records immediately.',
+      'When you delete a record, move it to the trash instead of removing it straight away. It disappears from search, chat and lists at once, and its search data is removed, but the record, its file and its sharing are kept. Records in the trash cannot be restored or emptied from the app. Disable to delete records immediately, as before.',
     defaultEnabled: false,
   },
   {

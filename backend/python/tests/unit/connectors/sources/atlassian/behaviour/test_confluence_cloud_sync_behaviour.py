@@ -7,8 +7,10 @@ in-memory fakes.
 """
 
 import logging
+import re
 from collections.abc import Callable
 from typing import Any, Optional
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -41,6 +43,8 @@ from app.models.entities import (
     AppUser,
     CommentRecord,
     FileRecord,
+    RecordGroup,
+    RecordGroupType,
     RecordType,
     WebpageRecord,
 )
@@ -118,15 +122,37 @@ SPEC = {"id": "att2", "title": "spec.pdf", "mediaType": "application/pdf", "file
 
 
 class ContentSearch:
-    """Answers v1 content search by cursor; remembers each query."""
+    """Answers v1 content search by cursor; remembers each query.
+
+    When ``folders`` or ``blogposts`` is set, those searches get it instead. When ``indexed`` is
+    set, a search narrowed to ``id in (...)`` gets the indexed items among those
+    ids, less any a ``NOT (id in (...))`` filter clause names, or ``indexed``
+    itself if it is a response.
+    """
 
     def __init__(self) -> None:
         self.by_cursor: dict[Optional[str], Any] = {}
         self.queries: list[dict[str, str]] = []
+        self.folders: list[dict[str, Any]] | None = None
+        self.blogposts: list[dict[str, Any]] | None = None
+        self.indexed: dict[str, dict[str, Any]] | httpx.Response | None = None
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         q = AtlassianApiStub.query(request)
         self.queries.append(q)
+        cql = q.get("cql", "")
+        if self.folders is not None and cql.startswith("type=folder"):
+            return json_response(search_page(self.folders))
+        if self.blogposts is not None and cql.startswith("type=blogpost"):
+            return json_response(search_page(self.blogposts))
+        by_id = re.search(r"(?:^| AND )id in \(([^)]*)\)", cql)
+        if self.indexed is not None and by_id:
+            if isinstance(self.indexed, httpx.Response):
+                return self.indexed
+            ids = [i.strip() for i in by_id.group(1).split(",")]
+            excluded = re.search(r"NOT \(id in \(([^)]*)\)", cql)
+            left_out = {i.strip() for i in excluded.group(1).split(",")} if excluded else set()
+            return json_response(search_page([self.indexed[i] for i in ids if i in self.indexed and i not in left_out]))
         answer = self.by_cursor.get(q.get("cursor"), search_page([]))
         return answer if isinstance(answer, httpx.Response) else json_response(answer)
 
@@ -908,3 +934,480 @@ class TestStreamingLegacyHtmlPages:
         with pytest.raises(HTTPException):
             await connector.stream_record(stub)
         assert not api.calls("GET", f"{V2}/pages/10")
+
+
+def space_group(space_id: str, key: str) -> RecordGroup:
+    return RecordGroup(
+        name=key, short_name=key, external_group_id=space_id, group_type=RecordGroupType.CONFLUENCE_SPACES,
+        connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID,
+    )
+
+
+ENG = space_group("77", "ENG")
+PAGES_CHECKPOINT = "confluence_pages/ENG"
+OLD_CHECKPOINT = "2020-01-01T00:00:00.000Z"
+
+
+def in_space(*ids: str, archived: tuple[str, ...] = (), cursor: str | None = None) -> dict[str, Any]:
+    """A v2 space listing: what the account can see, current unless named archived."""
+    links: dict[str, Any] = {"base": WIKI}
+    if cursor:
+        links["next"] = f"/wiki/api/v2/spaces/77/pages?cursor={cursor}&limit=250"
+    items = [{"id": i, "status": "archived" if i in archived else "current", "title": f"Page {i}"} for i in ids]
+    return {"results": items, "_links": links}
+
+
+class TestContentGoneFromSource:
+    """What the account can no longer find, or a narrowed filter leaves out, is removed; a failed read or delete removes nothing and holds the checkpoint."""
+
+    async def _two_pages_synced(self, api, db, checkpoints, search) -> ConfluenceConnector:
+        search.folders = []
+        search.blogposts = []
+        search.by_cursor = {None: search_page([v1_page("10"), v1_page("11", attachments=[SPEC])])}
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10", "11"))
+        api.on("GET", f"{V2}/spaces/77/blogposts", in_space())
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+        assert {"10", "11", "att2"} <= set(db.records)
+        assert self._checkpoint(checkpoints) is not None
+        search.by_cursor = {None: search_page([v1_page("10", version=2)])}
+        return connector
+
+    def _hold_checkpoint_at_old_value(self, checkpoints) -> None:
+        key = next(k for k in checkpoints.sync_points if k.endswith(PAGES_CHECKPOINT))
+        checkpoints.sync_points[key]["last_sync_time"] = OLD_CHECKPOINT
+
+    def _checkpoint(self, checkpoints) -> str | None:
+        value = checkpoints.values_for(PAGES_CHECKPOINT)
+        return value["last_sync_time"] if value else None
+
+    def _refilter(self, connector, checkpoints, search, *excluded: str) -> None:
+        checkpoints.sync_points.clear()  # saving filters deletes the connector's sync points
+        connector.sync_filters = type(connector.sync_filters).from_dict(
+            {"page_ids": {"operator": "not_in", "type": "list", "value": list(excluded)}} if excluded else {}
+        )
+        search.by_cursor = {None: search_page([v1_page("10")])}
+
+    async def test_a_trashed_page_leaves_with_its_attachments_and_comments_and_its_folder_stays(
+        self, api, db, checkpoints, search
+    ) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        db.records["900"] = FileRecord(
+            org_id="org-1", record_name="Specs", record_type=RecordType.FILE, external_record_id="900",
+            external_record_group_id="77", parent_external_record_id="11", parent_record_type=RecordType.CONFLUENCE_PAGE,
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR,
+            version=0, is_file=False, mime_type=MimeTypes.FOLDER.value,
+        )
+        db.records["12"] = db.records["10"].model_copy(update={
+            "id": "child-id", "external_record_id": "12", "parent_external_record_id": "11",
+        })
+        comment = CommentRecord(
+            org_id="org-1", record_name="c", record_type=RecordType.COMMENT, external_record_id="c1",
+            external_record_group_id="77", parent_external_record_id="11", parent_record_type=RecordType.WEBPAGE,
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR,
+            version=0, author_source_id="acc-ana",
+        )
+        db.records["c1"] = comment
+        db.records["c2"] = comment.model_copy(update={"id": "reply-id", "external_record_id": "c2",
+                                                      "parent_external_record_id": "c1"})
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10", "12"))
+
+        await connector._sync_spaces_content([ENG])
+
+        assert not {"11", "att2", "c1", "c2"} & set(db.records), "the page goes with its attachment and comments"
+        assert {"10", "900", "12"} <= set(db.records), "the folder and the child page stay"
+        assert db.records["900"].parent_external_record_id is None, "the folder moves to the space root"
+        assert db.records["12"].parent_external_record_id is None
+        request = api.calls("GET", f"{V2}/spaces/77/pages")[-1]
+        assert "status" not in AtlassianApiStub.query(request), "the default lists current and archived pages"
+
+    async def test_a_trashed_page_and_its_trashed_comment_the_source_no_longer_has_are_removed(
+        self, api, db, checkpoints, search
+    ) -> None:
+        """The scans list the trash, so a record already in it does not stay behind for good."""
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        db.records["c1"] = CommentRecord(
+            org_id="org-1", record_name="c", record_type=RecordType.COMMENT, external_record_id="c1",
+            external_record_group_id="77", parent_external_record_id="11", parent_record_type=RecordType.WEBPAGE,
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR,
+            version=0, author_source_id="acc-ana", is_deleted=True,
+        )
+        db.records["11"].is_deleted = True
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10"))
+
+        await connector._sync_spaces_content([ENG])
+
+        assert not {"11", "att2", "c1"} & set(db.records)
+        assert "10" in db.records
+
+    async def test_a_page_the_account_can_no_longer_see_is_removed_and_returns_when_visible_again(
+        self, api, db, checkpoints, search
+    ) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10"))
+
+        await connector._sync_spaces_content([ENG])
+        assert "11" not in db.records and "att2" not in db.records
+
+        # Regaining access changes nothing Confluence dates: the change search still leaves it out.
+        search.by_cursor = {None: search_page([])}
+        search.indexed = {"10": v1_page("10"), "11": v1_page("11")}
+        search.queries.clear()
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10", "11"))
+        await connector._sync_spaces_content([ENG])
+        assert "11" in db.records
+        by_id = [q["cql"] for q in search.queries if "id in (11)" in q["cql"]]
+        assert by_id and all("lastModified >" not in cql for cql in by_id), (
+            "the listed-but-missing page is asked for by id, whatever its last modified time"
+        )
+
+    async def test_a_listed_page_the_filters_leave_out_is_not_brought_back(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        self._refilter(connector, checkpoints, search, "11")
+        search.indexed = {"10": v1_page("10"), "11": v1_page("11")}
+        await connector._sync_spaces_content([ENG])
+        assert "11" not in db.records
+
+        search.by_cursor = {None: search_page([])}
+        await connector._sync_spaces_content([ENG])
+        assert "11" not in db.records, "the id search runs with the filters, so an excluded page stays out"
+
+    async def test_a_failed_search_for_a_listed_page_holds_the_checkpoint(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10"))
+        await connector._sync_spaces_content([ENG])
+        self._hold_checkpoint_at_old_value(checkpoints)
+
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10", "11"))
+        search.indexed = json_response({"message": "Service Unavailable"}, status=503)
+        await connector._sync_spaces_content([ENG])
+        assert "11" not in db.records
+        assert self._checkpoint(checkpoints) == OLD_CHECKPOINT
+
+    async def test_an_archived_page_the_account_can_see_is_kept(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10", "11", archived=("11",)))
+
+        await connector._sync_spaces_content([ENG])
+        assert "11" in db.records
+
+        self._refilter(connector, checkpoints, search, "99")
+        search.indexed = {"10": v1_page("10")}  # search never returns archived content
+        await connector._sync_spaces_content([ENG])
+        assert "11" in db.records, "a full sync keeps it too"
+
+    async def test_a_failed_delete_holds_the_checkpoint_and_the_next_incremental_sync_finishes_it(
+        self, api, db, checkpoints, search
+    ) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        self._hold_checkpoint_at_old_value(checkpoints)
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10"))
+        db.fail_delete_for = {db.records["11"].id}
+
+        await connector._sync_spaces_content([ENG])
+        assert "11" in db.records, "the delete failed once"
+        assert self._checkpoint(checkpoints) == OLD_CHECKPOINT
+
+        await connector._sync_spaces_content([ENG])
+        assert "11" not in db.records and "att2" not in db.records
+        assert self._checkpoint(checkpoints) != OLD_CHECKPOINT
+
+    @pytest.mark.parametrize(
+        "listing",
+        [
+            json_response({"message": "busy"}, status=503),
+            json_response({"message": "Something went wrong"}),
+            [json_response(in_space("10", cursor="P2")), json_response(in_space(cursor="P3"))],
+            [json_response(in_space("10", cursor="P2")), json_response(in_space("10", cursor="P2"))],
+            [json_response(in_space("10", cursor="P2")), json_response({"message": "busy"}, status=503)],
+        ],
+        ids=["fails", "error-body-with-200", "empty-page-with-a-next-link", "cursor-comes-round-again", "later-page-fails"],
+    )
+    async def test_a_space_listing_not_read_to_the_end_removes_nothing_and_holds_the_checkpoint(
+        self, api, db, checkpoints, search, listing
+    ) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        self._hold_checkpoint_at_old_value(checkpoints)
+        api.on("GET", f"{V2}/spaces/77/pages", listing)
+
+        await connector._sync_spaces_content([ENG])
+
+        assert {"11", "att2"} <= set(db.records)
+        assert self._checkpoint(checkpoints) == OLD_CHECKPOINT
+
+    async def test_a_short_space_listing_page_is_followed_to_the_end(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        api.on("GET", f"{V2}/spaces/77/pages", [json_response(in_space("10", cursor="P2")), json_response(in_space("11"))])
+
+        await connector._sync_spaces_content([ENG])
+
+        assert "11" in db.records
+
+    async def test_an_unreadable_graph_removes_nothing_and_holds_the_checkpoint(
+        self, api, db, checkpoints, search
+    ) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        self._hold_checkpoint_at_old_value(checkpoints)
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10"))
+        db.fail_record_scan = True
+
+        await connector._sync_spaces_content([ENG])
+
+        assert "11" in db.records and self._checkpoint(checkpoints) == OLD_CHECKPOINT
+
+    async def test_a_failed_change_search_holds_the_checkpoint(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        self._hold_checkpoint_at_old_value(checkpoints)
+        search.by_cursor = {None: json_response({"message": "busy"}, status=503)}
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10"))
+
+        await connector._sync_spaces_content([ENG])
+
+        assert "11" not in db.records, "the space listing is evidence on its own"
+        assert self._checkpoint(checkpoints) == OLD_CHECKPOINT
+
+    async def test_a_page_a_narrowed_filter_leaves_out_is_removed_by_the_full_sync_that_follows(
+        self, api, db, checkpoints, search
+    ) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        self._refilter(connector, checkpoints, search, "11")
+        search.indexed = {"10": v1_page("10"), "11": v1_page("11")}
+
+        await connector._sync_spaces_content([ENG])
+
+        assert "10" in db.records
+        assert "11" not in db.records and "att2" not in db.records
+        assert self._checkpoint(checkpoints) is not None
+
+    async def test_a_page_a_lagging_search_misses_is_kept_and_the_full_sync_stays_owed(
+        self, api, db, checkpoints, search
+    ) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        self._refilter(connector, checkpoints, search, "99")
+        search.indexed = {"10": v1_page("10")}
+
+        await connector._sync_spaces_content([ENG])
+
+        assert {"10", "11", "att2"} <= set(db.records)
+        assert self._checkpoint(checkpoints) is None
+
+    async def test_a_page_the_filtered_search_still_finds_is_kept(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        self._refilter(connector, checkpoints, search, "99")
+        search.indexed = {"10": v1_page("10"), "11": v1_page("11")}
+
+        await connector._sync_spaces_content([ENG])
+
+        assert "11" in db.records, "the listing skipped it, the filter did not exclude it"
+        assert self._checkpoint(checkpoints) is None
+
+    async def test_with_no_content_filter_a_full_sync_never_removes_what_the_listing_skipped(
+        self, api, db, checkpoints, search
+    ) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        self._refilter(connector, checkpoints, search)
+        search.indexed = {"10": v1_page("10"), "11": v1_page("11")}
+
+        await connector._sync_spaces_content([ENG])
+
+        assert "11" in db.records
+        assert not any(re.search(r"(?:^| AND )id in \(", q.get("cql", "")) for q in search.queries)
+
+    @pytest.mark.parametrize("failure", ["search", "graph"])
+    async def test_a_failed_filter_check_removes_nothing_and_keeps_the_full_sync_owed(
+        self, api, db, checkpoints, search, failure
+    ) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        self._refilter(connector, checkpoints, search, "11")
+        if failure == "search":
+            search.indexed = json_response({"message": "busy"}, status=503)
+        else:
+            search.indexed = {"11": v1_page("11")}
+            db.fail_record_scan = True
+
+        await connector._sync_spaces_content([ENG])
+
+        assert "11" in db.records
+        assert self._checkpoint(checkpoints) is None, "the next sync is a full one again"
+
+    @pytest.mark.parametrize(
+        "next_page",
+        [
+            json_response({"message": "Service Unavailable"}, status=503),
+            json_response({"message": "oops"}),
+            json_response(search_page([], cursor="C3")),
+        ],
+        ids=["fails", "error-body-with-200", "empty-page-with-a-next-link"],
+    )
+    async def test_a_full_listing_not_read_to_the_end_removes_nothing_it_missed(
+        self, api, db, checkpoints, search, next_page
+    ) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        self._refilter(connector, checkpoints, search, "11")
+        search.by_cursor = {None: search_page([v1_page("10")], cursor="C2"), "C2": next_page}
+        search.indexed = {"11": v1_page("11")}
+
+        await connector._sync_spaces_content([ENG])
+
+        assert "11" in db.records and self._checkpoint(checkpoints) is None
+
+    async def test_a_listed_page_that_fails_to_save_is_not_removed(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        self._refilter(connector, checkpoints, search, "99")
+        search.by_cursor = {None: search_page([v1_page("10"), v1_page("11")])}
+        search.indexed = {"10": v1_page("10")}
+        db.fail_lookup_for = {"11"}
+
+        await connector._sync_spaces_content([ENG])
+
+        db.fail_lookup_for = set()
+        assert "11" in db.records
+
+    async def test_placeholder_ancestors_are_kept(self, api, db, checkpoints, search) -> None:
+        connector = await self._two_pages_synced(api, db, checkpoints, search)
+        db.records["5"] = WebpageRecord(
+            org_id="org-1", record_name="5", record_type=RecordType.CONFLUENCE_PAGE, external_record_id="5",
+            external_record_group_id="77", connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID,
+            origin=OriginTypes.CONNECTOR, version=0, is_placeholder=True,
+        )
+
+        await connector._sync_spaces_content([ENG])
+
+        assert "5" in db.records, "a stub is never listed, so its absence means nothing"
+
+
+class TestSpacesOutOfScope:
+    async def _synced_in(self, db, checkpoints, search) -> ConfluenceConnector:
+        search.by_cursor = {None: search_page([v1_page("770", space_id=77), v1_page("990", space_id=99)])}
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._sync_content("HR", RecordType.CONFLUENCE_PAGE)
+        db.record_groups["77"] = ENG
+        db.record_groups["99"] = space_group("99", "HR")
+        assert checkpoints.values_for("confluence_pages/HR")["last_sync_time"]
+        return connector
+
+    def _spaces(self, api, *spaces: tuple[str, str]) -> None:
+        api.on("GET", f"{V2}/spaces", {"results": [{"id": i, "key": k, "name": k} for i, k in spaces], "_links": {"base": WIKI}})
+        api.on_suffix("GET", "/permissions", {"results": []})
+
+    @pytest.mark.parametrize(
+        "space_filter",
+        [None, {"operator": "in", "type": "list", "value": ["ENG"]}],
+        ids=["account-lost-access", "space-filter-leaves-it-out"],
+    )
+    async def test_a_space_no_longer_listed_is_removed_once_with_its_checkpoints_cleared(
+        self, api, db, checkpoints, search, space_filter
+    ) -> None:
+        connector = await self._synced_in(db, checkpoints, search)
+        if space_filter:
+            connector.sync_filters = type(connector.sync_filters).from_dict({"space_keys": space_filter})
+        self._spaces(api, ("77", "ENG"))
+
+        spaces = await connector._sync_spaces()
+        await connector._remove_spaces_out_of_scope(spaces)
+
+        assert "770" in db.records and "990" not in db.records
+        assert "99" not in db.record_groups
+        assert not checkpoints.values_for("confluence_pages/HR")["last_sync_time"], "re-adding HR reads it in full"
+        assert checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
+        assert checkpoints.values_for("confluence_space_scope/all")["space_ids"] == ["77"]
+
+        db.records["991"] = db.records["770"].model_copy(update={"id": "x991", "external_record_id": "991",
+                                                                  "external_record_group_id": "99"})
+        await connector._remove_spaces_out_of_scope(spaces)
+        assert "991" in db.records, "an unchanged scope is not rescanned"
+
+    @pytest.mark.parametrize(
+        "listing",
+        [
+            json_response({"message": "busy"}, status=503),
+            json_response({"message": "Something went wrong"}),
+            [json_response({"results": [{"id": "77", "key": "ENG", "name": "ENG"}],
+                            "_links": {"base": WIKI, "next": f"{V2}/spaces?cursor=S2&limit=20"}}),
+             json_response({"message": "busy"}, status=503)],
+            [json_response({"results": [{"id": "77", "key": "ENG", "name": "ENG"}],
+                            "_links": {"base": WIKI, "next": f"{V2}/spaces?cursor=S2&limit=20"}}),
+             json_response({"results": [], "_links": {"base": WIKI, "next": f"{V2}/spaces?cursor=S3&limit=20"}})],
+        ],
+        ids=["transient-failure", "error-body-with-200", "later-page-fails", "empty-page-with-a-next-link"],
+    )
+    async def test_a_space_listing_not_read_to_the_end_removes_nothing(
+        self, api, db, checkpoints, search, listing
+    ) -> None:
+        connector = await self._synced_in(db, checkpoints, search)
+        api.on("GET", f"{V2}/spaces", listing)
+        api.on_suffix("GET", "/permissions", {"results": []})
+
+        spaces = await connector._sync_spaces()
+        await connector._remove_spaces_out_of_scope(spaces)
+
+        assert connector._space_listing_complete is False
+        assert {"770", "990"} <= set(db.records) and db.deleted == []
+        assert checkpoints.values_for("confluence_pages/HR")["last_sync_time"]
+
+    async def test_a_space_no_longer_listed_takes_its_trashed_records_with_it(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced_in(db, checkpoints, search)
+        db.records["990"].is_deleted = True
+        self._spaces(api, ("77", "ENG"))
+
+        spaces = await connector._sync_spaces()
+        await connector._remove_spaces_out_of_scope(spaces)
+
+        assert "990" not in db.records
+        assert "99" not in db.record_groups
+        scope = checkpoints.values_for("confluence_space_scope/all")
+        assert (scope["space_ids"], scope["pending"]) == (["77"], []), "the removal finished"
+
+    async def test_a_failed_delete_keeps_the_space_and_its_checkpoints_until_the_next_sync(
+        self, api, db, checkpoints, search
+    ) -> None:
+        connector = await self._synced_in(db, checkpoints, search)
+        self._spaces(api, ("77", "ENG"))
+        db.fail_delete_for = {db.records["990"].id}
+
+        spaces = await connector._sync_spaces()
+        await connector._remove_spaces_out_of_scope(spaces)
+        assert "990" in db.records and "99" in db.record_groups
+        assert checkpoints.values_for("confluence_pages/HR")["last_sync_time"]
+        scope = checkpoints.values_for("confluence_space_scope/all")
+        assert "space_ids" not in scope and scope["pending"] == ["99"]
+
+        await connector._remove_spaces_out_of_scope(spaces)
+        assert "990" not in db.records and "99" not in db.record_groups
+        assert checkpoints.values_for("confluence_space_scope/all")["pending"] == []
+
+    async def test_a_space_whose_records_went_but_not_the_space_is_finished_next_sync(
+        self, api, db, checkpoints, search
+    ) -> None:
+        connector = await self._synced_in(db, checkpoints, search)
+        self._spaces(api, ("77", "ENG"))
+        real_delete = db.on_record_group_deleted
+        db.on_record_group_deleted = AsyncMock(return_value=False)
+
+        spaces = await connector._sync_spaces()
+        await connector._remove_spaces_out_of_scope(spaces)
+        assert "990" not in db.records and "99" in db.record_groups, "its records went, the space did not"
+
+        db.on_record_group_deleted = real_delete
+        await connector._remove_spaces_out_of_scope(spaces)
+        assert "99" not in db.record_groups, "the pending space is finished though no record points at it"
+
+    async def test_an_empty_space_listing_removes_nothing(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced_in(db, checkpoints, search)
+        self._spaces(api)
+
+        spaces = await connector._sync_spaces()
+        await connector._remove_spaces_out_of_scope(spaces)
+
+        assert "990" in db.records and "99" in db.record_groups
+
+    async def test_a_failed_graph_read_removes_nothing(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced_in(db, checkpoints, search)
+        self._spaces(api, ("77", "ENG"))
+        db.fail_record_scan = True
+
+        spaces = await connector._sync_spaces()
+        await connector._remove_spaces_out_of_scope(spaces)
+
+        assert "990" in db.records and checkpoints.values_for("confluence_space_scope/all") is None

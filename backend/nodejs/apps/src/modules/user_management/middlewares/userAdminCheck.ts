@@ -1,8 +1,11 @@
 import { NextFunction, Response } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { isUserOrgAdmin } from '../services/user-admin.service';
 import {
-  BadRequestError,
+  ADMIN_ACCESS_REQUIRED_MESSAGE,
+  isUserOrgAdmin,
+} from '../services/user-admin.service';
+import {
+  ForbiddenError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 
@@ -22,7 +25,7 @@ export const userAdminCheck = async (
     const isAdmin = await isUserOrgAdmin(userId, orgId);
 
     if (!isAdmin) {
-      throw new BadRequestError('Admin access required');
+      throw new ForbiddenError(ADMIN_ACCESS_REQUIRED_MESSAGE);
     }
     next();
   } catch (error) {

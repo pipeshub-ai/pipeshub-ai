@@ -166,7 +166,7 @@ class GraphTransactionStore(TransactionStore):
     async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> dict | None:
         return await self.graph_provider.get_record_by_path(connector_id, path, external_record_group_id, transaction=self.txn)
 
-    async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Optional[Record]:
+    async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Optional[dict]:
         return await self.graph_provider.get_document(
             key, CollectionNames.RECORDS.value, transaction=self.txn, raise_on_error=raise_on_error
         )
@@ -571,11 +571,13 @@ class GraphTransactionStore(TransactionStore):
         self,
         connector_id: str,
         parent_external_record_id: str,
-        record_type: Optional[str] = None
+        record_type: Optional[str] = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Get all child records for a parent record by parent_external_record_id. Optionally filter by record_type."""
         return await self.graph_provider.get_records_by_parent(
-            connector_id, parent_external_record_id, record_type, transaction=self.txn
+            connector_id, parent_external_record_id, record_type, transaction=self.txn, visibility=visibility
         )
 
     async def get_records_by_record_type(
@@ -807,8 +809,9 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 
     async def delete_sync_point(self, sync_point_key: str) -> None:
-        return await self.graph_provider.remove_sync_point([sync_point_key],
+        return await self.graph_provider.remove_sync_point(sync_point_key,
                     collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+
     async def read_sync_point(self, sync_point_key: str, *, raise_on_error: bool = False) -> Optional[dict]:
         return await self.graph_provider.get_sync_point(
             sync_point_key,

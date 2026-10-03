@@ -87,8 +87,11 @@ class BaseDataStore(ABC):
     """Base class for all data stores"""
 
     @abstractmethod
-    async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Optional[Record]:
-        """None when no record has this key; a failed read raises only with ``raise_on_error``."""
+    async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Optional[dict]:
+        """The stored record document, not a ``Record``, or None when no record has this key.
+
+        A failed read raises only with ``raise_on_error``.
+        """
         pass
 
     @abstractmethod
@@ -112,7 +115,9 @@ class BaseDataStore(ABC):
         self,
         connector_id: str,
         parent_external_record_id: str,
-        record_type: Optional[str] = None
+        record_type: Optional[str] = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Get all child records for a parent record by parent_external_record_id. Optionally filter by record_type."""
         pass

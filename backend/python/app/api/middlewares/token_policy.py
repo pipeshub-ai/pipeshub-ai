@@ -31,6 +31,8 @@ ACCEPTED_SERVICE_SCOPES: Final[frozenset[str]] = frozenset(
         TokenScopes.CONVERSATION_CREATE.value,  # Node Slack service account -> query chat
         TokenScopes.CONVERSATION_PERMISSIONS.value,  # Node share/unshare/view -> query record permissions
         TokenScopes.FETCH_CONFIG.value,  # Node scheduled-jobs backfill -> connectors
+        TokenScopes.DOCUMENT_PARSE.value,  # indexing -> parsing
+        TokenScopes.DOCUMENT_CLASSIFY.value,  # indexing -> extraction
     }
 )
 

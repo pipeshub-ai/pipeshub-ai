@@ -1107,6 +1107,18 @@ class EventProcessor:
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
+            if self._use_service_pipeline():
+                # The parsing and extraction services act for the org named in
+                # the service token, and refuse a token that names none.
+                org_id = org_id or doc.get("orgId")
+                if not org_id:
+                    raise ProcessingError(
+                        f"Record {record_id} has no organisation: neither the event "
+                        "nor the stored record carries an orgId",
+                        record_id=record_id,
+                        details={"event_type": event_type},
+                    )
+
             # Fail fast, before writing IN_PROGRESS, if the parsing service's
             # circuit breaker is already open. This is an in-memory check (no
             # HTTP call) so it doesn't add latency on the happy path, but it

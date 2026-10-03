@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from app.services.messaging.config import MessageBrokerType
+from tests.support.host_header import POISONED_HOSTS, request_with_host
 
 
 # ---------------------------------------------------------------------------
@@ -1105,6 +1106,34 @@ class TestAuthenticateRequestsMiddleware:
             await authenticate_requests(mock_request, mock_call_next)
 
         mock_auth.assert_awaited_once_with(mock_request)
+
+    @pytest.mark.parametrize("host", POISONED_HOSTS)
+    async def test_poisoned_host_header_does_not_skip_auth(self, host):
+        """A Host header naming an excluded path does not replace the request path."""
+        from app.connectors_main import authenticate_requests, app
+
+        request = request_with_host("/api/v1/x", host)
+        mock_call_next = AsyncMock(return_value=MagicMock(spec=JSONResponse))
+        app.container = MagicMock()
+
+        with patch("app.connectors_main.authMiddleware", new_callable=AsyncMock, return_value=request) as mock_auth:
+            await authenticate_requests(request, mock_call_next)
+
+        mock_auth.assert_awaited_once_with(request)
+
+    async def test_health_path_of_a_real_request_skips_auth(self):
+        """The exclusion still applies to a real request for /health."""
+        from app.connectors_main import authenticate_requests, app
+
+        request = request_with_host("/health")
+        mock_call_next = AsyncMock(return_value=MagicMock(spec=JSONResponse))
+        app.container = MagicMock()
+
+        with patch("app.connectors_main.authMiddleware", new_callable=AsyncMock) as mock_auth:
+            await authenticate_requests(request, mock_call_next)
+
+        mock_auth.assert_not_awaited()
+        mock_call_next.assert_awaited_once_with(request)
 
 
 # ---------------------------------------------------------------------------

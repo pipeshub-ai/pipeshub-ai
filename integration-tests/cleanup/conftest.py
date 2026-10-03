@@ -21,11 +21,13 @@ import pytest
 import pytest_asyncio
 
 from helper.cleanup_sources import (
+    INDEXING_TIMEOUT,
     folder_id_of as _folder_id,
     wait_for_embeddings as _wait_for_embeddings,
     wait_for_virtual_id as _wait_for_virtual_id,
 )
 from helper.clients.kb_client import KBClient
+from helper.indexing_progress import wait_until_enriched
 from helper.mongo_store import records_folder
 
 logger = logging.getLogger("cleanup-fixtures")
@@ -93,6 +95,7 @@ async def _indexed_record(
 
         virtual_record_id = await _wait_for_virtual_id(kb_client, record_id)
         await _wait_for_embeddings(vector_store, virtual_record_id, record_id)
+        await wait_until_enriched(kb_client, record_id, timeout=INDEXING_TIMEOUT)
 
         prefix = await mongo_store.envelope_path(
             test_org_id, virtual_record_id, within=records_folder(test_org_id, kb_id)
@@ -172,6 +175,7 @@ async def record_in_a_folder(
 
         virtual_record_id = await _wait_for_virtual_id(kb_client, record_id)
         await _wait_for_embeddings(vector_store, virtual_record_id, record_id)
+        await wait_until_enriched(kb_client, record_id, timeout=INDEXING_TIMEOUT)
 
         prefix = await mongo_store.envelope_path(
             test_org_id, virtual_record_id, within=records_folder(test_org_id, kb_id)
