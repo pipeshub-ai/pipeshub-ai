@@ -3,7 +3,8 @@
 The cascade works. Deleting a folder removes the folder and the records it
 contains, from the graph and from the vector database — the first two tests
 guard that. Blob storage and MongoDB are left behind, the same way they are on
-the record and collection paths, which is the third and fourth.
+the record path, which is the third and fourth. (A collection or connector
+delete is different: it removes its whole ``records/{id}`` storage tree.)
 
 The first four tests use a one-level folder with one record. The scenario at
 the end of the file nests a sub-folder (created with the ``?folderId=`` query
@@ -36,7 +37,8 @@ STORAGE_GAP = (
     "The delete path's scope is the graph and the vector database "
     "(kb_service.py:1178). Neither blob storage nor the storage documents in "
     "MongoDB are touched, and the documents are not flagged either, so nothing "
-    "will collect them later. The same on all three delete paths."
+    "will collect them later. A record delete is the same; a collection delete "
+    "removes its whole records/{kbId} storage tree instead."
 )
 
 
