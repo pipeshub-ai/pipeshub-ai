@@ -3,6 +3,9 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { ConfigService } from '../../../../src/modules/tokens_manager/services/cm.service'
 import { createHealthRouter } from '../../../../src/modules/tokens_manager/routes/health.routes'
+import * as buildInfoUtils from '../../../../src/libs/utils/build-info.utils'
+
+const NODE_BUILD = { version: '0.9.1', commitId: 'a'.repeat(40), buildTime: '2026-09-30T10:12:00Z' }
 
 describe('tokens_manager/routes/health.routes', () => {
   let mockRedis: any
@@ -27,6 +30,7 @@ describe('tokens_manager/routes/health.routes', () => {
       readDeploymentConfig: sinon.stub().callsFake(() => Promise.resolve({ ...mockAppConfig.deployment })),
     }
     sinon.stub(ConfigService, 'getInstance').returns(mockConfigService as any)
+    sinon.stub(buildInfoUtils, 'getBuildInfo').returns(NODE_BUILD)
 
     mockRedis = { get: sinon.stub().resolves(null) }
     mockKafka = { healthCheck: sinon.stub().resolves(true) }
@@ -727,6 +731,18 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg).to.have.property('services')
       expect(jsonArg).to.have.property('serviceNames')
       expect(jsonArg).to.have.property('deployment')
+    })
+
+    it('should report the build of the Node.js process', async () => {
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, sinon.stub())
+
+      expect(res.json.firstCall.args[0].build).to.deep.equal(NODE_BUILD)
     })
 
     it('should include all expected deployment keys', async () => {

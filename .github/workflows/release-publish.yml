@@ -112,6 +112,10 @@ jobs:
             fi
           done
 
+      - name: Stamp build time
+        id: stamp
+        run: echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push candidate
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -124,6 +128,9 @@ jobs:
           build-args: |
             PYTHON_DEPS_IMAGE=${{ env.BASE_IMAGE }}:${{ matrix.python_deps }}
             RUNTIME_BASE_IMAGE=${{ env.BASE_IMAGE }}:runtime
+            APP_VERSION=${{ needs.resolve.outputs.version }}
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ steps.stamp.outputs.build_time }}
           tags: |
             ${{ env.IMAGE }}:${{ needs.resolve.outputs.candidate }}${{ matrix.variant == 'slim' && '-slim' || '' }}
           cache-from: type=gha,scope=${{ matrix.variant }}
@@ -202,6 +209,8 @@ jobs:
           PIPESHUB_DEPLOY_TYPE: ${{ matrix.deploy }}
           PIPESHUB_GRAPH_DB: ${{ matrix.graph }}
           PIPESHUB_VERSION: ${{ needs.resolve.outputs.candidate }}${{ matrix.suffix }}
+          PIPESHUB_EXPECT_VERSION: ${{ needs.resolve.outputs.version }}
+          PIPESHUB_EXPECT_COMMIT: ${{ github.sha }}
           PUBLISHED_HUB_SMOKE_DIAG: ${{ runner.temp }}/diag
         run: bash deployment/docker-compose/tests/published_hub_smoke.sh
 

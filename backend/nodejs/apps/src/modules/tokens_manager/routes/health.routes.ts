@@ -8,6 +8,7 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import axios from 'axios';
 import { AppConfig } from '../config/config';
 import { ConfigService } from '../services/cm.service';
+import { BuildInfo, getBuildInfo } from '../../../libs/utils/build-info.utils';
 
 const logger = Logger.getInstance({
   service: 'HealthStatus'
@@ -35,6 +36,7 @@ export interface HealthStatus {
     // via getDeploymentConfig()'s KV-store fresh/fallback path.
     redisMode: string;
   };
+  build: BuildInfo;
 }
 
 export function createHealthRouter(
@@ -51,6 +53,8 @@ export function createHealthRouter(
 
   const appConfig = container.get<AppConfig>('AppConfig');
   const configService = ConfigService.getInstance();
+  // Resolved here, at startup: from source it shells out to git once.
+  const build = getBuildInfo();
 
   async function getDeploymentConfig() {
     try {
@@ -209,6 +213,7 @@ export function createHealthRouter(
           vectorDbType: deployment.vectorDbType || 'pending',
           redisMode: process.env.REDIS_MODE || 'standalone',
         },
+        build,
       };
 
       res.status(200).json(health);
