@@ -5,7 +5,8 @@ collection (``records/<kbId>/<folder>/<name>``), so the probes must:
 
 * match a path and the folders below it, never a sibling whose name only starts the same;
 * find the folder from the ``record_<virtualRecordId>`` document inside one collection,
-  and refuse to guess when there is none or more than one.
+  or in the flat ``records/<virtualRecordId>`` folder indexing falls back to, and refuse
+  to guess when there is none or more than one.
 """
 
 from __future__ import annotations
@@ -77,9 +78,18 @@ async def test_envelope_path_reads_the_records_folder(monkeypatch: pytest.Monkey
     assert path == f"{KB}/policy-433e53"
     query = documents.queries[0]
     assert query["documentName"] == f"record_{VRID}"
-    assert query["documentPath"] == {"$regex": mongo_store._under(KB)}
+    assert query["$or"] == [
+        {"documentPath": {"$regex": mongo_store._under(KB)}},
+        {"documentPath": {"$regex": mongo_store._under(f"{ORG}/PipesHub/records/{VRID}")}},
+    ]
     # orgId is a BSON ObjectId in Mongo; a string-only filter would match nothing.
     assert any(not isinstance(form, str) for form in query["orgId"]["$in"])
+
+
+@pytest.mark.asyncio
+async def test_envelope_path_accepts_the_flat_fallback_folder(monkeypatch: pytest.MonkeyPatch) -> None:
+    flat = f"{ORG}/PipesHub/records/{VRID}"
+    assert await _probe(monkeypatch, _Documents([flat])).envelope_path(ORG, VRID, within=KB) == flat
 
 
 @pytest.mark.asyncio

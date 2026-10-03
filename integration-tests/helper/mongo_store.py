@@ -98,12 +98,18 @@ class MongoStoreProbe:
         (``records/<kbId>/<folder>/<name>``), not its virtual record id, so it is
         read from the ``record_<virtualRecordId>`` storage document indexing
         writes. *within* keeps the search to one collection's folder: identical
-        content elsewhere in the org shares the virtual record id.
+        content elsewhere in the org shares the virtual record id. Indexing
+        files under the flat ``records/<virtualRecordId>`` instead when it
+        cannot work out the record's place, so that folder is searched too.
         """
+        flat = f"{org_id}/PipesHub/records/{virtual_record_id}"
         query = {
             "orgId": {"$in": _id_forms(org_id)},
             "documentName": f"record_{virtual_record_id}",
-            "documentPath": {"$regex": _under(within)},
+            "$or": [
+                {"documentPath": {"$regex": _under(within)}},
+                {"documentPath": {"$regex": _under(flat)}},
+            ],
         }
 
         def _paths() -> list[str]:
@@ -115,12 +121,12 @@ class MongoStoreProbe:
             await asyncio.sleep(_POLL_INTERVAL)
             paths = await asyncio.to_thread(_paths)
         assert paths, (
-            f"No storage document record_{virtual_record_id} under {within!r} "
-            f"after {timeout}s, so indexing never stored the record's content."
+            f"No storage document record_{virtual_record_id} under {within!r} or "
+            f"{flat!r} after {timeout}s, so indexing never stored the record's content."
         )
         assert len(paths) == 1, (
-            f"record_{virtual_record_id} is filed in {len(paths)} folders under "
-            f"{within!r}: {paths}. A cleanup test cannot tell which one is the record's."
+            f"record_{virtual_record_id} is filed in {len(paths)} folders: {paths}. "
+            "A cleanup test cannot tell which one is the record's."
         )
         return paths[0]
 
