@@ -15,6 +15,8 @@ def mock_logger():
 @pytest.fixture
 def mock_graph_provider():
     provider = AsyncMock()
+    # Like the real providers: a list, empty when nothing was uploaded.
+    provider.get_uploaded_document_ids = AsyncMock(return_value=[])
     # The folder-depth checks compare these with a number; a bare mock can't be compared.
     provider.get_folder_depth = AsyncMock(return_value=1)
     provider.get_folder_subtree_height = AsyncMock(return_value=0)

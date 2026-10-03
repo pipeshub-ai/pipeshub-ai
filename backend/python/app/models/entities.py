@@ -3394,6 +3394,39 @@ class EntityRecord(BaseModel):
         """
         return self.name.strip()
 
+    @classmethod
+    def for_record(
+        cls, record_id: str, name: str, org_id: str, connector_id: str | None,
+        record_group_id: str | None,
+    ) -> "EntityRecord":
+        """A record's title point. Its membership is exactly its own connector
+        and group, so it is written with ``merge_membership=False``."""
+        return cls(
+            entity_id=record_id,
+            entity_type=EntityType.RECORD,
+            name=name,
+            org_id=org_id,
+            connector_ids=[connector_id] if connector_id else [],
+            record_group_ids=[record_group_id] if record_group_id else [],
+            type_category=EntityTypeCategory.PREDEFINED,
+        )
+
+    @classmethod
+    def for_record_group(
+        cls, group_id: str, name: str, org_id: str, connector_id: str | None,
+    ) -> "EntityRecord":
+        """A record group's point. It lists itself as a record group so users
+        with group-level (not connector-level) access can reach it."""
+        return cls(
+            entity_id=group_id,
+            entity_type=EntityType.RECORD_GROUP,
+            name=name,
+            org_id=org_id,
+            connector_ids=[connector_id] if connector_id else [],
+            record_group_ids=[group_id],
+            type_category=EntityTypeCategory.PREDEFINED,
+        )
+
     def to_vector_payload(self) -> dict:
         """Serialise to the flat metadata dict stored on each vector point.
 

@@ -147,7 +147,7 @@ class TestBulkDeleteEvent:
         assert events[0].data.record_id == "bulk_delete"
         assert events[0].data.count == 3
         assert events[1].event == "indexing_complete"
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1", "vr2", "vr3"])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1", "vr2", "vr3"], org_id=None)
 
     @pytest.mark.asyncio
     async def test_bulk_delete_empty_list(self):
@@ -894,7 +894,7 @@ class TestDeleteRecordEvent:
         assert events[0].event == "parsing_complete"
         assert events[0].data.record_id == "r1"
         assert events[1].event == "indexing_complete"
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id=None)
 
     @pytest.mark.asyncio
     async def test_delete_record_no_virtual_record_id(self):
@@ -910,7 +910,7 @@ class TestDeleteRecordEvent:
         events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
 
         assert len(events) == 2
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with([None])
+        pipeline.bulk_delete_embeddings.assert_awaited_once_with([None], org_id=None)
 
     @pytest.mark.asyncio
     async def test_delete_record_also_deletes_record_entity(self):

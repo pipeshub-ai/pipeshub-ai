@@ -37,6 +37,8 @@ def _provider(access: object, delete_result: object = None) -> MagicMock:
         return_value=delete_result if delete_result is not None else {"success": True, "eventData": None}
     )
     provider.delete_records_and_relations = AsyncMock()
+    provider.get_document = AsyncMock(return_value={"id": RECORD_ID, "origin": "UPLOAD", "connectorId": "kb-1"})
+    provider.get_uploaded_document_ids = AsyncMock(return_value=[])
     return provider
 
 

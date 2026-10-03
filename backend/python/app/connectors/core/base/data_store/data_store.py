@@ -87,7 +87,8 @@ class BaseDataStore(ABC):
     """Base class for all data stores"""
 
     @abstractmethod
-    async def get_record_by_key(self, key: str) -> Optional[Record]:
+    async def get_record_by_key(self, key: str) -> Optional[dict]:
+        """The stored record document, or None. Not a ``Record``."""
         pass
 
     @abstractmethod
@@ -281,7 +282,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> None:
+    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> dict | None:
         pass
 
     @abstractmethod

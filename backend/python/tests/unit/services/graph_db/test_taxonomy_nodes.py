@@ -77,6 +77,24 @@ class TestArango:
         with pytest.raises(RuntimeError):
             await p.create_taxonomy_node_if_absent(TOPICS, {"id": "k1"})
 
+    async def test_create_if_absent_retries_a_write_conflict_outside_a_transaction(self, monkeypatch) -> None:
+        """Records resolving the same new name create it at once; the insert
+        fails with errorNum 1200 while another record's write holds the key."""
+        from app.services.graph_db.arango import arango_http_provider as module
+
+        monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
+        p = _arango()
+        conflict = RuntimeError("Batch insert failed with 1 error(s): Item 0: [1200] write-write conflict")
+        p.http_client.batch_insert_documents = AsyncMock(side_effect=[conflict, conflict, {"errors": 0}])
+
+        await p.create_taxonomy_node_if_absent(TOPICS, {"id": "k1"})
+        assert p.http_client.batch_insert_documents.await_count == 3
+
+        p.http_client.batch_insert_documents = AsyncMock(side_effect=conflict)
+        with pytest.raises(RuntimeError):
+            await p.create_taxonomy_node_if_absent(TOPICS, {"id": "k1"}, transaction="t1")
+        assert p.http_client.batch_insert_documents.await_count == 1
+
     async def test_add_aliases_is_an_atomic_union_with_cap(self) -> None:
         p = _arango()
         await p.add_taxonomy_aliases(

@@ -48,6 +48,8 @@ def mock_data_entities_processor():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
@@ -343,6 +345,8 @@ def mock_data_entities_processor_cov():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
@@ -1342,6 +1346,8 @@ def mock_dep():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.get_record_by_external_id = AsyncMock(return_value=None)
@@ -2688,7 +2694,8 @@ class TestFolderFilter:
 
         assert prefixes == ["reports/"]
         assert [call.args[0]["name"] for call in c._process_azure_blob.await_args_list] == ["reports/a.pdf"]
-        c.data_entities_processor.get_records_in_record_group.assert_awaited_once()
+        # Read before listing, read to find deletions, and the scope cleanup.
+        assert c.data_entities_processor.get_records_in_record_group.await_count == 3
 
     @pytest.mark.asyncio
     async def test_an_already_cleaned_scope_is_not_scanned_again(self, azure_blob_connector):
@@ -2699,7 +2706,8 @@ class TestFolderFilter:
         await c._sync_container("c1")
         await c._sync_container("c1")
 
-        c.data_entities_processor.get_records_in_record_group.assert_awaited_once()
+        # Two reads per sync; the unchanged scope is cleaned up once.
+        assert c.data_entities_processor.get_records_in_record_group.await_count == 5
 
     @pytest.mark.asyncio
     async def test_a_failed_cleanup_is_retried_next_sync(self, azure_blob_connector):
@@ -2748,6 +2756,13 @@ class TestFolderFilter:
         assert prefixes == [None]
         assert [call.args[0]["name"] for call in c._process_azure_blob.await_args_list] == ["a.pdf"]
 
+
+
+class _AllRecorded:
+    """Every listed object already has a record, so the date cutoff alone decides what is skipped."""
+
+    def __contains__(self, _: object) -> bool:
+        return True
 
 _JAN = [datetime(2026, 1, day, tzinfo=timezone.utc) for day in (1, 2, 3)]
 
@@ -2798,7 +2813,7 @@ class TestFailedBlobCheckpoint:
     async def _sync(connector):
         from app.connectors.core.registry.folder_scope import FolderScope
 
-        await connector._sync_container_prefix("c1", "", FolderScope())
+        await connector._sync_container_prefix("c1", "", FolderScope(), _AllRecorded(), [])
 
     @pytest.mark.asyncio
     async def test_a_failed_blob_holds_the_checkpoint_before_it(self, azure_blob_connector):

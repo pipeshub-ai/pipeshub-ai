@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
 import re
 import secrets
 import shlex
+import threading
 from collections.abc import Iterable
 from typing import Any
 
@@ -36,6 +38,7 @@ __all__ = [
     "CONTAINER_HARDENING",
     "FIREWALL_UNAVAILABLE_EXIT_CODE",
     "build_firewall_script",
+    "create_sandbox_container",
     "ensure_egress_network_sync",
     "firewall_unavailable",
     "firewalled_container_kwargs",
@@ -44,6 +47,91 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+_ENV_DISK_QUOTA = "SANDBOX_DISK_QUOTA"
+_DEFAULT_DISK_QUOTA = "10g"
+# Per-process: None = storage_opt not tried yet, True = the daemon accepts it
+# (applied), False = it rejects it (runs go uncapped). Set once under the lock.
+_storage_opt_usable: bool | None = None
+_storage_opt_lock = threading.Lock()
+
+
+def _disk_quota() -> str | None:
+    """Per-run writable-layer cap (``storage_opt size``), or None to disable.
+
+    Blank/0/none/off disables; otherwise a Docker size string such as ``10g``.
+    """
+    raw = os.environ.get(_ENV_DISK_QUOTA)
+    raw = (raw if raw is not None else _DEFAULT_DISK_QUOTA).strip()
+    if not raw or raw.lower() in {"0", "none", "off"}:
+        return None
+    return raw
+
+
+def create_sandbox_container(client: Any, **kwargs: Any) -> Any:
+    """``client.containers.create`` with a per-run writable-layer disk quota.
+
+    Caps a run's writable layer (``/src``, ``/output``, …) via ``storage_opt``
+    so one run cannot fill the host disk (CWE-400). The cap is applied wherever
+    the daemon accepts the option; whether an accepted cap is ENFORCED depends
+    on the storage driver (overlay2 on xfs with ``pquota``, or btrfs/zfs/
+    devicemapper, enforce it; overlay2 on ext4 accepts but silently ignores
+    it). That ignore case cannot be detected reliably — the daemon returns no
+    error, and the docker-socket-proxy blocks the ``/info`` query that would
+    reveal the driver — so it is stated in a one-time log rather than probed
+    (a write probe is not reliable through the proxy's log streaming). A daemon
+    that REJECTS the option falls back to no cap with a warning, so a run is
+    never broken. Exceeding an enforced cap fails a write with a clean ENOSPC.
+    """
+    quota = _disk_quota()
+    if quota is None or _storage_opt_usable is False:
+        return client.containers.create(**kwargs)
+    try:
+        container = client.containers.create(storage_opt={"size": quota}, **kwargs)
+    except Exception as exc:
+        if not _is_storage_opt_rejected(exc):
+            raise
+        _mark_storage_opt_unusable(quota, exc)
+        return client.containers.create(**kwargs)
+    _mark_storage_opt_applied(quota)
+    return container
+
+
+def _mark_storage_opt_applied(quota: str) -> None:
+    global _storage_opt_usable
+    if _storage_opt_usable is None:
+        with _storage_opt_lock:
+            if _storage_opt_usable is None:
+                _storage_opt_usable = True
+                logger.info(
+                    "Applying a per-run disk quota (%s=%s via storage_opt). Whether it is "
+                    "ENFORCED depends on the daemon's storage driver: overlay2 on xfs with "
+                    "the pquota mount option, or btrfs/zfs/devicemapper, enforce it; overlay2 "
+                    "on ext4 accepts but ignores it. Verify the driver if you rely on the cap.",
+                    _ENV_DISK_QUOTA, quota,
+                )
+
+
+def _mark_storage_opt_unusable(quota: str, exc: Exception) -> None:
+    global _storage_opt_usable
+    if _storage_opt_usable is not False:
+        with _storage_opt_lock:
+            if _storage_opt_usable is not False:
+                _storage_opt_usable = False
+                logger.warning(
+                    "%s=%s was rejected by this Docker daemon (%s); sandboxes run without a "
+                    "per-run disk cap. Use overlay2 on xfs with pquota (or btrfs/zfs) to "
+                    "enforce one.",
+                    _ENV_DISK_QUOTA, quota, exc,
+                )
+
+
+def _is_storage_opt_rejected(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(s in msg for s in (
+        "storage-opt", "storage opt", "storageopt", "--storage-opt", "pquota", "size option",
+    ))
+
 
 # Rejected before any operator allowance: link-local carries the AWS/GCP/
 # Azure/OpenStack metadata endpoint, and Azure's wireserver is a public IP.
@@ -64,10 +152,22 @@ BLOCKED_CIDRS = (
 FIREWALL_UNAVAILABLE_EXIT_CODE = 222
 _UNAVAILABLE_MARKER = "[sandbox-egress] firewall unavailable"
 
+# `user` is the non-root user the stock sandbox image creates (and the same
+# name the egress firewall's setpriv drops to); pinning it means an image or
+# daemon default that would otherwise run as root is caught. The firewalled
+# setup path overrides this back to "0" to install iptables, then setpriv-drops
+# to this user before any model code runs.
+#
+# No RLIMIT_FSIZE here: a per-file cap only bounds one file (a script can still
+# fill the disk with many) and exceeding it kills the run with SIGXFSZ rather
+# than failing cleanly. The per-run writable-layer quota is applied instead by
+# `create_sandbox_container` above (storage_opt, where the driver enforces it),
+# which bounds total writes and fails with a clean ENOSPC.
 CONTAINER_HARDENING: dict[str, Any] = {
     "cap_drop": ["ALL"],
     "security_opt": ["no-new-privileges:true"],
     "pids_limit": 256,
+    "user": "sandbox",
 }
 
 # NET_ADMIN installs the rules; SETUID/SETGID/SETPCAP let setpriv switch user

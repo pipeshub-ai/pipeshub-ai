@@ -166,7 +166,7 @@ class GraphTransactionStore(TransactionStore):
     async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> dict | None:
         return await self.graph_provider.get_record_by_path(connector_id, path, external_record_group_id, transaction=self.txn)
 
-    async def get_record_by_key(self, key: str) -> Optional[Record]:
+    async def get_record_by_key(self, key: str) -> Optional[dict]:
         return await self.graph_provider.get_document(key, CollectionNames.RECORDS.value, transaction=self.txn)
 
     async def get_app_by_id(self, connector_id: str) -> Optional[AppMetadata]:
@@ -267,7 +267,7 @@ class GraphTransactionStore(TransactionStore):
         # Delete the record node from the records collection
         return await self.graph_provider.delete_nodes([key], CollectionNames.RECORDS.value, transaction=self.txn)
 
-    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> None:
+    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> dict | None:
         return await self.graph_provider.delete_record_by_external_id(connector_id, external_id, user_id, transaction=self.txn)
 
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
@@ -758,8 +758,9 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 
     async def delete_sync_point(self, sync_point_key: str) -> None:
-        return await self.graph_provider.remove_sync_point([sync_point_key],
+        return await self.graph_provider.remove_sync_point(sync_point_key,
                     collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+
     async def read_sync_point(self, sync_point_key: str, *, raise_on_error: bool = False) -> Optional[dict]:
         return await self.graph_provider.get_sync_point(
             sync_point_key,

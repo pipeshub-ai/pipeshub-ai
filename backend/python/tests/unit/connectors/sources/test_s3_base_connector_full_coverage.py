@@ -44,6 +44,8 @@ def mock_dep():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     u = User(
@@ -889,6 +891,7 @@ class TestSyncBucket:
         mock_ext_filter = MagicMock()
         mock_ext_filter.is_empty.return_value = False
         mock_ext_filter.value = ["pdf"]
+        mock_ext_filter.operator_value = "in"
         connector.sync_filters = MagicMock()
         connector.sync_filters.get = MagicMock(side_effect=lambda k: mock_ext_filter if k == "file_extensions" else None)
         connector.sync_filters.__bool__ = MagicMock(return_value=True)
@@ -912,6 +915,7 @@ class TestSyncBucket:
         mock_ext_filter = MagicMock()
         mock_ext_filter.is_empty.return_value = False
         mock_ext_filter.value = ".pdf"
+        mock_ext_filter.operator_value = "in"
         connector.sync_filters = MagicMock()
         connector.sync_filters.get = MagicMock(side_effect=lambda k: mock_ext_filter if k == "file_extensions" else None)
         connector.sync_filters.__bool__ = MagicMock(return_value=True)
@@ -997,6 +1001,7 @@ class TestSyncBucket:
         mock_ext_filter = MagicMock()
         mock_ext_filter.is_empty.return_value = False
         mock_ext_filter.value = ["pdf"]
+        mock_ext_filter.operator_value = "in"
         connector.sync_filters = MagicMock()
         connector.sync_filters.get = MagicMock(side_effect=lambda k: mock_ext_filter if k == "file_extensions" else None)
         connector.sync_filters.__bool__ = MagicMock(return_value=True)
@@ -1020,6 +1025,7 @@ class TestSyncBucket:
         mock_ext_filter = MagicMock()
         mock_ext_filter.is_empty.return_value = False
         mock_ext_filter.value = ["pdf"]
+        mock_ext_filter.operator_value = "in"
         connector.sync_filters = MagicMock()
         connector.sync_filters.get = MagicMock(side_effect=lambda k: mock_ext_filter if k == "file_extensions" else None)
         connector.sync_filters.__bool__ = MagicMock(return_value=True)
@@ -1279,9 +1285,11 @@ class TestFolderFilter:
 
         assert prefixes == ["reports/"]
         assert self._processed(connector) == ["reports/a.pdf", "reports/2026/b.pdf"]
-        connector.data_entities_processor.get_records_in_record_group.assert_awaited_once_with(
-            connector.connector_id, "b1", 500, None, visibility=RecordVisibility.ALL
-        )
+        # Each sync reads the bucket's records before listing and again to find deletions;
+        # the first sync with this scope also cleans up what it leaves out.
+        reads = connector.data_entities_processor.get_records_in_record_group.await_args_list
+        assert [c.args for c in reads] == [(connector.connector_id, "b1", 500, None)] * 3
+        assert all(c.kwargs == {"visibility": RecordVisibility.ALL} for c in reads)
 
     @pytest.mark.asyncio
     async def test_exclude_lists_everything_and_skips_the_folder(self, connector):
@@ -1305,7 +1313,9 @@ class TestFolderFilter:
         saved = connector.record_sync_point.saved
         assert not any("last_sync_time" in v for v in saved.values())
         assert {"continuation_token": "t1"} in saved.values()
-        connector.data_entities_processor.get_records_in_record_group.assert_awaited_once()
+        # The read before listing and the scope cleanup; the failed listing looks for no deletions.
+        assert connector.data_entities_processor.get_records_in_record_group.await_count == 2
+        connector.data_entities_processor.on_record_deleted.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_failed_object_clears_the_resume_token(self, connector):
@@ -1346,7 +1356,8 @@ class TestFolderFilter:
         await connector._sync_bucket("b1")
         await connector._sync_bucket("b1")
 
-        connector.data_entities_processor.get_records_in_record_group.assert_awaited_once()
+        # Two reads per sync; the unchanged scope is cleaned up once.
+        assert connector.data_entities_processor.get_records_in_record_group.await_count == 5
 
     @pytest.mark.asyncio
     async def test_a_failed_cleanup_is_retried_next_sync(self, connector):
@@ -1361,7 +1372,8 @@ class TestFolderFilter:
         await connector._sync_bucket("b1")
 
         assert processor.on_record_deleted.await_count == 2
-        assert processor.get_records_in_record_group.await_count == 2
+        # Two reads per sync, plus a scope cleanup until one succeeds.
+        assert processor.get_records_in_record_group.await_count == 8
 
     @pytest.mark.asyncio
     async def test_a_changed_scope_is_cleaned_again(self, connector):
@@ -1371,7 +1383,8 @@ class TestFolderFilter:
         connector.sync_filters = _folder_filter(["docs"])
         await connector._sync_bucket("b1")
 
-        assert connector.data_entities_processor.get_records_in_record_group.await_count == 2
+        # Two reads per sync, and each new scope is cleaned up.
+        assert connector.data_entities_processor.get_records_in_record_group.await_count == 6
 
     @pytest.mark.asyncio
     async def test_no_filter_syncs_everything_and_removes_nothing(self, connector):
@@ -1381,8 +1394,15 @@ class TestFolderFilter:
         await connector._sync_bucket("b1")
 
         assert prefixes == [None]
-        connector.data_entities_processor.get_records_in_record_group.assert_not_awaited()
+        connector.data_entities_processor.on_record_deleted.assert_not_awaited()
 
+
+
+class _AllRecorded:
+    """Every listed object already has a record, so the date cutoff alone decides what is skipped."""
+
+    def __contains__(self, _: object) -> bool:
+        return True
 
 _JAN = [datetime(2026, 1, day, tzinfo=timezone.utc) for day in (1, 2, 3)]
 
@@ -1429,7 +1449,7 @@ class TestFailedObjectCheckpoint:
     async def _sync(connector):
         from app.connectors.core.registry.folder_scope import FolderScope
 
-        await connector._sync_bucket_prefix("b1", "", FolderScope())
+        await connector._sync_bucket_prefix("b1", "", FolderScope(), _AllRecorded(), [])
 
     @pytest.mark.asyncio
     async def test_a_failed_object_holds_the_checkpoint_before_it(self, connector):

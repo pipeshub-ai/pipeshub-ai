@@ -4445,6 +4445,40 @@ class TestOnRecordContentUpdateFlushBeforePublish:
 # ===========================================================================
 
 
+class TestOnRecordsDetachedFromParent:
+    @pytest.mark.asyncio
+    async def test_clears_each_parent_link_in_one_partial_update(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.batch_update_nodes = AsyncMock(return_value=True)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_detached_from_parent(["a", "b"])
+
+        tx_store.batch_update_nodes.assert_awaited_once_with(
+            [{"id": "a", "externalParentId": None}, {"id": "b", "externalParentId": None}],
+            CollectionNames.RECORDS.value,
+        )
+
+    @pytest.mark.asyncio
+    async def test_raises_when_a_record_was_not_updated(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.batch_update_nodes = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        with pytest.raises(RuntimeError):
+            await proc.on_records_detached_from_parent(["a"])
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_detach_touches_nothing(self) -> None:
+        proc = _make_processor()
+
+        await proc.on_records_detached_from_parent([])
+
+        proc.data_store_provider.transaction.assert_not_called()
+
+
 class TestOnRecordMetadataUpdateAndDelete:
     @pytest.mark.asyncio
     async def test_metadata_update_processes_and_updates(self):
@@ -4551,12 +4585,9 @@ class TestOnRecordMetadataUpdateAndDelete:
     async def test_record_deleted(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
-        existing = MagicMock()
-        existing.virtual_record_id = "v1"
-        existing.org_id = "org-1"
-        existing.id = "rec-1"
-        existing.version = 1
-        existing.connector_id = "conn-1"
+        # The stored document, as GraphTransactionStore.get_record_by_key returns it.
+        existing = {"_key": "rec-1", "orgId": "org-1", "version": 1,
+                    "virtualRecordId": "v1", "connectorId": "conn-1"}
         tx_store.get_record_by_key = AsyncMock(return_value=existing)
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
@@ -4583,12 +4614,9 @@ class TestOnRecordMetadataUpdateAndDelete:
     async def test_record_deleted_publishes_delete_event_when_vrid_present(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
-        existing = MagicMock()
-        existing.virtual_record_id = "vr-1"
-        existing.org_id = "org-1"
-        existing.id = "rec-1"
-        existing.version = 3
-        existing.connector_id = "conn-1"
+        # The stored document, as GraphTransactionStore.get_record_by_key returns it.
+        existing = {"_key": "rec-1", "orgId": "org-1", "version": 3,
+                    "virtualRecordId": "vr-1", "connectorId": "conn-1"}
         tx_store.get_record_by_key = AsyncMock(return_value=existing)
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 

@@ -1054,3 +1054,61 @@ class TestHandleDelete:
         logged = " ".join(str(c.args[0]) for c in service.logger.info.call_args_list)
         assert "Entity vector store entries removed" not in logged
         assert any("entity vector store" in str(c.args[0]) for c in service.logger.error.call_args_list)
+
+
+# ===========================================================================
+# _config_service_for
+# ===========================================================================
+
+
+class TestConfigServiceFor:
+    _APP_DOC = {
+        "_key": "c1", "isActive": True, "orgId": "org-doc", "scope": "team", "createdBy": "user-1",
+    }
+
+    def test_config_service_for_defaults_to_container_service(self, service):
+        assert service._config_service_for("org1") is service.app_container.config_service.return_value
+
+    @pytest.mark.asyncio
+    async def test_auto_initialize_uses_config_service_for_doc_org(self, service):
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        org_config = MagicMock(name="org_config")
+        with patch.object(service, "_config_service_for", return_value=org_config) as config_for, \
+             patch.object(service, "_store_connector"), \
+             patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"):
+            mock_factory.initialize_connector = AsyncMock(return_value=MagicMock())
+            await service._auto_initialize_connector("gmail", "c1")
+
+        config_for.assert_called_once_with("org-doc")
+        assert mock_factory.initialize_connector.await_args.kwargs["config_service"] is org_config
+
+    @pytest.mark.asyncio
+    async def test_init_event_uses_config_service_for_payload_org(self, service):
+        mock_conn = AsyncMock()
+        mock_conn.init = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        org_config = MagicMock(name="org_config")
+        with patch.object(service, "_config_service_for", return_value=org_config) as config_for, \
+             patch.object(service, "_store_connector"), \
+             patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"):
+            mock_factory.create_connector = AsyncMock(return_value=mock_conn)
+            result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        assert result is True
+        config_for.assert_called_once_with("org1")
+        assert mock_factory.create_connector.await_args.kwargs["config_service"] is org_config
+
+    @pytest.mark.asyncio
+    async def test_delete_event_deletes_config_through_org_service(self, service):
+        org_config = AsyncMock()
+        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm, \
+             patch.object(service, "_config_service_for", return_value=org_config) as config_for:
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        assert result is True
+        config_for.assert_called_once_with("org1")
+        org_config.delete_config.assert_awaited_once_with("/services/connectors/c1/config")
+        service.app_container.config_service.return_value.delete_config.assert_not_awaited()

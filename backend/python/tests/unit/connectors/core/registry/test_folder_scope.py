@@ -12,6 +12,8 @@ from app.connectors.core.registry.folder_scope import (
     CleanupResult,
     FolderScope,
     clean_up_scope,
+    listed_record_ids,
+    remove_records_not_listed,
     remove_records_outside_scope,
 )
 from app.services.graph_db.common.record_visibility import RecordVisibility, matches_visibility
@@ -333,6 +335,33 @@ class TestCleanUpScope:
         # A folder name holding the separator must not collide with two folders.
         assert FolderScope(("a/", "b/")).key() != FolderScope(("a/|b/",)).key()
         assert FolderScope(("a/", "b/")).key() != FolderScope(("a/", "b/"), exclude=True).key()
+
+
+class TestRemoveRecordsNotListed:
+    def test_a_listed_object_keeps_the_folders_above_it(self) -> None:
+        assert listed_record_ids("b1", "a/b/c.txt") == {"b1/a", "b1/a/b", "b1/a/b/c.txt"}
+        assert listed_record_ids("b1", "a/b/") == {"b1/a", "b1/a/b", "b1/a/b/"}
+        assert listed_record_ids("b1", "/top.txt") == {"b1/top.txt"}
+        assert listed_record_ids("b1", "") == set()
+
+    @pytest.mark.asyncio
+    async def test_removes_only_what_the_listed_prefix_no_longer_holds(self) -> None:
+        record = TestRemoveRecordsOutsideScope.record
+        processor = MagicMock()
+        processor.get_records_in_record_group = AsyncMock(return_value=[
+            record("kept", "b1/reports/q1.pdf"),
+            record("kept-folder", "b1/reports", folder=True),
+            record("gone", "b1/reports/q2.pdf"),
+            record("other-prefix", "b1/legal/contract.pdf"),
+            record("other-folder", "b1/other/x.pdf"),
+        ])
+        processor.on_record_deleted = AsyncMock()
+        listed = listed_record_ids("b1", "reports/q1.pdf")
+
+        result = await remove_records_not_listed(processor, "c", "b1", ["reports/"], listed, logging.getLogger("t"))
+
+        assert [c.args[0] for c in processor.on_record_deleted.await_args_list] == ["gone"]
+        assert result == CleanupResult(removed=1, failed=0)
 
 
 class TestFilterField:
