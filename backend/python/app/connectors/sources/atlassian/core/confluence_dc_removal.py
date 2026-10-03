@@ -511,11 +511,14 @@ class ConfluenceDataCenterRemovalMixin:
             )
         if group is not None and group.short_name:
             # An empty checkpoint reads as none, so the space is read in full if it is listed again.
+            # The store merges fields, so the failure maps are emptied too: a re-added space starts afresh.
             for content_type in ("pages", "blogposts"):
                 checkpoint_key = generate_record_sync_point_key(
                     RecordType.WEBPAGE.value, f"confluence_{content_type}", group.short_name
                 )
-                await self.pages_sync_point.update_sync_point(checkpoint_key, {"last_sync_time": ""})
+                await self.pages_sync_point.update_sync_point(
+                    checkpoint_key, {"last_sync_time": "", "failedPages": "", "givenUpPages": ""}
+                )
         if group is not None and not await self.data_entities_processor.on_record_group_deleted(
             space_id, self.connector_id
         ):

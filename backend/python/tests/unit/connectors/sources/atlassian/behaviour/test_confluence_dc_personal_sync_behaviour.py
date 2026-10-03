@@ -1272,12 +1272,19 @@ class TestRemovalFromSource:
             "sync": {"values": {"space_keys": {"operator": "not_in", "type": "list", "value": ["ENG"]}}}
         }
         checkpoints.sync_points.clear()
+        await connector.pages_sync_point.update_sync_point(
+            generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", "ENG"),
+            {"failedPages": json.dumps({"p2": 2}), "givenUpPages": json.dumps({"p3": "version:3"})},
+        )
 
         await connector.run_sync()
 
         assert "10" not in records_db.record_groups and "20" in records_db.record_groups
         assert not {"p1", "p2", "p3"} & set(records_db.records)
-        assert checkpoints.values_for("confluence_pages/ENG")["last_sync_time"] == ""
+        stored = checkpoints.values_for("confluence_pages/ENG")
+        assert stored["last_sync_time"] == ""
+        # A space listed again is read afresh: no page keeps the attempts or give-up of before.
+        assert not stored.get("failedPages") and not stored.get("givenUpPages")
 
     async def test_a_listed_space_that_fails_to_process_keeps_its_records(
         self, atlassian_api, records_db, checkpoints, search, monkeypatch

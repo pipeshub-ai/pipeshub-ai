@@ -213,7 +213,8 @@ class FakeCheckpointStore:
             items = value if isinstance(value, list) else [value]
             if any(isinstance(item, (dict, list, tuple, set)) for item in items):
                 raise TypeError(f"sync point field {field!r} is not a primitive: {value!r}")
-        self.sync_points[key] = dict(data)
+        # Both graph stores merge fields into an existing sync point (Neo4j SET +=, Arango UPDATE).
+        self.sync_points[key] = {**self.sync_points.get(key, {}), **data}
 
     async def delete_sync_point(self, key: str) -> None:
         self.sync_points.pop(key, None)
