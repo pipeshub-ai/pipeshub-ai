@@ -55,6 +55,7 @@ from app.edition_config import (
     resolve_mcp_instances_with_inheritance,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import action_failed
 
 logger = logging.getLogger(__name__)
 DEFAULT_TOOLS_DISCOVERY_TIMEOUT_SECONDS = 8.0
@@ -1327,7 +1328,11 @@ async def get_instance_tools(request: Request, instance_id: str) -> dict[str, An
     try:
         tools = await discover_tools(_instance_config_model_from_dict(instance), credentials_dict)
     except MCPConnectionError as e:
-        raise HTTPException(status_code=HttpStatusCode.BAD_GATEWAY.value, detail=str(e)) from e
+        logger.warning("Tool discovery failed for MCP instance %s: %s", instance_id, e, exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_GATEWAY.value,
+            detail=action_failed("load this MCP server's tools"),
+        ) from e
 
     return {"tools": [t.model_dump(by_alias=True) for t in tools]}
 

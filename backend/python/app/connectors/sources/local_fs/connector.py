@@ -93,6 +93,7 @@ from app.services.notification.types import (
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
+from app.utils.user_messages import action_failed
 
 from .models import (
     LocalFsFileEvent,
@@ -1935,21 +1936,29 @@ class LocalFsConnector(BaseConnector):
                     status_code=HttpStatusCode.NOT_FOUND.value,
                     detail=f"Local FS content unavailable: {exc}",
                 ) from exc
+            self.logger.warning(
+                "Local FS desktop could not serve content for record %s: %s",
+                record.id, exc, exc_info=True,
+            )
             raise HTTPException(
                 status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail=f"Local FS desktop could not serve content: {exc}",
+                detail=action_failed("open this file from the desktop app"),
             ) from exc
         except LocalFsDesktopOfflineError as exc:
             # 503 classifies as TRANSIENT for the indexing consumer, so the
             # record is retried once the machine is back rather than failed.
             raise HTTPException(
                 status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail=str(exc),
+                detail=str(exc),  # user-written message
             ) from exc
         except LocalFsDesktopError as exc:
+            self.logger.warning(
+                "Local FS desktop is not available for record %s: %s",
+                record.id, exc, exc_info=True,
+            )
             raise HTTPException(
                 status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail=f"Local FS desktop is not available: {exc}",
+                detail=action_failed("open this file from the desktop app"),
             ) from exc
 
         safe_filename = sanitize_filename_for_content_disposition(

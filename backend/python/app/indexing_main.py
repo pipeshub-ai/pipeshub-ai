@@ -1518,7 +1518,8 @@ async def health_check(request: Request) -> JSONResponse:
             except Exception as stats_error:
                 # Observability failure must not fail the liveness probe —
                 # the service itself is still healthy.
-                content["resource_governor"] = {"error": str(stats_error)}
+                container.logger().warning("Resource governor stats failed: %s", stats_error)
+                content["resource_governor"] = {"error": "unavailable"}
         # Per-tier dispatch admission: a heavy tier pinned at its ceiling with
         # light idle is attachments queueing on heavy parse, which is fine as
         # long as light keeps moving; both pinned means the node is full.
@@ -1531,19 +1532,21 @@ async def health_check(request: Request) -> JSONResponse:
             try:
                 dispatch[str(entry[0])] = stats()
             except Exception as stats_error:
-                dispatch[str(entry[0])] = {"error": str(stats_error)}
+                container.logger().warning("Dispatch stats failed for %s: %s", entry[0], stats_error)
+                dispatch[str(entry[0])] = {"error": "unavailable"}
         if dispatch:
             content["dispatch"] = dispatch
         return JSONResponse(
             status_code=200,
             content=content,
         )
-    except Exception as e:
+    except Exception:
+        container.logger().exception("Health check failed")
         return JSONResponse(
             status_code=500,
             content={
                 "status": "unhealthy",
-                "error": str(e),
+                "error": "Health check failed",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
