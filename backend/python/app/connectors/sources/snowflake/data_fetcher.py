@@ -547,6 +547,7 @@ class SnowflakeDataFetcher:
         The SQL API returns only partition 0 inline and lists the rest in
         resultSetMetaData.partitionInfo; a statement still running (HTTP 202)
         returns no rows at all. Either would pass for a complete, shorter list.
+        A later partition is the bare row array, with no metadata around it.
         """
         if not isinstance(data, dict) or not isinstance(data.get("data"), list):
             return None
@@ -561,13 +562,12 @@ class SnowflakeDataFetcher:
             response = await self.data_source.get_statement_status(
                 statement_handle=handle, partition=partition
             )
-            if (
-                not response.success
-                or not isinstance(response.data, dict)
-                or not isinstance(response.data.get("data"), list)
-            ):
+            body = response.data
+            if isinstance(body, dict):
+                body = body.get("data")
+            if not response.success or not isinstance(body, list):
                 return None
-            rows.extend(response.data["data"])
+            rows.extend(body)
         return rows
 
     def _deduce_folders(
@@ -630,8 +630,16 @@ class SnowflakeDataFetcher:
                 )
             return {}
         
+        # Every partition: a column only in a later one must still move the table's signature.
+        all_rows = await self._read_all_partitions(response.data)
+        if all_rows is None:
+            context = f"Failed to fetch columns for {database}.{schema}: could not read every result partition"
+            logger.warning(context)
+            if strict:
+                raise SnowflakeFetchError(context)
+            return {}
         columns_by_table: Dict[str, List[Dict[str, Any]]] = {}
-        for row in self._parse_sql_result(response.data):
+        for row in self._parse_sql_result({**response.data, "data": all_rows}):
             table_name = row.get("TABLE_NAME", "")
             if table_name not in columns_by_table:
                 columns_by_table[table_name] = []

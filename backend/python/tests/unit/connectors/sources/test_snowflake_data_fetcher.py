@@ -471,7 +471,7 @@ class TestFetchLastAlteredInSchema:
             "data": [["T1", "1759400000.000000000"]],
         })
         f.data_source.get_statement_status = AsyncMock(
-            return_value=_resp(data={"data": [["T2", "1759403600.000000000"]]})
+            return_value=_resp(data=[["T2", "1759403600.000000000"]])
         )
 
         assert await f._fetch_last_altered_in_schema("DB", "S") == {

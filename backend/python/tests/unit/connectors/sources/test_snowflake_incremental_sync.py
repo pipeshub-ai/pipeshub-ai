@@ -64,6 +64,8 @@ class FakeSnowflake:
         # Stage files past this index come back in a second SQL API partition.
         self.files_in_first_partition: int | None = None
         self.refuse_second_partition = False
+        # INFORMATION_SCHEMA.COLUMNS rows that only the second SQL API partition holds.
+        self.columns_in_second_partition: list[list[object]] = []
 
     async def list_databases(self, **_: object) -> SimpleNamespace:
         return _ok([{"name": DB}])
@@ -99,18 +101,25 @@ class FakeSnowflake:
         })
 
     async def get_statement_status(self, statement_handle: str, partition: int) -> SimpleNamespace:
+        # A later partition is the bare row array, with no metadata (Snowflake's handling-responses doc).
         if self.refuse_second_partition:
             return _refused()
-        return _ok({"data": self._file_rows()[self.files_in_first_partition:]})
+        if statement_handle == "h-cols":
+            return _ok(self.columns_in_second_partition)
+        return _ok(self._file_rows()[self.files_in_first_partition:])
 
     async def execute_sql(self, statement: str, **_: object) -> SimpleNamespace:
         if "INFORMATION_SCHEMA.COLUMNS" in statement:
             if self.refuse_columns:
                 return _refused()
-            return _ok(_rows(
-                ["TABLE_NAME", "COLUMN_NAME", "DATA_TYPE"],
-                [[t, "ID", "NUMBER"] for t in self.tables],
-            ))
+            first = _rows(["TABLE_NAME", "COLUMN_NAME", "DATA_TYPE"], [[t, "ID", "NUMBER"] for t in self.tables])
+            if not self.columns_in_second_partition:
+                return _ok(first)
+            first["statementHandle"] = "h-cols"
+            first["resultSetMetaData"]["partitionInfo"] = [
+                {"rowCount": len(first["data"])}, {"rowCount": len(self.columns_in_second_partition)},
+            ]
+            return _ok(first)
         if "INFORMATION_SCHEMA.TABLES" in statement:
             if self.refuse_last_altered:
                 return _refused()
@@ -286,6 +295,17 @@ async def test_an_update_that_keeps_rows_and_bytes_is_requeued(env) -> None:
 
     assert env.processor.upserted == [T1]
     assert env.processor.queued == [T1]
+
+
+@pytest.mark.asyncio
+async def test_a_column_only_in_a_later_partition_moves_the_table(env) -> None:
+    env.source.columns_in_second_partition = [["T2", "AAA", "NUMBER"]]
+    await env.sync()
+    env.source.columns_in_second_partition = [["T1", "NOTE", "VARCHAR"], ["T2", "AAA", "NUMBER"]]
+
+    await env.sync()
+
+    assert env.processor.upserted == [T1]
 
 
 @pytest.mark.asyncio
