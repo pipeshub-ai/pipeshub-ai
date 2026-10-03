@@ -318,6 +318,10 @@ class SyncCoordinator(Protocol):
     #: False when the coordinator cannot tell a live sync from a stale status,
     #: which anything acting destructively on `peek_many` has to check first.
     reports_liveness: bool
+    #: Logged at startup; 0 means leases never expire (one process).
+    ttl_sec: int
+    heartbeat_sec: int
+    instance_id: str
 
     async def begin(
         self,
