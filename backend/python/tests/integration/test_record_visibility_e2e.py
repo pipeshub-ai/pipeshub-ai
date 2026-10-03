@@ -684,12 +684,17 @@ async def test_connector_delete_collects_the_trash(world: _World) -> None:
     assert world.ids["trashed"] in keys and world.ids["live"] in keys
 
 
-async def test_a_full_listing_removes_a_trashed_record_the_source_no_longer_has(world: _World) -> None:
-    """Nextcloud's full-sync removal scan on the real store: a trashed record the
-    listing no longer returns still goes through ``on_record_deleted``."""
+def _processor(world: _World) -> DataSourceEntitiesProcessor:
     processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, world.graph), MagicMock())
     processor.org_id = world.org_id
     processor.messaging_producer = AsyncMock()
+    return processor
+
+
+async def test_a_full_listing_removes_a_trashed_record_the_source_no_longer_has(world: _World) -> None:
+    """Nextcloud's full-sync removal scan on the real store: a trashed record the
+    listing no longer returns still goes through ``on_record_deleted``."""
+    processor = _processor(world)
     connector = SimpleNamespace(
         data_entities_processor=processor, connector_id=world.connector_id, logger=logger
     )
@@ -701,3 +706,21 @@ async def test_a_full_listing_removes_a_trashed_record_the_source_no_longer_has(
     assert await world.graph.get_document(world.ids["trashed"], records) is None
     for name in ("live", "trashed_shared"):
         assert await world.graph.get_document(world.ids[name], records) is not None, name
+
+
+async def test_a_record_group_listing_finds_the_trash_only_when_asked(world: _World) -> None:
+    """The listing the folder-scope cleanup and GitHub's prune walk, on the real store."""
+    processor = _processor(world)
+    group = f"ext-{world.record_group_id}"
+    for name in ("live_shared", "trashed_shared"):
+        await world.graph.update_node(
+            world.ids[name], CollectionNames.RECORDS.value, {"recordGroupId": world.record_group_id}
+        )
+
+    live = await processor.get_records_in_record_group(world.connector_id, group, 100)
+    every = await processor.get_records_in_record_group(
+        world.connector_id, group, 100, visibility=RecordVisibility.ALL
+    )
+
+    assert _ids(live) == {world.ids["live_shared"]}
+    assert _ids(every) == {world.ids["live_shared"], world.ids["trashed_shared"]}

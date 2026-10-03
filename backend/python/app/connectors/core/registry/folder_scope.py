@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple
 
 from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 if TYPE_CHECKING:
     import logging
@@ -138,8 +139,9 @@ async def remove_records_outside_scope(
     removed = failed = 0
     after_key = None
     while True:
+        # Trash included: a trashed record outside the scope is removed too.
         page = await data_entities_processor.get_records_in_record_group(
-            connector_id, container_name, _PAGE_SIZE, after_key
+            connector_id, container_name, _PAGE_SIZE, after_key, visibility=RecordVisibility.ALL
         )
         for record in page:
             external_id = record.external_record_id or ""
