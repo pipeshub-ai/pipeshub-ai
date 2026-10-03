@@ -578,3 +578,19 @@ class TestRebuildSupport:
         info = await store.vector_db_service.get_collection_info(store.collection_name)
         assert info.exists and info.dense_dimension == DIM * 2
         assert await _point(store, org, "topic", "t1") is None
+
+        # A service initialised before the recreation still holds the old
+        # model: once the rebuild has written to the new collection its search
+        # fails (Redis answers an empty index without checking the vector),
+        # and the store resets to pick up the new model.
+        from app.services.vector_db.models import VectorPoint
+
+        await store.vector_db_service.upsert_points(store.collection_name, [VectorPoint(
+            id=store._point_id(org, "topic", "t2"), dense_vector=[0.1] * (DIM * 2),
+            payload={"page_content": "pricing", "metadata": {"orgId": org, "name": "pricing"},
+                     "connectorIds": ["c1"], "recordGroupIds": []},
+        )])
+        await _publish_writes(store)
+        with pytest.raises(Exception):
+            await store.search_entities("pricing", org, set(), {"c1"})
+        assert store._initialized is False

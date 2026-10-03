@@ -223,6 +223,31 @@ class EntityVectorStore:
             self._init_failed_at = None
             self._initialized = True
 
+    async def _reset_if_collection_changed(self) -> None:
+        """After a failed search: when the collection no longer has the
+        dimension this store initialised with, drop the initialisation so the
+        next call re-reads the model config and the collection.
+
+        The indexing service recreates the collection for a new model
+        (``recreate_on_dimension_mismatch``); a query or connector service
+        initialised before would otherwise send old-model vectors, and fail,
+        until it restarts. Checked only on failure, so a healthy search costs
+        no extra round trip."""
+        try:
+            info = await self.vector_db_service.get_collection_info(self.collection_name)
+        except Exception:
+            return
+        if not (info.exists and info.dense_dimension) or info.dense_dimension == self._embedding_size:
+            return
+        self.logger.warning(
+            "Entity collection '%s' now has dimension %s, this store %s; re-initialising",
+            self.collection_name, info.dense_dimension, self._embedding_size,
+        )
+        async with self._init_lock:
+            self._initialized = False
+            self._init_failed_at = None
+            self._query_vector_cache.clear()
+
     async def collection_exists(self) -> bool:
         """Needs no embeddings. Delete paths skip when it is False (nothing to
         delete), and the chat routes hide the entity tools."""
@@ -1092,6 +1117,7 @@ class EntityVectorStore:
             )
         except Exception as exc:
             self.logger.error("Entity search failed for query '%s': %s", query, exc)
+            await self._reset_if_collection_changed()
             raise
 
         results_for_query = batch_results[0] if batch_results else []
@@ -1187,9 +1213,13 @@ class EntityVectorStore:
             )
             for text, dense, sparse in zip(texts, dense_vecs, sparse_vecs)
         ]
-        batch_results = await self.vector_db_service.query_nearest_points(
-            collection_name=self.collection_name, requests=requests,
-        )
+        try:
+            batch_results = await self.vector_db_service.query_nearest_points(
+                collection_name=self.collection_name, requests=requests,
+            )
+        except Exception:
+            await self._reset_if_collection_changed()
+            raise
 
         for position, index in enumerate(indices):
             hits = batch_results[position] if position < len(batch_results) else []
