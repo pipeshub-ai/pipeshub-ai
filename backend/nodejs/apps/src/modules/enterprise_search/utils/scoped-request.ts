@@ -30,6 +30,8 @@ import { Users } from '../../user_management/schema/users.schema';
 
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 
+export const STAND_IN_TOKEN_TTL_SECONDS = 60;
+
 /** 24-char hex suitable for Mongo ObjectId; stable per email for Slack/service-account callers without a User row. */
 export const stableObjectIdHexForExternalEmail = (email: string): string =>
   crypto
@@ -109,14 +111,23 @@ export const hydrateScopedRequestAsUser = async (
     );
   }
 
-  const jwtToken = authTokenService.generateToken({
-    userId: user._id,
-    orgId: user.orgId,
-    email: user.email,
-    fullName: user.fullName,
-    mobile: user.mobile,
-    userSlug: user.slug,
-  });
+  // The Python services ask Node whether every session-style token is still
+  // live, and Node refuses one without a role claim. Member is what this token
+  // has always been treated as there, so it stays member. With a role Node
+  // honours it like a session, so it lives only as long as the request that
+  // minted it needs to reach the AI service, not generateToken's default week.
+  const jwtToken = authTokenService.generateToken(
+    {
+      userId: user._id,
+      orgId: user.orgId,
+      email: user.email,
+      fullName: user.fullName,
+      mobile: user.mobile,
+      userSlug: user.slug,
+      role: 'member',
+    },
+    STAND_IN_TOKEN_TTL_SECONDS,
+  );
 
   req.headers.authorization = `Bearer ${jwtToken}`;
 
@@ -136,10 +147,10 @@ export const checkServiceAccountAccess = async (
 ): Promise<boolean> => {
   const requestId = req.context?.requestId;
   try {
-    const agentKey = req.params.agentKey;
+    const agentKey = req.params.agentKey as string;
 
     const aiCommandOptions: AICommandOptions = {
-      uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/internal/service-account`,
+      uri: `${appConfig.aiBackend}/api/v1/agent/${encodeURIComponent(agentKey)}/internal/service-account`,
       method: HttpMethod.GET,
       headers: {
         ...(req.headers as Record<string, string>),

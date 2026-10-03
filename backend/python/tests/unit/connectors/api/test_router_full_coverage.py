@@ -525,8 +525,8 @@ class TestBuildOAuthFlowConfigEdgeCases:
         assert result.get("instanceUrl") == "https://gitlab.corp.com"
 
     @pytest.mark.asyncio
-    async def test_shared_oauth_instance_url_from_auth_config(self):
-        """Line 4634 — instanceUrl from auth_config takes precedence."""
+    async def test_shared_oauth_instance_url_ignores_auth_config(self):
+        """A linked connector's own instanceUrl must not move the shared app's OAuth host."""
         from app.connectors.api.router import _build_oauth_flow_config
         auth_config = {
             "oauthConfigId": "cfg1", "authType": "OAUTH",
@@ -546,7 +546,97 @@ class TestBuildOAuthFlowConfigEdgeCases:
             result = await _build_oauth_flow_config(
                 auth_config, "GITLAB", "o1", cs, MagicMock()
             )
-        assert result.get("instanceUrl") == "https://my-instance.com"
+        assert result.get("instanceUrl") == "https://other.com"
+
+    @pytest.mark.asyncio
+    async def test_shared_oauth_urls_ignore_auth_config(self):
+        """authorizeUrl / tokenUrl / instanceUrl saved on a linked connector are not used."""
+        from app.connectors.api.router import _build_oauth_flow_config
+        from app.utils.oauth_config import get_oauth_config
+        auth_config = {
+            "oauthConfigId": "cfg1", "authType": "OAUTH",
+            "authorizeUrl": "https://elsewhere.example/oauth/authorize",
+            "tokenUrl": "https://elsewhere.example/oauth/token",
+            "instanceUrl": "https://elsewhere.example",
+        }
+        shared = {
+            "_id": "cfg1", "orgId": "o1",
+            "authorizeUrl": "https://gitlab.com/oauth/authorize",
+            "tokenUrl": "https://gitlab.com/oauth/token",
+            "scopes": ["read"],
+            "config": {"clientId": "c1", "clientSecret": "s1"},
+        }
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value=[shared])
+
+        with patch(f"{_ROUTER}._get_oauth_config_path", return_value="/path"), \
+             patch(f"{_ROUTER}._apply_confluence_optional_jira_scope", return_value=["read"]):
+            result = await _build_oauth_flow_config(
+                auth_config, "GITLAB", "o1", cs, MagicMock()
+            )
+        assert result["authorizeUrl"] == "https://gitlab.com/oauth/authorize"
+        assert result["tokenUrl"] == "https://gitlab.com/oauth/token"
+        assert "instanceUrl" not in result
+        assert get_oauth_config(result).token_url == "https://gitlab.com/oauth/token"
+
+    @pytest.mark.asyncio
+    async def test_shared_oauth_without_urls_falls_back_to_registry(self):
+        """A shared app saved without URLs gets the registry defaults, not the connector's."""
+        from app.connectors.api.router import _build_oauth_flow_config
+        auth_config = {
+            "oauthConfigId": "cfg1", "authType": "OAUTH",
+            "tokenUrl": "https://elsewhere.example/token",
+        }
+        shared = {"_id": "cfg1", "orgId": "o1", "scopes": ["read"], "config": {"clientId": "c1"}}
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value=[shared])
+        registry = MagicMock()
+        registry.get_config.return_value = MagicMock(
+            authorize_url="https://provider.example/authorize",
+            token_url="https://provider.example/token",
+        )
+
+        with patch(f"{_ROUTER}._get_oauth_config_path", return_value="/path"), \
+             patch(f"{_ROUTER}._apply_confluence_optional_jira_scope", return_value=["read"]), \
+             patch(
+                 "app.connectors.core.registry.oauth_config_registry.get_oauth_config_registry",
+                 return_value=registry,
+             ):
+            result = await _build_oauth_flow_config(
+                auth_config, "DROPBOXPERSONAL", "o1", cs, MagicMock(), registry_type="Dropbox Personal"
+            )
+        registry.get_config.assert_called_once_with("Dropbox Personal")
+        assert result["authorizeUrl"] == "https://provider.example/authorize"
+        assert result["tokenUrl"] == "https://provider.example/token"
+
+    @pytest.mark.asyncio
+    async def test_shared_oauth_config_urls_win_over_top_level(self):
+        """URLs an admin typed into the app's fields (ServiceNow) are the ones used."""
+        from app.connectors.api.router import _build_oauth_flow_config
+        auth_config = {"oauthConfigId": "cfg1", "authType": "OAUTH"}
+        shared = {
+            "_id": "cfg1", "orgId": "o1",
+            "authorizeUrl": "https://placeholder/oauth_auth.do",
+            "tokenUrl": "https://placeholder/oauth_token.do",
+            "scopes": ["read"],
+            "config": {
+                "clientId": "c1",
+                "authorizeUrl": "https://acme.service-now.com/oauth_auth.do",
+                "tokenUrl": "https://acme.service-now.com/oauth_token.do",
+                "instanceUrl": "https://acme.service-now.com",
+            },
+        }
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value=[shared])
+
+        with patch(f"{_ROUTER}._get_oauth_config_path", return_value="/path"), \
+             patch(f"{_ROUTER}._apply_confluence_optional_jira_scope", return_value=["read"]):
+            result = await _build_oauth_flow_config(
+                auth_config, "SERVICENOW", "o1", cs, MagicMock()
+            )
+        assert result["tokenUrl"] == "https://acme.service-now.com/oauth_token.do"
+        assert result["authorizeUrl"] == "https://acme.service-now.com/oauth_auth.do"
+        assert result["instanceUrl"] == "https://acme.service-now.com"
 
     @pytest.mark.asyncio
     async def test_shared_oauth_not_found_raises(self):

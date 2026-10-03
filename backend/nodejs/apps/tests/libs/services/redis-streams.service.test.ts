@@ -641,10 +641,68 @@ describe('Redis Streams Service', () => {
       });
     });
 
+    describe('read count', () => {
+      const countArg = (args: unknown[]) => args[args.indexOf('COUNT') + 1];
+
+      async function runOnePass(c: any): Promise<void> {
+        await c.connect();
+        await c.subscribe(['test-stream']);
+        mockRedis.xreadgroup.callsFake(async () => {
+          c.running = false;
+          return null;
+        });
+        await c.consume(sinon.stub().resolves());
+        await c.consumeLoopPromise;
+      }
+
+      it('reads and reclaims 10 entries at a time by default', async () => {
+        await runOnePass(consumer);
+
+        expect(countArg(mockRedis.xreadgroup.firstCall.args)).to.equal('10');
+        expect(countArg(mockRedis.xautoclaim.firstCall.args)).to.equal('10');
+      });
+
+      it('uses readCount for both the read and the reclaim', async () => {
+        class OneAtATime extends BaseRedisStreamsConsumerConnection {}
+        const c = new OneAtATime({ ...defaultConfig, readCount: 1 }, mockLogger);
+
+        await runOnePass(c);
+
+        expect(countArg(mockRedis.xreadgroup.firstCall.args)).to.equal('1');
+        expect(countArg(mockRedis.xautoclaim.firstCall.args)).to.equal('1');
+      });
+    });
+
     describe('drainPending', () => {
       beforeEach(async () => {
         await consumer.connect();
         await consumer.subscribe(['test-stream']);
+      });
+
+      it('keeps scanning past an empty page whose cursor is not exhausted', async () => {
+        // Redis returns this when the scanned window held only fresh entries.
+        mockRedis.xautoclaim
+          .onFirstCall()
+          .resolves(['11-0', [], []])
+          .onSecondCall()
+          .resolves([
+            '0-0',
+            [['11-0', ['key', 'stale', 'value', JSON.stringify({ n: 11 })]]],
+            [],
+          ]);
+        mockRedis.xreadgroup.callsFake(async () => {
+          consumer.running = false;
+          return null;
+        });
+
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+
+        const startIds = mockRedis.xautoclaim.getCalls().map((c) => c.args[4]);
+        expect(startIds).to.deep.equal(['0-0', '11-0']);
+        expect(handler.calledOnce).to.be.true;
+        expect(handler.firstCall.args[0].key).to.equal('stale');
       });
 
       it('should recover pending messages via XAUTOCLAIM', async () => {

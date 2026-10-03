@@ -49,6 +49,7 @@ from app.connectors.core.registry.folder_scope import (
     FolderScope,
     clean_up_scope,
     listed_record_ids,
+    path_in_container,
     recorded_ids,
     remove_deselected_containers,
     remove_records_not_listed,
@@ -418,6 +419,9 @@ class GCSConnector(BaseConnector):
         self.data_source: GCSDataSource | None = None
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
+        # Records moved during this listing: two new copies of a deleted object
+        # must not both take its record before the batch naming it is saved.
+        self._moved_record_ids: set[str] = set()
         self.bucket_name: str | None = None
         self.project_id: str | None = None
 
@@ -954,6 +958,7 @@ class GCSConnector(BaseConnector):
                 modified_after_ms = last_sync_time
 
         batch_records = []
+        self._moved_record_ids = set()
         has_more = True
         listing_failed = False
         failed = FailedItems()
@@ -1217,10 +1222,10 @@ class GCSConnector(BaseConnector):
            │   ├─ Different → Content change → Update record
            │   └─ Same → Skip (no changes)
            └─ Not Found → Try lookup by revision (externalRevisionId) - FALLBACK
-               ├─ Found → Move/rename detected
+               ├─ Found, and its key is gone from the bucket → Move/rename detected
                │   ├─ Remove old parent relationship
                │   └─ Update record
-               └─ Not Found → New file → Create new record
+               └─ Not Found, or its key is still listed (a copy) → New file → Create new record
         """
         try:
             key = obj.get("Key", "")
@@ -1275,9 +1280,17 @@ class GCSConnector(BaseConnector):
                 existing_record = await self.data_entities_processor.get_record_by_external_revision_id(
                     self.connector_id, current_revision_id
                 )
+                if existing_record and (
+                    existing_record.id in self._moved_record_ids or await self._still_in_bucket(existing_record)
+                ):
+                    self.logger.info(
+                        f"New document: {normalized_key} is a copy of {existing_record.external_record_id}, not a move"
+                    )
+                    existing_record = None
 
                 if existing_record:
                     is_move = True
+                    self._moved_record_ids.add(existing_record.id)
                     self.logger.info(
                         f"Move/rename detected: {normalized_key} - file moved from {existing_record.external_record_id} to {external_record_id}"
                     )
@@ -1349,6 +1362,26 @@ class GCSConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error processing GCS object: {e}", exc_info=True)
             return None, []
+
+    async def _still_in_bucket(self, record: Record) -> bool:
+        """Whether ``record``'s object is still listed. A check that fails counts as yes:
+        taking a copy for a move would lose the original's record."""
+        bucket_name = record.external_record_group_id
+        key = path_in_container(bucket_name, record.external_record_id)
+        if not bucket_name or not key:
+            return True
+        try:
+            async with self.rate_limiter:
+                response = await self.data_source.list_blobs(bucket_name=bucket_name, prefix=key, max_results=1)
+        except Exception as e:
+            self.logger.warning(f"Could not check whether {bucket_name}/{key} still exists: {e}")
+            return True
+        if not response.success:
+            self.logger.warning(f"Could not check whether {bucket_name}/{key} still exists: {response.error}")
+            return True
+        # Names list in lexicographic order, so the key itself comes first among those it prefixes.
+        contents = (response.data or {}).get("Contents") or []
+        return bool(contents) and contents[0].get("Key") == key
 
     async def _create_gcs_permissions(
         self, bucket_name: str, key: str

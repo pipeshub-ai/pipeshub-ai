@@ -520,12 +520,6 @@ class TokenRefreshService:
                 if client_id and client_secret:
                     oauth_flow_config[AuthFieldKeys.CLIENT_ID] = client_id
                     oauth_flow_config[AuthFieldKeys.CLIENT_SECRET] = client_secret
-                    # Self-managed connectors (e.g. GitLab EE) store the user's
-                    # instance host in auth_config.instanceUrl. Propagate so
-                    # get_oauth_config() can redirect SaaS-default OAuth URLs
-                    # to the user's instance during token refresh.
-                    if auth_config.get(AuthFieldKeys.INSTANCE_URL):
-                        oauth_flow_config[AuthFieldKeys.INSTANCE_URL] = auth_config[AuthFieldKeys.INSTANCE_URL]
                     self.logger.info(f"Using shared OAuth config for connector {connector_id}")
                     return oauth_flow_config
 

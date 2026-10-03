@@ -200,6 +200,10 @@ class FakeVectorDBService(IVectorDBService):
         matched = [p for p in points if _filter_matches(p.payload, scroll_filter)]
         return ScrollResult(points=matched[:limit], next_offset=None)
 
+    async def retrieve_points(self, collection_name: str, ids: List[str]) -> List[VectorPoint]:
+        wanted = set(ids)
+        return [p for p in self.collections.get(collection_name, []) if p.id in wanted]
+
     async def query_nearest_points(
         self, collection_name: str, requests: List[HybridSearchRequest]
     ) -> List[List[SearchResult]]:
@@ -241,6 +245,12 @@ class FakeVectorDBService(IVectorDBService):
     async def set_payload(self, collection_name: str, payload: dict, filter: FilterExpression) -> None:
         for p in self.collections.get(collection_name, []):
             if _filter_matches(p.payload, filter):
+                p.payload.update(payload)
+
+    async def update_payload_by_ids(self, collection_name: str, point_ids: List[str], payload: dict) -> None:
+        wanted = set(point_ids)
+        for p in self.collections.get(collection_name, []):
+            if p.id in wanted:
                 p.payload.update(payload)
 
 
