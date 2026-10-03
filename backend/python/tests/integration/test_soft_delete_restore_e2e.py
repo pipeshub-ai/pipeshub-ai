@@ -49,6 +49,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app import indexing_main
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -559,6 +560,65 @@ async def test_a_sync_restore_that_fails_after_its_write_leaves_the_item_for_the
     assert [e["payload"]["recordId"] for e in world.producer.of_type(EventTypes.NEW_RECORD.value)] == [
         world.ids["drive_file"]
     ]
+
+
+class _SweepProducer:
+    """What the stranded sweep sends, kept for the test."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, dict]] = []
+
+    async def send_event(self, topic: str, event_type: str, payload: dict, key: str | None = None) -> bool:
+        self.sent.append((event_type, payload))
+        return True
+
+
+async def _run_stranded_sweep_an_hour_later(monkeypatch: pytest.MonkeyPatch, graph: IGraphDBProvider) -> list:
+    """The indexing service's own sweep, with its clock moved past the republish threshold."""
+    monkeypatch.setenv("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", "3600")
+    later = get_epoch_timestamp_in_ms() + 2 * 3600 * 1000
+    monkeypatch.setattr(indexing_main, "get_epoch_timestamp_in_ms", lambda: later)
+    producer = _SweepProducer()
+
+    async def run_coordination(coro: object) -> object:
+        return await coro
+
+    await indexing_main._republish_stranded_records(
+        graph_provider=graph, logger=logger, producer=producer,
+        run_coordination=run_coordination, concurrency_manager=None, page_size=500,
+    )
+    return producer.sent
+
+
+# Neo4j only, for the same reason as the test above.
+@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
+async def test_the_stranded_sweep_republishes_a_restore_that_failed_after_its_write(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Indexing left md5Checksum and virtualRecordId on the record, which the sweep
+    took for a duplicate parked behind a twin, so it never sent the record again."""
+    await world.graph.update_node(
+        world.ids["drive_file"], CollectionNames.RECORDS.value, {"md5Checksum": "md5-indexed-before"}
+    )
+    await world.processor.on_record_deleted(world.ids["drive_file"])
+
+    async def parent_lookup_fails(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("parent lookup failed")
+
+    monkeypatch.setattr(world.processor, "_handle_parent_record", parent_lookup_fails)
+    with pytest.raises(RuntimeError, match="parent lookup failed"):
+        await _sync_sees_drive_file_again(world)
+
+    sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph)
+
+    assert [(event, payload["virtualRecordId"]) for event, payload in sent
+            if payload["recordId"] == world.ids["drive_file"]] == [
+        (EventTypes.REINDEX_RECORD.value, f"vr-{world.ids['drive_file']}")
+    ]
+    doc = await world.stored("drive_file")
+    assert (doc["isDeleted"], doc["indexingStatus"]) == (False, ProgressStatus.NOT_STARTED.value)
+    assert doc.get("md5Checksum") is None
+    assert doc["virtualRecordId"] == f"vr-{world.ids['drive_file']}", "citations still resolve"
 
 
 async def test_restore_records_changes_only_its_own_batch(world: _World) -> None:

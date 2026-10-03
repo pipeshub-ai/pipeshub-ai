@@ -272,6 +272,8 @@ class TestSyncBringsBackWhatTheConnectorDeleted:
             ("stored-1", ProgressStatus.NOT_STARTED.value)
         ]
         assert restores[0]["set"]["queuedAtTimestamp"] > 0
+        # A null removes it, so the stranded sweep does not take the row for a parked duplicate.
+        assert "md5Checksum" in restores[0]["set"] and restores[0]["set"]["md5Checksum"] is None
         assert processed is not None and processed.id == "stored-1"
         # Unchanged content would stay COMPLETED and publish nothing; its vectors are gone.
         assert processed.indexing_status == ProgressStatus.NOT_STARTED.value

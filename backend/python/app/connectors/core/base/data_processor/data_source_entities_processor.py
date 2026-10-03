@@ -1448,9 +1448,13 @@ class DataSourceEntitiesProcessor:
                 # In the restore's own write, which commits on its own on Neo4j: if this
                 # upsert fails later, the stranded sweep finds the record and indexes it,
                 # where a stored COMPLETED would keep it out of search with no vectors.
+                # The sweep passes over a row with both md5Checksum and virtualRecordId as
+                # a duplicate behind a twin, so the checksum goes (indexing works it out
+                # again from the content); virtualRecordId stays for old citations.
                 restore["set"] = {
                     "indexingStatus": ProgressStatus.NOT_STARTED.value,
                     "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "md5Checksum": None,
                 }
             restored = await tx_store.restore_records([restore], existing_record.delete_batch_id)
             if restored != [existing_record.id]:
