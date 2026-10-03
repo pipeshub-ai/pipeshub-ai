@@ -83,7 +83,7 @@ class TestValidation:
     async def test_an_unknown_source_is_rejected_whatever_the_scope(self, make) -> None:
         p = make([])
         with pytest.raises(ValueError):
-            await p.page_entity_index_source("users", "", None, 10)
+            await p.page_entity_index_source("permissions", "", None, 10)
 
     async def test_query_failure_raises(self, make) -> None:
         p = make(RuntimeError("db down"))
