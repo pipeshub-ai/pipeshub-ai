@@ -11674,10 +11674,13 @@ class Neo4jProvider(IGraphDBProvider):
             if parent_folder_id is None:
                 query = """
                 MATCH (rec:Record)-[:BELONGS_TO]->(kb:App {id: $kb_id, type: "KB"})
+                OPTIONAL MATCH (rec)-[:IS_OF_TYPE]->(file:File {isFile: true})
+                WITH rec, coalesce(rec.mimeType, file.mimeType) AS mime_type
                 WHERE rec.isDeleted <> true
-                  AND NOT rec.mimeType = "application/vnd.folder"
+                  AND mime_type IS NOT NULL
+                  AND mime_type <> "application/vnd.folder"
                   AND NOT (rec)<-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]-(:Record)
-                RETURN toLower(rec.recordName) AS name_lower, rec.mimeType AS mime_type
+                RETURN toLower(rec.recordName) AS name_lower, mime_type
                 """
                 params: dict = {"kb_id": kb_id}
             else:

@@ -260,3 +260,17 @@ async def test_a_subfolder_rename_onto_a_sibling_folder_name_is_refused(kb: _Kb)
     result = await kb.service.updateFolder(kb.records[-1], kb.kb_id, kb.user_id, "2025")
 
     assert result["success"] is False and result["code"] == 409, result
+
+
+async def test_a_root_upload_skips_a_legacy_file_typed_only_on_its_file_node(kb: _Kb) -> None:
+    # Older files carry the type on the file node and none on the record.
+    legacy = (await kb.upload("report", TEXT))["id"]
+    assert await kb.graph.update_node(legacy, CollectionNames.RECORDS.value, {"mimeType": None})
+    assert await kb.graph.update_node(legacy, CollectionNames.FILES.value, {"mimeType": TEXT})
+    record = await kb.graph.get_document(legacy, CollectionNames.RECORDS.value)
+    assert record.get("mimeType") is None, record
+
+    result = await kb.upload("report", TEXT)
+
+    assert result["totalCreated"] == 0, result
+    assert [s["reason"] for s in result["skippedFiles"]] == ["DUPLICATE_NAME"], result
