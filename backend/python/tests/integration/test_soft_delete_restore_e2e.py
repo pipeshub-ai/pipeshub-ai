@@ -55,7 +55,6 @@ from app.connectors.core.base.data_processor import (
     data_source_entities_processor as processor_module,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    TRASHED_EXTERNAL_ID_PREFIX,
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
@@ -63,7 +62,7 @@ from app.connectors.sources.localKB.handlers import kb_service as kb_service_mod
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.models.entities import FileRecord, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
-from app.services.graph_db.common.utils import TRASH_STATE_FIELDS
+from app.services.graph_db.common.utils import TRASH_STATE_FIELDS, TRASHED_EXTERNAL_ID_PREFIX
 from app.services.graph_db.neo4j import neo4j_provider as neo4j_provider_module
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms

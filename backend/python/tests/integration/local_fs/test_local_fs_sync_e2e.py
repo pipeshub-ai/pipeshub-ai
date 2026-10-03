@@ -258,9 +258,11 @@ class LocalFsTransactionStore(MockTransactionStore):
             docs = docs[:limit]
         return [await self.get_file_record_by_id(d["_key"]) or self._doc_to_record(d) for d in docs]
 
-    async def batch_upsert_records(self, records: list[Record]) -> None:
+    async def batch_upsert_records(
+        self, records: list[Record], *, release_trashed_external_ids: bool = False
+    ) -> None:
         """The base document plus a files document, as both graph providers write a FileRecord."""
-        await super().batch_upsert_records(records)
+        await super().batch_upsert_records(records, release_trashed_external_ids=release_trashed_external_ids)
         for record in records:
             if isinstance(record, FileRecord):
                 self._s.upsert_node(CollectionNames.FILES.value, record.to_arango_record())

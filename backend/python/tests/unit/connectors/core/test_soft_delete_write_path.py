@@ -397,7 +397,20 @@ class _MoveStore(AsyncMock):
             self.docs[node["id"]] = stored.model_copy(update=fields)
         return True
 
-    async def batch_upsert_records(self, records: list[Record]) -> None:
+    async def batch_upsert_records(self, records: list[Record], *, release_trashed_external_ids: bool = False) -> None:
+        if release_trashed_external_ids:
+            ids = {r.id for r in records}
+            for record in records:
+                for held in list(self.docs.values()):
+                    if (
+                        held.id not in ids and held.is_deleted is True
+                        and held.connector_id == record.connector_id
+                        and held.external_record_id == record.external_record_id
+                    ):
+                        self.docs[held.id] = held.model_copy(update={
+                            "external_record_id": f"trashed:{held.id}",
+                            "trashed_external_record_id": held.external_record_id,
+                        })
         self.docs.update({r.id: r for r in records})
 
     async def delete_record_by_key(self, key: str) -> None:
@@ -464,13 +477,15 @@ class TestMoveOntoAnIdHeldInTheTrash:
         assert store.holders("src/new.py") == ["live-1"]
         assert [p["recordId"] for p in _published(proc, EventTypes.DELETE_RECORD.value)] == ["dup-1"]
 
-    async def test_a_failed_release_fails_the_move(self) -> None:
+    async def test_the_release_is_part_of_the_moved_records_write(self) -> None:
+        """Written on its own, a release outlived a move that failed before its write (Neo4j commits each statement)."""
         trashed = _stored("trashed-1", external_record_id="src/new.py", is_deleted=True, deleted_at=1)
         store = _MoveStore(trashed, _stored("live-1", external_record_id="src/old.py"))
-        store.batch_update_nodes = AsyncMock(return_value=False)
         proc = _moving_processor(store)
+        proc._handle_record_group = AsyncMock(side_effect=RuntimeError("graph unavailable"))
 
-        with pytest.raises(RuntimeError, match="Could not release"):
+        with pytest.raises(RuntimeError, match="graph unavailable"):
             await proc.on_records_moved([self._move()])
         assert store.docs["trashed-1"].external_record_id == "src/new.py"
+        assert store.docs["trashed-1"].trashed_external_record_id is None
         assert _published(proc, EventTypes.DELETE_RECORD.value) == []

@@ -20,12 +20,12 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    TRASHED_EXTERNAL_ID_PREFIX,
     DataSourceEntitiesProcessor,
     RestoreRefused,
 )
 from app.models.entities import FileRecord, Record, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
 
 MODULE = "app.connectors.core.base.data_processor.data_source_entities_processor"
 

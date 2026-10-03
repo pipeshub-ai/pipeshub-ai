@@ -2354,6 +2354,45 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Batch upsert failed: {str(e)}")
             raise
 
+    async def _upsert_record_nodes_releasing_trash(
+        self, nodes: list[dict], transaction: str | None = None
+    ) -> None:
+        """Upsert record nodes; records in the trash holding one of their external ids give it up.
+
+        One query, as on Neo4j. It writes like ``batch_upsert_nodes`` (insert or
+        merge into the stored document), and AQL modifies a collection once per
+        query, so the releases go through the same INSERT.
+        """
+        docs = self._translate_nodes_to_arango(nodes)
+        await self.execute_query(
+            """
+            LET releases = (
+                FOR node IN @docs
+                    FILTER node.externalRecordId != null
+                    FOR holder IN @@records
+                        FILTER holder.externalRecordId == node.externalRecordId
+                            AND holder.connectorId == node.connectorId
+                        FILTER holder.isDeleted == true AND holder._key NOT IN @keys
+                        COLLECT key = holder._key, external_id = holder.externalRecordId
+                        RETURN {
+                            _key: key,
+                            externalRecordId: CONCAT(@trashed_prefix, key),
+                            trashedExternalRecordId: external_id
+                        }
+            )
+            FOR doc IN APPEND(releases, @docs)
+                INSERT doc INTO @@records OPTIONS { overwriteMode: "update" }
+                RETURN NEW._key
+            """,
+            bind_vars={
+                "docs": docs,
+                "keys": [doc["_key"] for doc in docs],
+                "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
+                "@records": CollectionNames.RECORDS.value,
+            },
+            transaction=transaction,
+        )
+
     async def delete_nodes(
         self,
         keys: list[str],
@@ -6079,7 +6118,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def batch_upsert_records(
         self,
         records: list[Record],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        release_trashed_external_ids: bool = False,
     ) -> None:
         """
         Batch upsert records (base + specific type + IS_OF_TYPE edges).
@@ -6120,11 +6161,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
 
                 # Upsert base record
-                await self.batch_upsert_nodes(
-                    [record.to_arango_base_record()],
-                    collection=CollectionNames.RECORDS.value,
-                    transaction=transaction
-                )
+                if release_trashed_external_ids:
+                    await self._upsert_record_nodes_releasing_trash(
+                        [record.to_arango_base_record()], transaction
+                    )
+                else:
+                    await self.batch_upsert_nodes(
+                        [record.to_arango_base_record()],
+                        collection=CollectionNames.RECORDS.value,
+                        transaction=transaction
+                    )
 
                 # Upsert specific record type
                 await self.batch_upsert_nodes(
