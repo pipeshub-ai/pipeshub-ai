@@ -144,6 +144,7 @@ services:
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-20m}
 
       # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
       # runtime_threads.py propagates this to OPENBLAS and MKL automatically.
@@ -162,6 +163,10 @@ services:
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE:-}
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL:-300}
       - PIPESHUB_SIGNED_URL_CACHE_SECONDS=${PIPESHUB_SIGNED_URL_CACHE_SECONDS:-0}
+
+      # Storage config
+      - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-true}
+
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
@@ -181,6 +186,11 @@ services:
       # Default docker image uses the same IMAGE_TAG as pipeshubai/pipeshub-ai; build and
       # push it from deployment/sandbox/Dockerfile as pipeshubai/pipeshub-sandbox:${IMAGE_TAG}.
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+      # Generated code gets no network unless set to true; even then private,
+      # link-local and cloud-metadata addresses are firewalled. CIDRs in
+      # SANDBOX_EGRESS_ALLOW_CIDRS (comma-separated, e.g. a pip mirror) are exempt.
+      - SANDBOX_ALLOW_NETWORK=${SANDBOX_ALLOW_NETWORK:-false}
+      - SANDBOX_EGRESS_ALLOW_CIDRS=${SANDBOX_EGRESS_ALLOW_CIDRS:-}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
     depends_on:
       qdrant:

@@ -6,7 +6,7 @@ Phase 1 (``EnvSandboxSettingsLoader``): reads from process environment,
 same vars the legacy stack used (``SANDBOX_MODE``, ``SANDBOX_DOCKER_IMAGE``,
 ``SANDBOX_EGRESS_NETWORK``, ``SANDBOX_PIP_INDEX_URL``, ``SANDBOX_NPM_REGISTRY``,
 ``SANDBOX_ALLOW_NETWORK``, ``E2B_API_KEY``, plus new ``SANDBOX_MAX_TOTAL``,
-``SANDBOX_MAX_PER_ORG``).
+``SANDBOX_MAX_PER_ORG``, ``SANDBOX_EGRESS_ALLOW_CIDRS``).
 
 Phase 4 (``ConfigServiceSandboxSettingsLoader``): per-org settings through
 ``ConfigurationService`` — interface defined here, body raises
@@ -22,6 +22,7 @@ from typing import Any, Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.sandbox.coding.base import SandboxContext
+from app.agent_loop_lib.sandbox.coding.egress_firewall import parse_cidrs
 
 __all__ = [
     "SandboxSettings",
@@ -175,7 +176,9 @@ class SandboxSettings(BaseModel):
 
     backend: str = "local"
     backend_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    allow_network: bool = True
+    # Off unless an operator opts in: with it on, generated code (which a
+    # prompt-injected document can steer) gets an outbound connection.
+    allow_network: bool = False
     max_concurrent_per_request: int = 5
     max_lifetime_s: float = 1800.0
     provision_timeout_s: float = 60.0
@@ -219,6 +222,7 @@ class EnvSandboxSettingsLoader:
     _ENV_PIP_INDEX_URL = "SANDBOX_PIP_INDEX_URL"
     _ENV_NPM_REGISTRY = "SANDBOX_NPM_REGISTRY"
     _ENV_ALLOW_NETWORK = "SANDBOX_ALLOW_NETWORK"
+    _ENV_EGRESS_ALLOW_CIDRS = "SANDBOX_EGRESS_ALLOW_CIDRS"
     _ENV_E2B_API_KEY = "E2B_API_KEY"
     _ENV_MAX_TOTAL = "SANDBOX_MAX_TOTAL"
     _ENV_MAX_PER_ORG = "SANDBOX_MAX_PER_ORG"
@@ -242,6 +246,7 @@ class EnvSandboxSettingsLoader:
                 "egress_network": os.environ.get(self._ENV_EGRESS_NETWORK, self._DEFAULT_EGRESS_NETWORK),
                 "pip_index_url": os.environ.get(self._ENV_PIP_INDEX_URL, self._DEFAULT_PIP_INDEX_URL),
                 "npm_registry": os.environ.get(self._ENV_NPM_REGISTRY, self._DEFAULT_NPM_REGISTRY),
+                "egress_allow_cidrs": list(parse_cidrs(os.environ.get(self._ENV_EGRESS_ALLOW_CIDRS))),
             }
         # No E2B branch: the API key deliberately never enters
         # `SandboxSettings`. This model is logged and dumped freely, and
@@ -251,7 +256,7 @@ class EnvSandboxSettingsLoader:
         return SandboxSettings(
             backend=backend,
             backend_options=backend_options,
-            allow_network=_env_bool(self._ENV_ALLOW_NETWORK, default=True),
+            allow_network=_env_bool(self._ENV_ALLOW_NETWORK, default=False),
             max_concurrent_per_request=_env_int(self._ENV_MAX_CONCURRENT, 5),
             max_lifetime_s=_env_float(self._ENV_MAX_LIFETIME_S, 1800.0),
             provision_timeout_s=_env_float(self._ENV_PROVISION_TIMEOUT_S, 60.0),

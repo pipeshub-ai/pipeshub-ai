@@ -11,6 +11,7 @@ import { AuthService } from '../../../../src/modules/user_management/services/au
 import { EntitiesEventProducer } from '../../../../src/modules/user_management/services/entity_events.service';
 import { OrgController } from '../../../../src/modules/user_management/controller/org.controller';
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
+import { ValidationError } from '../../../../src/libs/errors/validation.error';
 
 describe('User Routes', () => {
   let container: Container;
@@ -733,6 +734,37 @@ describe('User Routes', () => {
       await handler(mockReq, mockRes, mockNext);
 
       expect(mockUserController.getUsersByIds.calledOnce).to.be.true;
+    });
+
+    it('POST /by-ids rejects an empty user ID with a plain message', async () => {
+      const router = createUserRouter(container);
+      const { mockReq, mockRes, mockNext } = createMockReqRes();
+      mockReq.params = {};
+      mockReq.body = { userIds: [''] };
+      const validationMiddleware = findValidationMiddleware(router, '/by-ids', 'post');
+
+      expect(validationMiddleware).to.not.be.undefined;
+      await validationMiddleware(mockReq, mockRes, mockNext);
+
+      expect(mockNext.calledOnce).to.be.true;
+      const error = mockNext.firstCall.args[0];
+      expect(error).to.be.an.instanceOf(ValidationError);
+      expect(error.message).to.equal(
+        'Each user ID must be a 24-character user ID. Remove any empty or incomplete IDs and try again.',
+      );
+      expect(mockUserController.getUsersByIds.called).to.be.false;
+    });
+
+    it('POST /by-ids rejects an empty list with a plain message', async () => {
+      const router = createUserRouter(container);
+      const { mockReq, mockRes, mockNext } = createMockReqRes();
+      mockReq.params = {};
+      mockReq.body = { userIds: [] };
+      const validationMiddleware = findValidationMiddleware(router, '/by-ids', 'post');
+
+      await validationMiddleware(mockReq, mockRes, mockNext);
+
+      expect(mockNext.firstCall.args[0].message).to.equal('Send at least one user ID to look up.');
     });
 
     it('GET /email/exists handler should call userController.checkUserExistsByEmail', async () => {

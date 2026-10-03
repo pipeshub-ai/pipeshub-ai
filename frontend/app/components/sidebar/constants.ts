@@ -105,6 +105,20 @@ export const TREE_BASE_PADDING = 8;
  */
 export const TREE_LINE_OFFSET = 8;
 
+/**
+ * A tree container may set this to tighten the per-level indent when a deep
+ * tree would not fit; rows fall back to TREE_INDENT_PER_LEVEL without it.
+ */
+export const TREE_INDENT_CSS_VAR = '--kb-tree-indent';
+
+/** Opacity of the vertical guide lines; a container hides them when the indent is too tight for them to read. */
+export const TREE_LINE_OPACITY_CSS_VAR = '--kb-tree-line-opacity';
+
+/** Left offset of a tree row (or guide line) at `depth`, honouring TREE_INDENT_CSS_VAR. */
+export function treeIndentOffset(depth: number, extraPx: number = 0): string {
+  return `calc(${TREE_BASE_PADDING + extraPx}px + ${depth} * var(${TREE_INDENT_CSS_VAR}, ${TREE_INDENT_PER_LEVEL}px))`;
+}
+
 // ============================================
 // ICON SIZES
 // ============================================

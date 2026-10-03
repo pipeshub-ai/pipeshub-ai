@@ -5733,7 +5733,11 @@ components:
         - breadcrumbs
         - counts
         - permissions
+        - maxFolderDepth
       properties:
+        maxFolderDepth:
+          type: integer
+          description: Deepest a collection folder may be nested; a folder directly in the collection is depth 1.
         success:
           type: boolean
           enum: [true]
@@ -18032,19 +18036,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/RefreshTokenResponse'
         '400':
-          description: Disabled user account
+          description: The account is locked after repeated failed sign-ins
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Invalid or expired refresh token - user must re-authenticate
+          description: |
+            The user must sign in again. Either the refresh token is invalid or
+            expired, or the session was ended by signing out or a password change.
+
+            If the account has been deleted or disabled, the message is
+            "Your account is no longer active. Contact your admin." Signing in
+            again will not help until an admin restores the account.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found (account may have been deleted), User credentials not found, or Organization not found
+          description: The user's credentials or organization could not be found
           content:
             application/json:
               schema:
@@ -19325,6 +19335,16 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The deletion could not be recorded, so the user was not deleted. Safe to retry:
+            "We couldn't delete this user just now. They are still a member; please try
+            again in a moment." If the write timed out it may still have been saved, in
+            which case the user's existing sessions have ended and they sign in again.
           content:
             application/json:
               schema:

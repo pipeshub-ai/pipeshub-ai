@@ -50,7 +50,8 @@ def _method_source(path: str, name: str) -> str:
 
     # Explicit encoding: the providers carry emoji in log strings, and the
     # platform default is cp1252 on Windows.
-    text = pathlib.Path(path).read_text(encoding="utf-8")
+    root = pathlib.Path(__file__).resolve().parents[4]
+    text = (root / path).read_text(encoding="utf-8")
     try:
         start = text.index(f"async def {name}(")
     except ValueError:

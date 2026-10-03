@@ -74,6 +74,9 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_record_path(self, record_id):
         return None
 
+    async def get_record_path_segments(self, record_id):
+        return []
+
     async def get_records_by_status(self, org_id, connector_id, status_filters, limit=None, offset=0, after_key=None, exclude_statuses=None):
         return []
 
@@ -97,6 +100,21 @@ class ConcreteTransactionStore(TransactionStore):
 
     async def batch_upsert_people(self, people):
         pass
+
+    async def get_person_by_email(self, email, org_id):
+        return None
+
+    async def upsert_person_by_email(self, person):
+        return None
+
+    async def ensure_app_membership(
+        self, principal_id, principal_collection, connector_id, *,
+        is_external, source_user_id=None,
+    ):
+        pass
+
+    async def reap_stale_external_app_relations(self, connector_id):
+        return 0
 
     async def get_users(self, org_id, active=True):
         return []

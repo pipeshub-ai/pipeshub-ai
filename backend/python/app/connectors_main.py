@@ -32,9 +32,6 @@ from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.config.constants.arangodb import AccountType, CollectionNames
 from app.config.constants.service import config_node_constants
-from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    DataSourceEntitiesProcessor,
-)
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
@@ -447,16 +444,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Use the already-resolved graph_provider from data_store to avoid coroutine reuse
     logger = app_container.logger()
     graph_provider = data_store.graph_provider
-
-    # Shared KB entities processor: routes KB (Collections) CRUD through the same
-    # DataSourceEntitiesProcessor connectors use. Initialized once (sets up the Kafka
-    # producer). Org-agnostic — kb_service sets record.org_id from the request org.
-    kb_entities_processor = DataSourceEntitiesProcessor(
-        logger, data_store, app_container.config_service()
-    )
-    await kb_entities_processor.initialize()
-    app.state.kb_entities_processor = kb_entities_processor
-    logger.info("✅ KB entities processor initialized")
 
     # Sync completion and KB deletes happen here; both drop the query service's
     # cached accessible-record maps.

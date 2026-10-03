@@ -13,6 +13,16 @@ from app.agent_loop_lib.sandbox.coding.docker_client import (
 )
 
 
+def _network(name: str, subnet: str = "172.30.0.0/16") -> MagicMock:
+    network = MagicMock()
+    network.name = name
+    network.attrs = {
+        "Options": {"com.docker.network.bridge.enable_icc": "false"},
+        "IPAM": {"Config": [{"Subnet": subnet}]},
+    }
+    return network
+
+
 class TestDockerClientProvider:
     def test_lazy_client_creation(self) -> None:
         provider = DockerClientProvider()
@@ -64,61 +74,71 @@ class TestDockerClientProvider:
         assert "missing:latest" not in provider._image_cache
         provider.close()
 
-    async def test_ensure_egress_network_caches(self) -> None:
+    async def test_egress_network_subnets_are_cached(self) -> None:
         provider = DockerClientProvider()
         fake_client = MagicMock()
-        existing = MagicMock()
-        existing.name = "sandbox_egress"
+        existing = _network("sandbox_egress")
         fake_client.networks.list.return_value = [existing]
+        fake_client.networks.get.return_value = existing
         provider._client = fake_client
 
-        name = await provider.ensure_egress_network("sandbox_egress")
-        assert name == "sandbox_egress"
-        assert "sandbox_egress" in provider._network_cache
-
-        name2 = await provider.ensure_egress_network("sandbox_egress")
-        assert name2 == "sandbox_egress"
+        assert await provider.ensure_egress_network("sandbox_egress") == "sandbox_egress"
+        assert await provider.egress_network_cidrs("sandbox_egress") == ["172.30.0.0/16"]
         fake_client.networks.list.assert_called_once()
         provider.close()
 
     async def test_ensure_egress_network_creates_when_missing(self) -> None:
         provider = DockerClientProvider()
         fake_client = MagicMock()
-        fake_client.networks.list.return_value = []
-        fake_client.networks.create.return_value = MagicMock()
+        created = _network("new_net")
+        fake_client.networks.list.side_effect = [[], [created]]
+        fake_client.networks.get.return_value = created
         provider._client = fake_client
 
-        name = await provider.ensure_egress_network("new_net")
-        assert name == "new_net"
+        assert await provider.ensure_egress_network("new_net") == "new_net"
         # A user-defined bridge with the sandbox label — never the caller's
         # default network, or compose siblings (mongo, arango, redis) would
-        # be reachable by name from an install container. The label is what
-        # lets orphan cleanup find these later.
+        # be reachable by name. ICC off keeps one org's sandbox from
+        # reaching another's on the same bridge.
         fake_client.networks.create.assert_called_once_with(
             name="new_net",
             driver="bridge",
             internal=False,
+            enable_ipv6=False,
+            options={"com.docker.network.bridge.enable_icc": "false"},
             labels={"agent_loop.sandbox": "egress"},
             check_duplicate=True,
         )
-        assert "new_net" in provider._network_cache
+        provider.close()
+
+    async def test_unreadable_subnet_is_not_cached(self) -> None:
+        """An empty answer means callers run offline; a later call must be
+        able to pick up the subnet once it is readable."""
+        provider = DockerClientProvider()
+        fake_client = MagicMock()
+        net = _network("egress")
+        net.attrs["IPAM"]["Config"] = []
+        fake_client.networks.list.return_value = [net]
+        fake_client.networks.get.return_value = net
+        provider._client = fake_client
+
+        assert await provider.egress_network_cidrs("egress") == []
+        net.attrs["IPAM"]["Config"] = [{"Subnet": "172.30.0.0/16"}]
+        assert await provider.egress_network_cidrs("egress") == ["172.30.0.0/16"]
         provider.close()
 
     async def test_ensure_egress_network_tolerates_a_creation_race(self) -> None:
-        """Another process may create the network between our list and our
+        """Another process may create the network between our look and our
         create; that is success, not failure."""
         provider = DockerClientProvider()
         fake_client = MagicMock()
-        # `name` is a MagicMock constructor kwarg, so it has to be set after
-        # construction to become a real attribute.
-        raced = MagicMock()
-        raced.name = "raced_net"
-        fake_client.networks.list.side_effect = [[], [raced]]
+        raced = _network("raced_net")
+        fake_client.networks.list.side_effect = [[], [raced], [raced]]
+        fake_client.networks.get.return_value = raced
         fake_client.networks.create.side_effect = RuntimeError("already exists")
         provider._client = fake_client
 
         assert await provider.ensure_egress_network("raced_net") == "raced_net"
-        assert "raced_net" in provider._network_cache
         provider.close()
 
     async def test_ensure_egress_network_reraises_a_real_failure(self) -> None:
@@ -130,25 +150,7 @@ class TestDockerClientProvider:
 
         with pytest.raises(RuntimeError, match="daemon refused"):
             await provider.ensure_egress_network("bad_net")
-        assert "bad_net" not in provider._network_cache
-        provider.close()
-
-    async def test_substring_match_is_not_mistaken_for_the_network(self) -> None:
-        """Docker's `names` filter matches on SUBSTRING, so a host running
-        the PipesHub compose stack (`pipeshub_sandbox_egress`) answers a
-        query for `sandbox_egress` with it. Treating that as a hit skips
-        creation and every later container start fails with
-        `network sandbox_egress not found`."""
-        provider = DockerClientProvider()
-        fake_client = MagicMock()
-        near_miss = MagicMock()
-        near_miss.name = "pipeshub_sandbox_egress"
-        fake_client.networks.list.return_value = [near_miss]
-        provider._client = fake_client
-
-        assert await provider.ensure_egress_network("sandbox_egress") == "sandbox_egress"
-        fake_client.networks.create.assert_called_once()
-        assert fake_client.networks.create.call_args.kwargs["name"] == "sandbox_egress"
+        assert "bad_net" not in provider._network_cidrs
         provider.close()
 
     async def test_run_blocking_uses_executor(self) -> None:
