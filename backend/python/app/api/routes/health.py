@@ -336,6 +336,30 @@ _CAPABILITY_ERROR_MARKERS = (
     "unknown parameter",
 )
 
+_IMAGE_EMBEDDING_SETUP_FAILED = (
+    "PipesHub couldn't set up image embedding for this provider. Check its endpoint "
+    "and API key in Workspace → AI Models, then try again."
+)
+
+_IMAGE_EMBEDDING_RETURNED_NOTHING = (
+    "The model returned no embedding for a test image, so images wouldn't be "
+    "indexed. Check its API key and endpoint and that it accepts images, then try again."
+)
+
+
+class _ImageEmbeddingSettingsError(Exception):
+    """Image embedding failed because of the model's settings (endpoint, API
+    key), not because the model cannot embed images.
+
+    Kept apart from a capability failure: telling the admin to uncheck
+    Multimodal would switch off a capability over a wrong endpoint or key.
+    `message` is fixed text; the provider's own error goes to the log only.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
 
 def _is_capability_error(exc: Exception) -> bool:
     """Whether `exc` says the model cannot do the thing, as opposed to the
@@ -1268,7 +1292,7 @@ async def _probe_vision(llm_model: BaseChatModel, logger: Logger) -> str | None:
     except Exception as image_error:
         if _is_capability_error(image_error):
             logger.info("Model rejected image input: %s", image_error)
-            return f"Model doesn't support images/vision: {_short_provider_reason(image_error)}".rstrip(": ")
+            return "Model doesn't support images/vision."
         # Rate limit, gateway 5xx, auth: says nothing about vision support, so
         # reporting "no vision" here would tell the admin to disable a
         # capability the model may well have.
@@ -1293,7 +1317,8 @@ def _is_multimodal(config: dict) -> bool:
 async def _probe_image_embedding(
     embedding_config: dict, model_name: str, text_dimension: int, logger: Logger,
 ) -> str | None:
-    """None when this model really can embed an image, else why not.
+    """None when this model really can embed an image, else why it cannot.
+    Raises `_ImageEmbeddingSettingsError` when the settings are at fault.
 
     Uses the same `MultimodalEmbeddingFactory` the indexing pipeline uses, so a
     provider with no implementation is caught here rather than by images
@@ -1320,7 +1345,7 @@ async def _probe_image_embedding(
         )
     except Exception as exc:
         logger.warning("Could not build a multimodal embedding provider: %s", exc)
-        return f"This provider cannot embed images: {_short_provider_reason(exc)}".rstrip(": ")
+        raise _ImageEmbeddingSettingsError(_IMAGE_EMBEDDING_SETUP_FAILED) from exc
 
     if multimodal_provider is None or not multimodal_provider.supports_multimodal():
         return (
@@ -1337,14 +1362,16 @@ async def _probe_image_embedding(
         raise
     except Exception as exc:
         if _is_capability_error(exc):
-            return f"Model cannot embed images: {_short_provider_reason(exc)}".rstrip(": ")
+            logger.info("Model rejected image embedding: %s", exc)
+            return "Model cannot embed images."
         raise
 
     first = results[0] if results else None
     embedding = getattr(first, "embedding", None)
     if not embedding:
-        error = getattr(first, "error", None)
-        return f"Image embedding returned nothing{f': {error}' if error else ''}"
+        # Providers report failed calls here (a 401, a bad endpoint), not only refusals.
+        logger.warning("Image embedding probe returned no embedding: %s", getattr(first, "error", None))
+        raise _ImageEmbeddingSettingsError(_IMAGE_EMBEDDING_RETURNED_NOTHING)
     if len(embedding) != text_dimension:
         # A collection holds one vector width; text and image points must agree.
         return (
@@ -1457,9 +1484,12 @@ async def perform_embedding_health_check(
             # images silently never get indexed
             # (`vectorstore._process_image_embeddings` warns and returns []).
             if _is_multimodal(embedding_config):
-                image_error = await _probe_image_embedding(
-                    embedding_config, model_name, embedding_dimension, logger,
-                )
+                try:
+                    image_error = await _probe_image_embedding(
+                        embedding_config, model_name, embedding_dimension, logger,
+                    )
+                except _ImageEmbeddingSettingsError as exc:
+                    return _config_error(exc.message, embedding_config, model_name)
                 if image_error is not None:
                     return _config_error(
                         image_error, embedding_config, model_name,
@@ -1945,7 +1975,7 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
             status_code=500,
             content={
                 "status": "not healthy",
-                "error": f"Health check failed: {_short_provider_reason(e) or type(e).__name__}",
+                "error": f"Health check failed: {type(e).__name__}",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )

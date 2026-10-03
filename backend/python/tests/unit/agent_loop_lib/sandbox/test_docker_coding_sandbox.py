@@ -770,6 +770,63 @@ class TestTarExtractionGuard:
         with open(os.path.join(output_dir, "safe.txt"), "rb") as f:
             assert f.read() == b"safe-content"
 
+    def test_extract_container_dir_drops_symlink_members(self, tmp_path) -> None:
+        """A symlink in the output tar must not land on the host: otherwise the
+        next run's readers follow it off-box and copy host files back in (SB-5).
+        """
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            data = b"real-artifact"
+            fi = tarfile.TarInfo("output/chart.png")
+            fi.size = len(data)
+            tar.addfile(fi, io.BytesIO(data))
+            link = tarfile.TarInfo("output/leak.txt")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "/etc/hostname"
+            tar.addfile(link)
+        buf.seek(0)
+        container = MagicMock()
+        container.get_archive.return_value = (iter([buf.read()]), {})
+
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        _extract_container_dir(container, "/output", output_dir)
+
+        assert os.path.isfile(os.path.join(output_dir, "chart.png"))
+        leak = os.path.join(output_dir, "leak.txt")
+        assert not os.path.lexists(leak), "symlink member must be skipped entirely"
+
+    def test_dependency_archive_keeps_in_tree_symlink_rejects_escaping(self, tmp_path) -> None:
+        """Deps archives (allow_symlinks=True, e.g. node_modules/.bin) keep
+        in-tree links so installed CLIs survive the round trip, but a link whose
+        target escapes the directory is still refused (SB-5)."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            data = b"module.exports = 1"
+            fi = tarfile.TarInfo("deps/pkg/index.js")
+            fi.size = len(data)
+            tar.addfile(fi, io.BytesIO(data))
+            good = tarfile.TarInfo("deps/.bin/cli")        # in-tree link
+            good.type = tarfile.SYMTYPE
+            good.linkname = "../pkg/index.js"
+            tar.addfile(good)
+            evil = tarfile.TarInfo("deps/escape")          # absolute -> escapes
+            evil.type = tarfile.SYMTYPE
+            evil.linkname = "/etc/hostname"
+            tar.addfile(evil)
+        buf.seek(0)
+        container = MagicMock()
+        container.get_archive.return_value = (iter([buf.read()]), {})
+
+        deps_dir = str(tmp_path / "deps")
+        os.makedirs(deps_dir, exist_ok=True)
+        _extract_container_dir(container, "/deps", deps_dir, allow_symlinks=True)
+
+        assert os.path.isfile(os.path.join(deps_dir, "pkg/index.js"))
+        link = os.path.join(deps_dir, ".bin/cli")
+        assert os.path.islink(link), "in-tree dependency symlink must be preserved"
+        assert not os.path.lexists(os.path.join(deps_dir, "escape")), "escaping link must be refused"
+
 
 class TestDockerMissing:
     async def test_execute_raises_infra_error_when_docker_package_missing(self, tmp_path) -> None:

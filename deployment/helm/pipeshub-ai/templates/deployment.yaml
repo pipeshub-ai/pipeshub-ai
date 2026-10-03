@@ -39,6 +39,16 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "pipeshub-ai.serviceAccountName" . }}
+      {{- with .Values.sandbox.runtimeClassName }}
+      # Pod-level RuntimeClass for the whole pod, including the privileged
+      # Docker-in-Docker sidecar, so an escape lands in the sandboxed runtime
+      # rather than on the node. The RuntimeClass must already exist in the
+      # cluster. This chart does NOT configure gVisor's required DinD daemon
+      # flags or nested-container networking, so do not combine gVisor with
+      # sandbox.dind.enabled until that is set up and smoke-tested; a VM runtime
+      # (Kata) or an off-cluster backend (e2b) avoids that gap.
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -96,10 +106,12 @@ spec:
               value: {{ .Values.config.signedUrlCacheSeconds | quote }}
             - name: DISTRIBUTED_INDEXING_CONCURRENCY
               value: {{ .Values.config.distributedIndexingConcurrency | quote }}
-            # Coding sandbox. Set explicitly: the service's own fallback is
-            # "local", which executes generated code on this pod.
+            # Coding sandbox. The service has no default: unset, unknown, or
+            # "local" without SANDBOX_ALLOW_LOCAL drops the code tools.
             - name: SANDBOX_MODE
               value: {{ include "pipeshub-ai.sandboxMode" . | quote }}
+            - name: SANDBOX_ALLOW_LOCAL
+              value: {{ include "pipeshub-ai.sandboxAllowLocal" . | quote }}
             - name: SANDBOX_DOCKER_IMAGE
               value: {{ .Values.config.sandboxDockerImage | quote }}
             - name: SANDBOX_ALLOW_NETWORK
@@ -108,6 +120,8 @@ spec:
               value: {{ .Values.config.sandboxEgressNetwork | quote }}
             - name: SANDBOX_EGRESS_ALLOW_CIDRS
               value: {{ .Values.config.sandboxEgressAllowCidrs | default "" | quote }}
+            - name: SANDBOX_DISK_QUOTA
+              value: {{ .Values.config.sandboxDiskQuota | quote }}
             {{- with (include "pipeshub-ai.dockerHost" .) }}
             - name: DOCKER_HOST
               value: {{ . | quote }}

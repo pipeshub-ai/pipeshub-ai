@@ -173,12 +173,14 @@ class TestResolveEntityVirtualIds:
         assert scope.truncated is True
 
     @pytest.mark.asyncio
-    async def test_entities_past_the_cap_are_reported_as_truncated(self, patched) -> None:
+    async def test_entities_past_the_cap_are_counted_as_skipped(self, patched) -> None:
+        """Reported apart from ``truncated``, which is about one entity's
+        records, so the search note names what was actually left out."""
         entities = [(f"rg-{i}", "record_group") for i in range(SEARCH_SCOPE_MAX_ENTITIES + 1)]
 
         scope = await resolve_entity_virtual_ids(_state(), entities)
 
-        assert scope.truncated is True
+        assert scope.entities_skipped == 1
         assert patched[1].await_count == SEARCH_SCOPE_MAX_ENTITIES
 
 

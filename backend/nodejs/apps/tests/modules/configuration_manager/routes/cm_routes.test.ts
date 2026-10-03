@@ -13,7 +13,21 @@ import {
   SyncEventProducer,
 } from '../../../../src/modules/configuration_manager/services/kafka_events.service'
 import { NotFoundError } from '../../../../src/libs/errors/http.errors'
+import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum'
 import axios from 'axios'
+
+// Express does not expose router.stack in its public types, so the scope
+// assertions below describe just the shape they read.
+type ScopedGuard = { scope?: string }
+type RouteLayer = {
+  route?: {
+    path: string
+    methods: Record<string, boolean | undefined>
+    stack: Array<{ handle?: ScopedGuard }>
+  }
+}
+const routeLayers = (router: unknown): RouteLayer[] =>
+  (router as { stack: RouteLayer[] }).stack
 
 describe('ConfigurationManager Routes', () => {
   let container: Container
@@ -618,6 +632,30 @@ describe('ConfigurationManager Routes', () => {
 
       const internalSlack = routes.find((r: any) => r.path === '/internal/slack-bot' && r.methods.get)
       expect(internalSlack).to.exist
+    })
+
+    // This route hands out every org's Slack credentials, so it must not be
+    // reachable with the broad fetch:config scope other services hold.
+    it('should guard the internal slack-bot route with the bot-only scope', () => {
+      // Tag each generated guard with the scope it was built for, so the route's
+      // own middleware stack identifies which scope protects it.
+      mockAuthMiddleware.scopedTokenValidator = sinon.stub().callsFake((scope: string) => {
+        const guard = (_req: unknown, _res: unknown, next: () => void) => next()
+        ;(guard as ScopedGuard).scope = scope
+        return guard
+      })
+
+      const router = createConfigurationManagerRouter(container)
+      const layer = routeLayers(router).find(
+        (l) => l.route?.path === '/internal/slack-bot' && l.route?.methods.get,
+      )
+      expect(layer, 'internal slack-bot route is not registered').to.exist
+      const scopes = (layer?.route?.stack ?? [])
+        .map((s) => s.handle?.scope)
+        .filter((scope): scope is string => typeof scope === 'string')
+
+      expect(scopes).to.include(TokenScopes.SLACK_BOT_VERIFY)
+      expect(scopes).to.not.include(TokenScopes.FETCH_CONFIG)
     })
 
     it('should register internal metricsCollection toggle route', () => {

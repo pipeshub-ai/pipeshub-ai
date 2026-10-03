@@ -93,6 +93,23 @@ RUN ELECTRON_STATIC=1 npm run build && \
 FROM runtime-base AS runtime
 WORKDIR /app
 
+# Unprivileged runtime user (uid/gid 1000, matching the Helm chart's runAsUser).
+# Its home stays /root so every on-disk path is unchanged across the upgrade:
+# local storage records absolute file:// URLs under ~/.local, and existing
+# volumes and custom mounts target /root/.local and /root/.cache/huggingface.
+# docker-entrypoint.sh hands root-owned data from earlier releases over to it.
+RUN groupadd --gid 1000 pipeshub && \
+    useradd --uid 1000 --gid 1000 --home-dir /root --no-create-home \
+        --shell /usr/sbin/nologin pipeshub && \
+    install -d -o 1000 -g 1000 /root/.cache /root/.local && \
+    chown 1000:1000 /root
+ENV HOME=/root
+# Pinned so the baked models are still found when HOME is overridden (the
+# Helm chart sets HOME=/home/user).
+ENV HF_HOME=/root/.cache/huggingface \
+    NLTK_DATA=/root/nltk_data \
+    PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+
 # Point fastembed at the pre-populated cache we copy in below, matching the
 # FASTEMBED_CACHE_PATH used at build time in the python-deps stage.
 ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
@@ -112,12 +129,12 @@ COPY --from=python-deps /usr/local/lib/python3.12/site-packages /usr/local/lib/p
 COPY --from=python-deps /usr/local/bin /usr/local/bin
 
 # Copy ML model data (dense HF embeddings + reranker, sparse fastembed, NLTK)
-COPY --from=python-deps /root/.cache/huggingface /root/.cache/huggingface
-COPY --from=python-deps /root/.cache/fastembed /root/.cache/fastembed
-COPY --from=python-deps /root/nltk_data /root/nltk_data
+COPY --chown=1000:1000 --from=python-deps /root/.cache/huggingface /root/.cache/huggingface
+COPY --chown=1000:1000 --from=python-deps /root/.cache/fastembed /root/.cache/fastembed
+COPY --chown=1000:1000 --from=python-deps /root/nltk_data /root/nltk_data
 
 # Copy Playwright browser binaries
-COPY --from=python-deps /root/.cache/ms-playwright /root/.cache/ms-playwright
+COPY --chown=1000:1000 --from=python-deps /root/.cache/ms-playwright /root/.cache/ms-playwright
 
 # Copy Node.js backend (already pruned)
 COPY --from=nodejs-backend /app/backend/dist ./backend/dist
@@ -432,8 +449,17 @@ while true; do
 done
 EOF
 
-RUN chmod +x /app/process_monitor.sh
+RUN chmod +x /app/process_monitor.sh && \
+    install -d -o 1000 -g 1000 /app/python/logs /data/pipeshub && \
+    chown 1000:1000 /app /app/backend
+
+# Code stays root-owned (read-only to the app); only the dirs above, which the
+# services create log and state files in, belong to the runtime user. The image
+# starts as root so the entrypoint can take over data from earlier root-running
+# releases; it drops to uid 1000 with no capabilities before any service starts.
+COPY --chmod=755 deployment/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 3000 8002 8092 8093
 
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["/app/process_monitor.sh"]

@@ -1,4 +1,5 @@
 import re
+from collections.abc import Iterable
 from typing import Any, Dict, List, Optional
 
 from app.config.constants.arangodb import Connectors, OriginTypes, RecordRelations
@@ -61,7 +62,8 @@ CONTAINMENT_MAX_DEPTH = 1000
 # Records considered per entity when listing an entity's records, taken
 # before the newest-first sort. Without a bound, a language or broad category
 # linked to most of an org's records is sorted in full on every page. Past the
-# cap the order is newest among the first records found, and paging ends.
+# cap the order is newest among the first records found, and paging ends; the
+# provider reports that through ``EntityCandidateRows.capped``.
 ENTITY_CANDIDATE_SCAN_CAP = 10_000
 
 # Edge types that make one record the storage/display parent of another.
@@ -115,6 +117,21 @@ def select_canonical_chain_names(
                 break
     names.reverse()
     return names
+
+
+class EntityCandidateRows(list):
+    """One entity's candidate record rows, plus whether the provider's scan
+    stopped at ``ENTITY_CANDIDATE_SCAN_CAP``.
+
+    When ``capped`` the rows are the newest within an arbitrary bounded subset
+    of the entity's records, so neither "newest first" nor "no more records"
+    holds for the entity as a whole. A list subclass so existing callers that
+    treat the value as a plain list keep working.
+    """
+
+    def __init__(self, rows: Iterable[dict[str, Any]] = (), *, capped: bool = False) -> None:
+        super().__init__(rows)
+        self.capped = capped
 
 
 def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:

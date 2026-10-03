@@ -265,6 +265,7 @@ if TYPE_CHECKING:
         RecordGroup,
         User,
     )
+    from app.services.graph_db.common.utils import EntityCandidateRows
 
 
 def _distinct_connector_types(apps: "list[dict] | None") -> list[str]:
@@ -1137,7 +1138,9 @@ class IGraphDBProvider(ABC):
         field_name: str,
         field_values: list[Any],
         return_fields: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get nodes from a collection where a field value is in a list.
@@ -1150,6 +1153,9 @@ class IGraphDBProvider(ABC):
             field_values (List[Any]): List of values to match
             return_fields (Optional[List[str]]): Optional list of fields to return
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed query instead of logging it
+                and returning ``[]``, for callers that must tell "no such
+                nodes" from "could not look".
 
         Returns:
             List[Dict]: List of matching node documents
@@ -1444,6 +1450,53 @@ class IGraphDBProvider(ABC):
 
         Selects documents where ``vectorMembershipBackfilled`` is missing or false
         and ``status`` is not ``DELETING``.
+        """
+        pass
+
+    @abstractmethod
+    async def get_entity_index_candidate(
+        self,
+        collection: str,
+        marker: str,
+        *,
+        sweep_before: int | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """One app or org whose entity index projection is not at ``marker``.
+
+        ``collection`` is ``apps`` or ``organizations``; apps being deleted
+        are skipped. With ``sweep_before`` (epoch ms), an org whose stale-point
+        sweep last finished before it, or never, is also returned. See
+        ``app.modules.indexing.entity_index_rebuild``.
+
+        Raises:
+            ValueError: for any other collection.
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def page_entity_index_source(
+        self,
+        source: str,
+        scope_id: str,
+        after_key: str | None,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """One keyset page of ``source`` within ``scope_id``, ordered by key.
+
+        ``source`` is a key of ``ENTITY_INDEX_SOURCES``
+        (``app.services.graph_db.entity_index_queries``): records and record
+        groups are scoped by connector, taxonomy nodes and departments by org
+        (canonical nodes only; departments include global ones). Rows are
+        ``{"_key", "name", ...}`` plus the source's extra fields, unfiltered,
+        so a page shorter than ``limit`` means the source is exhausted. An
+        empty ``scope_id`` returns ``[]`` without querying.
+
+        Raises:
+            ValueError: for an unknown source.
+            Exception: on query failure.
         """
         pass
 
@@ -5720,7 +5773,7 @@ class IGraphDBProvider(ABC):
         limit_per_entity: int = 20,
         offset: int = 0,
         transaction: str | None = None,
-    ) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    ) -> "dict[tuple[str, str], EntityCandidateRows]":
         """Records linked to each knowledge-graph entity in ``refs``, scoped
         to the org and to each ref's connectors. **No permission check** —
         callers (``app.modules.retrieval.entity_permissions``) check every
@@ -5737,8 +5790,10 @@ class IGraphDBProvider(ABC):
 
         Every row satisfies ``orgId == org_id``, not deleted,
         ``connectorId IN ref["connectorIds"]`` and, when ``record_types`` is
-        given, ``recordType IN record_types``. Rows are deduplicated per
-        entity, sorted by ``sourceLastModifiedTimestamp`` (falling back to
+        given, ``recordType IN record_types``. At most
+        ``ENTITY_CANDIDATE_SCAN_CAP`` records are scanned per entity; within
+        that scan rows are deduplicated, sorted by
+        ``sourceLastModifiedTimestamp`` (falling back to
         ``updatedAtTimestamp``) descending then key ascending, and paged per
         entity with ``offset``/``limit_per_entity``. Runs at most one query
         per entity type present in ``refs``; the type→collection/label/edge
@@ -5753,7 +5808,11 @@ class IGraphDBProvider(ABC):
             transaction: Optional transaction id.
 
         Returns:
-            ``{(entity_type, entity_id): [row, ...]}`` for every ref queried.
+            ``{(entity_type, entity_id): EntityCandidateRows}`` for every ref
+            queried. ``EntityCandidateRows`` is a list of rows whose
+            ``capped`` is true when the scan stopped at the cap, so the rows
+            are not newest across all of the entity's records and paging past
+            them does not mean there are no more.
             The key carries the type because ids are only unique within a
             collection, so an id-keyed result would let one type's rows
             overwrite another's. Each row is

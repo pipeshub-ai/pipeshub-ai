@@ -40951,6 +40951,7 @@ paths:
       summary: Get Slack bot configurations
       description: |
         Retrieve all Slack bot configurations for the organization.
+        Bot tokens and signing secrets are masked in this response.
       operationId: getSlackBotConfigs
       security:
         - bearerAuth: []
@@ -40968,6 +40969,24 @@ paths:
                     type: array
                     items:
                       type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        agentId:
+                          type: string
+                          nullable: true
+                        createdAt:
+                          type: string
+                        updatedAt:
+                          type: string
+                        botToken:
+                          type: string
+                          description: Masked. The stored bot token is not returned.
+                        signingSecret:
+                          type: string
+                          description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
         '403':
@@ -40997,12 +41016,72 @@ paths:
               schema:
                 type: object
                 properties:
-                  message:
+                  status:
                     type: string
+                  config:
+                    type: object
+                    description: The created configuration. botToken and signingSecret are masked.
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      agentId:
+                        type: string
+                        nullable: true
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      botToken:
+                        type: string
+                        description: Masked. The stored bot token is not returned.
+                      signingSecret:
+                        type: string
+                        description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
         '403':
           description: Forbidden - Admin access required
+
+  /configurationManager/internal/slack-bot:
+    get:
+      tags:
+        - Configuration Manager
+      summary: Get Slack bot credentials for signature verification
+      description: |
+        Service-to-service only. Requires the slack-bot:verify scope, which only
+        the Slack bot process mints. Returns the fields that process needs to
+        verify a request signature. Bot tokens and signing secrets are not masked.
+      operationId: getInternalSlackBotConfigs
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Slack bot credentials retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  configs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        agentId:
+                          type: string
+                          nullable: true
+                        botToken:
+                          type: string
+                        signingSecret:
+                          type: string
+        '401':
+          description: The scoped token was missing, invalid, or did not include slack-bot:verify
 
   /configurationManager/slack-bot/{configId}:
     put:
@@ -41035,8 +41114,29 @@ paths:
               schema:
                 type: object
                 properties:
-                  message:
+                  status:
                     type: string
+                  config:
+                    type: object
+                    description: The updated configuration. botToken and signingSecret are masked.
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      agentId:
+                        type: string
+                        nullable: true
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      botToken:
+                        type: string
+                        description: Masked. The stored bot token is not returned.
+                      signingSecret:
+                        type: string
+                        description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
         '403':
@@ -41820,7 +41920,9 @@ paths:
         - Crawling Jobs
       summary: Get all crawling job statuses
       description: |
-        Retrieve the status of all scheduled crawling jobs across the organization.
+        Retrieve the status of all scheduled crawling jobs across the organization,
+        including org-wide connectors and other members' personal connectors.
+        Only an organization admin may call this; a member is refused with 400.
       operationId: getAllCrawlingJobStatus
       security:
         - bearerAuth: []
@@ -41839,8 +41941,16 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/JobStatus'
+        '400':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid JWT token required
+        '403':
+          description: Token lacks the required scope
 
     delete:
       tags:
@@ -41962,6 +42072,7 @@ paths:
       summary: Get queue statistics
       description: |
         Retrieve statistics for the crawling job queue including active, waiting, and completed job counts.
+        Counts cover only the caller's organization.
       operationId: getQueueStats
       security:
         - bearerAuth: []

@@ -10,6 +10,7 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import {
   storageEtcdPaths,
   STORAGE_WRITE_FAILED_MESSAGE,
+  MAX_SIGNED_URL_TTL_SECONDS,
 } from '../constants/constants';
 import {
   AzureBlobStorageConfig,
@@ -1100,7 +1101,10 @@ export class StorageController {
         document,
         resolvedVersion,
         undefined, // fileName is not required for download TODO: fix this usage
-        expirationTimeInSeconds ? Number(expirationTimeInSeconds) : 3600,
+        Math.min(
+          expirationTimeInSeconds ? Number(expirationTimeInSeconds) : 3600,
+          MAX_SIGNED_URL_TTL_SECONDS,
+        ),
       );
 
       if (document.storageVendor === StorageVendor.Local) {

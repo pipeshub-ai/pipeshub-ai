@@ -58,6 +58,8 @@ class TokenScopes(Enum):
     # Python -> Node caller-role lookups, so Node's rate limiter can tell them from
     # client traffic. Never accepted by the Python services.
     CALLER_ROLE = "caller:role"
+    DOCUMENT_PARSE = "document:parse"
+    DOCUMENT_CLASSIFY = "document:classify"
 
 
 class OAuthScopes(str, Enum):
