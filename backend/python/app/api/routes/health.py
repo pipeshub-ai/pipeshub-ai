@@ -336,6 +336,19 @@ _CAPABILITY_ERROR_MARKERS = (
     "unknown parameter",
 )
 
+_IMAGE_EMBEDDING_SETUP_FAILED = (
+    "PipesHub couldn't set up image embedding for this provider. Check its endpoint "
+    "and API key in Workspace → AI Models, then try again."
+)
+
+
+class _ImageEmbeddingSetupError(Exception):
+    """The image-embedding provider could not be built from these settings.
+
+    Kept apart from a capability failure: telling the admin to uncheck
+    Multimodal would switch off a capability over a wrong endpoint.
+    """
+
 
 def _is_capability_error(exc: Exception) -> bool:
     """Whether `exc` says the model cannot do the thing, as opposed to the
@@ -1320,7 +1333,7 @@ async def _probe_image_embedding(
         )
     except Exception as exc:
         logger.warning("Could not build a multimodal embedding provider: %s", exc)
-        return "This provider cannot embed images."
+        raise _ImageEmbeddingSetupError from exc
 
     if multimodal_provider is None or not multimodal_provider.supports_multimodal():
         return (
@@ -1458,9 +1471,14 @@ async def perform_embedding_health_check(
             # images silently never get indexed
             # (`vectorstore._process_image_embeddings` warns and returns []).
             if _is_multimodal(embedding_config):
-                image_error = await _probe_image_embedding(
-                    embedding_config, model_name, embedding_dimension, logger,
-                )
+                try:
+                    image_error = await _probe_image_embedding(
+                        embedding_config, model_name, embedding_dimension, logger,
+                    )
+                except _ImageEmbeddingSetupError:
+                    return _config_error(
+                        _IMAGE_EMBEDDING_SETUP_FAILED, embedding_config, model_name,
+                    )
                 if image_error is not None:
                     return _config_error(
                         image_error, embedding_config, model_name,
