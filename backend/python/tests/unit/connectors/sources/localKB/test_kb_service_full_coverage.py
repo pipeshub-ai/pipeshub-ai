@@ -1979,7 +1979,6 @@ class TestMoveRecord:
         service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
         service.graph_provider.is_record_folder = AsyncMock(return_value=True)
-        service.graph_provider.is_record_descendant_of = AsyncMock(return_value=True)
 
         result = await service.move_record("kb1", "rec1", "child_folder", "user1")
         assert result["success"] is False

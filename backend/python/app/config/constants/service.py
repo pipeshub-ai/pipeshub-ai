@@ -55,6 +55,9 @@ class TokenScopes(Enum):
     # Node -> query: grant/revoke permission edges on a conversation's attachments
     # and artifacts, after Node has checked ownership/sharing in Mongo.
     CONVERSATION_PERMISSIONS = "conversation:permissions"
+    # Python -> Node caller-role lookups, so Node's rate limiter can tell them from
+    # client traffic. Never accepted by the Python services.
+    CALLER_ROLE = "caller:role"
 
 
 class OAuthScopes(str, Enum):

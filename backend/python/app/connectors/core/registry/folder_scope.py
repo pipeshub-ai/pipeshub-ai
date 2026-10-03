@@ -30,6 +30,16 @@ def _as_folder(path: str) -> str:
     return f"{cleaned}/" if cleaned else ""
 
 
+def path_in_container(container_name: str | None, external_record_id: str | None) -> str | None:
+    """The ``<path>`` of a record id ``<container>/<path>``; None when the id is not in that container."""
+    if not container_name or not external_record_id:
+        return None
+    prefix = f"{container_name}/"
+    if not external_record_id.startswith(prefix):
+        return None
+    return external_record_id[len(prefix):] or None
+
+
 @dataclass(frozen=True)
 class FolderScope:
     """Folder prefixes (each ending in ``/``) and whether they are excluded."""

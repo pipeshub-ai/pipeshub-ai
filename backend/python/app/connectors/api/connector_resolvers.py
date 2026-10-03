@@ -34,9 +34,9 @@ def build_graph_data_store(logger_: logging.Logger, graph_provider: Any, org_id:
 
 
 async def lookup_user_for_records(graph_provider: Any, user_id: str, org_id: Optional[str]) -> Any:
-    """OSS: lookup by external userId only."""
+    """OSS: lookup by external userId only. A failed lookup raises, not "user not found"."""
     del org_id
-    return await graph_provider.get_user_by_user_id(user_id=user_id)
+    return await graph_provider.get_user_by_user_id(user_id=user_id, raise_on_error=True)
 
 
 def records_user_id_arg(user: dict[str, Any], external_user_id: str) -> str:
@@ -90,15 +90,6 @@ async def authorize_connector_stats(
             status_code=403,
             detail=f"Insufficient permissions to access stats for connector {connector_id}",
         )
-
-
-async def assert_hard_delete_record_org(
-    request: Request,
-    graph_provider: Any,
-    record_id: str,
-) -> None:
-    """OSS: no extra tenant gate on hard delete."""
-    del request, graph_provider, record_id
 
 
 def strip_redacted_fields(data: dict[str, Any]) -> dict[str, Any]:

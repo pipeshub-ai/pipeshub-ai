@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.edition_config import (
     agent_router,
@@ -505,7 +506,8 @@ app.include_router(speech_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(skills_router, prefix="/api/v1/skills")
 app.include_router(toolsets_router)
-app.include_router(health_router, prefix="/api/v1")
+# These routes call whatever provider URL the body names, so only admins may reach them.
+app.include_router(health_router, prefix="/api/v1", dependencies=[Depends(require_admin_caller)])
 app.include_router(ai_models_registry_router, prefix="/api/v1")
 if agent_sharing_router is not None:
     app.include_router(agent_sharing_router, prefix="/api/v1/agent")

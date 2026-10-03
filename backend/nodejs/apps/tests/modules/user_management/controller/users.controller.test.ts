@@ -3,7 +3,8 @@ import bcrypt from 'bcryptjs';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
-import { UserController } from '../../../../src/modules/user_management/controller/users.controller';
+import { UserController, USER_DELETE_NOT_RECORDED } from '../../../../src/modules/user_management/controller/users.controller';
+import { ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
 import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
@@ -1680,6 +1681,7 @@ describe('UserController', () => {
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
       stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      const recordActivity = sinon.stub(UserActivities, 'create').resolves({} as any);
 
       await controller.deleteUser(req, res, next);
 
@@ -1688,6 +1690,46 @@ describe('UserController', () => {
       expect(mockUser.save.calledOnce).to.be.true;
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
       expect(res.json.calledWith({ message: 'User deleted successfully' })).to.be.true;
+      expect(
+        recordActivity.calledWithMatch({
+          userId: mockUser._id,
+          orgId: mockUser.orgId,
+          activityType: userActivitiesType.ACCOUNT_DELETED,
+        }),
+        'the deletion is recorded as ending the account\'s sessions',
+      ).to.be.true;
+      // Recorded before anything is changed, so a deletion always leaves one.
+      expect(recordActivity.calledBefore(UserGroups.updateMany as sinon.SinonStub)).to.be.true;
+      expect(recordActivity.calledBefore(mockUser.save)).to.be.true;
+    });
+
+    it('deletes nothing, and says to retry, when the deletion cannot be recorded', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+      const mockUser = {
+        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'test@test.com',
+        isDeleted: false,
+        role: 'member',
+        save: sinon.stub().resolves(),
+      };
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      stubOAuthAppsForDeletedUser([]);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      sinon.stub(UserActivities, 'create').rejects(new Error('mongo timeout'));
+
+      await controller.deleteUser(req, res, next);
+
+      const error = next.firstCall.args[0];
+      expect(error).to.be.instanceOf(ServiceUnavailableError);
+      expect(error.message).to.equal(USER_DELETE_NOT_RECORDED);
+      expect(mockUser.isDeleted).to.be.false;
+      expect(mockUser.save.called).to.be.false;
+      expect((UserGroups.updateMany as sinon.SinonStub).called).to.be.false;
+      expect((UserCredentials.updateOne as sinon.SinonStub).called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(res.json.called).to.be.false;
     });
   });
 
@@ -2042,6 +2084,12 @@ describe('UserController', () => {
   });
 
   describe('deleteUser (additional)', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should call next with BadRequestError when userId or orgId is missing', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
 
@@ -2232,6 +2280,12 @@ describe('UserController', () => {
   });
 
   describe('deleteUser (additional cases)', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should throw NotFoundError when user._id or orgId is missing', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
 
@@ -2881,6 +2935,50 @@ describe('UserController', () => {
       }
     });
 
+    it('records the restore before bringing a deleted account back', async () => {
+      req.body = { emails: ['deleted@test.com'], groupIds: [] };
+      stubActorAsOrgAdmin();
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      const deletedUser = { _id: 'du1', email: 'deleted@test.com', isDeleted: true };
+      sinon.stub(Users, 'find')
+        .onFirstCall().resolves([deletedUser] as any)
+        .onSecondCall().resolves([{ ...deletedUser, isDeleted: false }] as any);
+      const order: string[] = [];
+      const record = sinon.stub(UserActivities, 'insertMany').callsFake((async () => {
+        order.push('restore recorded');
+        return [];
+      }) as any);
+      sinon.stub(Users, 'updateMany').callsFake((async () => {
+        order.push('account restored');
+        return {};
+      }) as any);
+      sinon.stub(Users, 'create').resolves([] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(order).to.deep.equal(['restore recorded', 'account restored']);
+      const [docs] = record.firstCall.args as any[];
+      expect(docs).to.have.lengthOf(1);
+      expect(docs[0]).to.include({ userId: 'du1', activityType: 'ACCOUNT RESTORED' });
+    });
+
+    it('restores nothing when the restore cannot be recorded', async () => {
+      req.body = { emails: ['deleted@test.com'], groupIds: [] };
+      stubActorAsOrgAdmin();
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      sinon.stub(Users, 'find').resolves([{ _id: 'du1', email: 'deleted@test.com', isDeleted: true }] as any);
+      sinon.stub(UserActivities, 'insertMany').rejects(new Error('mongo timeout'));
+      const restore = sinon.stub(Users, 'updateMany').resolves({} as any);
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(restore.called).to.be.false;
+      expect(next.called).to.be.true;
+    });
+
     it('should return error message when all emails already have active accounts', async () => {
       req.body = {
         emails: ['existing@test.com'],
@@ -3030,6 +3128,8 @@ describe('UserController', () => {
 
   describe('addManyUsers - promote restored/pending to admin', () => {
     it('should set role admin on restored and pending users when inviteRole is admin', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       const deletedId = new mongoose.Types.ObjectId();
       const pendingId = new mongoose.Types.ObjectId();
 
@@ -3095,6 +3195,8 @@ describe('UserController', () => {
     });
 
     it('should not promote users to admin when inviteRole is member', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       const deletedId = new mongoose.Types.ObjectId();
 
       req.body = {
@@ -3267,6 +3369,12 @@ describe('UserController', () => {
   });
 
   describe('deleteUser - admin check', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should throw BadRequestError when deleting admin user', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
 
@@ -3998,6 +4106,12 @@ describe('UserController', () => {
   // deleteUser - full success flow
   // -----------------------------------------------------------------------
   describe('deleteUser - full success flow', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should soft delete user, remove from groups, clear password, and publish event', async () => {
       req.params = { id: '507f1f77bcf86cd799439013' };
 
@@ -4032,6 +4146,12 @@ describe('UserController', () => {
   // deleteUser - OAuth apps soft-delete cascade
   // -----------------------------------------------------------------------
   describe('deleteUser - OAuth apps cascade', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     function stubOAuthAppQueryChain(appsFromExec: unknown[]) {
       const chain = {
         select: sinon.stub(),
@@ -5249,6 +5369,12 @@ describe('UserController', () => {
   // Branch coverage: deleteUser - userId/orgId null check
   // -----------------------------------------------------------------------
   describe('deleteUser - userId/orgId branches', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should throw NotFoundError when user._id is falsy', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
       sinon.stub(Users, 'findOne').resolves({
@@ -5464,6 +5590,8 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('addManyUsers - restored accounts mail error branches', () => {
     it('should return the specific error code when mail fails for restored users with password enabled', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
@@ -5504,6 +5632,8 @@ describe('UserController', () => {
     });
 
     it('should return the specific error code when mail fails for restored users with password disabled', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
@@ -5544,6 +5674,8 @@ describe('UserController', () => {
     });
 
     it('should skip restored user without email', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['valid@test.com'],
         groupIds: ['g1'],
@@ -5703,6 +5835,8 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('addManyUsers - restored user missing userId throws', () => {
     it('should throw when restored user has no _id', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
@@ -5745,6 +5879,8 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('addManyUsers - auth method fetch error for restored users', () => {
     it('should throw when passwordMethodEnabled returns non-200 for restored users', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],

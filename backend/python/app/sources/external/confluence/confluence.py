@@ -440,6 +440,41 @@ class ConfluenceDataSource:
         )
         return await self._client.execute(req)
 
+    async def list_space_content_v1(
+        self,
+        space_key: str,
+        content_type: str,
+        status: str = "current",
+        start: int | None = None,
+        limit: int = 100,
+        expand: str | None = None,
+        headers: dict[str, Any] | None = None,
+    ) -> HTTPResponse:
+        """``GET /rest/api/content?spaceKey=&type=&status=`` — a space's pages or blog posts from the database.
+
+        Unlike ``/content/search`` it does not go through the search index, so it
+        is what exists, as far as the caller's account can see.
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        url = f"{self._v1_rest_api_base()}/content"
+        _query: dict[str, Any] = {"spaceKey": space_key, "type": content_type, "status": status, "limit": limit}
+        if start is not None:
+            _query["start"] = start
+        if expand:
+            _query["expand"] = expand
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(dict(headers or {})),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
     async def get_content_comments_v1(
         self,
         content_id: str,

@@ -65,7 +65,6 @@ from app.config.constants.service import (
 from app.edition_config import (
     allowed_connector_list_scopes,
     annotate_oauth_inheritance,
-    assert_hard_delete_record_org,
     authorize_connector_stats,
     build_graph_data_store,
     default_connector_scope,
@@ -1138,36 +1137,6 @@ async def get_signed_url(
     except Exception as e:
         logger.error(f"Error getting signed URL: {repr(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=action_failed("open this file")) from e
-
-@router.delete("/api/v1/delete/record/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE))])
-@inject
-async def handle_record_deletion(
-    record_id: str,
-    request: Request,
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-) -> dict | None:
-    try:
-        await assert_hard_delete_record_org(request, graph_provider, record_id)
-        response = await graph_provider.delete_records_and_relations(
-            record_id, hard_delete=True
-        )
-        if not response:
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This file")
-            )
-        return {
-            "status": "success",
-            "message": "Record deleted successfully",
-            "response": response,
-        }
-    except HTTPException as he:
-        raise he  # Re-raise HTTP exceptions as-is
-    except Exception as e:
-        logger.error(f"Error deleting record: {str(e)}")
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=action_failed("delete this file"),
-        ) from e
 
 @router.get("/api/v1/internal/stream/record/{record_id}/", response_model=None)
 @inject
@@ -2286,6 +2255,19 @@ async def delete_record(
                 detail="You do not have access to this record",
             )
 
+        # Only uploads are role-checked by the providers, and a synced record deleted here
+        # would return on the next sync, so those are removed at the source instead.
+        record = has_access.get("record") or {}
+        if (
+            record.get("origin") != OriginTypes.UPLOAD.value
+            and record.get("connectorName") != Connectors.KNOWLEDGE_BASE.value
+        ):
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only files uploaded to a knowledge base can be deleted here. To remove a record "
+                "synced from a connector, delete the item in the source app or remove the connector.",
+            )
+
         result = await graph_provider.delete_record(
             record_id=record_id,
             user_id=user_id,
@@ -2299,6 +2281,7 @@ async def delete_record(
             # Retry transient broker hiccups, then flag (rather than silently
             # swallow) a failure so the caller knows vector cleanup is pending.
             vector_cleanup_pending = False
+            failed_record_ids: list[str] = []
             event_data = result.get("eventData")
             has_valid_event_data = (
                 isinstance(event_data, dict)
@@ -2311,26 +2294,31 @@ async def delete_record(
                     f"❌ Malformed eventData for record {record_id}, skipping publish: {event_data!r}"
                 )
                 vector_cleanup_pending = True
+                failed_record_ids.append(record_id)
             elif has_valid_event_data:
                 timestamp = get_epoch_timestamp_in_ms()
-                event = {
-                    "eventType": event_data["eventType"],
-                    "timestamp": timestamp,
-                    "payload": event_data["payload"]
-                }
-                try:
-                    await retry_async(
-                        lambda: kafka_service.publish_event(event_data["topic"], event),
-                        logger=logger,
-                        description=f"publish {event_data['eventType']} event for record {record_id}",
-                    )
-                    logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
-                except Exception as e:
-                    logger.error(
-                        f"❌ Giving up publishing deletion event for record {record_id} "
-                        f"after retries; embeddings are orphaned until reconciliation: {str(e)}"
-                    )
-                    vector_cleanup_pending = True
+                # An email's attachments have vectors of their own.
+                for payload in event_data.get("payloads") or [event_data["payload"]]:
+                    event = {
+                        "eventType": event_data["eventType"],
+                        "timestamp": timestamp,
+                        "payload": payload,
+                    }
+                    try:
+                        await retry_async(
+                            lambda event=event: kafka_service.publish_event(event_data["topic"], event),
+                            logger=logger,
+                            description=f"publish {event_data['eventType']} event for record {record_id}",
+                        )
+                        logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                    except Exception as e:
+                        logger.error(
+                            f"❌ Giving up publishing deletion event for record "
+                            f"{payload.get('recordId') or record_id} after retries; embeddings "
+                            f"are orphaned until reconciliation: {str(e)}"
+                        )
+                        vector_cleanup_pending = True
+                        failed_record_ids.append(payload.get("recordId") or record_id)
 
             # This route deletes directly, bypassing the processor's cascade
             # path, so it owns its own cache invalidation.
@@ -2347,7 +2335,7 @@ async def delete_record(
             }
             if vector_cleanup_pending:
                 response["vectorCleanupPending"] = True
-                response["vectorCleanupFailedRecordIds"] = [record_id]
+                response["vectorCleanupFailedRecordIds"] = failed_record_ids or [record_id]
             return response
         else:
             logger.error("❌ Failed to delete record %s: %s", record_id, result.get("reason"))
@@ -4431,6 +4419,15 @@ async def get_connector_instance_config(
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=not_found("This connector")
+            )
+
+        # The config carries the owner's credentials, so being able to see a personal
+        # connector (as a share recipient can, in the enterprise edition) is not enough to read it.
+        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
+            logger.warning(f"Config read refused for personal connector {connector_id}: caller is not its creator")
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="Only the person who created this connector can view its configuration",
             )
 
         connector_type = instance.get("type", "")

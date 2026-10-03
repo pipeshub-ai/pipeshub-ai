@@ -34,6 +34,7 @@ from app.modules.parsers.excel.prompt_template import (
     row_text_prompt_for_csv,
     table_summary_prompt,
 )
+from app.modules.parsers.text_decoding import decode_text
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
 from app.utils.logger import create_logger
@@ -87,25 +88,12 @@ class CSVParser:
     ) -> ParseResult:
             llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
 
-            # Try different encodings to decode binary data
-            encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
-            all_rows = None
-            for encoding in encodings:
-                try:
-                    # Decode binary data to string
-                    csv_text = content.decode(encoding)
-
-                    # Create string stream from decoded text
-                    csv_stream = io.StringIO(csv_text)
-
-                    # Read raw rows for table detection (sync CSV scan; keep
-                    # large files off the event loop).
-                    all_rows = await asyncio.to_thread(self.read_raw_rows, csv_stream)
-                    break
-                except UnicodeDecodeError:
-                    continue
-                except Exception as e:
-                    continue
+            try:
+                # Sync CSV scan; keep large files off the event loop.
+                all_rows = await asyncio.to_thread(self.read_raw_rows, io.StringIO(decode_text(content)))
+            except Exception as e:
+                logger.warning("Could not read rows from CSV %s: %s", record_name, e)
+                all_rows = None
 
             if all_rows is None or not all_rows:
                 return ParseResult(
@@ -137,16 +125,7 @@ class CSVParser:
         Assumes the first non-empty row of each detected table is a header row.
         Caps data rows at ``max_rows`` across all tables to keep chat context bounded.
         """
-        encodings = ["utf-8", "utf-8-sig", "latin1", "cp1252", "iso-8859-1"]
-        all_rows: list[list[str]] | None = None
-        for encoding in encodings:
-            try:
-                csv_text = content.decode(encoding)
-                csv_stream = io.StringIO(csv_text)
-                all_rows = await asyncio.to_thread(self.read_raw_rows, csv_stream)
-                break
-            except UnicodeDecodeError:
-                continue
+        all_rows = await asyncio.to_thread(self.read_raw_rows, io.StringIO(decode_text(content)))
 
         if not all_rows:
             return BlocksContainer(blocks=[], block_groups=[])

@@ -1,15 +1,12 @@
 # pyright: ignore-file
 
 """
-Confluence mutation/resync integration tests (NOT collected by pytest).
+Confluence incremental sync: pages created, updated, renamed and moved at the source.
 
-These tests create, update, move, or rename Confluence content and depend on v1
-content/search reflecting recent API changes. They are kept for future re-enable
-when Confluence search indexing is reliable.
-
-Pytest only collects ``test_*.py`` and ``*_test.py`` — this module is excluded.
-To run manually later, copy tests back into ``confluence_integration_test.py``
-or rename this file to ``confluence_mutation_integration_test.py``.
+Every page these tests touch is one they created, and all of them are deleted
+when the module finishes, so the shared test space is left as it was found.
+Each step waits for Confluence's v1 search to show the change before syncing,
+because the connector reads through that search and it lags the write API.
 """
 
 import asyncio
@@ -20,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import pytest
+import pytest_asyncio
 
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
@@ -45,7 +43,45 @@ from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import wait_for_sync_completion  # noqa: E402
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 
-logger = logging.getLogger("confluence-mutation-cases")
+logger = logging.getLogger("confluence-mutation")
+
+CREATED_PAGES = "created_page_ids"
+
+
+def _remember_created_page(state: Dict[str, Any], page_id: str) -> None:
+    state.setdefault(CREATED_PAGES, []).append(page_id)
+
+
+def _page_from_earlier_step(state: Dict[str, Any], key: str, step: str) -> str:
+    """A page an earlier test in this module created; never a page of the shared space."""
+    page_id = state.get(key)
+    if not page_id:
+        pytest.fail(
+            f"{step} did not leave a page for this test to change, so it has nothing "
+            "of its own to work on. Its failure above is the one to look at."
+        )
+    return str(page_id)
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="session", autouse=True)
+async def _delete_created_pages(
+    confluence_connector: Dict[str, Any],
+    confluence_datasource: ConfluenceDataSource,
+):
+    yield
+    # Creation order puts a moved child before the parent it was moved under.
+    left_behind = []
+    for page_id in confluence_connector.get(CREATED_PAGES, []):
+        try:
+            resp = await confluence_datasource.delete_page(int(page_id))
+            if resp.status not in (200, 204, 404):
+                left_behind.append(f"{page_id} (HTTP {resp.status})")
+        except Exception as exc:  # noqa: BLE001 - try every page, then report
+            left_behind.append(f"{page_id} ({exc})")
+    assert not left_behind, (
+        "These pages created by the Confluence incremental tests could not be "
+        f"deleted and are still in the shared test space: {left_behind}"
+    )
 
 
 @pytest.mark.integration
@@ -86,6 +122,7 @@ class TestConfluenceIncrementalSync:
         )
         page_data = resp.json()
         page_id = str(page_data["id"])
+        _remember_created_page(confluence_connector, page_id)
 
         await wait_until_confluence_condition(
             check_fn=lambda: check_page_in_v1_search_bool(
@@ -133,9 +170,7 @@ class TestConfluenceIncrementalSync:
     ) -> None:
         """TC-CF-026: Update page content, verify version is incremented."""
         connector_id = confluence_connector["connector_id"]
-        page_id = int(
-            confluence_connector.get("tc_cf_024_page_id", confluence_connector["test_page_id"])
-        )
+        page_id = int(_page_from_earlier_step(confluence_connector, "tc_cf_024_page_id", "TC-CF-024"))
 
         page_resp = await confluence_datasource.get_page_by_id(page_id, body_format="storage")
         page_data = page_resp.json()
@@ -217,10 +252,7 @@ class TestConfluenceReindexMutation:
     ) -> None:
         """TC-CF-047: Reindex updated page - DB should update with new version."""
         connector_id = confluence_connector["connector_id"]
-        page_id = int(confluence_connector.get("test_page_id", 0))
-
-        if not page_id:
-            pytest.skip("No test page ID available")
+        page_id = int(_page_from_earlier_step(confluence_connector, "incr_page_id", "TC-INCR-001"))
 
         record_before = await graph_provider.get_record_by_external_id(
             connector_id, str(page_id)
@@ -332,6 +364,7 @@ class TestConfluenceConnectorMutation:
             },
         )
         new_page_1 = resp_1.json()
+        _remember_created_page(confluence_connector, str(new_page_1["id"]))
 
         resp_2 = await confluence_datasource.create_page(
             root_level=True,
@@ -346,6 +379,7 @@ class TestConfluenceConnectorMutation:
             },
         )
         new_page_2 = resp_2.json()
+        _remember_created_page(confluence_connector, str(new_page_2["id"]))
 
         page_id_1 = str(new_page_1["id"])
         page_id_2 = str(new_page_2["id"])
@@ -359,7 +393,8 @@ class TestConfluenceConnectorMutation:
         api_after_create = await count_confluence_space_pages_v1_search(
             confluence_datasource, space_key
         )
-        assert api_after_create == api_before + 2, (
+        # At least: another run may be writing to the same space.
+        assert api_after_create >= api_before + 2, (
             f"Confluence v1 page count should increase by 2; before={api_before}, "
             f"after_create={api_after_create}"
         )
@@ -383,8 +418,8 @@ class TestConfluenceConnectorMutation:
 
         after_count = await graph_provider.count_records(connector_id)
 
-        confluence_connector["test_page_id"] = str(new_page_1["id"])
-        confluence_connector["test_page_title"] = new_page_1["title"]
+        confluence_connector["incr_page_id"] = str(new_page_1["id"])
+        confluence_connector["incr_page_title"] = new_page_1["title"]
         logger.info(
             "TC-INCR-001 passed: %d -> %d records (v1 pages %d -> %d)",
             before_count,
@@ -403,7 +438,7 @@ class TestConfluenceConnectorMutation:
     ) -> None:
         """TC-UPDATE-001: Update page content, verify record is updated."""
         connector_id = confluence_connector["connector_id"]
-        page_id = int(confluence_connector["test_page_id"])
+        page_id = int(_page_from_earlier_step(confluence_connector, "incr_page_id", "TC-INCR-001"))
         before_count = await graph_provider.count_records(connector_id)
 
         page_resp = await confluence_datasource.get_page_by_id(page_id, body_format="storage")
@@ -456,8 +491,8 @@ class TestConfluenceConnectorMutation:
     ) -> None:
         """TC-RENAME-001: Rename page, verify old title gone and new title present."""
         connector_id = confluence_connector["connector_id"]
-        page_id = int(confluence_connector["test_page_id"])
-        old_title = confluence_connector["test_page_title"]
+        page_id = int(_page_from_earlier_step(confluence_connector, "incr_page_id", "TC-INCR-001"))
+        old_title = confluence_connector["incr_page_title"]
         before_count = await graph_provider.count_records(connector_id)
 
         new_title = f"Renamed-{old_title}"
@@ -505,7 +540,7 @@ class TestConfluenceConnectorMutation:
         """TC-MOVE-001: Move page under new parent, verify hierarchy change."""
         connector_id = confluence_connector["connector_id"]
         space_id = confluence_connector["space_id"]
-        page_id = confluence_connector["renamed_page_id"]
+        page_id = _page_from_earlier_step(confluence_connector, "renamed_page_id", "TC-RENAME-001")
         before_count = await graph_provider.count_records(connector_id)
 
         parent_title = f"Parent Page {uuid.uuid4().hex[:8]}"
@@ -522,6 +557,7 @@ class TestConfluenceConnectorMutation:
             },
         )
         parent_page = parent_resp.json()
+        _remember_created_page(confluence_connector, str(parent_page["id"]))
 
         parent_id_str = str(parent_page["id"])
         await wait_until_confluence_condition(

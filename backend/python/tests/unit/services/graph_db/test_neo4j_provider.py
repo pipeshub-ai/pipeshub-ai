@@ -1927,6 +1927,32 @@ class TestTraversalAndRecordLookups:
             await neo4j_provider.get_file_record_by_id("r1")
 
 
+def _neo4j_group(key: str = "g1", email: str = "sales@example.com") -> dict:
+    return {
+        "id": key, "name": "Sales", "externalGroupId": email, "connectorName": "DRIVE WORKSPACE",
+        "connectorId": "c1", "orgId": "o1", "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+    }
+
+
+class TestGetGroupsWithPermissionToNode:
+    @pytest.mark.asyncio
+    async def test_returns_the_groups_with_an_edge_to_the_node(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"g": _neo4j_group()}])
+        groups = await neo4j_provider.get_groups_with_permission_to_node("records/r1", "records", transaction="t1")
+        assert [(g.id, g.source_user_group_id) for g in groups] == [("g1", "sales@example.com")]
+        call = neo4j_provider.client.execute_query.call_args
+        assert call.kwargs["parameters"] == {"node_key": "r1"}
+        assert call.kwargs["txn_id"] == "t1"
+        assert "(g:Group)-[r:PERMISSION]->(n)" in call.args[0]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_answers_empty_unless_asked_to_raise(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("down"))
+        assert await neo4j_provider.get_groups_with_permission_to_node("r1", "records") == []
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_groups_with_permission_to_node("r1", "records", raise_on_error=True)
+
+
 class TestUserAndOrganizationLookups:
     @pytest.mark.asyncio
     async def test_get_user_by_email_success_and_none(self, neo4j_provider: Neo4jProvider):

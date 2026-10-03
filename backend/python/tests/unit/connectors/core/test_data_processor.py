@@ -734,12 +734,9 @@ class TestOnRecordDeleted:
     async def test_deletes_record_publishes_when_vrid_present(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
-        existing = MagicMock()
-        existing.virtual_record_id = "vr-9"
-        existing.org_id = "org-1"
-        existing.id = "rec-1"
-        existing.version = 1
-        existing.connector_id = "conn-9"
+        # The stored document, as GraphTransactionStore.get_record_by_key returns it.
+        existing = {"_key": "rec-1", "orgId": "org-1", "version": 1,
+                    "virtualRecordId": "vr-9", "connectorId": "conn-9"}
         tx_store.get_record_by_key = AsyncMock(return_value=existing)
 
         ctx = AsyncMock()

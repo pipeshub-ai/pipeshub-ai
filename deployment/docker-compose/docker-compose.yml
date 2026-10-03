@@ -104,6 +104,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       - WEB_CONNECTOR_ALLOWED_HOSTS=${WEB_CONNECTOR_ALLOWED_HOSTS:-}
+      - PIPESHUB_BLOCK_PRIVATE_ADDRESSES=${PIPESHUB_BLOCK_PRIVATE_ADDRESSES:-}
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
@@ -222,6 +223,7 @@ services:
       - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read,agent:read,agent:execute,connector:read}
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-20m}
       # RFC 7591 DCR is off unless "true". RFC 8628 device grant is on unless "false".
       - PIPESHUB_ENABLE_DCR=${PIPESHUB_ENABLE_DCR:-}
       - PIPESHUB_ENABLE_DEVICE_GRANT=${PIPESHUB_ENABLE_DEVICE_GRANT:-}

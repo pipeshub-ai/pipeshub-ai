@@ -47,6 +47,7 @@ from app.exceptions.graph_db_exceptions import (
     GraphQueryError,
     PermissionVerificationUnavailableError,
 )
+from app.models.permission import ORG_SHARE_PERMISSION_TYPES
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -144,8 +145,10 @@ from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
+    CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
     KB_MAX_FOLDER_DEPTH,
+    KB_ROLE_PRIORITY,
     MAX_DIRECT_GRANT_RECORDS,
     PATH_MAX_CANDIDATES,
     ROOT_SCOPED_CONNECTOR_TYPES,
@@ -157,7 +160,9 @@ from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     STRICT_SCOPE_FILTER_KEY,
+    FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     AccessibleContainers,
+    FolderChangedDuringDelete,
     IGraphDBProvider,
     _containers_from_row,
     _distinct_connector_types,
@@ -239,6 +244,12 @@ NODE_COLLECTIONS = [
 
 _WRITE_CONFLICT_ATTEMPTS = 6
 _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
+
+# Each inlined permission lookup gives this rule 16 loop orders to try, and the
+# orders multiply across lookups. App browse inlines three, so the optimizer hits
+# its 128-plan cap and needs over 1 GB to plan. Written order costs a few extra
+# edge lookups per permission target.
+_APP_CHILDREN_QUERY_OPTIONS = {"optimizer": {"rules": ["-interchange-adjacent-enumerations"]}}
 
 
 def _is_write_conflict(exc: Exception) -> bool:
@@ -954,6 +965,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to commit transaction: {str(e)}")
             raise
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        """A write-write conflict (errorNum 1200) with another writer, such as
+        indexing updating the same record. A stream transaction rolls back
+        whole, so the block can be re-run."""
+        return isinstance(error, Exception) and _is_write_conflict(error)
 
     async def rollback_transaction(self, transaction: str) -> None:
         """
@@ -1870,7 +1887,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> dict:
         """
         Generic permission checker for any record type.
-        Checks: Direct permissions, Group permissions, Domain permissions, Anyone permissions, and optionally Drive-level access
+        Checks: Direct permissions, Group permissions, organization permissions, and optionally Drive-level access.
+        Domain, "anyone" and link shares grant no access.
 
         Args:
             record_id: The record to check permissions for
@@ -1992,33 +2010,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             RETURN perm.role
             )
 
-            // 3. Check domain/organization permissions
-            LET domain_permission = FIRST(
+            // 3. Check organization permissions
+            LET org_permission = FIRST(
                 FOR belongs_edge IN @@belongs_to
                     FILTER belongs_edge._from == user_from AND belongs_edge.entityType == "ORGANIZATION"
                     LET org = DOCUMENT(belongs_edge._to)
                     FILTER org != null
                     FOR perm IN @@permission
-                        FILTER perm._from == org._id AND perm._to == record_from AND perm.type IN ["DOMAIN", "ORG"]
+                        FILTER perm._from == org._id AND perm._to == record_from AND perm.type IN @org_share_types
                         RETURN perm.role
             )
-
-            // 4. Check 'anyone' permissions (public sharing)
-            LET user_org_id = FIRST(
-                FOR belongs_edge IN @@belongs_to
-                    FILTER belongs_edge._from == user_from
-                    FILTER belongs_edge.entityType == "ORGANIZATION"
-                    LET org = DOCUMENT(belongs_edge._to)
-                    FILTER org != null
-                    RETURN org._key
-            )
-            LET anyone_permission = user_org_id ? FIRST(
-                FOR anyone_perm IN @@anyone
-                    FILTER anyone_perm.file_key == @record_id
-                    FILTER anyone_perm.organization == user_org_id
-                    FILTER anyone_perm.active == true
-                    RETURN anyone_perm.role
-            ) : null
 
             LET org_record_group_permission = FIRST(
                 // User -> Organization -> RecordGroup -> Record (with nested record groups support)
@@ -2029,6 +2030,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
                     // Org -> record_group permission
                     FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id @@permission
+                        FILTER orgToRgEdge.type IN @org_share_types
                         FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
 
                         // Record group -> nested record groups (0 to 2 levels) -> record
@@ -2077,8 +2079,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 record_group_permission ? record_group_permission :
                 direct_user_record_group_permission ? direct_user_record_group_permission :
                 nested_record_group_permission ? nested_record_group_permission :
-                domain_permission ? domain_permission :
-                anyone_permission ? anyone_permission :
+                org_permission ? org_permission :
                 org_record_group_permission ? org_record_group_permission :
                 drive_access ? drive_access :
                 null
@@ -2095,8 +2096,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     record_group_permission ? "RECORD_GROUP" :
                     direct_user_record_group_permission ? "DIRECT_USER_RECORD_GROUP" :
                     nested_record_group_permission ? "NESTED_RECORD_GROUP" :
-                    domain_permission ? "DOMAIN" :
-                    anyone_permission ? "ANYONE" :
+                    org_permission ? "ORG" :
                     org_record_group_permission ? "ORG_RECORD_GROUP" :
                     drive_access ? "DRIVE_ACCESS" :
                     "NONE"
@@ -2108,11 +2108,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "record_from": record_from,
                 "record_id": record_id,
                 "check_drive_inheritance": check_drive_inheritance,
+                "org_share_types": list(ORG_SHARE_PERMISSION_TYPES),
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
                 "@authenticated_as": CollectionNames.AUTHENTICATED_AS.value,
-                "@anyone": CollectionNames.ANYONE.value,
                 "@records": CollectionNames.RECORDS.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 "@user_drive_relation": CollectionNames.USER_DRIVE_RELATION.value,
@@ -7139,7 +7139,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         node_id: str,
         node_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[User]:
         """
         Get all users with permission to node.
@@ -7174,12 +7176,51 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get users with permission to node failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return []
+
+    async def get_groups_with_permission_to_node(
+        self,
+        node_id: str,
+        node_collection: str,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[AppUserGroup]:
+        """Get the user groups with a permission edge to a node."""
+        try:
+            query = """
+            FOR edge IN @@edge_collection
+                FILTER edge._to == @node_key
+                FOR user_group IN @@group_collection
+                    FILTER user_group._id == edge._from AND user_group.externalGroupId != null
+                    RETURN DISTINCT user_group
+            """
+            bind_vars = {
+                "@edge_collection": CollectionNames.PERMISSION.value,
+                "@group_collection": CollectionNames.GROUPS.value,
+                "node_key": f"{node_collection}/{node_id}",
+            }
+
+            results = await self.http_client.execute_aql(query, bind_vars, transaction)
+            return [
+                AppUserGroup.from_arango_base_user_group(self._translate_node_from_arango(result))
+                for result in results
+            ]
+
+        except Exception as e:
+            self.logger.error(f"❌ Get groups with permission to node failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_record_owner_source_user_email(
         self,
         record_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> str | None:
         """Get record owner source user email"""
         try:
@@ -7202,6 +7243,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get record owner source user email failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def get_file_parents(
@@ -8539,8 +8582,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 key=record_id,
                 txn_id=transaction
             )
-            # The per-connector role checks below are not org-scoped (Drive domain/anyone
-            # grants, Gmail address match), so tenancy has to be enforced here.
+            # The per-connector role checks below are not org-scoped (Gmail address
+            # match), so tenancy has to be enforced here.
             if not org_id or not record or record.get("orgId") != org_id:
                 return {
                     "success": False,
@@ -8583,7 +8626,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         external_id: str,
         user_id: str,
         transaction: str | None = None
-    ) -> None:
+    ) -> dict | None:
         """
         Delete a record by external ID.
 
@@ -8604,7 +8647,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             if not record:
                 self.logger.warning(f"⚠️ Record {external_id} not found in {connector_id}")
-                return
+                return None
 
             # Delete record using the record's internal ID and user_id
             deletion_result = await self.delete_record(record.id, user_id, record.org_id, transaction=transaction)
@@ -8612,6 +8655,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Check if deletion was successful
             if deletion_result.get("success"):
                 self.logger.debug(f"✅ Record {external_id} deleted from {connector_id}")
+                return deletion_result
             else:
                 error_reason = deletion_result.get("reason", "Unknown error")
                 self.logger.error(f"❌ Failed to delete record {external_id}: {error_reason}")
@@ -11184,23 +11228,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN perm.role
             )
 
-            // 3. Check domain permissions
-            LET domain_permission = FIRST(
-                FOR perm IN @@permission
-                    FILTER perm._to == record_from
-                    FILTER perm.type == "DOMAIN"
-                    RETURN perm.role
-            )
-
-            // 4. Check anyone permissions
-            LET anyone_permission = FIRST(
-                FOR perm IN @@anyone
-                    FILTER perm._to == record_from
-                    RETURN perm.role
-            )
-
-            // Return the highest permission found
-            RETURN direct_permission || group_permission || domain_permission || anyone_permission
+            // Domain, "anyone" and link shares grant no access, so none is read here.
+            RETURN direct_permission || group_permission
             """
 
             result = await self.http_client.execute_aql(
@@ -11210,7 +11239,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "user_key": user_key,
                     "@permission": CollectionNames.PERMISSION.value,
                     "@belongs_to": CollectionNames.BELONGS_TO.value,
-                    "@anyone": CollectionNames.ANYONE.value,
                 },
                 txn_id=transaction
             )
@@ -11421,8 +11449,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return role
 
         except Exception as e:
+            # None means "no access"; a failed read must not look like that.
             self.logger.error(f"Failed to check KB permission: {e}")
-            return None
+            raise
 
     async def list_user_knowledge_bases(
         self,
@@ -13055,6 +13084,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         connector_id: str,
         transaction: str | None = None,
         cascade_children: bool = True,
+        within_folder_id: str | None = None,
     ) -> dict:
         """Delete records and their owned descendants, scoped by connector_id.
 
@@ -13069,6 +13099,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         *cascade_children*, type docs removed, and a deleteRecord event emitted per
         record that carries a virtualRecordId (Qdrant cleanup).
         """
+        # Once this call has written, a failure must reach a caller-owned transaction
+        # as an exception: a returned failure would let it commit a half-done delete.
+        writes_started = False
         try:
             if not record_ids:
                 return {
@@ -13087,17 +13120,31 @@ class ArangoHTTPProvider(IGraphDBProvider):
             try:
                 traversal_types = "['PARENT_CHILD', 'ATTACHMENT']" if cascade_children else "['ATTACHMENT']"
                 inventory_query = """
-                LET valid_roots = (
+                LET checked = (
                     FOR rid IN @record_ids
                         LET rec = DOCUMENT('records', rid)
                         FILTER rec != null AND rec.isDeleted != true
                         FILTER rec.connectorId == @connector_id
-                        RETURN rec
+                        // The containment path's edge keys, so they can be locked before the delete.
+                        LET inside = @folder_id == null ? [] : FIRST(
+                            FOR anc, edge, path IN 1..""" + str(CONTAINMENT_MAX_DEPTH) + """ INBOUND rec._id @@record_relations
+                                PRUNE edge != null AND edge.relationshipType NOT IN ['PARENT_CHILD', 'ATTACHMENT']
+                                FILTER path.edges[*].relationshipType ALL IN ['PARENT_CHILD', 'ATTACHMENT']
+                                FILTER anc._key == @folder_id
+                                LIMIT 1
+                                RETURN path.edges[*]._key
+                        )
+                        FILTER inside != null
+                        RETURN { rec: rec, inside: inside }
                 )
+                LET valid_roots = checked[*].rec
+                // Every edge on the path must be a containment edge. FILTER alone does not
+                // stop the walk, so without PRUNE a RELATED edge leads on to its target's children.
                 LET all_records = (
                     FOR root IN valid_roots
-                        FOR v, e, p IN 0..20 OUTBOUND root._id @@record_relations
-                            FILTER LENGTH(p.edges) == 0 OR p.edges[-1].relationshipType IN """ + traversal_types + """
+                        FOR v, e, p IN 0..""" + str(CONTAINMENT_MAX_DEPTH) + """ OUTBOUND root._id @@record_relations
+                            PRUNE e != null AND e.relationshipType NOT IN """ + traversal_types + """
+                            FILTER p.edges[*].relationshipType ALL IN """ + traversal_types + """
                             RETURN DISTINCT v
                 )
                 LET records_with_type = (
@@ -13111,9 +13158,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         )
                         RETURN { record: rec, type_target: tt }
                 )
+                LET tree_edges = @folder_id == null ? [] : UNIQUE(
+                    FOR root IN valid_roots
+                        FOR v, e, p IN 1..""" + str(CONTAINMENT_MAX_DEPTH) + """ OUTBOUND root._id @@record_relations
+                            PRUNE e != null AND e.relationshipType NOT IN """ + traversal_types + """
+                            FILTER p.edges[*].relationshipType ALL IN """ + traversal_types + """
+                            RETURN e._key
+                )
                 RETURN {
                     valid_root_keys: valid_roots[*]._key,
-                    records_with_type: records_with_type
+                    records_with_type: records_with_type,
+                    guard_edges: UNIQUE(APPEND(FLATTEN(checked[*].inside), tree_edges))
                 }
                 """
                 inv_results = await self.execute_query(
@@ -13121,15 +13176,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     bind_vars={
                         "record_ids": record_ids,
                         "connector_id": connector_id,
+                        "folder_id": within_folder_id,
                         "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                         "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                     },
                     transaction=txn_id,
                 )
                 inventory = inv_results[0] if inv_results else {}
+                guard_edges = inventory.get("guard_edges") or []
+                if within_folder_id and guard_edges:
+                    # Reads here are not isolated from other writers, so the check above
+                    # holds only if its edges stay put. Writing to them takes their locks
+                    # until commit; an edge a concurrent move already removed is "not
+                    # found", which aborts the delete and keeps every record.
+                    for marker in ("true", "null"):
+                        await self.execute_query(
+                            "FOR k IN @keys UPDATE k WITH { deleteGuard: " + marker + " } "
+                            "IN @@record_relations OPTIONS { keepNull: false }",
+                            bind_vars={
+                                "keys": guard_edges,
+                                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                            },
+                            transaction=txn_id,
+                        )
                 valid_root_keys = inventory.get("valid_root_keys", [])
                 records_with_type = inventory.get("records_with_type", [])
                 record_keys = [rt["record"]["_key"] for rt in records_with_type]
+                if within_folder_id and valid_root_keys:
+                    await self._abort_if_records_moved_in(valid_root_keys, record_keys, traversal_types)
                 type_targets = [rt["type_target"] for rt in records_with_type if rt.get("type_target")]
                 failed_records = [
                     {"record_id": rid, "reason": "Validation failed"}
@@ -13164,6 +13238,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             ) > 0
                             UPDATE rec WITH {{ externalParentId: null }} IN @@records
                         """
+                        writes_started = True
                         await self.execute_query(
                             clear_orphan_parent_query,
                             bind_vars={
@@ -13177,6 +13252,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         )
 
                 node_ids = [f"records/{k}" for k in record_keys]
+                writes_started = True
                 if node_ids:
                     # Dynamic edge sweep: remove every edge touching the deleted records
                     # (recordRelations, isOfType, belongsTo, inheritPermissions, permission,
@@ -13188,6 +13264,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     await self._delete_isoftype_targets_from_collected(txn_id, type_targets, edge_collections)
                 if record_keys:
                     await self._delete_nodes_by_keys(txn_id, record_keys, CollectionNames.RECORDS.value)
+                if within_folder_id and valid_root_keys:
+                    # Again after the deletes: a move committed while they ran is outside
+                    # this transaction's snapshot, so its new edge was left in place.
+                    await self._abort_if_records_moved_in(valid_root_keys, record_keys, traversal_types)
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)
 
@@ -13230,7 +13310,48 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 raise db_error
         except Exception as e:
             self.logger.error(f"❌ Failed to delete records recursively: {str(e)}")
+            if transaction is not None and writes_started:
+                raise
+            if isinstance(e, FolderChangedDuringDelete):
+                return {
+                    "success": False, "reason": FOLDER_CHANGED_DURING_DELETE_MESSAGE, "code": 409, "eventData": None,
+                }
             return {"success": False, "reason": str(e), "code": 500, "eventData": None}
+
+    async def _abort_if_records_moved_in(
+        self, root_keys: list[str], inventory_keys: list[str], traversal_types: str,
+    ) -> None:
+        """Raise when the committed subtree under *root_keys* holds records the inventory missed.
+
+        The edge lock catches a record moved out, but a record moved in arrives on a
+        new edge it cannot lock, and the transaction's snapshot never shows it. Left
+        alone it would survive under a deleted parent. This read runs outside the
+        transaction to see the committed tree: once before any delete, and again
+        after the deletes, before the commit, for a move that commits while they run.
+        """
+        live_keys = await self.execute_query(
+            """
+            FOR root_key IN @root_keys
+                FOR v, e, p IN 0..""" + str(CONTAINMENT_MAX_DEPTH) + """ OUTBOUND CONCAT(@records, "/", root_key) @@record_relations
+                    PRUNE e != null AND e.relationshipType NOT IN """ + traversal_types + """
+                    FILTER p.edges[*].relationshipType ALL IN """ + traversal_types + """
+                    RETURN DISTINCT v._key
+            """,
+            bind_vars={
+                "root_keys": root_keys,
+                "records": CollectionNames.RECORDS.value,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+            },
+        )
+        if live_keys is None:
+            raise RuntimeError("Could not re-read the folder before deleting from it")
+        moved_in = set(live_keys) - set(inventory_keys)
+        if moved_in:
+            self.logger.warning(
+                "Folder delete stopped: %d record(s) were moved into the folder while it was being deleted",
+                len(moved_in),
+            )
+            raise FolderChangedDuringDelete(FOLDER_CHANGED_DURING_DELETE_MESSAGE)
 
 
     async def delete_single_record(
@@ -13770,7 +13891,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET users = (
                 FOR user_id IN user_ids
                     LET user = DOCUMENT(user_id)
-                    FILTER user != null
+                    // A deleted user is kept as an inactive node with their edges; they are not shown as having access.
+                    FILTER user != null AND user.isActive == true
                     RETURN { _id: user._id, _key: user._key, fullName: user.fullName, name: user.name, userName: user.userName, userId: user.userId, email: user.email }
             )
             LET team_ids = UNIQUE(perms_with_ids[* FILTER STARTS_WITH(CURRENT.entity_id, "teams/")].entity_id)
@@ -13837,6 +13959,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             final_kb_roles = list(base_roles.intersection(set(permissions or []))) if permissions else list(base_roles)
             if permissions and not final_kb_roles:
                 include_kb = False
+            if not include_kb and not include_connector:
+                return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
             user_from = f"users/{user_id}"
             filter_conditions = []
             filter_bind: dict[str, Any] = {}
@@ -13863,7 +13987,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 filter_bind["date_to"] = date_to
             record_filter = " AND " + " AND ".join(filter_conditions) if filter_conditions else ""
             perm_filter = " AND permissionEdge.role IN @permissions" if permissions else ""
-            sort_field = sort_by if sort_by in ("recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType") else "recordName"
+            sort_field = sort_by if sort_by in ("recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus") else "recordName"
+            sort_direction = "DESC" if (sort_order or "").lower() == "desc" else "ASC"
             main_query = f"""
             LET user_from = @user_from
             LET org_id = @org_id
@@ -13871,7 +13996,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR kbEdge IN @@permission
                     FILTER kbEdge._from == user_from
                     FILTER kbEdge.type == "USER"
-                    FILTER kbEdge.role IN @kb_permissions
                     LET kb = DOCUMENT(kbEdge._to)
                     FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true
                     RETURN {{ kb_id: kb._key, kb_doc: kb, role: kbEdge.role }}
@@ -13887,48 +14011,53 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER user_team_perm != null
                     RETURN {{ kb_id: kb._key, kb_doc: kb, role: user_team_perm }}
             )
-            LET allKbAccess = APPEND(directKbAccess, (FOR t IN teamKbAccess FILTER LENGTH(FOR d IN directKbAccess FILTER d.kb_id == t.kb_id RETURN 1) == 0 RETURN t))
-            LET kbRecords = {'(FOR access IN directKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" FILTER record.recordType != "ARTIFACT" ' + ('FILTER record.isFile != false ' if include_kb else '') + record_filter + ' RETURN { record: record, permission: { role: access.role, type: "USER" }, kb_id: kb._key, kb_name: kb.name })' if include_kb else '[]'}
+            LET allKbAccess = (
+                FOR access IN APPEND(directKbAccess, teamKbAccess)
+                    COLLECT kb_id = access.kb_id INTO grants = access
+                    LET strongest = FIRST(FOR g IN grants SORT @kb_role_priority[g.role] || 0 DESC RETURN g)
+                    // The permissions filter applies to the role the user ends up with.
+                    FILTER strongest.role IN @kb_permissions
+                    RETURN strongest
+            )
+            LET kbRecords = {'(FOR access IN allKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" FILTER record.recordType != "ARTIFACT" FILTER record.mimeType != "application/vnd.folder" ' + record_filter + ' RETURN { record: record, permission: { role: access.role, type: "USER" }, kb_id: kb._key, kb_name: kb.name })' if include_kb else '[]'}
             LET connectorRecords = {'(FOR permissionEdge IN @@permission FILTER permissionEdge._from == user_from FILTER permissionEdge.type == "USER" ' + perm_filter + ' LET record = DOCUMENT(permissionEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "CONNECTOR" ' + record_filter + ' RETURN { record: record, permission: { role: permissionEdge.role, type: permissionEdge.type } })' if include_connector else '[]'}
             LET allRecords = APPEND(kbRecords, connectorRecords)
+            LET page = (
             FOR item IN allRecords
                 LET record = item.record
-                SORT record.{sort_field} {sort_order.upper()}
+                SORT record.{sort_field} {sort_direction}
                 LIMIT @skip, @limit
                 LET fileRecord = FIRST(FOR fileEdge IN @@is_of_type FILTER fileEdge._from == record._id LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }})
                 RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb: {{ id: item.kb_id || null, name: item.kb_name || null }} }}
+            )
+            RETURN {{ records: page, total: LENGTH(allRecords) }}
             """
+            # Arango rejects a bind parameter the query does not use, and each
+            # source leaves its half of the query out.
             bind = {
                 "user_from": user_from,
                 "org_id": org_id,
                 "skip": skip,
                 "limit": limit,
                 "kb_permissions": final_kb_roles,
+                "kb_role_priority": KB_ROLE_PRIORITY,
                 "@permission": CollectionNames.PERMISSION.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 **filter_bind,
             }
-            if permissions:
+            if include_kb:
+                bind["@belongs_to_kb"] = CollectionNames.BELONGS_TO.value
+            if permissions and include_connector:
                 bind["permissions"] = permissions
-            records = await self.execute_query(main_query, bind_vars=bind)
-            count_query = """
-            LET user_from = @user_from
-            LET org_id = @org_id
-            LET directKbAccess = (FOR kbEdge IN @@permission FILTER kbEdge._from == user_from FILTER kbEdge.type == "USER" FILTER kbEdge.role IN @kb_permissions LET kb = DOCUMENT(kbEdge._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true RETURN { kb_doc: kb })
-            LET teamKbAccess = (FOR teamKbPerm IN @@permission FILTER teamKbPerm.type == "TEAM" FILTER STARTS_WITH(teamKbPerm._to, "apps/") LET kb = DOCUMENT(teamKbPerm._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true LET team_id = SPLIT(teamKbPerm._from, '/')[1] LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN 1) FILTER user_team_perm != null RETURN { kb_doc: kb })
-            LET allKbAccess = APPEND(directKbAccess, (FOR t IN teamKbAccess FILTER LENGTH(FOR d IN directKbAccess FILTER d.kb_doc._key == t.kb_doc._key RETURN 1) == 0 RETURN t))
-            LET kbCount = LENGTH(FOR access IN allKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" FILTER record.recordType != "ARTIFACT" RETURN 1)
-            LET connectorCount = LENGTH(FOR permissionEdge IN @@permission FILTER permissionEdge._from == user_from FILTER permissionEdge.type == "USER" LET record = DOCUMENT(permissionEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "CONNECTOR" RETURN 1)
-            RETURN kbCount + connectorCount
-            """
-            count_results = await self.execute_query(count_query, bind_vars={**bind, "kb_permissions": final_kb_roles, "@permission": CollectionNames.PERMISSION.value, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, **filter_bind})
-            total = count_results[0] if count_results else 0
+            # Page and total from one query, so the count can never disagree with
+            # the list or be sent bind parameters it does not declare.
+            result = await self.execute_query(main_query, bind_vars=bind)
+            page = result[0] if result else {"records": [], "total": 0}
             available = {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
-            return records or [], total, available
+            return page["records"], page["total"], available
         except Exception as e:
             self.logger.error(f"❌ Failed to list all records: {str(e)}")
-            return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
+            raise
 
     async def get_records(
         self,
@@ -13948,38 +14077,28 @@ class ArangoHTTPProvider(IGraphDBProvider):
         sort_order: str,
         source: str,
     ) -> tuple[list[dict], int, dict]:
+        """List all records the user can access; ``user_id`` is the user's graph key.
+
+        The same list as ``list_all_records``, which takes the same key. A read
+        that fails raises; it is never reported as an empty list.
         """
-        List all records the user can access.
-        Resolves external user_id to user key and delegates to list_all_records.
-        Returns (records, total_count, available_filters).
-        """
-        try:
-            user = await self.get_user_by_user_id(user_id)
-            if not user:
-                return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
-            user_key = user.get("_key") or user.get("id")
-            if not user_key:
-                return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
-            return await self.list_all_records(
-                user_key,
-                org_id,
-                skip,
-                limit,
-                search,
-                record_types,
-                origins,
-                connectors,
-                indexing_status,
-                permissions,
-                date_from,
-                date_to,
-                sort_by,
-                sort_order,
-                source,
-            )
-        except Exception as e:
-            self.logger.error("❌ Failed to get records: %s", str(e))
-            return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
+        return await self.list_all_records(
+            user_id,
+            org_id,
+            skip,
+            limit,
+            search,
+            record_types,
+            origins,
+            connectors,
+            indexing_status,
+            permissions,
+            date_from,
+            date_to,
+            sort_by,
+            sort_order,
+            source,
+        )
 
     def _artifact_gallery_sort_expr(self, sort_by: str) -> str:
         return {
@@ -14172,7 +14291,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [], "folders": []}
             filter_conditions = []
             filter_bind: dict[str, Any] = {"kb_id": kb_id, "org_id": org_id, "user_permission": user_perm, "skip": skip, "limit": limit, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, "@record_relations": CollectionNames.RECORD_RELATIONS.value, "@is_of_type": CollectionNames.IS_OF_TYPE.value}
-            filter_bind: dict[str, Any] = {"kb_id": kb_id, "org_id": org_id, "user_permission": user_perm, "skip": skip, "limit": limit, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, "@record_relations": CollectionNames.RECORD_RELATIONS.value, "@is_of_type": CollectionNames.IS_OF_TYPE.value}
             if search:
                 filter_conditions.append("(LIKE(LOWER(record.recordName), @search) OR LIKE(LOWER(record.externalRecordId), @search))")
                 filter_bind["search"] = f"%{(search or '').lower()}%"
@@ -14198,6 +14316,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
             folder_filter = " AND folder_record._key == @folder_id" if folder_id else ""
             if folder_id:
                 filter_bind["folder_id"] = folder_id
+            sort_field = sort_by if sort_by in ("recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus") else "recordName"
+            sort_direction = "DESC" if (sort_order or "").lower() == "desc" else "ASC"
+            # A folder filter lists that folder's children only, so the KB-root arm runs without one.
+            root_records = "[]" if folder_id else f"""(
+                FOR belongsEdge IN @@belongs_to_kb
+                    FILTER belongsEdge._to == kb._id
+                    LET record = DOCUMENT(belongsEdge._from)
+                    FILTER record != null
+                    FILTER record.isDeleted != true
+                    FILTER record.orgId == @org_id
+                    FILTER record.mimeType != "application/vnd.folder"
+                    FILTER LENGTH(FOR parentEdge IN @@record_relations FILTER parentEdge._to == record._id AND parentEdge.relationshipType == "PARENT_CHILD" LIMIT 1 RETURN 1) == 0
+                    {record_filter}
+                    RETURN {{ record: record, folder_id: null, folder_name: null, permission: {{ role: @user_permission, type: "USER" }}, kb_id: @kb_id }}
+            )"""
             main_query = f"""
             LET kb = DOCUMENT("apps", @kb_id)
             FILTER kb != null AND kb.type == "KB"
@@ -14211,7 +14344,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN {{ folder: folder_record, folder_id: folder_record._key, folder_name: folder_record.recordName }}
             )
             LET folder_ids = kbFolders[*].folder._id
-            LET all_records_data = (
+            LET folder_records = (
                 FOR relEdge IN @@record_relations
                     FILTER relEdge._from IN folder_ids
                     FILTER relEdge.relationshipType == "PARENT_CHILD"
@@ -14219,38 +14352,26 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER record != null
                     FILTER record.isDeleted != true
                     FILTER record.orgId == @org_id
-                    FILTER record.isFile != false
+                    FILTER record.mimeType != "application/vnd.folder"
                     {record_filter}
                     LET folder_info = FIRST(FOR f IN kbFolders FILTER f.folder._id == relEdge._from RETURN f)
-                    RETURN {{ record: record, folder_id: folder_info.folder_id, folder_name: folder_info.folder_name, permission: {{ role: user_permission, type: "USER" }}, kb_id: @kb_id }}
+                    RETURN {{ record: record, folder_id: folder_info.folder_id, folder_name: folder_info.folder_name, permission: {{ role: @user_permission, type: "USER" }}, kb_id: @kb_id }}
             )
+            LET all_records_data = APPEND(folder_records, {root_records})
             LET record_ids = all_records_data[*].record._id
             LET all_files = (FOR fileEdge IN @@is_of_type FILTER fileEdge._from IN record_ids LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ record_id: fileEdge._from, file: {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }} }})
+            LET page = (
             FOR item IN all_records_data
                 LET record = item.record
                 LET fileRecord = FIRST(FOR f IN all_files FILTER f.record_id == record._id RETURN f.file)
-                SORT record.{sort_by or "recordName"} {(sort_order or "asc").upper()}
+                SORT record.{sort_field} {sort_direction}
                 LIMIT @skip, @limit
-                RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb_id: item.kb_id, folder: {{ id: item.folder_id, name: item.folder_name }} }}
-            """
-            records = await self.execute_query(main_query, bind_vars=filter_bind)
-            count_query = f"""
-            LET kb = DOCUMENT("apps", @kb_id)
-            FILTER kb != null AND kb.type == "KB"
-            LET folder_ids = (
-                FOR belongsEdge IN @@belongs_to_kb
-                    FILTER belongsEdge._to == kb._id
-                    LET folder_record = DOCUMENT(belongsEdge._from)
-                    FILTER folder_record != null
-                    FILTER folder_record.mimeType == "application/vnd.folder"
-                    {folder_filter}
-                    RETURN belongsEdge._from
+                RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb_id: item.kb_id, folder: item.folder_id != null ? {{ id: item.folder_id, name: item.folder_name }} : null }}
             )
-            LET record_count = (FOR relEdge IN @@record_relations FILTER relEdge._from IN folder_ids FILTER relEdge.relationshipType == "PARENT_CHILD" LET record = DOCUMENT(relEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == @org_id {record_filter} COLLECT WITH COUNT INTO c RETURN c)
-            RETURN FIRST(record_count) || 0
+            RETURN {{ records: page, total: LENGTH(all_records_data) }}
             """
-            count_results = await self.execute_query(count_query, bind_vars=filter_bind)
-            total = count_results[0] if count_results else 0
+            result = await self.execute_query(main_query, bind_vars=filter_bind)
+            page = result[0] if result else {"records": [], "total": 0}
             folders_query = """
             LET kb = DOCUMENT("apps", @kb_id)
             FILTER kb != null AND kb.type == "KB"
@@ -14267,10 +14388,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             folders_result = await self.execute_query(folders_query, bind_vars={"kb_id": kb_id, "@belongs_to_kb": CollectionNames.BELONGS_TO.value})
             folder_list = folders_result[0] if folders_result and isinstance(folders_result[0], list) else []
             available = {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [user_perm] if user_perm else [], "folders": folder_list}
-            return records or [], total, available
+            return page["records"], page["total"], available
         except Exception as e:
             self.logger.error(f"❌ Failed to list KB records: {str(e)}")
-            return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [], "folders": []}
+            raise
 
     def _validation_error(self, code: int, reason: str) -> dict:
         """Helper to create validation error response."""
@@ -14492,6 +14613,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # Delete main record
         await self.delete_nodes([record_key], CollectionNames.RECORDS.value, transaction)
 
+    async def _attachment_delete_payloads(
+        self, attachment_ids: list[str], transaction: str | None
+    ) -> list[dict]:
+        """deleteRecord payloads for an email's attachments, read before they are removed."""
+        payloads: list[dict] = []
+        for attachment_id in attachment_ids:
+            attachment = await self.http_client.get_document(
+                collection=CollectionNames.RECORDS.value, key=attachment_id, txn_id=transaction
+            )
+            if not attachment or not attachment.get("virtualRecordId"):
+                continue
+            file_doc = await self.get_document(attachment_id, CollectionNames.FILES.value, transaction)
+            payload = await self._create_deleted_record_event_payload(attachment, file_doc)
+            if payload:
+                payload["connectorName"] = attachment.get("connectorName")
+                payload["origin"] = attachment.get("origin")
+                payloads.append(payload)
+        return payloads
+
     async def _execute_outlook_record_deletion(
         self,
         record_id: str,
@@ -14514,6 +14654,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 txn_id=transaction
             )
             attachment_ids = attachment_ids if attachment_ids else []
+            # Read before the delete: the payloads carry the virtualRecordIds.
+            mail_record = await self.get_document(record_id, CollectionNames.MAILS.value, transaction)
+            attachment_payloads = await self._attachment_delete_payloads(attachment_ids, transaction)
 
             # Delete all attachments first
             for attachment_id in attachment_ids:
@@ -14533,10 +14676,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             self.logger.debug(f"✅ Deleted Outlook record {record_id} with {len(attachment_ids)} attachments")
 
+            payload = await self._create_deleted_record_event_payload(record, mail_record)
+            event_data = None
+            if payload:
+                payload["connectorName"] = Connectors.OUTLOOK.value
+                payload["origin"] = OriginTypes.CONNECTOR.value
+                event_data = {
+                    "eventType": "deleteRecord",
+                    "topic": "record-events",
+                    "payload": payload,
+                    "payloads": [payload, *attachment_payloads],
+                }
             return {
                 "success": True,
                 "record_id": record_id,
-                "attachments_deleted": len(attachment_ids)
+                "connector": Connectors.OUTLOOK.value,
+                "attachments_deleted": len(attachment_ids),
+                "eventData": event_data,
             }
 
         except Exception as e:
@@ -14830,6 +14986,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 txn_id=transaction
             )
             attachment_ids = attachment_ids if attachment_ids else []
+            attachment_payloads = await self._attachment_delete_payloads(attachment_ids, transaction)
 
             # Delete all attachments first
             for attachment_id in attachment_ids:
@@ -14870,7 +15027,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     event_data = {
                         "eventType": "deleteRecord",
                         "topic": "record-events",
-                        "payload": payload
+                        "payload": payload,
+                        "payloads": [payload, *attachment_payloads],
                     }
                 else:
                     event_data = None
@@ -15208,7 +15366,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
         RETURN {{ nodes: paginated_children, total: total_count }}
         """
 
-        result = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
+        result = await self.http_client.execute_aql(
+            query,
+            bind_vars=bind_vars,
+            txn_id=transaction,
+            options=_APP_CHILDREN_QUERY_OPTIONS if parent_type == "app" else None,
+        )
         elapsed = time.perf_counter() - start
         self.logger.debug(f"get_knowledge_hub_children finished in {elapsed * 1000} ms")
         return result[0] if result else {"nodes": [], "total": 0}
@@ -18123,6 +18286,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET orgAccessPermissionEdge = (
                 FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
                 FOR record, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                FILTER permEdge.type IN @org_share_types
                 FILTER record._key == @recordId
                 {app_record_filter}
                 RETURN {{
@@ -18215,16 +18379,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }}
             ) : []
             LET kbAccess = UNION_DISTINCT(kbDirectAccess, kbTeamAccess)
-            LET anyoneAccess = (
-                FOR records IN @@anyone
-                FILTER records.organization == @orgId
-                    AND records.file_key == @recordId
-                RETURN {{
-                    type: 'ANYONE',
-                    source: null,
-                    role: records.role
-                }}
-            )
             LET allAccess = UNION_DISTINCT(
                 directAccessPermissionEdge,
                 recordGroupAccess,
@@ -18233,8 +18387,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 directUserToRecordGroupAccess,
                 orgAccessPermissionEdge,
                 orgRecordGroupAccess,
-                kbAccess,
-                anyoneAccess
+                kbAccess
             )
             RETURN allAccess
             )
@@ -18244,13 +18397,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             bind_vars = {
                 "userId": user_id,
-                "orgId": org_id,
                 "recordId": record_id,
                 "user_apps_ids": user_apps_ids,
+                "org_share_types": list(ORG_SHARE_PERMISSION_TYPES),
                 "@users": CollectionNames.USERS.value,
                 "records": CollectionNames.RECORDS.value,
                 "files": CollectionNames.FILES.value,
-                "@anyone": CollectionNames.ANYONE.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@record_relations": CollectionNames.RECORD_RELATIONS.value,
@@ -18613,13 +18765,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         permission_role_aql = self._get_permission_role_aql("recordGroup", "node", "u")
         app_permission_role_aql = self._get_permission_role_aql("app", "app", "u")
-        # Parent-visibility probes and candidate roles for the external-collaborator
-        # branches. Distinct node variables so each helper's internal `permission_role`
-        # stays in its own scope - two of them in one scope is a redeclaration error.
-        parent_record_perm_aql = self._get_permission_role_aql("record", "parent_record", "u")
-        parent_group_perm_aql = self._get_permission_role_aql("recordGroup", "parent_group", "u")
-        orphan_record_perm_aql = self._get_permission_role_aql("record", "orphan_record", "u")
-        orphan_group_perm_aql = self._get_permission_role_aql("recordGroup", "orphan_group", "u")
+        hoist_record_perm_aql = self._get_permission_role_aql("record", "hoist_record", "u")
+        hoist_group_perm_aql = self._get_permission_role_aql("recordGroup", "hoist_group", "u")
 
         sub_query = f"""
         LET app = DOCUMENT("apps", @app_id)
@@ -18762,229 +18909,201 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }})
             )
 
-            // Orphaned records: shared with this collaborator, container invisible.
-            // Candidates are direct grants plus grants via a group/role/team. Org-wide
-            // grants are excluded on purpose - they apply to everyone and would flood
-            // the view.
-            LET hoisted_records = !is_external_user ? [] : (
-                    LET direct_recs = (
-                        FOR perm IN {CollectionNames.PERMISSION.value}
-                            FILTER perm._from == u._id AND perm.type == "USER"
-                            FILTER STARTS_WITH(perm._to, "{CollectionNames.RECORDS.value}/")
-                            LET r = DOCUMENT(perm._to)
-                            FILTER r != null AND r.isDeleted != true AND r.connectorId == app._key
-                            RETURN r
-                    )
-                    LET shared_recs = (
-                        FOR perm IN {CollectionNames.PERMISSION.value}
-                            FILTER perm._from == u._id AND perm.type == "USER"
-                            FILTER STARTS_WITH(perm._to, "{CollectionNames.GROUPS.value}/")
-                                OR STARTS_WITH(perm._to, "{CollectionNames.ROLES.value}/")
-                                OR STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
-                            FOR perm2 IN {CollectionNames.PERMISSION.value}
-                                FILTER perm2._from == perm._to
-                                FILTER STARTS_WITH(perm2._to, "{CollectionNames.RECORDS.value}/")
-                                LET r2 = DOCUMENT(perm2._to)
-                                FILTER r2 != null AND r2.isDeleted != true AND r2.connectorId == app._key
-                                RETURN r2
-                    )
-                    LET candidate_recs = (
-                        FOR r IN UNION(direct_recs, shared_recs)
-                            COLLECT rec_key = r._key INTO grouped
-                            RETURN grouped[0].r
-                    )
-                    FOR orphan_record IN candidate_recs
-                        // Immediate parents in both directions: a parent folder is found
-                        // by following recordRelations *backwards*, a record group by
-                        // following belongsTo *forwards*.
-                        LET parent_recs = (
-                            FOR rel IN recordRelations
-                                FILTER rel._to == orphan_record._id
-                                AND rel.relationshipType == "PARENT_CHILD"
-                                LET pr = DOCUMENT(rel._from)
-                                FILTER pr != null
-                                RETURN pr
-                        )
-                        LET parent_rgs = (
-                            FOR be IN belongsTo
-                                FILTER be._from == orphan_record._id
-                                AND STARTS_WITH(be._to, "{CollectionNames.RECORD_GROUPS.value}/")
-                                LET prg = DOCUMENT(be._to)
-                                FILTER prg != null
-                                RETURN prg
-                        )
-                        // Never hoist a container-less node; that also excludes top-level
-                        // nodes, which the first branch already owns.
-                        FILTER LENGTH(parent_recs) > 0 OR LENGTH(parent_rgs) > 0
-
-                        LET visible_parent_recs = (
-                            FOR parent_record IN parent_recs
-                                {parent_record_perm_aql}
-                                LET pr_role = IS_ARRAY(permission_role)
-                                    ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
-                                    : permission_role
-                                FILTER pr_role != null AND pr_role != ""
-                                RETURN pr_role
-                        )
-                        LET visible_parent_rgs = (
-                            FOR parent_group IN parent_rgs
-                                {parent_group_perm_aql}
-                                LET pg_role = IS_ARRAY(permission_role)
-                                    ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
-                                    : permission_role
-                                FILTER pg_role != null AND pg_role != ""
-                                RETURN pg_role
-                        )
-                        // If any parent is visible the user reaches this record by
-                        // drilling into that parent; hoisting it would duplicate it.
-                        FILTER LENGTH(visible_parent_recs) == 0 AND LENGTH(visible_parent_rgs) == 0
-
-                        LET orphan_role = FIRST(
-                            {orphan_record_perm_aql}
-                            LET own_role = IS_ARRAY(permission_role)
-                                ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
-                                : permission_role
-                            RETURN own_role
-                        )
-                        FILTER orphan_role != null AND orphan_role != ""
-
-                        LET rec_file_info = FIRST(
-                            FOR fe IN isOfType FILTER fe._from == orphan_record._id
-                            RETURN DOCUMENT(fe._to)
-                        )
-                        LET rec_is_folder = orphan_record.mimeType == "application/vnd.folder"
-                        LET rec_has_children = LENGTH(
-                            FOR rel IN recordRelations
-                                FILTER rel._from == orphan_record._id
-                                AND rel.relationshipType == "PARENT_CHILD"
-                                LIMIT 1
-                                RETURN 1
-                        ) > 0
-                        RETURN {{
-                            id: orphan_record._key,
-                            name: orphan_record.recordName,
-                            nodeType: rec_is_folder ? "folder" : "record",
-                            parentId: CONCAT("apps/", @app_id),
-                            origin: "CONNECTOR",
-                            connector: orphan_record.connectorName,
-                            connectorId: orphan_record.connectorId,
-                            externalGroupId: orphan_record.externalGroupId,
-                            recordType: orphan_record.recordType,
-                            recordGroupType: null,
-                            indexingStatus: orphan_record.indexingStatus,
-                            reason: orphan_record.reason,
-                            createdAt: orphan_record.sourceCreatedAtTimestamp != null ? orphan_record.sourceCreatedAtTimestamp : (orphan_record.createdAtTimestamp != null ? orphan_record.createdAtTimestamp : 0),
-                            updatedAt: orphan_record.sourceLastModifiedTimestamp != null ? orphan_record.sourceLastModifiedTimestamp : (orphan_record.updatedAtTimestamp != null ? orphan_record.updatedAtTimestamp : 0),
-                            sizeInBytes: orphan_record.sizeInBytes != null ? orphan_record.sizeInBytes : (rec_file_info != null ? rec_file_info.sizeInBytes : null),
-                            mimeType: orphan_record.mimeType,
-                            extension: rec_file_info != null ? rec_file_info.extension : null,
-                            webUrl: orphan_record.webUrl,
-                            hasChildren: rec_has_children,
-                            userRole: orphan_role,
-                            sharingStatus: null,
-                            isInternal: orphan_record.isInternal ? true : false
-                        }}
+            // Records and nested groups shared with this collaborator whose container
+            // they cannot see. The rule matches Neo4j's: hoist N iff the user has a role
+            // on N and on none of N's immediate parents. Candidates are direct grants
+            // plus grants via a group/role/team; org-wide grants are excluded on purpose,
+            // they apply to everyone and would flood the view.
+            //
+            // Each permission lookup runs once per distinct node in a flat LET. Nested in
+            // the per-candidate loop, the optimizer permutes every FOR it splices in from
+            // the lookups and runs out of memory while still planning the query.
+            //
+            // AQL evaluates a subquery inside a ternary whatever the condition, so the
+            // gate is a FILTER at the head of the candidate subqueries.
+            LET direct_targets = (
+                FILTER is_external_user
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == u._id AND perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.RECORDS.value}/")
+                        OR STARTS_WITH(perm._to, "{CollectionNames.RECORD_GROUPS.value}/")
+                    RETURN perm._to
+            )
+            LET shared_targets = (
+                FILTER is_external_user
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == u._id AND perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.GROUPS.value}/")
+                        OR STARTS_WITH(perm._to, "{CollectionNames.ROLES.value}/")
+                        OR STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                    FOR perm2 IN {CollectionNames.PERMISSION.value}
+                        FILTER perm2._from == perm._to
+                        FILTER STARTS_WITH(perm2._to, "{CollectionNames.RECORDS.value}/")
+                            OR STARTS_WITH(perm2._to, "{CollectionNames.RECORD_GROUPS.value}/")
+                        RETURN perm2._to
+            )
+            LET candidates = (
+                FOR candidate IN DOCUMENT(APPEND(direct_targets, shared_targets, true))
+                    FILTER candidate.isDeleted != true AND candidate.connectorId == app._key
+                    RETURN candidate
             )
 
-            // Orphaned nested recordGroups. Needed because on_new_record_groups only
-            // creates the RG->App edge when the RG has no parent RG, so a nested RG's
-            // belongsTo points at its parent and the first branch never returns it.
-            LET hoisted_groups = !is_external_user ? [] : (
-                    LET direct_rgs = (
-                        FOR perm IN {CollectionNames.PERMISSION.value}
-                            FILTER perm._from == u._id AND perm.type == "USER"
-                            FILTER STARTS_WITH(perm._to, "{CollectionNames.RECORD_GROUPS.value}/")
-                            LET g = DOCUMENT(perm._to)
-                            FILTER g != null AND g.isDeleted != true AND g.connectorId == app._key
-                            RETURN g
+            // Immediate parents in both directions: a parent folder is found by following
+            // recordRelations *backwards*, a record group by following belongsTo
+            // *forwards*. A node with no parent is never hoisted; top-level groups are
+            // connector_rgs' job.
+            LET record_parents = (
+                FOR orphan_record IN candidates
+                    FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", orphan_record)
+                    LET parent_record_ids = (
+                        FOR rel IN recordRelations
+                            FILTER rel._to == orphan_record._id
+                            AND rel.relationshipType == "PARENT_CHILD"
+                            FILTER DOCUMENT(rel._from) != null
+                            RETURN DISTINCT rel._from
                     )
-                    LET shared_rgs = (
-                        FOR perm IN {CollectionNames.PERMISSION.value}
-                            FILTER perm._from == u._id AND perm.type == "USER"
-                            FILTER STARTS_WITH(perm._to, "{CollectionNames.GROUPS.value}/")
-                                OR STARTS_WITH(perm._to, "{CollectionNames.ROLES.value}/")
-                                OR STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
-                            FOR perm2 IN {CollectionNames.PERMISSION.value}
-                                FILTER perm2._from == perm._to
-                                FILTER STARTS_WITH(perm2._to, "{CollectionNames.RECORD_GROUPS.value}/")
-                                LET g2 = DOCUMENT(perm2._to)
-                                FILTER g2 != null AND g2.isDeleted != true AND g2.connectorId == app._key
-                                RETURN g2
+                    LET parent_group_ids = (
+                        FOR be IN belongsTo
+                            FILTER be._from == orphan_record._id
+                            AND STARTS_WITH(be._to, "{CollectionNames.RECORD_GROUPS.value}/")
+                            FILTER DOCUMENT(be._to) != null
+                            RETURN DISTINCT be._to
                     )
-                    LET candidate_rgs = (
-                        FOR g IN UNION(direct_rgs, shared_rgs)
-                            COLLECT rg_key = g._key INTO rg_grouped
-                            RETURN rg_grouped[0].g
+                    FILTER LENGTH(parent_record_ids) > 0 OR LENGTH(parent_group_ids) > 0
+                    RETURN {{ node: orphan_record, records: parent_record_ids, groups: parent_group_ids }}
+            )
+            LET group_parents = (
+                FOR orphan_group IN candidates
+                    FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", orphan_group)
+                    LET group_parent_ids = (
+                        FOR be IN belongsTo
+                            FILTER be._from == orphan_group._id
+                            AND STARTS_WITH(be._to, "{CollectionNames.RECORD_GROUPS.value}/")
+                            FILTER DOCUMENT(be._to) != null
+                            RETURN DISTINCT be._to
                     )
-                    FOR orphan_group IN candidate_rgs
-                        LET rg_parents = (
-                            FOR be IN belongsTo
-                                FILTER be._from == orphan_group._id
-                                AND STARTS_WITH(be._to, "{CollectionNames.RECORD_GROUPS.value}/")
-                                LET prg = DOCUMENT(be._to)
-                                FILTER prg != null
-                                RETURN prg
-                        )
-                        // A top-level RG has no parent RG and belongs to the first branch.
-                        FILTER LENGTH(rg_parents) > 0
+                    FILTER LENGTH(group_parent_ids) > 0
+                    RETURN {{ node: orphan_group, groups: group_parent_ids }}
+            )
 
-                        LET visible_rg_parents = (
-                            FOR parent_group IN rg_parents
-                                {parent_group_perm_aql}
-                                LET pg_role2 = IS_ARRAY(permission_role)
-                                    ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
-                                    : permission_role
-                                FILTER pg_role2 != null AND pg_role2 != ""
-                                RETURN pg_role2
-                        )
-                        FILTER LENGTH(visible_rg_parents) == 0
+            // The user's role on every candidate and every parent, one lookup per node.
+            LET record_role_rows = (
+                FOR hoist_record IN DOCUMENT(APPEND(FLATTEN(record_parents[*].records), record_parents[*].node._id, true))
+                    {hoist_record_perm_aql}
+                    LET record_role = IS_ARRAY(permission_role)
+                        ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                        : permission_role
+                    FILTER record_role != null AND record_role != ""
+                    RETURN {{ id: hoist_record._id, role: record_role }}
+            )
+            LET group_role_rows = (
+                FOR hoist_group IN DOCUMENT(APPEND(
+                    APPEND(FLATTEN(record_parents[*].groups), FLATTEN(group_parents[*].groups), true),
+                    group_parents[*].node._id,
+                    true
+                ))
+                    {hoist_group_perm_aql}
+                    LET group_role = IS_ARRAY(permission_role)
+                        ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                        : permission_role
+                    FILTER group_role != null AND group_role != ""
+                    RETURN {{ id: hoist_group._id, role: group_role }}
+            )
+            LET visible_record_ids = record_role_rows[*].id
+            LET visible_group_ids = group_role_rows[*].id
+            LET record_roles = ZIP(visible_record_ids, record_role_rows[*].role)
+            LET group_roles = ZIP(visible_group_ids, group_role_rows[*].role)
 
-                        LET orphan_group_role = FIRST(
-                            {orphan_group_perm_aql}
-                            LET own_group_role = IS_ARRAY(permission_role)
-                                ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
-                                : permission_role
-                            RETURN own_group_role
-                        )
-                        FILTER orphan_group_role != null AND orphan_group_role != ""
-
-                        LET og_has_child_rgs = LENGTH(
-                            FOR c_edge IN belongsTo
-                                FILTER c_edge._to == orphan_group._id
-                                AND STARTS_WITH(c_edge._from, "{CollectionNames.RECORD_GROUPS.value}/")
-                                AND c_edge.isDeleted != true
-                                LIMIT 1
-                                RETURN 1
-                        ) > 0
-                        LET og_has_records = LENGTH(
-                            FOR r_edge IN belongsTo
-                                FILTER r_edge._to == orphan_group._id
-                                AND STARTS_WITH(r_edge._from, "{CollectionNames.RECORDS.value}/")
-                                AND r_edge.isDeleted != true
-                                LIMIT 1
-                                RETURN 1
-                        ) > 0
-                        RETURN {{
-                            id: orphan_group._key,
-                            name: orphan_group.groupName,
-                            nodeType: "recordGroup",
-                            parentId: CONCAT("apps/", @app_id),
-                            origin: "CONNECTOR",
-                            connector: orphan_group.connectorName,
-                            recordType: null,
-                            recordGroupType: orphan_group.groupType,
-                            indexingStatus: null,
-                            createdAt: orphan_group.sourceCreatedAtTimestamp != null ? orphan_group.sourceCreatedAtTimestamp : (orphan_group.createdAtTimestamp != null ? orphan_group.createdAtTimestamp : 0),
-                            updatedAt: orphan_group.sourceLastModifiedTimestamp != null ? orphan_group.sourceLastModifiedTimestamp : (orphan_group.updatedAtTimestamp != null ? orphan_group.updatedAtTimestamp : 0),
-                            sizeInBytes: null,
-                            mimeType: null,
-                            extension: null,
-                            webUrl: orphan_group.webUrl,
-                            hasChildren: og_has_child_rgs OR og_has_records,
-                            userRole: orphan_group_role,
-                            sharingStatus: null,
-                            isInternal: orphan_group.isInternal ? true : false
-                        }}
+            // A visible parent means the user reaches the node by drilling into it;
+            // hoisting it as well would show it twice.
+            LET hoisted_records = (
+                FOR entry IN record_parents
+                    FILTER entry.records NONE IN visible_record_ids
+                    FILTER entry.groups NONE IN visible_group_ids
+                    LET orphan_record = entry.node
+                    LET orphan_role = record_roles[orphan_record._id]
+                    FILTER orphan_role != null
+                    LET rec_file_info = FIRST(
+                        FOR fe IN isOfType FILTER fe._from == orphan_record._id
+                        RETURN DOCUMENT(fe._to)
+                    )
+                    LET rec_has_children = LENGTH(
+                        FOR rel IN recordRelations
+                            FILTER rel._from == orphan_record._id
+                            AND rel.relationshipType == "PARENT_CHILD"
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0
+                    RETURN {{
+                        id: orphan_record._key,
+                        name: orphan_record.recordName,
+                        nodeType: rec_file_info != null AND rec_file_info.isFile == false ? "folder" : "record",
+                        parentId: CONCAT("apps/", @app_id),
+                        origin: "CONNECTOR",
+                        connector: orphan_record.connectorName,
+                        connectorId: orphan_record.connectorId,
+                        externalGroupId: orphan_record.externalGroupId,
+                        recordType: orphan_record.recordType,
+                        recordGroupType: null,
+                        indexingStatus: orphan_record.indexingStatus,
+                        reason: orphan_record.reason,
+                        createdAt: orphan_record.sourceCreatedAtTimestamp != null ? orphan_record.sourceCreatedAtTimestamp : (orphan_record.createdAtTimestamp != null ? orphan_record.createdAtTimestamp : 0),
+                        updatedAt: orphan_record.sourceLastModifiedTimestamp != null ? orphan_record.sourceLastModifiedTimestamp : (orphan_record.updatedAtTimestamp != null ? orphan_record.updatedAtTimestamp : 0),
+                        sizeInBytes: orphan_record.sizeInBytes != null ? orphan_record.sizeInBytes : rec_file_info.sizeInBytes,
+                        mimeType: orphan_record.mimeType,
+                        extension: rec_file_info.extension,
+                        webUrl: orphan_record.webUrl,
+                        hasChildren: rec_has_children,
+                        previewRenderable: orphan_record.previewRenderable != null ? orphan_record.previewRenderable : true,
+                        userRole: orphan_role,
+                        sharingStatus: null,
+                        isInternal: orphan_record.isInternal ? true : false,
+                        isPlaceholder: orphan_record.isPlaceholder ? true : false
+                    }}
+            )
+            LET hoisted_groups = (
+                FOR entry IN group_parents
+                    FILTER entry.groups NONE IN visible_group_ids
+                    LET orphan_group = entry.node
+                    LET orphan_group_role = group_roles[orphan_group._id]
+                    FILTER orphan_group_role != null
+                    LET og_has_child_rgs = LENGTH(
+                        FOR c_edge IN belongsTo
+                            FILTER c_edge._to == orphan_group._id
+                            AND STARTS_WITH(c_edge._from, "{CollectionNames.RECORD_GROUPS.value}/")
+                            AND c_edge.isDeleted != true
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0
+                    LET og_has_records = LENGTH(
+                        FOR r_edge IN belongsTo
+                            FILTER r_edge._to == orphan_group._id
+                            AND STARTS_WITH(r_edge._from, "{CollectionNames.RECORDS.value}/")
+                            AND r_edge.isDeleted != true
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0
+                    RETURN {{
+                        id: orphan_group._key,
+                        name: orphan_group.groupName,
+                        nodeType: "recordGroup",
+                        parentId: CONCAT("apps/", @app_id),
+                        origin: "CONNECTOR",
+                        connector: orphan_group.connectorName,
+                        recordType: null,
+                        recordGroupType: orphan_group.groupType,
+                        indexingStatus: null,
+                        createdAt: orphan_group.sourceCreatedAtTimestamp != null ? orphan_group.sourceCreatedAtTimestamp : (orphan_group.createdAtTimestamp != null ? orphan_group.createdAtTimestamp : 0),
+                        updatedAt: orphan_group.sourceLastModifiedTimestamp != null ? orphan_group.sourceLastModifiedTimestamp : (orphan_group.updatedAtTimestamp != null ? orphan_group.updatedAtTimestamp : 0),
+                        sizeInBytes: null,
+                        mimeType: null,
+                        extension: null,
+                        webUrl: orphan_group.webUrl,
+                        hasChildren: og_has_child_rgs OR og_has_records,
+                        userRole: orphan_group_role,
+                        sharingStatus: null,
+                        isInternal: orphan_group.isInternal ? true : false
+                    }}
             )
 
             FOR child IN UNION(connector_rgs, hoisted_records, hoisted_groups)
@@ -21106,12 +21225,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             bind_vars = {
                 "userId": user_id,
-                "orgId": org_id,
                 "connectorId": connector_id,
                 "completedStatus": ProgressStatus.COMPLETED.value,
+                "org_share_types": list(ORG_SHARE_PERMISSION_TYPES),
                 "@users": CollectionNames.USERS.value,
-                "@records": CollectionNames.RECORDS.value,
-                "@anyone": CollectionNames.ANYONE.value,
             }
 
             if metadata_filters:
@@ -21162,6 +21279,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET groupRecords = (
                 FOR principal_id IN principal_ids
                 FOR group IN 1..1 ANY principal_id {CollectionNames.BELONGS_TO.value}
+                    // The user's organization is reached here too; orgRecords handles it, with the type check.
+                    FILTER !IS_SAME_COLLECTION("{CollectionNames.ORGS.value}", group)
                     FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connectorId
@@ -21184,7 +21303,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET orgRecords = (
                 FOR principal_id IN principal_ids
                 FOR org IN 1..1 ANY principal_id {CollectionNames.BELONGS_TO.value}
-                    FOR record IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                    FOR record, orgPerm IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                        FILTER orgPerm.type IN @org_share_types
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
@@ -21195,7 +21315,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET orgRecordGroupRecords = (
                 FOR principal_id IN principal_ids
                 FOR org IN 1..1 ANY principal_id {CollectionNames.BELONGS_TO.value}
-                    FOR recordGroup IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                    FOR recordGroup, orgPerm IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                        FILTER orgPerm.type IN @org_share_types
                         FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
                         FOR record IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                             FILTER IS_SAME_COLLECTION("records", record)
@@ -21230,21 +21351,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
-            LET anyoneRecords = (
-                FOR anyone IN @@anyone
-                    FILTER anyone.organization == @orgId
-                    FOR record IN @@records
-                        FILTER record._key == anyone.file_key
-                        FILTER record.connectorId == @connectorId
-                        FILTER record.indexingStatus == @completedStatus
-                        {metadata_filter_clause}
-                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
-            )
-
+            // Domain, "anyone" and link shares grant no access, so no path reads them.
             LET allPairs = UNION(
                 directRecords, groupRecords, groupRecordsPermissionEdge,
                 orgRecords, orgRecordGroupRecords, recordGroupRecords,
-                inheritedRecordGroupRecords, anyoneRecords
+                inheritedRecordGroupRecords
             )
             FOR pair IN allPairs
                 FILTER pair != null AND pair.virtualRecordId != null AND pair.recordId != null
@@ -21659,7 +21770,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR org, belongsEdge IN 1..1 ANY user_from {CollectionNames.BELONGS_TO.value}
                     FILTER belongsEdge.entityType == "ORGANIZATION"
                     FOR rg, orgPerm IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                        FILTER orgPerm.type == "ORG"
+                        FILTER orgPerm.type IN @org_share_types
                         FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", rg)
                         LET rg_app = DOCUMENT(CONCAT("{CollectionNames.APPS.value}/", rg.connectorId))
                         FILTER rg.orgId == @org_id
@@ -21742,7 +21853,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 (FOR org, belongsEdge IN 1..1 ANY user_from {CollectionNames.BELONGS_TO.value}
                     FILTER belongsEdge.entityType == "ORGANIZATION"
                     FOR rec, orgPerm IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                        FILTER orgPerm.type == "ORG"
+                        FILTER orgPerm.type IN @org_share_types
                         FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", rec)
                         FILTER rec.orgId == @org_id
                         FILTER @scope_ids == null OR rec.connectorId IN @scope_ids
@@ -21811,6 +21922,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     # Always bound: Arango rejects a query that declares a bind
                     # variable it is not sent.
                     "scope_ids": sorted(scope_set) if scope_set is not None else None,
+                    "org_share_types": list(ORG_SHARE_PERMISSION_TYPES),
                 },
             )
             row = rows[0] if rows else None
@@ -21841,7 +21953,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Args:
             user_id (str): The userId field value in users collection
-            org_id (str): The org_id to filter anyone collection
+            org_id (str): The org the user belongs to
             filters (Optional[Dict[str, List[str]]]): Optional filters for departments, categories, languages, topics etc.
                 Format: {
                     'departments': [dept_ids],
