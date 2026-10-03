@@ -5,6 +5,8 @@ the saved filter alone, so a failed read of it, or a bucket list that happens to
 leave a bucket out, removes nothing.
 """
 
+import logging
+
 import pytest
 from object_store_behaviour_fakes import (
     BUCKET,
@@ -95,6 +97,23 @@ class TestDeselectedBucket:
 
         assert trashed.id in db.deleted
         assert in_bucket(db, OTHER) == set()
+        assert OTHER not in db.record_groups
+
+    @pytest.mark.asyncio
+    async def test_a_group_that_cannot_be_removed_is_reported_and_retried(
+        self, kind, connector, db, config, caplog
+    ) -> None:
+        db.refused_group_deletes.add(OTHER)
+        config.set_selection(filter_name(kind), [BUCKET])
+
+        with caplog.at_level(logging.WARNING):
+            await connector.run_sync()
+
+        assert OTHER in db.record_groups
+        assert any(f"record group of de-selected {OTHER}" in r.getMessage() for r in caplog.records)
+
+        db.refused_group_deletes.clear()
+        await connector.run_sync()
         assert OTHER not in db.record_groups
 
     @pytest.mark.asyncio

@@ -232,6 +232,8 @@ class FakeRecordsDb:
         self.deleted: list[str] = []
         self.written: list[str] = []
         self.failing: set[str] = set()
+        # Groups whose delete answers False, as the processor does when the delete fails.
+        self.refused_group_deletes: set[str] = set()
 
     def _check(self, method: str) -> None:
         if method in self.failing:
@@ -307,6 +309,8 @@ class FakeRecordsDb:
         return [d for d in docs if all(d.get(k) == v for k, v in filters.items())]
 
     async def on_record_group_deleted(self, external_group_id: str, connector_id: str) -> bool:
+        if external_group_id in self.refused_group_deletes:
+            return False
         return self.record_groups.pop(external_group_id, None) is not None
 
     async def on_record_deleted(self, record_id: str, **_: object) -> None:
