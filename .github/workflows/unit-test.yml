@@ -178,6 +178,7 @@ jobs:
           # -- leaving it exactly as unenforced on a pull request as it was.
           PYTHONPATH=backend/python:integration-tests \
             pytest integration-tests/unit/test_graph_entity_schemas.py \
+              integration-tests/unit/test_graph_edge_schemas.py \
               integration-tests/unit/test_connector_types_are_registered.py \
               --noconftest -c backend/python/pytest.ini -v
 

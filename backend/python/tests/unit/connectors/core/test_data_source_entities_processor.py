@@ -4551,12 +4551,9 @@ class TestOnRecordMetadataUpdateAndDelete:
     async def test_record_deleted(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
-        existing = MagicMock()
-        existing.virtual_record_id = "v1"
-        existing.org_id = "org-1"
-        existing.id = "rec-1"
-        existing.version = 1
-        existing.connector_id = "conn-1"
+        # The stored document, as GraphTransactionStore.get_record_by_key returns it.
+        existing = {"_key": "rec-1", "orgId": "org-1", "version": 1,
+                    "virtualRecordId": "v1", "connectorId": "conn-1"}
         tx_store.get_record_by_key = AsyncMock(return_value=existing)
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
@@ -4583,12 +4580,9 @@ class TestOnRecordMetadataUpdateAndDelete:
     async def test_record_deleted_publishes_delete_event_when_vrid_present(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
-        existing = MagicMock()
-        existing.virtual_record_id = "vr-1"
-        existing.org_id = "org-1"
-        existing.id = "rec-1"
-        existing.version = 3
-        existing.connector_id = "conn-1"
+        # The stored document, as GraphTransactionStore.get_record_by_key returns it.
+        existing = {"_key": "rec-1", "orgId": "org-1", "version": 3,
+                    "virtualRecordId": "vr-1", "connectorId": "conn-1"}
         tx_store.get_record_by_key = AsyncMock(return_value=existing)
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 

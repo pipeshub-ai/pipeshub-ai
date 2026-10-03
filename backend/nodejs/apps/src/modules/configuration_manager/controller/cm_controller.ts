@@ -63,7 +63,10 @@ import {
 } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
-import { getPlatformSettingsFromStore } from '../utils/util';
+import {
+  getPlatformSettingsFromStore,
+  readStoredAiModelsConfig,
+} from '../utils/util';
 import { AIModelConfiguration, AIModelsConfig, SystemPromptsConfig } from '../types/ai-models.types';
 import { WebSearchConfig } from '../types/web-search.types';
 import { WebSearchProviderConfiguration } from '../types/web-search.types';
@@ -2744,24 +2747,6 @@ export const createAIModelsConfig =
       next(error);
     }
   };
-
-async function readStoredAiModelsConfig(
-  keyValueStoreService: KeyValueStoreService,
-): Promise<Record<string, unknown> | null> {
-  const configManagerConfig = loadConfigurationManagerConfig();
-  const encryptedAIConfig = await keyValueStoreService.get<string>(
-    configPaths.aiModels,
-  );
-  if (!encryptedAIConfig) {
-    return null;
-  }
-  return JSON.parse(
-    EncryptionService.getInstance(
-      configManagerConfig.algorithm,
-      configManagerConfig.secretKey,
-    ).decrypt(encryptedAIConfig),
-  );
-}
 
 export const getAIModelsConfig =
   (keyValueStoreService: KeyValueStoreService) =>

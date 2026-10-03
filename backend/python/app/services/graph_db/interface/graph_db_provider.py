@@ -1485,7 +1485,9 @@ class IGraphDBProvider(ABC):
         List all records the user can access.
 
         Args:
-            user_id: External user ID
+            user_id: The user's graph key (the users node's ``_key`` / ``id``), not
+                the external ``userId``: ``/api/v1/records`` resolves the caller
+                and passes the key (``records_user_id_arg``).
             org_id: Organization ID
             skip: Number of records to skip (pagination)
             limit: Maximum records to return
@@ -1503,6 +1505,9 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Tuple of (records list, total count, available_filters dict)
+
+        Raises:
+            Exception: The listing could not be read. Never reported as an empty list.
         """
         pass
 
@@ -2506,7 +2511,11 @@ class IGraphDBProvider(ABC):
         sort_order: str,
         source: str,
     ) -> tuple[list[dict], int, dict]:
-        """List all records the user can access. Returns (records, total_count, available_filters)."""
+        """List all records the user can access. Returns (records, total_count, available_filters).
+
+        An empty list means the user can reach no matching record. A query that
+        could not be read raises; it is never reported as an empty list.
+        """
         pass
 
     @abstractmethod
@@ -2528,7 +2537,11 @@ class IGraphDBProvider(ABC):
         sort_order: str,
         folder_id: str | None = None,
     ) -> tuple[list[dict], int, dict]:
-        """List records in a KB. Returns (records, total_count, available_filters)."""
+        """List records in a KB. Returns (records, total_count, available_filters).
+
+        An empty list means no matching record or no access. A query that could
+        not be read raises; it is never reported as an empty list.
+        """
         pass
 
     @abstractmethod
@@ -3514,7 +3527,9 @@ class IGraphDBProvider(ABC):
         self,
         node_id: str,
         node_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list['User']:
         """
         Get all users with permission to a node.
@@ -3523,9 +3538,35 @@ class IGraphDBProvider(ABC):
             node_id (str): Node ID
             node_collection (str): Node collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error: Raise when the read fails, instead of answering an
+                empty list that reads as "nobody has access"
 
         Returns:
             List[User]: List of user objects
+        """
+        pass
+
+    @abstractmethod
+    async def get_groups_with_permission_to_node(
+        self,
+        node_id: str,
+        node_collection: str,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list['AppUserGroup']:
+        """
+        Get the user groups holding a direct permission edge to a node.
+
+        Args:
+            node_id (str): Node ID
+            node_collection (str): Node collection name
+            transaction (Optional[Any]): Optional transaction context
+            raise_on_error: Raise when the read fails, instead of answering an
+                empty list that reads as "no group has access"
+
+        Returns:
+            List[AppUserGroup]: The groups with a permission edge to the node
         """
         pass
 
@@ -3554,7 +3595,9 @@ class IGraphDBProvider(ABC):
     async def get_record_owner_source_user_email(
         self,
         record_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> str | None:
         """
         Get the owner's source email for a record.
@@ -3562,6 +3605,8 @@ class IGraphDBProvider(ABC):
         Args:
             record_id (str): Record ID
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Propagate a failed read instead of answering
+                None, which a caller would take for "no owner"
 
         Returns:
             Optional[str]: Owner email if found, None otherwise
@@ -4032,7 +4077,7 @@ class IGraphDBProvider(ABC):
         external_id: str,
         user_id: str,
         transaction: str | None = None
-    ) -> None:
+    ) -> dict | None:
         """
         Delete a record by external ID.
 
@@ -4041,6 +4086,10 @@ class IGraphDBProvider(ABC):
             external_id (str): External record ID
             user_id (str): User ID performing the deletion
             transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            The ``delete_record`` result, whose ``eventData`` the caller publishes
+            after its transaction commits; None when there was no such record.
         """
         pass
 

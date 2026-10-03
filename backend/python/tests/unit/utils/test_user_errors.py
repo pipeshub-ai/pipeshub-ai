@@ -348,3 +348,17 @@ _RAW_REASON = re.compile(r"""(reason\s*=|["']reason["']\s*:|\[["']reason["']\]\s
 def test_indexing_code_never_stores_exception_text_as_a_reason(path: str) -> None:
     source = (Path(__file__).resolve().parents[3] / path).read_text(encoding="utf-8")
     assert not _RAW_REASON.findall(source)
+
+
+
+class TestProviderErrorCode:
+    def test_a_google_genai_key_rejection_is_an_auth_error(self) -> None:
+        from google.genai import errors as genai_errors
+
+        body = {"error": {"code": 401, "message": "API key not valid", "status": "UNAUTHENTICATED"}}
+        assert ue.provider_error_code(genai_errors.ClientError(401, body)) == "auth_error"
+
+    def test_a_missing_model_is_model_not_found(self) -> None:
+        request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        error = openai.NotFoundError("not found", response=httpx.Response(404, request=request), body=None)
+        assert ue.provider_error_code(error) == "model_not_found"

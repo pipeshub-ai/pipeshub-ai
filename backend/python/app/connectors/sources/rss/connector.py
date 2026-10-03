@@ -450,6 +450,7 @@ class RSSConnector(BaseConnector):
 
         # Process entries in batches
         records_batch: List[Tuple[FileRecord, List[Permission]]] = []
+        retitled: list[FileRecord] = []
         processed_count = 0
 
         for entry in feed.entries[: self.max_articles_per_feed]:
@@ -458,6 +459,8 @@ class RSSConnector(BaseConnector):
                 if result:
                     records_batch.append(result)
                     processed_count += 1
+                    if await self._only_metadata_changed(result[0]):
+                        retitled.append(result[0])
 
                     # Flush batch when it reaches batch_size
                     if len(records_batch) >= self.batch_size:
@@ -481,8 +484,32 @@ class RSSConnector(BaseConnector):
                 f"  📦 Flushed final batch of {len(records_batch)} records"
             )
 
+        # on_new_records rewrites an existing record only when its revision (the
+        # text's hash) changes, so a new title or link on unchanged text is saved here.
+        for record in retitled:
+            try:
+                await self.data_entities_processor.on_record_metadata_update(record)
+            except Exception as e:
+                self.logger.error(
+                    f"❌ Error updating the title of '{record.record_name}': {e}", exc_info=True
+                )
+
         self.logger.info(f"✅ Processed {processed_count} articles from '{feed_title}'")
         return processed_count
+
+    async def _only_metadata_changed(self, record: FileRecord) -> bool:
+        """True when the entry is already synced with the same text but a new title or link."""
+        try:
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, record.external_record_id
+            )
+        except Exception as e:
+            # The entry still goes to on_new_records; only its rename waits for the next sync.
+            self.logger.warning(f"⚠️ Could not read the stored record for '{record.record_name}': {e}")
+            return False
+        if existing is None or existing.external_revision_id != record.external_revision_id:
+            return False
+        return existing.record_name != record.record_name or existing.weburl != record.weburl
 
     def _source_fetch_error(self, result: Optional[FetchResponse]) -> HTTPException:
         """Map a failed `fetch_url_with_fallback` result onto our HTTP status."""

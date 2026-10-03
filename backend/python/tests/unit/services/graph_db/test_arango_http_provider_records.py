@@ -1503,6 +1503,32 @@ class TestGetUsersWithPermission:
         assert result == []
 
 
+class TestGetGroupsWithPermission:
+    async def test_returns_the_groups_with_an_edge_to_the_node(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.return_value = [{
+            "_key": "g1", "_id": "groups/g1", "name": "Sales", "externalGroupId": "sales@example.com",
+            "connectorName": "DRIVE WORKSPACE", "connectorId": "c1", "orgId": "o1",
+            "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+        }]
+        groups = await connected_provider.get_groups_with_permission_to_node(
+            node_id="r1", node_collection="records",
+        )
+        assert [(g.id, g.source_user_group_id) for g in groups] == [("g1", "sales@example.com")]
+        bind_vars = _get_bind_vars(connected_provider.http_client.execute_aql)
+        assert bind_vars["node_key"] == "records/r1"
+        assert bind_vars["@group_collection"] == CollectionNames.GROUPS.value
+
+    async def test_a_failed_read_answers_empty_unless_asked_to_raise(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.side_effect = Exception("err")
+        assert await connected_provider.get_groups_with_permission_to_node(
+            node_id="r1", node_collection="records",
+        ) == []
+        with pytest.raises(Exception, match="err"):
+            await connected_provider.get_groups_with_permission_to_node(
+                node_id="r1", node_collection="records", raise_on_error=True,
+            )
+
+
 # ===================================================================
 # get_record_owner_source_user_email
 # ===================================================================
@@ -3877,10 +3903,10 @@ class TestGetUserKbPermission:
         result = await connected_provider.get_user_kb_permission("kb1", "u1")
         assert result is None
 
-    async def test_exception_returns_none(self, connected_provider):
+    async def test_a_failed_read_raises(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_user_kb_permission("kb1", "u1")
-        assert result is None
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_user_kb_permission("kb1", "u1")
 
     async def test_correct_bind_vars(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = []
