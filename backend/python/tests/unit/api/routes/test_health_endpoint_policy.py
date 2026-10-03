@@ -1,10 +1,15 @@
 """Model health checks refuse endpoints the deployment may not call, before calling them,
-and report a provider's failure as one short line rather than its whole response."""
+and report a provider's failure as fixed text: what the provider said goes to the log only."""
 
 from __future__ import annotations
 
+import builtins
+import dis
 import ipaddress
 import json
+import types
+from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +17,12 @@ import pytest
 from app.api.routes import health
 from app.utils import aimodels
 from app.utils.url_fetcher import PRIVATE_ADDRESS_SWITCH_ENV
+from app.utils.user_messages import action_failed
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+PROVIDER_TEXT = "upstream said: deployment gpt-x not found at https://internal.example/v1"
 
 _PERFORMERS = {
     "llm": "perform_llm_health_check",
@@ -163,33 +174,86 @@ class TestBulkRoutes:
         initialize.assert_not_awaited()
 
 
-class TestProviderErrorsAreOneShortLine:
-    async def test_unexpected_failure_reports_one_capped_line(self, default_mode: None) -> None:
-        upstream_body = "first line of the provider's answer\n" + "internal detail " * 200
+class TestProviderTextIsNeverReturned:
+    async def test_unexpected_failure_returns_fixed_text(self, default_mode: None) -> None:
+        request = _request()
         with patch.object(
-            health, "perform_llm_health_check", new_callable=AsyncMock, side_effect=RuntimeError(upstream_body)
+            health, "perform_llm_health_check", new_callable=AsyncMock, side_effect=RuntimeError(PROVIDER_TEXT)
         ):
-            response = await health.health_check(_request(), "llm", _config("https://api.example/v1"))
+            response = await health.health_check(request, "llm", _config("https://api.example/v1"))
 
-        error = _body(response)["error"]
         assert response.status_code == 500
-        assert "first line of the provider's answer" in error
-        assert "internal detail" not in error
-        assert "\n" not in error
+        assert _body(response)["error"] == action_failed("check this model")
+        assert PROVIDER_TEXT in str(request.app.container.logger.return_value.error.call_args)
 
-    async def test_failure_without_a_message_still_names_what_failed(self, default_mode: None) -> None:
-        with patch.object(health, "perform_llm_health_check", new_callable=AsyncMock, side_effect=RuntimeError()):
-            response = await health.health_check(_request(), "llm", _config("https://api.example/v1"))
+    async def test_vision_probe_returns_fixed_text(self) -> None:
+        with patch.object(
+            health, "_invoke_with_timeout", new_callable=AsyncMock, side_effect=RuntimeError(PROVIDER_TEXT)
+        ), patch.object(health, "_is_capability_error", return_value=True), patch.object(
+            health, "_get_test_image", return_value="aGk="
+        ):
+            message = await health._probe_vision(MagicMock(), logger := MagicMock())
 
-        assert _body(response)["error"] == "Health check failed: RuntimeError"
+        assert message == "Model doesn't support images/vision"
+        assert PROVIDER_TEXT in str(logger.info.call_args)
 
-    async def test_vision_probe_reports_one_capped_line(self) -> None:
-        long_error = RuntimeError("image input is not supported\n" + "x" * 5000)
-        with patch.object(health, "_invoke_with_timeout", new_callable=AsyncMock, side_effect=long_error), patch.object(
-            health, "_is_capability_error", return_value=True
+    async def test_image_embedding_probe_returns_fixed_text_when_the_provider_cannot_be_built(self) -> None:
+        with patch(
+            "app.services.embeddings.multimodal.factory.MultimodalEmbeddingFactory.create",
+            side_effect=RuntimeError(PROVIDER_TEXT),
+        ):
+            message = await health._probe_image_embedding(
+                _config("https://api.example/v1"), "m", 8, logger := MagicMock()
+            )
+
+        assert message == "Couldn't set up image embedding with these settings"
+        assert PROVIDER_TEXT in str(logger.warning.call_args)
+
+    async def test_image_embedding_probe_returns_fixed_text_when_the_model_refuses_images(self) -> None:
+        provider = MagicMock()
+        provider.supports_multimodal.return_value = True
+        provider.embed_images = AsyncMock(side_effect=RuntimeError(PROVIDER_TEXT))
+        logger = MagicMock()
+        with patch(
+            "app.services.embeddings.multimodal.factory.MultimodalEmbeddingFactory.create", return_value=provider
+        ), patch.object(health, "_is_capability_error", return_value=True), patch.object(
+            health, "_get_test_image", return_value="aGk="
+        ):
+            message = await health._probe_image_embedding(_config("https://api.example/v1"), "m", 8, logger)
+
+        assert message == "Model cannot embed images"
+        assert PROVIDER_TEXT in str(logger.info.call_args)
+
+    async def test_image_embedding_probe_returns_fixed_text_when_the_provider_reports_an_error(self) -> None:
+        provider = MagicMock()
+        provider.supports_multimodal.return_value = True
+        provider.embed_images = AsyncMock(return_value=[MagicMock(embedding=None, error=PROVIDER_TEXT)])
+        logger = MagicMock()
+        with patch(
+            "app.services.embeddings.multimodal.factory.MultimodalEmbeddingFactory.create", return_value=provider
         ), patch.object(health, "_get_test_image", return_value="aGk="):
-            message = await health._probe_vision(MagicMock(), MagicMock())
+            message = await health._probe_image_embedding(_config("https://api.example/v1"), "m", 8, logger)
 
-        assert message.startswith("Model doesn't support images/vision: image input is not supported")
-        assert len(message) < 300
-        assert "\n" not in message
+        assert message == "Image embedding returned nothing"
+        assert PROVIDER_TEXT in str(logger.warning.call_args)
+
+
+def _code_objects(code: types.CodeType) -> Iterator[types.CodeType]:
+    yield code
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType):
+            yield from _code_objects(const)
+
+
+def test_every_name_the_module_uses_is_defined() -> None:
+    """A helper removed while callers remain only fails when that caller runs; catch it here."""
+    source = Path(health.__file__).read_text(encoding="utf-8")
+    defined = set(vars(health)) | set(vars(builtins))
+    undefined: set[str] = set()
+    for code in _code_objects(compile(source, health.__file__, "exec")):
+        instructions = list(dis.get_instructions(code))
+        stored = {i.argval for i in instructions if i.opname in ("STORE_NAME", "STORE_GLOBAL")}
+        loaded = {i.argval for i in instructions if i.opname in ("LOAD_NAME", "LOAD_GLOBAL")}
+        undefined |= loaded - stored - defined
+
+    assert not undefined

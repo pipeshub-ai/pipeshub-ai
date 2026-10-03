@@ -14696,7 +14696,7 @@ components:
         error:
           type: string
           description: Alternate top-level error field (legacy envelopes and HTTPException detail)
-          example: "Health check failed: Connection refused"
+          example: "We couldn't check this model. Please try again; if it keeps failing, contact your admin."
         timestamp:
           type: integer
           format: int64
