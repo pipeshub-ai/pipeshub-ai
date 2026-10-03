@@ -6,11 +6,10 @@ Single-user sync without permission APIs. Inherits from BaseConnector directly.
 Authentication: API token (personal access token or HTTP basic with API token).
 """
 
-import json
 import uuid
 import re
 from collections.abc import AsyncGenerator
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from logging import Logger
 from typing import Any, Literal, Optional
 from urllib.parse import parse_qs, urlparse
@@ -62,6 +61,13 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterPersonalApp
+from app.connectors.sources.atlassian.core.confluence_dc_removal import (
+    ConfluenceDataCenterRemovalMixin,
+    ContentListing,
+    item_last_modified_when,
+    item_revision_marker,
+    stored_map,
+)
 from app.connectors.sources.atlassian.core.confluence_html import prepare_streaming_html
 from app.sources.client.http.http_retry import call_with_retry
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -90,56 +96,6 @@ from app.connectors.core.base.error.stream_errors import (
 # Time offset (in hours) applied to date filters to handle timezone differences
 # between the application and Confluence server, ensuring no data is missed during sync
 TIME_OFFSET_HOURS = 24
-
-# How many runs the checkpoint is held for pages that failed to save before they
-# are given up on, so one broken page can't stop a space from ever moving on.
-MAX_FAILED_PAGE_ATTEMPTS = 5
-
-
-def _stored_map(value: object) -> dict[str, Any]:
-    """A map kept in a sync point as JSON text (graph stores such as Neo4j can't hold nested maps)."""
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str) and value:
-        try:
-            parsed = json.loads(value)
-        except ValueError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
-
-def _extract_item_last_modified_when(item_data: dict[str, Any]) -> Optional[str]:
-    """Extract last modified timestamp from Confluence item data.
-    
-    Tries history.lastUpdated.when first, then falls back to version.when or version.createdAt.
-    """
-    history = item_data.get("history")
-    if isinstance(history, dict):
-        last_updated = history.get("lastUpdated")
-        if isinstance(last_updated, dict):
-            when = last_updated.get("when")
-            if when:
-                return when
-    version = item_data.get("version")
-    if isinstance(version, dict):
-        return version.get("when") or version.get("createdAt")
-    return None
-
-def _item_revision_marker(item_data: dict[str, Any]) -> str | None:
-    """What identifies this revision of an item: its last-modified time, else its version number.
-
-    None when neither is known, so a given-up item can't be matched and is never skipped.
-    """
-    when = _extract_item_last_modified_when(item_data)
-    if when:
-        return when
-    history = item_data.get("history")
-    last_updated = history.get("lastUpdated") if isinstance(history, dict) else None
-    version = item_data.get("version")
-    number = (last_updated.get("number") if isinstance(last_updated, dict) else None) or (
-        version.get("number") if isinstance(version, dict) else None
-    )
-    return f"version:{number}" if number is not None else None
 
 # Expand parameters for fetching pages and blogposts with required metadata
 # Includes: ancestors, history, space, attachments, and comments
@@ -328,7 +284,7 @@ CONTENT_V1_ATTACHMENT_EXPAND = "version,history,metadata,extensions"
         ))
     )\
     .build_decorator()
-class ConfluenceDataCenterPersonalConnector(BaseConnector):
+class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, BaseConnector):
     """Personal Confluence DC: creator-only permissions, no user/group/permission API calls."""
 
     def __init__(
@@ -368,6 +324,11 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             )
 
         self.pages_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
+        self._space_listing_complete = False
+        # Spaces this sync wrote to the graph, which the space sweep expects to read back.
+        self._saved_space_ids: set[str] = set()
+        # Items the by-id syncs of the current space listing failed to save; counted in failedPages.
+        self._id_sync_failed_items: list[tuple[str, str, str]] = []
 
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
@@ -534,17 +495,19 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                 len(spaces),
             )
 
-            # Sync content per space
+            await self._remove_spaces_out_of_scope(spaces)
+
+            # Sync content per space; each type's sync also removes what left the space
             for space in spaces:
                 space_key = space.short_name
 
                 # Pages
                 self.logger.info(f"Syncing pages for space: {space.name} ({space_key})")
-                await self._sync_content(space_key, RecordType.CONFLUENCE_PAGE)
+                await self._sync_content(space_key, RecordType.CONFLUENCE_PAGE, space=space)
 
                 # Blogposts
                 self.logger.info(f"Syncing blogposts for space: {space.name} ({space_key})")
-                await self._sync_content(space_key, RecordType.CONFLUENCE_BLOGPOST)
+                await self._sync_content(space_key, RecordType.CONFLUENCE_BLOGPOST, space=space)
 
             self.logger.info(
                 "✅ Confluence DC Personal connector %s sync completed",
@@ -602,6 +565,10 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             total_spaces_synced = 0
             base_url = None  # Extract from first response
             record_groups = []
+            self._space_listing_complete = False
+            self._saved_space_ids = set()
+            # A listed space that couldn't be processed would look like one that left.
+            skipped_a_space = False
 
             while True:
                 datasource = await self._get_fresh_datasource()
@@ -619,7 +586,11 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                     break
 
                 response_data = response.json()
-                spaces_data = response_data.get("results", [])
+                spaces_data = response_data.get("results") if isinstance(response_data, dict) else None
+                if not isinstance(spaces_data, list):
+                    self.logger.error("❌ The space listing had no results list; no space is removed this sync")
+                    break
+                listed_count = len(spaces_data)
 
                 # Extract base URL from first response
                 if not base_url and response_data.get("_links", {}).get("base"):
@@ -627,6 +598,10 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                     self.logger.debug(f"Base URL extracted: {base_url}")
 
                 if not spaces_data:
+                    # Only a missing next link ends the listing; an empty page that points further is a failed read.
+                    self._space_listing_complete = (
+                        not (response_data.get("_links") or {}).get("next") and not skipped_a_space
+                    )
                     break
 
                 # Apply client-side exclusion filter if NOT_IN
@@ -649,6 +624,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                         space_key = space_data.get("key")
 
                         if not space_id or not space_name or not space_key:
+                            skipped_a_space = True
                             continue
 
                         self.logger.debug(f"Processing space: {space_name} ({space_id})")
@@ -656,6 +632,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                         # Create RecordGroup for space
                         record_group = self._transform_to_space_record_group(space_data, base_url)
                         if not record_group:
+                            skipped_a_space = True
                             continue
 
                         # Grant ConnectorGroup permission (Jira DC Personal pattern)
@@ -669,19 +646,23 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                             )
 
                     except Exception as space_error:
+                        skipped_a_space = True
                         self.logger.error(f"❌ Failed to process space {space_data.get('name')}: {space_error}")
                         continue
 
                 # Save batch to database
                 if batch_groups_with_permissions:
                     await self.data_entities_processor.on_new_record_groups(batch_groups_with_permissions)
+                    self._saved_space_ids.update(str(g.external_group_id) for g, _ in batch_groups_with_permissions)
                     self.logger.info(f"Synced batch of {len(batch_groups_with_permissions)} spaces")
 
                 # Next page: prefer _links.next (cursor or start), else bump start by batch size
                 next_url = response_data.get("_links", {}).get("next")
                 token = self._pagination_token_from_next_link(next_url)
                 if token is None:
-                    if len(spaces_data) < batch_size:
+                    # Counted before the exclusion filter, which can shorten a full page.
+                    if listed_count < batch_size:
+                        self._space_listing_complete = not next_url and not skipped_a_space
                         break
                     start_offset += batch_size
                 else:
@@ -727,7 +708,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                 )
                 if hp_resp and hp_resp.status == HttpStatusCode.SUCCESS.value:
                     hp_data = hp_resp.json()
-                    homepage_last_modified = _extract_item_last_modified_when(hp_data)
+                    homepage_last_modified = item_last_modified_when(hp_data)
                     homepage_title = hp_data.get("title") or homepage_title
             return homepage_id, homepage_title, homepage_last_modified
         except Exception as e:
@@ -763,6 +744,10 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             item_id = item_data.get("id")
             item_title = item_data.get("title")
             if not item_id or not item_title:
+                return 0
+            if self._listed_item_filtered_out(str(item_id), self._listed_item(item_data, "current"), record_type):
+                # Removal would take it out again next sync; both follow the same filter check.
+                self.logger.info("Not backfilling space homepage %s: the sync filters leave it out", item_id)
                 return 0
 
             existing_record = await self.data_entities_processor.get_record_by_external_id(
@@ -801,7 +786,14 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             )
             return 0
 
-    async def _sync_content(self, space_key: str, record_type: RecordType) -> None:
+    async def _sync_content(
+        self,
+        space_key: str,
+        record_type: RecordType,
+        *,
+        space: RecordGroup | None = None,
+        only_ids: list[str] | None = None,
+    ) -> bool:
         """
         Unified sync for pages and blogposts from Confluence using v1 API.
 
@@ -811,6 +803,13 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
         Args:
             space_key: The space key to sync content from
             record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
+            space: The space's record group; given, what left the space is removed
+                before the checkpoint moves, and the checkpoint holds if that fails.
+            only_ids: Sync only these items, whatever their last modified time, still
+                within the sync filters; the checkpoint is neither read nor moved.
+
+        Returns:
+            Whether the listing was read in full; by id, also whether every item was saved.
         """
         # Derive content_type from record_type for logging and sync point
         content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
@@ -842,11 +841,15 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                     action = "Excluding" if content_ids_operator_str == "not_in" else "Including"
                     self.logger.info(f"🔍 Filter: {action} {content_type}s by IDs: {content_ids}")
 
+            if only_ids is not None:
+                # The caller already kept only items the id filter admits.
+                content_ids, content_ids_operator_str = list(only_ids), "in"
+
             # Get last sync checkpoint (use content_type as suffix)
             sync_point_key = generate_record_sync_point_key(
                 RecordType.WEBPAGE.value, f"confluence_{content_type}s", space_key
             )
-            last_sync_data = await self.pages_sync_point.read_sync_point(sync_point_key)
+            last_sync_data = None if only_ids is not None else await self.pages_sync_point.read_sync_point(sync_point_key)
             last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
             if last_sync_time:
                 self.logger.info(f"🔄 Incremental sync: Fetching {content_type}s modified after {last_sync_time}")
@@ -889,9 +892,10 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                 self.logger.info(f"🔍 Filter: Fetching {content_type}s created before {created_before}")
 
             space_homepage_id: Optional[str] = None
+            homepage_modified: Optional[str] = None
             homepage_seen_in_search = False
-            if record_type == RecordType.CONFLUENCE_PAGE:
-                space_homepage_id, _, _ = await self._fetch_space_homepage_info(space_key)
+            if record_type == RecordType.CONFLUENCE_PAGE and only_ids is None:
+                space_homepage_id, _, homepage_modified = await self._fetch_space_homepage_info(space_key)
 
             # Pagination variables
             # Supports both offset-based (start/limit) and cursor-based pagination
@@ -901,10 +905,15 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
             total_attachments_synced = 0
             total_comments_synced = 0
             listing_complete = True
+            seen: set[str] = set()
             # (id, title, last modified) of items that failed to save this run.
             failed_items: list[tuple[str, str, str]] = []
             # Items given up on, id -> last modified then; skipped until it changes.
-            given_up = _stored_map((last_sync_data or {}).get("givenUpPages"))
+            given_up = stored_map((last_sync_data or {}).get("givenUpPages"))
+            if space_homepage_id and homepage_modified and given_up.get(space_homepage_id) == homepage_modified:
+                # Unchanged since it was given up on, so a backfill would only fail again.
+                self.logger.info("Not backfilling space homepage %s: given up on until it changes", space_homepage_id)
+                space_homepage_id = None
 
             if record_type == RecordType.CONFLUENCE_PAGE and space_homepage_id:
                 homepage_in_db = await self.data_entities_processor.get_record_by_external_id(
@@ -941,7 +950,8 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                         space_key=space_key,
                         page_ids=content_ids,
                         page_ids_operator=content_ids_operator_str,
-                        include_children=True,
+                        # By id, each item was checked against the filter itself; its subtree wasn't.
+                        include_children=only_ids is None,
                         order_by="lastModified",
                         sort_order="asc",
                         expand=CONTENT_EXPAND_PARAMS,
@@ -972,14 +982,20 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                     break
 
                 response_data = response.json()
-                items_data = response_data.get("results", [])
+                items_data = response_data.get("results") if isinstance(response_data, dict) else None
+                if not isinstance(items_data, list):
+                    self.logger.error(f"❌ {content_type.capitalize()} listing for space {space_key} had no results list")
+                    listing_complete = False
+                    break
 
                 # Extract api_base_url from response root for URL construction
                 api_base_url = (response_data.get("_links") or {}).get("base")
 
                 if not items_data:
+                    # Only a missing next link ends the listing; an empty page that points further is a failed read.
+                    if (response_data.get("_links") or {}).get("next"):
+                        listing_complete = False
                     break
-
 
                 # Transform items to WebpageRecords with permissions
                 records_with_permissions = []
@@ -987,9 +1003,10 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                     try:
                         item_id = item_data.get("id")
                         item_title = item_data.get("title")
-
-                        if not item_id or not item_title:
+                        if not item_id:
                             continue
+                        # Before anything can skip it: an item that fails or is given up on still exists.
+                        seen.add(str(item_id))
 
                         if (
                             record_type == RecordType.CONFLUENCE_PAGE
@@ -999,11 +1016,17 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                             homepage_seen_in_search = True
 
                         # After the homepage check, so a skipped homepage isn't mistaken for one missing from search.
-                        item_marker = _item_revision_marker(item_data)
+                        item_marker = item_revision_marker(item_data)
                         if str(item_id) in given_up:
                             if item_marker and given_up[str(item_id)] == item_marker:
                                 continue
                             del given_up[str(item_id)]
+
+                        if not item_title:
+                            # Counted as failed, so it holds the checkpoint and is read again, within the retry limit.
+                            self.logger.warning(f"Could not save {content_type} {item_id} in space {space_key}: it has no title")
+                            failed_items.append((str(item_id), "", item_marker or ""))
+                            continue
 
                         self.logger.debug(f"Processing {content_type}: {item_title} ({item_id})")
 
@@ -1131,7 +1154,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                         failed_items.append((
                             str(item_data.get("id")),
                             str(item_data.get("title")),
-                            _item_revision_marker(item_data) or "",
+                            item_revision_marker(item_data) or "",
                         ))
                         continue
 
@@ -1174,94 +1197,44 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
 
             # Update sync checkpoint with current time (only if we synced something)
             # Using current time instead of last item's time avoids re-fetching due to the 24-hour offset
+            if only_ids is not None:
+                self._id_sync_failed_items.extend(failed_items)
+                self.logger.info(f"✅ {content_type.capitalize()} sync by id complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}")
+                return listing_complete and not failed_items
+
+            settled = True
+            self._id_sync_failed_items = []
+            if space is not None:
+                # A given-up item the search didn't return again is unchanged; syncing it by id would only fail again.
+                settled = await self._reconcile_space_content(space, record_type, ContentListing(
+                    full=not last_sync_time, complete=listing_complete, seen=frozenset(seen | set(given_up)),
+                    checkpoint_key=sync_point_key,
+                ))
             if not listing_complete:
                 self.logger.warning(
                     f"Keeping the {content_type}s checkpoint for space {space_key}: not everything in "
                     "this window could be read, so the next sync reads it again"
                 )
             else:
+                if not settled:
+                    self.logger.warning(
+                        f"Keeping the {content_type}s checkpoint for space {space_key}: some removals or "
+                        "re-syncs could not be checked or made, so the next sync repeats them"
+                    )
                 await self._save_content_checkpoint(
-                    sync_point_key, last_sync_data, failed_items, given_up, content_type, space_key,
-                    synced_any=total_synced > 0,
+                    sync_point_key, last_sync_data, failed_items + self._id_sync_failed_items, given_up,
+                    content_type, space_key, synced_any=total_synced > 0, hold=not settled,
                 )
 
             self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Comments: {total_comments_synced}")
+            return listing_complete
 
         except Exception as e:
             self.logger.error(f"❌ {content_type.capitalize()} sync failed: {e}", exc_info=True)
             raise
 
-    async def _save_content_checkpoint(
-        self,
-        sync_point_key: str,
-        last_sync_data: dict[str, Any] | None,
-        failed_items: list[tuple[str, str, str]],
-        given_up: dict[str, str],
-        content_type: str,
-        space_key: str,
-        *,
-        synced_any: bool,
-    ) -> None:
-        """Move the checkpoint to now, or keep it while any item that failed still has attempts left.
-
-        Each failed item has its own count. One that fails ``MAX_FAILED_PAGE_ATTEMPTS`` syncs
-        in a row is given up on and skipped until its last-modified time changes.
-        """
-        stored = last_sync_data or {}
-        attempts_before = _stored_map(stored.get("failedPages"))
-        held: dict[str, int] = {}
-        newly_given_up: list[str] = []
-        for item_id, title, when in failed_items:
-            attempts = int(attempts_before.get(item_id) or 0) + 1
-            if attempts >= MAX_FAILED_PAGE_ATTEMPTS:
-                if when:
-                    given_up[item_id] = when
-                newly_given_up.append(f"'{title}' ({item_id})")
-            else:
-                held[item_id] = attempts
-        if newly_given_up:
-            self.logger.error(
-                f"❌ {content_type.capitalize()}s {', '.join(newly_given_up)} in space {space_key} still could not be "
-                f"saved after {MAX_FAILED_PAGE_ATTEMPTS} syncs; moving on without them. They are read again when "
-                "they next change"
-            )
-
-        if held:
-            checkpoint: dict[str, Any] = {}
-            if stored.get("last_sync_time"):
-                checkpoint["last_sync_time"] = stored["last_sync_time"]
-            titles = {item_id: title for item_id, title, _ in failed_items}
-            self.logger.warning(
-                f"Keeping the {content_type}s checkpoint for space {space_key}: "
-                + ", ".join(f"'{titles[i]}' ({i}, attempt {n} of {MAX_FAILED_PAGE_ATTEMPTS})" for i, n in held.items())
-                + " could not be saved and will be read again next sync"
-            )
-        elif synced_any or failed_items or stored.get("failedPages") or given_up != _stored_map(stored.get("givenUpPages")):
-            now = datetime.now(timezone.utc)
-            checkpoint = {"last_sync_time": now.strftime("%Y-%m-%dT%H:%M:%S.000Z")}
-            # The listing re-reads TIME_OFFSET_HOURS before the checkpoint; older given-up items can't come back.
-            forget_before = now - timedelta(hours=TIME_OFFSET_HOURS * 2)
-            given_up = {i: when for i, when in given_up.items() if self._listed_after(when, forget_before)}
-            self.logger.info(f"Updated {content_type}s sync checkpoint to {checkpoint['last_sync_time']}")
-        else:
-            return
-
-        # Written even when empty: Neo4j merges sync point fields, so an omitted field would keep its old value.
-        if held or stored.get("failedPages"):
-            checkpoint["failedPages"] = json.dumps(held, sort_keys=True)
-        if given_up or stored.get("givenUpPages"):
-            checkpoint["givenUpPages"] = json.dumps(given_up, sort_keys=True)
-        await self.pages_sync_point.update_sync_point(sync_point_key, checkpoint)
-
-    @staticmethod
-    def _listed_after(when: str, cutoff: datetime) -> bool:
-        # A version-number marker has no time to compare, so it is kept.
-        if when.startswith("version:"):
-            return True
-        try:
-            return datetime.fromisoformat(when.replace("Z", "+00:00")) >= cutoff
-        except (AttributeError, ValueError):
-            return False
+    async def _sync_content_by_ids(self, space: RecordGroup, record_type: RecordType, ids: list[str]) -> bool:
+        return await self._sync_content(space.short_name, record_type, only_ids=ids)
 
     async def _fetch_all_attachments(self, content_id: str) -> tuple[list[dict[str, Any]], Optional[str]]:
         """

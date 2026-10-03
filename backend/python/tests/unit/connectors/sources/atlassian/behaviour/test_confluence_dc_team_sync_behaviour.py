@@ -6,6 +6,7 @@ The focus is on who ends up able to see what: users, groups, space grants,
 page restrictions, and the audit-log pass that catches restriction changes.
 """
 
+import json
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -17,18 +18,17 @@ from atlassian_behaviour_fakes import (
     AtlassianApiStub,
     FakeCheckpointStore,
     FakeConfigService,
-    FakeRecordsDb,
     json_response,
+    logged,
+    record_logs,
 )
+from confluence_dc_removal_fakes import RemovalRecordsDb
 from fastapi import HTTPException
 
-from app.connectors.sources.atlassian.confluence_datacenter import (
-    connector as team_connector_module,
-)
 from app.connectors.sources.atlassian.confluence_datacenter.connector import (
-    CONTENT_LIST_LIMIT,
     ConfluenceDataCenterConnector,
 )
+from app.connectors.sources.atlassian.core import confluence_dc_removal
 from app.models.entities import Record, RecordType
 from app.models.permission import EntityType, PermissionType
 from app.sources.client.confluence.confluence import ConfluenceRESTClientViaToken
@@ -41,16 +41,12 @@ FAKE_PAT = "fake-pat-for-tests"
 AUDIT = "/rest/auditing/1.0/events"
 
 
-class TeamDb(FakeRecordsDb):
+class TeamDb(RemovalRecordsDb):
     """Adds the user and group lookups the team connector makes."""
 
     def __init__(self) -> None:
         super().__init__()
         self.migrations: list[dict[str, Any]] = []
-        self.fail_delete_for = set()
-        # Record ids with an isOfType doc; only a cascade delete removes it.
-        self.type_docs: set[str] = set()
-        self.fail_group_read = False
 
     async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> object:
         return next((u for u in reversed(self.app_users) if u.source_user_id == source_user_id), None)
@@ -63,105 +59,6 @@ class TeamDb(FakeRecordsDb):
 
     async def migrate_group_to_user_by_external_id(self, **kwargs: str) -> None:
         self.migrations.append(kwargs)
-
-    # ---- what removal reads and writes, answered the way the graph stores do ----
-
-    fail_scan = False
-    fail_delete_for: set[str] = set()
-
-    def _by_id(self, record_id: str) -> Record | None:
-        return next((r for r in self.records.values() if r.id == record_id), None)
-
-    async def get_records_in_record_group(
-        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None
-    ) -> list[Record]:
-        """Typed records of one group, keyset-paged by id, as ``get_records_by_status`` returns them."""
-        if self.fail_scan:
-            raise RuntimeError("graph unavailable")
-        if external_group_id not in self.record_groups:
-            return []
-        ordered = sorted(
-            (r for r in self.records.values() if r.external_record_group_id == external_group_id), key=lambda r: r.id
-        )
-        return [r.model_copy() for r in ordered if after_key is None or r.id > after_key][:limit]
-
-    async def get_records_by_status(
-        self, connector_id: str, status_filters: list[str] | None, limit: int | None = None,
-        after_key: str | None = None, **_: object,
-    ) -> list[Record]:
-        if self.fail_scan:
-            raise RuntimeError("graph unavailable")
-        ordered = sorted(self.records.values(), key=lambda r: r.id)
-        page = [r.model_copy() for r in ordered if after_key is None or r.id > after_key]
-        return page[:limit] if limit else page
-
-    async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> object:
-        return self.record_groups.get(external_id)
-
-    async def get_nodes_by_filters(
-        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None
-    ) -> list[dict[str, Any]]:
-        """Record group nodes; like both graph providers, a failed read answers [] instead of raising."""
-        assert collection == "recordGroups", collection
-        if self.fail_group_read:
-            return []
-        nodes = [{**g.to_arango_base_record_group(), "id": g.id} for g in self.record_groups.values()]
-        matching = [n for n in nodes if all(n.get(k) == v for k, v in filters.items())]
-        return [{f: n.get(f) for f in return_fields} if return_fields else n for n in matching]
-
-    async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
-        await super().on_new_records(records_with_permissions)
-        self.type_docs.update(record.id for record, _ in records_with_permissions)
-
-    async def on_record_group_deleted(self, external_group_id: str, connector_id: str) -> bool:
-        return self.record_groups.pop(external_group_id, None) is not None
-
-    async def on_record_deleted(self, record_id: str, **_: object) -> None:
-        """Like the real one: the record and its parent link go, its isOfType doc stays behind."""
-        record = self._by_id(record_id)
-        if record is not None and record.external_record_id in self.fail_delete_for:
-            raise RuntimeError(f"delete of {record_id} failed")
-        self.deleted.append(record_id)
-        if record is not None:
-            del self.records[record.external_record_id]
-
-    async def on_records_deleted_cascade(
-        self, record_ids: list[str], connector_id: str, cascade_children: bool = True
-    ) -> dict[str, Any]:
-        """Like ``delete_records_recursive``: files under a record are ATTACHMENT edges, everything
-        else PARENT_CHILD, which only a full cascade follows; a survivor's parent link is cleared.
-        A root that no longer exists is a failed root, and type docs go with their records."""
-        from app.models.entities import RecordType as RT
-
-        containers = {RT.CONFLUENCE_PAGE, RT.CONFLUENCE_BLOGPOST, RT.COMMENT, RT.INLINE_COMMENT}
-        doomed: list[Any] = []
-        failed = [{"record_id": i, "reason": "Validation failed"} for i in record_ids if self._by_id(i) is None]
-        pending = [r for r in (self._by_id(i) for i in record_ids) if r is not None]
-        while pending:
-            record = pending.pop()
-            if record in doomed:
-                continue
-            doomed.append(record)
-            for child in self.records.values():
-                if child.parent_external_record_id != record.external_record_id:
-                    continue
-                is_attachment = child.record_type == RT.FILE and record.record_type in containers
-                if cascade_children or is_attachment:
-                    pending.append(child)
-        if any(r.external_record_id in self.fail_delete_for for r in doomed):
-            return {"success": False, "failed_count": len(doomed), "deleted_records": []}
-        roots = {r.external_record_id for r in doomed if r.id in record_ids}
-        for record in doomed:
-            del self.records[record.external_record_id]
-            self.type_docs.discard(record.id)
-            self.deleted.append(record.id)
-        for survivor in self.records.values():
-            if survivor.parent_external_record_id in roots:
-                survivor.parent_external_record_id = None
-        return {
-            "success": True, "failed_records": failed, "failed_count": len(failed),
-            "deleted_records": [{"record_id": r.id} for r in doomed],
-        }
 
     def members_of(self, group_name: str) -> Optional[list[str]]:
         for group, members in reversed(self.user_groups):
@@ -1282,6 +1179,20 @@ class TestAuditPassEdgeCases:
         assert db.records["p1"] is before, "content whose type changed is left as it was"
 
 
+def count_group_reads(db: TeamDb) -> list[str]:
+    """Records each first-page read of a space's stored records."""
+    reads: list[str] = []
+    original = db.get_records_in_record_group
+
+    async def counting(connector_id: str, external_group_id: str, limit: int, after_key: Optional[str] = None) -> list[Record]:
+        if after_key is None:
+            reads.append(external_group_id)
+        return await original(connector_id, external_group_id, limit, after_key)
+
+    db.get_records_in_record_group = counting
+    return reads
+
+
 def child_of(cid: str, parent: str) -> dict[str, Any]:
     return {**content(cid), "ancestors": [{"id": parent}]}
 
@@ -1390,7 +1301,7 @@ class TestRemovalFromSource:
         connector = await self._two_pages_synced(atlassian_api, db, store, search)
         search.existing["page"] = [content("p2"), child_of("p3", "p2")]
         # A full first archived page, then a 400 where p1 would have been listed.
-        search.archived = [content(f"a{i}") for i in range(CONTENT_LIST_LIMIT)] + [content("p1")]
+        search.archived = [content(f"a{i}") for i in range(confluence_dc_removal.CONTENT_LIST_LIMIT)] + [content("p1")]
         served = search.database
 
         def archived_fails_past_the_first_page(request: httpx.Request) -> httpx.Response:
@@ -1460,6 +1371,160 @@ class TestRemovalFromSource:
         await connector.run_sync()
         assert "p2" not in db.records
         assert store.values_for("confluence_pages/ENG")["last_sync_time"] != held
+
+    @staticmethod
+    def _search_window(atlassian_api, search, since: str, changed: list[dict[str, Any]]) -> None:
+        """The change search returns ``changed`` only to a sync asking from ``since`` (checkpoint less 24 hours)."""
+
+        def windowed(request: httpx.Request) -> httpx.Response:
+            cql = AtlassianApiStub.query(request)["cql"]
+            search.cql.append(cql)
+            found = changed if cql.startswith("type=page") and f'lastModified > "{since}"' in cql else []
+            return json_response(listing(found))
+
+        atlassian_api.on("GET", f"{API}/content/search", windowed)
+
+    async def test_a_page_that_failed_to_save_is_read_again_next_sync(self, atlassian_api, db, store, search) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        held = self._hold_checkpoint(store)
+        self._search_window(atlassian_api, search, "2023-12-31 00:00", [content("p1", version=2), content("p2", version=2)])
+        db.fail_lookup_for = {"p2"}
+
+        await connector.run_sync()
+
+        stored = store.values_for("confluence_pages/ENG")
+        assert db.records["p2"].external_revision_id == "1"
+        assert stored["last_sync_time"] == held, "a page that failed to save holds the checkpoint"
+        assert json.loads(stored["failedPages"]) == {"p2": 1}
+
+        db.fail_lookup_for = set()
+        await connector.run_sync()
+
+        stored = store.values_for("confluence_pages/ENG")
+        assert db.records["p2"].external_revision_id == "2", "the edit is read again, not lost behind the checkpoint"
+        assert stored["last_sync_time"] > held and json.loads(stored["failedPages"]) == {}
+
+    async def test_a_page_that_keeps_failing_is_given_up_on_and_the_checkpoint_moves_on(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        held = self._hold_checkpoint(store)
+        self._search_window(atlassian_api, search, "2023-12-31 00:00", [content("p1", version=2), content("p2", version=2)])
+        db.fail_lookup_for = {"p2"}
+        logs = record_logs(connector)
+
+        for attempt in range(1, 5):
+            await connector.run_sync()
+            stored = store.values_for("confluence_pages/ENG")
+            assert stored["last_sync_time"] == held
+            assert json.loads(stored["failedPages"]) == {"p2": attempt}
+
+        await connector.run_sync()
+
+        stored = store.values_for("confluence_pages/ENG")
+        assert stored["last_sync_time"] > held, "one broken page does not freeze the space"
+        assert json.loads(stored["failedPages"]) == {}
+        assert json.loads(stored["givenUpPages"]) == {"p2": "2024-05-01T10:00:00.000Z"}
+        assert any("p2" in m and "after 5 syncs" in m for m in logged(logs))
+
+        edited = content("p2", version=3)
+        edited["version"]["when"] = edited["history"]["lastUpdated"]["when"] = "2024-06-01T10:00:00.000Z"
+        search.add("page", 0, listing([edited]))
+        atlassian_api.on("GET", f"{API}/content/search", search)
+        db.fail_lookup_for = set()
+        await connector.run_sync()
+
+        assert db.records["p2"].external_revision_id == "3", "once it changes it is tried afresh"
+        assert json.loads(store.values_for("confluence_pages/ENG")["givenUpPages"]) == {}
+
+    async def test_a_page_that_keeps_failing_when_synced_by_id_is_counted_and_given_up_on(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        del db.records["p2"]
+        db.fail_lookup_for = {"p2"}
+
+        def by_id(request: httpx.Request) -> httpx.Response:
+            cql = AtlassianApiStub.query(request)["cql"]
+            search.cql.append(cql)
+            return json_response(listing([content("p2")] if "id in (p2)" in cql else []))
+
+        atlassian_api.on("GET", f"{API}/content/search", by_id)
+        held = self._hold_checkpoint(store)
+
+        for attempt in range(1, 5):
+            await connector.run_sync()
+            stored = store.values_for("confluence_pages/ENG")
+            assert json.loads(stored["failedPages"]) == {"p2": attempt}
+            assert stored["last_sync_time"] == held
+
+        await connector.run_sync()
+        assert json.loads(store.values_for("confluence_pages/ENG")["givenUpPages"]) == {"p2": "2024-05-01T10:00:00.000Z"}
+
+        search.cql.clear()
+        await connector.run_sync()
+        assert not [c for c in search.cql if "id in (p2)" in c], "an unchanged given-up page is not synced by id again"
+        assert store.values_for("confluence_pages/ENG")["last_sync_time"] > held
+
+    async def test_a_page_listed_without_a_title_holds_the_checkpoint_until_given_up_and_is_never_removed(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        held = self._hold_checkpoint(store)
+        untitled = {**content("p2", version=2), "title": None}
+        self._search_window(atlassian_api, search, "2023-12-31 00:00", [content("p1", version=2), untitled])
+
+        for attempt in range(1, 5):
+            search.cql.clear()
+            await connector.run_sync()
+            stored = store.values_for("confluence_pages/ENG")
+            assert any('lastModified > "2023-12-31 00:00"' in c for c in search.cql), "it is read again"
+            assert stored["last_sync_time"] == held, "an item that could not be saved holds the checkpoint"
+            assert json.loads(stored.get("failedPages") or "{}") == {"p2": attempt}
+
+        await connector.run_sync()
+
+        stored = store.values_for("confluence_pages/ENG")
+        assert stored["last_sync_time"] > held, "one untitled page does not freeze the space"
+        assert json.loads(stored["failedPages"]) == {}
+        assert json.loads(stored["givenUpPages"]) == {"p2": "2024-05-01T10:00:00.000Z"}
+
+        search.add("page", 0, listing([untitled]))
+        atlassian_api.on("GET", f"{API}/content/search", search)
+        moved = stored["last_sync_time"]
+        await connector.run_sync()
+
+        stored = store.values_for("confluence_pages/ENG")
+        assert stored["last_sync_time"] >= moved and json.loads(stored["failedPages"]) == {}, "given up, so not held again"
+        assert db.records["p2"].record_name == "Title p2", "the stored page still exists, so it is kept as it was"
+
+    async def test_the_stored_space_is_read_once_for_its_pages_and_blog_posts(self, atlassian_api, db, store, search) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        search.add("blogpost", 0, listing([content("b1", ctype="blogpost")]))
+        await connector.run_sync()
+        assert "b1" in db.records
+        search.add("blogpost", 0, listing([]))
+        search.existing["page"] = [content("p1"), child_of("p3", "p1")]
+        search.existing["blogpost"] = []
+        reads = count_group_reads(db)
+
+        await connector.run_sync()
+
+        assert len(reads) == 1, "one read of the space serves both its pages and its blog posts"
+        assert not {"p2", "b1"} & set(db.records), "both types are still brought in line from it"
+
+    async def test_a_blog_post_saved_after_the_pages_read_is_still_checked_that_sync(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        search.add("blogpost", 0, listing([content("b1", ctype="blogpost")]))
+        search.existing["blogpost"] = []
+        reads = count_group_reads(db)
+
+        await connector.run_sync()
+
+        assert "b1" not in db.records, "the search had it, the space no longer does"
+        assert len(reads) == 2, "the read made for the pages predates b1, so the space is read again"
 
     async def test_a_narrowed_page_filter_removes_the_page_and_the_pages_below_it(
         self, atlassian_api, db, store, search
@@ -1573,7 +1638,7 @@ class TestRemovalFromSource:
         self, atlassian_api, db, store, search, monkeypatch
     ) -> None:
         connector = await self._two_pages_synced(atlassian_api, db, store, search)
-        monkeypatch.setattr(team_connector_module, "RECORD_DELETE_CHUNK", 1)
+        monkeypatch.setattr(confluence_dc_removal, "RECORD_DELETE_CHUNK", 1)
         scan = db.get_records_by_status
 
         async def pages_first(*args: object, **kwargs: object) -> list[Record]:
