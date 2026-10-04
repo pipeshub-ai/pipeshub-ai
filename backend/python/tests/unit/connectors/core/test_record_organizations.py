@@ -21,7 +21,7 @@ BASE = {
 def _store(organization: str | None = "acme") -> MagicMock:
     store = MagicMock()
     store.get_record_group_organization = AsyncMock(return_value=organization)
-    store.delete_edges_between_collections = AsyncMock()
+    store.delete_record_entity_relations = AsyncMock(return_value=1)
     store.batch_create_entity_relations = AsyncMock()
     return store
 
@@ -34,9 +34,8 @@ async def test_a_deal_links_to_its_account_as_inferred() -> None:
     store = _store()
     assert await link_record_organization(_deal(), store, logging.getLogger("t")) == 1
     store.get_record_group_organization.assert_awaited_once_with("rg-acme", "org-1")
-    store.delete_edges_between_collections.assert_awaited_once_with(
-        "rec-1", "records", "entityRelations", "organizations",
-    )
+    # Only the connector's own links: organisations its content names stay.
+    store.delete_record_entity_relations.assert_awaited_once_with("rec-1", "organizations", "INFERRED")
     (edge,) = store.batch_create_entity_relations.await_args.args[0]
     assert (edge["_from"], edge["_to"], edge["edgeType"]) == ("records/rec-1", "organizations/acme", "FOR_ACCOUNT")
     assert (edge["origin"], edge["source"]) == ("INFERRED", "conn-1")
@@ -46,7 +45,7 @@ async def test_a_case_whose_group_has_no_account_loses_its_old_edge() -> None:
     store = _store(organization=None)
     case = TicketRecord(record_type=RecordType.CASE, **BASE)
     assert await link_record_organization(case, store, logging.getLogger("t")) == 0
-    store.delete_edges_between_collections.assert_awaited_once()
+    store.delete_record_entity_relations.assert_awaited_once()
     store.batch_create_entity_relations.assert_not_awaited()
 
 
@@ -56,14 +55,14 @@ async def test_other_record_types_are_left_alone() -> None:
     assert await link_record_organization(file_record, store, logging.getLogger("t")) == 0
     assert await link_record_organization(_deal(record_group_id=None), store, logging.getLogger("t")) == 0
     store.get_record_group_organization.assert_not_awaited()
-    store.delete_edges_between_collections.assert_not_awaited()
+    store.delete_record_entity_relations.assert_not_awaited()
 
 
 async def test_a_failed_lookup_keeps_the_existing_edge() -> None:
     store = _store()
     store.get_record_group_organization.side_effect = RuntimeError("db")
     assert await link_record_organization(_deal(), store, logging.getLogger("t")) == 0
-    store.delete_edges_between_collections.assert_not_awaited()
+    store.delete_record_entity_relations.assert_not_awaited()
 
 
 async def test_a_rejected_write_does_not_fail_the_record() -> None:

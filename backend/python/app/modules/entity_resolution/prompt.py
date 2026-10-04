@@ -22,6 +22,7 @@ You maintain a knowledge-graph taxonomy for one organisation. A document was jus
 - Merge only when the two names denote the same concept. Casing, spacing, punctuation, plural versus singular, word order, an acronym and its expansion, a typo, or a trailing qualifier that adds nothing ("session", "process", "overview") are the same concept.
 - Related is not the same. "Unit testing" and "integration testing" are different concepts. A narrower topic is not the same as its broader topic.
 - Never merge across kinds: a topic never matches a category, and a subcategory only matches a subcategory of the same level. Every offered match already has the right kind, so decide on meaning only.
+- An organization is the same only as the same organization under another spelling, abbreviation or legal suffix ("IBM", "International Business Machines Corp."). Its parent, a subsidiary, a division or a different organization with a similar name is not the same.
 - At most one offered match can be the same concept; if none is, do not pick the closest one.
 - If a name has no offered match and no sibling in this list it is new.
 - When a name is new you may return a cleaned display form in canonical_name: fix casing and punctuation, expand nothing, add nothing. Leave it empty to keep the name as written.

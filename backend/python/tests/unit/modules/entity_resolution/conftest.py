@@ -37,6 +37,7 @@ _TAXONOMY_COLLECTIONS: dict[tuple[str, str | None], str] = {
     ("subcategory", "2"): CollectionNames.SUBCATEGORIES2.value,
     ("subcategory", "3"): CollectionNames.SUBCATEGORIES3.value,
 }
+_ORGS = CollectionNames.ORGS.value
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +69,10 @@ class FakeEntityVectorStore:
         """Every real entity point is projected from a graph node; seeding a
         point creates its per-org node so the resolver's winner check finds it."""
         if self.graph is None:
+            return
+        if entity.entity_type.value == "organization":
+            if (_ORGS, entity.entity_id) not in self.graph.nodes:
+                self.graph.add_account(entity.org_id, entity.entity_id, entity.name)
             return
         collection = _TAXONOMY_COLLECTIONS.get((entity.entity_type.value, entity.level))
         if collection is None or (collection, entity.entity_id) in self.graph.nodes:
@@ -286,11 +291,13 @@ def make_metadata(**kwargs) -> SemanticMetadata:
 
 
 def make_ctx(record_id: str, org_id: str, metadata: SemanticMetadata | None,
-             connector_id: str = "conn-1", record_group_id: str = "rg-1") -> SimpleNamespace:
+             connector_id: str = "conn-1", record_group_id: str = "rg-1",
+             connector_name: object = "DRIVE") -> SimpleNamespace:
     record = SimpleNamespace(
         id=record_id,
         org_id=org_id,
         connector_id=connector_id,
+        connector_name=connector_name,
         record_group_id=record_group_id,
         virtual_record_id=f"vr-{record_id}",
         semantic_metadata=metadata,

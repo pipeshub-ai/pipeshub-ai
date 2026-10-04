@@ -29,9 +29,7 @@ ACCOUNT_RECORD_TYPES = frozenset({RecordType.DEAL, RecordType.CASE, RecordType.T
 
 class OrganizationStore(Protocol):
     async def get_record_group_organization(self, record_group_id: str, org_id: str) -> str | None: ...
-    async def delete_edges_between_collections(
-        self, from_id: str, from_collection: str, edge_collection: str, to_collection: str,
-    ) -> None: ...
+    async def delete_record_entity_relations(self, record_id: str, to_collection: str, origin: str) -> int: ...
     async def batch_create_entity_relations(self, edges: list[dict]) -> None: ...
 
 
@@ -50,11 +48,10 @@ async def link_record_organization(record: Record, store: OrganizationStore, log
         logger.warning("Account lookup failed for record %s: %s", record.id, exc)
         return 0
     try:
-        # TODO(KG-13 slice 3b): extraction will also write record ->
-        # organisation edges (EXTRACTED); clear only INFERRED ones then.
-        await store.delete_edges_between_collections(
-            record.id, CollectionNames.RECORDS.value,
-            CollectionNames.ENTITY_RELATIONS.value, CollectionNames.ORGS.value,
+        # Only INFERRED: extraction's links to organisations the record names
+        # are its own to replace.
+        await store.delete_record_entity_relations(
+            record.id, CollectionNames.ORGS.value, EntityOrigin.INFERRED.value,
         )
     except Exception as exc:  # the edge below replaces a stale one anyway
         logger.warning("Could not clear account edges of record %s: %s", record.id, exc)

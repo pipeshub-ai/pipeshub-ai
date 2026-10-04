@@ -54,6 +54,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     ),
     # Gates: a trashed record must never pass.
     "check_record_access_with_details": (Rule.LIVE, "the access check: trashed means no access"),
+    "get_organization_record_reach": (Rule.LIVE, "a trashed record does not make an extracted organisation searchable"),
     "get_accessible_virtual_record_ids": (Rule.LIVE, "the search permission map"),
     "filter_accessible_virtual_record_ids": (Rule.LIVE, "search permission check"),
     "filter_accessible_record_ids": (Rule.LIVE, "search permission check"),
@@ -164,4 +165,5 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "restore_records": (Rule.WRITE, "all or nothing: only records still in the trash under the batch named"),
     "purge_trashed_records": (Rule.WRITE, "removes only records still in the trash and due, checked in the delete"),
     "record_purge_failure": (Rule.WRITE, "counts only on records still in the trash"),
+    "delete_record_entity_relations": (Rule.WRITE, "one record's own edges, whatever its state"),
 }

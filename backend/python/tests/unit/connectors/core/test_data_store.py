@@ -254,6 +254,9 @@ class ConcreteTransactionStore(TransactionStore):
     async def delete_edges_between_collections(self, from_id, from_collection, edge_collection, to_collection):
         pass
 
+    async def delete_record_entity_relations(self, record_id, to_collection, origin):
+        return 0
+
     async def get_record_by_weburl(self, weburl, org_id=None):
         return None
 

@@ -80,6 +80,7 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
+from app.modules.entity_resolution.organizations import extracted_organization_id
 from collections import defaultdict
 
 from app.models.blocks import (
@@ -4375,9 +4376,18 @@ class SalesforceConnector(BaseConnector):
                         for o in all_orgs
                         if parent_org_id is None or o.get("parentOrgId") == parent_org_id
                     }
+                    external_keys = set(external_org_key_by_name.values())
+                    tenant_id = parent_org_id or self.data_entities_processor.org_id
                     delete_tasks = []
                     for org, rg, _, _ in orgs_with_edges:
                         existing_key = external_org_key_by_name.get(org.name)
+                        if existing_key is None:
+                            # A node documents named before the CRM synced the
+                            # account (KG-13 3b): the account takes it over, so
+                            # those records link to it. Only extraction's own
+                            # deterministic key, never another account's.
+                            extracted = extracted_organization_id(tenant_id, org.name)
+                            existing_key = extracted if extracted in external_keys else None
                         if existing_key is not None:
                             org.id = existing_key
                             delete_tasks.append(tx_store.delete_edges_to(

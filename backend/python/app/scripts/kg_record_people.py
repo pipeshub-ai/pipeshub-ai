@@ -29,6 +29,7 @@ from app.connectors.core.base.data_processor.record_organizations import (
     link_record_organization,
 )
 from app.connectors.core.base.data_processor.record_people import link_record_people
+from app.modules.entity_resolution.organizations import organization_key
 from app.modules.indexing.entity_index_rebuild import EntityIndexState
 
 if TYPE_CHECKING:
@@ -71,6 +72,9 @@ class _DryRunStore:
     ) -> None:
         return None
 
+    async def delete_record_entity_relations(self, record_id: str, to_collection: str, origin: str) -> int:
+        return 0
+
     async def batch_create_entity_relations(self, edges: list[dict]) -> None:
         self.edges += len(edges)
 
@@ -99,6 +103,12 @@ async def backfill(
         # Stamping is a write, so the dry run cannot count the account edges
         # of accounts it would stamp.
         out.write(json.dumps({"stamp_accounts": "skipped in a dry run; their records count no account edge"}) + "\n")
+    keyed: int | None = None
+    if apply:
+        try:
+            keyed = await stamp_organization_keys(graph, org_id, page_size=page_size)
+        except Exception as exc:  # unkeyed accounts are found by search, not by key; reported below
+            out.write(json.dumps({"key_accounts": "failed", "error": type(exc).__name__}) + "\n")
     while True:
         ids = await graph.page_record_ids_by_type(org_id, LINKED_TYPES, after_key=after, limit=page_size)
         if not ids:
@@ -141,11 +151,33 @@ async def backfill(
         except Exception:
             reprojected = False
     out.write(json.dumps({
-        "org": org_id, "total": totals, "applied": apply, "accounts_stamped": stamped,
+        "org": org_id, "total": totals, "applied": apply, "accounts_stamped": stamped, "accounts_keyed": keyed,
         "entity_index_rerun": reprojected,
     }) + "\n")
-    partial = totals["failed_pages"] or totals["skipped"] or reprojected is False or (apply and stamped is None)
+    partial = (
+        totals["failed_pages"] or totals["skipped"] or reprojected is False
+        or (apply and (stamped is None or keyed is None))
+    )
     return EXIT_PARTIAL if partial else 0
+
+
+async def stamp_organization_keys(graph: IGraphDBProvider, org_id: str, *, page_size: int = PAGE_SIZE) -> int:
+    """Write ``normalizedName`` on the tenant's external organisations, so a
+    name a document extracts finds an account synced before it was keyed.
+    Returns how many were written."""
+    written, after = 0, None
+    while True:
+        rows = await graph.page_entity_index_source(CollectionNames.ORGS.value, org_id, after, page_size)
+        docs = [
+            {"id": row["_key"], "normalizedName": organization_key(row.get("name") or "")}
+            for row in rows if row.get("_key")
+        ]
+        if docs:
+            await graph.batch_update_nodes(docs, CollectionNames.ORGS.value)
+            written += len(docs)
+        if len(rows) < page_size:
+            return written
+        after = rows[-1].get("_key")
 
 
 async def _link(record: Record, store: object, logger: Logger) -> int:

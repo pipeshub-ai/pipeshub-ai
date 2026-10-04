@@ -481,6 +481,7 @@ EXERCISED_HERE: dict[str, str] = {
     "get_record_by_id": "test_point_reads_return_the_trash_with_its_state",
     "get_file_record_by_id": "test_point_reads_return_the_trash_with_its_state",
     "filter_nodes_with_permission_role": "test_location_trail_stops_at_a_trashed_folder",
+    "get_organization_record_reach": "test_organization_record_reach",
 }
 
 
@@ -718,6 +719,22 @@ async def test_linked_records(world: _World) -> None:
         world.ids["live_failed"], world.org_id, world.user_key, ["LINKED_TO"],
     ))
     assert world.ids["live_shared"] in got and world.ids["trashed_shared"] not in got
+
+
+async def test_organization_record_reach(world: _World) -> None:
+    orgs = CollectionNames.ORGS.value
+    key = f"named-{world.connector_id}"
+    await world.graph.create_organization_if_absent(world.org_id, {"id": key, "name": "Named", "normalizedName": "named"})
+    try:
+        await world.graph.batch_create_entity_relations([
+            {"_from": f"{CollectionNames.RECORDS.value}/{world.ids[name]}", "_to": f"{orgs}/{key}",
+             "edgeType": "MENTIONS", "origin": "EXTRACTED", "createdAtTimestamp": 1}
+            for name in ("live", "trashed")
+        ])
+        reach = await world.graph.get_organization_record_reach(world.org_id, [key])
+        assert reach[key]["records"] == 1
+    finally:
+        await world.graph.delete_nodes_and_edges([key], orgs)
 
 
 async def test_all_records_list(world: _World) -> None:

@@ -37,6 +37,7 @@ from app.config.constants.arangodb import (
     ConnectorScopes,
     DeleteSource,
     DepartmentNames,
+    EntityOrigin,
     GraphNames,
     OriginTypes,
     PermissionModel,
@@ -843,6 +844,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             await self.http_client.ensure_persistent_index(
                 taxonomy_collection, ["mergedInto"], sparse=True,
             )
+
+        # An organisation a document names is looked up by its tenant and key
+        # once per record (find_organizations); tenant orgs have no key.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.ORGS.value, ["parentOrgId", "normalizedName"], sparse=True,
+        )
 
         # ==================== ENTITY INDEX SOURCES ====================
         # The entity index rebuild pages each source by scope, then key; without
@@ -19339,6 +19346,120 @@ class ArangoHTTPProvider(IGraphDBProvider):
             txn_id=transaction,
         )
         return [dict(row) for row in rows or []]
+
+    async def find_organizations(
+        self,
+        org_id: str,
+        keys: list[str],
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_organizations`."""
+        wanted = sorted({k for k in keys if k})
+        if not org_id or not wanted:
+            return []
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR o IN {CollectionNames.ORGS.value}
+                FILTER o.parentOrgId == @org_id AND o.normalizedName IN @keys AND o.isExternal == true
+                SORT o._key
+                RETURN {{ id: o._key, name: o.name, normalizedName: o.normalizedName }}
+            """,
+            bind_vars={"org_id": org_id, "keys": wanted},
+            txn_id=transaction,
+        )
+        return [dict(row) for row in rows or []]
+
+    async def create_organization_if_absent(
+        self,
+        org_id: str,
+        node: dict[str, Any],
+        transaction: str | None = None,
+    ) -> None:
+        """See :meth:`IGraphDBProvider.create_organization_if_absent`."""
+        key = node.get("id") or node.get("_key")
+        if not org_id or not key or not node.get("name"):
+            raise ValueError("an extracted organisation needs a tenant, an id and a name")
+        now = get_epoch_timestamp_in_ms()
+        doc = {
+            "_key": key, "name": node["name"], "normalizedName": node.get("normalizedName"),
+            "accountType": "enterprise", "isActive": True, "isExternal": True, "parentOrgId": org_id,
+            "createdAtTimestamp": now, "updatedAtTimestamp": now,
+        }
+        # Records naming the same new organisation create it at once; the
+        # second insert is ignored, never an overwrite of a connector's node.
+        result = await self._retry_write_conflicts(
+            lambda: self.http_client.batch_insert_documents(
+                CollectionNames.ORGS.value, [doc], txn_id=transaction, overwrite=True, overwrite_mode="ignore",
+            ),
+            transaction,
+        )
+        if (result or {}).get("errors", 0):
+            raise RuntimeError(f"create_organization_if_absent failed for organizations/{key}")
+
+    async def delete_record_entity_relations(
+        self,
+        record_id: str,
+        to_collection: str,
+        origin: str,
+        transaction: str | None = None,
+    ) -> int:
+        """See :meth:`IGraphDBProvider.delete_record_entity_relations`."""
+        if not record_id or not to_collection or not origin:
+            raise ValueError("deleting a record's entity relations needs a record, a collection and an origin")
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR e IN {CollectionNames.ENTITY_RELATIONS.value}
+                FILTER e._from == @from AND IS_SAME_COLLECTION(@to, e._to)
+                FILTER NOT_NULL(e.origin, @inferred) == @origin
+                REMOVE e IN {CollectionNames.ENTITY_RELATIONS.value}
+                RETURN 1
+            """,
+            bind_vars={
+                "from": f"{CollectionNames.RECORDS.value}/{record_id}", "to": to_collection,
+                "origin": origin, "inferred": EntityOrigin.INFERRED.value,
+            },
+            txn_id=transaction,
+        )
+        return len(rows or [])
+
+    async def get_organization_record_reach(
+        self,
+        org_id: str,
+        keys: list[str],
+        transaction: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_organization_record_reach`."""
+        wanted = sorted({k for k in keys if k})
+        if not org_id or not wanted:
+            return {}
+        orgs = CollectionNames.ORGS.value
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR o IN {orgs}
+                FILTER o._key IN @keys AND o.isExternal == true AND o.parentOrgId == @org_id
+                LET linked = (
+                    FOR r, e IN 1..1 INBOUND o {CollectionNames.ENTITY_RELATIONS.value}
+                        FILTER IS_SAME_COLLECTION(@records, r) AND r.orgId == @org_id AND {aql_live_record("r")}
+                        RETURN DISTINCT {{ key: r._key, extracted: NOT_NULL(e.origin, @inferred) == @extracted }}
+                )
+                LET account = LENGTH(
+                    FOR v IN 1..1 INBOUND o {CollectionNames.DEAL_OF.value}, {CollectionNames.PROSPECT.value},
+                        {CollectionNames.CUSTOMER.value}
+                        LIMIT 1 RETURN 1
+                ) > 0
+                RETURN {{
+                    key: o._key,
+                    records: LENGTH(UNIQUE(linked[* FILTER CURRENT.extracted].key)),
+                    inferred: account OR LENGTH(linked[* FILTER NOT CURRENT.extracted]) > 0,
+                }}
+            """,
+            bind_vars={
+                "keys": wanted, "org_id": org_id, "records": CollectionNames.RECORDS.value,
+                "inferred": EntityOrigin.INFERRED.value, "extracted": EntityOrigin.EXTRACTED.value,
+            },
+            txn_id=transaction,
+        )
+        return {row["key"]: {"records": int(row["records"]), "inferred": bool(row["inferred"])} for row in rows or []}
 
     async def create_taxonomy_node_if_absent(
         self,

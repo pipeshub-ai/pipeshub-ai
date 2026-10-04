@@ -458,6 +458,12 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def delete_record_entity_relations(self, record_id: str, to_collection: str, origin: str) -> int:
+        """Delete the record's ``entityRelations`` edges of ``origin`` to
+        ``to_collection``; see ``IGraphDBProvider.delete_record_entity_relations``."""
+        pass
+
+    @abstractmethod
     async def ensure_team_app_edge(self, connector_id: str, org_id: str) -> None:
         """
         Ensure the org's "All" team has an edge to the app in userAppRelation.

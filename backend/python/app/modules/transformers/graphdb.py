@@ -4,6 +4,8 @@ from typing import Dict, List, Optional
 
 from app.config.constants.arangodb import (
     CollectionNames,
+    EntityOrigin,
+    EntityRelations,
     ProgressStatus,
 )
 from app.connectors.core.base.data_store.data_store import TransactionStore
@@ -14,6 +16,7 @@ from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.models import (
     CATEGORY,
     LANGUAGE,
+    ORGANIZATION,
     SUBCATEGORY_1,
     SUBCATEGORY_2,
     SUBCATEGORY_3,
@@ -22,6 +25,7 @@ from app.modules.entity_resolution.models import (
     TaxonomyKind,
 )
 from app.modules.entity_resolution.normalizer import display_form, normalize_name
+from app.modules.entity_resolution.organizations import searchable_organizations
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -109,6 +113,8 @@ class GraphDBTransformer(Transformer):
                 resolution=resolution,
             )
             record.extraction_status = ProgressStatus.COMPLETED.value
+            if resolution is not None:
+                result.extend(await self._link_organizations(record, resolution))
             return result
 
     # ------------------------------------------------------------------
@@ -205,6 +211,8 @@ class GraphDBTransformer(Transformer):
         """
         provider = self.graph_data_store.graph_provider
         for entity in resolution.entries.values():
+            if entity.kind is ORGANIZATION:
+                continue  # _link_organizations
             collection = entity.kind.collection
             if entity.is_new:
                 await provider.create_taxonomy_node_if_absent(
@@ -233,6 +241,61 @@ class GraphDBTransformer(Transformer):
                         "entity_resolution: aliases not recorded for %s/%s: %s",
                         collection, entity.key, exc,
                     )
+
+    async def _link_organizations(self, record: object, resolution: EntityResolution) -> List[EntityRecord]:
+        """Replace the record's EXTRACTED links to the organisations it names,
+        after its transaction: a connector's INFERRED links are left alone.
+        Returns the points of those now searchable.
+
+        Kept out of the record's transaction and never raised: the edge type
+        and the organisation key are new, and an older pod's strict schema
+        rejects them during a rolling deploy; the record's taxonomy must not
+        be lost over that. A re-extraction writes them again.
+        """
+        provider = self.graph_data_store.graph_provider
+        org_id = resolution.org_id
+        record_id = getattr(record, "id", "")
+        entities = [e for e in resolution.entries.values() if e.kind is ORGANIZATION]
+        try:
+            now = get_epoch_timestamp_in_ms()
+            for entity in entities:
+                if entity.is_new:
+                    await provider.create_organization_if_absent(
+                        org_id, {"id": entity.key, "name": entity.name, "normalizedName": entity.normalized},
+                    )
+            await provider.delete_record_entity_relations(
+                record_id, CollectionNames.ORGS.value, EntityOrigin.EXTRACTED.value,
+            )
+            if not entities:
+                return []
+            await provider.batch_create_entity_relations([
+                {
+                    "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
+                    "_to": f"{CollectionNames.ORGS.value}/{entity.key}",
+                    "edgeType": EntityRelations.MENTIONS.value,
+                    "origin": EntityOrigin.EXTRACTED.value,
+                    "source": "extraction",
+                    "extractedName": entity.extracted_name,
+                    "createdAtTimestamp": now,
+                    "updatedAtTimestamp": now,
+                }
+                for entity in entities
+            ])
+            reach = await provider.get_organization_record_reach(org_id, [e.key for e in entities])
+        except Exception as exc:
+            self.logger.warning(
+                "entity_resolution: organisations of record %s not linked (%d): %s",
+                record_id, len(entities), exc,
+            )
+            return []
+        searchable = searchable_organizations(reach)
+        return [
+            EntityRecord.for_linked(
+                EntityType.ORGANIZATION, entity.key, entity.name, org_id,
+                getattr(record, "connector_id", None), getattr(record, "record_group_id", None),
+            )
+            for entity in entities if entity.key in searchable
+        ]
 
     @classmethod
     def _department_for_org(cls, nodes: list[dict] | None, org_id: str) -> dict | None:
