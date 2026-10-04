@@ -20,6 +20,7 @@ from app.models.blocks import SemanticMetadata
 from app.modules.entity_resolution.models import MergeDecision, MergeDecisions
 from app.modules.entity_resolution.normalizer import normalize_name
 from app.modules.entity_resolution.resolver import EntityResolver
+from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
 from app.modules.transformers.graphdb import GraphDBTransformer
 
 if TYPE_CHECKING:
@@ -104,6 +105,7 @@ class FakeGraph:
             for (coll, key), node in self.nodes.items()
             if coll == collection
             and node.get("orgId") == org_id
+            and not node.get("mergedInto")
             and (
                 node.get("normalizedName") in wanted
                 or wanted & set(node.get("normalizedAliases") or [])
@@ -258,7 +260,7 @@ class FakeEntityVectorStore:
     def points_of(self, org_id: str, entity_type: str) -> list[dict[str, Any]]:
         return [p for (o, t, _k), p in self.points.items() if o == org_id and t == entity_type]
 
-    async def upsert_entities_batch(self, entities, batch_size=64, *, merge_membership=True) -> None:
+    async def upsert_entities_batch(self, entities, batch_size=64, *, merge_membership=True) -> EntityWriteOutcome:
         self.upserts.append(list(entities))
         for entity in entities:
             self._back_with_graph_node(entity)
@@ -281,6 +283,7 @@ class FakeEntityVectorStore:
                 "connectorIds": connector_ids,
                 "recordGroupIds": record_group_ids,
             }
+        return EntityWriteOutcome(written=len(entities))
 
     async def find_best_matches(self, names, org_id, entity_type, level=None) -> list[dict[str, Any] | None]:
         self.match_calls.append((list(names), org_id, entity_type, level))

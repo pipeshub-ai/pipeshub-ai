@@ -256,8 +256,10 @@ class TestMembershipMerge:
         never an overwrite, and the next batch still writes."""
         vector_db_service = MagicMock()
         vector_db_service.upsert_points = AsyncMock(return_value=None)
+        # The bad batch fails its first read; the good one reads twice
+        # (before embedding, then under the lock).
         vector_db_service.retrieve_points = AsyncMock(
-            side_effect=[RuntimeError("vector db down"), []]
+            side_effect=[RuntimeError("vector db down"), [], []]
         )
         store = _make_store(vector_db_service)
         entities = [
@@ -328,7 +330,10 @@ class TestConcurrentMergeIsSerialised:
             store.upsert_entities_batch([entity_b]),
         )
 
-        assert trace == ["read", "write", "read", "write"], (
+        # Each writer first reads without the lock (to embed outside it);
+        # the reads that decide the merge happen under the lock and are each
+        # followed by their own write before the other writer reads.
+        assert trace == ["read", "read", "read", "write", "read", "write"], (
             f"read/write interleaved across concurrent upserts: {trace}"
         )
         assert set(state["recordGroupIds"]) == {"group_A", "group_B"}, (

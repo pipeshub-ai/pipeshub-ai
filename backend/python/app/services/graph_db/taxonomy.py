@@ -25,6 +25,20 @@ TAXONOMY_COLLECTIONS: frozenset[str] = frozenset(
     }
 )
 
+# Set on a node merged into another (app.modules.entity_resolution.consolidation);
+# lookups skip it and the resolver follows it to the winner.
+MERGED_INTO_FIELD = "mergedInto"
+# A redirect chain longer than this is a corrupt graph, not a real history.
+MAX_MERGE_REDIRECT_HOPS = 16
+
+# The edge collection a record reaches each taxonomy collection over.
+TAXONOMY_EDGE_COLLECTIONS: dict[str, str] = {
+    CollectionNames.CATEGORIES.value: CollectionNames.BELONGS_TO_CATEGORY.value,
+    **dict.fromkeys(SUBCATEGORY_LEVELS, CollectionNames.BELONGS_TO_CATEGORY.value),
+    CollectionNames.TOPICS.value: CollectionNames.BELONGS_TO_TOPIC.value,
+    CollectionNames.LANGUAGES.value: CollectionNames.BELONGS_TO_LANGUAGE.value,
+}
+
 # Entity types records reach over a belongsTo* edge (departments included).
 TAXONOMY_ENTITY_TYPES: frozenset[str] = frozenset(
     {"department", "category", "subcategory", "topic", "language"}
@@ -57,10 +71,43 @@ def alias_pairs(aliases: list[str], normalized_aliases: list[str]) -> list[tuple
 
 
 __all__ = [
+    "MAX_MERGE_REDIRECT_HOPS",
+    "MERGED_INTO_FIELD",
     "SUBCATEGORY_LEVELS",
     "TAXONOMY_COLLECTIONS",
+    "TAXONOMY_EDGE_COLLECTIONS",
     "TAXONOMY_ENTITY_TYPES",
     "alias_pairs",
     "is_taxonomy_collection",
     "subcategory_level",
 ]
+
+
+EDGE_PROVENANCE_FIELDS = frozenset({"mergedFrom", "migratedFrom"})
+
+
+def check_edge_move(collection: str, from_key: str, to_key: str, org_id: str, provenance: str) -> None:
+    """Validate a ``move_taxonomy_edges`` call before it touches the graph."""
+    if provenance not in EDGE_PROVENANCE_FIELDS:
+        raise ValueError(f"{provenance!r} is not an edge provenance field")
+    if not is_taxonomy_collection(collection):
+        raise ValueError(f"{collection!r} is not a taxonomy collection")
+    if not from_key or not to_key or not org_id:
+        raise ValueError("moving taxonomy edges needs both keys and an org")
+    if from_key == to_key:
+        raise ValueError("cannot move taxonomy edges onto the same node")
+
+
+def check_edge_move_target(
+    collection: str, to_key: str, org_id: str, *, found: bool, target_org: str | None,
+    provenance: str, only_merged_from: str | None,
+) -> None:
+    """An org's edges may only land on that org's node, or back on the
+    legacy node (no ``orgId``) they were migrated from."""
+    if not found:
+        raise ValueError(f"{collection}/{to_key} not found")
+    if target_org == org_id:
+        return
+    if target_org is None and provenance == "migratedFrom" and only_merged_from == to_key:
+        return
+    raise ValueError(f"{collection}/{to_key} is not a node of org {org_id}")

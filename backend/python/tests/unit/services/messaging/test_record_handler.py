@@ -372,6 +372,105 @@ class TestDeleteConnectorEmbeddingsEvent:
             )
 
 
+class TestDeleteConnectorEntitiesEvent:
+    """Connector entity cleanup runs here, in a handler that is retried and
+    dead-lettered, instead of inline in the connector service (KG-45)."""
+
+    @staticmethod
+    def _handler_with_store(store: AsyncMock) -> MagicMock:
+        handler = _make_handler()
+        handler.event_processor.sink_orchestrator = MagicMock(entity_vector_store=store)
+        handler.event_processor.graph_provider.get_taxonomy_entity_membership = AsyncMock(return_value={})
+        return handler
+
+    @pytest.mark.asyncio
+    async def test_runs_the_cleanup_with_the_payload_groups_and_graph_membership(self) -> None:
+        store = AsyncMock()
+        handler = self._handler_with_store(store)
+        events = await _collect_events(
+            handler, EventTypes.DELETE_CONNECTOR_ENTITIES.value,
+            {"orgId": "org-1", "connectorId": "conn-1", "recordGroupIds": ["rg-1"]},
+        )
+        assert len(events) == 2
+        kwargs = store.delete_entities_by_connector.await_args.kwargs
+        assert (kwargs["org_id"], kwargs["connector_id"], kwargs["record_group_ids"]) == ("org-1", "conn-1", ["rg-1"])
+        await kwargs["membership_lookup"]([{"id": "t1", "type": "topic"}])
+        handler.event_processor.graph_provider.get_taxonomy_entity_membership.assert_awaited_once_with(
+            [{"id": "t1", "type": "topic"}], "org-1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_unknown_groups_reach_the_store_as_none(self) -> None:
+        store = AsyncMock()
+        handler = self._handler_with_store(store)
+        await _collect_events(
+            handler, EventTypes.DELETE_CONNECTOR_ENTITIES.value,
+            {"orgId": "org-1", "connectorId": "conn-1", "recordGroupIds": None},
+        )
+        assert store.delete_entities_by_connector.await_args.kwargs["record_group_ids"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_failure_is_retried_not_acked(self) -> None:
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        store = AsyncMock()
+        store.delete_entities_by_connector = AsyncMock(side_effect=RuntimeError("vector db down"))
+        handler = self._handler_with_store(store)
+        with pytest.raises(IndexingError, match="conn-1"):
+            await _collect_events(
+                handler, EventTypes.DELETE_CONNECTOR_ENTITIES.value,
+                {"orgId": "org-1", "connectorId": "conn-1", "recordGroupIds": []},
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [{"orgId": "org-1"}, {"connectorId": "conn-1"}])
+    async def test_a_payload_without_ids_dead_letters(self, payload) -> None:
+        from app.exceptions.indexing_exceptions import ProcessingError
+
+        store = AsyncMock()
+        handler = self._handler_with_store(store)
+        with pytest.raises(ProcessingError):
+            await _collect_events(handler, EventTypes.DELETE_CONNECTOR_ENTITIES.value, payload)
+        store.delete_entities_by_connector.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_without_an_entity_store_the_cleanup_is_retried_not_acked(self) -> None:
+        """Acking would leave the deleted connector's points for good."""
+        from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
+
+        handler = _make_handler()
+        handler.event_processor.sink_orchestrator = None
+        with pytest.raises(IndexingError) as raised:
+            await _collect_events(
+                handler, EventTypes.DELETE_CONNECTOR_ENTITIES.value, {"orgId": "o", "connectorId": "c"},
+            )
+        assert not isinstance(raised.value, ProcessingError)  # retryable, not terminal
+
+    @pytest.mark.asyncio
+    async def test_a_finished_cleanup_clears_its_pending_intent(self) -> None:
+        store = AsyncMock()
+        handler = self._handler_with_store(store)
+        handler.config_service.delete_config = AsyncMock(return_value=True)
+        await _collect_events(
+            handler, EventTypes.DELETE_CONNECTOR_ENTITIES.value, {"orgId": "o", "connectorId": "c"},
+        )
+        handler.config_service.delete_config.assert_awaited_once_with("/services/entityCleanup/pending/c")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_cleanup_keeps_its_pending_intent(self) -> None:
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        store = AsyncMock()
+        store.delete_entities_by_connector = AsyncMock(side_effect=RuntimeError("down"))
+        handler = self._handler_with_store(store)
+        handler.config_service.delete_config = AsyncMock(return_value=True)
+        with pytest.raises(IndexingError):
+            await _collect_events(
+                handler, EventTypes.DELETE_CONNECTOR_ENTITIES.value, {"orgId": "o", "connectorId": "c"},
+            )
+        handler.config_service.delete_config.assert_not_awaited()
+
+
 class TestSyncVectorMembershipEvent:
     @pytest.mark.asyncio
     async def test_sync_membership_rewrites_and_never_deletes(self):

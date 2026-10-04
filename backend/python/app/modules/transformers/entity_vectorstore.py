@@ -51,9 +51,10 @@ import contextlib
 import time
 import uuid
 import weakref
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
@@ -74,6 +75,7 @@ from app.services.vector_db.sparse_embeddings import (
     SparseEmbedder,
     get_default_sparse_embedder,
 )
+from app.telemetry.modules import entity_index_metrics
 from app.utils.aimodels import get_default_embedding_model, get_embedding_model
 
 if TYPE_CHECKING:
@@ -101,6 +103,40 @@ class _MembershipReadError(Exception):
 _ENTITIES_COLLECTION = QdrantCollectionNames.ENTITIES.value
 
 
+class _Page(Enum):
+    """What connector cleanup did with one scrolled page."""
+
+    CHANGED = "changed"
+    ALREADY_DONE = "already_done"  # every point gone or already stripped
+    NO_ENTITIES = "no_entities"  # only points without an entity id or type
+
+
+# Ids of unwritten entities named in one warning; the count is always given.
+_LOGGED_FAILED_IDS = 20
+
+
+@dataclass
+class EntityWriteOutcome:
+    """What one ``upsert_entities_batch`` call did, one count per entity."""
+
+    written: int = 0
+    membership_only: int = 0
+    unchanged: int = 0
+    skipped: int = 0
+    failed: int = 0
+
+
+@dataclass(frozen=True)
+class EntitySearchPass:
+    """The membership one search pass is filtered to. ``org_wide`` allows a
+    pass with no ids, which searches the whole org (every hit must then be
+    checked against the graph)."""
+
+    record_group_ids: frozenset[str] = frozenset()
+    connector_ids: frozenset[str] = frozenset()
+    org_wide: bool = False
+
+
 @dataclass(frozen=True)
 class EntityPointRef:
     """Which graph node an entity point projects; see ``page_entity_points``."""
@@ -114,8 +150,9 @@ _CONFIDENCE_THRESHOLD = 0.0
 # A failed initialisation (embedding endpoint down, dimension mismatch) is not
 # retried for this long, so every caller does not re-send a probe embedding.
 _INIT_RETRY_SECONDS = 30.0
-# Times connector cleanup processes the same unchanged page before giving up.
-_CLEANUP_PAGE_ATTEMPTS = 2
+# Times connector cleanup writes one point before giving up on it: a write
+# that does not take leaves the point needing the same write again.
+_CLEANUP_WRITE_ATTEMPTS = 2
 
 _QUERY_VECTOR_CACHE_SIZE = 64
 
@@ -391,173 +428,192 @@ class EntityVectorStore:
         batch_size: int = 64,
         *,
         merge_membership: bool = True,
-    ) -> int:
+    ) -> EntityWriteOutcome:
         """Batch-embed and upsert a list of EntityRecord objects.
 
-        Returns how many entities were not written (a failed batch, or a
-        merge skipped because stored membership could not be read).
-
-        Failures within a batch are logged and skipped rather than aborting
-        the entire batch (partial-failure tolerance).
+        Returns what happened to each entity (``EntityWriteOutcome``), counts
+        it in ``pipeshub_entity_index_writes_total``, and logs the ids of the
+        entities that were not written. A failed batch never raises.
 
         ``connectorIds``/``recordGroupIds`` are merged with whatever is
-        already stored for that entity, not replaced — see
-        ``_merge_membership``. Every entity in the batch has its lock (see
-        ``_entity_lock``) held from the pre-write read through this batch's
-        single ``upsert_points`` call, so two concurrent batches touching the
-        same shared entity (e.g. two records both tagged "Engineering")
-        cannot each merge against a stale read and drop the other's update.
+        already stored for that entity, not replaced. A point whose stored
+        text, metadata, membership and embedding model already match is not
+        written; one whose only change is membership has its arrays rewritten
+        by id without re-embedding; a point embedded by another model is
+        re-embedded.
 
-        Either way, a point whose stored text, metadata, membership and
-        embedding model already match is not written, and one whose only
-        change is membership has its arrays rewritten by id without
-        re-embedding. A point embedded by another model, or written before the
-        model was recorded, is re-embedded.
+        Embedding happens before the entities' locks are taken (see
+        ``_entity_lock``), so records sharing a popular entity do not wait on
+        each other's embedding call. Under the locks the state is read again
+        and membership is merged against that read, so two concurrent
+        batches cannot drop each other's update; a point whose content
+        changed between the two reads is embedded there.
 
         ``merge_membership=False`` writes ``entity.connector_ids``/
         ``record_group_ids`` as-is instead of unioning with what is already
-        stored — for record and record-group points, whose membership is
-        exactly their own connector and group (a union would keep a moved
-        record matching its old group's users). A failed state read then
+        stored, for record and record-group points, whose membership is
+        exactly their own connector and group. A failed state read then
         rewrites the batch in full rather than skipping it.
         """
         await self._ensure_initialized()
+        outcome = EntityWriteOutcome()
         if not entities:
-            return 0
-        entities = self._coalesce_by_key(entities)
-        failed = 0
-
-        for start in range(0, len(entities), batch_size):
-            batch = entities[start : start + batch_size]
+            return outcome
+        failed_keys: list[str] = []
+        coalesced = self._coalesce_by_key(entities)
+        for start in range(0, len(coalesced), batch_size):
+            batch = coalesced[start : start + batch_size]
+            named = [e for e in batch if e.name.strip()]
+            outcome.skipped += len(batch) - len(named)
+            for entity in batch:
+                if not entity.name.strip():
+                    self.logger.warning(
+                        "Skipping entity with empty name: %s / %s", entity.entity_type, entity.entity_id,
+                    )
+            if not named:
+                continue
+            # Each entity is counted when its write lands; whatever a failure
+            # leaves unaccounted is counted failed, so none is counted twice.
+            settled: set[str] = set()
             try:
-                async with contextlib.AsyncExitStack() as locks:
-                    # Sorted, deduped acquisition order: a global lock
-                    # ordering rules out circular waits between overlapping
-                    # concurrent batches, so no separate deadlock-avoidance
-                    # logic is needed.
-                    lock_keys = sorted({
-                        self._entity_key(
-                            e.org_id, e.entity_type.value, e.entity_id
-                        )
-                        for e in batch
-                    })
-                    for key in lock_keys:
-                        await locks.enter_async_context(self._entity_lock(key))
+                await self._upsert_batch(named, outcome, settled, merge_membership=merge_membership)
+            except _MembershipReadError as exc:
+                self.logger.warning("Skipping entity upsert batch, membership unknown: %s", exc)
+            except Exception as exc:
+                self.logger.error("Failed to upsert entity batch starting at %d: %s", start, exc)
+            unwritten = [e for e in named if self._key_of(e) not in settled]
+            outcome.failed += len(unwritten)
+            failed_keys.extend(f"{e.entity_type.value}/{e.entity_id}" for e in unwritten)
+        self._report(outcome, failed_keys)
+        return outcome
 
-                    named: list[EntityRecord] = []
-                    for entity in batch:
-                        if not entity.name.strip():
-                            self.logger.warning(
-                                "Skipping entity with empty name: %s / %s",
-                                entity.entity_type,
-                                entity.entity_id,
-                            )
-                            continue
-                        named.append(entity)
+    def _key_of(self, entity: EntityRecord) -> str:
+        return self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)
 
-                    existing_states: dict[str, dict[str, Any]] = {}
-                    if named:
-                        try:
-                            existing_states = await self._fetch_existing_states(named)
-                        except _MembershipReadError as exc:
-                            if merge_membership:
-                                # Merging against an assumed-empty state would
-                                # drop every other writer's membership.
-                                self.logger.warning(
-                                    "Skipping entity upsert batch, membership unknown: %s", exc
-                                )
-                                failed += len(named)
-                                continue
-                            # Replacing never reads membership into the write;
-                            # the read only lets an unchanged point be skipped.
-                            self.logger.warning(
-                                "Entity state read failed; rewriting %d points in full: %s",
-                                len(named), exc,
-                            )
+    async def _upsert_batch(
+        self,
+        named: list[EntityRecord],
+        outcome: EntityWriteOutcome,
+        settled: set[str],
+        *,
+        merge_membership: bool,
+    ) -> None:
+        """Write one batch, counting each entity in ``outcome`` and adding its
+        point id to ``settled`` only once its write has landed (or none was
+        needed). Raises on failure; the caller counts the rest as failed."""
+        # Read and embed without the locks. A failed read in merge mode skips
+        # the batch: merging against an assumed-empty state would drop every
+        # other writer's membership.
+        try:
+            early = await self._fetch_existing_states(named)
+        except _MembershipReadError as exc:
+            if merge_membership:
+                raise
+            self.logger.warning("Entity state read failed; rewriting %d points in full: %s", len(named), exc)
+            early = {}
+        vectors = await self._embed_changed(named, early)
 
-                    pending: list[tuple[EntityRecord, list[str], list[str]]] = []
-                    membership_only: list[tuple[EntityRecord, list[str], list[str]]] = []
-                    for entity in named:
-                        existing = existing_states.get(self._point_id(
-                            entity.org_id, entity.entity_type.value, entity.entity_id
-                        ))
-                        if merge_membership:
-                            connector_ids = self._union_ids(
-                                existing["connectorIds"], entity.connector_ids
-                            )
-                            record_group_ids = self._union_ids(
-                                existing["recordGroupIds"], entity.record_group_ids
-                            )
-                        else:
-                            connector_ids = self._union_ids([], entity.connector_ids)
-                            record_group_ids = self._union_ids([], entity.record_group_ids)
-                        if existing is not None and self._same_content(existing, entity, self._fingerprint()):
-                            if (
-                                list(existing["connectorIds"]) != connector_ids
-                                or list(existing["recordGroupIds"]) != record_group_ids
-                            ):
-                                membership_only.append((entity, connector_ids, record_group_ids))
-                            continue
-                        pending.append((entity, connector_ids, record_group_ids))
+        async with contextlib.AsyncExitStack() as locks:
+            # Sorted, deduped acquisition order rules out circular waits
+            # between overlapping concurrent batches.
+            for key in sorted({self._entity_key(e.org_id, e.entity_type.value, e.entity_id) for e in named}):
+                await locks.enter_async_context(self._entity_lock(key))
+            try:
+                states = await self._fetch_existing_states(named)
+            except _MembershipReadError as exc:
+                if merge_membership:
+                    raise
+                self.logger.warning("Entity state re-read failed; rewriting %d points in full: %s", len(named), exc)
+                states = {}
 
-                    # The stored vector is still right; only the arrays move.
-                    # Written by id: a search-based update (OpenSearch
-                    # update_by_query) cannot see a point the index has not
-                    # refreshed yet, and would silently update nothing.
-                    for entity, connector_ids, record_group_ids in membership_only:
+            pending: list[tuple[EntityRecord, list[str], list[str]]] = []
+            for entity in named:
+                point_id = self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)
+                existing = states.get(point_id)
+                if merge_membership and existing is not None:
+                    connector_ids = self._union_ids(existing["connectorIds"], entity.connector_ids)
+                    record_group_ids = self._union_ids(existing["recordGroupIds"], entity.record_group_ids)
+                else:
+                    connector_ids = self._union_ids([], entity.connector_ids)
+                    record_group_ids = self._union_ids([], entity.record_group_ids)
+                if existing is not None and self._same_content(existing, entity, self._fingerprint()):
+                    if (
+                        list(existing["connectorIds"]) != connector_ids
+                        or list(existing["recordGroupIds"]) != record_group_ids
+                    ):
+                        # The stored vector is still right; only the arrays
+                        # move. Written by id: a search-based update cannot
+                        # see a point the index has not refreshed yet.
                         await self.vector_db_service.update_payload_by_ids(
-                            self.collection_name,
-                            [self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)],
+                            self.collection_name, [point_id],
                             {CONNECTOR_IDS_FIELD: connector_ids, RECORD_GROUP_IDS_FIELD: record_group_ids},
                         )
+                        outcome.membership_only += 1
+                    else:
+                        outcome.unchanged += 1
+                    settled.add(point_id)
+                    continue
+                pending.append((entity, connector_ids, record_group_ids))
 
-                    if not pending:
-                        continue
+            if not pending:
+                return
+            # Content changed between the reads: embed it here, under the lock.
+            late = [entity for entity, _, _ in pending
+                    if self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id) not in vectors]
+            if late:
+                vectors |= await self._embed_entities(late)
 
-                    # Embedding happens under the locks so the read above and
-                    # the write below stay one atomic read-merge-write per
-                    # entity; only entities that actually change are embedded.
-                    texts = [entity.embedding_text for entity, _, _ in pending]
-                    dense_vecs = await self._embed(texts)
-                    sparse_vecs = await self._embed_sparse(texts)
+            points = []
+            for entity, connector_ids, record_group_ids in pending:
+                point_id = self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)
+                dense, sparse = vectors[point_id]
+                points.append(VectorPoint(
+                    id=point_id,
+                    dense_vector=dense,
+                    sparse_vector=sparse,
+                    payload={
+                        "page_content": entity.embedding_text,
+                        "metadata": {**entity.to_vector_payload(), EMBEDDING_MODEL_FIELD: self._fingerprint()},
+                        CONNECTOR_IDS_FIELD: connector_ids,
+                        RECORD_GROUP_IDS_FIELD: record_group_ids,
+                    },
+                ))
+            await self.vector_db_service.upsert_points(collection_name=self.collection_name, points=points)
+            outcome.written += len(points)
+            settled.update(point.id for point in points)
 
-                    points: list[VectorPoint] = []
-                    for (entity, connector_ids, record_group_ids), dense, sparse in zip(
-                        pending, dense_vecs, sparse_vecs
-                    ):
-                        payload = {
-                            "page_content": entity.embedding_text,
-                            "metadata": {
-                                **entity.to_vector_payload(),
-                                EMBEDDING_MODEL_FIELD: self._fingerprint(),
-                            },
-                            CONNECTOR_IDS_FIELD: connector_ids,
-                            RECORD_GROUP_IDS_FIELD: record_group_ids,
-                        }
-                        points.append(
-                            VectorPoint(
-                                id=self._point_id(
-                                    entity.org_id, entity.entity_type.value, entity.entity_id
-                                ),
-                                dense_vector=dense,
-                                sparse_vector=sparse,
-                                payload=payload,
-                            )
-                        )
+    async def _embed_changed(
+        self, entities: list[EntityRecord], states: dict[str, dict[str, Any]],
+    ) -> dict[str, tuple[list[float], Any]]:
+        """Vectors, by point id, for the entities whose stored content does
+        not already match (per ``states``)."""
+        changed = [
+            e for e in entities
+            if not self._same_content(
+                states.get(self._point_id(e.org_id, e.entity_type.value, e.entity_id)) or {}, e, self._fingerprint(),
+            )
+        ]
+        return await self._embed_entities(changed) if changed else {}
 
-                    await self.vector_db_service.upsert_points(
-                        collection_name=self.collection_name, points=points
-                    )
-                    self.logger.debug(
-                        "Upserted %d entity points (batch start=%d, skipped %d unchanged)",
-                        len(points), start, len(batch) - len(points),
-                    )
-            except Exception as exc:
-                failed += len(batch)
-                self.logger.error(
-                    "Failed to upsert entity batch starting at %d: %s", start, exc
-                )
-        return failed
+    async def _embed_entities(self, entities: list[EntityRecord]) -> dict[str, tuple[list[float], Any]]:
+        texts = [e.embedding_text for e in entities]
+        dense = await self._embed(texts)
+        sparse = await self._embed_sparse(texts)
+        return {
+            self._point_id(e.org_id, e.entity_type.value, e.entity_id): (d, sp)
+            for e, d, sp in zip(entities, dense, sparse)
+        }
+
+    def _report(self, outcome: EntityWriteOutcome, failed_keys: list[str]) -> None:
+        for name in ("written", "membership_only", "unchanged", "skipped", "failed"):
+            entity_index_metrics.record_writes("upsert", name, getattr(outcome, name))
+        if failed_keys:
+            shown = ", ".join(failed_keys[:_LOGGED_FAILED_IDS])
+            more = len(failed_keys) - _LOGGED_FAILED_IDS
+            self.logger.warning(
+                "Entity points not written (%d): %s%s",
+                len(failed_keys), shown, f" and {more} more" if more > 0 else "",
+            )
 
     @staticmethod
     def _coalesce_by_key(entities: list["EntityRecord"]) -> list["EntityRecord"]:
@@ -823,17 +879,26 @@ class EntityVectorStore:
            its RECORD_GROUP points (and on its RECORD points when the graph
            gave none). These points are only deleted in step 3, so a retry
            after a failure still finds them.
-        2. Page through the taxonomy points naming the connector, always from
-           the start: a shared point gets its stripped membership written back
-           with ``set_payload`` (no re-embedding), an exclusive one is deleted.
-           Either way it leaves the filter, so paging never goes deep (Redis
-           caps search offsets at 10k) and an interrupted run resumes.
+        2. Page through the taxonomy points naming the connector. Each page is
+           re-read by id under the entities' locks: a shared point gets its
+           stripped membership written by id (no re-embedding), an exclusive
+           one is deleted. A changed page leaves the filter, so paging starts
+           over from the top and never goes deep (Redis caps search offsets at
+           10k). A page the fresh read shows is already done (search lagging
+           by-id writes, as on OpenSearch) is stepped past by offset.
         3. Delete what is left of the connector in one filtered call: its
            RECORD and RECORD_GROUP points, and any point without a type.
            Taxonomy points are never swept; one that a concurrently indexed
-           record re-tagged with the connector is left and logged. A page that stays unchanged (OpenSearch's
-        ``update_by_query`` skips a point rewritten underneath it) is retried,
-        then raises, as does a full page of points without an id.
+           record re-tagged with the connector is left and logged.
+
+        The locks serialise this with writers in the same indexing process
+        only; another instance can still re-tag a point between the re-read
+        and the write. A point whose write does not take is written once
+        more, then the cleanup raises, as it does on a full page of points
+        without an id. Two cleanups of
+        one connector running at once on Redis can step past each other's
+        pages with a numeric offset; the second run's final check logs what
+        is left.
         """
         from app.models.entities import EntityType
 
@@ -850,13 +915,21 @@ class EntityVectorStore:
             must={"metadata.orgId": org_id, CONNECTOR_IDS_FIELD: connector_id},
             must_not={"metadata.entityType": scoped_types},
         )
-        previous_page: set[str] = set()
-        attempts = 0
+        # Counted per point, not per repeated page: on OpenSearch a handled
+        # page keeps coming back first and is stepped past, so a stuck page
+        # never repeats back to back.
+        writes: Counter[str] = Counter()
+        offset: str | None = None
+        # Points a fresh read showed are done (stripped or gone). Search lags
+        # by-id writes on OpenSearch, so they keep coming back until the next
+        # refresh; skipping them costs no locks and no reads.
+        handled: set[str] = set()
         while True:
             page = await self.vector_db_service.scroll(
                 collection_name=self.collection_name,
                 scroll_filter=taxonomy_filter,
                 limit=page_size,
+                offset=offset,
                 with_payload=[
                     "metadata.entityId", "metadata.entityType",
                     CONNECTOR_IDS_FIELD, RECORD_GROUP_IDS_FIELD,
@@ -864,17 +937,19 @@ class EntityVectorStore:
             )
             if not page.points:
                 break
-            page_ids = {point.id for point in page.points}
-            attempts = attempts + 1 if page_ids == previous_page else 1
-            if attempts > _CLEANUP_PAGE_ATTEMPTS:
-                raise RuntimeError(
-                    f"Connector cleanup made no progress on {len(page_ids)} points "
-                    f"(org={org_id} connector={connector_id}); a retry resumes it"
-                )
-            previous_page = page_ids
-            if await self._strip_or_delete(
-                page.points, org_id, connector_id, group_ids, membership_lookup,
-            ):
+            result = await self._strip_or_delete(
+                page.points, org_id, connector_id, group_ids, membership_lookup, handled=handled, writes=writes,
+            )
+            if result is _Page.ALREADY_DONE:
+                # Search lags by-id writes (OpenSearch refreshes every 30 s), so
+                # a page this run already handled can come back; step past it.
+                offset = page.next_offset
+                if offset is None:
+                    break
+                continue
+            if result is _Page.CHANGED:
+                # The page left the filter; start over so paging never goes deep.
+                offset = None
                 continue
             # Only points without an entity id or type are on this page. A
             # short page is everything left in the filter, so the sweep below
@@ -950,45 +1025,83 @@ class EntityVectorStore:
         connector_id: str,
         group_ids: set[str],
         membership_lookup: MembershipLookup | None = None,
-    ) -> bool:
-        """Apply step 2 to one page. Returns whether any point was changed."""
-        stripped: dict[tuple[str, tuple[str, ...], tuple[str, ...]], list[str]] = {}
-        exclusive: dict[str, list[str]] = {}
-        for point in points:
-            meta = _entity_metadata(point.payload)
-            entity_id, entity_type = meta.get("entityId"), meta.get("entityType")
-            if not entity_id or not entity_type:
-                continue
-            connectors = tuple(
-                c for c in (point.payload.get(CONNECTOR_IDS_FIELD) or []) if c != connector_id
-            )
-            if not connectors:
-                exclusive.setdefault(entity_type, []).append(entity_id)
-                continue
-            groups = tuple(
-                g for g in (point.payload.get(RECORD_GROUP_IDS_FIELD) or []) if g not in group_ids
-            )
-            stripped.setdefault((entity_type, connectors, groups), []).append(entity_id)
+        *,
+        handled: set[str] | None = None,
+        writes: Counter[str] | None = None,
+    ) -> _Page:
+        """Apply step 2 to one page.
 
-        for (entity_type, connectors, groups), entity_ids in stripped.items():
-            filter_expr = await self._entities_filter(org_id, entity_type, entity_ids)
-            await self.vector_db_service.set_payload(
-                self.collection_name,
-                {CONNECTOR_IDS_FIELD: list(connectors), RECORD_GROUP_IDS_FIELD: list(groups)},
-                filter_expr,
-                refresh=True,
-            )
-        progressed = bool(stripped or exclusive)
-        if exclusive and membership_lookup is not None:
-            exclusive = await self._rewrite_still_reached(
-                org_id, exclusive, membership_lookup, connector_id, group_ids,
-            )
-        for entity_type, entity_ids in exclusive.items():
-            filter_expr = await self._entities_filter(org_id, entity_type, entity_ids)
-            await self.vector_db_service.delete_points(
-                self.collection_name, filter_expr, refresh=True,
-            )
-        return progressed
+        The page's points are read again by id under their entities' locks,
+        and the stripped membership is computed from that read, not from the
+        scroll: a record indexed since the page was scrolled keeps the
+        connector it just added. Stripped membership is written by id, which
+        every backend applies at once; a search-based update would skip a
+        point rewritten since the last OpenSearch refresh.
+        """
+        refs = [
+            (point.id, meta["entityType"], meta["entityId"])
+            for point in points
+            if (meta := _entity_metadata(point.payload)).get("entityId") and meta.get("entityType")
+        ]
+        if not refs:
+            return _Page.NO_ENTITIES
+        handled = handled if handled is not None else set()
+        refs = [ref for ref in refs if ref[0] not in handled]
+        if not refs:
+            return _Page.ALREADY_DONE
+        async with contextlib.AsyncExitStack() as locks:
+            for key in sorted({self._entity_key(org_id, entity_type, entity_id) for _, entity_type, entity_id in refs}):
+                await locks.enter_async_context(self._entity_lock(key))
+            fresh = {
+                point.id: point.payload or {}
+                for point in await self.vector_db_service.retrieve_points(
+                    self.collection_name, [point_id for point_id, _, _ in refs],
+                )
+            }
+            stripped: dict[tuple[tuple[str, ...], tuple[str, ...]], list[str]] = {}
+            exclusive: dict[str, list[str]] = {}
+            for point_id, entity_type, entity_id in refs:
+                payload = fresh.get(point_id)
+                stored = list((payload or {}).get(CONNECTOR_IDS_FIELD) or [])
+                if payload is None or connector_id not in stored:
+                    # Verified done: gone, or already stripped. Only such
+                    # points are skipped later; a written one is re-checked.
+                    handled.add(point_id)
+                    continue
+                connectors = tuple(c for c in stored if c != connector_id)
+                if not connectors:
+                    exclusive.setdefault(entity_type, []).append(entity_id)
+                    continue
+                groups = tuple(g for g in (payload.get(RECORD_GROUP_IDS_FIELD) or []) if g not in group_ids)
+                stripped.setdefault((connectors, groups), []).append(point_id)
+            if not stripped and not exclusive:
+                return _Page.ALREADY_DONE
+            if writes is not None:
+                exclusive_ids = {(t, e) for t, ids in exclusive.items() for e in ids}
+                to_write = [p for ids in stripped.values() for p in ids]
+                to_write += [point_id for point_id, t, e in refs if (t, e) in exclusive_ids]
+                stuck = [p for p in to_write if writes[p] >= _CLEANUP_WRITE_ATTEMPTS]
+                if stuck:
+                    raise RuntimeError(
+                        f"Connector cleanup made no progress on {len(stuck)} points "
+                        f"(org={org_id} connector={connector_id}); a retry resumes it"
+                    )
+                writes.update(to_write)
+
+            for (connectors, groups), point_ids in stripped.items():
+                await self.vector_db_service.update_payload_by_ids(
+                    self.collection_name, point_ids,
+                    {CONNECTOR_IDS_FIELD: list(connectors), RECORD_GROUP_IDS_FIELD: list(groups)},
+                )
+            if exclusive and membership_lookup is not None:
+                exclusive = await self._rewrite_still_reached(
+                    org_id, exclusive, membership_lookup, connector_id, group_ids,
+                    point_ids={(t, e): point_id for point_id, t, e in refs},
+                )
+            for entity_type, entity_ids in exclusive.items():
+                filter_expr = await self._entities_filter(org_id, entity_type, entity_ids)
+                await self.vector_db_service.delete_points(self.collection_name, filter_expr, refresh=True)
+        return _Page.CHANGED
 
     async def _rewrite_still_reached(
         self,
@@ -997,6 +1110,7 @@ class EntityVectorStore:
         membership_lookup: MembershipLookup,
         connector_id: str,
         group_ids: set[str],
+        point_ids: dict[tuple[str, str], str] | None = None,
     ) -> dict[str, list[str]]:
         """Rewrite, from the graph, the exclusive-looking points that other
         connectors' records still reach. Returns the ids left to delete.
@@ -1018,12 +1132,12 @@ class EntityVectorStore:
                     to_delete.setdefault(entity_type, []).append(entity_id)
                     continue
                 groups = [g for g in membership.get("recordGroupIds") or [] if g not in group_ids]
-                filter_expr = await self._entities_filter(org_id, entity_type, [entity_id])
-                await self.vector_db_service.set_payload(
-                    self.collection_name,
+                point_id = (point_ids or {}).get((entity_type, entity_id)) or self._point_id(
+                    org_id, entity_type, entity_id,
+                )
+                await self.vector_db_service.update_payload_by_ids(
+                    self.collection_name, [point_id],
                     {CONNECTOR_IDS_FIELD: connectors, RECORD_GROUP_IDS_FIELD: groups},
-                    filter_expr,
-                    refresh=True,
                 )
         return to_delete
 
@@ -1054,99 +1168,111 @@ class EntityVectorStore:
         *,
         allow_org_wide: bool = False,
     ) -> list[dict[str, Any]]:
-        """Semantically search for entities matching *query*, scoped to what
-        the caller can reach.
+        """One scoped entity search; see ``search_entities_passes``."""
+        (hits,) = await self.search_entities_passes(
+            query, org_id,
+            [EntitySearchPass(
+                frozenset(accessible_record_group_ids), frozenset(accessible_connector_ids), allow_org_wide,
+            )],
+            entity_types=entity_types, top_k=top_k, score_threshold=score_threshold,
+        )
+        return hits
 
-        *accessible_record_group_ids*/*accessible_connector_ids* are
-        **required** (plain id sets, not an ACL object — this class stays
-        graph-free) so a direct call cannot silently produce an unfiltered,
-        org-wide search. Only ``allow_org_wide=True`` drops the membership
-        filter, for callers that verify every hit against the graph (see
-        ``app.modules.retrieval.entity_permissions``) — stored membership
-        can be empty or stale, so it is a recall hint, never an access check.
+    async def search_entities_passes(
+        self,
+        query: str,
+        org_id: str,
+        passes: list[EntitySearchPass],
+        *,
+        entity_types: list[str] | None = None,
+        top_k: int = 10,
+        score_threshold: float = _CONFIDENCE_THRESHOLD,
+    ) -> list[list[dict[str, Any]]]:
+        """Semantically search for entities matching *query* once per pass,
+        in a single vector request, returning one hit list per pass.
 
-        Filter shape: ``must={orgId[, entityType]}`` AND
-        ``should={recordGroupIds, connectorIds}`` (at least one must match —
-        no ``min_should_match``, since KB/Collection records have no record
-        group by design and are reachable only via ``connectorIds``; see
-        ``services/vector_db/membership.py``).
+        A pass's record group and connector ids are **required** (plain id
+        sets, not an ACL object; this class stays graph-free), so a direct
+        call cannot silently produce an unfiltered, org-wide search. Only
+        ``org_wide=True`` drops the membership filter, for callers that verify
+        every hit against the graph (``app.modules.retrieval.entity_permissions``).
+        Stored membership can be empty or stale, so it is a recall hint, never
+        an access check. A pass with no ids and not org-wide returns no hits.
 
-        Returns a list of dicts:
-            {entityId, entityType, name, score, connectorIds, recordGroupIds}
+        Filter shape per pass: ``must={orgId[, entityType]}`` AND
+        ``should={recordGroupIds, connectorIds}`` (at least one must match).
+        There is no ``min_should_match``, since KB records have no record group
+        by design and are reachable only via ``connectorIds``.
+
+        Each hit is ``{entityId, entityType, name, canonicalName, aliases,
+        score, connectorIds, recordGroupIds}``.
 
         Raises on a vector DB failure so callers can tell it apart from "no
         match".
         """
         await self._ensure_initialized()
-
-        if not query.strip() or not org_id:
-            return []
-
-        if not allow_org_wide and not accessible_record_group_ids and not accessible_connector_ids:
-            # Omitting the should-group here would leave only the org/type
-            # must-filter, silently widening back to an org-wide search.
-            return []
-
-        dense_vec, sparse_vec = await self._query_vectors(query)
-
-        must_conditions: dict[str, Any] = {"metadata.orgId": org_id}
-        if entity_types:
-            must_conditions["metadata.entityType"] = entity_types  # list → "any of" filter
-
-        should_conditions: dict[str, Any] = {}
-        if accessible_record_group_ids:
-            should_conditions[RECORD_GROUP_IDS_FIELD] = sorted(accessible_record_group_ids)
-        if accessible_connector_ids:
-            should_conditions[CONNECTOR_IDS_FIELD] = sorted(accessible_connector_ids)
-
-        filter_expr = await self.vector_db_service.filter_collection(
-            must=must_conditions,
-            should=should_conditions,
-        )
+        results: list[list[dict[str, Any]]] = [[] for _ in passes]
+        if not query.strip() or not org_id or not passes:
+            return results
+        searchable = [
+            index for index, scope in enumerate(passes)
+            # No ids would leave only the org/type must-filter, silently
+            # widening to an org-wide search.
+            if scope.org_wide or scope.record_group_ids or scope.connector_ids
+        ]
+        if not searchable:
+            return results
 
         from app.services.vector_db.models import FusionMethod, HybridSearchRequest
 
-        request = HybridSearchRequest(
-            dense_query=dense_vec,
-            sparse_query=sparse_vec,
-            text_query=query,
-            filter=filter_expr,
-            limit=top_k,
-            fusion_method=FusionMethod.RRF,
-            with_payload=True,
-        )
-
+        dense_vec, sparse_vec = await self._query_vectors(query)
+        must: dict[str, Any] = {"metadata.orgId": org_id}
+        if entity_types:
+            must["metadata.entityType"] = entity_types  # list → "any of" filter
+        requests = []
+        for index in searchable:
+            scope = passes[index]
+            should: dict[str, Any] = {}
+            if scope.record_group_ids:
+                should[RECORD_GROUP_IDS_FIELD] = sorted(scope.record_group_ids)
+            if scope.connector_ids:
+                should[CONNECTOR_IDS_FIELD] = sorted(scope.connector_ids)
+            requests.append(HybridSearchRequest(
+                dense_query=dense_vec,
+                sparse_query=sparse_vec,
+                text_query=query,
+                filter=await self.vector_db_service.filter_collection(must=must, should=should),
+                limit=top_k,
+                fusion_method=FusionMethod.RRF,
+                with_payload=True,
+            ))
         try:
-            batch_results: list[list[SearchResult]] = (
-                await self.vector_db_service.query_nearest_points(
-                    collection_name=self.collection_name,
-                    requests=[request],
-                )
+            batch = await self.vector_db_service.query_nearest_points(
+                collection_name=self.collection_name, requests=requests,
             )
         except Exception as exc:
             self.logger.error("Entity search failed for query '%s': %s", query, exc)
             await self._reset_if_collection_changed()
             raise
+        for index, hits in zip(searchable, batch or []):
+            results[index] = [
+                self._search_hit(hit) for hit in hits if hit.score >= score_threshold
+            ]
+        return results
 
-        results_for_query = batch_results[0] if batch_results else []
-        output: list[dict[str, Any]] = []
-        for hit in results_for_query:
-            if hit.score < score_threshold:
-                continue
-            meta = _entity_metadata(hit.payload)
-            output.append(
-                {
-                    "entityId": meta.get("entityId"),
-                    "entityType": meta.get("entityType"),
-                    "name": meta.get("name", hit.payload.get("page_content", "")),
-                    "canonicalName": meta.get("canonicalName"),
-                    "aliases": meta.get("aliases") or [],
-                    "score": round(hit.score, 4),
-                    "connectorIds": hit.payload.get(CONNECTOR_IDS_FIELD) or [],
-                    "recordGroupIds": hit.payload.get(RECORD_GROUP_IDS_FIELD) or [],
-                }
-            )
-        return output
+    @staticmethod
+    def _search_hit(hit: SearchResult) -> dict[str, Any]:
+        meta = _entity_metadata(hit.payload)
+        return {
+            "entityId": meta.get("entityId"),
+            "entityType": meta.get("entityType"),
+            "name": meta.get("name", hit.payload.get("page_content", "")),
+            "canonicalName": meta.get("canonicalName"),
+            "aliases": meta.get("aliases") or [],
+            "score": round(hit.score, 4),
+            "connectorIds": hit.payload.get(CONNECTOR_IDS_FIELD) or [],
+            "recordGroupIds": hit.payload.get(RECORD_GROUP_IDS_FIELD) or [],
+        }
 
     async def _query_vectors(self, query: str) -> tuple[list[float], Any]:
         """Dense and sparse vectors for ``query``, cached: one entity search

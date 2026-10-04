@@ -29,6 +29,7 @@ from app.utils.aimodels import (
     get_image_generation_model,
     get_stt_model,
     get_tts_model,
+    model_default_reasoning_effort,
     require_public_endpoint,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1141,6 +1142,15 @@ def _validate_context_length(llm_config: dict, model_string: str) -> JSONRespons
     return None
 
 
+def _validate_default_reasoning_effort(llm_config: dict, model_string: str) -> JSONResponse | None:
+    """Reject a model default the LLM factory would refuse, before spending a provider call."""
+    try:
+        model_default_reasoning_effort(llm_config)
+    except ValueError as e:
+        return _config_error(str(e), llm_config, model_string)
+    return None
+
+
 async def perform_llm_health_check(
     llm_config: dict,
     logger: Logger,
@@ -1173,6 +1183,9 @@ async def perform_llm_health_check(
         context_error = _validate_context_length(llm_config, model_string)
         if context_error is not None:
             return context_error
+        effort_error = _validate_default_reasoning_effort(llm_config, model_string)
+        if effort_error is not None:
+            return effort_error
 
         # Node registers every name in the list as its own model
         # (`cm_controller.ts`'s model flattening), so every name is checked.

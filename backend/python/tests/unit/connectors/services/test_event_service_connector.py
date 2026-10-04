@@ -968,7 +968,10 @@ class TestHandleDelete:
                 "orgId": "org1", "connectorId": "c1"
             })
             assert result is True
-            service.app_container.messaging_producer.send_message.assert_awaited_once()
+            # The record cleanup, then the entity cleanup.
+            sent = [c.kwargs["message"]["eventType"]
+                    for c in service.app_container.messaging_producer.send_message.await_args_list]
+            assert sent == ["bulkDeleteRecords", "deleteConnectorEntities"]
 
     @pytest.mark.asyncio
     async def test_graph_delete_fails_reverts(self, service):
@@ -1015,9 +1018,9 @@ class TestHandleDelete:
             assert result is True
 
     @pytest.mark.asyncio
-    async def test_graph_record_groups_reach_entity_cleanup(self, service):
-        """The groups are gone from the graph after deletion; the entity store
-        needs them to strip shared taxonomy entities."""
+    async def test_entity_cleanup_is_published_with_the_graph_record_groups(self, service):
+        """The groups are gone from the graph after deletion, so they travel in
+        the event; the indexing service runs the cleanup and retries it (KG-45)."""
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": True, "virtual_record_ids": [], "record_group_ids": ["rg-1"],
         })
@@ -1028,32 +1031,50 @@ class TestHandleDelete:
             service.app_container.config_service.return_value = AsyncMock()
             await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
 
-        kwargs = store.delete_entities_by_connector.await_args.kwargs
-        assert kwargs["org_id"] == "org1" and kwargs["connector_id"] == "c1"
-        assert kwargs["record_group_ids"] == ["rg-1"]
-        service.graph_provider.get_taxonomy_entity_membership = AsyncMock(return_value={})
-        await kwargs["membership_lookup"]([{"id": "t1", "type": "topic"}])
-        service.graph_provider.get_taxonomy_entity_membership.assert_awaited_once_with(
-            [{"id": "t1", "type": "topic"}], "org1",
-        )
+        store.delete_entities_by_connector.assert_not_awaited()
+        sent = [c.kwargs["message"] for c in service.app_container.messaging_producer.send_message.await_args_list]
+        (event,) = [m for m in sent if m["eventType"] == "deleteConnectorEntities"]
+        assert event["payload"]["orgId"] == "org1" and event["payload"]["connectorId"] == "c1"
+        assert event["payload"]["recordGroupIds"] == ["rg-1"]
+
 
     @pytest.mark.asyncio
-    async def test_entity_cleanup_failure_is_logged_as_a_failure(self, service):
-        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
-            "success": True, "virtual_record_ids": [],
-        })
-        store = AsyncMock()
-        store.delete_entities_by_connector = AsyncMock(side_effect=RuntimeError("vector db down"))
-        service.app_container.entity_vector_store = AsyncMock(return_value=store)
+    async def test_the_entity_cleanup_intent_is_recorded_before_the_graph_delete(self, service):
+        """A lost deleteConnectorEntities would otherwise leave the points for
+        good: nothing else knows the deleted connector existed."""
+        calls: list[str] = []
+        config_svc = AsyncMock()
+
+        async def record(key, value):
+            calls.append(f"intent:{key}:{value['orgId']}")
+            return True
+
+        async def delete_graph(**kwargs):
+            calls.append("graph-delete")
+            return {"success": True, "virtual_record_ids": []}
+
+        config_svc.set_config = AsyncMock(side_effect=record)
+        service.graph_provider.delete_connector_instance = AsyncMock(side_effect=delete_graph)
+        service.app_container.config_service.return_value = config_svc
         with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
-            service.app_container.config_service.return_value = AsyncMock()
-            result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+            assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is True
+        assert calls == ["intent:/services/entityCleanup/pending/c1:org1", "graph-delete"]
 
-        assert result is True
-        logged = " ".join(str(c.args[0]) for c in service.logger.info.call_args_list)
-        assert "Entity vector store entries removed" not in logged
-        assert any("entity vector store" in str(c.args[0]) for c in service.logger.error.call_args_list)
+    @pytest.mark.asyncio
+    async def test_no_graph_delete_without_a_recorded_intent(self, service):
+        config_svc = AsyncMock()
+        config_svc.set_config = AsyncMock(return_value=False)
+        service.app_container.config_service.return_value = config_svc
+        service.graph_provider.delete_connector_instance = AsyncMock()
+        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete(
+                "gmail", {"orgId": "org1", "connectorId": "c1", "previousIsActive": True},
+            )
+        assert result is False
+        service.graph_provider.delete_connector_instance.assert_not_awaited()
+        assert service.graph_provider.batch_upsert_nodes.await_count >= 1  # status reverted
 
 
 # ===========================================================================
@@ -1112,3 +1133,5 @@ class TestConfigServiceFor:
         config_for.assert_called_once_with("org1")
         org_config.delete_config.assert_awaited_once_with("/services/connectors/c1/config")
         service.app_container.config_service.return_value.delete_config.assert_not_awaited()
+        # The entity cleanup intent is service-wide: indexing reads it back.
+        service.app_container.config_service.return_value.set_config.assert_awaited_once()

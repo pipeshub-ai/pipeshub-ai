@@ -139,6 +139,8 @@ class TestSearch:
         assert "records" in results[3]
         assert "records" not in results[4]
         assert "connectedEntities" not in topic
+        # The fused rank score is not a similarity; the order already shows rank.
+        assert all("score" not in r for r in results)
 
         assert state["known_record_ids"] == {"r1", "r2", "r3", "rec-9", "r4"}
         assert state[ENTITY_INDEX_CACHE_KEY]["rec-9"]["type"] == "record"

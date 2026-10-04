@@ -275,7 +275,10 @@ if TYPE_CHECKING:
         RecordGroup,
         User,
     )
-    from app.services.graph_db.common.utils import EntityCandidateRows
+    from app.services.graph_db.common.utils import (
+        EntityCandidateRows,
+        PermittedEntityRows,
+    )
 
 
 def _distinct_connector_types(apps: "list[dict] | None") -> list[str]:
@@ -1102,7 +1105,8 @@ class IGraphDBProvider(ABC):
         self,
         query: str,
         bind_vars: dict | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> list[dict] | None:
         """
         Execute a database-specific query (AQL for ArangoDB, Cypher for Neo4j).
@@ -1111,6 +1115,8 @@ class IGraphDBProvider(ABC):
             query (str): Query string in database-specific language
             bind_vars (Optional[Dict]): Query parameters/variables
             transaction (Optional[Any]): Optional transaction context
+            timeout_seconds: Optional server-side limit; the server stops the
+                query past it (outside a transaction)
 
         Returns:
             Optional[List[Dict]]: Query results if successful, None otherwise
@@ -6040,6 +6046,60 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_permitted_entity_records(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        user_key: str,
+        *,
+        app_level_connector_ids: list[str],
+        record_types: list[str] | None = None,
+        limit_per_entity: int = 20,
+        offset: int = 0,
+        window: int = 200,
+        timeout_seconds: float | None = None,
+    ) -> "dict[tuple[str, str], PermittedEntityRows]":
+        """The records of each entity in ``refs`` that the user may read,
+        checked inside the query.
+
+        Candidates are exactly those of :meth:`get_entity_candidate_records`
+        (same refs, scoping, scan cap and newest-first order). Of these, the
+        window ``[offset, offset + window)`` is walked in order and a row is
+        returned when:
+          - its ``connectorId`` is in ``app_level_connector_ids`` (app access
+            grants every record), or
+          - the user ``user_key`` holds a permission role on it, by the same
+            paths as :meth:`filter_nodes_with_permission_role`.
+        Domain, "anyone" and link shares grant no access, as in every other
+        access check.
+        The walk stops after ``limit_per_entity`` permitted rows, so the
+        permission work per entity is bounded by the window and usually ends
+        sooner.
+
+        Args:
+            refs: Entities, shaped as for ``get_entity_candidate_records``.
+            org_id: Organization scope. Empty returns ``{}`` without querying.
+            user_key: The user's graph key. Empty returns ``{}``.
+            app_level_connector_ids: Connectors whose records need no
+                per-record check.
+            record_types: Optional record-type filter.
+            limit_per_entity: Max permitted rows per entity.
+            offset: Candidates to skip per entity.
+            window: Candidates to walk per entity.
+            timeout_seconds: Optional server-side query limit.
+
+        Returns:
+            ``{(entity_type, entity_id): PermittedEntityRows}`` for every ref
+            queried, rows in candidate order and shaped as the candidate rows.
+            ``window_size`` and ``examined`` give the next offset
+            (``offset + examined``); ``capped`` is as for the candidates.
+
+        Raises:
+            Exception: on any query failure, including the timeout.
+        """
+        pass
+
+    @abstractmethod
     async def get_taxonomy_entity_membership(
         self,
         refs: list[dict[str, Any]],
@@ -6084,7 +6144,8 @@ class IGraphDBProvider(ABC):
         ``app.modules.entity_resolution``).
 
         Only nodes written with ``orgId`` and ``normalizedName`` match; legacy
-        global nodes (created by name alone) are never returned, by design.
+        global nodes (created by name alone) are never returned, by design,
+        and neither is a node merged into another (``mergedInto`` set).
         ``collection`` must be one of ``TAXONOMY_COLLECTIONS``
         (``app.services.graph_db.taxonomy``); anything else returns ``[]``.
 
@@ -6096,6 +6157,73 @@ class IGraphDBProvider(ABC):
         Raises:
             Exception: on query failure. The resolver decides whether that
                 fails the record (apply mode) or is logged (shadow mode).
+        """
+        pass
+
+    @abstractmethod
+    async def move_taxonomy_edges(
+        self,
+        collection: str,
+        from_key: str,
+        to_key: str,
+        org_id: str,
+        *,
+        set_merged_from: str | None,
+        only_merged_from: str | None = None,
+        provenance: str = "mergedFrom",
+        dry_run: bool = False,
+        transaction: str | None = None,
+    ) -> int:
+        """Move the record edges of ``org_id``'s records from taxonomy node
+        ``from_key`` to ``to_key`` in ``collection``, keeping each edge's
+        properties. A forward move keeps an edge's existing ``mergedFrom`` and
+        otherwise sets ``set_merged_from``, so chained merges keep each edge's
+        origin. With ``only_merged_from`` (undoing a merge), only edges whose
+        ``mergedFrom`` equals it move, and ``mergedFrom`` is set to
+        ``set_merged_from`` (normally None). An edge whose record already
+        links to ``to_key`` is removed instead of duplicated. Batched and
+        idempotent.
+
+        ``provenance`` names the edge field the move records and filters on:
+        ``mergedFrom`` for merges, ``migratedFrom`` for legacy migrations, so
+        undoing one never hides the other's edges. Restoring with
+        ``migratedFrom`` also clears ``mergedFrom``: an edge back on its legacy
+        node has no merge history left.
+
+        ``to_key`` must be a node of ``org_id``; only a ``migratedFrom``
+        restore may land on a legacy node (no ``orgId``). Trashed records'
+        edges move too, so a restored record finds its taxonomy. Matching
+        edges are found once and moved by id in batches.
+
+        Returns:
+            How many edges matched (with ``dry_run``, how many would move).
+
+        Raises:
+            ValueError: for a non-taxonomy collection, a missing key or org,
+                ``from_key == to_key``, an unknown provenance field, or (when
+                not a dry run) a ``to_key`` node that does not exist or is
+                not one ``org_id``'s edges may land on.
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def find_legacy_taxonomy_nodes(
+        self,
+        collection: str,
+        org_id: str,
+        limit: int,
+        after_key: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Legacy nodes of ``collection`` (no ``orgId``) that records of
+        ``org_id`` link to, with how many distinct such records each has,
+        ordered by key after ``after_key``. Walks the org's records, trashed
+        ones included, and their edges; meant for an offline migration, not
+        a request path.
+
+        Returns:
+            ``[{"_key", "name", "records"}]``, at most ``limit``.
         """
         pass
 

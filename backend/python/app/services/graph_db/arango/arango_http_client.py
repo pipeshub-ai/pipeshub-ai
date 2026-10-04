@@ -497,6 +497,7 @@ class ArangoHTTPClient:
         txn_id: Optional[str] = None,
         batch_size: int = 1000,
         options: dict | None = None,
+        max_runtime: float | None = None,
     ) -> List[Dict]:
         """
         Execute AQL query.
@@ -507,6 +508,8 @@ class ArangoHTTPClient:
             txn_id: Optional transaction ID
             batch_size: Batch size for cursor
             options: Cursor options, e.g. optimizer rules for one query
+            max_runtime: Server-side limit in seconds; the server kills the
+                query past it
 
         Returns:
             List[Dict]: Query results
@@ -522,8 +525,11 @@ class ArangoHTTPClient:
             "count": True,
             "batchSize": batch_size
         }
-        if options:
-            payload["options"] = options
+        if options or max_runtime is not None:
+            payload["options"] = {
+                **(options or {}),
+                **({"maxRuntime": max_runtime} if max_runtime is not None else {}),
+            }
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
