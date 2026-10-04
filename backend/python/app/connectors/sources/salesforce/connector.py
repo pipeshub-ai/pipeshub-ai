@@ -25,7 +25,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.constants import IconPaths
+from app.connectors.core.constants import AuthFieldKeys, IconPaths, OAuthDefaults
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -56,6 +56,7 @@ from app.connectors.core.registry.connector_builder import (
     SyncStrategy,
 )
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
+from app.connectors.core.registry.types import FieldType
 from app.connectors.core.registry.filters import (
     FilterCollection,
     IndexingFilterKey,
@@ -759,6 +760,20 @@ def _ts_in_bounds(
                     ),
                     field_type="TEXT",
                     max_length=2048
+                ),
+                AuthField(
+                    name=AuthFieldKeys.LOGIN_URL,
+                    display_name="Salesforce Login URL",
+                    placeholder="https://login.salesforce.com",
+                    description=(
+                        "Where users sign in. Leave blank for a production org. "
+                        "For a sandbox, enter https://test.salesforce.com or the sandbox's "
+                        "My Domain URL, such as https://yourcompany--uat.sandbox.my.salesforce.com. "
+                        "A production org can also use its My Domain URL."
+                    ),
+                    field_type=FieldType.URL.value,
+                    required=False,
+                    max_length=OAuthDefaults.MAX_URL_LENGTH,
                 ),
                 CommonFields.client_id("Salesforce Connected App"),
                 CommonFields.client_secret("Salesforce Connected App")
