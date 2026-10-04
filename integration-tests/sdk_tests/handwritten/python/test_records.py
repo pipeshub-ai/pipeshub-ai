@@ -6,7 +6,7 @@ FILE_NAME = "sdk-test-record.txt"
 FILE_CONTENT = b"PipesHub SDK test file.\n"
 
 
-def test_record_lifecycle(pipeshub: Pipeshub):
+def test_handwritten_record_lifecycle(pipeshub: Pipeshub):
     kb_id = pipeshub.knowledge_base.create_knowledge_base(kb_name="sdk-test-records").id
     try:
         events = list(

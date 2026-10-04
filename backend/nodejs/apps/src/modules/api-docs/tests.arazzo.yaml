@@ -628,3 +628,62 @@ workflows:
         successCriteria:
           - condition: $statusCode == 200
     x-speakeasy-test-group: Knowledge Base
+
+  # Needs one indexed document; provision_sdk_test_env.py seeds it. Search answers 404 without one.
+  - workflowId: searchLifecycle
+    steps:
+      - stepId: search
+        operationId: search
+        requestBody:
+          contentType: application/json
+          payload:
+            query: What is the codeword?
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/searchResponse/status_code == 200
+        outputs:
+          searchId: $response.body#/searchId
+      - stepId: listSearchHistory
+        operationId: searchHistory
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: getSearch
+        operationId: getSearchById
+        parameters:
+          - name: searchId
+            in: path
+            value: $steps.search.outputs.searchId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: archiveSearch
+        operationId: archiveSearch
+        parameters:
+          - name: searchId
+            in: path
+            value: $steps.search.outputs.searchId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/status == archived
+      - stepId: unarchiveSearch
+        operationId: unarchiveSearch
+        parameters:
+          - name: searchId
+            in: path
+            value: $steps.search.outputs.searchId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/status == unarchived
+      - stepId: deleteSearch
+        operationId: deleteSearchById
+        parameters:
+          - name: searchId
+            in: path
+            value: $steps.search.outputs.searchId
+        successCriteria:
+          - condition: $statusCode == 200
+    x-speakeasy-test-group: Semantic Search

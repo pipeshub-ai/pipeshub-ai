@@ -7,7 +7,7 @@ from .streams import created_conversation_id, last_answer_id, read_finished_run
 CHAT_MODE = "internal_search"
 
 
-def test_conversation_streams(pipeshub: Pipeshub):
+def test_handwritten_conversation_streams(pipeshub: Pipeshub):
     events = list(
         pipeshub.conversations.stream_chat(
             query="Reply with the single word OK.", chat_mode=CHAT_MODE
