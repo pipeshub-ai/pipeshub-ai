@@ -36,6 +36,7 @@ SECRETS=(
   --set mongodb.auth.rootPassword=ci-root
   --set redis.auth.password=ci-redis
   --set neo4j.auth.password=ci-neo4j
+  --set qdrant.apiKey=ci-qdrant
   --set 'mongodb.auth.usernames[0]=pipeshub'
   --set 'mongodb.auth.passwords[0]=ci-app'
   --set 'mongodb.auth.databases[0]=pipeshub'
@@ -143,6 +144,27 @@ if [[ -f "$OUT/eks.yaml" ]]; then
   expect eks 'whenUnsatisfiable: ScheduleAnyway' present 'name: ci-pipeshub-ai-qdrant'
   expect eks 'replicas: 1' present 'name: ci-pipeshub-ai-neo4j'
 fi
+# A rotated key must restart both sides together. Secrets the chart does not
+# create carry no checksum: the chart cannot see their value.
+if [[ -f "$OUT/local-neo4j-kafka.yaml" && -f "$OUT/local-existing-secrets.yaml" && -f "$OUT/local-external-secrets.yaml" ]]; then
+  expect local-neo4j-kafka 'checksum/qdrant-api-key' present 'name: ci-pipeshub-ai-qdrant'
+  expect local-neo4j-kafka 'checksum/qdrant-api-key' present 'app.kubernetes.io/component: main'
+  expect local-existing-secrets 'checksum/qdrant-api-key' absent
+  expect local-external-secrets 'checksum/qdrant-api-key' absent
+fi
+
+# Secrets sourced outside the chart must not need qdrant.apiKey in values.
+for entry in \
+  "existing secrets without qdrant.apiKey|${LOCAL[*]} --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-app" \
+  "external secrets without qdrant.apiKey|${LOCAL[*]} --set secretManagement.externalSecrets.enabled=true --set secretManagement.externalSecrets.secretStoreRef.name=vault --set secretManagement.externalSecrets.remoteRefs.secretKey=pipeshub/secret-key"; do
+  name="${entry%%|*}"
+  read -r -a args <<<"${entry#*|}"
+  if helm template ci . "${args[@]}" >/dev/null 2>"$OUT/accepted.err"; then
+    echo "ok accepted: ${name}"
+  else
+    echo "!! ${name}: refused:"; cat "$OUT/accepted.err"; failed=1
+  fi
+done
 
 # name | expected message fragment | helm arguments (after SECRETS)
 REFUSED=(
@@ -150,6 +172,9 @@ REFUSED=(
   "etcd store without etcd|config.kvStoreType=etcd requires etcd.enabled=true|${LOCAL[*]} --set config.kvStoreType=etcd"
   "external secrets without secret-key|remoteRefs.secretKey is required|${LOCAL[*]} --set secretManagement.externalSecrets.enabled=true --set secretManagement.externalSecrets.secretStoreRef.name=vault"
   "placeholder neo4j password|must not use default placeholder|${LOCAL[*]} --set neo4j.auth.password=your_password"
+  "no qdrant api key|qdrant.apiKey is required|${LOCAL[*]} --set qdrant.apiKey="
+  "placeholder qdrant api key|qdrant.apiKey must not use default placeholder 'api_key'|${LOCAL[*]} --set qdrant.apiKey=api_key"
+  "default arango password|arango.auth.rootPassword must not use default placeholder 'root'|${LOCAL[*]} --set neo4j.enabled=false --set arango.enabled=true --set arango.auth.rootPassword=root"
   "docker sandbox without a daemon|no Docker daemon is configured|--set persistence.accessModes={ReadWriteMany}"
   "shared RWO volume across replicas|persistence requires ReadWriteMany|--set sandbox.dind.enabled=true"
   "cluster mode on the bundled redis|requires redis.external.enabled=true|${LOCAL[*]} --set redis.mode=cluster"

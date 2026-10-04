@@ -620,7 +620,7 @@ arango:
     storageClass: "" # Fill
   auth:
     enabled: true
-    rootPassword: "root"
+    rootPassword: ""  # Required when arango.enabled
   podSecurityContext:
     runAsUser: 1000
     fsGroup: 1000
@@ -802,7 +802,10 @@ qdrant:
   tolerations: []
   affinity: {}
   topologySpreadConstraints: []
-  apiKey: "api_key"
+  # Required unless secretManagement.existingSecrets/externalSecrets supplies qdrant-api-key.
+  # Generate once and keep it: openssl rand -hex 32. On upgrade, an empty value
+  # reuses the key already stored in this release's Secret.
+  apiKey: ""
 
 # Neo4j (enabled by default). When enabled, the app uses Neo4j as the graph database (DATA_STORE=neo4j).
 # Override neo4j.auth.password in production (e.g. --set neo4j.auth.password=... or values from secret manager).

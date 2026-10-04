@@ -11,7 +11,7 @@
 #   - persistence.storageClass             -> RWX class for the shared app PVC
 #   - persistence.accessModes              -> must include ReadWriteMany when replicaCount > 1
 #   - ingress.className + ingress.hosts    -> the public DNS names
-#   - secretKey + db passwords             -> via --set or external secrets
+#   - secretKey + db passwords + qdrant.apiKey -> via --set or external secrets
 #
 # Usage (use release name "pipeshub-ai" so the rendered Service is also
 # "pipeshub-ai" — otherwise the chart fullname becomes "<release>-pipeshub-ai"
@@ -33,6 +33,7 @@
 #     --set mongodb.auth.rootPassword="..." \
 #     --set redis.auth.password="..." \
 #     --set neo4j.auth.password="..." \
+#     --set qdrant.apiKey="$(openssl rand -hex 32)" \
 #     --set "mongodb.auth.usernames[0]=pipeshub" \
 #     --set "mongodb.auth.passwords[0]=..." \
 #     --set "mongodb.auth.databases[0]=pipeshub"

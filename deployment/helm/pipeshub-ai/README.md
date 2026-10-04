@@ -49,6 +49,7 @@ helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set mongodb.auth.rootPassword="change-me" \
   --set redis.auth.password="change-me" \
   --set neo4j.auth.password="change-me" \
+  --set qdrant.apiKey="$(openssl rand -hex 32)" \
   --set "mongodb.auth.usernames[0]=pipeshub" \
   --set "mongodb.auth.passwords[0]=$(openssl rand -hex 16)" \
   --set "mongodb.auth.databases[0]=pipeshub"
@@ -119,6 +120,7 @@ helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set mongodb.auth.rootPassword="..." \
   --set redis.auth.password="..." \
   --set neo4j.auth.password="..." \
+  --set qdrant.apiKey="..." \
   --set "mongodb.auth.usernames[0]=pipeshub" \
   --set "mongodb.auth.passwords[0]=..." \
   --set "mongodb.auth.databases[0]=pipeshub"
@@ -191,6 +193,74 @@ Redis Cluster and MemoryDB never support `SELECT` (`REDIS_DB`); it is only
 honoured when `redis.mode` is `standalone` (and a non-standalone `redis.mode` requires `redis.external.enabled=true` — the bundled subchart is a replication deployment, not a Redis Cluster). Use `redis.keyNamespace` for
 isolation instead.
 
+## Qdrant API key
+
+Qdrant and the app share one API key, stored as `qdrant-api-key` in the
+release Secret. The chart has no default for it. With chart-created secrets
+(the inline mode) it refuses to render unless `qdrant.apiKey` is set, and it
+refuses the old shared defaults (`api_key`, `qdrant`, `your_qdrant_api_key`,
+`your_qdrant_secret_api_key`). ArangoDB likewise refuses `arango.auth.rootPassword=root`.
+
+Generate the key once and keep it with your other secrets:
+
+```bash
+openssl rand -hex 32
+```
+
+On a later `helm upgrade` against the cluster you may leave `qdrant.apiKey`
+unset: the chart reuses the key already in `<release>-pipeshub-ai-secrets`
+(or `pipeshub-ai-secrets` for the release name used above). `helm template`,
+`--dry-run=client`, Argo CD and Flux cannot read the cluster, so they need the
+key in values every time.
+
+### Upgrading a release that still uses `api_key`
+
+Releases installed from earlier chart versions without `qdrant.apiKey` run with
+the public default `api_key`. The first upgrade to this chart fails until you
+set a new key. Qdrant stores no data under the key; it only checks it on each
+request, so collections stay readable after the change.
+
+Both the Qdrant StatefulSet and the app Deployment carry a
+`checksum/qdrant-api-key` annotation, so changing the key restarts both. Until
+both have restarted, requests made with the old key to a pod that has the new
+one fail with 401. To avoid that window, stop the app first:
+
+```bash
+KEY="$(openssl rand -hex 32)"   # store it before continuing
+
+# 1. App stopped, Qdrant restarted on the new key
+helm upgrade pipeshub-ai ./deployment/helm/pipeshub-ai --reuse-values \
+  --set qdrant.apiKey="$KEY" --set replicaCount=0 --set autoscaling.enabled=false
+kubectl rollout status statefulset/pipeshub-ai-qdrant -n <namespace>
+
+# 2. App back, with your usual replicaCount / autoscaling values
+helm upgrade pipeshub-ai ./deployment/helm/pipeshub-ai --reuse-values \
+  --set replicaCount=<n> --set autoscaling.enabled=<true|false>
+```
+
+A single `helm upgrade --set qdrant.apiKey="$KEY"` also works if a short burst
+of failed indexing and search requests is acceptable.
+
+The services pick up the new key on the first start. The app pod receives it
+as `QDRANT_API_KEY`. The Node.js process writes it to the KV store
+(`/services/qdrant`) during startup, before its health check passes. The
+Python services start only after that check, and read the key once when they
+connect to Qdrant. There is no KV migration to run. The KV entry is shared by
+every app pod, and an old pod that is still running can write its old key back
+when certain admin requests reach it. Stopping the app first, as above, avoids
+pods with mixed keys.
+
+`helm rollback` restores the previous Secret, and the annotation restarts both
+sides again.
+
+With `existingSecrets` or `externalSecrets` the chart neither reads nor checks
+the key, and adds no checksum annotation. After rotating the key there, restart
+both sides yourself:
+
+```bash
+kubectl rollout restart statefulset/pipeshub-ai-qdrant deployment/pipeshub-ai -n <namespace>
+```
+
 ## Secret Management Modes
 
 - `inline` (default): chart creates Kubernetes Secret from values
@@ -208,6 +278,9 @@ helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set secretManagement.existingSecrets.neo4jSecretName="pipeshub-secrets" \
   --set secretManagement.existingSecrets.qdrantSecretName="pipeshub-secrets"
 ```
+
+The Secret must hold a random `qdrant-api-key` (for example
+`openssl rand -hex 32`). The chart does not check its value.
 
 ### External Secrets Example
 
@@ -242,6 +315,7 @@ helm template pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set mongodb.auth.rootPassword="test" \
   --set redis.auth.password="test" \
   --set neo4j.auth.password="test" \
+  --set qdrant.apiKey="test" \
   --set "mongodb.auth.usernames[0]=pipeshub" \
   --set "mongodb.auth.passwords[0]=test" \
   --set "mongodb.auth.databases[0]=pipeshub"
@@ -263,7 +337,7 @@ SMOKE_VARIANT=arangodb-redis bash deployment/helm/tests/kind_smoke.sh
 
 ## Production Checklist
 
-- Set all passwords and `secretKey` securely
+- Set all passwords, `secretKey` and `qdrant.apiKey` securely
 - Configure ingress/TLS
 - Enable `podDisruptionBudget` for HA
 - Enable `networkPolicy` with cluster-specific rules

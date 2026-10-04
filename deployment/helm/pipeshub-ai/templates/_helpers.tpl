@@ -193,6 +193,33 @@ Get the name of the secret containing Qdrant credentials
 {{- end }}
 
 {{/*
+Qdrant API key for the chart-created Secret: qdrant.apiKey, else the key this
+release's Secret already holds, so an upgrade need not pass it again. Never
+generated: `helm template` and GitOps renders cannot see the cluster, and a
+fresh key per render would put the app and Qdrant on different keys.
+*/}}
+{{- define "pipeshub-ai.qdrantApiKey" -}}
+{{- if .Values.qdrant.apiKey -}}
+{{- .Values.qdrant.apiKey -}}
+{{- else -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace (printf "%s-secrets" (include "pipeshub-ai.fullname" .)) -}}
+{{- if and $existing $existing.data (hasKey $existing.data "qdrant-api-key") -}}
+{{- index $existing.data "qdrant-api-key" | b64dec -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Pod-template annotation value that changes with the Qdrant key, so a rotation
+restarts the app and Qdrant together instead of leaving one on the old key.
+Keyed with secretKey (required whenever the chart creates the Secret) so
+anyone who can read pod specs cannot brute-force a weak key offline.
+*/}}
+{{- define "pipeshub-ai.qdrantApiKeyChecksum" -}}
+{{- printf "%s:%s" (required "secretKey is required" .Values.secretKey | toString) (include "pipeshub-ai.qdrantApiKey" .) | sha256sum | trunc 16 -}}
+{{- end -}}
+
+{{/*
 Validate required secrets are provided when not using external or existing secrets
 This helper is called during template rendering to fail fast with clear error messages
 */}}
@@ -224,8 +251,22 @@ This helper is called during template rendering to fail fast with clear error me
     {{- end }}
     
     {{- /* Validate ArangoDB credentials */ -}}
-    {{- if and .Values.arango.enabled (not .Values.arango.auth.rootPassword) }}
-      {{- fail "arango.auth.rootPassword is required when ArangoDB is enabled. Set via --set arango.auth.rootPassword=<password>" }}
+    {{- if .Values.arango.enabled }}
+      {{- if not .Values.arango.auth.rootPassword }}
+        {{- fail "arango.auth.rootPassword is required when ArangoDB is enabled. Set via --set arango.auth.rootPassword=<password>" }}
+      {{- end }}
+      {{- if eq .Values.arango.auth.rootPassword "root" }}
+        {{- fail "arango.auth.rootPassword must not use default placeholder 'root'. Set a secure password." }}
+      {{- end }}
+    {{- end }}
+
+    {{- /* Validate Qdrant API key */ -}}
+    {{- $qdrantApiKey := include "pipeshub-ai.qdrantApiKey" . }}
+    {{- if not $qdrantApiKey }}
+      {{- fail "qdrant.apiKey is required. Set via --set qdrant.apiKey=\"$(openssl rand -hex 32)\" and keep it for later upgrades." }}
+    {{- end }}
+    {{- if has $qdrantApiKey (list "api_key" "your_qdrant_api_key" "your_qdrant_secret_api_key" "qdrant") }}
+      {{- fail (printf "qdrant.apiKey must not use default placeholder '%s'. Set a secure key via --set qdrant.apiKey=\"$(openssl rand -hex 32)\"; see \"Qdrant API key\" in the chart README." $qdrantApiKey) }}
     {{- end }}
   {{- end }}
 {{- else }}
