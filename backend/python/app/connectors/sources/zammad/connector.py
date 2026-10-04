@@ -2239,10 +2239,6 @@ class ZammadConnector(BaseConnector):
             for answer_id, answer_data in listing.get("KnowledgeBaseAnswer", {}).items()
             if self._kb_answer_changed_since(answer_data, since)
         }
-        if not changed_answers:
-            self.logger.info("No KB answers changed since the last sync")
-            return
-
         kb_map: Dict[int, RecordGroup] = {}
         category_map: Dict[int, RecordGroup] = {}
         category_permissions_map: Dict[int, Dict[str, List[int]]] = {}
@@ -2252,6 +2248,10 @@ class ZammadConnector(BaseConnector):
             category_map=category_map,
             category_permissions_map=category_permissions_map
         )
+
+        if not changed_answers:
+            self.logger.info("No KB answers changed since the last sync")
+            return
 
         total_synced, max_updated_at, failed_updated_at = await self._sync_kb_answers(
             answers=changed_answers,

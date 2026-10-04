@@ -62,6 +62,7 @@ class FakeZammad64Kb:
                 "archived_at": None,
                 visibility: stamp(answer_id),
             }
+        self.category_titles = {cid: title for cid, (title, _) in CATEGORIES.items()}
         self.init_status = 200
         self.init_body: object | None = None
         self.calls: list[tuple[str, str, dict[str, str]]] = []
@@ -89,7 +90,7 @@ class FakeZammad64Kb:
             },
             "KnowledgeBaseCategoryTranslation": {
                 str(100 + cid): {"id": 100 + cid, "category_id": cid, "kb_locale_id": 1, "title": title}
-                for cid, (title, _) in CATEGORIES.items()
+                for cid, title in self.category_titles.items()
             },
         }
 
@@ -137,6 +138,7 @@ class KbRecords(FakeRecordsDb):
         super().__init__()
         self.answer_writes: list[str] = []
         self.fail_lookup_for: set[str] = set()
+        self.group_writes: list[tuple[str, str]] = []
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         if external_record_id in self.fail_lookup_for:
@@ -151,6 +153,10 @@ class KbRecords(FakeRecordsDb):
 
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         return None
+
+    async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
+        self.group_writes.extend((g.external_group_id, g.name) for g, _ in groups)
+        await super().on_new_record_groups(groups)
 
 
 class FakeSyncPoint:
@@ -219,6 +225,19 @@ async def test_an_install_upgraded_from_the_search_based_sync_reads_every_answer
         await connector._sync_knowledge_bases()
 
     assert sorted(records.answer_writes) == sorted(f"kb_answer_{a}" for a in range(1, ANSWERS + 1))
+
+
+async def test_a_renamed_category_is_written_when_no_answer_changed() -> None:
+    zammad, records = FakeZammad64Kb(ANSWERS), KbRecords()
+    with _connector(zammad, records) as connector:
+        await connector._sync_knowledge_bases()
+        records.answer_writes.clear()
+        records.group_writes.clear()
+        zammad.category_titles[2] = "Payments"
+        await connector._sync_knowledge_bases()
+
+    assert records.answer_writes == []
+    assert ("cat_2", "Payments") in records.group_writes
 
 
 async def test_the_next_sync_reads_only_the_answers_edited_since_and_ends() -> None:
