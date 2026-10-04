@@ -26,7 +26,11 @@ from app.connectors.core.base.token_service.token_refresh_service import (
     TokenRefreshService,
 )
 from app.connectors.sources.salesforce.connector import SalesforceConnector
-from app.utils.oauth_config import get_oauth_config, normalize_salesforce_login_url
+from app.utils.oauth_config import (
+    SALESFORCE_LOGIN_URL_ERROR,
+    get_oauth_config,
+    normalize_salesforce_login_url,
+)
 
 _ROUTER = "app.connectors.api.router"
 PROD_AUTHORIZE = "https://login.salesforce.com/services/oauth2/authorize"
@@ -237,7 +241,7 @@ class TestSavingRefusesANonSalesforceHost:
             with pytest.raises(HTTPException) as refused:
                 await create_oauth_config("Salesforce", _admin_request(body), config_service=config_service)
         assert refused.value.status_code == HttpStatusCode.BAD_REQUEST.value
-        assert "https://test.salesforce.com" in refused.value.detail
+        assert refused.value.detail == SALESFORCE_LOGIN_URL_ERROR
         config_service.set_config.assert_not_called()
 
     async def test_editing_an_oauth_app(self) -> None:
@@ -310,4 +314,4 @@ class TestLoginUrlFormField:
         field = self._field()
         assert field["fieldType"] == "URL"
         assert field["placeholder"] == "https://login.salesforce.com"
-        assert "test.salesforce.com" in field["description"]
+        assert "https://test.salesforce.com" in field["description"].split()
