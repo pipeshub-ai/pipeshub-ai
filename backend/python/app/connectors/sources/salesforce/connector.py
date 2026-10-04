@@ -80,7 +80,7 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
-from app.modules.entity_resolution.organizations import extracted_organization_id
+from app.modules.entity_resolution.organizations import accounts_last, extracted_organization_id
 from collections import defaultdict
 
 from app.models.blocks import (
@@ -4286,7 +4286,7 @@ class SalesforceConnector(BaseConnector):
                 all_orgs = await tx_store.get_all_orgs()
             external_org_key_by_name: Dict[str, str] = {
                 o["name"]: o["_key"]
-                for o in (all_orgs or [])
+                for o in accounts_last(all_orgs or [])
                 if o.get("isExternal") is True
                 and (parent_org_id is None or o.get("parentOrgId") == parent_org_id)
             }
@@ -4373,7 +4373,7 @@ class SalesforceConnector(BaseConnector):
                     parent_org_id = self._get_parent_org_id()
                     external_org_key_by_name = {
                         o["name"]: o.get("id", o.get("_key"))
-                        for o in all_orgs
+                        for o in accounts_last(all_orgs)
                         if parent_org_id is None or o.get("parentOrgId") == parent_org_id
                     }
                     external_keys = set(external_org_key_by_name.values())
@@ -4588,7 +4588,7 @@ class SalesforceConnector(BaseConnector):
                     }
                     org_name_map = {
                         node.get("name"): node
-                        for node in (existing_orgs_result or [])
+                        for node in accounts_last(existing_orgs_result or [])
                         if parent_org_id is None or (
                             node.get("isExternal") is True
                             and node.get("parentOrgId") == parent_org_id

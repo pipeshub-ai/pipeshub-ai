@@ -350,6 +350,11 @@ EDGE_COLLECTIONS = [
 _EDGE_MOVE_BATCH = 5000
 
 
+def _record_cap(cap: int | None) -> int:
+    # LIMIT needs a number; uncapped counts every record.
+    return max(1, int(cap)) if cap is not None else 2**31 - 1
+
+
 # Promotions to these statuses leave the primary with taxonomy to copy to its
 # duplicates; see update_queued_duplicates_status.
 _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
@@ -19427,35 +19432,46 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         keys: list[str],
         transaction: str | None = None,
+        *,
+        record_cap: int | None = None,
     ) -> dict[str, dict[str, Any]]:
         """See :meth:`IGraphDBProvider.get_organization_record_reach`."""
         wanted = sorted({k for k in keys if k})
         if not org_id or not wanted:
             return {}
         orgs = CollectionNames.ORGS.value
+        relations = CollectionNames.ENTITY_RELATIONS.value
+        # MENTIONS is the only EXTRACTED edge type and edges upsert on
+        # (_from, _to, edgeType), so a record has at most one: edges count records.
         rows = await self.http_client.execute_aql(
             f"""
             FOR o IN {orgs}
                 FILTER o._key IN @keys AND o.isExternal == true AND o.parentOrgId == @org_id
-                LET linked = (
-                    FOR r, e IN 1..1 INBOUND o {CollectionNames.ENTITY_RELATIONS.value}
+                LET records = LENGTH(
+                    FOR r, e IN 1..1 INBOUND o {relations}
+                        FILTER NOT_NULL(e.origin, @inferred) == @extracted
                         FILTER IS_SAME_COLLECTION(@records, r) AND r.orgId == @org_id AND {aql_live_record("r")}
-                        RETURN DISTINCT {{ key: r._key, extracted: NOT_NULL(e.origin, @inferred) == @extracted }}
+                        LIMIT @cap
+                        RETURN 1
                 )
+                LET linked = LENGTH(
+                    FOR r, e IN 1..1 INBOUND o {relations}
+                        FILTER NOT_NULL(e.origin, @inferred) != @extracted
+                        FILTER IS_SAME_COLLECTION(@records, r) AND r.orgId == @org_id AND {aql_live_record("r")}
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
                 LET account = LENGTH(
                     FOR v IN 1..1 INBOUND o {CollectionNames.DEAL_OF.value}, {CollectionNames.PROSPECT.value},
                         {CollectionNames.CUSTOMER.value}
                         LIMIT 1 RETURN 1
                 ) > 0
-                RETURN {{
-                    key: o._key,
-                    records: LENGTH(UNIQUE(linked[* FILTER CURRENT.extracted].key)),
-                    inferred: account OR LENGTH(linked[* FILTER NOT CURRENT.extracted]) > 0,
-                }}
+                RETURN {{ key: o._key, records: records, inferred: account OR linked }}
             """,
             bind_vars={
                 "keys": wanted, "org_id": org_id, "records": CollectionNames.RECORDS.value,
                 "inferred": EntityOrigin.INFERRED.value, "extracted": EntityOrigin.EXTRACTED.value,
+                "cap": _record_cap(record_cap),
             },
             txn_id=transaction,
         )

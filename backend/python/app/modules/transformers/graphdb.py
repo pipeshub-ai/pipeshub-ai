@@ -281,21 +281,39 @@ class GraphDBTransformer(Transformer):
                 }
                 for entity in entities
             ])
-            reach = await provider.get_organization_record_reach(org_id, [e.key for e in entities])
+            searchable = await searchable_organizations(provider, org_id, [e.key for e in entities])
         except Exception as exc:
             self.logger.warning(
                 "entity_resolution: organisations of record %s not linked (%d): %s",
                 record_id, len(entities), exc,
             )
             return []
-        searchable = searchable_organizations(reach)
-        return [
+        points = [
             EntityRecord.for_linked(
                 EntityType.ORGANIZATION, entity.key, entity.name, org_id,
                 getattr(record, "connector_id", None), getattr(record, "record_group_id", None),
             )
             for entity in entities if entity.key in searchable
         ]
+        if not points:
+            return []
+        # An organisation that just crossed the threshold has no point yet to
+        # merge into, so its membership comes from every record naming it.
+        try:
+            membership = await provider.get_taxonomy_entity_membership(
+                [{"id": p.entity_id, "type": EntityType.ORGANIZATION.value} for p in points], org_id,
+            )
+        except Exception as exc:
+            self.logger.warning("entity_resolution: organisation membership not read for record %s: %s", record_id, exc)
+            return points
+        out = []
+        for point in points:
+            reach = membership.get((EntityType.ORGANIZATION.value, point.entity_id)) or {}
+            out.append(point.model_copy(update={
+                "connector_ids": sorted({*point.connector_ids, *(c for c in reach.get("connectorIds") or [] if c)}),
+                "record_group_ids": sorted({*point.record_group_ids, *(g for g in reach.get("recordGroupIds") or [] if g)}),
+            }))
+        return out
 
     @classmethod
     def _department_for_org(cls, nodes: list[dict] | None, org_id: str) -> dict | None:

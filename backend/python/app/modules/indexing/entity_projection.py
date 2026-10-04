@@ -70,7 +70,7 @@ async def project_taxonomy_nodes(
         )
         # An organisation only extraction knows needs enough records naming it.
         searchable = (
-            searchable_organizations(await graph.get_organization_record_reach(org_id, list(nodes)))
+            await searchable_organizations(graph, org_id, list(nodes))
             if entity_type is EntityType.ORGANIZATION else set(nodes)
         )
     except Exception:
@@ -134,7 +134,7 @@ async def project_taxonomy_nodes(
     if unnamed:
         try:
             # Re-read, as above: a record naming it since may have made it searchable.
-            again = searchable_organizations(await graph.get_organization_record_reach(org_id, unnamed))
+            again = await searchable_organizations(graph, org_id, unnamed)
             await store.delete_entities(org_id, entity_type.value, [k for k in unnamed if k not in again])
         except Exception:
             logger.warning(

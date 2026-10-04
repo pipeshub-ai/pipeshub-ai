@@ -108,7 +108,7 @@ class FakeGraph:
         }
 
     async def get_organization_record_reach(
-        self, org_id: str, keys: list[str], transaction: str | None = None,
+        self, org_id: str, keys: list[str], transaction: str | None = None, *, record_cap: int | None = None,
     ) -> dict[str, dict[str, Any]]:
         return {k: self.org_reach.get(k, {"records": 0, "inferred": True}) for k in keys}
 

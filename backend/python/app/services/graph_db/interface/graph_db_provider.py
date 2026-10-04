@@ -6716,12 +6716,16 @@ class IGraphDBProvider(ABC):
         org_id: str,
         keys: list[str],
         transaction: str | None = None,
+        *,
+        record_cap: int | None = None,
     ) -> dict[str, dict[str, Any]]:
         """For each of ``keys`` that is an external organisation of tenant
         ``org_id``: how many live records of the org name it (EXTRACTED
         edges), and whether a connector knows it (a record group's ``dealOf``
         edge, a tenant's ``prospect``/``customer`` edge, or an INFERRED
-        record edge). Trashed records count for neither.
+        record edge). Trashed records count for neither. With
+        ``record_cap``, counting stops there: deciding the searchability
+        threshold need not walk every record of a much-named organisation.
 
         Returns:
             ``{key: {"records": int, "inferred": bool}}``; other keys are left out.

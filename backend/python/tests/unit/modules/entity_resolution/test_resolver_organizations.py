@@ -213,3 +213,32 @@ async def test_a_connectors_account_wins_over_an_extracted_namesake(make_resolve
         _, resolution = await _resolve(make_resolver, ctx_factory, metadata_factory(organizations=["Globex"]))
         assert [e.key for e in resolution.entries.values()] == [account]
         del fake_graph.nodes[(ORGS, account)]
+
+
+async def test_the_threshold_check_stops_counting_at_the_threshold(run, fake_graph) -> None:
+    """An organisation named in 100k records is not walked for each record."""
+    await run("r1", ["Initech"])
+    caps = [args[2] for name, args in fake_graph.calls if name == "get_organization_record_reach"]
+    assert caps == [2]
+
+
+async def test_the_point_made_when_the_threshold_is_crossed_has_every_records_reach(
+    make_resolver, make_transformer, fake_graph, fake_store, ctx_factory, metadata_factory, scripted_model,
+) -> None:
+    """The first record wrote no point, so the crossing record cannot be the
+    only membership: users of the first record's connector would miss it."""
+    scripted_model()
+    sink = SinkOrchestrator(
+        graphdb=make_transformer(), blob_storage=MagicMock(), vector_store=MagicMock(),
+        graph_provider=MagicMock(), logger=MagicMock(), config_service=MagicMock(),
+        entity_vector_store=fake_store, entity_resolver=make_resolver(),
+    )
+    for record, connector, group in (("r1", "drive", "rg-d"), ("r2", "slack", "rg-s")):
+        fake_graph.add_record(record, ORG, connector, group)
+        ctx = ctx_factory(record, ORG, metadata_factory(organizations=["Initech"]), connector_id=connector,
+                          record_group_id=group)
+        await sink.resolve_entities(ctx)
+        await sink.enrich(ctx)
+    (point,) = fake_store.points_of(ORG, "organization")
+    assert sorted(point["connectorIds"]) == ["drive", "slack"]
+    assert sorted(point["recordGroupIds"]) == ["rg-d", "rg-s"]

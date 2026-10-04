@@ -222,7 +222,10 @@ class FakeGraph:
             self.entity_relations.append(dict(edge))
         return True
 
-    async def get_organization_record_reach(self, org_id, keys, transaction=None) -> dict[str, dict[str, Any]]:
+    async def get_organization_record_reach(
+        self, org_id, keys, transaction=None, *, record_cap=None,
+    ) -> dict[str, dict[str, Any]]:
+        self.calls.append(("get_organization_record_reach", (org_id, sorted(keys), record_cap)))
         out = {}
         for key in keys:
             node = self.nodes.get((ORGS, key))
@@ -235,7 +238,24 @@ class FakeGraph:
             ]
             extracted = {e["_from"] for e in edges if (e.get("origin") or "INFERRED") == "EXTRACTED"}
             inferred = any((e.get("origin") or "INFERRED") != "EXTRACTED" for e in edges) or bool(node.get("account"))
-            out[key] = {"records": len(extracted), "inferred": inferred}
+            count = len(extracted) if record_cap is None else min(len(extracted), record_cap)
+            out[key] = {"records": count, "inferred": inferred}
+        return out
+
+    async def get_taxonomy_entity_membership(self, refs, org_id, transaction=None) -> dict:
+        """Organisations only: the connectors and groups of the org's records
+        linking to each."""
+        out = {}
+        for ref in refs:
+            records = [
+                self.records.get(e["_from"].split("/", 1)[1], {}) for e in self.entity_relations
+                if e["_to"] == f"{ORGS}/{ref['id']}"
+            ]
+            records = [r for r in records if r.get("orgId") == org_id]
+            out[(ref["type"], ref["id"])] = {
+                "connectorIds": sorted({r["connectorId"] for r in records if r.get("connectorId")}),
+                "recordGroupIds": sorted({r["recordGroupId"] for r in records if r.get("recordGroupId")}),
+            }
         return out
 
     # ---- transaction-store level (GraphDBTransformer) ----
