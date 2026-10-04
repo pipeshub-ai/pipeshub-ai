@@ -126,3 +126,78 @@ class TestEnsureDatabaseExists:
             return_value=mock_session,
         ), pytest.raises(RuntimeError, match="ArcadeDB database creation failed"):
             await client._create_database_over_http()
+
+
+def _http_session(get_status: int = 200, get_json: dict | None = None) -> MagicMock:
+    response = AsyncMock()
+    response.status = get_status
+    response.json = AsyncMock(return_value=get_json or {})
+    response.text = AsyncMock(return_value="boom")
+    response.__aenter__ = AsyncMock(return_value=response)
+    response.__aexit__ = AsyncMock(return_value=None)
+    session = MagicMock()
+    session.get = MagicMock(return_value=response)
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    return session
+
+
+class TestProvisionBeforeBoltConnect:
+    @pytest.mark.asyncio
+    async def test_creates_missing_database_before_bolt_connect(self) -> None:
+        """A server with no databases rejects the Bolt handshake, so the
+        database must exist before the base class connects."""
+        client = _make_client()
+        order: list[str] = []
+
+        async def _create() -> None:
+            order.append("create")
+
+        async def _base_connect(self: object) -> bool:
+            order.append("bolt")
+            return True
+
+        with patch(
+            "app.services.graph_db.arcadedb.arcadedb_client.aiohttp.ClientSession",
+            return_value=_http_session(get_json={"result": False}),
+        ), patch.object(
+            ArcadeDBClient, "_create_database_over_http", new=AsyncMock(side_effect=_create)
+        ), patch(
+            "app.services.graph_db.neo4j.neo4j_client.Neo4jClient._connect_inner",
+            new=_base_connect,
+        ):
+            assert await client._connect_inner() is True
+
+        assert order == ["create", "bolt"]
+
+    @pytest.mark.asyncio
+    async def test_skips_creation_when_database_exists(self) -> None:
+        client = _make_client()
+
+        with patch(
+            "app.services.graph_db.arcadedb.arcadedb_client.aiohttp.ClientSession",
+            return_value=_http_session(get_json={"result": True}),
+        ), patch.object(
+            ArcadeDBClient, "_create_database_over_http", new=AsyncMock()
+        ) as mock_create, patch(
+            "app.services.graph_db.neo4j.neo4j_client.Neo4jClient._connect_inner",
+            new=AsyncMock(return_value=True),
+        ):
+            assert await client._connect_inner() is True
+
+        mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_http_failure_still_attempts_bolt_connect(self) -> None:
+        client = _make_client()
+
+        with patch(
+            "app.services.graph_db.arcadedb.arcadedb_client.aiohttp.ClientSession",
+            return_value=_http_session(get_status=500),
+        ), patch(
+            "app.services.graph_db.neo4j.neo4j_client.Neo4jClient._connect_inner",
+            new=AsyncMock(return_value=False),
+        ) as mock_base:
+            assert await client._connect_inner() is False
+
+        mock_base.assert_called_once()

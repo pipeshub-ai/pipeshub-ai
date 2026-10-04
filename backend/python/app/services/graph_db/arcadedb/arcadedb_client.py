@@ -11,6 +11,10 @@ returns "Only CREATE CONSTRAINT, CREATE INDEX and CREATE USER are currently
 supported"), so the base class's system-database bootstrap can only ever
 detect a missing database, never create one. This subclass creates it over
 ArcadeDB's HTTP API instead, then falls back to the base behavior.
+
+On a fresh server with no databases at all, the Bolt handshake itself is
+rejected ("No database available"), so the target database is provisioned
+over HTTP *before* the first Bolt connection rather than after it.
 """
 
 from logging import Logger
@@ -72,6 +76,35 @@ class ArcadeDBClient(Neo4jClient):
         )
         self.http_uri = http_uri.rstrip("/")
 
+    async def _connect_inner(self) -> bool:
+        """Provision the database over HTTP first: on a server that has no
+        databases yet, ArcadeDB refuses the Bolt handshake, so the base
+        class's connect-then-ensure order can never get as far as creating
+        one."""
+        if not self._database_ensured:
+            try:
+                await self._provision_database_over_http()
+            except (aiohttp.ClientError, RuntimeError) as e:
+                # Let the Bolt connect below report the real failure.
+                self.logger.warning(
+                    f"⚠️ Could not provision database '{self.database}' over HTTP: {str(e)}"
+                )
+        return await super()._connect_inner()
+
+    async def _provision_database_over_http(self) -> None:
+        auth = aiohttp.BasicAuth(self.username, self.password)
+        async with aiohttp.ClientSession(auth=auth) as session:
+            async with session.get(f"{self.http_uri}/api/v1/exists/{self.database}") as response:
+                if response.status >= 400:
+                    body = await response.text()
+                    raise RuntimeError(f"ArcadeDB existence check failed ({response.status}): {body}")
+                exists = (await response.json()).get("result") is True
+        if exists:
+            return
+        self.logger.info(f"📦 Database '{self.database}' not found. Creating it over HTTP...")
+        await self._create_database_over_http()
+        self.logger.info(f"✅ Database '{self.database}' created successfully")
+
     async def _ensure_database_exists(self) -> None:
         """Check via Bolt (ArcadeDB supports ``SHOW DATABASES``); create over
         HTTP if missing, since ArcadeDB's Cypher engine rejects ``CREATE
@@ -93,7 +126,8 @@ class ArcadeDBClient(Neo4jClient):
             self.logger.info(f"✅ Database '{self.database}' created successfully")
 
         except (ClientError, aiohttp.ClientError, RuntimeError) as e:
-            self.logger.warning(f"⚠️ Could not verify/create database '{self.database}': {str(e)}")
+            self.logger.error(f"❌ Could not verify/create database '{self.database}': {str(e)}")
+            raise
 
     async def _create_database_over_http(self) -> None:
         auth = aiohttp.BasicAuth(self.username, self.password)

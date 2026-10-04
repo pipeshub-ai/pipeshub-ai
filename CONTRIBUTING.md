@@ -166,13 +166,19 @@ Do not start these unless you change the env defaults:
   the same Bolt wire protocol as Neo4j, so `ArcadeDBProvider` reuses `Neo4jProvider`
   almost unchanged. The Bolt plugin is opt-in and separate from the HTTP API on
   2480, which the app also uses to create the database (ArcadeDB's Cypher engine
-  does not implement `CREATE DATABASE`):
+  does not implement `CREATE DATABASE`). Both Neo4j and ArcadeDB bind host port
+  7687, so stop Neo4j first (`docker rm -f neo4j`), then start ArcadeDB and set the
+  matching `ARCADEDB_PASSWORD` in your `.env`:
 
   ```bash
   docker run -d --name arcadedb --restart always -p 2480:2480 -p 7687:7687 \
-    -e JAVA_OPTS="-Darcadedb.server.rootPassword=your_arcadedb_password \
+    -e ARCADEDB_SETTINGS="-Darcadedb.server.rootPassword=your_arcadedb_password \
       -Darcadedb.server.plugins=Bolt:com.arcadedb.bolt.BoltProtocolPlugin" \
     arcadedata/arcadedb:26.9.1
+  ```
+
+  ```bash
+  ARCADEDB_PASSWORD=your_arcadedb_password
   ```
 - Kafka instead of Redis Streams: `MESSAGE_BROKER=kafka` (ZooKeeper and Kafka).
 - etcd instead of Redis KV: `KV_STORE_TYPE=etcd`.

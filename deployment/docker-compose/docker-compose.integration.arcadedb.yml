@@ -412,7 +412,7 @@ services:
       - "2480:2480"
       - "7687:7687"
     environment:
-      - JAVA_OPTS=-Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:-your_password} -Darcadedb.server.plugins=Bolt:com.arcadedb.bolt.BoltProtocolPlugin
+      - ARCADEDB_SETTINGS=-Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:-your_password} -Darcadedb.server.plugins=Bolt:com.arcadedb.bolt.BoltProtocolPlugin
     volumes:
       - arcadedb_data:/home/arcadedb/databases
       - arcadedb_log:/home/arcadedb/log
