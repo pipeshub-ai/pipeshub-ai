@@ -4100,6 +4100,7 @@ class Neo4jProvider(IGraphDBProvider):
         active: bool = True,
         is_external: bool = False,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """Get all organizations"""
         try:
@@ -4132,6 +4133,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get all orgs failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_org_apps(
@@ -12139,12 +12142,13 @@ class Neo4jProvider(IGraphDBProvider):
                 }}
             ) AS due
             FOREACH (_ IN CASE WHEN due THEN [] ELSE [1] END | REMOVE r.{_PURGE_LOCK})
-            WITH r, due WHERE due
+            WITH r, due
             OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
-            WITH r, properties(r) AS rec, collect(t) AS types, collect(properties(t)) AS type_docs
-            FOREACH (t IN types | DETACH DELETE t)
-            DETACH DELETE r
-            RETURN rec, head(type_docs) AS type_doc
+            WITH r, due, properties(r) AS rec, collect(t) AS types, collect(properties(t)) AS type_docs
+            FOREACH (_ IN CASE WHEN due THEN [1] ELSE [] END |
+                FOREACH (t IN types | DETACH DELETE t)
+                DETACH DELETE r)
+            RETURN rec.id AS id, due, rec, head(type_docs) AS type_doc
             """,
             parameters={
                 "keys": list(dict.fromkeys(record_ids)),
@@ -12156,9 +12160,10 @@ class Neo4jProvider(IGraphDBProvider):
             },
             txn_id=transaction,
         )
-        purged = [await self._trash_purge_row(row["rec"], row.get("type_doc")) for row in rows or []]
-        gone = {row["id"] for row in purged}
-        return {"purged": purged, "kept": [k for k in dict.fromkeys(record_ids) if k not in gone]}
+        rows = rows or []
+        purged = [await self._trash_purge_row(row["rec"], row.get("type_doc")) for row in rows if row["due"]]
+        # A missing id is in neither list: it may be one an earlier attempt already removed.
+        return {"purged": purged, "kept": [row["id"] for row in rows if not row["due"]]}
 
     async def record_purge_failure(
         self,

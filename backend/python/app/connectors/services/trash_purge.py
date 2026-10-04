@@ -411,7 +411,8 @@ class TrashPurger:
         """Purge one page; False when its events could not be published and stay owed."""
         ids = [row["id"] for row in rows]
         outbox_key = f"{OUTBOX_DIRECTORY}{run.run_id}-{uuid4().hex[:12]}"
-        await self._save_outbox(outbox_key, org_id, {row["id"]: cleanup_owed(row) for row in rows})
+        saved = {row["id"]: cleanup_owed(row) for row in rows}
+        await self._save_outbox(outbox_key, org_id, saved)
         try:
             result = await self.graph.purge_trashed_records(
                 ids, org_id, run.cutoff, max_attempts=settings.max_attempts
@@ -432,6 +433,18 @@ class TrashPurger:
         record_purged("purged", len(purged))
         record_purged("kept", len(kept))
         owed = {row["id"]: cleanup_owed(row) for row in purged}
+        # In neither list means not stored: a delete that committed although its
+        # answer was lost, and that the retry found already gone. It still owes.
+        answered = set(owed) | set(kept)
+        for record_id in ids:
+            if record_id not in answered and await self.graph.get_document(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            ) is None:
+                owed[record_id] = saved[record_id]
+        recovered = len(owed) - len(purged)
+        run.purged += recovered
+        run.pass_purged += recovered
+        record_purged("purged", recovered)
         if owed and not await self._publish(org_id, owed):
             # Only what is gone from the graph stays owed; the next tick publishes it.
             await self._save_outbox(outbox_key, org_id, owed)
@@ -586,10 +599,14 @@ class TrashPurger:
             )
 
     async def _org_ids(self) -> list[str]:
-        orgs = [
-            *await self.graph.get_all_orgs(active=False),
-            *await self.graph.get_all_orgs(active=False, is_external=True),
-        ]
+        # Raising: an empty answer from a failed read would start, and finish, a run that purged nothing.
+        try:
+            orgs = [
+                *await self.graph.get_all_orgs(active=False, raise_on_error=True),
+                *await self.graph.get_all_orgs(active=False, is_external=True, raise_on_error=True),
+            ]
+        except Exception as exc:
+            raise TrashPurgeError(f"could not list the organizations; no run started: {exc}") from exc
         return sorted({str(o.get("_key") or o.get("id")) for o in orgs if o.get("_key") or o.get("id")})
 
     async def _read_state(self) -> PurgeState:

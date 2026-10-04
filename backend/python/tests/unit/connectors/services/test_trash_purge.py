@@ -53,6 +53,8 @@ class _Graph:
         self.children: dict[str, set[str]] = {}
         self.app_status: dict[str, str] = {}
         self.lock_unavailable = False
+        self.lose_answer = False
+        self.orgs_unreadable = False
         self.refuse: set[str] = set()
         self.refuse_counting = False
         self.groups_removed: list[str] = []
@@ -112,13 +114,18 @@ class _Graph:
         purged, kept = [], []
         for key in dict.fromkeys(record_ids):
             rec = self.records.get(key)
+            if rec is None or rec["orgId"] != org_id:
+                continue  # not stored here: in neither list, as both stores answer
             if (
-                rec is not None and rec["orgId"] == org_id and self._due(rec, deleted_before, max_attempts)
+                self._due(rec, deleted_before, max_attempts)
                 and self.app_status.get(rec["connectorId"]) != "DELETING" and not self._has_children(key)
             ):
                 purged.append(self._row(self.records.pop(key)))
             else:
                 kept.append(key)
+        if self.lose_answer:
+            self.lose_answer = False
+            raise ConnectionResetError("answer lost after the commit")
         return {"purged": purged, "kept": kept}
 
     async def record_purge_failure(self, record_ids, org_id, error, transaction=None) -> int:
@@ -146,7 +153,11 @@ class _Graph:
     async def get_document(self, key, collection, transaction=None, raise_on_error=False) -> dict | None:
         return copy.deepcopy(self.records.get(key))
 
-    async def get_all_orgs(self, *, active=True, is_external=False, transaction=None) -> list[dict]:
+    async def get_all_orgs(self, *, active=True, is_external=False, transaction=None, raise_on_error=False) -> list[dict]:
+        if self.orgs_unreadable:
+            if raise_on_error:
+                raise RuntimeError("graph down")
+            return []
         return [] if is_external else [{"_key": ORG}]
 
 
@@ -416,6 +427,31 @@ class TestPageFailures:
         assert broker.deleted() == ["a"]
         assert kv.outbox() == {}
 
+    async def test_a_delete_whose_answer_is_lost_still_sends_its_cleanup(self, flag) -> None:
+        graph, kv, broker = _Graph(), _KV(), _Broker()
+        graph.trash("a", days_ago=20)
+        graph.trash("young", days_ago=1)
+        graph.trash("restored", days_ago=20)
+        graph.records["restored"]["isDeleted"] = False
+        graph.lose_answer = True
+
+        listing = graph.get_purgeable_trashed_records
+
+        async def list_before_the_restore(*args, **kwargs) -> dict:
+            graph.records["restored"]["isDeleted"] = True
+            page = await listing(*args, **kwargs)
+            graph.records["restored"]["isDeleted"] = False
+            return page
+
+        graph.get_purgeable_trashed_records = list_before_the_restore
+        assert await _purger(graph, kv, broker).tick() == Outcome.FINISHED
+
+        assert broker.deleted() == ["a"]
+        stored = [e for e in broker.events if e["eventType"] == EventTypes.DELETE_STORED_DOCUMENTS.value]
+        assert [e["payload"]["documentIds"] for e in stored] == [[DOC_A]]
+        assert kv.outbox() == {}
+        assert kv.values[STATE_KEY]["lastCounts"]["purged"] == 1
+
     async def test_a_record_the_graph_refuses_is_counted_and_the_rest_go(self, flag) -> None:
         graph, kv = _Graph(), _KV()
         graph.trash("a", days_ago=20)
@@ -452,6 +488,22 @@ class TestPageFailures:
         kv.values[f"{OUTBOX_DIRECTORY}junk"] = "not a page"
         assert await _purger(graph, kv).tick() == Outcome.FINISHED
         assert kv.outbox() == {}
+
+
+class TestOrgListing:
+    async def test_a_failed_org_listing_starts_no_run_and_the_next_tick_does(self, flag) -> None:
+        graph, kv = _Graph(), _KV()
+        graph.trash("a", days_ago=20)
+        graph.orgs_unreadable = True
+
+        with pytest.raises(TrashPurgeError):
+            await _purger(graph, kv).tick()
+        assert STATE_KEY not in kv.values
+        assert "a" in graph.records
+
+        graph.orgs_unreadable = False
+        assert await _purger(graph, kv).tick() == Outcome.FINISHED
+        assert graph.records == {}
 
 
 class TestBookkeeping:

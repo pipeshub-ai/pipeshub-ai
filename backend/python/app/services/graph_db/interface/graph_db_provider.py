@@ -2972,6 +2972,7 @@ class IGraphDBProvider(ABC):
         active: bool = True,
         is_external: bool = False,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all organizations.
@@ -2980,6 +2981,8 @@ class IGraphDBProvider(ABC):
             active (bool): Filter by active status
             is_external (bool): Filter by external flag (default False)
             transaction (Optional[str]): Optional transaction ID
+            raise_on_error (bool): Raise a failed read instead of answering
+                [], which is also the answer for an install with no orgs
 
         Returns:
             List[Dict]: List of organizations
@@ -4476,7 +4479,9 @@ class IGraphDBProvider(ABC):
         failure raises and removes nothing, and ``GraphLockUnavailableError``
         means the locks could not be taken, which says nothing about the
         records. Returns ``purged`` (the ``trash_purge_row`` of each record
-        removed, read in the same write) and ``kept`` (the ids left in place).
+        removed, read in the same write) and ``kept`` (records still stored in
+        ``org_id`` and left in place). An id in neither is not stored, which
+        includes one an earlier attempt removed although its answer was lost.
         """
         raise NotImplementedError
 
