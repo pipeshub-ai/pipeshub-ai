@@ -182,6 +182,9 @@ class TestRecordVisibility:
 class TestDeletedRecordVisibility:
     """A deleted record stops being retrievable straight away."""
 
+    # The PDF only reaches COMPLETED with an LLM and embedding configured;
+    # without this it passed only when another test had seeded them first.
+    @pytest.mark.usefixtures("ai_models_configured")
     def test_deleted_record_disappears_from_retrieval(
         self,
         pipeshub_client: PipeshubClient,
