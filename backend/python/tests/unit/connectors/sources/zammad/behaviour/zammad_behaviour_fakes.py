@@ -18,6 +18,10 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from app.models.entities import Record
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    matches_visibility,
+)
 from app.sources.client.zammad.zammad import ZammadResponse
 
 if TYPE_CHECKING:
@@ -194,13 +198,17 @@ class FakeRecordsDb:
 
     async def get_records_in_record_group(
         self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Keyset pages ordered by record id, as ``get_records_by_status`` returns them."""
         self.group_page_reads.append(external_group_id)
         if external_group_id not in self.record_groups:
             return []
         members = sorted(
-            (r for r in self.records.values() if r.external_record_group_id == external_group_id),
+            (
+                r for r in self.records.values()
+                if r.external_record_group_id == external_group_id and matches_visibility(r, visibility)
+            ),
             key=lambda r: r.id,
         )
         if after_key is not None:

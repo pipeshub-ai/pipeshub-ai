@@ -332,6 +332,33 @@ class TestGetIndividualToken:
         assert result["clientSecret"] == "shared-sec"
 
     @pytest.mark.asyncio
+    async def test_drive_client_for_gmail_instance_reads_gmail_oauth_app(self, logger, mock_config_service) -> None:
+        """A personal Gmail instance opening a Drive attachment asks for the "drive"
+        service, but its shared OAuth app is stored under the Gmail connector type."""
+        store = {
+            "/services/connectors/gmail-1/config": {
+                "auth": {"oauthConfigId": "gmail-app", "connectorType": "Gmail"},
+                "credentials": {"access_token": "at", "refresh_token": "rt"},
+            },
+            "/services/oauth/gmail": [
+                {"_id": "gmail-app", "config": {"clientId": "gmail-cid", "clientSecret": "gmail-sec"}},
+            ],
+            "/services/oauth/drive": [
+                {"_id": "drive-app", "config": {"clientId": "drive-cid", "clientSecret": "drive-sec"}},
+            ],
+        }
+
+        async def fake_get_config(path: str, default: object = None) -> object:
+            return store.get(path, default)
+
+        mock_config_service.get_config = AsyncMock(side_effect=fake_get_config)
+        result = await GoogleClient.get_individual_token(
+            "drive", logger, mock_config_service, "gmail-1"
+        )
+        assert result["clientId"] == "gmail-cid"
+        assert result["clientSecret"] == "gmail-sec"
+
+    @pytest.mark.asyncio
     async def test_shared_oauth_fallback_on_error(self, logger, mock_config_service):
         """When shared OAuth fetch fails, fall back gracefully."""
         call_count = 0

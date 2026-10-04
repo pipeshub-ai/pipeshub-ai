@@ -5,6 +5,11 @@ from typing import Any
 from atlassian_behaviour_fakes import FakeRecordsDb
 
 from app.models.entities import Record
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+    matches_visibility,
+)
 
 
 class RemovalRecordsDb(FakeRecordsDb):
@@ -26,7 +31,8 @@ class RemovalRecordsDb(FakeRecordsDb):
         return next((r for r in self.records.values() if r.id == record_id), None)
 
     async def get_records_in_record_group(
-        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None
+        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Typed records of one group, keyset-paged by id, as ``get_records_by_status`` returns them."""
         if self.fail_scan:
@@ -34,17 +40,21 @@ class RemovalRecordsDb(FakeRecordsDb):
         if external_group_id not in self.record_groups:
             return []
         ordered = sorted(
-            (r for r in self.records.values() if r.external_record_group_id == external_group_id), key=lambda r: r.id
+            (
+                r for r in self.records.values()
+                if r.external_record_group_id == external_group_id and matches_visibility(r, visibility)
+            ),
+            key=lambda r: r.id,
         )
         return [r.model_copy() for r in ordered if after_key is None or r.id > after_key][:limit]
 
     async def get_records_by_status(
         self, connector_id: str, status_filters: list[str] | None, limit: int | None = None,
-        after_key: str | None = None, **_: object,
+        after_key: str | None = None, visibility: RecordVisibility = RecordVisibility.LIVE, **_: object,
     ) -> list[Record]:
         if self.fail_scan:
             raise RuntimeError("graph unavailable")
-        ordered = sorted(self.records.values(), key=lambda r: r.id)
+        ordered = sorted((r for r in self.records.values() if matches_visibility(r, visibility)), key=lambda r: r.id)
         page = [r.model_copy() for r in ordered if after_key is None or r.id > after_key]
         return page[:limit] if limit else page
 
@@ -79,17 +89,22 @@ class RemovalRecordsDb(FakeRecordsDb):
             del self.records[record.external_record_id]
 
     async def on_records_deleted_cascade(
-        self, record_ids: list[str], connector_id: str, cascade_children: bool = True
+        self, record_ids: list[str], connector_id: str, cascade_children: bool = True,
+        *, include_trashed_roots: bool = False,
     ) -> dict[str, Any]:
         """Like ``delete_records_recursive``: files under a record are ATTACHMENT edges, everything
         else PARENT_CHILD, which only a full cascade follows; a survivor's parent link is cleared.
-        A root that no longer exists is a failed root, and type docs go with their records."""
+        A root that no longer exists, or is in the trash without ``include_trashed_roots``, is a
+        failed root, and type docs go with their records."""
         from app.models.entities import RecordType as RT
+
+        def accepted(record: Record | None) -> bool:
+            return record is not None and (include_trashed_roots or is_live_record(record))
 
         containers = {RT.CONFLUENCE_PAGE, RT.CONFLUENCE_BLOGPOST, RT.COMMENT, RT.INLINE_COMMENT}
         doomed: list[Any] = []
-        failed = [{"record_id": i, "reason": "Validation failed"} for i in record_ids if self._by_id(i) is None]
-        pending = [r for r in (self._by_id(i) for i in record_ids) if r is not None]
+        failed = [{"record_id": i, "reason": "Validation failed"} for i in record_ids if not accepted(self._by_id(i))]
+        pending = [r for r in (self._by_id(i) for i in record_ids) if accepted(r)]
         while pending:
             record = pending.pop()
             if record in doomed:

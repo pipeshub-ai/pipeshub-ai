@@ -144,6 +144,140 @@ cases:
       - state: "A purchase of up to and including $250 needs no approval."
         expect: supported
 
+  # --- Answers that say the fact and also something against it --------------------
+  # A live run passed the first two. Every self-contradiction-* case fails its
+  # must-state claim; the consistent-* cases next to them say the same things
+  # without the conflict and pass, so refusing everything can't score well here.
+  - id: self-contradiction-required-then-none
+    about: says approval is required up to $250, then that none is
+    answer: "Up to $250, but your manager's approval is required. You can spend up to $250 with no approval."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: contradicted
+
+  - id: self-contradiction-including-250
+    about: an exception that puts the $250 purchase back with the manager
+    answer: "You can spend up to $250 without approval. Above that your manager must approve it, including the $250 purchase."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: contradicted
+
+  - id: self-contradiction-manager-first
+    about: the contradiction comes first, the fact second
+    answer: "Your manager must approve every purchase up to $250. You can spend up to $250 with no approval."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: contradicted
+
+  - id: self-contradiction-overlapping-band
+    about: the manager's band starts at $250 itself
+    answer: "You can spend up to $250 with no approval. From $250 to $2,500, your manager's approval is required."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: contradicted
+
+  - id: self-contradiction-starting-at-250
+    about: '"starting from $250" puts $250 with the manager'
+    answer: "You can spend up to $250 with no approval. Starting from $250, your manager approves."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: contradicted
+
+  - id: self-contradiction-nothing-goes-through
+    about: no approval, yet nothing goes through without sign-off
+    answer: "Purchases up to $250 need no approval, but nothing goes through without your manager's sign-off."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: contradicted
+
+  - id: self-contradiction-sign-off-before-buying
+    about: no approval, yet the manager signs off before you buy
+    answer: "You can spend up to $250 with no approval. You can't buy anything until your manager has signed it off."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: contradicted
+
+  - id: self-contradiction-same-sentence
+    about: both halves in one sentence
+    answer: "You can spend up to $250 with no approval and your manager must approve it."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: contradicted
+
+  - id: self-contradiction-glued
+    about: sentences run together with no space after the full stop
+    answer: "Up to $250.Your manager's approval is required.You can spend up to $250 with no approval."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: contradicted
+
+  - id: self-contradiction-pr482
+    about: says Marcus approved, then that he hasn't reviewed it
+    answer: "Marcus Webb approved PR #482. Marcus hasn't reviewed PR #482 yet, so it is still waiting on him."
+    claims:
+      - state: "Marcus Webb approved PR #482."
+        expect: contradicted
+
+  - id: self-contradiction-launch
+    about: says it launched, then that it hasn't
+    answer: "Background exports launched on 21 April. The launch has since been pushed back, so exports aren't live yet."
+    claims:
+      - state: "Background exports launched on 21 April."
+        expect: contradicted
+
+  - id: self-contradiction-forbidden-taken-back
+    about: states the forbidden rule, then takes it back; it was still said
+    answer: "Every purchase needs your manager's approval. Actually, purchases up to $250 need no approval at all."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: contradicted
+      - not_state: "Every purchase needs manager approval."
+        expect: supported
+
+  - id: consistent-manager-above
+    about: the manager's band first, then the fact; no conflict
+    answer: "Your manager approves purchases above $250. You can spend up to $250 with no approval."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: supported
+
+  - id: consistent-but-above
+    about: '"but your manager approves above that" is the next band, not a conflict'
+    answer: "Up to $250, but your manager approves above that. You can spend up to $250 with no approval."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: supported
+
+  - id: consistent-next-band
+    about: the manager's band starts at $251
+    answer: "You can spend up to $250 with no approval. From $251 to $2,500, your manager's approval is required."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: supported
+
+  - id: consistent-receipt-condition
+    about: a condition about the receipt, not about approval
+    answer: "You can spend up to $250 with no approval. You won't be reimbursed without a receipt, though."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: supported
+
+  - id: consistent-glued-preamble
+    about: the chat's tool-call preamble glued to the answer, shaped like a live run's
+    answer: "I’ll check the internal policy for purchase approval thresholds.You can spend up to **$250** on a purchase without any approval; **more than $250 up to $2,500** needs manager approval [source](ref9)."
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: supported
+      - state: "A purchase over $250 and up to $2,500 needs your manager's approval."
+        expect: supported
+
+  - id: consistent-pr482
+    about: both reviewers approved; the request isn't a conflict
+    answer: "Marcus Webb approved PR #482. Dana Okafor approved it too, after asking for a 120-second histogram bucket."
+    claims:
+      - state: "Marcus Webb approved PR #482."
+        expect: supported
+
   - id: expense-manager-band
     about: the middle band, stated plainly
     answer: "For purchases over $250 and up to $2,500, your manager approves."

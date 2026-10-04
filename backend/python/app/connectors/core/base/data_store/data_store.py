@@ -110,7 +110,9 @@ class BaseDataStore(ABC):
         self,
         connector_id: str,
         parent_external_record_id: str,
-        record_type: Optional[str] = None
+        record_type: Optional[str] = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Get all child records for a parent record by parent_external_record_id. Optionally filter by record_type."""
         pass

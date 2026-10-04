@@ -310,3 +310,104 @@ class TestFingerprint:
         with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model_b):
             fb = await b.embedding_fingerprint()
         assert fa != fb
+
+
+class TestARecreatedCollectionReachesRunningServices:
+    """The indexing service recreates the collection when the model's
+    dimension changes. A query or connector service initialised before keeps
+    the old model; its searches fail until it re-initialises."""
+
+    @staticmethod
+    def _searching_store(collection_dimension: int) -> tuple[EntityVectorStore, MagicMock]:
+        db = MagicMock()
+        db.get_capabilities.return_value = MagicMock(supports_sparse_vectors=False)
+        db.filter_collection = AsyncMock(return_value={})
+        db.query_nearest_points = AsyncMock(side_effect=RuntimeError("Vector dimension error"))
+        db.get_collection_info = AsyncMock(return_value=VectorCollectionInfo(
+            name="entities", exists=True, dense_dimension=collection_dimension,
+        ))
+        store, _ = _store(db)
+        store._dense_embeddings.embed_query = MagicMock(return_value=[0.1, 0.2])
+        store._query_vector_cache["pricing"] = ([0.1, 0.2], None)
+        return store, db
+
+    async def test_a_search_failing_on_a_recreated_collection_resets_the_store(self) -> None:
+        store, _ = self._searching_store(collection_dimension=4)
+        with pytest.raises(RuntimeError):
+            await store.search_entities("pricing", ORG, set(), {"c1"})
+        assert store._initialized is False
+        assert not store._query_vector_cache
+
+    async def test_a_matching_failure_with_the_dimension_unchanged_keeps_it(self) -> None:
+        store, _ = self._searching_store(collection_dimension=2)
+        with pytest.raises(RuntimeError):
+            await store.search_entities("pricing", ORG, set(), {"c1"})
+        assert store._initialized is True
+
+    async def test_the_merge_candidate_search_resets_it_too(self) -> None:
+        store, _ = self._searching_store(collection_dimension=4)
+        with pytest.raises(RuntimeError):
+            await store.find_best_matches(["Pricing"], ORG, "topic")
+        assert store._initialized is False
+
+    async def test_after_the_reset_the_next_call_reads_the_new_model(self) -> None:
+        store, db = self._searching_store(collection_dimension=4)
+        with pytest.raises(RuntimeError):
+            await store.search_entities("pricing", ORG, set(), {"c1"})
+
+        async def _new_model() -> None:
+            store._embedding_size = 4
+            store._dense_embeddings.embed_query = MagicMock(return_value=[0.1] * 4)
+
+        db.query_nearest_points = AsyncMock(return_value=[[]])
+        db.create_index = AsyncMock()
+        with patch.object(store, "_init_embeddings", side_effect=_new_model) as reinit:
+            assert await store.search_entities("pricing", ORG, set(), {"c1"}) == []
+        reinit.assert_awaited_once()
+        request = db.query_nearest_points.await_args.kwargs["requests"][0]
+        assert len(request.dense_query) == 4
+
+
+async def test_an_embedding_in_flight_across_a_reset_is_not_cached() -> None:
+    """A query embedded by the old model, finishing after the store reset for
+    a recreated collection, must not be cached: the next search for that text
+    would reuse the old dimension and fail until the entry ages out."""
+    import asyncio
+    import threading
+
+    store, db = TestARecreatedCollectionReachesRunningServices._searching_store(collection_dimension=4)
+    store._query_vector_cache.clear()
+    started, release = threading.Event(), threading.Event()
+
+    def _old_model_embed(text: str) -> list[float]:
+        started.set()
+        release.wait(5)
+        return [0.1, 0.2]
+
+    store._dense_embeddings.embed_query = MagicMock(side_effect=_old_model_embed)
+    in_flight = asyncio.create_task(store._query_vectors("pricing"))
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+    await store._reset_if_collection_changed()
+    release.set()
+    assert (await in_flight)[0] == [0.1, 0.2]
+    assert "pricing" not in store._query_vector_cache
+
+
+async def test_a_reset_waiting_on_a_reinitialisation_keeps_the_fresh_state() -> None:
+    """The dimension check passes while another call re-initialises under the
+    lock; once that call has the new model, the waiting reset must not undo it."""
+    import asyncio
+
+    store, _ = TestARecreatedCollectionReachesRunningServices._searching_store(collection_dimension=4)
+    store._query_vector_cache.clear()
+    generation = store._generation
+    await store._init_lock.acquire()
+    waiting = asyncio.create_task(store._reset_if_collection_changed())
+    await asyncio.sleep(0.05)
+    # The re-initialisation holding the lock finishes with the new model.
+    store._embedding_size, store._initialized = 4, True
+    store._init_lock.release()
+    await waiting
+    assert store._initialized is True
+    assert store._generation == generation

@@ -116,6 +116,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import (
     NotificationRecipientRole,
     NotificationSeverity,
@@ -2182,8 +2183,10 @@ class ConfluenceConnector(BaseConnector):
         stored: list[Record] = []
         after_key: str | None = None
         while True:
+            # The trash too: a removal scan must reach a trashed page the space no longer lists.
             page = await self.data_entities_processor.get_records_in_record_group(
-                self.connector_id, space_id, RECORD_SCAN_PAGE_SIZE, after_key
+                self.connector_id, space_id, RECORD_SCAN_PAGE_SIZE, after_key,
+                visibility=RecordVisibility.ALL,
             )
             stored.extend(r for r in page if r.record_type == record_type and not r.is_placeholder)
             if len(page) < RECORD_SCAN_PAGE_SIZE:
@@ -2288,7 +2291,7 @@ class ConfluenceConnector(BaseConnector):
                 while queue:
                     parent = queue.pop()
                     for child in await self.data_entities_processor.get_records_by_parent(
-                        self.connector_id, parent.external_record_id
+                        self.connector_id, parent.external_record_id, visibility=RecordVisibility.ALL
                     ):
                         if child.record_type in comment_types:
                             owned.append(child)
@@ -2343,6 +2346,7 @@ class ConfluenceConnector(BaseConnector):
             while True:
                 page = await self.data_entities_processor.get_records_by_status(
                     self.connector_id, None, limit=RECORD_SCAN_PAGE_SIZE, after_key=after_key,
+                    visibility=RecordVisibility.ALL,
                 )
                 for r in page:
                     if r.external_record_group_id and r.external_record_group_id not in wanted:

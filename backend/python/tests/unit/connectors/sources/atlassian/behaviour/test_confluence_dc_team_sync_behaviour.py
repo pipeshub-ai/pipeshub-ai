@@ -1184,10 +1184,12 @@ def count_group_reads(db: TeamDb) -> list[str]:
     reads: list[str] = []
     original = db.get_records_in_record_group
 
-    async def counting(connector_id: str, external_group_id: str, limit: int, after_key: Optional[str] = None) -> list[Record]:
+    async def counting(
+        connector_id: str, external_group_id: str, limit: int, after_key: Optional[str] = None, **kwargs: object
+    ) -> list[Record]:
         if after_key is None:
             reads.append(external_group_id)
-        return await original(connector_id, external_group_id, limit, after_key)
+        return await original(connector_id, external_group_id, limit, after_key, **kwargs)
 
     db.get_records_in_record_group = counting
     return reads
@@ -1228,6 +1230,32 @@ class TestRemovalFromSource:
         assert not {"p2", "a2", "c1"} & set(db.records)
         assert db.records["p3"].parent_external_record_id is None, "the child page moves to the space root"
         assert "p1" in db.records
+
+    async def test_a_trashed_page_and_its_trashed_comment_the_source_no_longer_has_are_removed(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        """The scans list the trash and the delete accepts a trashed root, so nothing stays behind for good."""
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        for external_id in ("p2", "c1"):
+            db.records[external_id].is_deleted = True
+        search.existing["page"] = [content("p1"), child_of("p3", "p1")]
+
+        await connector.run_sync()
+
+        assert not {"p2", "a2", "c1"} & set(db.records)
+        assert {"p1", "p3"} <= set(db.records)
+
+    async def test_a_space_with_a_trashed_page_finishes_its_removal(self, atlassian_api, db, store, search) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        db.records["p2"].is_deleted = True
+        atlassian_api.on("GET", f"{API}/space", {"results": [space("HR", 20)], "_links": {"base": BASE}})
+
+        await connector.run_sync()
+
+        assert "10" not in db.record_groups
+        assert not any(r.external_record_group_id == "10" for r in db.records.values())
+        scope = store.values_for("confluence_space_scope/all")
+        assert (scope["space_ids"], scope["pending"]) == (["20"], []), "the removal finished"
 
     async def test_a_page_the_account_can_no_longer_see_is_removed_and_returns_when_visible_again(
         self, atlassian_api, db, store, search

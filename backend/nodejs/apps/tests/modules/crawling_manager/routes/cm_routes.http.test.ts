@@ -352,8 +352,8 @@ describe('Crawling manager over HTTP', () => {
       await send('POST', `/${TYPE}/drive-max/schedule`, session(MEMBER_A), daily(6, 0))
 
       const all = await send('GET', '/schedule/all', session(MEMBER_A))
-      expect(all.status).to.equal(400)
-      expect(errorMessage(all)).to.equal('Admin access required')
+      expect(all.status).to.equal(403)
+      expect(errorMessage(all)).to.equal('You need admin access to do this. Ask an admin in your organisation.')
 
       const own = await send('GET', `/${TYPE}/drive-max/schedule`, session(MEMBER_A))
       expect(own.status).to.equal(200)

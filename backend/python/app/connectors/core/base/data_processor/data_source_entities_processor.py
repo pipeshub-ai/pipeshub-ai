@@ -3253,18 +3253,23 @@ class DataSourceEntitiesProcessor:
         connector_id: str,
         parent_external_record_id: str,
         record_type: str | None = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Return all child records whose parent_external_record_id matches.
 
         Used to check whether a folder record is empty before deleting it.
         Delegates to ``tx_store.get_records_by_parent`` which queries
-        ``PARENT_CHILD`` edges in ArangoDB.
+        ``PARENT_CHILD`` edges in ArangoDB. Live children only by default, so a
+        folder whose children are all in the trash reads as empty; a walk that
+        collects what a delete must remove passes ``RecordVisibility.ALL``.
         """
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_records_by_parent(
                 connector_id=connector_id,
                 parent_external_record_id=parent_external_record_id,
                 record_type=record_type,
+                visibility=visibility,
             )
 
     async def get_records_by_record_type(

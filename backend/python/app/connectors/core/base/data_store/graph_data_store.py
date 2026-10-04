@@ -526,11 +526,13 @@ class GraphTransactionStore(TransactionStore):
         self,
         connector_id: str,
         parent_external_record_id: str,
-        record_type: Optional[str] = None
+        record_type: Optional[str] = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Get all child records for a parent record by parent_external_record_id. Optionally filter by record_type."""
         return await self.graph_provider.get_records_by_parent(
-            connector_id, parent_external_record_id, record_type, transaction=self.txn
+            connector_id, parent_external_record_id, record_type, transaction=self.txn, visibility=visibility
         )
 
     async def get_records_by_record_type(
@@ -932,11 +934,12 @@ class GraphTransactionStore(TransactionStore):
         aliases: list[str],
         normalized_aliases: list[str],
         *,
+        org_id: str,
         max_aliases: int = 20,
     ) -> None:
         await self.graph_provider.add_taxonomy_aliases(
             collection, key, aliases, normalized_aliases,
-            max_aliases=max_aliases, transaction=self.txn,
+            org_id=org_id, max_aliases=max_aliases, transaction=self.txn,
         )
 
 

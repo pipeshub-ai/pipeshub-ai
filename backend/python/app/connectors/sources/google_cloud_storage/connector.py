@@ -51,6 +51,7 @@ from app.connectors.core.registry.folder_scope import (
     listed_record_ids,
     path_in_container,
     recorded_ids,
+    remove_deselected_containers,
     remove_records_not_listed,
 )
 from app.connectors.core.registry.connector_builder import (
@@ -74,7 +75,9 @@ from app.connectors.core.registry.filters import (
     OptionSourceType,
     SyncFilterKey,
     extension_passes_filter,
+    included_names,
     load_connector_filters,
+    name_passes_filter,
 )
 from app.connectors.sources.google_cloud_storage.common.apps import GCSApp
 from app.models.entities import (
@@ -527,8 +530,11 @@ class GCSConnector(BaseConnector):
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
 
             # Get bucket filter if specified
-            bucket_filter = sync_filters.get("buckets")
-            selected_buckets = bucket_filter.value if bucket_filter and bucket_filter.value else []
+            selected_buckets = included_names(sync_filters, "buckets")
+            if not self.bucket_name:
+                await remove_deselected_containers(
+                    self.data_entities_processor, self.config_service, self.connector_id, "buckets", sync_filters, self.logger
+                )
 
             # List all buckets or use configured bucket
             buckets_to_sync: list[str] = []
@@ -551,6 +557,7 @@ class GCSConnector(BaseConnector):
                     buckets_list_payload = buckets_data["Buckets"]
                     buckets_to_sync = [
                         bucket.get("name") for bucket in buckets_list_payload
+                        if name_passes_filter(sync_filters, "buckets", bucket.get("name"))
                     ]
                     self.logger.info(f"Found {len(buckets_to_sync)} bucket(s) to sync")
                 else:
@@ -1810,8 +1817,11 @@ class GCSConnector(BaseConnector):
 
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
 
-            bucket_filter = sync_filters.get("buckets")
-            selected_buckets = bucket_filter.value if bucket_filter and bucket_filter.value else []
+            selected_buckets = included_names(sync_filters, "buckets")
+            if not self.bucket_name:
+                await remove_deselected_containers(
+                    self.data_entities_processor, self.config_service, self.connector_id, "buckets", sync_filters, self.logger
+                )
 
             buckets_to_sync = []
             if self.bucket_name:
@@ -1827,6 +1837,7 @@ class GCSConnector(BaseConnector):
                     if "Buckets" in buckets_data:
                         buckets_to_sync = [
                             bucket.get("name") for bucket in buckets_data["Buckets"]
+                            if name_passes_filter(sync_filters, "buckets", bucket.get("name"))
                         ]
 
             if not buckets_to_sync:

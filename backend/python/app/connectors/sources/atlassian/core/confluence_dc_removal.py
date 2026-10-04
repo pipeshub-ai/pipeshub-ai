@@ -21,6 +21,7 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.filters import SyncFilterKey
 from app.models.entities import Record, RecordGroup, RecordGroupType, RecordType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 # The content search moves date filters by this much (``time_offset_hours``).
 TIME_OFFSET_HOURS = 24
@@ -339,8 +340,10 @@ class ConfluenceDataCenterRemovalMixin:
         stored: dict[RecordType, list[Record]] = {RecordType.CONFLUENCE_PAGE: [], RecordType.CONFLUENCE_BLOGPOST: []}
         after_key: str | None = None
         while True:
+            # The trash too: a removal scan must reach a trashed page the space no longer lists.
             page = await self.data_entities_processor.get_records_in_record_group(
-                self.connector_id, space_id, RECORD_SCAN_PAGE_SIZE, after_key
+                self.connector_id, space_id, RECORD_SCAN_PAGE_SIZE, after_key,
+                visibility=RecordVisibility.ALL,
             )
             for r in page:
                 if r.record_type in stored and not r.is_placeholder:
@@ -411,18 +414,19 @@ class ConfluenceDataCenterRemovalMixin:
             try:
                 comments = [
                     c.id for c in await self.data_entities_processor.get_records_by_parent(
-                        self.connector_id, record.external_record_id
+                        self.connector_id, record.external_record_id, visibility=RecordVisibility.ALL
                     )
                     if c.record_type in comment_types
                 ]
                 if comments:
                     result = await self.data_entities_processor.on_records_deleted_cascade(
-                        comments, self.connector_id, cascade_children=True
+                        comments, self.connector_id, cascade_children=True, include_trashed_roots=True
                     )
                     if not self._cascade_succeeded(result):
                         raise RuntimeError(f"its comments could not all be deleted: {result}")
+                # Removing what the source no longer has, so a root already in the trash goes too.
                 result = await self.data_entities_processor.on_records_deleted_cascade(
-                    [record.id], self.connector_id, cascade_children=False
+                    [record.id], self.connector_id, cascade_children=False, include_trashed_roots=True
                 )
                 if not self._cascade_succeeded(result):
                     raise RuntimeError(f"delete failed: {result}")
@@ -471,6 +475,7 @@ class ConfluenceDataCenterRemovalMixin:
             while True:
                 page = await self.data_entities_processor.get_records_by_status(
                     self.connector_id, None, limit=RECORD_SCAN_PAGE_SIZE, after_key=after_key,
+                    visibility=RecordVisibility.ALL,
                 )
                 for r in page:
                     if r.external_record_group_id and r.external_record_group_id not in wanted:
@@ -520,7 +525,7 @@ class ConfluenceDataCenterRemovalMixin:
             if not chunk:
                 continue
             result = await self.data_entities_processor.on_records_deleted_cascade(
-                chunk, self.connector_id, cascade_children=True
+                chunk, self.connector_id, cascade_children=True, include_trashed_roots=True
             )
             if not self._cascade_succeeded(result):
                 self.logger.warning(f"Could not delete the records of space {space_id}; retrying next sync: {result}")

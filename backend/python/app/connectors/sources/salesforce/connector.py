@@ -752,8 +752,11 @@ def _ts_in_bounds(
                 AuthField(
                     name="instance_url",
                     display_name="Salesforce Instance URL",
-                    placeholder="https://login.salesforce.com",
-                    description="The base URL of your Salesforce instance",
+                    placeholder="https://yourcompany.my.salesforce.com",
+                    description=(
+                        "Your org's My Domain URL, shown in Salesforce Setup under My Domain. "
+                        "Don't use login.salesforce.com: it only handles sign-in, and API calls to it fail."
+                    ),
                     field_type="TEXT",
                     max_length=2048
                 ),

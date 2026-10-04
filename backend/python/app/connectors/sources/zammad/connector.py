@@ -98,6 +98,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.sources.client.zammad.zammad import (
     ZammadClient,
 )
@@ -1363,8 +1364,10 @@ class ZammadConnector(BaseConnector):
         by_ticket: dict[str, list[str]] = defaultdict(list)
         after_key: str | None = None
         while True:
+            # The trash too: a ticket the search no longer returns is removed even if already trashed.
             page = await self.data_entities_processor.get_records_in_record_group(
-                self.connector_id, external_group_id, GRAPH_RECORDS_PAGE_SIZE, after_key
+                self.connector_id, external_group_id, GRAPH_RECORDS_PAGE_SIZE, after_key,
+                visibility=RecordVisibility.ALL,
             )
             for record in page:
                 ticket_id = self._ticket_id_of(record)
