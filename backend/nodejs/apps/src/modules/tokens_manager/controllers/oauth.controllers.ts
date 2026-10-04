@@ -201,7 +201,7 @@ export const createOAuthConfig = (appConfig: AppConfig) =>
       `/api/v1/oauth/${encodeURIComponent(req.params.connectorType as string)}`,
     (req) => {
       const { connectorType } = req.params;
-      const { oauthInstanceName, config, baseUrl } = req.body;
+      const { oauthInstanceName, config } = req.body;
 
       if (!connectorType) {
         throw new BadRequestError('Connector type is required');
@@ -212,13 +212,14 @@ export const createOAuthConfig = (appConfig: AppConfig) =>
       if (!config) {
         throw new BadRequestError('Config is required');
       }
-      if (!baseUrl) {
-        throw new BadRequestError('Base URL is required');
-      }
     },
     (req) => {
       const { oauthInstanceName, config, baseUrl } = req.body;
-      return { oauthInstanceName, config, baseUrl };
+      const payload: Record<string, unknown> = { oauthInstanceName, config };
+      if (baseUrl) {
+        payload.baseUrl = baseUrl;
+      }
+      return payload;
     },
     'Creating OAuth config',
     HttpMethod.POST,
@@ -257,7 +258,7 @@ export const updateOAuthConfig = (appConfig: AppConfig) =>
       `/api/v1/oauth/${encodeURIComponent(req.params.connectorType as string)}/${encodeURIComponent(req.params.configId as string)}`,
     (req) => {
       const { connectorType, configId } = req.params;
-      const { oauthInstanceName, config, baseUrl } = req.body;
+      const { oauthInstanceName, config } = req.body;
 
       if (!connectorType) {
         throw new BadRequestError('Connector type is required');
@@ -267,9 +268,6 @@ export const updateOAuthConfig = (appConfig: AppConfig) =>
       }
       if (!oauthInstanceName && !config) {
         throw new BadRequestError('Either oauthInstanceName or config must be provided');
-      }
-      if (!baseUrl) {
-        throw new BadRequestError('Base URL is required');
       }
     },
     (req) => {

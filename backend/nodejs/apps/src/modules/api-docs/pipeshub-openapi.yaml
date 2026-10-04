@@ -38573,6 +38573,9 @@ paths:
                       type: string
                     tenantId:
                       type: string
+                baseUrl:
+                  type: string
+                  description: "Base URL the OAuth redirect URI is built from. When omitted, the frontend public endpoint is used."
       responses:
         '200':
           description: OAuth configuration updated
