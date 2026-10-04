@@ -759,12 +759,7 @@ class TestBuildCompleteOauthConfig:
         assert result["tokenUrl"] == "https://token.example.com"
 
     async def test_fallback_to_legacy_creds(self):
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(side_effect=Exception("etcd error"))
-        svc = _make_service(cs)
-        svc._get_toolset_oauth_config_from_registry = MagicMock(return_value=None)
-        svc._enrich_from_toolset_registry = MagicMock()
-
+        """A config with no central app falls back to its own credentials when the lookup fails."""
         auth_config = {
             "type": "OAUTH",
             "clientId": "legacy_cid",
@@ -772,28 +767,44 @@ class TestBuildCompleteOauthConfig:
             "authorizeUrl": "https://auth.legacy.com",
             "tokenUrl": "https://token.legacy.com",
         }
-        result = await svc._build_complete_oauth_config(
-            "/services/toolsets/inst/user",
-            "googledrive",
-            auth_config
-        )
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value={"orgId": "org1", "auth": auth_config})
+        svc = _make_service(cs)
+        svc._get_toolset_oauth_config_from_registry = MagicMock(return_value=None)
+        svc._enrich_from_toolset_registry = MagicMock()
+
+        with patch(
+            "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
+            new_callable=AsyncMock,
+            side_effect=Exception("lookup failed"),
+        ):
+            result = await svc._build_complete_oauth_config(
+                "/services/toolsets/inst/user",
+                "googledrive",
+                auth_config
+            )
         assert result["clientId"] == "legacy_cid"
         assert result["clientSecret"] == "legacy_csecret"
 
     async def test_fallback_no_legacy_creds_raises(self):
         cs = AsyncMock()
-        cs.get_config = AsyncMock(side_effect=Exception("etcd error"))
+        cs.get_config = AsyncMock(return_value={"orgId": "org1", "auth": {"type": "OAUTH"}})
         svc = _make_service(cs)
 
-        with pytest.raises(ValueError, match="No OAuth credentials found"):
-            await svc._build_complete_oauth_config(
-                "/services/toolsets/inst/user",
-                "googledrive",
-                {"type": "OAUTH"}
-            )
+        with patch(
+            "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
+            new_callable=AsyncMock,
+            side_effect=Exception("lookup failed"),
+        ):
+            with pytest.raises(ValueError, match="No OAuth credentials found"):
+                await svc._build_complete_oauth_config(
+                    "/services/toolsets/inst/user",
+                    "googledrive",
+                    {"type": "OAUTH"}
+                )
 
     async def test_incomplete_centralized_creds_raises(self):
-        """Incomplete centralized creds fall back to legacy, which also fails."""
+        """Incomplete central creds on a linked config fail; nothing stored is used instead."""
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value={
             "oauthConfigId": "cfg1",
@@ -810,7 +821,7 @@ class TestBuildCompleteOauthConfig:
             new_callable=AsyncMock,
             return_value=mock_creds
         ):
-            with pytest.raises(ValueError, match="No OAuth credentials found"):
+            with pytest.raises(ValueError, match="could not be loaded"):
                 await svc._build_complete_oauth_config(
                     "/services/toolsets/inst/user",
                     "googledrive",
@@ -822,9 +833,9 @@ class TestBuildCompleteOauthConfig:
         cs.get_config = AsyncMock(return_value=None)
         svc = _make_service(cs)
 
-        # When full_user_config is None, ValueError is raised
-        # which falls through to legacy fallback
-        with pytest.raises(ValueError, match="No OAuth credentials found"):
+        # Without the config it is unknown whether a central app is linked,
+        # so there is no fallback to stored credentials.
+        with pytest.raises(ValueError, match="could not be loaded"):
             await svc._build_complete_oauth_config(
                 "/services/toolsets/inst/user",
                 "googledrive",
@@ -979,8 +990,8 @@ class TestBuildCompleteOauthConfig:
         assert result["tenantId"] == "tenant1"
         assert result["domain"] == "example.slack.com"
 
-    async def test_optional_fields_from_auth_config(self):
-        """tokenAccessType, additionalParams, etc. from auth_config."""
+    async def test_optional_fields_from_central_config(self):
+        """tokenAccessType, additionalParams, etc. come with the central credentials."""
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value={
             "oauthConfigId": "cfg1",
@@ -990,14 +1001,16 @@ class TestBuildCompleteOauthConfig:
         svc._get_toolset_oauth_config_from_registry = MagicMock(return_value=None)
         svc._enrich_from_toolset_registry = MagicMock()
 
-        mock_creds = {"clientId": "cid", "clientSecret": "csecret"}
-        auth_config = {
+        mock_creds = {
+            "clientId": "cid",
+            "clientSecret": "csecret",
             "tokenAccessType": "offline",
             "additionalParams": {"prompt": "consent"},
             "scopeParameterName": "user_scope",
             "tokenResponsePath": "authed_user",
             "scopes": ["read", "write"],
         }
+        auth_config = {}
         with patch(
             "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
             new_callable=AsyncMock,
@@ -1014,6 +1027,112 @@ class TestBuildCompleteOauthConfig:
         assert result["scopeParameterName"] == "user_scope"
         assert result["tokenResponsePath"] == "authed_user"
         assert result["scopes"] == ["read", "write"]
+
+    async def test_stored_urls_are_not_used_with_central_credentials(self):
+        """A config linked to a central OAuth app refreshes against that app's URLs,
+        whatever was saved under the config's own auth."""
+        stored_auth = {"tokenUrl": "https://elsewhere.example/token", "instanceUrl": "https://elsewhere.example"}
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value={"oauthConfigId": "cfg1", "orgId": "org1", "auth": stored_auth})
+        svc = _make_service(cs)
+        svc._get_toolset_oauth_config_from_registry = MagicMock(return_value=None)
+        svc._enrich_from_toolset_registry = MagicMock()
+
+        central = {"clientId": "cid", "clientSecret": "csecret", "tokenUrl": "https://provider.example/token"}
+        with patch(
+            "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
+            new_callable=AsyncMock,
+            return_value=central,
+        ) as fetch:
+            result = await svc._build_complete_oauth_config(
+                "/services/toolsets/inst/user", "googledrive", stored_auth
+            )
+
+        assert result["tokenUrl"] == "https://provider.example/token"
+        assert "instanceUrl" not in result
+        assert fetch.await_args.kwargs["toolset_config"]["auth"] == {}
+        assert "clientSecret" not in stored_auth
+
+    async def test_central_credentials_stored_in_snake_case_are_used(self):
+        """The central loader accepts client_id / client_secret; the refresh must too."""
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value={"oauthConfigId": "cfg1", "orgId": "org1", "auth": {}})
+        svc = _make_service(cs)
+        svc._get_toolset_oauth_config_from_registry = MagicMock(return_value=None)
+        svc._enrich_from_toolset_registry = MagicMock()
+
+        central = {"client_id": "cid", "client_secret": "csecret", "tokenUrl": "https://provider.example/token"}
+        with patch(
+            "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
+            new_callable=AsyncMock,
+            return_value=central,
+        ):
+            result = await svc._build_complete_oauth_config(
+                "/services/toolsets/inst/user", "googledrive", {}
+            )
+
+        assert result["clientId"] == "cid"
+        assert result["clientSecret"] == "csecret"
+        assert result["tokenUrl"] == "https://provider.example/token"
+
+    @pytest.mark.parametrize("unreadable", [RuntimeError("store down"), None, "not-a-dict"], ids=["error", "missing", "wrong-shape"])
+    async def test_a_config_that_cannot_be_read_does_not_fall_back_to_stored_credentials(self, unreadable):
+        """Whether the config is linked to a central app is unknown then, so stored
+        credentials and URLs are not used."""
+        stored_auth = {"clientId": "x", "clientSecret": "y", "tokenUrl": "https://elsewhere.example/token"}
+        cs = AsyncMock()
+        if isinstance(unreadable, Exception):
+            cs.get_config = AsyncMock(side_effect=unreadable)
+        else:
+            cs.get_config = AsyncMock(return_value=unreadable)
+        svc = _make_service(cs)
+        svc._get_toolset_oauth_config_from_registry = MagicMock(return_value=None)
+
+        with pytest.raises(ValueError, match="could not be loaded"):
+            await svc._build_complete_oauth_config(
+                "/services/toolsets/inst/user", "googledrive", stored_auth
+            )
+
+    async def test_linked_config_does_not_fall_back_to_stored_credentials(self):
+        """If the central app cannot be loaded, credentials saved on a linked config are
+        not used in its place; the refresh fails and says why."""
+        stored_auth = {"clientId": "x", "clientSecret": "y", "tokenUrl": "https://elsewhere.example/token"}
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value={"oauthConfigId": "cfg1", "orgId": "org1", "auth": stored_auth})
+        svc = _make_service(cs)
+        svc._get_toolset_oauth_config_from_registry = MagicMock(return_value=None)
+
+        with patch(
+            "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("app deleted"),
+        ):
+            with pytest.raises(ValueError, match="could not be loaded: app deleted"):
+                await svc._build_complete_oauth_config(
+                    "/services/toolsets/inst/user", "googledrive", stored_auth
+                )
+
+    async def test_unlinked_legacy_config_keeps_its_own_credentials_and_url(self):
+        """A legacy config that carries its own OAuth client is refreshed with it."""
+        stored_auth = {"clientId": "own", "clientSecret": "own-secret", "tokenUrl": "https://own.example/token"}
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value={"orgId": "org1", "auth": stored_auth})
+        svc = _make_service(cs)
+        svc._get_toolset_oauth_config_from_registry = MagicMock(return_value=None)
+        svc._enrich_from_toolset_registry = MagicMock()
+
+        with patch(
+            "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
+            new_callable=AsyncMock,
+            return_value=dict(stored_auth),
+        ) as fetch:
+            result = await svc._build_complete_oauth_config(
+                "/services/toolsets/inst/user", "googledrive", stored_auth
+            )
+
+        assert fetch.await_args.kwargs["toolset_config"]["auth"] == stored_auth
+        assert result["clientId"] == "own"
+        assert result["tokenUrl"] == "https://own.example/token"
 
     async def test_optional_fields_from_registry_fallback(self):
         """When auth_config lacks optional fields, registry provides them."""

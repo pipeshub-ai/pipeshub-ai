@@ -711,3 +711,46 @@ class TestChatQueryAgentCapabilities:
 
 # ---------------------------------------------------------------------------
 # askAIStream endpoint (lines 496-702)
+
+
+class TestDeleteChatAttachmentAuthz:
+    """record_id is client-supplied: only the owner's own chat attachments may be deleted."""
+
+    def _setup(self, *, record, owner_edge):
+        request = MagicMock()
+        request.state.user = {"orgId": "o1", "userId": "u1"}
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value=record)
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+        gp.get_edge = AsyncMock(return_value=owner_edge)
+        return request, gp
+
+    @pytest.mark.asyncio
+    async def test_non_attachment_record_is_not_deleted(self):
+        from fastapi import HTTPException
+
+        from app.api.routes.chatbot import delete_chat_attachment
+
+        request, gp = self._setup(
+            record={"orgId": "o1", "connectorName": "KB"}, owner_edge={"role": "OWNER"}
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_chat_attachment("rid", request, gp)
+        assert exc_info.value.status_code == 404
+        gp.delete_nodes_and_edges.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_other_users_attachment_is_not_deleted(self):
+        from fastapi import HTTPException
+
+        from app.api.routes.chatbot import delete_chat_attachment
+        from app.config.constants.arangodb import Connectors
+
+        request, gp = self._setup(
+            record={"orgId": "o1", "connectorName": Connectors.ATTACHMENTS.value},
+            owner_edge={"role": "READER"},
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_chat_attachment("rid", request, gp)
+        assert exc_info.value.status_code == 404
+        gp.delete_nodes_and_edges.assert_not_called()

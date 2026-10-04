@@ -1,14 +1,42 @@
 import uuid
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from app.config.constants.arangodb import (
     CollectionNames,
+    ProgressStatus,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.blocks import SemanticMetadata
+from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
+from app.modules.entity_resolution.keys import taxonomy_node_key
+from app.modules.entity_resolution.models import (
+    CATEGORY,
+    LANGUAGE,
+    SUBCATEGORY_1,
+    SUBCATEGORY_2,
+    SUBCATEGORY_3,
+    TOPIC,
+    EntityResolution,
+    TaxonomyKind,
+)
+from app.modules.entity_resolution.normalizer import display_form, normalize_name
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+
+@dataclass
+class _TaxonomyNode:
+    """A taxonomy node this record links to, however it was resolved."""
+
+    key: str
+    name: str
+    # None on the legacy path so edges written with the resolver off are
+    # unchanged; the resolver always supplies the raw extracted spelling.
+    extracted_name: Optional[str] = None
+    level: Optional[str] = None
+    aliases: List[str] = field(default_factory=list)
 
 
 class GraphDBTransformer(Transformer):
@@ -17,8 +45,13 @@ class GraphDBTransformer(Transformer):
         self.logger = logger
         self.graph_data_store = GraphDataStore(logger, graph_provider)
 
-    async def apply(self, ctx: TransformContext) -> None:
+    async def apply(self, ctx: TransformContext) -> List[EntityRecord]:
         """Persist semantic metadata to the graph and update extractionStatus.
+
+        Returns a list of :class:`EntityRecord` objects for every entity that
+        was referenced (created or reused) during this run.  The caller
+        (:meth:`SinkOrchestrator.enrich`) uses these to sync entities to the
+        vector store.
 
         ``indexingStatus`` is intentionally **not** touched here — that is set
         by :meth:`SinkOrchestrator.index` (via ``_update_indexing_status``)
@@ -57,13 +90,23 @@ class GraphDBTransformer(Transformer):
                             "⚠️ Failed to update indexing status for record %s - record may not exist",
                             record_id,
                         )
-                        return
+                        return []
+                    record.extraction_status = ProgressStatus.FAILED.value
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
                 raise
+            return []
         else:
             is_vlm_ocr_processed = getattr(record, 'is_vlm_ocr_processed', False)
-            await self.save_metadata_to_db(record_id, metadata, virtual_record_id, is_vlm_ocr_processed)
+            resolution = getattr(ctx, "entity_resolution", None)
+            if not isinstance(resolution, EntityResolution):
+                resolution = None
+            result = await self.save_metadata_to_db(
+                record_id, metadata, virtual_record_id, is_vlm_ocr_processed,
+                resolution=resolution,
+            )
+            record.extraction_status = ProgressStatus.COMPLETED.value
+            return result
 
     # ------------------------------------------------------------------
     # helpers
@@ -98,6 +141,116 @@ class GraphDBTransformer(Transformer):
         )
         return new_key
 
+    async def _resolve_taxonomy_node(
+        self,
+        tx_store,
+        kind: TaxonomyKind,
+        name: str,
+        resolution: Optional[EntityResolution],
+    ) -> _TaxonomyNode:
+        """The node ``name`` links to in ``kind``'s collection.
+
+        With a resolution from ``EntityResolver`` (apply mode) the canonical
+        node is used; ``_write_canonical_nodes`` already created it and added
+        this record's aliases. Only without a resolution does the legacy
+        exact-name lookup run; it is not org-scoped.
+        """
+        if resolution is None:
+            key = await self._find_or_create_node(tx_store, kind.collection, "name", name)
+            return _TaxonomyNode(key=key, name=name, level=kind.level)
+
+        entry = resolution.get(kind.collection, name)
+        if entry is None:
+            # Every metadata name was rewritten by the resolver, so a miss is
+            # a keying bug; the per-org node is still the right target.
+            self.logger.warning(
+                "entity_resolution: %r missing from the resolution for %s; "
+                "linking its per-org node", name, kind.collection,
+            )
+            normalized = normalize_name(name)
+            key = taxonomy_node_key(resolution.org_id, kind.collection, normalized)
+            # Through the provider, not the transaction, for the same reason as
+            # _write_canonical_nodes.
+            await self.graph_data_store.graph_provider.create_taxonomy_node_if_absent(
+                kind.collection,
+                {
+                    "id": key,
+                    "name": display_form(name),
+                    "normalizedName": normalized,
+                    "orgId": resolution.org_id,
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
+            return _TaxonomyNode(key=key, name=display_form(name), extracted_name=name, level=kind.level)
+
+        return _TaxonomyNode(
+            key=entry.key,
+            name=entry.name,
+            extracted_name=entry.extracted_name,
+            level=kind.level,
+            aliases=list(entry.aliases),
+        )
+
+    async def _write_canonical_nodes(self, resolution: EntityResolution) -> None:
+        """Create this record's new canonical nodes and add its new aliases,
+        before the record's transaction opens.
+
+        Both writes are idempotent and shared by every record that resolves
+        the same name. Inside two open ArangoDB stream transactions, two
+        records inserting the same deterministic key conflict (errorNum 1200)
+        and one enrichment fails; outside, the second insert is a no-op.
+        """
+        provider = self.graph_data_store.graph_provider
+        for entity in resolution.entries.values():
+            collection = entity.kind.collection
+            if entity.is_new:
+                await provider.create_taxonomy_node_if_absent(
+                    collection,
+                    {
+                        "id": entity.key,
+                        "name": entity.name,
+                        "normalizedName": entity.normalized,
+                        "orgId": resolution.org_id,
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    },
+                )
+            if entity.new_aliases:
+                try:
+                    await provider.add_taxonomy_aliases(
+                        collection,
+                        entity.key,
+                        list(entity.new_aliases),
+                        [normalize_name(alias) for alias in entity.new_aliases],
+                        org_id=resolution.org_id,
+                    )
+                except Exception as exc:
+                    # An alias only saves a later model call; losing the
+                    # record's taxonomy over it would cost far more.
+                    self.logger.warning(
+                        "entity_resolution: aliases not recorded for %s/%s: %s",
+                        collection, entity.key, exc,
+                    )
+
+    @staticmethod
+    def _taxonomy_entity_record(
+        node: _TaxonomyNode,
+        entity_type: EntityType,
+        org_id: str,
+        connector_ids: List[str],
+        record_group_ids: List[str],
+    ) -> EntityRecord:
+        return EntityRecord(
+            entity_id=node.key,
+            entity_type=entity_type,
+            name=node.name,
+            org_id=org_id,
+            aliases=list(node.aliases),
+            level=node.level,
+            type_category=EntityTypeCategory.GENERIC_SCHEMA_FREE,
+            connector_ids=connector_ids,
+            record_group_ids=record_group_ids,
+        )
+
     async def _reconcile_edges(
         self,
         tx_store,
@@ -106,6 +259,7 @@ class GraphDBTransformer(Transformer):
         edge_collection: str,
         new_tos: Dict[str, str],
         label: str,
+        extracted_names: Optional[Dict[str, str]] = None,
     ) -> None:
         """
         Generic reconciliation: create new edges, delete stale ones.
@@ -117,6 +271,9 @@ class GraphDBTransformer(Transformer):
             edge_collection: the edge collection name
             new_tos: mapping of full-to-id -> human-readable name
             label: label for log messages (e.g. "department")
+            extracted_names: optional full-to-id -> the raw extracted string,
+                stored as ``extractedName`` on the edge so a merge can be
+                undone per record later
         """
         # 1. Fetch existing edges for this record
         existing_edges = await tx_store.get_edges_from_node_with_target_name(
@@ -134,13 +291,17 @@ class GraphDBTransformer(Transformer):
         for to_full, name in sorted_new_targets:
             if to_full not in existing_by_to:
                 to_collection, to_id = to_full.split("/", 1)
-                edges_to_create.append({
+                edge = {
                     "from_id": record_id,
                     "from_collection": CollectionNames.RECORDS.value,
                     "to_id": to_id,
                     "to_collection": to_collection,
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                })
+                }
+                extracted = (extracted_names or {}).get(to_full)
+                if extracted:
+                    edge["extractedName"] = extracted
+                edges_to_create.append(edge)
                 self.logger.debug(f"🔗 Created {label} edge: {record_id} -> {name}")
         if edges_to_create:
             await tx_store.batch_create_edges(
@@ -182,14 +343,33 @@ class GraphDBTransformer(Transformer):
     # ------------------------------------------------------------------
 
     async def save_metadata_to_db(
-        self, record_id: str, metadata: SemanticMetadata, virtual_record_id: str, is_vlm_ocr_processed: bool = False
-    ) -> None:
+        self,
+        record_id: str,
+        metadata: SemanticMetadata,
+        virtual_record_id: str,
+        is_vlm_ocr_processed: bool = False,
+        *,
+        resolution: Optional[EntityResolution] = None,
+    ) -> List[EntityRecord]:
         """
         Extract metadata from a document and create department relationships.
         Uses reconciliation logic: fetch existing edges, compare with new, create new ones, delete stale ones.
+
+        ``resolution`` (apply-mode output of ``EntityResolver``) maps each
+        metadata name to its canonical per-org node; without it every name
+        is looked up by exact spelling as before.
+
+        Returns a list of :class:`EntityRecord` objects representing all
+        entity nodes referenced during this call (newly created or reused).
+        The caller uses these to sync entities to the vector store.
         """
+        touched_entities: List[EntityRecord] = []
+        # org_id comes from the record node once it is loaded below.
+        org_id_placeholder = ""
 
         self.logger.debug("🚀 Saving metadata to graph database")
+        if resolution is not None:
+            await self._write_canonical_nodes(resolution)
         async with self.graph_data_store.transaction() as tx_store:
             try:
                 # Retrieve the document content from graph database
@@ -200,6 +380,15 @@ class GraphDBTransformer(Transformer):
                 if record is None:
                     self.logger.error(f"❌ Record {record_id} not found in database")
                     raise Exception(f"Record {record_id} not found in database")
+
+                # Use orgId stored on the record node for entity metadata
+                org_id_placeholder = record.get("orgId", "")
+                connector_ids_placeholder = (
+                    [record["connectorId"]] if record.get("connectorId") else []
+                )
+                record_group_ids_placeholder = (
+                    [record["recordGroupId"]] if record.get("recordGroupId") else []
+                )
 
                 record_from = f"{CollectionNames.RECORDS.value}/{record_id}"
 
@@ -215,6 +404,15 @@ class GraphDBTransformer(Transformer):
                             dept_key = self._node_key(results[0])
                             dept_to = f"{CollectionNames.DEPARTMENTS.value}/{dept_key}"
                             new_dept_tos[dept_to] = department
+                            touched_entities.append(EntityRecord(
+                                entity_id=dept_key,
+                                entity_type=EntityType.DEPARTMENT,
+                                name=department,
+                                org_id=org_id_placeholder,
+                                type_category=EntityTypeCategory.GENERIC_SCHEMA_FREE,
+                                connector_ids=connector_ids_placeholder,
+                                record_group_ids=record_group_ids_placeholder,
+                            ))
                         else:
                             self.logger.warning(f"⚠️ No department found for: {department}")
                     except Exception as e:
@@ -228,23 +426,48 @@ class GraphDBTransformer(Transformer):
 
                 # --- Reconcile category edges ---
                 new_cat_tos: Dict[str, str] = {}
+                cat_extracted: Dict[str, str] = {}
 
-                # Handle primary category
-                category_key = await self._find_or_create_node(
-                    tx_store, CollectionNames.CATEGORIES.value, "name", metadata.categories[0]
+                # Handle primary category. An empty category used to create a
+                # node named ""; it is skipped instead, and the subcategory
+                # chain hangs off the category so it is skipped with it.
+                primary_category = next(
+                    (c for c in (metadata.categories or []) if isinstance(c, str) and c.strip()),
+                    None,
                 )
-                cat_to = f"{CollectionNames.CATEGORIES.value}/{category_key}"
-                new_cat_tos[cat_to] = metadata.categories[0]
+                category_key: Optional[str] = None
+                if primary_category:
+                    category_node = await self._resolve_taxonomy_node(
+                        tx_store, CATEGORY, primary_category, resolution
+                    )
+                    category_key = category_node.key
+                    cat_to = f"{CollectionNames.CATEGORIES.value}/{category_node.key}"
+                    new_cat_tos[cat_to] = category_node.name
+                    if category_node.extracted_name:
+                        cat_extracted[cat_to] = category_node.extracted_name
+                    touched_entities.append(self._taxonomy_entity_record(
+                        category_node, EntityType.CATEGORY, org_id_placeholder,
+                        connector_ids_placeholder, record_group_ids_placeholder,
+                    ))
+                else:
+                    self.logger.warning("⚠️ No category extracted for record %s", record_id)
 
                 # Handle subcategories
                 async def handle_subcategory(
-                    name: str, level: str, parent_key: str, parent_collection: str
+                    name: str, kind: TaxonomyKind, parent_key: str, parent_collection: str
                 ) -> str:
-                    collection_name = getattr(CollectionNames, f"SUBCATEGORIES{level}").value
-                    key = await self._find_or_create_node(tx_store, collection_name, "name", name)
+                    collection_name = kind.collection
+                    node = await self._resolve_taxonomy_node(tx_store, kind, name, resolution)
+                    key = node.key
 
                     sub_to = f"{collection_name}/{key}"
-                    new_cat_tos[sub_to] = name
+                    new_cat_tos[sub_to] = node.name
+                    if node.extracted_name:
+                        cat_extracted[sub_to] = node.extracted_name
+                    touched_entities.append(self._taxonomy_entity_record(
+                        node, EntityType.SUBCATEGORY, org_id_placeholder,
+                        connector_ids_placeholder, record_group_ids_placeholder,
+                    ))
 
                     # Create hierarchy relationship (inter-category) only when it does
                     # not already exist.  Skipping the write for existing edges avoids
@@ -273,19 +496,19 @@ class GraphDBTransformer(Transformer):
                 # Process subcategories
                 sub1_key: Optional[str] = None
                 sub2_key: Optional[str] = None
-                if metadata.sub_category_level_1:
+                if metadata.sub_category_level_1 and category_key:
                     sub1_key = await handle_subcategory(
-                        metadata.sub_category_level_1, "1",
+                        metadata.sub_category_level_1, SUBCATEGORY_1,
                         category_key, CollectionNames.CATEGORIES.value,
                     )
                 if metadata.sub_category_level_2 and sub1_key:
                     sub2_key = await handle_subcategory(
-                        metadata.sub_category_level_2, "2",
+                        metadata.sub_category_level_2, SUBCATEGORY_2,
                         sub1_key, CollectionNames.SUBCATEGORIES1.value,
                     )
                 if metadata.sub_category_level_3 and sub2_key:
                     await handle_subcategory(
-                        metadata.sub_category_level_3, "3",
+                        metadata.sub_category_level_3, SUBCATEGORY_3,
                         sub2_key, CollectionNames.SUBCATEGORIES2.value,
                     )
 
@@ -293,37 +516,55 @@ class GraphDBTransformer(Transformer):
                 await self._reconcile_edges(
                     tx_store, record_id, record_from,
                     CollectionNames.BELONGS_TO_CATEGORY.value,
-                    new_cat_tos, "category",
+                    new_cat_tos, "category", extracted_names=cat_extracted,
                 )
 
                 # --- Reconcile language edges ---
                 new_lang_tos: Dict[str, str] = {}
-                for language in metadata.languages:
-                    lang_key = await self._find_or_create_node(
-                        tx_store, CollectionNames.LANGUAGES.value, "name", language
+                lang_extracted: Dict[str, str] = {}
+                for language in metadata.languages or []:
+                    if not isinstance(language, str) or not language.strip():
+                        continue
+                    lang_node = await self._resolve_taxonomy_node(
+                        tx_store, LANGUAGE, language, resolution
                     )
-                    lang_to = f"{CollectionNames.LANGUAGES.value}/{lang_key}"
-                    new_lang_tos[lang_to] = language
+                    lang_to = f"{CollectionNames.LANGUAGES.value}/{lang_node.key}"
+                    new_lang_tos[lang_to] = lang_node.name
+                    if lang_node.extracted_name:
+                        lang_extracted[lang_to] = lang_node.extracted_name
+                    touched_entities.append(self._taxonomy_entity_record(
+                        lang_node, EntityType.LANGUAGE, org_id_placeholder,
+                        connector_ids_placeholder, record_group_ids_placeholder,
+                    ))
 
                 await self._reconcile_edges(
                     tx_store, record_id, record_from,
                     CollectionNames.BELONGS_TO_LANGUAGE.value,
-                    new_lang_tos, "language",
+                    new_lang_tos, "language", extracted_names=lang_extracted,
                 )
 
                 # --- Reconcile topic edges ---
                 new_topic_tos: Dict[str, str] = {}
-                for topic in metadata.topics:
-                    topic_key = await self._find_or_create_node(
-                        tx_store, CollectionNames.TOPICS.value, "name", topic
+                topic_extracted: Dict[str, str] = {}
+                for topic in metadata.topics or []:
+                    if not isinstance(topic, str) or not topic.strip():
+                        continue
+                    topic_node = await self._resolve_taxonomy_node(
+                        tx_store, TOPIC, topic, resolution
                     )
-                    topic_to = f"{CollectionNames.TOPICS.value}/{topic_key}"
-                    new_topic_tos[topic_to] = topic
+                    topic_to = f"{CollectionNames.TOPICS.value}/{topic_node.key}"
+                    new_topic_tos[topic_to] = topic_node.name
+                    if topic_node.extracted_name:
+                        topic_extracted[topic_to] = topic_node.extracted_name
+                    touched_entities.append(self._taxonomy_entity_record(
+                        topic_node, EntityType.TOPIC, org_id_placeholder,
+                        connector_ids_placeholder, record_group_ids_placeholder,
+                    ))
 
                 await self._reconcile_edges(
                     tx_store, record_id, record_from,
                     CollectionNames.BELONGS_TO_TOPIC.value,
-                    new_topic_tos, "topic",
+                    new_topic_tos, "topic", extracted_names=topic_extracted,
                 )
 
                 self.logger.debug(
@@ -355,9 +596,11 @@ class GraphDBTransformer(Transformer):
                         "⚠️ Failed to update extraction status for record %s - record may not exist",
                         record_id,
                     )
-                    return
+                    return touched_entities
 
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
                 raise
+
+        return touched_entities
 

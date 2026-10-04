@@ -63,6 +63,7 @@ class Connectors(Enum):
     DROPBOX_PERSONAL = "DROPBOX PERSONAL"
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
+    DRUPAL_WIKI = "DRUPAL WIKI"
     GITHUB = "GITHUB"
     GITHUB_TEAMS = "GITHUB TEAMS"
     SERVICENOW = "SERVICENOW"
@@ -86,6 +87,9 @@ class Connectors(Enum):
 
     RSS = "RSS"
     LOCAL_FS = "LOCAL_FS"
+    DEMO = "DEMO"
+    SMB = "SMB"
+    CIFS = "CIFS"
 
     CODING_SANDBOX = "CODING_SANDBOX"
     DATABASE_SANDBOX = "DATABASE_SANDBOX"
@@ -126,6 +130,7 @@ class AppGroups(Enum):
     NEXTCLOUD = "Nextcloud"
     WEB = "Web"
     BOOKSTACK = "BookStack"
+    DRUPAL_WIKI = "Drupal Wiki"
     GITHUB = "Github"
     S3 = "S3"
     MINIO = "MinIO"
@@ -136,12 +141,15 @@ class AppGroups(Enum):
     ZAMMAD = "Zammad"
     ZOOM = "Zoom"
     LOCAL_STORAGE = "Local Storage"
+    DEMO = "Demo"
     RSS = "RSS"
     GITLAB = "GitLab"
 
     SNOWFLAKE = "Snowflake"
     POSTGRESQL = "PostgreSQL"
     MARIADB = "MariaDB"
+    SMB = "SMB"
+    CIFS = "CIFS"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
@@ -201,7 +209,7 @@ class CollectionNames(Enum):
     SQL_VIEWS = "sqlViews"
 
     # Users and groups
-    PEOPLE = "people"
+    PEOPLE = "person"
     USERS = "users"
     GROUPS = "groups"
     ROLES = "roles"
@@ -233,6 +241,7 @@ class CollectionNames(Enum):
     APPS = "apps"
     ORG_APP_RELATION = "orgAppRelation"
     USER_APP_RELATION = "userAppRelation"
+    AUTHENTICATED_AS = "authenticatedAs"  # User -> User: connector creator -> source account it authenticated as, per connectorId
     ORG_DEPARTMENT_RELATION = "orgDepartmentRelation"
     PROSPECT = "prospect"  # Org -> Org: prospect/account relationship
     CUSTOMER = "customer"  # Org -> Org: customer relationship
@@ -284,6 +293,7 @@ class CollectionNames(Enum):
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
+    ENTITIES = "entities"
 
 
 class ExtensionTypes(Enum):
@@ -580,6 +590,14 @@ class ProgressStatus(Enum):
     QUEUED = "QUEUED"
 
 
+class DeleteSource(str, Enum):
+    """Who moved a record to the trash. Decides whether a sync may restore it."""
+
+    USER = "USER"
+    CONNECTOR = "CONNECTOR"
+    SYSTEM = "SYSTEM"
+
+
 class RecordTypes(Enum):
     FILE = "FILE"
     ATTACHMENT = "ATTACHMENT"
@@ -653,8 +671,10 @@ class EventTypes(Enum):
     REINDEX_FAILED = "reindexFailed"
     BULK_DELETE_RECORDS = "bulkDeleteRecords"
     DELETE_CONNECTOR_EMBEDDINGS = "deleteConnectorEmbeddings"
+    DELETE_CONNECTOR_ENTITIES = "deleteConnectorEntities"
     SYNC_VECTOR_MEMBERSHIP = "syncVectorMembership"
     DELETE_VECTOR_COLLECTION = "deleteVectorCollection"
+    DELETE_STORED_DOCUMENTS = "deleteStoredDocuments"
 
 
 class AccountType(Enum):
@@ -703,3 +723,34 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "SQL_VIEW": CollectionNames.SQL_VIEWS.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }
+
+
+# Person -> User promotion (see docs/external-user-support-plan.md, D4).
+#
+# One definition for both graph backends so they cannot drift: a Person that carries any
+# CRM edge is a Salesforce contact as well as a collaborator, so the two identities split
+# rather than merge - the collaborator edges move to the User and the Person survives
+# holding only its CRM edges. A Person with no CRM edge migrates outright and is deleted.
+#
+# Direction matters and differs: the transferable edges always have the Person as _from,
+# while `lead`/`contact` point AT the Person and only `memberOf` points away from it - so
+# the CRM check has to look both ways.
+PERSON_TRANSFERABLE_EDGES = (
+    CollectionNames.PERMISSION.value,
+    CollectionNames.USER_APP_RELATION.value,
+)
+
+PERSON_CRM_EDGES_OUTBOUND = (CollectionNames.MEMBER_OF.value,)
+PERSON_CRM_EDGES_INBOUND = (
+    CollectionNames.LEAD.value,
+    CollectionNames.CONTACT.value,
+)
+PERSON_CRM_EDGES = PERSON_CRM_EDGES_OUTBOUND + PERSON_CRM_EDGES_INBOUND
+
+
+class PersonMigrationMode:
+    """Outcome of migrate_person_to_user. Distinguished so callers can log which of the
+    two very different things happened."""
+
+    MIGRATED = "migrated"  # no CRM edges: everything moved, Person node deleted
+    SPLIT = "split"  # CRM edges present: collaborator edges moved, Person kept

@@ -221,6 +221,7 @@ export function ConnectorDetailsLayout({
           {onOpenDocs && (
             <button
               type="button"
+              aria-label={t('workspace.actions.documentation')}
               onClick={onOpenDocs}
               style={{
                 appearance: 'none',

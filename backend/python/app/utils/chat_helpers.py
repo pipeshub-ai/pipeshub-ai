@@ -760,6 +760,7 @@ def get_record_id_shortener_if_enabled(state: dict[str, Any]) -> "RecordIdShorte
 logger = create_logger("chat_helpers")
 
 TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
+FRAGMENT_DIRECTIVE_DELIMITER = ":~:"
 
 GRAPH_CONTEXT_ENRICHMENT_CONNECTORS: frozenset[Connectors] = frozenset({
     Connectors.JIRA,
@@ -775,6 +776,11 @@ RECORD_RELATION_ENRICHMENT_TYPES: frozenset[RecordRelations] = frozenset({
     RecordRelations.ATTACHMENT,
     RecordRelations.PARENT_CHILD,
 })
+
+# Related records listed (id + name) per hit, after the permission check.
+MAX_RELATED_RECORDS_PER_HIT = 50
+# Of those, how many also get full graph metadata + summary (one blob fetch each).
+MAX_FULL_METADATA_RELATED_PER_HIT = 15
 
 _GRAPH_TO_RECORD_FIELDS: dict[str, str] = {
     "recordName": "record_name",
@@ -822,8 +828,15 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
     if not record_dict:
         return None
 
+    # get_record copies these straight from the graph, where connectorId may be
+    # null and version may be missing; the Record model rejects None for both.
+    version = record_dict.get("version")
+    version = 1 if version is None else version
+    connector_id = record_dict.get("connector_id") or ""
+
     if not graph_doc:
-        return Record(
+        try:
+            return Record(
                 id=record_dict.get("id", ""),
                 record_name=record_dict.get("record_name", ""),
                 record_type=RecordType(record_dict.get("record_type")),
@@ -831,35 +844,43 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 mime_type=record_dict.get("mime_type", ""),
                 external_record_id=record_dict.get("external_record_id", ""),
                 weburl=record_dict.get("weburl", ""),
+                hide_weburl=bool(record_dict.get("hide_weburl")),
                 location=record_dict.get("location"),
-                version=record_dict.get("version", 1),
+                version=version,
                 origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
-                connector_id=record_dict.get("connector_id", ""),
+                connector_id=connector_id,
                 source_created_at=record_dict.get("source_created_at") or None,
                 source_updated_at=record_dict.get("source_updated_at") or None,
-                semantic_metadata=SemanticMetadata(**record_dict.get("semantic_metadata", {})),
+                semantic_metadata=SemanticMetadata(**(record_dict.get("semantic_metadata") or {})),
+                parent_external_record_id=record_dict.get("parent_external_record_id"),
             )
+        except Exception as e:
+            # One malformed record must not fail the whole search; it just loses its header.
+            logger.error(f"Error creating record instance: {str(e)}")
+            return None
 
     record_type = record_dict.get("record_type")
 
-    base_args = {
-        "id": record_dict.get("id", ""),
-        "org_id": record_dict.get("org_id", ""),
-        "record_name": record_dict.get("record_name", ""),
-        "external_record_id": record_dict.get("external_record_id", ""),
-        "version": record_dict.get("version", 1),
-        "origin": OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
-        "connector_name": Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
-        "connector_id": record_dict.get("connector_id", ""),
-        "mime_type": record_dict.get("mime_type", ""),
-        "source_created_at": record_dict.get("source_created_at") or None,
-        "source_updated_at": record_dict.get("source_updated_at") or None,
-        "location": record_dict.get("location"),
-        "weburl": record_dict.get("weburl", ""),
-        "semantic_metadata": SemanticMetadata(**record_dict.get("semantic_metadata", {})),
-    }
-
     try:
+        base_args = {
+            "id": record_dict.get("id", ""),
+            "org_id": record_dict.get("org_id", ""),
+            "record_name": record_dict.get("record_name", ""),
+            "external_record_id": record_dict.get("external_record_id", ""),
+            "version": version,
+            "origin": OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
+            "connector_name": Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
+            "connector_id": connector_id,
+            "mime_type": record_dict.get("mime_type", ""),
+            "source_created_at": record_dict.get("source_created_at") or None,
+            "source_updated_at": record_dict.get("source_updated_at") or None,
+            "location": record_dict.get("location"),
+            "weburl": record_dict.get("weburl", ""),
+            "hide_weburl": bool(record_dict.get("hide_weburl")),
+            "semantic_metadata": SemanticMetadata(**(record_dict.get("semantic_metadata") or {})),
+            "parent_external_record_id": record_dict.get("parent_external_record_id"),
+        }
+
         if record_type == RecordType.TICKET.value and graph_doc:
             specific_args = {
                 "record_type": RecordType.TICKET,
@@ -1060,6 +1081,8 @@ def _merge_graph_into_blob_record(
         val = base_doc.get(graph_key)
         if val:
             merged.setdefault(record_key_name, val)
+    # A link the graph hides stays hidden, whatever the blob copy says.
+    merged["hide_weburl"] = bool(merged.get("hide_weburl") or base_doc.get("hideWeburl"))
     return merged
 
 def _build_record_dict_from_graph_base(base_doc: dict[str, Any]) -> dict[str, Any]:
@@ -1067,12 +1090,26 @@ def _build_record_dict_from_graph_base(base_doc: dict[str, Any]) -> dict[str, An
     record_dict: dict[str, Any] = {
         "id": base_doc.get("id") or base_doc.get("_key", ""),
         "version": base_doc.get("version", 1),
-        "semantic_metadata": {},
     }
     for graph_key, record_key_name in _GRAPH_TO_RECORD_FIELDS.items():
         record_dict[record_key_name] = base_doc.get(graph_key) or ""
     record_dict["source_created_at"] = base_doc.get("sourceCreatedAtTimestamp")
     record_dict["source_updated_at"] = base_doc.get("sourceLastModifiedTimestamp")
+    record_dict["hide_weburl"] = bool(base_doc.get("hideWeburl"))
+    record_dict["location"] = base_doc.get("location") or ""
+    record_dict["parent_external_record_id"] = base_doc.get("externalParentId")
+    sem: dict[str, Any] = {}
+    if base_doc.get("summary"):
+        sem["summary"] = base_doc["summary"]
+    if base_doc.get("topics"):
+        sem["topics"] = base_doc["topics"]
+    if base_doc.get("categories"):
+        sem["categories"] = base_doc["categories"]
+    for level in (1, 2, 3):
+        val = base_doc.get(f"subCategoryLevel{level}") or base_doc.get(f"sub_category_level_{level}")
+        if val:
+            sem[f"sub_category_level_{level}"] = val
+    record_dict["semantic_metadata"] = sem
     return record_dict
 
 async def _fetch_type_specific_doc(
@@ -1167,7 +1204,7 @@ def _base_record_context_metadata_from_graph(
     ]
     if mime_type:
         lines.append(f"MIME Type: {mime_type}")
-    if web_url:
+    if web_url and not base_graph_doc.get("hideWeburl"):
         if not str(web_url).startswith("http") and frontend_url:
             web_url = f"{frontend_url.rstrip('/')}/{str(web_url).lstrip('/')}"
         lines.append(f"Web URL: {web_url}")
@@ -1318,7 +1355,7 @@ async def _fetch_edges_for_records(
     for record_id in record_ids:
         buckets = relations.get(record_id) or {}
         edges: list[tuple[str, str]] = []
-        for bucket, outgoing in (("parents", True), ("children", False)):
+        for bucket, outgoing in (("children", False), ("parents", True)):
             for edge in buckets.get(bucket) or []:
                 if not isinstance(edge, dict):
                     continue
@@ -1415,12 +1452,19 @@ async def _resolve_target_metadata(
     frontend_url: str | None,
     blob_store: Any,
     org_id: str,
+    *,
+    full_metadata_ids: set[str] | None = None,
 ) -> dict[str, str]:
     """Batch-resolve graph docs and context metadata for all target IDs.
 
     Returns context_map: out-of-context record id -> rendered metadata.
+    ``full_metadata_ids`` narrows which records get rendered metadata (one blob
+    fetch each); None renders every out-of-context target.
     """
     ids_needing_docs = [rid for rid in all_target_ids if rid not in doc_index]
+    context_ids = (
+        all_target_ids if full_metadata_ids is None else all_target_ids & full_metadata_ids
+    )
 
     async def _fetch_docs() -> dict[str, dict[str, Any]]:
         """One query per chunk instead of one per record.
@@ -1471,7 +1515,7 @@ async def _resolve_target_metadata(
 
     doc_results, vrid_result = await asyncio.gather(
         _fetch_docs(),
-        graph_provider.get_virtual_record_ids_for_record_ids(list(all_target_ids)),
+        graph_provider.get_virtual_record_ids_for_record_ids(list(context_ids)),
         return_exceptions=True,
     )
 
@@ -1488,7 +1532,7 @@ async def _resolve_target_metadata(
 
     # Build context for out-of-context, non-deleted IDs
     out_of_context_ids = [
-        rid for rid in all_target_ids
+        rid for rid in context_ids
         if rid not in in_context_ids
         and doc_index.get(rid) and not doc_index.get(rid, {}).get("isDeleted")
     ]
@@ -1588,10 +1632,17 @@ def _annotate_record_relations(
     doc_index: dict[str, dict[str, Any]],
     in_context_ids: set[str],
     context_map: dict[str, str],
+    full_metadata_by_hit: dict[str, set[str]] | None = None,
+    truncated_record_ids: set[str] | None = None,
 ) -> None:
-    """Attach record_relations to hit records from relation buckets."""
+    """Attach record_relations to hit records from relation buckets.
+
+    ``full_metadata_by_hit`` caps which relations of each hit carry
+    context_metadata; None lets every resolved one through.
+    """
     enriched_count = 0
     for vrid, record, bucket in relation_buckets:
+        allowed_full = None if full_metadata_by_hit is None else full_metadata_by_hit.get(vrid, set())
         relations: list[dict[str, Any]] = []
         for rid, entry in bucket.items():
             doc = doc_index.get(rid)
@@ -1602,11 +1653,17 @@ def _annotate_record_relations(
                 "record_name": _record_name_from_graph_doc(doc),
                 "labels": sorted(entry["labels"]),
             }
-            if rid not in in_context_ids and rid in context_map:
+            if (
+                rid not in in_context_ids
+                and rid in context_map
+                and (allowed_full is None or rid in allowed_full)
+            ):
                 rel["context_metadata"] = context_map[rid]
             relations.append(rel)
         if relations:
             record["record_relations"] = relations
+            if truncated_record_ids and record.get("id") in truncated_record_ids:
+                record["record_relations_truncated"] = True
             enriched_count += 1
 
     logger.info("Record relation enrichment: %d records enriched", enriched_count)
@@ -1621,22 +1678,29 @@ async def enrich_records_with_graph_context(
     blob_store: Any = None,
     org_id: str = "",
     config_service: "ConfigurationService | None" = None,
+    *,
+    user_id: str,
 ) -> None:
     """
     Unified graph context enrichment for search results. Performs both:
       1. Dependent parent annotation (isDependentNode -> parent metadata on flattened_results)
       2. Record relation enrichment (graph edges -> record_relations on hit records)
 
+    Only records ``user_id`` may read are shown: hits were adjudicated by the
+    search, and everything reached from them is adjudicated here. If that check
+    cannot run nothing is added; the hits themselves are left untouched.
     All graph/blob calls are batched and deduplicated across both paths.
     """
     if not graph_provider or flattened_results is None:
+        return
+    if not user_id:
+        logger.warning("Graph context enrichment skipped: no user_id to check access for")
         return
 
     if doc_index is None:
         doc_index = _build_record_id_to_graph_doc_index(virtual_to_record_map)
         _extend_record_id_index_from_hit_records(doc_index, virtual_record_id_to_result)
 
-    frontend_url = await resolve_frontend_url(config_service)
     in_context_ids: set[str] = {
         rec["id"] for rec in virtual_record_id_to_result.values()
         if isinstance(rec, dict) and rec.get("id")
@@ -1649,20 +1713,69 @@ async def enrich_records_with_graph_context(
     if not dependent_vrid_to_parent_id and not relation_eligible:
         return
 
-    # Step 2: Fetch edges for relation-eligible hits
-    edge_results: list = []
-    if relation_eligible:
-        eligible_ids = [rid for _, rid, _ in relation_eligible]
-        edges_by_record = await _fetch_edges_for_records(graph_provider, eligible_ids)
-        edge_results = [edges_by_record.get(rid, []) for rid in eligible_ids]
+    # Step 2: Fetch edges for relation-eligible hits, alongside the frontend URL
+    eligible_ids = [rid for _, rid, _ in relation_eligible]
+
+    async def _no_edges() -> dict[str, list[tuple[str, str]]]:
+        return {}
+
+    frontend_url, edges_by_record = await asyncio.gather(
+        resolve_frontend_url(config_service),
+        _fetch_edges_for_records(graph_provider, eligible_ids) if eligible_ids else _no_edges(),
+    )
+    edge_results = [edges_by_record.get(rid, []) for rid in eligible_ids]
 
     # Step 3: Build relation buckets from edges
     relation_buckets, all_related_ids = _build_relation_buckets(
         relation_eligible, edge_results,
     )
 
-    # Step 4: Collect all IDs needing resolution (parents + related)
-    all_target_ids = all_related_ids | set(dependent_vrid_to_parent_id.values())
+    # Step 4: One access check for everything reached from the hits. The hits
+    # themselves were adjudicated by the search.
+    to_check = (all_related_ids | set(dependent_vrid_to_parent_id.values())) - in_context_ids
+    readable_ids = set(in_context_ids)
+    if to_check:
+        ids = list(to_check)
+        verdicts = await asyncio.gather(
+            *[
+                graph_provider.filter_accessible_record_ids(
+                    ids[start:start + GRAPH_BATCH_CHUNK_SIZE], user_id, org_id,
+                )
+                for start in range(0, len(ids), GRAPH_BATCH_CHUNK_SIZE)
+            ],
+            return_exceptions=True,
+        )
+        failed = next((v for v in verdicts if not isinstance(v, set)), None)
+        if failed is not None:
+            # Fail closed: without a verdict a related record may be one the user cannot open.
+            logger.warning("Graph context enrichment skipped: access check unavailable: %s", failed)
+            return
+        for granted in verdicts:
+            readable_ids |= granted
+
+    # Keep each hit's first MAX_RELATED_RECORDS_PER_HIT readable relations (parents
+    # come first), and full metadata for the first MAX_FULL_METADATA_RELATED_PER_HIT.
+    dependent_vrid_to_parent_id = {
+        vrid: pid for vrid, pid in dependent_vrid_to_parent_id.items() if pid in readable_ids
+    }
+    full_metadata_ids = set(dependent_vrid_to_parent_id.values()) - in_context_ids
+    full_metadata_by_hit: dict[str, set[str]] = {}
+    truncated_record_ids: set[str] = set()
+    readable_buckets = []
+    for vrid, record, bucket in relation_buckets:
+        kept = [rid for rid in bucket if rid in readable_ids]
+        if len(kept) > MAX_RELATED_RECORDS_PER_HIT:
+            truncated_record_ids.add(record.get("id"))
+            kept = kept[:MAX_RELATED_RECORDS_PER_HIT]
+        if kept:
+            readable_buckets.append((vrid, record, {rid: bucket[rid] for rid in kept}))
+            full = [rid for rid in kept if rid not in in_context_ids][:MAX_FULL_METADATA_RELATED_PER_HIT]
+            full_metadata_by_hit[vrid] = set(full)
+            full_metadata_ids.update(full)
+    relation_buckets = readable_buckets
+
+    all_target_ids = {rid for _, _, bucket in relation_buckets for rid in bucket}
+    all_target_ids |= set(dependent_vrid_to_parent_id.values())
     if not all_target_ids:
         return
 
@@ -1670,6 +1783,7 @@ async def enrich_records_with_graph_context(
     context_map = await _resolve_target_metadata(
         all_target_ids, doc_index, graph_provider,
         in_context_ids, frontend_url, blob_store, org_id,
+        full_metadata_ids=full_metadata_ids,
     )
 
     # Step 6: Distribute results
@@ -1681,6 +1795,7 @@ async def enrich_records_with_graph_context(
     if relation_buckets:
         _annotate_record_relations(
             relation_buckets, doc_index, in_context_ids, context_map,
+            full_metadata_by_hit, truncated_record_ids,
         )
 
 
@@ -1738,6 +1853,9 @@ def build_record_relations_info(record: dict[str, Any]) -> str:
                 record_id = rel.get("record_id", "")
                 record_name = rel.get("record_name", "Unknown")
                 lines.append(f"    - Record ID: {record_id} | Name: {record_name}")
+    if record.get("record_relations_truncated"):
+        # No count: it would reveal how many linked records the user cannot see.
+        lines.append("  (more related records exist; not shown)")
     return "\n".join(lines) + "\n"
 
 # FK table enrichment (runs before doc_index in chatbot; extends virtual_record_id_to_result)
@@ -2088,7 +2206,16 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 graph_provider, list(by_record_id), by_record_id
             )
 
-    await asyncio.gather(*[get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider,frontend_url,batched_lookups.get(virtual_record_id),type_docs) for virtual_record_id in records_to_fetch])
+    async def _fetch_record(virtual_record_id: str) -> None:
+        # One unreadable blob (e.g. its storage document was deleted) must not
+        # fail the whole search; treat it like a record that fetched empty.
+        try:
+            await get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider,frontend_url,batched_lookups.get(virtual_record_id),type_docs)
+        except Exception as e:
+            logger.warning("Skipping record %s: fetch failed: %s", virtual_record_id, e)
+            virtual_record_id_to_result[virtual_record_id] = None
+
+    await asyncio.gather(*[_fetch_record(virtual_record_id) for virtual_record_id in records_to_fetch])
     # Prefetch reconciliation metadata in parallel (records were fully fetched above).
     vrids_needing_recon: set = set[Any]()
 
@@ -2308,6 +2435,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 continue
         elif block_type == BlockType.TABLE_ROW.value:
             block_group_index = block.get("parent_index")
+            if block_group_index is None:
+                logger.warning("Table row %d has no table, vrid=%s", index, virtual_record_id)
+                continue
             rows_to_be_included[f"{virtual_record_id}_{block_group_index}"].append((index,float(result.get("score",0.0)), None))
             continue
         elif block_type == GroupType.TABLE.value:
@@ -2475,7 +2605,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
     for key,rows_tuple in rows_to_be_included.items():
         sorted_rows_tuple = sorted(rows_tuple)
-        virtual_record_id,block_group_index = key.split("_")
+        virtual_record_id,block_group_index = key.rsplit("_", 1)
         block_group_index = int(block_group_index)
         record = virtual_record_id_to_result[virtual_record_id]
         if record is None:
@@ -2483,6 +2613,12 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         block_container = record.get("block_containers",{})
         blocks = block_container.get("blocks",[])
         block_groups = block_container.get("block_groups",[])
+        if not 0 <= block_group_index < len(block_groups):
+            logger.warning(
+                "Table group index %d out of bounds (len=%d), vrid=%s",
+                block_group_index, len(block_groups), virtual_record_id,
+            )
+            continue
         block_group = block_groups[block_group_index]
         data = block_group.get("data", {})
         table_summary = data.get("table_summary","")
@@ -3779,7 +3915,8 @@ def record_to_message_content(
                 if block_group_id in seen_block_groups:
                     continue
                 seen_block_groups.add(block_group_id)
-                if block_group_index is not None:
+                # A row whose table is missing is skipped like a row with no table at all.
+                if block_group_index is not None and 0 <= block_group_index < len(block_groups):
                     corresponding_block_group = block_groups[block_group_index]
 
                     block_type = corresponding_block_group.get("type")
@@ -4096,7 +4233,8 @@ def record_to_text(record: dict[str, Any]) -> str:
                 if block_group_id in seen_block_groups:
                     continue
                 seen_block_groups.add(block_group_id)
-                if block_group_index is not None:
+                # A row whose table is missing is skipped like a row with no table at all.
+                if block_group_index is not None and 0 <= block_group_index < len(block_groups):
                     corresponding_block_group = block_groups[block_group_index]
 
                     block_type = corresponding_block_group.get("type")
@@ -4313,7 +4451,7 @@ def build_message_content_array(
     current_record_id = ""
     current_file_path = ""
     # True so the first record's blocks get "Record blocks (sorted):"; later records reopen
-    # pending via the i > 0 branch before the next record's metadata.
+    # pending when the previous record is closed, before the next record's metadata.
     pending_record_blocks_sorted_header = True
     record_page_url_for_summary: str | None = None
     summary_citation_insert_index: int | None = None
@@ -4350,10 +4488,19 @@ def build_message_content_array(
             return f"Record blocks (sorted):\n{text}"
         return text
 
-    for i,result in enumerate(flattened_results):
+    # Records that are gone or were never fetched. Their later hits must be skipped
+    # too: rendering them would cite the previous record's URL.
+    unavailable_vrids: set = set()
+    for result in flattened_results:
         virtual_record_id = result.get("virtual_record_id")
+        if virtual_record_id in unavailable_vrids:
+            continue
         if virtual_record_id not in seen_virtual_record_ids:
-            if i > 0:
+            record = virtual_record_id_to_result.get(virtual_record_id)
+            if record is None:
+                unavailable_vrids.add(virtual_record_id)
+                continue
+            if content:
                 insert_summary_citation_if_needed()
                 content.append({
                     "type": "text",
@@ -4363,9 +4510,6 @@ def build_message_content_array(
                 all_contents.append(content)
                 content = []
             seen_virtual_record_ids.add(virtual_record_id)
-            record = virtual_record_id_to_result[virtual_record_id]
-            if record is None:
-                continue
 
             current_frontend_url = record.get("frontend_url", "")
             current_record_id = record.get("id", "")
@@ -4839,8 +4983,9 @@ def _build_text_fragment_url(base_url: str, text_snippet: str) -> str:
     if not base_url or not text_snippet:
         return base_url
 
-    # Preserve URLs that already have a text fragment
-    if TEXT_FRAGMENT_DIRECTIVE_PREFIX in base_url:
+    # Everything after the first `:~:` is the fragment directive, so a URL that
+    # already carries one cannot take a second.
+    if FRAGMENT_DIRECTIVE_DELIMITER in base_url:
         return base_url
 
     try:
@@ -4864,10 +5009,16 @@ def _build_text_fragment_url(base_url: str, text_snippet: str) -> str:
         if end_text:
             encoded_end = quote(end_text, safe="';:[]")
 
-        if '#' in base_url:
-            base_url = base_url.split('#')[0]
+        # Append rather than replace: a conforming browser hands the page the
+        # fragment up to `:~:` and keeps the directive to itself, so an anchor
+        # the connector set (a Gmail message id, a heading) still resolves.
+        delimiter = (
+            FRAGMENT_DIRECTIVE_DELIMITER
+            if '#' in base_url
+            else f"#{FRAGMENT_DIRECTIVE_DELIMITER}"
+        )
 
-        return f"{base_url}#:~:text={encoded_start}{(',' + encoded_end) if encoded_end else ''}"
+        return f"{base_url}{delimiter}text={encoded_start}{(',' + encoded_end) if encoded_end else ''}"
 
     except Exception:
         return base_url

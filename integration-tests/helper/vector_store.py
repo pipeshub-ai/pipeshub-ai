@@ -142,7 +142,37 @@ class VectorStoreProbe:
         result = await client.get_collections()
         return sorted(c.name for c in result.collections)
 
-    async def _count_matching(self, condition: qmodels.FieldCondition) -> int:
+    async def dense_size(self, collection: str = "records") -> int | None:
+        """Width of the collection's dense vectors, or None if it does not exist.
+
+        This is what the product rebuilds on an embedding model change, and
+        what every upsert has to match.
+        """
+        client = await self._conn()
+        try:
+            info = await client.get_collection(collection)
+        except Exception as exc:
+            if _is_missing_collection(exc):
+                return None
+            raise VectorProbeUnavailable(
+                f"Could not read collection {collection!r}: {exc}"
+            ) from exc
+        vectors = info.config.params.vectors
+        if isinstance(vectors, dict):
+            params = vectors.get("dense") or next(iter(vectors.values()), None)
+        else:
+            params = vectors
+        if params is None:
+            raise VectorProbeUnavailable(
+                f"Collection {collection!r} has no dense vector configured: {vectors!r}"
+            )
+        return int(params.size)
+
+    async def _count_matching(
+        self,
+        condition: qmodels.FieldCondition,
+        must_not: list[qmodels.FieldCondition] | None = None,
+    ) -> int:
         """Total points matching a condition across every collection.
 
         Retried once on a fresh client: the probe is shared by a whole session,
@@ -150,20 +180,24 @@ class VectorStoreProbe:
         restarting under it. A second failure is a real one.
         """
         try:
-            return await self._count_matching_once(condition)
+            return await self._count_matching_once(condition, must_not)
         except Exception as exc:  # noqa: BLE001 - re-raised below if a new client fails too
             logger.info("Reconnecting to the vector database after: %s", exc)
             await self.close()
-            return await self._count_matching_once(condition)
+            return await self._count_matching_once(condition, must_not)
 
-    async def _count_matching_once(self, condition: qmodels.FieldCondition) -> int:
+    async def _count_matching_once(
+        self,
+        condition: qmodels.FieldCondition,
+        must_not: list[qmodels.FieldCondition] | None = None,
+    ) -> int:
         client = await self._conn()
         total = 0
         for name in await self.collections():
             try:
                 result = await client.count(
                     collection_name=name,
-                    count_filter=qmodels.Filter(must=[condition]),
+                    count_filter=qmodels.Filter(must=[condition], must_not=must_not or []),
                     exact=True,
                 )
             except Exception as exc:
@@ -188,6 +222,72 @@ class VectorStoreProbe:
                 match=qmodels.MatchValue(value=virtual_record_id),
             )
         )
+
+    async def count_content_chunks(self, virtual_record_id: str) -> int:
+        """The document's own chunks, without the record summary.
+
+        The summary is one extra vector written by the enrichment step, which
+        runs after the document is already searchable and is allowed to fail --
+        `events.py` catches it with "document remains searchable". So a document
+        holds one more vector when enrichment succeeded than when it did not,
+        and two copies of the same file can legitimately differ by exactly one.
+        Counting only the content chunks makes a difference mean what a reader
+        assumes it means: a chunk was lost, or written twice.
+        """
+        return await self._count_matching(
+            qmodels.FieldCondition(
+                key="metadata.virtualRecordId",
+                match=qmodels.MatchValue(value=virtual_record_id),
+            ),
+            must_not=[
+                qmodels.FieldCondition(
+                    key="metadata.isRecordSummary",
+                    match=qmodels.MatchValue(value=True),
+                )
+            ],
+        )
+
+    async def content_texts(self, virtual_record_id: str, limit: int = 256) -> list[str]:
+        """The text of the document's own chunks, so a test can tell old content from new.
+
+        A count cannot: an edit that re-indexes to the same number of chunks, or
+        leaves the old chunks behind next to the new ones, looks the same. The
+        summary vector is left out for the reason ``count_content_chunks`` gives.
+        """
+        client = await self._conn()
+        condition = qmodels.Filter(
+            must=[qmodels.FieldCondition(
+                key="metadata.virtualRecordId",
+                match=qmodels.MatchValue(value=virtual_record_id),
+            )],
+            must_not=[qmodels.FieldCondition(
+                key="metadata.isRecordSummary",
+                match=qmodels.MatchValue(value=True),
+            )],
+        )
+        texts: list[str] = []
+        for name in await self.collections():
+            offset = None
+            while len(texts) < limit:
+                try:
+                    points, offset = await client.scroll(
+                        collection_name=name,
+                        scroll_filter=condition,
+                        limit=min(64, limit - len(texts)),
+                        offset=offset,
+                        with_payload=True,
+                        with_vectors=False,
+                    )
+                except Exception as exc:
+                    if _is_missing_collection(exc):
+                        break
+                    raise VectorProbeUnavailable(
+                        f"Could not read points in collection {name!r}: {exc}"
+                    ) from exc
+                texts.extend(str((p.payload or {}).get("page_content") or "") for p in points)
+                if offset is None:
+                    break
+        return texts
 
     async def count_for_connector(self, connector_id: str) -> int:
         return await self._count_matching(

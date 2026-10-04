@@ -633,7 +633,7 @@ class TestSyncUserGroups:
         assert result == {}
 
     @pytest.mark.asyncio
-    async def test_group_error_continues(self):
+    async def test_group_error_maps_the_group_to_none(self):
         connector = _make_connector()
         connector._fetch_groups = AsyncMock(return_value=([
             {"groupId": "g1", "name": "devs"},
@@ -641,16 +641,16 @@ class TestSyncUserGroups:
         connector._fetch_group_members = AsyncMock(side_effect=Exception("API error"))
 
         result = await connector._sync_user_groups([])
-        assert result == {}
+        assert result == {"g1": None, "devs": None}, "members unknown, not empty"
 
     @pytest.mark.asyncio
-    async def test_returns_empty_on_exception(self):
+    async def test_returns_none_on_exception(self):
         connector = _make_connector()
         connector._fetch_groups = AsyncMock(side_effect=Exception("total failure"))
         connector.notify = AsyncMock()
 
         result = await connector._sync_user_groups([])
-        assert result == {}
+        assert result is None
         connector.notify.assert_awaited_once()
 
 
@@ -2131,11 +2131,11 @@ class TestFetchProjectPermissionScheme:
         assert len(permissions) == 0
 
     @pytest.mark.asyncio
-    async def test_application_role_forbidden_grants_creator(self):
-        """When 403 flag is set, grant configuring user instead of ORG."""
+    async def test_application_role_forbidden_grants_authenticated_jira_account(self):
+        """When 403 flag is set, grant the authenticated Jira account instead of ORG."""
         connector = _make_connector()
         connector._app_roles_forbidden = True
-        connector.creator_email = "admin@example.com"
+        connector._authenticated_jira_email = "admin@example.com"
         mock_ds = MagicMock()
         mock_ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response_fullcov(200, {"id": 1}))
         mock_ds.get_permission_scheme_grants = AsyncMock(return_value=_make_mock_response_fullcov(200, {
@@ -2159,7 +2159,7 @@ class TestFetchProjectPermissionScheme:
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         permissions = await connector._fetch_project_permission_scheme("PROJ")
-        assert permissions == []
+        assert permissions is None, "no owner email to fall back to: keep what is stored"
 
     @pytest.mark.asyncio
     async def test_grants_fetch_failure(self):

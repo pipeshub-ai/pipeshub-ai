@@ -2550,7 +2550,8 @@ class TestStreamFromDrive:
             mock_stream.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_stream_from_drive_with_pdf_conversion(self, connector_fullcov):
+    @pytest.mark.parametrize("file_name", ["file.docx", "../../file.docx", "/etc/file.docx"])
+    async def test_stream_from_drive_with_pdf_conversion(self, connector_fullcov, file_name):
         mock_drive_client = MagicMock()
         mock_service = MagicMock()
         mock_drive_client.get_client.return_value = mock_service
@@ -2579,10 +2580,12 @@ class TestStreamFromDrive:
         ) as mock_stream:
             mock_stream.return_value = MagicMock()
             result = await connector_fullcov._stream_from_drive(
-                "drive-id", record, "file.docx", "application/msword",
+                "drive-id", record, file_name, "application/msword",
                 convertTo=MimeTypes.PDF.value,
             )
             mock_stream.assert_called_once()
+            path, temp_dir = connector_fullcov._convert_to_pdf.await_args.args
+            assert os.path.dirname(path) == temp_dir
 
     @pytest.mark.asyncio
     async def test_stream_from_drive_client_failure_no_credentials(self, connector_fullcov):
@@ -2884,7 +2887,8 @@ class TestStreamAttachmentRecord:
             )
 
     @pytest.mark.asyncio
-    async def test_attachment_with_pdf_conversion(self, connector_fullcov):
+    @pytest.mark.parametrize("file_name", ["file.docx", "../../file.docx", "/etc/file.docx"])
+    async def test_attachment_with_pdf_conversion(self, connector_fullcov, file_name):
         gmail_service = MagicMock()
         file_data = base64.urlsafe_b64encode(b"file content").decode()
         gmail_service.users().messages().attachments().get().execute.return_value = {
@@ -2917,10 +2921,12 @@ class TestStreamAttachmentRecord:
         ) as mock_stream:
             mock_stream.return_value = MagicMock()
             await connector_fullcov._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "file.docx", "application/msword",
+                gmail_service, "msg-1~1", record, file_name, "application/msword",
                 convertTo=MimeTypes.PDF.value,
             )
             mock_stream.assert_called()
+            path, temp_dir = connector_fullcov._convert_to_pdf.await_args.args
+            assert os.path.dirname(path) == temp_dir
 
     @pytest.mark.asyncio
     async def test_message_id_mismatch_warning(self, connector_fullcov):

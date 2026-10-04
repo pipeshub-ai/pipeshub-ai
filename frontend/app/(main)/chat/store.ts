@@ -1617,10 +1617,10 @@ export function getEffectiveModel(
 
 /**
  * Whether `model` is flagged `isReasoning` in the model catalog fetched for
- * `ctxKey`. Used to gate the client-side `DEFAULT_REASONING_EFFORT` fallback —
- * sending an effort value for a non-reasoning model is harmless server-side
- * (the LLM factory ignores it), but omitting it keeps outgoing payloads clean
- * for models that don't support the concept at all.
+ * `ctxKey`. Used to gate sending an agent's default effort and the picker's
+ * displayed default — sending an effort value for a non-reasoning model is
+ * harmless server-side (the LLM factory ignores it), but omitting it keeps
+ * outgoing payloads clean for models that don't support the concept at all.
  */
 export function isModelReasoningCapable(
   ctxKey: string,

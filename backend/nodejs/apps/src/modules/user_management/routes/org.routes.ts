@@ -26,7 +26,7 @@ export const OrgCreationBody = z
       .min(8, 'Minimum 8 characters password required')
       .refine(passwordValidator, {
         message:
-          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number and one special character',
+          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number and one special character, and be no longer than 72 bytes',
       }),
     sendEmail: z.boolean().optional(),
     permanentAddress: z

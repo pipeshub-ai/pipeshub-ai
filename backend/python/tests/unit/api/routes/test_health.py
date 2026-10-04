@@ -1,4 +1,5 @@
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -77,7 +78,7 @@ class TestLlmHealthCheck:
             )
 
         assert resp.status_code == 500
-        assert "LLM failed" in resp.body.decode()
+        assert "LLM failed" not in resp.body.decode()  # logged, never returned
 
 
 class TestInitializeEmbeddingModel:
@@ -523,7 +524,7 @@ class TestPerformLlmHealthCheck:
         body = resp.body.decode()
         assert resp.status_code == 500
         assert "doesn't support images" not in body
-        assert "Rate limit" in body
+        assert "Rate limit" not in body  # the provider's text is logged, never returned
 
     @pytest.mark.asyncio
     async def test_multimodal_both_fail(self):
@@ -901,7 +902,7 @@ class TestInitializeEmbeddingModelExtraEdgeCases:
             with pytest.raises(HTTPException) as exc_info:
                 await initialize_embedding_model(mock_request, configs)
             assert exc_info.value.status_code == 500
-            assert "No default embedding model found" in str(exc_info.value.detail)
+            assert "couldn't start" in str(exc_info.value.detail)
 
     @pytest.mark.asyncio
     async def test_dense_embeddings_none_after_try_block(self, mock_request):
@@ -1076,7 +1077,7 @@ class TestPerformEmbeddingHealthCheckExtraEdgeCases:
 
         assert resp.status_code == 500
         body = resp.body.decode()
-        assert "embed fail" in body
+        assert "embed fail" not in body  # logged, never returned
 
     @pytest.mark.asyncio
     async def test_collection_info_falsy(self, mock_request):
@@ -1184,7 +1185,7 @@ class TestLlmHealthCheckFullCoverage:
             )
 
         assert resp.status_code == 500
-        assert "LLM failed" in resp.body.decode()
+        assert "LLM failed" not in resp.body.decode()  # logged, never returned
 
 
 class TestInitializeEmbeddingModelFullCoverage:
@@ -1587,7 +1588,7 @@ class TestPerformLlmHealthCheckFullCoverage:
         body = resp.body.decode()
         assert resp.status_code == 500
         assert "doesn't support images" not in body
-        assert "Rate limit" in body
+        assert "Rate limit" not in body  # the provider's text is logged, never returned
 
     @pytest.mark.asyncio
     async def test_multimodal_both_fail(self):
@@ -2031,7 +2032,7 @@ class TestPerformImageGenerationHealthCheck:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_openrouter_bad_api_key_returns_500(self):
+    async def test_openrouter_bad_api_key_is_a_settings_error(self):
         logger = MagicMock()
         mock_adapter = MagicMock()
 
@@ -2049,10 +2050,11 @@ class TestPerformImageGenerationHealthCheck:
             resp = await perform_image_generation_health_check(
                 self._cfg("openRouter", model="bytedance-seed/seedream-4.5"), logger
             )
-        assert resp.status_code == 500
+        assert resp.status_code == 400
+        assert "API key" in json.loads(resp.body)["message"]
 
     @pytest.mark.asyncio
-    async def test_openrouter_network_error_returns_500(self):
+    async def test_openrouter_network_error_is_an_unreachable_endpoint(self):
         logger = MagicMock()
         mock_adapter = MagicMock()
 
@@ -2062,12 +2064,14 @@ class TestPerformImageGenerationHealthCheck:
         mock_http.get = AsyncMock(side_effect=RuntimeError("connection refused"))
 
         with patch(f"{MODULE}.get_image_generation_model", return_value=mock_adapter), \
-             patch("httpx.AsyncClient", return_value=mock_http):
+             patch("httpx.AsyncClient", return_value=mock_http), \
+             patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=True):
             from app.api.routes.health import perform_image_generation_health_check
             resp = await perform_image_generation_health_check(
                 self._cfg("openRouter", model="bytedance-seed/seedream-4.5"), logger
             )
-        assert resp.status_code == 500
+        assert resp.status_code == 400
+        assert json.loads(resp.body)["details"]["error_code"] == "endpoint_unreachable"
 
 
 # ============================================================================
@@ -2191,7 +2195,7 @@ class TestLlmHealthCheckNeedsOutbound:
             resp = await perform_llm_health_check(config, logger)
 
         probe.assert_not_called()
-        assert resp.status_code == 500
+        assert resp.status_code == 400
         assert "outbound_connectivity" not in resp.body.decode()
 
     def test_litellm_proxy_localhost_does_not_need_outbound(self):
@@ -2230,7 +2234,7 @@ class TestLlmHealthCheckNeedsOutbound:
             resp = await perform_llm_health_check(config, logger)
 
         probe.assert_awaited()
-        assert resp.status_code == 500
+        assert resp.status_code == 400
         assert "outbound_connectivity" not in resp.body.decode()
 
     @pytest.mark.asyncio

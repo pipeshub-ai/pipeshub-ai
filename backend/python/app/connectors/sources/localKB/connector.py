@@ -73,6 +73,10 @@ class KnowledgeBaseConnector(BaseConnector):
     Since KBs are local storage, sync methods are no-ops.
     """
 
+    # Every user gets a KB, so one processor (and producer) per KB does not scale;
+    # the processor holds only org-level state, so the org's KBs share one.
+    shares_org_processor = True
+
     def __init__(
         self,
         logger: Logger,

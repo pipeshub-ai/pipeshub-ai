@@ -175,6 +175,11 @@ export function TeamDetailSidebar({
     enabled: isDetailPanelOpen && isEditMode,
     idField: 'userId',
     limit: 50,
+      // Service accounts are offered here, each marked, because membership is
+    // how one is given anything to read — the create panel tells an
+    // administrator to grant access through groups and teams.
+    includeServiceAccounts: true,
+    serviceAccountBadge: t('workspace.serviceAccounts.memberBadge'),
   });
 
   // Exclude users who are already on the team (keep pending-add selections in the

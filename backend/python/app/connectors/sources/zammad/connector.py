@@ -1,6 +1,7 @@
 """Zammad Connector Implementation"""
 import base64
 import re
+from dataclasses import dataclass, field
 from collections import defaultdict
 from datetime import datetime, timezone
 from logging import Logger
@@ -97,6 +98,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.sources.client.zammad.zammad import (
     ZammadClient,
 )
@@ -110,6 +112,75 @@ ZAMMAD_CONFIG_PATH = "/services/connectors/{connector_id}/config"
 BATCH_SIZE_KB_ANSWERS = 50
 ATTACHMENT_ID_PARTS_COUNT = 3
 KB_ANSWER_ATTACHMENT_PARTS_COUNT = 2
+TICKET_ID_LISTING_PAGE_SIZE = 50
+# Held tickets counted per call. Elasticsearch's _count is exact at any size; a chunk
+# that comes up short is listed, so bigger means fewer counts but longer listings.
+TICKET_ID_COUNT_CHUNK = 1_000
+# Elasticsearch refuses a search whose offset + limit passes index.max_result_window.
+SEARCH_RESULT_WINDOW = 10_000
+# Syncs in a row one version of a ticket may fail to read before the group checkpoint
+# moves past it. Scheduled syncs run hourly by default, so three spans a few hours:
+# long enough for an outage or rate limit to clear, short enough that one ticket
+# Zammad always refuses doesn't make every sync re-read a growing backlog.
+MAX_TICKET_READ_ATTEMPTS = 3
+# Narrowest updated_at window a group's ticket search is split into (queries use whole seconds).
+MIN_SPLIT_WINDOW_MS = 60_000
+GRAPH_RECORDS_PAGE_SIZE = 500
+FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup:excluded_groups"
+# Attachment records are "<ticket>_<article>_<attachment>".
+TICKET_ATTACHMENT_ID_PATTERN = re.compile(r"^(\d+)_\d+_\d+$")
+
+
+@dataclass(frozen=True)
+class BurstResume:
+    """Where to pick up an updated_at window too dense to split, read by ticket id.
+
+    Every ticket in [low, high] with an id below ``next_id`` has been read.
+    """
+
+    low: int
+    high: int
+    next_id: int
+
+
+@dataclass
+class TicketReadFailures:
+    """Tickets of one group that failed to read, and for how many syncs in a row.
+
+    A version is ``"<ticket id>@<updated_at>"``, so a ticket edited in Zammad
+    starts a fresh count. ``failing`` holds the checkpoint back; a version that
+    reached MAX_TICKET_READ_ATTEMPTS is ``given_up`` and no longer does.
+    """
+
+    earlier: dict[str, int] = field(default_factory=dict)
+    failing: dict[str, str] = field(default_factory=dict)
+    given_up: dict[str, int] = field(default_factory=dict)
+    read: set[str] = field(default_factory=set)
+
+    def counts_to_keep(self, *, listing_complete: bool) -> dict[str, int]:
+        # After a complete read the checkpoint has passed every version not failing now.
+        counts = {} if listing_complete else {
+            version: count for version, count in self.earlier.items() if version not in self.read
+        }
+        for version in self.failing.values():
+            counts[version] = self.earlier.get(version, 0) + 1
+        if not listing_complete:
+            counts.update(dict.fromkeys(self.given_up, MAX_TICKET_READ_ATTEMPTS))
+        return counts
+
+
+class ZammadReadError(Exception):
+    """A read from Zammad failed, so what depends on it must wait for the next sync.
+
+    ``read_until`` is the updated_at below which every ticket was read, when known;
+    ``burst`` says how far a dense window was read by id.
+    """
+
+    def __init__(self, message: str, read_until: int | None = None, burst: BurstResume | None = None) -> None:
+        super().__init__(message)
+        self.read_until = read_until
+        self.burst = burst
+
 
 # Zammad link type to RecordRelations mapping
 # Zammad supports: normal, parent, child
@@ -266,6 +337,13 @@ class ZammadConnector(BaseConnector):
         # Filter collections (initialized in run_sync)
         self.sync_filters: Any = None
         self.indexing_filters: Any = None
+        # Ids of groups the applied group filter leaves out; None until a complete
+        # group listing has been read, so a failed listing removes nothing.
+        self._filter_excluded_group_ids: set[str] | None = None
+        # Ids of the groups synced as RecordGroups, under the same rule.
+        self._synced_group_ids: set[str] | None = None
+        # Zammad before 6.5 has no only_total_count; then reconciliation lists every held ticket.
+        self._ticket_count_unsupported = False
 
     async def init(self) -> bool:
         """
@@ -413,6 +491,7 @@ class ZammadConnector(BaseConnector):
             # Store filters for use in sync methods
             self.sync_filters = sync_filters
             self.indexing_filters = indexing_filters
+            self._ticket_count_unsupported = False
 
             # Step 1: Fetch and sync users
             self.logger.info("👤 Step 1: Syncing users...")
@@ -442,6 +521,8 @@ class ZammadConnector(BaseConnector):
             # Step 5: Sync tickets (linked to group RecordGroups via group_id)
             self.logger.info("🎫 Step 5: Syncing tickets...")
             await self._sync_tickets_for_groups(group_record_groups)
+
+            await self._remove_tickets_in_excluded_groups()
 
             # Step 6: Sync knowledge base (always fetch, indexing filters control indexing_status)
             self.logger.info("📚 Step 6: Syncing knowledge base...")
@@ -613,13 +694,20 @@ class ZammadConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         page = 1
         per_page = 100
+        self._filter_excluded_group_ids = None
+        self._synced_group_ids = None
+        excluded_group_ids: set[str] = set()
+        synced_group_ids: set[str] = set()
+        listing_complete = True
 
         while True:
             response = await datasource.list_groups(page=page, per_page=per_page)
 
-            if not response.success or not response.data:
-                if page == 1:
-                    self.logger.warning("Failed to fetch groups from Zammad")
+            if not response.success:
+                listing_complete = False
+                self.logger.warning(f"Failed to fetch groups from Zammad (page {page})")
+                break
+            if not response.data:
                 break
 
             groups_data = response.data
@@ -634,12 +722,12 @@ class ZammadConnector(BaseConnector):
                 group_name = group_data.get("name", "")
                 active = group_data.get("active", True)
 
-                if not active or not group_id or not group_name:
+                if group_id and not self._is_group_allowed_by_filter(str(group_id)):
+                    excluded_group_ids.add(str(group_id))
+                    self.logger.debug(f"⏭️ Skipping group {group_id} ({group_name}) - excluded by filter")
                     continue
 
-                # Apply group_ids filter early - skip groups that don't match the filter
-                if not self._is_group_allowed_by_filter(str(group_id)):
-                    self.logger.debug(f"⏭️ Skipping group {group_id} ({group_name}) - excluded by filter")
+                if not active or not group_id or not group_name:
                     continue
 
                 # Parse timestamps
@@ -676,6 +764,7 @@ class ZammadConnector(BaseConnector):
                 ]
 
                 record_groups.append((record_group, permissions))
+                synced_group_ids.add(str(group_id))
 
                 # 2. Create AppUserGroup for membership tracking
                 user_group = AppUserGroup(
@@ -719,6 +808,9 @@ class ZammadConnector(BaseConnector):
 
             page += 1
 
+        if listing_complete:
+            self._filter_excluded_group_ids = excluded_group_ids
+            self._synced_group_ids = synced_group_ids
         self.logger.info(
             f"📥 Fetched {len(user_groups)} groups, "
             f"created {len(record_groups)} RecordGroups and {len(user_groups)} UserGroups"
@@ -851,6 +943,8 @@ class ZammadConnector(BaseConnector):
 
                 # Read group-level sync point (using group name as key)
                 last_sync_time = await self._get_group_sync_checkpoint(group_name)
+                burst_resume = await self._get_burst_resume(group_name)
+                failures = TicketReadFailures(earlier=await self._get_read_failures(group_name))
 
                 if last_sync_time:
                     self.logger.info(f"🔄 Incremental sync for group {group_name} from {last_sync_time}")
@@ -861,51 +955,70 @@ class ZammadConnector(BaseConnector):
                 total_tickets = 0
                 total_attachments = 0
                 max_ticket_updated_at: Optional[int] = None
+                listing_complete = True
 
-                async for batch_records in self._fetch_tickets_for_group_batch(
-                    group_id=int(group_id),
-                    group_name=group_name,
-                    last_sync_time=last_sync_time
-                ):
-                    if not batch_records:
-                        continue
+                try:
+                    async for batch_records in self._fetch_tickets_for_group_batch(
+                        group_id=int(group_id),
+                        group_name=group_name,
+                        last_sync_time=last_sync_time,
+                        burst_resume=burst_resume,
+                        failures=failures,
+                    ):
+                        if not batch_records:
+                            continue
 
-                    # Count tickets vs attachments separately
-                    batch_tickets = 0
-                    batch_attachments = 0
-                    for record, _ in batch_records:
-                        if isinstance(record, TicketRecord):
-                            batch_tickets += 1
-                            # Track max updated_at from tickets for sync point
-                            if record.source_updated_at:
-                                if max_ticket_updated_at is None or record.source_updated_at > max_ticket_updated_at:
-                                    max_ticket_updated_at = record.source_updated_at
+                        # Count tickets vs attachments separately
+                        batch_tickets = 0
+                        batch_attachments = 0
+                        for record, _ in batch_records:
+                            if isinstance(record, TicketRecord):
+                                batch_tickets += 1
+                                # Track max updated_at from tickets for sync point
+                                if record.source_updated_at:
+                                    if max_ticket_updated_at is None or record.source_updated_at > max_ticket_updated_at:
+                                        max_ticket_updated_at = record.source_updated_at
+                            else:
+                                # Assume it's an attachment (FileRecord)
+                                batch_attachments += 1
+
+                        # Process batch
+                        total_tickets += batch_tickets
+                        total_attachments += batch_attachments
+                        await self.data_entities_processor.on_new_records(batch_records)
+                        if batch_attachments > 0:
+                            self.logger.debug(f"📝 Synced batch: {batch_tickets} tickets, {batch_attachments} attachments for group {group_name}")
                         else:
-                            # Assume it's an attachment (FileRecord)
-                            batch_attachments += 1
+                            self.logger.debug(f"📝 Synced batch: {batch_tickets} tickets for group {group_name}")
+                except ZammadReadError as e:
+                    listing_complete = False
+                    self.logger.warning(
+                        f"⚠️ Incomplete ticket read for group {group_name}; the next sync reads again from the last complete window: {e}"
+                    )
+                    if e.read_until and e.read_until != last_sync_time:
+                        await self._update_group_sync_checkpoint(group_name, e.read_until)
+                    if e.burst is not None and e.burst != burst_resume:
+                        await self._save_burst_resume(group_name, e.burst)
 
-                    # Process batch
-                    total_tickets += batch_tickets
-                    total_attachments += batch_attachments
-                    await self.data_entities_processor.on_new_records(batch_records)
-                    if batch_attachments > 0:
-                        self.logger.debug(f"📝 Synced batch: {batch_tickets} tickets, {batch_attachments} attachments for group {group_name}")
-                    else:
-                        self.logger.debug(f"📝 Synced batch: {batch_tickets} tickets for group {group_name}")
+                if failures.given_up:
+                    max_ticket_updated_at = max(max_ticket_updated_at or 0, *failures.given_up.values())
+                kept_failures = failures.counts_to_keep(listing_complete=listing_complete)
+                if kept_failures != failures.earlier:
+                    await self._save_read_failures(group_name, kept_failures)
 
-                    # Update sync point after each batch (fault tolerance)
-                    if max_ticket_updated_at:
-                        await self._update_group_sync_checkpoint(group_name, max_ticket_updated_at + 1000)
-
-                # Final sync point update: Only update to current time if we processed tickets
-                if total_tickets > 0:
-                    # If max_ticket_updated_at wasn't set (edge case), use current time as fallback
-                    if not max_ticket_updated_at:
-                        self.logger.warning(f"Processed {total_tickets} tickets but max_ticket_updated_at not set, using current time")
-                        await self._update_group_sync_checkpoint(group_name)
-                    # else: max_ticket_updated_at was already set above, no need to update again
-                else:
+                # Pages come newest first, so the checkpoint moves only once every
+                # page and every ticket has been read.
+                if listing_complete and burst_resume is not None:
+                    await self._save_burst_resume(group_name, None)
+                if listing_complete and max_ticket_updated_at:
+                    await self._update_group_sync_checkpoint(group_name, max_ticket_updated_at + 1000)
+                elif listing_complete and total_tickets > 0:
+                    self.logger.warning(f"Processed {total_tickets} tickets but max_ticket_updated_at not set, using current time")
+                    await self._update_group_sync_checkpoint(group_name)
+                elif listing_complete:
                     self.logger.debug(f"No tickets found for group {group_name}, keeping existing checkpoint to avoid skipping older tickets")
+
+                await self._remove_tickets_gone_from_group(int(group_id), group_name)
 
                 total_tickets_all_groups += total_tickets
                 total_attachments_all_groups += total_attachments
@@ -923,149 +1036,572 @@ class ZammadConnector(BaseConnector):
         else:
             self.logger.info(f"✅ Total: Synced {total_tickets_all_groups} tickets across {len(group_record_groups)} groups")
 
+    def _date_filter_bounds(self, key: SyncFilterKey) -> tuple[int | None, int | None]:
+        date_filter = self.sync_filters.get(key) if self.sync_filters else None
+        if not date_filter:
+            return None, None
+        return date_filter.get_value(default=(None, None))
+
+    def _build_ticket_search_query(
+        self, group_id: int, last_sync_time: int | None, until: int | None = None
+    ) -> str:
+        """Zammad search query for a group's tickets within the sync date filters."""
+        query_parts = [f"group_id:{group_id}"]
+        modified_after, modified_before = self._date_filter_bounds(SyncFilterKey.MODIFIED)
+        created_after, created_before = self._date_filter_bounds(SyncFilterKey.CREATED)
+
+        if last_sync_time:
+            modified_after = max(modified_after, last_sync_time) if modified_after else last_sync_time
+        if until:
+            modified_before = min(modified_before, until) if modified_before else until
+
+        def _iso(epoch_ms: int) -> str:
+            return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        if modified_after:
+            query_parts.append(f"updated_at:[{_iso(modified_after)} TO *]")
+        if modified_before:
+            query_parts.append(f"updated_at:[* TO {_iso(modified_before)}]")
+        if created_after:
+            query_parts.append(f"created_at:[{_iso(created_after)} TO *]")
+        if created_before:
+            query_parts.append(f"created_at:[* TO {_iso(created_before)}]")
+        return " AND ".join(query_parts)
+
+    def _window_bounds(self, low: int | None, high: int | None) -> tuple[int, int]:
+        lo = low if low is not None else (self._date_filter_bounds(SyncFilterKey.MODIFIED)[0] or 0)
+        hi = high if high is not None else get_epoch_timestamp_in_ms()
+        return lo, hi
+
+    def _split_window(self, low: int | None, high: int | None) -> list[tuple[int | None, int | None]] | None:
+        """Halves of an updated_at window, or None when it is already as narrow as it may get."""
+        lo, hi = self._window_bounds(low, high)
+        if hi - lo < 2 * MIN_SPLIT_WINDOW_MS:
+            return None
+        mid = (lo + hi) // 2
+        return [(low, mid), (mid, high)]
+
     async def _fetch_tickets_for_group_batch(
         self,
         group_id: int,
         group_name: str,
-        last_sync_time: Optional[int]
+        last_sync_time: Optional[int],
+        burst_resume: BurstResume | None = None,
+        failures: TicketReadFailures | None = None,
     ) -> AsyncGenerator[List[Tuple[Record, List[Permission]]], None]:
         """
         Fetch tickets for a specific group with pagination and incremental sync support.
+
+        One search can page through only SEARCH_RESULT_WINDOW tickets, so a
+        group with more is read in updated_at windows, halved until each fits.
+        A window too narrow to halve (a bulk edit that stamped one time on that
+        many tickets) is read in ticket-id ranges instead. A failed page or
+        ticket raises ``ZammadReadError`` carrying ``read_until``: every ticket
+        updated before it has been read, and ``burst``: how far a dense window
+        was read by id, so the next sync carries on from there. A ticket that
+        has failed on MAX_TICKET_READ_ATTEMPTS syncs no longer holds it back.
 
         Args:
             group_id: Zammad group ID to fetch tickets for
             group_name: Group name for logging
             last_sync_time: Last sync timestamp (epoch ms) or None for full sync
+            failures: The group's ticket read failures, updated in place
 
         Yields:
             Batches of (Record, permissions) tuples (includes TicketRecords and FileRecords)
+
+        Raises:
+            ZammadReadError: a search failed or a page repeated, so the listing did not reach its end
         """
         datasource = await self._get_fresh_datasource()
         limit = 50
-        offset = 0
         batch_size = 50
+        windows: list[tuple[int | None, int | None]] = [(last_sync_time, None)]
+        # A dense window a failed sync stopped in is finished first, from the id it reached.
+        resume_from: dict[tuple[int | None, int | None], int] = {}
+        if burst_resume is not None and self._window_bounds(last_sync_time, None)[0] == burst_resume.low:
+            windows = [(last_sync_time, burst_resume.high), (burst_resume.high, None)]
+            resume_from[windows[0]] = burst_resume.next_id
+        read_until = last_sync_time
+        # Ticket id -> updated_at already written this sync; a split window reads some tickets twice.
+        written: dict[str, Any] = {}
+        failures = failures if failures is not None else TicketReadFailures()
 
-        # Build query: always filter by group_id
-        query_parts = [f"group_id:{group_id}"]
+        while windows:
+            low, high = windows.pop(0)
+            query = self._build_ticket_search_query(group_id, low, until=high)
+            self.logger.debug(f"Fetching tickets for group '{group_name}' with query: {query}")
+            offset = 0
+            overflowed = (low, high) in resume_from
+            previous_page_ids: set[str] | None = None
 
-        # Get modified date filter from sync_filters
-        modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED) if self.sync_filters else None
-        modified_after: Optional[int] = None
-        modified_before: Optional[int] = None
+            while not overflowed:
+                if offset + limit > SEARCH_RESULT_WINDOW:
+                    overflowed = True
+                    break
+                response = await datasource.search_tickets(query=query, limit=limit, offset=offset)
+                if not response.success:
+                    raise ZammadReadError(
+                        f"ticket search for group '{group_name}' failed at offset {offset}: "
+                        f"{response.error or response.message}",
+                        read_until=read_until,
+                    )
 
-        if modified_filter:
-            modified_after, modified_before = modified_filter.get_value(default=(None, None))
+                # search_tickets answers with a list of ticket objects, or fails.
+                tickets_data = response.data
+                if not isinstance(tickets_data, list):
+                    tickets_data = [tickets_data] if tickets_data else []
+                if not tickets_data:
+                    break
+                page_ids = {str(t.get("id")) for t in tickets_data}
+                if page_ids == previous_page_ids:
+                    raise ZammadReadError(
+                        f"Zammad returned the same {len(tickets_data)} tickets for group '{group_name}' "
+                        f"at offset {offset} as on the page before, so it is not paging. Stopped reading "
+                        f"this group's tickets here; the group's sync point stays below the tickets not read.",
+                        read_until=read_until,
+                    )
+                previous_page_ids = page_ids
+                if offset == 0 and len(tickets_data) >= limit:
+                    overflowed = await self._fills_search_window(datasource, query, group_name, read_until)
+                    if overflowed:
+                        break
 
-        # Get created date filter from sync_filters
-        created_filter = self.sync_filters.get(SyncFilterKey.CREATED) if self.sync_filters else None
-        created_after: Optional[int] = None
-        created_before: Optional[int] = None
+                self.logger.debug(f"Fetched {len(tickets_data)} tickets for group '{group_name}' from offset {offset}")
+                async for batch_records in self._ticket_batches(tickets_data, written, failures, group_name, batch_size):
+                    yield batch_records
+                if len(tickets_data) < limit:
+                    break
+                offset += limit
 
-        if created_filter:
-            created_after, created_before = created_filter.get_value(default=(None, None))
+            if overflowed:
+                halves = None if (low, high) in resume_from else self._split_window(low, high)
+                if halves is not None:
+                    windows[0:0] = halves
+                    continue
+                async for batch_records in self._read_dense_window(
+                    datasource, query, group_name, self._window_bounds(low, high), read_until,
+                    resume_from.get((low, high), 0), written, failures, limit, batch_size,
+                ):
+                    yield batch_records
+            if high is not None and not failures.failing:
+                read_until = high
 
-        # Determine modified_after from filter and/or incremental sync checkpoint
-        if last_sync_time:
-            # Use the greater of last_sync_time and modified_after filter
-            if modified_after:
-                modified_after = max(modified_after, last_sync_time)
-            else:
-                modified_after = last_sync_time
-
-        # Add modified date range filter (updated_at)
-        if modified_after:
-            dt = datetime.fromtimestamp(modified_after / 1000, tz=timezone.utc)
-            iso_format = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-            query_parts.append(f"updated_at:[{iso_format} TO *]")
-
-        if modified_before:
-            dt = datetime.fromtimestamp(modified_before / 1000, tz=timezone.utc)
-            iso_format = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-            query_parts.append(f"updated_at:[* TO {iso_format}]")
-
-        # Add created date range filter (created_at)
-        if created_after:
-            dt = datetime.fromtimestamp(created_after / 1000, tz=timezone.utc)
-            iso_format = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-            query_parts.append(f"created_at:[{iso_format} TO *]")
-
-        if created_before:
-            dt = datetime.fromtimestamp(created_before / 1000, tz=timezone.utc)
-            iso_format = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-            query_parts.append(f"created_at:[* TO {iso_format}]")
-
-        # Build final query
-        query = " AND ".join(query_parts)
-        self.logger.debug(f"Fetching tickets for group '{group_name}' with query: {query}")
-
-        while True:
-            # Use search_tickets for fetching
-            response = await datasource.search_tickets(
-                query=query,
-                limit=limit,
-                offset=offset
+        if failures.failing:
+            raise ZammadReadError(
+                f"tickets {', '.join(sorted(failures.failing))} in group '{group_name}' could not be read",
+                read_until=read_until,
             )
 
-            if not response.success:
-                self.logger.warning(f"Failed to fetch tickets for group '{group_name}' (offset {offset}): {response.message if hasattr(response, 'message') else 'Unknown error'}")
-                break
+    async def _fills_search_window(
+        self, datasource: ZammadDataSource, query: str, group_name: str, read_until: int | None,
+    ) -> bool:
+        """Whether ``query`` matches more tickets than one search can page through.
 
-            if not response.data:
-                self.logger.debug(f"No ticket data returned for group '{group_name}' at offset {offset}")
-                break
+        One read of the window's last slot answers it, instead of paging up to it.
+        """
+        probe = await datasource.search_tickets(query=query, limit=1, offset=SEARCH_RESULT_WINDOW - 1)
+        if not probe.success:
+            raise ZammadReadError(
+                f"ticket search for group '{group_name}' failed probing the result window: {probe.message}",
+                read_until=read_until,
+            )
+        return bool(probe.data)
 
-            # Response.data is now a list of ticket objects (already extracted from assets.Ticket)
-            tickets_data = response.data
-            if not isinstance(tickets_data, list):
-                tickets_data = [tickets_data] if tickets_data else []
-
-            if not tickets_data:
-                self.logger.debug(f"Empty tickets list for group '{group_name}' at offset {offset}")
-                break
-
-            self.logger.debug(f"Fetched {len(tickets_data)} tickets for group '{group_name}' from offset {offset}")
-
-            batch_records: List[Tuple[Record, List[Permission]]] = []
-
-            for ticket_data in tickets_data:
-                try:
-                    ticket_record = await self._transform_ticket_to_ticket_record(ticket_data)
-
-                    if ticket_record:
-                        # Set indexing status based on indexing filters
-                        if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.TICKETS):
-                            ticket_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-
-                        # Records inherit permissions from RecordGroup
-                        batch_records.append((ticket_record, []))
-
-                        # Always fetch attachments (sync filter controls fetching, indexing filter controls status)
-                        attachment_records = await self._fetch_ticket_attachments(
-                            ticket_data,
-                            ticket_record
-                        )
-                        batch_records.extend(attachment_records)
-
-                except Exception as e:
-                    ticket_id = ticket_data.get("id", "unknown")
-                    self.logger.error(f"❌ Error processing ticket {ticket_id}: {e}", exc_info=True)
-                    continue
-
-                # Yield batch when size reached
-                if len(batch_records) >= batch_size:
-                    yield batch_records
-                    batch_records = []
-
-            # Yield remaining records
-            if batch_records:
+    async def _ticket_batches(
+        self,
+        tickets_data: list[dict[str, Any]],
+        written: dict[str, Any],
+        failures: TicketReadFailures,
+        group_name: str,
+        batch_size: int,
+    ) -> AsyncGenerator[list[tuple[Record, list[Permission]]], None]:
+        """Records for one page of tickets, in batches; a ticket that fails is noted in ``failures``."""
+        batch_records: list[tuple[Record, list[Permission]]] = []
+        for ticket_data in tickets_data:
+            ticket_key = str(ticket_data.get("id", "unknown"))
+            updated_at = ticket_data.get("updated_at")
+            if ticket_key in written and written[ticket_key] == updated_at:
+                continue
+            version = f"{ticket_key}@{updated_at}"
+            try:
+                batch_records.extend(await self._ticket_records(ticket_data))
+                written[ticket_key] = updated_at
+                failures.failing.pop(ticket_key, None)
+                failures.given_up.pop(version, None)
+                failures.read.add(version)
+            except Exception as e:
+                if failures.earlier.get(version, 0) + 1 >= MAX_TICKET_READ_ATTEMPTS:
+                    failures.failing.pop(ticket_key, None)
+                    failures.given_up[version] = self._parse_zammad_datetime(updated_at or "")
+                    self.logger.error(
+                        f"❌ Ticket {ticket_key} in group '{group_name}' could not be read on "
+                        f"{MAX_TICKET_READ_ATTEMPTS} syncs in a row, so the sync moves past it "
+                        f"and it is read again when it next changes in Zammad. Last error: {e}",
+                        exc_info=True,
+                    )
+                else:
+                    failures.failing[ticket_key] = version
+                    self.logger.error(f"❌ Error processing ticket {ticket_key}: {e}", exc_info=True)
+                continue
+            if len(batch_records) >= batch_size:
                 yield batch_records
+                batch_records = []
+        if batch_records:
+            yield batch_records
 
-            # Check if we got less than limit, meaning we're done
-            if len(tickets_data) < limit:
-                break
+    async def _read_dense_window(
+        self,
+        datasource: ZammadDataSource,
+        query: str,
+        group_name: str,
+        bounds: tuple[int, int],
+        read_until: int | None,
+        next_id: int,
+        written: dict[str, Any],
+        failures: TicketReadFailures,
+        limit: int,
+        batch_size: int,
+    ) -> AsyncGenerator[list[tuple[Record, list[Permission]]], None]:
+        """Read an updated_at window that halving can't bring under the search window, by ticket id.
 
-            # Increment offset for next page
-            offset += limit
+        Each id range is at most SEARCH_RESULT_WINDOW - limit ids wide, so it
+        holds no more tickets than that and its pages never pass the window.
+        The read starts at ``next_id`` (every ticket in the window with a lower
+        id was read by an earlier sync), and stops, saying how far it got, at a
+        range that failed or held a ticket that couldn't be read.
+        """
+        low, high = bounds
+        span = SEARCH_RESULT_WINDOW - limit
+
+        def stopped(reason: str) -> ZammadReadError:
+            return ZammadReadError(
+                f"{reason} while reading group '{group_name}' by ticket id from {next_id}",
+                read_until=read_until,
+                burst=BurstResume(low, high, next_id),
+            )
+
+        while True:
+            probe = await datasource.search_tickets(query=f"{query} AND id:[{next_id} TO *]", limit=1, offset=0)
+            if not probe.success or not isinstance(probe.data, list):
+                raise stopped("a ticket search failed")
+            if not probe.data:
+                return
+            ranged = f"{query} AND id:[{next_id} TO {next_id + span - 1}]"
+            offset = 0
+            in_range: set[str] = set()
+            previous_page_ids: set[str] | None = None
+            while True:
+                response = await datasource.search_tickets(query=ranged, limit=limit, offset=offset)
+                if not response.success or not isinstance(response.data, list):
+                    raise stopped("a ticket search failed")
+                page_ids = {str(t.get("id")) for t in response.data}
+                if response.data and page_ids == previous_page_ids:
+                    raise stopped(f"Zammad returned the same {len(response.data)} tickets at offset {offset} as on the page before")
+                previous_page_ids = page_ids
+                in_range.update(str(t.get("id", "unknown")) for t in response.data)
+                async for batch_records in self._ticket_batches(
+                    response.data, written, failures, group_name, batch_size,
+                ):
+                    yield batch_records
+                if len(response.data) < limit:
+                    break
+                offset += limit
+            # Only this range's tickets hold it back; one from another window has its own.
+            failed_here = in_range & failures.failing.keys()
+            if failed_here:
+                raise stopped(f"tickets {', '.join(sorted(failed_here))} could not be read")
+            next_id += span
+
+    async def _get_read_failures(self, group_name: str) -> dict[str, int]:
+        data = await self.tickets_sync_point.read_sync_point(group_name) or {}
+        versions = data.get("read_failure_versions") or []
+        counts = data.get("read_failure_counts") or []
+        return {str(v): int(c) for v, c in zip(versions, counts)}
+
+    async def _save_read_failures(self, group_name: str, counts: dict[str, int]) -> None:
+        # Two flat lists: a Neo4j property can't hold a map.
+        await self.tickets_sync_point.update_sync_point(group_name, {
+            "read_failure_versions": list(counts),
+            "read_failure_counts": list(counts.values()),
+        })
+
+    async def _get_burst_resume(self, group_name: str) -> BurstResume | None:
+        data = await self.tickets_sync_point.read_sync_point(group_name) or {}
+        if not data.get("burst_next_id"):
+            return None
+        return BurstResume(int(data["burst_low"]), int(data["burst_high"]), int(data["burst_next_id"]))
+
+    async def _save_burst_resume(self, group_name: str, burst: BurstResume | None) -> None:
+        # The store merges fields, so clearing is an explicit write of zeros.
+        await self.tickets_sync_point.update_sync_point(group_name, {
+            "burst_low": burst.low if burst else 0,
+            "burst_high": burst.high if burst else 0,
+            "burst_next_id": burst.next_id if burst else 0,
+        })
+
+    async def _ticket_records(self, ticket_data: dict[str, Any]) -> list[tuple[Record, list[Permission]]]:
+        """A ticket and its attachments, ready for ``on_new_records``; raises if its articles can't be read."""
+        ticket_record = await self._transform_ticket_to_ticket_record(ticket_data)
+        if not ticket_record:
+            return []
+        if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.TICKETS):
+            ticket_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        # Records inherit permissions from the group's RecordGroup.
+        return [(ticket_record, []), *await self._fetch_ticket_attachments(ticket_data, ticket_record)]
+
+    @staticmethod
+    def _ticket_id_of(record: Record) -> str | None:
+        """The Zammad ticket a ticket or ticket-attachment record belongs to, else None."""
+        external_id = record.external_record_id or ""
+        if record.record_type == RecordType.TICKET:
+            return external_id if external_id.isdigit() else None
+        match = TICKET_ATTACHMENT_ID_PATTERN.match(external_id)
+        return match.group(1) if match else None
+
+    async def _records_by_ticket_in_group(self, external_group_id: str) -> dict[str, list[str]]:
+        """Record ids of each ticket held in a group record group: its attachments, then the ticket."""
+        by_ticket: dict[str, list[str]] = defaultdict(list)
+        after_key: str | None = None
+        while True:
+            # The trash too: a ticket the search no longer returns is removed even if already trashed.
+            page = await self.data_entities_processor.get_records_in_record_group(
+                self.connector_id, external_group_id, GRAPH_RECORDS_PAGE_SIZE, after_key,
+                visibility=RecordVisibility.ALL,
+            )
+            for record in page:
+                ticket_id = self._ticket_id_of(record)
+                if not ticket_id:
+                    continue
+                # Ticket last: a failed delete leaves the ticket for the next sync to find again.
+                if record.record_type == RecordType.TICKET:
+                    by_ticket[ticket_id].append(record.id)
+                else:
+                    by_ticket[ticket_id].insert(0, record.id)
+            if len(page) < GRAPH_RECORDS_PAGE_SIZE:
+                return by_ticket
+            after_key = page[-1].id
+
+    @staticmethod
+    def _id_ranges(ticket_ids: list[int], span: int) -> list[tuple[int, int]]:
+        """Contiguous id ranges covering ``ticket_ids`` (sorted), each at most ``span`` ids wide."""
+        ranges: list[tuple[int, int]] = []
+        for ticket_id in ticket_ids:
+            if ranges and ticket_id - ranges[-1][0] < span:
+                ranges[-1] = (ranges[-1][0], ticket_id)
+            else:
+                ranges.append((ticket_id, ticket_id))
+        return ranges
+
+    async def _list_ticket_ids_in_range(self, query: str, low: int, high: int) -> set[str] | None:
+        """Ids of the tickets matching ``query`` with ids in [low, high], or None if a page failed."""
+        datasource = await self._get_fresh_datasource()
+        ranged = f"{query} AND id:[{low} TO {high}]"
+        ticket_ids: set[str] = set()
+        offset = 0
+        while True:
+            response = await datasource.search_tickets(
+                query=ranged, limit=TICKET_ID_LISTING_PAGE_SIZE, offset=offset
+            )
+            if not response.success or not isinstance(response.data, list):
+                return None
+            ticket_ids.update(
+                str(t["id"]) for t in response.data if isinstance(t, dict) and t.get("id") is not None
+            )
+            if len(response.data) < TICKET_ID_LISTING_PAGE_SIZE:
+                return ticket_ids
+            offset += TICKET_ID_LISTING_PAGE_SIZE
+
+    async def _unlisted_ticket_ids(self, group_id: int, group_name: str, held: list[str]) -> list[str]:
+        """The held tickets Zammad's search does not return for this group.
+
+        Held tickets are first counted in chunks, among their own ids: a chunk
+        whose count matches is fully listed, which is the usual case and costs
+        one call. Only a chunk that comes up short (or a Zammad that can't
+        count) is listed, in id ranges around its tickets, each narrow enough
+        that its pages stay inside Elasticsearch's result window. A range that
+        fails is left out of the answer, so its tickets are kept this sync.
+        """
+        query = self._build_ticket_search_query(group_id, last_sync_time=None)
+        # A range of this many ids holds at most this many tickets, so offset + limit never passes the window.
+        span = SEARCH_RESULT_WINDOW - TICKET_ID_LISTING_PAGE_SIZE
+        held_ids = sorted(int(t) for t in held)
+        unlisted: list[str] = []
+        for start in range(0, len(held_ids), TICKET_ID_COUNT_CHUNK):
+            chunk = held_ids[start:start + TICKET_ID_COUNT_CHUNK]
+            if await self._search_returns_all(query, chunk):
+                continue
+            for low, high in self._id_ranges(chunk, span):
+                listed = await self._list_ticket_ids_in_range(query, low, high)
+                if listed is None:
+                    self.logger.warning(
+                        f"Could not list tickets {low}-{high} of group '{group_name}'; keeping them this sync"
+                    )
+                    continue
+                unlisted.extend(str(t) for t in chunk if low <= t <= high and str(t) not in listed)
+        return unlisted
+
+    async def _search_returns_all(self, query: str, ticket_ids: list[int]) -> bool:
+        """Whether Zammad's search matches every one of ``ticket_ids`` for ``query``, by one count.
+
+        The count is taken among these ids only, so it equals their number
+        exactly when none is missing. False when it is lower, or when no count
+        could be had (a failed call, or a Zammad before 6.5): the caller lists.
+        """
+        if self._ticket_count_unsupported:
+            return False
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.count_tickets(query=query, ids=ticket_ids)
+        if not response.success:
+            return False
+        total = response.data.get("total_count") if isinstance(response.data, dict) else None
+        if not isinstance(total, int) or total > len(ticket_ids):
+            # No count, or one the ids didn't narrow: listing is the only safe answer from here on.
+            self._ticket_count_unsupported = True
+            return False
+        return total == len(ticket_ids)
+
+    def _passes_date_filters(self, ticket: dict[str, Any]) -> bool:
+        for key, field_name in ((SyncFilterKey.MODIFIED, "updated_at"), (SyncFilterKey.CREATED, "created_at")):
+            after, before = self._date_filter_bounds(key)
+            value = self._parse_zammad_datetime(ticket.get(field_name) or "")
+            if not value:
+                continue
+            if (after and value < after) or (before and value > before):
+                return False
+        return True
+
+    async def _read_back_ticket(self, ticket_id: str) -> tuple[bool, dict[str, Any] | None]:
+        """``(True, None)`` when Zammad says the ticket is gone, ``(True, ticket)`` when it is there.
+
+        Anything else, including a success whose body is not this ticket, is
+        ``(False, None)``: a read that failed.
+        """
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.get_ticket(int(ticket_id))
+        if response.status_code == HttpStatusCode.NOT_FOUND.value:
+            return True, None
+        ticket = response.data
+        if not response.success or not isinstance(ticket, dict) or str(ticket.get("id")) != ticket_id:
+            return False, None
+        return True, ticket
+
+    async def _settle_ticket(self, ticket_id: str, record_ids: list[str], held_in_group: str, reason: str) -> bool:
+        """Settle a held ticket its group no longer lists, or whose group the filter excludes.
+
+        A search listing can miss a ticket that still exists (the index lags
+        or is being rebuilt), so the ticket is read back first. It is removed
+        only when Zammad says it is gone or an applied filter leaves it out; a
+        ticket now in another synced group is written there. One now in a group
+        that isn't synced (inactive or nameless) has no RecordGroup to sit in
+        and no sync that would reach it again, so it is removed too. Returns
+        False when a read or a delete failed and the next sync must try again.
+        """
+        read, ticket = await self._read_back_ticket(ticket_id)
+        if not read:
+            return False
+        if ticket is not None and ticket.get("group_id") is None:
+            return True
+        if ticket is None or not self._is_group_allowed_by_filter(str(ticket["group_id"])) \
+                or not self._passes_date_filters(ticket):
+            return await self._delete_ticket_records(record_ids, reason)
+        if f"group_{ticket['group_id']}" == held_in_group:
+            return True
+        if self._synced_group_ids is None:
+            return False
+        if str(ticket["group_id"]) not in self._synced_group_ids:
+            return await self._delete_ticket_records(
+                record_ids, f"{reason}; it is now in group {ticket['group_id']}, which is not synced"
+            )
+        await self.data_entities_processor.on_new_records(await self._ticket_records(ticket))
+        return True
+
+    async def _delete_ticket_records(self, record_ids: list[str], reason: str) -> bool:
+        """Delete one ticket's records in order through the shared delete path.
+
+        Stops at the first failure so the ticket itself stays and the next sync
+        finds it and retries. Returns whether every record was removed.
+        """
+        for record_id in record_ids:
+            try:
+                await self.data_entities_processor.on_record_deleted(record_id)
+            except Exception as e:
+                self.logger.warning(f"Failed to remove record {record_id} ({reason}); retrying next sync: {e}")
+                return False
+        return True
+
+    async def _remove_tickets_gone_from_group(self, group_id: int, group_name: str) -> None:
+        """Remove tickets deleted in Zammad, or now outside the sync filters, from a synced group.
+
+        The incremental search only returns tickets updated since the checkpoint,
+        so a deleted ticket never appears in it. This checks the graph's tickets
+        against the group's search instead (see ``_unlisted_ticket_ids``). It reads everything afresh each sync,
+        so a failed read or delete is simply repeated next time.
+        """
+        external_group_id = f"group_{group_id}"
+        try:
+            by_ticket = await self._records_by_ticket_in_group(external_group_id)
+            if not by_ticket:
+                return
+            removed = 0
+            for ticket_id in await self._unlisted_ticket_ids(group_id, group_name, list(by_ticket)):
+                try:
+                    if await self._settle_ticket(
+                        ticket_id, by_ticket[ticket_id], external_group_id,
+                        f"ticket {ticket_id} left group '{group_name}'",
+                    ):
+                        removed += 1
+                except Exception as e:
+                    self.logger.warning(f"Could not settle ticket {ticket_id} of group '{group_name}': {e}")
+            if removed:
+                self.logger.info(f"🗑️ Settled {removed} tickets no longer listed in group '{group_name}'")
+        except Exception as e:
+            self.logger.warning(f"Could not check group '{group_name}' for deleted tickets: {e}", exc_info=True)
+
+    async def _remove_tickets_in_excluded_groups(self) -> None:
+        """Remove the tickets held in a group the applied group filter now leaves out.
+
+        Each ticket is read back first, so one that moved to a synced group is
+        written there instead of removed. The clean-up is remembered in a sync
+        point only when every ticket was settled; editing the filters deletes
+        the sync points, so the next sync cleans up again.
+        """
+        excluded = self._filter_excluded_group_ids
+        if not excluded:
+            return
+        wanted = sorted(excluded)
+        try:
+            done = await self.tickets_sync_point.read_sync_point(FILTER_CLEANUP_SYNC_POINT_KEY)
+            if done and done.get("excluded_group_ids") == wanted:
+                return
+            unsettled = 0
+            for group_id in wanted:
+                external_group_id = f"group_{group_id}"
+                by_ticket = await self._records_by_ticket_in_group(external_group_id)
+                if by_ticket:
+                    self.logger.info(
+                        f"🗑️ Settling {len(by_ticket)} tickets of group {group_id}, which the group filter excludes"
+                    )
+                for ticket_id, record_ids in by_ticket.items():
+                    try:
+                        settled = await self._settle_ticket(
+                            ticket_id, record_ids, external_group_id,
+                            f"group {group_id} excluded by filter",
+                        )
+                    except Exception as e:
+                        settled = False
+                        self.logger.warning(f"Could not settle ticket {ticket_id} of group {group_id}: {e}")
+                    unsettled += not settled
+            if unsettled:
+                self.logger.warning(
+                    f"{unsettled} tickets in filtered-out groups could not be settled; retrying next sync"
+                )
+                return
+            await self.tickets_sync_point.update_sync_point(
+                FILTER_CLEANUP_SYNC_POINT_KEY, {"excluded_group_ids": wanted}
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not remove tickets of filtered-out groups: {e}", exc_info=True)
 
     # ==================== ATTACHMENT HANDLING AND TRANSFORMATIONS ====================
 
@@ -1093,7 +1629,9 @@ class ZammadConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         response = await datasource.list_ticket_articles(ticket_id=ticket_id)
 
-        if not response.success or not response.data:
+        if not response.success or (isinstance(response.data, dict) and response.data.get("error")):
+            raise ZammadReadError(f"articles of ticket {ticket_id} could not be read: {response.message}")
+        if not response.data:
             return attachments
 
         articles = response.data

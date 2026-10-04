@@ -85,8 +85,9 @@ spec:
   resources:
     requests:
       storage: {{ .Values.arango.persistence.size }}
-  {{- if .Values.arango.persistence.storageClass }}
-  storageClassName: {{ .Values.arango.persistence.storageClass | quote }}
+  {{- $arangoClass := .Values.arango.persistence.storageClass | default .Values.global.storageClass }}
+  {{- if $arangoClass }}
+  storageClassName: {{ $arangoClass | quote }}
   {{- end }}
 {{- end }}
 {{- end }}

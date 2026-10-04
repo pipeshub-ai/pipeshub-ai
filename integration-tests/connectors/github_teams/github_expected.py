@@ -142,10 +142,16 @@ class GitHubExpected:
         }
         if kind not in names:
             raise ValueError(f"unknown child group kind {kind!r}")
+        # All three are marked as groups whose permissions every record beneath
+        # them is guaranteed to carry, so search may trust the group instead of
+        # re-checking each record. `_create_record_group_hierarchy` sets it on
+        # each one; leaving it off here made the comparison fail on a field the
+        # connector has always written.
         return RecordGroup(
             id="", org_id="",
             name=names[kind],
             group_type=RecordGroupType.PROJECT.value,
+            permission_model=PermissionModel.RECORD_GROUP_LEVEL,
             connector_name=Connectors.GITHUB_TEAMS,
             connector_id=connector_id,
             external_group_id=f"{repo['id']}-{kind}",

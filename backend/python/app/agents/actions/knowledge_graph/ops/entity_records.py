@@ -1,0 +1,264 @@
+"""``find_records_by_entity`` operation — records connected to one entity
+(taxonomy entity, record group, or a record title), limited to what the user
+can access, newest first, paged by cursor.
+
+Access is decided by ``app.modules.retrieval.entity_permissions``. An entity
+the user cannot reach and an entity with no accessible records get the same
+response, so the tool never confirms that inaccessible data exists.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from app.agents.actions.knowledge_graph.ops.entity_filters import (
+    ENTITY_INDEX_CACHE_KEY,
+    load_entity_access_context,
+)
+from app.agents.actions.knowledge_graph.views import (
+    _compact_date,
+    _read_hint,
+    _short,
+    _trunc,
+)
+from app.models.entities import resolve_weburl
+from app.modules.agents.qna.chat_state import remember_record_ids
+from app.modules.retrieval.entity_permissions import (
+    RECORD_GROUP_ENTITY_TYPE,
+    SEARCH_SCOPE_MAX_ENTITIES,
+    SEARCH_SCOPE_MAX_RECORDS,
+    SEARCH_SCOPE_MAX_SCAN,
+    SEARCHABLE_ENTITY_TYPES,
+    EntityAccessContext,
+    EntityAccessError,
+    list_accessible_entity_records,
+)
+from app.utils.chat_helpers import (
+    get_record_id_shortener_if_enabled,
+    resolve_frontend_url,
+)
+
+if TYPE_CHECKING:
+    from app.modules.agents.qna.chat_state import ChatState
+    from app.utils.chat_helpers import RecordIdShortener
+
+logger = logging.getLogger(__name__)
+
+_MAX_LIMIT = 50
+_DEFAULT_LIMIT = 20
+_MAX_READ_HINT_IDS = 8
+NO_ACCESSIBLE_RECORDS_MSG = "No accessible records found for this entity."
+NO_FURTHER_RECORDS_MSG = (
+    "No further accessible records for this entity - the previous page was the last."
+)
+LOOKUP_FAILED_MSG = "Lookup failed — try again."
+_NARROW_HINT = (
+    "Narrow with record_types=[...], or search inside it with "
+    "knowledgegraph__search(query=..., entity_ids=[...])."
+)
+CAPPED_EMPTY_MSG = (
+    "No accessible records among the records checked for this entity, but it has "
+    "more records than one listing can scan, so this is not conclusive. " + _NARROW_HINT
+)
+_CAPPED_NOTE = (
+    "This entity has more records than one listing can scan; these are the newest "
+    "of a sample, and the listing can end before its last record. " + _NARROW_HINT
+)
+
+
+async def execute_find_records_by_entity(
+    state: "ChatState",
+    entity_id: str | None,
+    entity_type: str | None = None,
+    record_types: list[str] | None = None,
+    limit: int = _DEFAULT_LIMIT,
+    cursor: str | None = None,
+) -> tuple[bool, str]:
+    if not state:
+        return False, "Knowledge graph tool state not initialized."
+    raw_id = (entity_id or "").strip()
+    if not raw_id:
+        return False, "entity_id is required."
+    if not state.get("graph_provider"):
+        return False, "Graph provider not available."
+
+    shortener = get_record_id_shortener_if_enabled(state)
+    resolved_id = shortener.resolve(raw_id) if shortener is not None else raw_id
+    indexed: dict[str, str] = (state.get(ENTITY_INDEX_CACHE_KEY) or {}).get(resolved_id) or {}
+    resolved_type = (entity_type or "").strip().lower() or indexed.get("type")
+    supported = ", ".join(sorted(SEARCHABLE_ENTITY_TYPES))
+    if not resolved_type:
+        return False, (
+            "entity_type is required for an entity that search_entities did not return "
+            f"in this turn — pass one of: {supported}."
+        )
+    if resolved_type not in SEARCHABLE_ENTITY_TYPES:
+        return False, f"Unsupported entity_type {resolved_type!r} — pass one of: {supported}."
+
+    wanted_types = [str(t).strip().upper() for t in (record_types or []) if str(t).strip()] or None
+    bounded_limit = min(max(1, limit or _DEFAULT_LIMIT), _MAX_LIMIT)
+    try:
+        context = await load_entity_access_context(state)
+        page = await list_accessible_entity_records(
+            state["graph_provider"],
+            context,
+            entity_id=resolved_id,
+            entity_type=resolved_type,
+            record_types=wanted_types,
+            limit=bounded_limit,
+            cursor=cursor,
+        )
+    except ValueError as exc:
+        return False, str(exc)
+    except EntityAccessError:
+        logger.warning("find_records_by_entity failed", exc_info=True)
+        return False, LOOKUP_FAILED_MSG
+
+    if not page.records:
+        if page.capped and page.next_cursor is None:
+            return True, CAPPED_EMPTY_MSG
+        if page.next_cursor is not None:
+            # The scan budget ran out before anything visible turned up; later
+            # candidates may still be accessible.
+            return True, _empty_window_message(raw_id, resolved_type, page.next_cursor)
+        # After a page of results, "none found" reads as "this entity is empty"
+        # and contradicts what the caller was just shown.
+        return True, NO_FURTHER_RECORDS_MSG if cursor else NO_ACCESSIBLE_RECORDS_MSG
+
+    record_ids = [r["_key"] for r in page.records if r.get("_key")]
+    remember_record_ids(state, record_ids)
+    name = indexed.get("name") if indexed.get("type") == resolved_type else None
+    return True, _render_page(
+        page.records,
+        context,
+        entity_ref=raw_id,
+        entity_type=resolved_type,
+        entity_name=name,
+        next_cursor=page.next_cursor,
+        capped=page.capped,
+        shortener=shortener,
+        frontend_url=await resolve_frontend_url(state.get("config_service")),
+    )
+
+
+def _continue_call(entity_ref: str, entity_type: str, cursor: str) -> str:
+    return (
+        "knowledgegraph__find_records_by_entity("
+        f'entity_id="{entity_ref}", entity_type="{entity_type}", cursor="{cursor}")'
+    )
+
+
+def _empty_window_message(entity_ref: str, entity_type: str, cursor: str) -> str:
+    return (
+        "No accessible records in this window of candidates, but more remain unchecked. "
+        f"Continue with {_continue_call(entity_ref, entity_type, cursor)}"
+    )
+
+
+def _render_page(
+    records: list[dict[str, Any]],
+    context: EntityAccessContext,
+    *,
+    entity_ref: str,
+    entity_type: str,
+    entity_name: str | None,
+    next_cursor: str | None,
+    capped: bool = False,
+    shortener: "RecordIdShortener | None",
+    frontend_url: str | None = None,
+) -> str:
+    preposition = "in" if entity_type == RECORD_GROUP_ENTITY_TYPE else "connected to"
+    subject = f'{entity_type} "{_trunc(entity_name)}"' if entity_name else f"this {entity_type}"
+    order = "newest of a sample" if capped else "newest first"
+    lines = [f"Records {preposition} {subject}, {order} ({len(records)} shown):"]
+    for record in records:
+        parts = [
+            f"- [{record.get('recordType') or 'RECORD'}] {_trunc(record.get('recordName') or record['_key'])}",
+            f"record_id={_short(record['_key'], shortener)}",
+        ]
+        app = context.app_names.get(record.get("connectorId"))
+        if app:
+            parts.append(f"app: {app}")
+        modified = _compact_date(
+            record.get("sourceLastModifiedTimestamp") or record.get("updatedAtTimestamp")
+        )
+        if modified:
+            parts.append(f"modified: {modified}")
+        url = None if record.get("hideWeburl") else resolve_weburl(record.get("webUrl"), frontend_url)
+        if url:
+            parts.append(f"url={url}")
+        lines.append(" | ".join(parts))
+
+    lines.append("")
+    if next_cursor is not None:
+        lines.append(f"More records may exist: {_continue_call(entity_ref, entity_type, next_cursor)}")
+    if capped:
+        lines.append(_CAPPED_NOTE)
+    record_ids = [r["_key"] for r in records[:_MAX_READ_HINT_IDS]]
+    lines.append(
+        f"Next: {_read_hint(record_ids, shortener)}, or knowledgegraph__navigate(node_id=...) "
+        "to see where a record sits."
+    )
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class EntitySearchScope:
+    """``truncated`` means some connected records were never checked (a cap
+    or the scan budget was hit), so an empty or small scope is not the whole
+    answer. ``entities_skipped`` counts requested entities past
+    ``SEARCH_SCOPE_MAX_ENTITIES`` that did not scope the search at all."""
+
+    virtual_ids: list[str]
+    truncated: bool
+    entities_skipped: int = 0
+
+
+async def resolve_entity_virtual_ids(
+    state: "ChatState", entities: list[tuple[str, str]],
+) -> EntitySearchScope:
+    """Deduplicated ``virtualRecordId``s of the accessible records connected to
+    each ``(entity_id, entity_type)``, used to scope ``search(entity_ids=[...])``.
+    Bounded per call; raises ``EntityAccessError`` on failure so search never
+    silently widens to an unscoped query."""
+    context = await load_entity_access_context(state)
+    graph_provider = state["graph_provider"]
+    seen: set[str] = set()
+    virtual_ids: list[str] = []
+    unique = list(dict.fromkeys(entities))
+    entities_skipped = max(0, len(unique) - SEARCH_SCOPE_MAX_ENTITIES)
+    truncated = False
+    for entity_id, entity_type in unique[:SEARCH_SCOPE_MAX_ENTITIES]:
+        remaining = SEARCH_SCOPE_MAX_RECORDS - len(virtual_ids)
+        if remaining <= 0:
+            truncated = True
+            break
+        page = await list_accessible_entity_records(
+            graph_provider,
+            context,
+            entity_id=entity_id,
+            entity_type=entity_type,
+            limit=remaining,
+            max_scan=SEARCH_SCOPE_MAX_SCAN,
+        )
+        truncated = truncated or page.next_cursor is not None or page.capped
+        for record in page.records:
+            virtual_id = record.get("virtualRecordId")
+            if virtual_id and virtual_id not in seen:
+                seen.add(virtual_id)
+                virtual_ids.append(virtual_id)
+    return EntitySearchScope(
+        virtual_ids=virtual_ids, truncated=truncated, entities_skipped=entities_skipped,
+    )
+
+
+__all__ = [
+    "CAPPED_EMPTY_MSG",
+    "LOOKUP_FAILED_MSG",
+    "NO_ACCESSIBLE_RECORDS_MSG",
+    "NO_FURTHER_RECORDS_MSG",
+    "execute_find_records_by_entity",
+    "EntitySearchScope",
+    "resolve_entity_virtual_ids",
+]

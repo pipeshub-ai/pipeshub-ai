@@ -74,6 +74,9 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_record_path(self, record_id):
         return None
 
+    async def get_record_path_segments(self, record_id):
+        return []
+
     async def get_records_by_status(self, org_id, connector_id, status_filters, limit=None, offset=0, after_key=None, exclude_statuses=None):
         return []
 
@@ -97,6 +100,21 @@ class ConcreteTransactionStore(TransactionStore):
 
     async def batch_upsert_people(self, people):
         pass
+
+    async def get_person_by_email(self, email, org_id):
+        return None
+
+    async def upsert_person_by_email(self, person):
+        return None
+
+    async def ensure_app_membership(
+        self, principal_id, principal_collection, connector_id, *,
+        is_external, source_user_id=None,
+    ):
+        pass
+
+    async def reap_stale_external_app_relations(self, connector_id):
+        return 0
 
     async def get_users(self, org_id, active=True):
         return []
@@ -197,16 +215,22 @@ class ConcreteTransactionStore(TransactionStore):
     async def ensure_team_app_edge(self, connector_id: str, org_id: str) -> None:
         pass
 
+    async def upsert_authenticated_as(self, creator_key, source_user_key, connector_id, org_id) -> None:
+        pass
+
+    async def remove_authenticated_as(self, connector_id) -> None:
+        pass
+
     async def find_slack_burst_record_by_ts(self, connector_id, channel_id, ts):
         return None
 
     async def get_user_by_user_id(self, user_id):
         return None
 
-    async def get_user_group_by_external_id(self, connector_id, external_id):
+    async def get_user_group_by_external_id(self, connector_id, external_id, *, raise_on_error=False):
         return None
 
-    async def get_app_role_by_external_id(self, connector_id, external_id):
+    async def get_app_role_by_external_id(self, connector_id, external_id, *, raise_on_error=False):
         return None
 
     async def get_app_by_id(self, connector_id):
@@ -407,3 +431,29 @@ class TestBaseDataStoreFindSlackBurstRecord:
         assert hasattr(BaseDataStore, "find_slack_burst_record_by_ts")
         method = getattr(BaseDataStore, "find_slack_burst_record_by_ts")
         assert getattr(method, "__isabstractmethod__", False) is True
+
+
+class TestLookupContractMatchesTheCreatePath:
+    """on_new_user_groups and on_new_app_roles call these on a TransactionStore
+    with raise_on_error=True. The abstract signatures have to accept it, or a
+    store that implements the ABC as declared raises TypeError on the create
+    path instead of refusing the duplicate write.
+
+    Checked at runtime because pyright cannot: DataStoreProvider.transaction()
+    is annotated as an async def returning AsyncContextManager, so
+    `async with ...transaction() as tx_store` types tx_store as Unknown and
+    every call on it goes unchecked.
+    """
+
+    @pytest.mark.parametrize(
+        "method", ["get_user_group_by_external_id", "get_app_role_by_external_id"]
+    )
+    def test_the_abstract_lookup_takes_raise_on_error_as_a_keyword(self, method):
+        import inspect
+
+        from app.connectors.core.base.data_store.data_store import BaseDataStore
+
+        params = inspect.signature(getattr(BaseDataStore, method)).parameters
+        assert "raise_on_error" in params, f"BaseDataStore.{method} does not accept raise_on_error"
+        assert params["raise_on_error"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params["raise_on_error"].default is False

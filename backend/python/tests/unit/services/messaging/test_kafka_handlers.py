@@ -13,7 +13,7 @@ import pytest
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
 from app.services.messaging.kafka.handlers.entity import EntityEventService
 
-log = logging.getLogger("test")
+log = logging.getLogger(__name__)
 log.setLevel(logging.CRITICAL)
 
 

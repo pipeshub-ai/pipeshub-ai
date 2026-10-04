@@ -1,5 +1,7 @@
 """Tests for Jira ticket live enrichment."""
 
+import logging
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -187,10 +189,12 @@ def clear_enrichment_caches():
     enrichment_service._data_sources.clear()
     enrichment_service._auth_types.clear()
     enrichment_service._is_cloud.clear()
+    enrichment_service._unavailable_until.clear()
     yield
     enrichment_service._data_sources.clear()
     enrichment_service._auth_types.clear()
     enrichment_service._is_cloud.clear()
+    enrichment_service._unavailable_until.clear()
 
 
 class TestOAuthTokenSync:
@@ -398,3 +402,122 @@ class TestOAuthTokenSyncEdgeCases:
 
         await _sync_oauth_token_if_needed(mock_ds, config_service, "conn-1")
         mock_ds._client.set_token.assert_not_called()
+
+
+def _real_config_service(store: AsyncMock) -> Any:
+    """A ConfigurationService over a fake key-value store, with no watcher or encryption."""
+    from app.config.configuration_service import ConfigurationService
+
+    with patch("app.config.configuration_service.EncryptionService.get_instance", return_value=MagicMock()), \
+            patch.object(ConfigurationService, "_start_watch"), \
+            patch.dict("os.environ", {"SECRET_KEY": "test-secret-key"}):
+        return ConfigurationService(logger=logging.getLogger("test-jira-enrichment"), key_value_store=store)
+
+
+class TestUnavailableConnectorIsNotRetriedOnEveryAnswer:
+    """A record can say JIRA without coming from a Jira connector.
+
+    The Demo connector's records imitate Jira tickets, and a real Jira
+    connector can be misconfigured. Building a client for either fails, and
+    before this every answer citing such a ticket tried again and logged it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_failed_build_is_not_repeated_within_the_window(self) -> None:
+        from app.connectors.sources.atlassian.jira.enrichment import service as enrichment_service
+
+        with patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service.JiraClient.build_from_services",
+            new=AsyncMock(side_effect=ValueError("no Jira credentials")),
+        ) as mock_build, patch.object(enrichment_service, "logger") as mock_logger:
+            first = await _get_data_source(AsyncMock(), "demo-connector", Connectors.JIRA)
+            second = await _get_data_source(AsyncMock(), "demo-connector", Connectors.JIRA)
+
+        assert first is None and second is None
+        assert mock_build.await_count == 1
+        assert mock_logger.warning.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_it_is_tried_again_once_the_window_has_passed(self) -> None:
+        from app.connectors.sources.atlassian.jira.enrichment import service as enrichment_service
+
+        now = [1000.0]
+        with patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service.JiraClient.build_from_services",
+            new=AsyncMock(side_effect=ValueError("down")),
+        ) as mock_build, patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service.time.monotonic",
+            side_effect=lambda: now[0],
+        ):
+            await _get_data_source(AsyncMock(), "jira-1", Connectors.JIRA)
+            now[0] += enrichment_service._RETRY_UNAVAILABLE_AFTER_S - 1
+            await _get_data_source(AsyncMock(), "jira-1", Connectors.JIRA)
+            assert mock_build.await_count == 1
+            now[0] += 2
+            await _get_data_source(AsyncMock(), "jira-1", Connectors.JIRA)
+
+        assert mock_build.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_one_unavailable_connector_does_not_block_another(self) -> None:
+        with patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service.JiraClient.build_from_services",
+            new=AsyncMock(side_effect=ValueError("down")),
+        ) as mock_build:
+            await _get_data_source(AsyncMock(), "demo-connector", Connectors.JIRA)
+            await _get_data_source(AsyncMock(), "real-jira", Connectors.JIRA)
+
+        assert mock_build.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_transient_failure_is_tried_again_on_the_next_answer(self) -> None:
+        # Only a configuration that cannot make a client pauses retries; a blip does not.
+        with patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service.JiraClient.build_from_services",
+            new=AsyncMock(side_effect=ConnectionError("config store unreachable")),
+        ) as mock_build:
+            await _get_data_source(AsyncMock(), "jira-1", Connectors.JIRA)
+            await _get_data_source(AsyncMock(), "jira-1", Connectors.JIRA)
+
+        assert mock_build.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_config_store_failure_is_tried_again_on_the_next_answer(self) -> None:
+        # Through the real config service and client build, which both used to
+        # turn a failed read into "no config".
+        store = AsyncMock()
+        store.get_key.side_effect = TimeoutError("etcd timed out")
+        config_service = _real_config_service(store)
+
+        first = await _get_data_source(config_service, "jira-1", Connectors.JIRA)
+        second = await _get_data_source(config_service, "jira-1", Connectors.JIRA)
+
+        assert first is None and second is None
+        assert store.get_key.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_connector_with_no_jira_config_is_paused(self) -> None:
+        store = AsyncMock()
+        store.get_key.return_value = None
+        config_service = _real_config_service(store)
+
+        await _get_data_source(config_service, "demo-connector", Connectors.JIRA)
+        await _get_data_source(config_service, "demo-connector", Connectors.JIRA)
+
+        assert store.get_key.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failure_after_the_client_was_built_is_tried_again(self) -> None:
+        config_service = AsyncMock()
+        config_service.get_config.side_effect = [TimeoutError("etcd"), {"auth": {"authType": "API_TOKEN"}}]
+        client = MagicMock()
+        client.get_client.return_value = MagicMock(base_url="https://acme.atlassian.net")
+        with patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service.JiraClient.build_from_services",
+            new=AsyncMock(return_value=client),
+        ) as mock_build:
+            first = await _get_data_source(config_service, "jira-1", Connectors.JIRA)
+            second = await _get_data_source(config_service, "jira-1", Connectors.JIRA)
+
+        assert first is None and second is not None
+        assert mock_build.await_count == 2

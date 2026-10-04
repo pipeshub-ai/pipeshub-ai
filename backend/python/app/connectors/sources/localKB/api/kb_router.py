@@ -7,7 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ValidationError
 
 from app.api.middlewares.auth import require_scopes
+from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.localKB.api.models import (
     CreateFolderResponse,
@@ -48,13 +52,44 @@ async def get_kb_service(request: Request) -> KnowledgeBaseService:
     logger = container.logger()
     graph_provider = request.app.state.graph_provider
     kafka_service = container.kafka_service()
-    processor = request.app.state.kb_entities_processor
     config_service = container.config_service()
+    request_org_id = request.state.user.get("orgId")
+    # Deferred: EventService pulls in every connector module via ConnectorFactory.
+    from app.edition_services import EventService
+
+    event_service = EventService(
+        logger=logger, graph_provider=graph_provider, app_container=container
+    )
+
+    # Each KB is its own connector instance, created with the KB's org like any
+    # other connector, so its processor stamps that org on every write.
+    async def processor_for_kb(kb_id: str) -> DataSourceEntitiesProcessor:
+        # The KB doc's orgId is the ownership record. Checked before building an
+        # instance because lazy init falls back to the caller's org when it is
+        # missing, which would bind the KB (and its org's shared processor) wrongly.
+        kb_doc = await graph_provider.get_document(kb_id, CollectionNames.APPS.value)
+        kb_org_id = (kb_doc or {}).get("orgId")
+        if not kb_org_id or kb_org_id != request_org_id:
+            raise PermissionError(
+                f"Knowledge base {kb_id} is not owned by org {request_org_id} (owner: {kb_org_id!r})"
+            )
+        connector = await event_service.get_or_init_connector(
+            Connectors.KNOWLEDGE_BASE.value.lower(), kb_id
+        )
+        if connector is None:
+            raise LookupError(f"Knowledge base {kb_id} has no active connector instance")
+        processor = connector.data_entities_processor
+        if processor.org_id != request_org_id:
+            raise PermissionError(
+                f"Knowledge base {kb_id} belongs to org {processor.org_id}, not {request_org_id}"
+            )
+        return processor
+
     return KnowledgeBaseService(
         logger=logger,
         graph_provider=graph_provider,
         kafka_service=kafka_service,
-        processor=processor,
+        processor_for_kb=processor_for_kb,
         config_service=config_service,
     )
 
@@ -71,6 +106,19 @@ HTTP_MAX_STATUS = 600
 HTTP_INTERNAL_SERVER_ERROR = 500
 
 kb_router = APIRouter(prefix="/api/v1/kb", tags=["Knowledge Base"])
+
+
+def _listing_or_error(result: dict[str, Any]) -> dict[str, Any]:
+    """Turn the service's error payload into an error status.
+
+    The error payload is not a valid listing, so returned as-is it fails the
+    response model and the caller gets a bare 500 without the message.
+    """
+    if result.get("success") is False:
+        raise HTTPException(status_code=result.get("code") or 500, detail=result.get("reason"))
+    if result.get("error"):
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=result["error"])
+    return result
 
 def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
@@ -265,7 +313,7 @@ async def update_knowledge_base(
             body = UpdateKnowledgeBaseRequest(**raw_body)
         except ValidationError as ve:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=ve.errors()
             )
         updates = body.model_dump(exclude_none=True)
@@ -323,6 +371,13 @@ async def delete_knowledge_base(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
                 detail=error_reason
             )
+
+        kb_connector = getattr(container, "connectors_map", {}).pop(kb_id, None)
+        if kb_connector is not None:
+            try:
+                await kb_connector.cleanup()
+            except Exception as e:
+                logger.error(f"Error cleaning up connector instance for deleted KB {kb_id}: {e}")
 
         # Publish batch deletion events
         event_data = result.get("eventData")
@@ -945,7 +1000,7 @@ async def list_kb_records(
 ) -> Dict[str, Any]:
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    return await kb_service.list_kb_records(
+    return _listing_or_error(await kb_service.list_kb_records(
         kb_id=kb_id,
         user_id=user_id,
         org_id=org_id,
@@ -960,7 +1015,7 @@ async def list_kb_records(
         date_to=date_to,
         sort_by=sort_by,
         sort_order=sort_order,
-    )
+    ))
 
 @kb_router.get(
     "/{kb_id}/children",
@@ -1628,7 +1683,7 @@ async def list_all_records(
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
 
-    return await kb_service.list_all_records(
+    return _listing_or_error(await kb_service.list_all_records(
         user_id=user_id,
         org_id=org_id,
         page=page,
@@ -1644,7 +1699,7 @@ async def list_all_records(
         sort_by=sort_by,
         sort_order=sort_order,
         source=source,
-    )
+    ))
 
 
 # ========================================================================

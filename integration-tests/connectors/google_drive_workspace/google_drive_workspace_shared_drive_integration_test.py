@@ -13,8 +13,8 @@ plumbing; full leave/return/rename matrix lives in the My Drive suite.
 
 from __future__ import annotations
 
-import os
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -31,13 +31,11 @@ from app.sources.external.google.drive.drive import (  # type: ignore[import-not
 from connectors.google_drive_workspace.drive_workspace_test_utils import (  # noqa: E402
     create_drive_folder,
     create_drive_text_file,
+    record_present,
+    sync_until,
 )
 from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
-from helper.graph_provider_utils import (  # noqa: E402
-    wait_for_sync_completion,
-    wait_until_graph_condition,
-)
 from pipeshub_client import PipeshubClient  # noqa: E402
 
 pytestmark = [
@@ -46,50 +44,19 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
-_SYNC_TIMEOUT_SEC = int(os.getenv("GOOGLE_DRIVE_WORKSPACE_SYNC_TIMEOUT", "300"))
 
+def _all_present(
+    graph_provider: GraphProviderProtocol, connector_id: str, *external_ids: str
+) -> Callable[[], Awaitable[bool]]:
+    checks = [record_present(graph_provider, connector_id, eid) for eid in external_ids]
 
-def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
-    pipeshub_client.toggle_sync(connector_id, enable=False)
-    pipeshub_client.wait(5)
-    pipeshub_client.toggle_sync(connector_id, enable=True)
-    pipeshub_client.wait(8)
-
-
-async def _wait_record_present(
-    graph_provider: GraphProviderProtocol,
-    connector_id: str,
-    external_id: str,
-    *,
-    description: str,
-) -> None:
     async def _present() -> bool:
-        return (
-            await graph_provider.get_record_by_external_id(connector_id, external_id)
-            is not None
-        )
+        for check in checks:
+            if not await check():
+                return False
+        return True
 
-    await wait_until_graph_condition(
-        connector_id,
-        check=_present,
-        timeout=_SYNC_TIMEOUT_SEC,
-        poll_interval=10,
-        description=description,
-    )
-
-
-async def _sync_and_wait(
-    pipeshub_client: PipeshubClient,
-    graph_provider: GraphProviderProtocol,
-    connector_id: str,
-) -> None:
-    _restart_sync(pipeshub_client, connector_id)
-    await wait_for_sync_completion(
-        pipeshub_client,
-        graph_provider,
-        connector_id,
-        timeout=_SYNC_TIMEOUT_SEC,
-    )
+    return _present
 
 
 class TestDriveWorkspaceSharedDriveFolderFilter:
@@ -186,18 +153,15 @@ class TestDriveWorkspaceSharedDriveFolderFilter:
         drive_workspace_shared_drive_connector["deeper_folder_id"] = deeper_id
         drive_workspace_shared_drive_connector["deeper_child_file_id"] = deeper_child_id
 
-        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
-        await _wait_record_present(
+        await sync_until(
+            pipeshub_client,
             graph_provider,
             connector_id,
-            deeper_id,
-            description=f"deeper folder ({deeper_id}) after Shared Drive expansion",
-        )
-        await _wait_record_present(
-            graph_provider,
-            connector_id,
-            deeper_child_id,
-            description=f"deeper-child.txt ({deeper_child_id}) after Shared Drive expansion",
+            _all_present(graph_provider, connector_id, deeper_id, deeper_child_id),
+            description=(
+                f"deeper folder ({deeper_id}) and deeper-child.txt ({deeper_child_id}) "
+                "after Shared Drive expansion"
+            ),
         )
 
         await connector_assertions.assert_record_exists(
@@ -240,11 +204,11 @@ class TestDriveWorkspaceSharedDriveFolderFilter:
         )
         drive_workspace_shared_drive_connector["new_file_id"] = new_file_id
 
-        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
-        await _wait_record_present(
+        await sync_until(
+            pipeshub_client,
             graph_provider,
             connector_id,
-            new_file_id,
+            record_present(graph_provider, connector_id, new_file_id),
             description=f"new.txt ({new_file_id}) under Shared Drive seed",
         )
 

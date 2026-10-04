@@ -26,6 +26,8 @@ import { toolStatusLabel } from './utils/tool-display';
  * legacy dispatcher's local `receivedComplete`/`lastSSEError` bookkeeping). */
 export interface AGUIStreamTracking {
   receivedComplete: boolean;
+  /** A root RUN_ERROR arrived and was reported through `onError`. */
+  receivedError?: boolean;
 }
 
 interface AGUIStreamState {
@@ -549,15 +551,16 @@ export function createAGUIEventHandler(
           break;
         }
         const message = typeof data?.message === 'string' ? data.message : 'Stream ended with an error';
-        // Defensive: if a Stop ever surfaces as RUN_ERROR instead of a clean
-        // RUN_FINISHED{status:'stopped'} (e.g. the connection drops right as
-        // cancellation lands upstream), don't show a scary error bubble on
-        // top of an intentional user action — `cancelStreamForSlot`'s
-        // grace-timeout fallback already owns cleanup for this slot.
+        // A Stop can surface as RUN_ERROR{code:'abort'} instead of a clean
+        // RUN_FINISHED{status:'stopped'}; its raw message is no reply to show.
+        // `receivedError` stays unset so `runChatStream` still ends the turn as
+        // interrupted when the stream closes: without a Stop no grace timer
+        // exists to settle the slot, and with one the slot ignores that error.
         if (data?.code === 'abort') {
           console.warn('[Chat SSE/AGUI] RUN_ERROR with abort code — treating as stop, not error:', message);
           break;
         }
+        if (tracking) tracking.receivedError = true;
         console.warn('[Chat SSE/AGUI] RUN_ERROR:', message);
         callbacks.onError?.(new Error(message));
         break;

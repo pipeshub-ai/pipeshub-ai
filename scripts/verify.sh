@@ -112,6 +112,10 @@ run shell "installer unit tests" \
   'exists deployment/docker-compose/tests/installer_test.sh' \
   bash deployment/docker-compose/tests/installer_test.sh
 
+run shell "eks purge tests" \
+  'exists deployment/helm/tests/purge_bucket_test.sh' \
+  bash deployment/helm/tests/purge_bucket_test.sh
+
 run shell "release tooling tests" \
   'exists deployment/docker-compose/tests/release_tooling_test.sh' \
   bash deployment/docker-compose/tests/release_tooling_test.sh
@@ -135,17 +139,28 @@ run python "python service tests (no infra)" \
   bash -c "cd backend/python && $PY -m pytest tests/integration \
       --ignore=tests/integration/redis_cluster \
       --ignore=tests/integration/skills/test_npm_import_live.py \
-      --ignore=tests/integration/test_model_reasoning_effort_e2e.py \
       -q -p no:warnings --timeout=300"
 
 # ── frontend ─────────────────────────────────────────────────────────────────
+run frontend "locale parity" \
+  'have node' \
+  node frontend/scripts/check-i18n-parity.mjs
+
+run frontend "translation keys resolve" \
+  'have node' \
+  node frontend/scripts/check-i18n-keys.mjs
+
+run frontend "i18n checker tests" \
+  'have node' \
+  node --test frontend/scripts/check-i18n-parity.test.mjs frontend/scripts/check-i18n-keys.test.mjs
+
 run frontend "frontend unit tests (vitest)" \
   'exists frontend/node_modules && have npm' \
   bash -c "cd frontend && npm run --silent test:unit"
 
-run frontend "electron local-sync tests" \
+run frontend "electron main-process tests" \
   'exists frontend/node_modules && have npm' \
-  bash -c "cd frontend && npm run --silent test:electron:local-sync"
+  bash -c "cd frontend && npm run --silent test:electron"
 
 # ── node ─────────────────────────────────────────────────────────────────────
 run node "node backend tests (mocha)" \

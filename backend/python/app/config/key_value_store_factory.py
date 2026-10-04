@@ -145,6 +145,8 @@ class KeyValueStoreFactory:
             ca_cert=config.ca_cert,
             cert_key=config.cert_key,
             cert_cert=config.cert_cert,
+            username=config.username,
+            password=config.password,
         )
         logger.debug("✅ ETCD3 store instance created successfully")
         return store

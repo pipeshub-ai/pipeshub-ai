@@ -18,13 +18,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
           cache: 'npm'
@@ -64,12 +64,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
           cache: 'npm'
@@ -80,21 +80,33 @@ jobs:
           cd frontend
           npm install
 
-      # frontend/package.json defines test:unit (vitest) and 380 tests exist
-      # across 27 files, but no workflow ran them. They need no browser and no
-      # services and finish in about twenty seconds.
-      - name: Run frontend unit tests
+      - name: Typecheck frontend
+        working-directory: frontend
+        run: npm run typecheck
+
+      # Parity keeps every locale in step with en-US; the key check catches an
+      # en-US key that was deleted while code still asks for it, which parity
+      # alone cannot see because it compares the catalogues to each other.
+      - name: Check locale parity and translation keys
+        working-directory: frontend
+        run: npm run i18n:check && npm run i18n:keys && npm run test:i18n
+
+      # The coverage run, not plain test:unit: the minimum lives in
+      # frontend/vitest.config.ts (coverage.thresholds) and is checked only when
+      # coverage is on. A run below it fails here with "Coverage for <metric>
+      # does not meet global threshold".
+      - name: Run frontend unit tests with coverage
         run: |
           cd frontend
-          npm run test:unit
+          npm run test:unit:coverage
 
       # The Electron local-sync tests drive a real file watcher against a real
       # temporary directory, so they are slower than the vitest suite (~45s) and
-      # must run one file at a time — see the note on test:electron:local-sync.
-      - name: Run Electron local-sync tests
+      # must run one file at a time — see the note on test:electron.
+      - name: Run Electron main-process tests
         run: |
           cd frontend
-          npm run test:electron:local-sync
+          npm run test:electron
 
       - name: Build frontend
         run: |
@@ -106,13 +118,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
@@ -139,13 +151,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
@@ -183,7 +195,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -226,7 +238,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
@@ -264,12 +276,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 

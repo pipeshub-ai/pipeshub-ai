@@ -37,6 +37,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getAgentBuilderPermissions } from './agent-builder-permissions';
 import { useUserPermission } from '@/config';
 import { toast } from '@/lib/store/toast-store';
+import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import {
   collectActiveToolsetTypeKeysFromNodes,
   type ToolsetTypeKeyFlowNode,
@@ -47,14 +48,6 @@ import type { McpInstanceIdFlowNode } from './sidebar-mcp-utils';
 const AGENT_BUILDER_SIDEBAR_WIDTH = 332;
 
 const SVC_ACCT_TOOLSET_BLOCK_TOAST_MS = 9000;
-
-/** Extract a human-readable message from an unknown API error. */
-function extractErrorMessage(e: unknown, fallback: string): string {
-  const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  if (typeof detail === 'string' && detail.trim()) return detail.trim();
-  if (e instanceof Error && e.message) return e.message;
-  return fallback;
-}
 
 // ── Dirty-tracking helpers ───────────────────────────────────────────────────
 type CleanSnapshot = {
@@ -664,7 +657,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}`);
       }
     } catch (e: unknown) {
-      setError(extractErrorMessage(e, t('agentBuilder.saveFailed')));
+      setError(getUserFacingErrorMessage(e, t('agentBuilder.saveFailed')));
     } finally {
       setSaving(false);
       saveRef.current = false;
@@ -744,7 +737,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}&sa=1`);
       }
     } catch (e: unknown) {
-      setServiceAccountError(extractErrorMessage(e, t('agentBuilder.svcAcctEnableFailed')));
+      setServiceAccountError(getUserFacingErrorMessage(e, t('agentBuilder.svcAcctEnableFailed')));
     } finally {
       setServiceAccountCreating(false);
     }
@@ -790,7 +783,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       setAgentDeleteDialogOpen(false);
       router.replace('/chat/');
     } catch (e: unknown) {
-      setError(extractErrorMessage(e, t('agentBuilder.deleteAgentFailed')));
+      setError(getUserFacingErrorMessage(e, t('agentBuilder.deleteAgentFailed')));
     } finally {
       setIsDeletingAgent(false);
     }

@@ -135,7 +135,7 @@ PLACEHOLDER_REVISION_PREFIX: str = "placeholder:"
             scopes=OAuthScopeConfig(
                 personal_sync=[],
                 team_sync=["read"],
-                agent=["read","write","admin"]
+                agent=[]
             ),
             fields=[
                 AuthField(
@@ -520,6 +520,27 @@ class LinearConnector(BaseConnector):
             self.logger.error(f"❌ Error fetching teams: {e}", exc_info=True)
             raise RuntimeError(f"Failed to fetch team options: {str(e)}")
 
+    async def _register_authenticated_identity(self) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector."""
+        if not self.data_source:
+            return
+        viewer = {}
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.viewer()
+            if response.success and response.data:
+                viewer = response.data.get("viewer") or {}
+        except Exception as e:
+            self.logger.debug("Could not read the authenticated Linear account: %s", e)
+            return
+        if not isinstance(viewer, dict):
+            return
+        email = viewer.get("email")
+        await self.register_authenticated_source_user(
+            email.strip() if isinstance(email, str) else None, viewer.get("id")
+        )
+
     async def run_sync(self) -> None:
         """
         Main sync orchestration method.
@@ -534,6 +555,8 @@ class LinearConnector(BaseConnector):
                 )
                 init_error._notification_sent = True
                 raise init_error
+
+            await self._register_authenticated_identity()
 
             # Load sync and indexing filters (loaded in run_sync to ensure latest values)
             self.sync_filters, self.indexing_filters = await load_connector_filters(

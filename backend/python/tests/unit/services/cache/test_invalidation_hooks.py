@@ -231,7 +231,7 @@ class TestDeleteRecordResultShape:
         provider.execute_query = AsyncMock(return_value=[])
         provider.client.execute_query = AsyncMock(return_value=[])
 
-        result = await provider.delete_record(record_id="rec-1", user_id="user-1")
+        result = await provider.delete_record(record_id="rec-1", user_id="user-1", org_id="org-1")
 
         assert result["success"] is True
         assert result["connectorId"] == "conn-1"

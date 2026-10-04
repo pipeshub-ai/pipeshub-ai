@@ -172,7 +172,7 @@ export class OrgController {
 
       if (!passwordValidator(password)) {
         throw new BadRequestError(
-          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number and one special character',
+          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number and one special character, and be no longer than 72 bytes',
         );
       }
 
@@ -249,7 +249,7 @@ export class OrgController {
         eventType: EventType.OrgCreatedEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: org._id,
+          orgId: org._id.toString(),
           accountType: org.accountType,
           registeredName: org.registeredName,
         } as OrgAddedEvent,
@@ -259,7 +259,7 @@ export class OrgController {
         timestamp: Date.now(),
         payload: {
           orgId: adminUser.orgId.toString(),
-          userId: adminUser._id,
+          userId: adminUser._id.toString(),
           fullName: adminUser.fullName,
           email: adminUser.email,
           syncAction: 'none',
@@ -406,7 +406,7 @@ export class OrgController {
         eventType: EventType.OrgUpdatedEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: org._id,
+          orgId: org._id.toString(),
           registeredName: org.registeredName,
         } as OrgUpdatedEvent,
       };
@@ -446,7 +446,7 @@ export class OrgController {
         eventType: EventType.OrgDeletedEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: org._id,
+          orgId: org._id.toString(),
         } as OrgDeletedEvent,
       };
       await this.eventService.publishEvent(event);

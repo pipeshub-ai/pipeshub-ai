@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional,Dict, List, Literal, TypeVar
+from urllib.parse import quote
 from uuid import uuid4
 from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
@@ -13,6 +14,7 @@ from app.models.blocks import BlockType, GroupType
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+    DeleteSource,
     MimeTypes,
     OriginTypes,
     PermissionModel,
@@ -48,6 +50,27 @@ def resolve_weburl(weburl: str | None, frontend_url: str | None) -> str | None:
     return f"{frontend_url.rstrip('/')}/{weburl.lstrip('/')}"
 
 
+# Shared Gmail mailboxes are synced once but opened by many users, so those
+# connectors store this placeholder and each read path fills in the viewer's email.
+USER_EMAIL_PLACEHOLDER = "{user.email}"
+_GMAIL_CONNECTORS = frozenset({
+    Connectors.GOOGLE_MAIL.value,
+    Connectors.GOOGLE_MAIL_WORKSPACE.value,
+})
+
+
+def substitute_user_email(
+    weburl: str | None,
+    user_email: str | None,
+    connector_name: str | None,
+) -> str | None:
+    if connector_name not in _GMAIL_CONNECTORS:
+        return weburl
+    if not weburl or not user_email or USER_EMAIL_PLACEHOLDER not in weburl:
+        return weburl
+    return weburl.replace(USER_EMAIL_PLACEHOLDER, quote(user_email, safe="@"))
+
+
 class LlmTextContent(BaseModel):
     """A single LLM message-content item produced by ``to_llm_full_context``."""
 
@@ -77,6 +100,7 @@ class RecordGroupType(str, Enum):
     SHELF = "SHELF"
     BOOK = "BOOK"
     CHAPTER = "CHAPTER"
+    DRUPAL_WIKI_SPACE = "DRUPAL_WIKI_SPACE"
     RSS_FEED = "RSS_FEED"
     SALESFORCE_FILE = "SALESFORCE_FILE"
     PRODUCT = "PRODUCT"
@@ -258,6 +282,15 @@ class Record(BaseModel):
     # Processing flags
     is_vlm_ocr_processed: bool | None = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
 
+    # Soft delete
+    is_deleted: bool = Field(default=False, description="True while the record is in the trash")
+    deleted_at: int | None = Field(default=None, description="Epoch ms the record entered the trash; the purge ages on it")
+    deleted_by_user_id: str | None = Field(default=None, description="User who deleted the record; None for connector or system deletes")
+    delete_source: DeleteSource | None = Field(default=None, description="Who deleted the record")
+    delete_batch_id: str | None = Field(default=None, description="Shared by every record one delete action trashed, so a restore brings back the same set")
+    purge_attempts: int | None = Field(default=None, description="Failed purge attempts")
+    purge_last_error: str | None = Field(default=None, description="Last purge error, shortened")
+
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
     semantic_metadata: SemanticMetadata | None = None
@@ -355,9 +388,9 @@ class Record(BaseModel):
             "indexingStatus": self.indexing_status,
             "extractionStatus": self.extraction_status,
             "reason": self.reason,
-            "isDeleted": False,
+            "isDeleted": self.is_deleted,
             "isArchived": False,
-            "deletedByUserId": None,
+            "deletedByUserId": self.deleted_by_user_id,
             "previewRenderable": self.preview_renderable,
             "isShared": self.is_shared,
             "isVLMOcrProcessed": self.is_vlm_ocr_processed,
@@ -374,7 +407,35 @@ class Record(BaseModel):
         # key deletes the stored value, and most writers never set this field.
         if self.queued_at is not None:
             base["queuedAtTimestamp"] = self.queued_at
+        # Only written once set: a pod still on the old strict Arango schema
+        # rejects these keys, even as null, during a rolling upgrade.
+        delete_state = {
+            "deletedAtTimestamp": self.deleted_at,
+            "deleteSource": self.delete_source.value if self.delete_source else None,
+            "deleteBatchId": self.delete_batch_id,
+            "purgeAttempts": self.purge_attempts,
+            "purgeLastError": self.purge_last_error,
+        }
+        base.update({k: v for k, v in delete_state.items() if v is not None})
         return base
+
+    @staticmethod
+    def delete_state_from_arango(record_doc: dict) -> dict[str, Any]:
+        """Constructor kwargs for the soft-delete fields of a stored record."""
+        delete_source = record_doc.get("deleteSource")
+        try:
+            delete_source = DeleteSource(delete_source) if delete_source else None
+        except ValueError:
+            delete_source = None
+        return {
+            "is_deleted": record_doc.get("isDeleted") is True,
+            "deleted_at": record_doc.get("deletedAtTimestamp"),
+            "deleted_by_user_id": record_doc.get("deletedByUserId"),
+            "delete_source": delete_source,
+            "delete_batch_id": record_doc.get("deleteBatchId"),
+            "purge_attempts": record_doc.get("purgeAttempts"),
+            "purge_last_error": record_doc.get("purgeLastError"),
+        }
 
     @staticmethod
     def from_arango_base_record(arango_base_record: dict) -> "Record":
@@ -428,6 +489,7 @@ class Record(BaseModel):
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
             storage_document_id=arango_base_record.get("storageDocumentId"),
+            **Record.delete_state_from_arango(arango_base_record),
         )
 
     def to_kafka_record(self) -> dict:
@@ -667,6 +729,7 @@ class FileRecord(Record):
             sha1_hash=arango_base_file_record.get("sha1Hash"),
             sha256_hash=arango_base_file_record.get("sha256Hash"),
             storage_document_id=arango_base_record.get("storageDocumentId"),
+            **Record.delete_state_from_arango(arango_base_record),
         )
 
     def to_kafka_record(self) -> dict:
@@ -821,6 +884,7 @@ class MessageRecord(Record):
             start_ts=message_doc.get("startTs"),
             end_ts=message_doc.get("endTs"),
             involved_user_source_ids=message_doc.get("involvedUserSourceIds", []),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict[str, Any]:
@@ -948,6 +1012,7 @@ class MailRecord(Record):
             internet_message_id=mail_doc.get("messageIdHeader"),
             conversation_index=mail_doc.get("conversationIndex"),
             label_ids=mail_doc.get("labelIds", []),
+            **Record.delete_state_from_arango(record_doc),
         )
 
 class WebpageRecord(Record):
@@ -1009,6 +1074,7 @@ class WebpageRecord(Record):
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
+            **Record.delete_state_from_arango(record_doc),
         )
 
 class LinkRecord(Record):
@@ -1115,6 +1181,7 @@ class LinkRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
 class CommentRecord(Record):
@@ -1205,6 +1272,7 @@ class CommentRecord(Record):
             author_source_id=comment_doc.get("authorSourceId") or comment_doc.get("authorId") or "unknown",
             resolution_status=comment_doc.get("resolutionStatus"),
             comment_selection=comment_doc.get("commentSelection"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
 class TicketRecord(Record):
@@ -1383,6 +1451,7 @@ class TicketRecord(Record):
             creator_source_timestamp=ticket_doc.get("creatorSourceTimestamp"),
             reporter_source_timestamp=ticket_doc.get("reporterSourceTimestamp"),
             labels=ticket_doc.get("labels"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1483,6 +1552,7 @@ class ProjectRecord(Record):
             lead_id=project_doc.get("leadId"),
             lead_name=project_doc.get("leadName"),
             lead_email=project_doc.get("leadEmail"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1564,6 +1634,7 @@ class ProductRecord(Record):
             is_active=product_doc.get("isActive"),
             sku=product_doc.get("sku"),
             list_price=product_doc.get("listPrice"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1887,6 +1958,7 @@ class DealRecord(Record):
             is_closed=deal_doc.get("isClosed"),
             created_date=deal_doc.get("createdDate"),
             close_date=deal_doc.get("closeDate"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -2080,6 +2152,7 @@ class SQLViewRecord(Record):
             source_tables=view_doc.get("sourceTables") or [],
             is_secure=view_doc.get("isSecure", False),
             comment=view_doc.get("comment"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -2179,6 +2252,7 @@ class SQLTableRecord(Record):
             primary_keys=table_doc.get("primaryKeys") or [],
             foreign_keys=table_doc.get("foreignKeys") or [],
             comment=table_doc.get("comment"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -2296,6 +2370,7 @@ class PullRequestRecord(Record):
             merged_by=pr_doc.get("mergedBy"),
             labels=pr_doc.get("labels"),
             last_commit_sha=pr_doc.get("lastCommitSha"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
 class LifecycleStatus(str, Enum):
@@ -2492,6 +2567,7 @@ class ArtifactRecord(Record):
             content_hash=artifact_doc.get("contentHash"),
             result_schema=artifact_doc.get("resultSchema"),
             versions=deserialize_artifact_versions(artifact_doc.get("versions")),
+            **Record.delete_state_from_arango(record_doc),
         )
 
         
@@ -2683,6 +2759,7 @@ class CodeFileRecord(Record):
             extension=extension,
             language=arango_base_code_file_record.get("language"),
             file_role=arango_base_code_file_record.get("fileRole"),
+            **Record.delete_state_from_arango(arango_base_record),
         )
 
 
@@ -2866,8 +2943,10 @@ class Person(BaseModel):
     """Lightweight entity for external email addresses (not organization members)."""
     id: str = Field(description="Unique identifier", default_factory=lambda: str(uuid4()))
     email: str = Field(description="Email address")
+    org_id: str | None = Field(default=None, description="Owning org for this Person")
     created_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Creation timestamp")
     updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Update timestamp")
+    full_name: str | None = Field(default=None, description="Display name")
     # Salesforce contact fields
     first_name: str | None = Field(default=None, description="First name")
     last_name: str | None = Field(default=None, description="Last name")
@@ -2876,9 +2955,15 @@ class Person(BaseModel):
     def to_arango_person(self) -> dict[str, Any]:
         return {
             "_key": self.id,
-            "email": self.email,
+            # (orgId, email) is this node's business key and carries a composite unique
+            # index. Atomic upserts match on exact equality, so the stored form must be
+            # normalised or Foo@x.com and foo@x.com become two nodes every reader sees
+            # as one.
+            "email": self.email.lower(),
+            "orgId": self.org_id,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
+            "fullName": self.full_name,
             "firstName": self.first_name,
             "lastName": self.last_name,
             "phone": self.phone,
@@ -2889,8 +2974,10 @@ class Person(BaseModel):
         return Person(
             id=data.get("_key"),
             email=data.get("email"),
+            org_id=data.get("orgId"),
             created_at=data.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
             updated_at=data.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()),
+            full_name=data.get("fullName"),
             first_name=data.get("firstName"),
             last_name=data.get("lastName"),
             phone=data.get("phone"),
@@ -3047,6 +3134,7 @@ class AppMetadata(BaseModel):
     is_authenticated: bool = Field(default=False, description="Whether the app is authenticated")
     created_by: str | None = Field(default=None, description="User ID who created the app")
     updated_by: str | None = Field(default=None, description="User ID who last updated the app")
+    authenticated_by: str | None = Field(default=None, description="User ID who supplied the credentials the app runs with")
     last_synced_by: str | None = Field(default=None, description="User ID who last triggered a sync")
     created_at_timestamp: int = Field(description="Epoch timestamp in milliseconds of app creation")
     updated_at_timestamp: int = Field(description="Epoch timestamp in milliseconds of app update")
@@ -3085,6 +3173,7 @@ class AppMetadata(BaseModel):
             is_authenticated=doc.get("isAuthenticated", False),
             created_by=doc.get("createdBy"),
             updated_by=doc.get("updatedBy"),
+            authenticated_by=doc.get("authenticatedBy"),
             last_synced_by=doc.get("lastSyncedBy"),
             created_at_timestamp=doc.get("createdAtTimestamp", 0),
             updated_at_timestamp=doc.get("updatedAtTimestamp", 0),
@@ -3200,6 +3289,7 @@ class MeetingRecord(Record):
             end_time=meeting_doc.get("endTime"),
             timezone=meeting_doc.get("timezone"),
             recording_url=meeting_doc.get("recordingUrl"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -3231,6 +3321,133 @@ class MeetingRecord(Record):
             "endTime": self.end_time,
             "timezone": self.timezone,
             "recordingUrl": self.recording_url,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Entity Vector Store models (for knowledge graph entity embedding)
+# ---------------------------------------------------------------------------
+
+class EntityType(str, Enum):
+    """Types of knowledge graph entities that are synced to the vector store."""
+    CATEGORY = "category"
+    SUBCATEGORY = "subcategory"
+    TOPIC = "topic"
+    DEPARTMENT = "department"
+    RECORD = "record"
+    RECORD_GROUP = "record_group"
+    CONNECTOR = "connector"
+    LANGUAGE = "language"
+    RELATIONSHIP = "relationship"
+    CUSTOM = "custom"
+
+
+class EntityTypeCategory(str, Enum):
+    """How an entity's type was derived — mirrors the extraction-routing mode
+    (see knowledge-graph rebuild plan §Part B) so filter reliability can be
+    tracked per category at query time."""
+    PREDEFINED = "predefined"
+    ONTOLOGY = "ontology"
+    DOMAIN_SCHEMA_FREE = "domain_schema_free"
+    GENERIC_SCHEMA_FREE = "generic_schema_free"
+
+
+class EntityRecord(BaseModel):
+    """
+    A knowledge graph entity to be synced to the vector store.
+
+    The `page_content` embedded by EntityVectorStore is the canonical
+    ``name`` only (see ``embedding_text``); aliases live in the payload.
+
+    Kept intentionally slim: only fields needed for embedding text and for
+    server-side filtering live here. Operational/provenance data (reference
+    counts, connector lists, timestamps, summaries) belongs on the graph node,
+    not on the vector payload — the vector store is a search index, not the
+    system of record.
+    """
+
+    entity_id: str = Field(description="Graph DB node key (_key in Arango, id in Neo4j)")
+    entity_type: EntityType = Field(description="Type of the entity")
+    name: str = Field(description="Display name (used as the primary embedding text)")
+    org_id: str = Field(default="", description="Organization ID for multi-tenant isolation")
+
+    # Optional semantic enrichment
+    canonical_name: str = Field(default="", description="Resolution-time canonical display name (defaults to name)")
+    description: str = Field(default="", description="Optional context appended to name for richer embedding")
+    aliases: list[str] = Field(default_factory=list, description="Alternative names for better recall")
+
+    # Scoping
+    domain: str | None = Field(default=None, description="Domain-specific scope (e.g. 'legal', 'finance') for domain-aware extraction")
+    type_category: EntityTypeCategory = Field(default=EntityTypeCategory.PREDEFINED, description="How the entity's type was derived")
+    connector_ids: list[str] = Field(default_factory=list, description="Connector instances that reference this entity; used for targeted disconnect cleanup")
+    record_group_ids: list[str] = Field(default_factory=list, description="Record groups (e.g. folders, Jira projects) of records that reference this entity")
+    level: str | None = Field(default=None, description="Subcategory level (\"1\", \"2\" or \"3\"); None for every other entity type. Subcategories only resolve against their own level.")
+
+    @property
+    def embedding_text(self) -> str:
+        """The text embedded for this entity: the canonical name only.
+
+        Aliases and description are payload, never embedded. Folding merged
+        spellings into the text would move the vector with every merge and
+        make one point match every query that shares a token with any
+        alias; the name alone keeps the vector stable and targeted.
+        """
+        return self.name.strip()
+
+    @classmethod
+    def for_record(
+        cls, record_id: str, name: str, org_id: str, connector_id: str | None,
+        record_group_id: str | None,
+    ) -> "EntityRecord":
+        """A record's title point. Its membership is exactly its own connector
+        and group, so it is written with ``merge_membership=False``."""
+        return cls(
+            entity_id=record_id,
+            entity_type=EntityType.RECORD,
+            name=name,
+            org_id=org_id,
+            connector_ids=[connector_id] if connector_id else [],
+            record_group_ids=[record_group_id] if record_group_id else [],
+            type_category=EntityTypeCategory.PREDEFINED,
+        )
+
+    @classmethod
+    def for_record_group(
+        cls, group_id: str, name: str, org_id: str, connector_id: str | None,
+    ) -> "EntityRecord":
+        """A record group's point. It lists itself as a record group so users
+        with group-level (not connector-level) access can reach it."""
+        return cls(
+            entity_id=group_id,
+            entity_type=EntityType.RECORD_GROUP,
+            name=name,
+            org_id=org_id,
+            connector_ids=[connector_id] if connector_id else [],
+            record_group_ids=[group_id],
+            type_category=EntityTypeCategory.PREDEFINED,
+        )
+
+    def to_vector_payload(self) -> dict:
+        """Serialise to the flat metadata dict stored on each vector point.
+
+        Kept to exactly the fields needed for embedding recall and server-side
+        filtering — see knowledge-graph rebuild plan Part D "Slim vector payload".
+
+        ``connectorIds``/``recordGroupIds`` are deliberately excluded: they are
+        stored as top-level payload siblings of ``metadata`` (not nested in
+        it), matching the records collection's ``VectorChunkPayload`` — see
+        ``EntityVectorStore.upsert_entities_batch``.
+        """
+        return {
+            "entityId": self.entity_id,
+            "entityType": self.entity_type.value,
+            "orgId": self.org_id,
+            "name": self.name,
+            "canonicalName": self.canonical_name or self.name,
+            "domain": self.domain,
+            "typeCategory": self.type_category.value,
+            "aliases": self.aliases,
+            "level": self.level,
         }
 
 

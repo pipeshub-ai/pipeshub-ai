@@ -22,13 +22,24 @@ on:
       # to run it.
       - 'integration-tests/unit/**'
       - 'integration-tests/validation/**'
+      # The connector-type guard checks the types these suites ask for against
+      # the names the connectors register under backend/python/app, so a
+      # misspelling on the suite side has to run it too.
+      - 'integration-tests/connectors/**'
+      # The admin-route inventory reads the Node and Python route code above
+      # against this table, so a route that gains an admin check fails here.
+      - 'integration-tests/helper/admin_route*.py'
 
   workflow_call:
     inputs:
+      # Only ever raise the Python minimum; never lower it to make a PR pass. Add tests instead.
+      # It lives in three places that must move together: this default, the `|| 89.8`
+      # fallback on the `coverage report --fail-under` line (the one pull_request runs use),
+      # and weekly-coverage.yml (its input and its Slack text).
       python-coverage-threshold:
         description: 'Minimum Python coverage percentage'
         type: number
-        default: 88.4
+        default: 89.8
       generate-coverage-reports:
         description: 'Generate and upload coverage report artifacts'
         type: boolean
@@ -49,10 +60,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
@@ -93,7 +104,7 @@ jobs:
 
       - name: Upload Node.js coverage artifact
         if: ${{ always() && inputs.generate-coverage-reports == true }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nodejs-coverage-report-${{ matrix.os }}
           path: backend/nodejs/apps/coverage-report.zip
@@ -111,10 +122,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -148,14 +159,21 @@ jobs:
         run: |
           cd backend/python
           coverage run -m pytest tests/unit -v
-          coverage report --fail-under=${{ inputs.python-coverage-threshold || 88.4 }}
+          coverage report --fail-under=${{ inputs.python-coverage-threshold || 89.8 }}
 
       # Lives under integration-tests because it guards that suite's schemas,
       # but it is pure and needs no stack -- and the job that normally runs it
       # sits behind a reviewer gate, so on a pull request it would not run until
       # someone approved it, and in practice not until the nightly. That is the
       # delay the guard exists to remove, so it runs here too.
-      - name: Run the graph-entity schema guard
+      # Three offline guards over integration-tests: the graph-entity schemas,
+      # the connector types the suites ask for, which must match a registered
+      # @ConnectorBuilder name exactly, and the admin-route inventory. The second
+      # exists because the SharePoint suite asked for "SharePointOnline" against
+      # "SharePoint Online" and only a nightly with a real tenant could find out.
+      # The third is here because a route that gained an admin check without a
+      # table row reached main through a pull request this job did not check.
+      - name: Run the integration-suite guards
         run: |
           uv pip install --system pyyaml
           # `-c` and `--noconftest` because the file sits inside integration-tests,
@@ -165,6 +183,9 @@ jobs:
           # -- leaving it exactly as unenforced on a pull request as it was.
           PYTHONPATH=backend/python:integration-tests \
             pytest integration-tests/unit/test_graph_entity_schemas.py \
+              integration-tests/unit/test_graph_edge_schemas.py \
+              integration-tests/unit/test_connector_types_are_registered.py \
+              integration-tests/unit/test_admin_route_inventory.py \
               --noconftest -c backend/python/pytest.ini -v
 
       # The only automated check on agent behaviour: six golden properties the
@@ -188,29 +209,19 @@ jobs:
       # redis_cluster were run by any workflow. Despite the name most need no
       # services: the ones that do are written to skip when the service is
       # absent, so on a bare runner they skip cleanly and the rest execute.
-      # Three files are excluded below, leaving 20 that run here.
+      # Two paths are excluded below.
       #
       # test_npm_import_live.py is excluded because it is not offline: it pulls
       # real tarballs from registry.npmjs.org. It skips when the registry is
       # unreachable, but a CI runner can reach it, so leaving it in would make
       # every Python pull request depend on the public npm registry and on the
       # pinned packages staying published.
-      #
-      # test_model_reasoning_effort_e2e.py is excluded and tracked in #3201 so
-      # the exclusion does not quietly become permanent. It asserts
-      # that a model-level "defaultReasoningEffort" is honoured by
-      # get_generator_model, and that key appears nowhere in app/utils/aimodels.py
-      # — the setting is an agent-level field, applied in api/routes/agent.py.
-      # The test encodes a design the code does not have. Whether to implement
-      # it or delete the test is a product decision; excluding it here is what
-      # lets the other 23 files run in the meantime.
       - name: Run Python integration tests
         run: |
           cd backend/python
           pytest tests/integration \
             --ignore=tests/integration/redis_cluster \
             --ignore=tests/integration/skills/test_npm_import_live.py \
-            --ignore=tests/integration/test_model_reasoning_effort_e2e.py \
             -v --timeout=300 --session-timeout=900
 
       - name: Generate coverage reports
@@ -239,7 +250,7 @@ jobs:
 
       - name: Upload Python coverage artifact
         if: ${{ always() && inputs.generate-coverage-reports == true }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: python-coverage-report-${{ matrix.os }}-${{ matrix.python-version }}
           path: backend/python/python-coverage-report.zip
@@ -255,12 +266,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
@@ -290,7 +301,7 @@ jobs:
         run: pytest tests/integration/redis_cluster -v -m integration
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 

@@ -8,6 +8,12 @@ const LAST_ADMIN_DEMOTION_MESSAGE =
 
 export const MAX_ORG_ADMINS = 5;
 
+export const ADMIN_ACCESS_REQUIRED_MESSAGE =
+  'You need admin access to do this. Ask an admin in your organisation.';
+
+export const OWN_ADMIN_CHECK_ONLY_MESSAGE =
+  'You can only check your own admin access.';
+
 export const MAX_ORG_ADMINS_MESSAGE =
   'An organization can have at most 5 admins.';
 

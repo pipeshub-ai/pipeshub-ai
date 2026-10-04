@@ -126,7 +126,35 @@ class GitHubDataSource:
             error=str(e),
             status_code=getattr(e, "status", None),
             exception_type=type(e).__name__,
+            api_message=GitHubDataSource._api_message(getattr(e, "data", None)),
+            retry_after_seconds=GitHubDataSource._retry_after_seconds(getattr(e, "headers", None)),
         )
+
+    @staticmethod
+    def _api_message(data: object) -> str | None:
+        """GitHub's ``message`` plus the text of any field ``errors`` it listed."""
+        if not isinstance(data, dict):
+            return None
+        parts = [str(data["message"]).rstrip(".")] if data.get("message") else []
+        for item in data.get("errors") or []:
+            text = item.get("message") if isinstance(item, dict) else item
+            if isinstance(text, str) and text and text not in parts:
+                parts.append(text.rstrip("."))
+        return "; ".join(parts) or None
+
+    @staticmethod
+    def _retry_after_seconds(headers: object) -> int | None:
+        """Seconds GitHub asked us to wait: ``Retry-After``, else until ``X-RateLimit-Reset``."""
+        if not isinstance(headers, dict):
+            return None
+        lowered = {str(k).lower(): str(v) for k, v in headers.items()}
+        retry_after = lowered.get("retry-after", "").strip()
+        if retry_after.isdigit():
+            return int(retry_after)
+        reset = lowered.get("x-ratelimit-reset", "").strip()
+        if reset.isdigit() and lowered.get("x-ratelimit-remaining", "").strip() == "0":
+            return max(0, int(reset) - int(datetime.datetime.now(datetime.timezone.utc).timestamp()))
+        return None
 
     @staticmethod
     def _not_none(**params: object) -> dict[str, object]:
@@ -179,6 +207,27 @@ class GitHubDataSource:
         """
         return "/pull/" in (getattr(item, "html_url", "") or "")
 
+    def _reload_edited_issue(self, r: Repository, issue: Issue) -> GitHubResponse:
+        """Return the issue as GitHub now has it after a successful edit().
+
+        edit() updates the typed attributes from the PATCH reply but not raw_data, which is what
+        callers serialize, so read it again. If that read fails the change is still saved: say so
+        from the attributes edit() did update, rather than report the write as failed.
+        """
+        try:
+            return GitHubResponse(success=True, data=r.get_issue(issue.number))
+        except Exception as e:
+            return GitHubResponse(success=True, data={
+                "number": issue.number,
+                "title": issue.title,
+                "state": issue.state,
+                "html_url": issue.html_url,
+                "note": (
+                    "The change was saved, but the updated issue could not be reloaded "
+                    f"({e}). Call get_issue to see it in full."
+                ),
+            })
+
     @classmethod
     def _issues_only(cls, items: list) -> list:
         """Filter to items that are issues, excluding PRs."""
@@ -224,6 +273,8 @@ class GitHubDataSource:
                 obj = self._sdk.get_organization(login)
             else:
                 obj = self._sdk.get_user() if (login or "").strip().lower() == "me" else self._sdk.get_user(login)
+            # A lazy object would make its GET on whichever thread first reads it; as in get_authenticated, read it here.
+            _ = obj.id
             return GitHubResponse(success=True, data=obj)
         except Exception as e:
             return self._err(e)
@@ -422,7 +473,7 @@ class GitHubDataSource:
             if not params:
                 return GitHubResponse(success=True, data=issue)
             issue.edit(**params)
-            return GitHubResponse(success=True, data=issue)
+            return self._reload_edited_issue(r, issue)
         except Exception as e:
             return self._err(e)
 
@@ -433,7 +484,7 @@ class GitHubDataSource:
             r = self._repo(owner, repo)
             issue = r.get_issue(number)
             issue.edit(state="closed")
-            return GitHubResponse(success=True, data=issue)
+            return self._reload_edited_issue(r, issue)
         except Exception as e:
             return self._err(e)
 

@@ -16,6 +16,7 @@ import time
 from typing import TYPE_CHECKING, TypeVar
 
 import openai
+from google.genai import errors as genai_errors
 
 from app.services.base_client import parse_retry_after
 
@@ -54,7 +55,28 @@ def is_retriable_embedding_error(exc: BaseException) -> bool:
         return True
     if isinstance(exc, openai.APIStatusError):
         return exc.status_code in _RETRIABLE_HTTP_STATUS_CODES
+    google_code = _google_api_error_code(exc)
+    if google_code is not None:
+        return google_code in _RETRIABLE_HTTP_STATUS_CODES
     return False
+
+
+def _google_api_error_code(exc: BaseException) -> int | None:
+    """HTTP code of the google-genai APIError at or under ``exc``, if any.
+
+    The Gemini embedder (langchain_google_genai) re-raises Google errors as
+    GoogleGenerativeAIError ``from`` the original, so the code sits on the
+    explicit cause. ``__context__`` is not followed: it can hold an unrelated
+    error that was being handled when this one was raised.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, genai_errors.APIError):
+            return current.code
+        seen.add(id(current))
+        current = current.__cause__
+    return None
 
 
 def retry_delay_seconds(attempt: int) -> float:

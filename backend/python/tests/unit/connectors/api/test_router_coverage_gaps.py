@@ -78,7 +78,6 @@ from app.connectors.api.router import (
     get_record_by_id,
     get_records,
     get_validated_connector_instance,
-    handle_record_deletion,
     reindex_record_group,
     reindex_single_record,
     require_connector_not_locked,
@@ -289,6 +288,7 @@ class TestDeleteRecordGaps:
         """When result has no eventData, no kafka publish but still returns success."""
         req = _mock_request()
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={"success": True, "connector": "c1", "timestamp": 123})
         kafka = AsyncMock()
 
@@ -301,6 +301,7 @@ class TestDeleteRecordGaps:
         """eventData present but no payload key -- skip publish."""
         req = _mock_request()
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(
             return_value={"success": True, "eventData": {"eventType": "x"}, "connector": "c1"}
         )
@@ -314,6 +315,7 @@ class TestDeleteRecordGaps:
         """Non-HTTP exception becomes a 500."""
         req = _mock_request()
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(side_effect=RuntimeError("db down"))
         kafka = AsyncMock()
 
@@ -326,6 +328,7 @@ class TestDeleteRecordGaps:
         """Kafka publish failure is logged but doesn't raise."""
         req = _mock_request()
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {"eventType": "deleted", "payload": {"id": "rec-1"}, "topic": "t"},
@@ -830,7 +833,7 @@ class TestGetConnectorInstanceConfigGaps:
         registry = AsyncMock()
         registry.get_connector_instance = AsyncMock(return_value={
             "type": "GOOGLE_DRIVE", "name": "My Drive", "scope": "personal",
-            "createdBy": "u1", "authType": "OAUTH",
+            "createdBy": "user-1", "authType": "OAUTH",
         })
         config_service = MagicMock()
         config_service.get_config = AsyncMock(side_effect=RuntimeError("not found"))
@@ -852,7 +855,7 @@ class TestGetConnectorInstanceConfigGaps:
         registry = AsyncMock()
         registry.get_connector_instance = AsyncMock(return_value={
             "type": "GOOGLE_DRIVE", "name": "My Drive", "scope": "personal",
-            "createdBy": "u1", "authType": "OAUTH",
+            "createdBy": "user-1", "authType": "OAUTH",
         })
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value={
@@ -1368,6 +1371,101 @@ class TestCreateOrUpdateOAuthConfigGaps:
                             logger=None,  # No logger provided
                         )
         assert result == "new-id"
+
+    @pytest.mark.asyncio
+    async def test_new_app_stores_connector_scope(self):
+        """Apps saved without connectorScope were missing from the scope-filtered picker."""
+        from app.connectors.api.router import _create_or_update_oauth_config
+
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value=[])
+        config_service.set_config = AsyncMock()
+
+        with patch(f"{_ROUTER}._get_oauth_field_names_from_registry", return_value=["clientId", "clientSecret"]), \
+                patch(f"{_ROUTER}._update_oauth_infrastructure_fields", new_callable=AsyncMock), \
+                patch(f"{_ROUTER}._generate_oauth_config_id", return_value="new-id"), \
+                patch(
+                    f"{_ROUTER}.oauth_create_extra_fields",
+                    side_effect=lambda *, connector_scope, oauth_instance_name: {
+                        "connectorScope": connector_scope,
+                        "name": oauth_instance_name,
+                    },
+                ):
+            await _create_or_update_oauth_config(
+                connector_type="Confluence",
+                auth_config={"clientId": "abc", "clientSecret": "xyz"},
+                instance_name="Confluence 2",
+                user_id="u1",
+                org_id="o1",
+                is_admin=True,
+                config_service=config_service,
+                base_url="",
+                logger=logging.getLogger("test"),
+                connector_scope="team",
+            )
+
+        saved = config_service.set_config.call_args.args[1]
+        assert saved[0]["connectorScope"] == "team"
+        assert saved[0]["name"] == "Confluence 2"
+        assert saved[0]["createdBy"] == "u1"
+        assert saved[0]["updatedBy"] == "u1"
+        assert saved[0]["userId"] == "u1"
+
+    @pytest.mark.asyncio
+    async def test_creator_can_update_app_that_only_records_created_by(self):
+        """Apps saved from the OAuth Apps page have createdBy; older ones only userId."""
+        from app.connectors.api.router import _create_or_update_oauth_config
+
+        existing = {"_id": "app-1", "orgId": "o1", "createdBy": "u1", "config": {"clientId": "old"}}
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value=[existing])
+        config_service.set_config = AsyncMock()
+
+        with patch(f"{_ROUTER}._get_oauth_field_names_from_registry", return_value=["clientId"]),                 patch(f"{_ROUTER}._update_oauth_infrastructure_fields", new_callable=AsyncMock):
+            result = await _create_or_update_oauth_config(
+                connector_type="Confluence",
+                auth_config={"clientId": "new"},
+                instance_name="Confluence",
+                user_id="u1",
+                org_id="o1",
+                is_admin=False,
+                config_service=config_service,
+                base_url="",
+                oauth_app_id="app-1",
+                logger=logging.getLogger("test"),
+            )
+
+        assert result == "app-1"
+        saved = config_service.set_config.call_args.args[1]
+        assert len(saved) == 1
+        assert saved[0]["config"]["clientId"] == "new"
+        assert saved[0]["updatedBy"] == "u1"
+
+    @pytest.mark.asyncio
+    async def test_handle_oauth_config_creation_passes_scope_through(self):
+        from app.connectors.api.router import _handle_oauth_config_creation
+
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value=[])
+
+        with patch(f"{_ROUTER}._get_oauth_field_names_from_registry", return_value=["clientId", "clientSecret"]), \
+                patch(f"{_ROUTER}._create_or_update_oauth_config", new_callable=AsyncMock, return_value="new-id") as mock_create:
+            await _handle_oauth_config_creation(
+                connector_type="Confluence",
+                auth_config={"clientId": "abc", "clientSecret": "xyz"},
+                instance_name="Confluence",
+                user_id="u1",
+                org_id="o1",
+                is_admin=True,
+                config_service=config_service,
+                oauth_config_id=None,
+                auth_type="OAUTH",
+                base_url="",
+                logger=logging.getLogger("test"),
+                connector_scope="personal",
+            )
+
+        assert mock_create.call_args.kwargs["connector_scope"] == "personal"
 
     @pytest.mark.asyncio
     async def test_update_existing_with_matching_id_and_org(self):
@@ -1980,45 +2078,6 @@ class TestGetRecordsGaps:
         with pytest.raises(HTTPException) as exc_info:
             await get_records(req, graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-
-
-# ============================================================================
-# handle_record_deletion — record not found (line 466-469)
-# ============================================================================
-
-
-class TestHandleRecordDeletionGaps:
-    @pytest.mark.asyncio
-    async def test_record_not_found_raises_404(self):
-        gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
-        gp.delete_records_and_relations = AsyncMock(return_value=None)
-        req = _mock_request(graph_provider=gp)
-
-        with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", request=req, graph_provider=gp)
-        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
-
-    @pytest.mark.asyncio
-    async def test_generic_exception_raises_500(self):
-        gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
-        gp.delete_records_and_relations = AsyncMock(side_effect=RuntimeError("boom"))
-        req = _mock_request(graph_provider=gp)
-
-        with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", request=req, graph_provider=gp)
-        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-
-    @pytest.mark.asyncio
-    async def test_success_returns_response(self):
-        gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
-        gp.delete_records_and_relations = AsyncMock(return_value={"deleted": True})
-        req = _mock_request(graph_provider=gp)
-
-        result = await handle_record_deletion("rec-1", request=req, graph_provider=gp)
-        assert result["status"] == "success"
 
 
 # ============================================================================
@@ -2725,35 +2784,6 @@ class TestGetRecordsAdditional:
 
 
 # ============================================================================
-# handle_record_deletion — success with event data
-# ============================================================================
-
-
-class TestHandleRecordDeletionSuccess:
-    @pytest.mark.asyncio
-    async def test_success_returns_response(self):
-        gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
-        gp.delete_records_and_relations = AsyncMock(return_value={"deleted": True})
-        req = _mock_request(graph_provider=gp)
-
-        result = await handle_record_deletion("rec-1", request=req, graph_provider=gp)
-        assert result["status"] == "success"
-
-    @pytest.mark.asyncio
-    async def test_http_exception_re_raised(self):
-        gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"orgId": "org-1"})
-        gp.delete_records_and_relations = AsyncMock(
-            side_effect=HTTPException(status_code=403, detail="Forbidden")
-        )
-        req = _mock_request(graph_provider=gp)
-        with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", request=req, graph_provider=gp)
-        assert exc_info.value.status_code == 403
-
-
-# ============================================================================
 # delete_record — success with event data published
 # ============================================================================
 
@@ -2763,6 +2793,7 @@ class TestDeleteRecordEventPublish:
     async def test_success_with_event_data_published(self):
         req = _mock_request()
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {"eventType": "deleted", "payload": {"id": "rec-1"}, "topic": "t"},
@@ -2780,6 +2811,7 @@ class TestDeleteRecordEventPublish:
     async def test_failure_result_raises_http_exception(self):
         req = _mock_request()
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": False, "reason": "not found", "code": 404,
         })
@@ -3332,6 +3364,65 @@ class TestHandleOAuthConfigCreation:
 # ============================================================================
 # _build_oauth_flow_config
 # ============================================================================
+
+
+class TestConfluenceJiraScopeFromSavedOAuthApp:
+    """Grant Jira user access saved on an OAuth app applies to connectors using it,
+    unless the connector sets its own value."""
+
+    _SHARED_APP = {
+        "_id": "app-1",
+        "orgId": "o1",
+        "authorizeUrl": "https://auth.atlassian.com/authorize",
+        "tokenUrl": "https://auth.atlassian.com/oauth/token",
+        "scopes": {"team_sync": ["read:page:confluence"], "personal_sync": [], "agent": []},
+        "config": {"clientId": "cid", "clientSecret": "secret", "includeJiraScope": "yes"},
+    }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "connector_auth, expect_jira_scope",
+        [
+            ({}, True),  # connector linked to a saved app records no choice of its own
+            ({"includeJiraScope": ""}, True),  # an empty value is not a choice either
+            ({"includeJiraScope": "no"}, False),  # the connector's own choice wins
+        ],
+    )
+    async def test_authorize_scopes_follow_the_saved_app(self, connector_auth, expect_jira_scope):
+        from app.connectors.api.router import _build_oauth_flow_config
+
+        auth_config = {"oauthConfigId": "app-1", "connectorScope": "team", **connector_auth}
+        stored_auth = dict(auth_config)
+        with patch(
+            f"{_ROUTER}.resolve_shared_oauth_config_for_flow",
+            new_callable=AsyncMock,
+            return_value=dict(self._SHARED_APP),
+        ):
+            result = await _build_oauth_flow_config(
+                auth_config=auth_config,
+                connector_type="Confluence",
+                org_id="o1",
+                config_service=AsyncMock(),
+                logger=logging.getLogger("test"),
+            )
+
+        assert ("read:jira-user" in result["scopes"]) is expect_jira_scope
+        assert "read:page:confluence" in result["scopes"]
+        assert auth_config == stored_auth
+
+    @pytest.mark.asyncio
+    async def test_connector_without_saved_app_uses_its_own_setting(self):
+        from app.connectors.api.router import _build_oauth_flow_config
+
+        result = await _build_oauth_flow_config(
+            auth_config={"clientId": "cid", "scopes": ["read:page:confluence"], "includeJiraScope": "yes"},
+            connector_type="Confluence",
+            org_id="o1",
+            config_service=AsyncMock(),
+            logger=logging.getLogger("test"),
+        )
+
+        assert "read:jira-user" in result["scopes"]
 
 
 class TestBuildOAuthFlowConfig:

@@ -16,6 +16,7 @@ from qdrant_client.http.models import (  # type: ignore
     Distance,
     Filter,
     FilterSelector,
+    HasIdCondition,
     HnswConfigDiff,
     KeywordIndexParams,
     KeywordIndexType,
@@ -240,6 +241,21 @@ def _pending_storage_patches(
         )
 
     return pending
+
+
+def _sparse_modifier(config: CollectionConfig) -> Optional[Modifier]:
+    return Modifier.IDF if config.sparse_idf else None
+
+
+def _missing_sparse_idf(info: object, config: CollectionConfig) -> bool:
+    """True when ``config`` wants IDF on the sparse vector and the collection lacks it."""
+    if not (config.enable_sparse and config.sparse_idf):
+        return False
+    params = getattr(getattr(info, "config", None), "params", None)
+    sparse = _named(getattr(params, "sparse_vectors", None), "sparse")
+    if sparse is None:
+        return False
+    return getattr(sparse, "modifier", None) != Modifier.IDF
 
 
 class QdrantService(IVectorDBService):
@@ -471,7 +487,7 @@ class QdrantService(IVectorDBService):
             {
                 "sparse": SparseVectorParams(
                     index=SparseIndexParams(on_disk=config.on_disk_sparse),
-                    modifier=Modifier.IDF if config.sparse_idf else None,
+                    modifier=_sparse_modifier(config),
                 )
             }
             if config.enable_sparse
@@ -542,6 +558,35 @@ class QdrantService(IVectorDBService):
             "change(s) still pending."
         )
         return pending_patch.field
+
+    async def reconcile_lexical_scoring(
+        self,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
+    ) -> Optional[str]:
+        """Switch an existing collection's sparse vector to server-side IDF.
+
+        Qdrant computes IDF from the inverted index at query time, so this is a
+        config change only: no segment is rewritten and no point re-embedded,
+        which is why it runs unconditionally rather than behind the opt-in
+        storage reconcile.
+        """
+        self._assert_connected()
+        if config is None:
+            config = CollectionConfig()
+
+        info = await self.client.get_collection(collection_name)  # type: ignore
+        if not _missing_sparse_idf(info, config):
+            return None
+
+        await self.client.update_collection(  # type: ignore
+            collection_name=collection_name,
+            sparse_vectors_config={
+                "sparse": SparseVectorParams(modifier=_sparse_modifier(config))
+            },
+        )
+        logger.info(f"Enabled IDF scoring on sparse vectors of '{collection_name}'")
+        return "sparse.modifier"
 
     async def get_collections(self) -> object:
         self._assert_connected()
@@ -678,6 +723,22 @@ class QdrantService(IVectorDBService):
             next_offset=str(next_offset) if next_offset is not None else None,
         )
 
+    async def retrieve_points(
+        self,
+        collection_name: str,
+        ids: List[str],
+    ) -> List[VectorPoint]:
+        self._assert_connected()
+        if not ids:
+            return []
+        raw_points = await self.client.retrieve(  # type: ignore
+            collection_name=collection_name,
+            ids=list(ids),
+            with_payload=True,
+            with_vectors=False,
+        )
+        return [VectorPoint(id=str(p.id), payload=p.payload or {}) for p in raw_points]
+
     async def query_nearest_points(
         self,
         collection_name: str,
@@ -803,6 +864,24 @@ class QdrantService(IVectorDBService):
             collection_name=collection_name,
             payload=payload,
             points=FilterSelector(filter=qdrant_filter),
+            wait=True,
+        )
+
+    async def update_payload_by_ids(
+        self,
+        collection_name: str,
+        point_ids: List[str],
+        payload: dict,
+    ) -> None:
+        self._assert_connected()
+        if not point_ids:
+            return
+        # A plain id list fails the whole call with a 404 if any id is missing;
+        # an id filter skips those, as the interface requires.
+        await self.client.set_payload(  # type: ignore
+            collection_name=collection_name,
+            payload=payload,
+            points=FilterSelector(filter=Filter(must=[HasIdCondition(has_id=list(point_ids))])),
             wait=True,
         )
 

@@ -92,7 +92,7 @@ def _make_vector_store(vector_db_service):
     registry = CollectionRegistry(
         vector_db_service=vector_db_service,
         strategy=SingleCollectionStrategy(),
-        collection_config_factory=lambda size, sparse_idf=False: CollectionConfig(
+        collection_config_factory=lambda size: CollectionConfig(
             embedding_size=size
         ),
         manifest_store=CollectionManifestStore(AsyncMock(), MagicMock()),

@@ -619,8 +619,15 @@ class OrchestratorLoop(LoopStrategy):
                 turn_index += 1
                 if outcome.status == "stop":
                     return outcome.result
-                if agent.last_tool_result("spawn_agent") is not None:
-                    if agent.has_successful_tool_result("spawn_agent"):
+                # Only this turn's spawns count: the phase gate refuses early
+                # spawn_agent calls during Phase 1, and a run-wide lookup would
+                # keep treating that refusal as a fresh failed dispatch.
+                spawn_results = [
+                    tr for tr in (outcome.turn.tool_results if outcome.turn else [])
+                    if tr.name == "spawn_agent"
+                ]
+                if spawn_results:
+                    if any(not tr.is_error for tr in spawn_results):
                         dispatched = True
                         break
                     dispatch_retries += 1

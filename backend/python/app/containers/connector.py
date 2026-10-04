@@ -101,6 +101,14 @@ class ConnectorAppContainer(BaseAppContainer):
 
     feature_flag_service = providers.Singleton(container_utils.create_feature_flag_service, config_service=config_service)
 
+    # For the startup health check (Health.health_check_vector_db). Entity
+    # cleanup on connector and Collection deletion runs in the indexing
+    # service (deleteConnectorEntities).
+    vector_db_service = providers.Resource(
+        container_utils.get_vector_db_service,
+        config_service=config_service,
+    )
+
     # Connector-specific wiring configuration
     wiring_config = containers.WiringConfiguration(
         modules=[

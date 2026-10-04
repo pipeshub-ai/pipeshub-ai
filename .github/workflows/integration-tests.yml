@@ -38,11 +38,14 @@ on:
             - google_drive_individual
             - gcs
             - azure_blob
+            - smb
             - azure_files
             - messaging
             - oauth_clients
             - mcp
             - zammad
+            - demo
+            - ai_agents
             - resilience
             - permissions
             - storage
@@ -103,7 +106,7 @@ permissions:
   contents: read
 
 # The matrix reads labels from each event's frozen payload, so an opened/synchronize
-# event firing before a label lands resolves to the default "both" and would otherwise
+# event firing before a label lands resolves to the neo4j default and would otherwise
 # burn a runner alongside the labeled run. Non-PR events get a unique group per run so
 # a manual dispatch never cancels the nightly cron.
 concurrency:
@@ -129,7 +132,7 @@ jobs:
     steps:
       # The base branch's copy on pull_request_target, never the PR's.
       - name: Checkout the picker
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
           sparse-checkout: scripts
@@ -151,23 +154,32 @@ jobs:
       fail-fast: false
       matrix:
         # One job per value; "both" runs both backends sequentially in one job.
-        # Select backends via the graph_db dispatch input or the
-        # it-neo4j / it-arango / it-parallel PR labels (default: sequential "both").
+        # PRs default to neo4j alone; it-arango / it-both / it-parallel (or
+        # it-neo4j + it-arango) widen that. Cron and dispatch still get "both".
         # `strategy` can't read the job env block, so derive from inputs/labels here.
-        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || '["both"]') }}
+        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-both') && '["both"]') || (github.event_name == 'pull_request_target' && '["neo4j"]') || '["both"]') }}
         # Split the suite into parallel shards, each with its own stack, so the
         # slow connector suites do not all serialize on one worker. Three
         # connector shards (balanced on measured minutes, see
         # scripts/shard_durations.json) plus a "core" shard for everything else.
         # Each shard's marker is derived in the test step from CONN_SHARD_1 /
         # CONN_SHARD_2 / CONN_SHARD_3 (one source of truth); "core" is everything
-        # those three do not own, so the four partition -m "integration" exactly.
+        # those three and "demo" do not own, so the five partition -m "integration"
+        # exactly.
         # scripts/shard_balance.py checks that partition and the balance; run it
         # after adding or growing a connector suite.
+        # "demo" runs only the Acme Corp demo questions, on a stack where no
+        # other suite has indexed anything: the demo's prompt differs once the
+        # workspace has real data, and core would index plenty. Core leaves the
+        # demo marker out, so it runs once.
+        # "ai_agents" runs the AI models, agents, MCP and agent harness suite
+        # against a real model. Each test costs model calls, so it runs on the
+        # nightly and on a full manual run, never on a pull request; core leaves
+        # its marker out everywhere, so on a pull request it does not run at all.
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || '["connectors-1","connectors-2","connectors-3","core"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request_target' && '["connectors-1","connectors-2","connectors-3","core","demo"]') || '["connectors-1","connectors-2","connectors-3","core","demo","ai_agents"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -178,6 +190,11 @@ jobs:
     env:
       MESSAGE_BROKER: ${{ needs.setup.outputs.message_broker }}
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      # One value for both sides: compose seeds the stack with it and the
+      # storage suite mints its service tokens with it. Test-only; a
+      # TEST_SCOPED_JWT_SECRET secret replaces it, except on a pull request,
+      # whose checked-out code must never see a real signing secret.
+      SCOPED_JWT_SECRET: ${{ (github.event_name != 'pull_request_target' && secrets.TEST_SCOPED_JWT_SECRET) || 'pipeshub-integration-scoped-jwt-secret-test-only' }}
       DOCKER_BUILDKIT: "1"
       PIPESHUB_TEST_ENV: local
       # A connector suite whose credential is missing skips itself, which on the
@@ -185,6 +202,9 @@ jobs:
       # cover these connectors — the nightly, and a dispatch that picked one —
       # a missing credential is a failure instead.
       PIPESHUB_REQUIRE_CONNECTOR_SECRETS: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != 'integration')) && '1' || '' }}
+      # The demo's Build Pack questions cost about four times the golden
+      # questions' model calls, so they run nightly and on a demo dispatch only.
+      DEMO_PACK_QUESTIONS: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.connectors == 'demo')) && '1' || '' }}
       ARANGO_PASSWORD: ${{ secrets.TEST_ARANGO_PASSWORD }}
       PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
       PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
@@ -226,6 +246,11 @@ jobs:
       # (which changes pages through its control API) on the published port.
       WEB_FIXTURES_TEST_URL: http://localhost:8089
       WEB_FIXTURES_CONNECTOR_URL: http://web-fixtures:8080
+      # The agent tests register the mcp-fixture service as an external MCP
+      # server: PipesHub reaches it by service name, the test process reads its
+      # call log on the published port.
+      MCP_FIXTURE_TEST_URL: http://localhost:8097
+      MCP_FIXTURE_CONNECTOR_URL: http://mcp-fixture:8080/mcp
       # Nextcloud and BookStack run in the compose stack too, behind the
       # selfhosted-sources profile: only the shard that runs their tests
       # (connectors-1, or a dispatch of just one of them) starts them.
@@ -239,7 +264,7 @@ jobs:
       BOOKSTACK_DB_PORT: '3308'
       ZAMMAD_TEST_URL: http://localhost:8096
       ZAMMAD_CONNECTOR_URL: http://zammad-railsserver:3000
-      COMPOSE_PROFILES: ${{ format('{0},{1},{2}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '') }}
+      COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '') }}
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
@@ -264,6 +289,9 @@ jobs:
       # local .env run does today.
       TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
       TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
+      # The demo test's answer judge uses the Azure settings above. Without it,
+      # facts a question lists for the judge would go unchecked yet pass.
+      PIPESHUB_REQUIRE_JUDGE: '1'
       CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
       CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
       CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
@@ -273,8 +301,12 @@ jobs:
       SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
       SHAREPOINT_TEST_CLIENT_ID: ${{ secrets.SHAREPOINT_TEST_CLIENT_ID }}
       SHAREPOINT_TEST_SHAREPOINT_DOMAIN: ${{ secrets.SHAREPOINT_TEST_SHAREPOINT_DOMAIN }}
-      SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE_CONTENT }}
-      SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE_CONTENT }}
+      # No _CONTENT suffix: the secrets are stored under these names, and a
+      # reference to a secret that does not exist resolves to empty, which the
+      # suite reports as "the SharePoint tenant is not configured" -- the same
+      # message as having no credentials at all.
+      SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE }}
+      SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE }}
       JIRA_TEST_BASE_URL: ${{ secrets.JIRA_TEST_BASE_URL }}
       JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
       JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}
@@ -316,15 +348,31 @@ jobs:
       SMTP_HOST: mailpit
       SMTP_PORT: '1025'
       SMTP_FROM_EMAIL: no-reply@example.com
+      # The SMB connector syncs from the smb-source Samba share in the compose
+      # stack, started by the smb-source profile for connectors-2 (or a dispatch
+      # of smb). The connector reaches it by service name; the test process
+      # writes files through the published port. A secret, when set, points
+      # both at an external share instead. CIFS is not registered, so it is
+      # not in a shard.
+      SMB_HOST: ${{ secrets.SMB_HOST || 'localhost' }}
+      SMB_PORT: ${{ secrets.SMB_HOST && (secrets.SMB_PORT || '445') || '1445' }}
+      SMB_CONNECTOR_HOST: ${{ secrets.SMB_HOST || 'smb-source' }}
+      SMB_CONNECTOR_PORT: ${{ secrets.SMB_HOST && (secrets.SMB_PORT || '445') || '445' }}
+      SMB_SHARE: ${{ secrets.SMB_SHARE || 'pipeshubtest' }}
+      SMB_USERNAME: ${{ secrets.SMB_USERNAME || 'pipeshubtest' }}
+      SMB_PASSWORD: ${{ secrets.SMB_PASSWORD || 'pipeshubtest123' }}
       # Connector shards, one source of truth. The `core` shard is everything
-      # these three do not own, built in the test step from the same values.
+      # these three and the `demo` shard do not own, built in the test step
+      # from the same values.
       # Balanced on measured minutes across both graph legs (both legs run in
       # one job, so a shard's wall clock is the sum of the two):
-      # shard 1 ~136 min, shard 2 ~135 min, shard 3 ~132 min. Shard 1 keeps
+      # shard 1 ~194 min, shard 2 ~204 min, shard 3 ~209 min, of which ~60 min
+      # each is the scenario matrix (an estimate until a nightly measures it; it
+      # runs on the Neo4j leg only). Shard 1 keeps
       # nextcloud and bookstack, the only suites needing selfhosted-sources.
       # Rebalance with scripts/shard_balance.py when a suite grows.
       CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
-      CONN_SHARD_2: "google_drive_workspace or google_drive_individual or gitlab or jira or linear or azure_blob or azure_files"
+      CONN_SHARD_2: "google_drive_workspace or google_drive_individual or gitlab or jira or linear or azure_blob or azure_files or smb"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
@@ -344,7 +392,7 @@ jobs:
 
       - name: Set up Node.js
         if: env.RUN_PLAYWRIGHT == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 
@@ -374,12 +422,19 @@ jobs:
         run: docker compose -f docker-compose.integration.arango.yml build
 
       - name: Set up Python ${{ github.event.inputs.python_version || '3.12' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ github.event.inputs.python_version || '3.12' }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      # The examples suite runs the Go SDK starter; the runner image only caches Go.
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.23'
+          cache: false
 
       - name: Set up Python and install dependencies
         working-directory: integration-tests
@@ -487,15 +542,17 @@ jobs:
         run: |
           source .venv/bin/activate
           # Each shard runs its slice; `core` is everything the three connector
-          # lists do not own, built here so the lists live in one place. The
-          # single "dispatch" job (a one-marker workflow_dispatch) runs exactly
-          # the selected marker.
+          # lists and the demo shard do not own, built here so the lists live in
+          # one place. The single "dispatch" job (a one-marker workflow_dispatch)
+          # runs exactly the selected marker.
           case "$SHARD" in
             dispatch)     MARKERS="$CONNECTORS_INPUT" ;;
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo and not ai_agents" ;;
+            demo)         MARKERS="demo" ;;
+            ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
@@ -530,8 +587,9 @@ jobs:
 
       # Restarts Redis, Qdrant, the graph database and MongoDB, kills the
       # indexing process, cuts the app off from its AI provider and makes blob
-      # storage unwritable on the live stack, which would break any test
-      # running beside it. So it runs alone,
+      # storage unwritable on the live stack, and empties and rebuilds the
+      # vector store (Labs cleanup, embedding model change), which would break
+      # any test running beside it. So it runs alone,
       # after everything else on this stack, and only nightly on the core
       # shard's Neo4j pass: one stack, no extra runner, no time added to a PR.
       # A dispatch with connectors=resilience runs it through the step above.
@@ -670,15 +728,17 @@ jobs:
         run: |
           source .venv/bin/activate
           # Each shard runs its slice; `core` is everything the three connector
-          # lists do not own, built here so the lists live in one place. The
-          # single "dispatch" job (a one-marker workflow_dispatch) runs exactly
-          # the selected marker.
+          # lists and the demo shard do not own, built here so the lists live in
+          # one place. The single "dispatch" job (a one-marker workflow_dispatch)
+          # runs exactly the selected marker.
           case "$SHARD" in
             dispatch)     MARKERS="$CONNECTORS_INPUT" ;;
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage and not cifs and not demo and not ai_agents" ;;
+            demo)         MARKERS="demo" ;;
+            ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
@@ -898,7 +958,7 @@ jobs:
       - name: Send Slack report
         if: ${{ !cancelled() }}
         id: slack-message
-        uses: slackapi/slack-github-action@v2.1.0
+        uses: slackapi/slack-github-action@b0fa283ad8fea605de13dc3f449259339835fc52 # v2.1.0
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -1129,7 +1189,7 @@ jobs:
 
       - name: Upload reports artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: reports-${{ matrix.graph_db }}-${{ matrix.shard }}
           path: integration-tests/reports/

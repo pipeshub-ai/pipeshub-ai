@@ -46,7 +46,8 @@ def _method_source(path: str, name: str) -> str:
 
     # Explicit encoding: the providers carry emoji in log strings, and the
     # platform default is cp1252 on Windows.
-    text = pathlib.Path(path).read_text(encoding="utf-8")
+    root = pathlib.Path(__file__).resolve().parents[4]
+    text = (root / path).read_text(encoding="utf-8")
     try:
         start = text.index(f"async def {name}(")
     except ValueError:
@@ -684,7 +685,7 @@ class TestScopeInTheContainerQuery:
         a record the user can read and asked for, lost without an error."""
         query, _, _, _ = await _render_containers(backend, {"kb": ["k"]})
         if backend == "neo4j":
-            seeds = query[query.index("OPTIONAL MATCH (u)-[:PERMISSION]->(rg:RecordGroup"):query.index("AS seed_rgs")]
+            seeds = query[query.index("OPTIONAL MATCH (pu)-[:PERMISSION]->(rg:RecordGroup"):query.index("AS seed_rgs")]
         else:
             seeds = query[query.index("LET path1_seed_rgs"):query.index("LET seed_rgs")]
         assert "scope_ids" not in seeds

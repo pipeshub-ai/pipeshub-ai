@@ -2,12 +2,15 @@ import ast
 import json
 import logging
 import uuid
+from datetime import datetime, timedelta
 from typing import List, Optional, Union
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.google_api_errors import GoogleToolWording, google_error_message
 from app.agents.actions.util.tool_summaries import entity_summary, list_summary
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
@@ -23,13 +26,108 @@ from app.connectors.core.registry.tool_builder import (
 from app.connectors.core.registry.types import DocumentationLink
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.calendar.gcalendar import GoogleCalendarDataSource
-from app.utils.time_conversion import prepare_iso_timestamps
 
 logger = logging.getLogger(__name__)
 
 
 def _calendar_event_label(event: dict) -> str:
     return event.get("summary") or event.get("id") or "?"
+
+
+class _CalendarInputError(ValueError):
+    """Bad tool arguments; the message says what to change and is safe to show the agent."""
+
+
+_CALENDAR_WORDING = GoogleToolWording(
+    product="Google Calendar",
+    toolset="Calendar",
+    access="calendar access",
+    not_found=(
+        "that event or calendar. Check the id, or call get_calendar_events or get_calendar_list "
+        "to find the right one."
+    ),
+    gone="that event has already been deleted from Google Calendar.",
+)
+
+
+def _calendar_error_message(error: Exception, action: str) -> str:
+    if isinstance(error, _CalendarInputError):
+        return str(error)
+    return google_error_message(error, action, _CALENDAR_WORDING)
+
+
+def _calendar_failure(error: Exception, action: str) -> tuple[bool, str]:
+    logger.error("Failed to %s: %s", action, error)
+    return False, json.dumps({"error": _calendar_error_message(error, action)})
+
+
+_EPOCH_MIN_DIGITS = 9
+_EPOCH_MS_DIGITS = 13
+
+
+def _parse_time(value: str, zone: ZoneInfo) -> datetime:
+    """ISO 8601 or a Unix timestamp; a time without an offset is read in ``zone``, not the server's clock."""
+    text = str(value).strip()
+    if text.isdigit() and _EPOCH_MIN_DIGITS <= len(text) <= _EPOCH_MS_DIGITS:
+        seconds = int(text) / 1000 if len(text) >= _EPOCH_MS_DIGITS else int(text)
+        # Same instant, expressed in the event's zone so an all-day date is that zone's date.
+        return datetime.fromtimestamp(seconds, tz=zone)
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        raise _CalendarInputError(
+            f"'{value}' is not a date and time Google Calendar can read. Use ISO 8601, "
+            "for example '2026-09-30T14:00:00' or '2026-09-30T14:00:00+05:30'."
+        ) from None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=zone)
+
+
+def _zone(name: str | None) -> tuple[str, ZoneInfo]:
+    zone_name = (name or "UTC").strip() or "UTC"
+    try:
+        return zone_name, ZoneInfo(zone_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise _CalendarInputError(
+            f"'{name}' is not a time zone Google Calendar understands. Use an IANA name such as "
+            "'America/New_York', 'Europe/London' or 'UTC'."
+        ) from None
+
+
+def _event_times(start: str, end: str, zone_name: str | None, *, all_day: bool = False) -> tuple[dict, dict]:
+    """Google event ``start``/``end`` objects; the zone goes on each, where the API reads it."""
+    zone_name, zone = _zone(zone_name)
+    start_dt, end_dt = _parse_time(start, zone), _parse_time(end, zone)
+    if end_dt < start_dt:
+        raise _CalendarInputError(
+            "The event must end after it starts. Check the start and end times and try again."
+        )
+    if all_day:
+        start_day, end_day = start_dt.date(), end_dt.date()
+        # Google's all-day end date is exclusive, so a one-day event ends the next day.
+        if end_day <= start_day:
+            end_day = start_day + timedelta(days=1)
+        return {"date": start_day.isoformat()}, {"date": end_day.isoformat()}
+    return (
+        {"dateTime": start_dt.isoformat(), "timeZone": zone_name},
+        {"dateTime": end_dt.isoformat(), "timeZone": zone_name},
+    )
+
+
+def _meeting_link(event: dict) -> str:
+    """The video entry point's URL, else the legacy hangoutLink; empty when the event has none."""
+    conference = event.get("conferenceData")
+    entry_points = conference.get("entryPoints") if isinstance(conference, dict) else None
+    for entry in entry_points if isinstance(entry_points, list) else []:
+        if isinstance(entry, dict) and entry.get("entryPointType") == "video" and entry.get("uri"):
+            return entry["uri"]
+    return event.get("hangoutLink") or ""
+
+
+def _event_when(part: object) -> str:
+    """A timed event has ``dateTime``; an all-day one has only ``date``."""
+    if not isinstance(part, dict):
+        return ""
+    return part.get("dateTime") or part.get("date") or ""
 
 
 # Pydantic schemas for Google Calendar tools
@@ -257,11 +355,12 @@ class GoogleCalendar:
             tuple[bool, str]: True if the events are fetched, False otherwise
         """
         try:
+            _, zone = _zone(time_zone)
             events = await self.client.events_list(
                 calendarId=calendar_id or "primary",
                 maxResults=max_results,
-                timeMin=time_min,
-                timeMax=time_max,
+                timeMin=_parse_time(time_min, zone).isoformat() if time_min else None,
+                timeMax=_parse_time(time_max, zone).isoformat() if time_max else None,
                 orderBy=order_by,
                 singleEvents=single_events,
                 q=query,
@@ -279,8 +378,7 @@ class GoogleCalendar:
 
             return True, json.dumps(events)
         except Exception as e:
-            logger.error(f"Failed to get calendar events: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _calendar_failure(e, "get calendar events")
 
 
     @tool(
@@ -343,23 +441,18 @@ class GoogleCalendar:
             if not event_end_time:
                 return False, json.dumps({"error": "Event end time is required"})
 
-            event_start_time_iso, event_end_time_iso = prepare_iso_timestamps(event_start_time, event_end_time)
+            start, end = _event_times(event_start_time, event_end_time, event_timezone, all_day=bool(event_all_day))
 
             event_config = {
                 "summary": event_title,
                 "description": event_description,
-                "start": {
-                    "dateTime": event_start_time_iso,
-                },
-                "end": {
-                    "dateTime": event_end_time_iso,
-                },
+                "start": start,
+                "end": end,
                 "location": event_location,
                 "organizer": {
                     "email": event_organizer,
                 },
                 "attendees": [{"email": email} for email in event_attendees_emails] if event_attendees_emails else [],
-                "timeZone": event_timezone,
             }
 
             if event_meeting_link:
@@ -372,10 +465,6 @@ class GoogleCalendar:
                     },
                 }
 
-            if event_all_day:
-                event_config["start"] = {"date": event_start_time_iso.split("T")[0]}
-                event_config["end"] = {"date": event_end_time_iso.split("T")[0]}
-
             # Use GoogleCalendarDataSource method
             # sendUpdates="all" ensures Google sends invite emails to all attendees
             event = await self.client.events_insert(
@@ -387,18 +476,17 @@ class GoogleCalendar:
             return True, json.dumps({
                 "event_id": event.get("id", ""),
                 "event_title": event.get("summary", ""),
-                "event_start_time": event.get("start", {}).get("dateTime", ""),
-                "event_end_time": event.get("end", {}).get("dateTime", ""),
+                "event_start_time": _event_when(event.get("start")),
+                "event_end_time": _event_when(event.get("end")),
                 "event_location": event.get("location", ""),
                 "event_organizer": event.get("organizer", {}).get("email", ""),
                 "event_attendees": event.get("attendees", []),
-                "event_meeting_link": event.get("conferenceData", {}).get("entryPoints", [{}])[0].get("uri", ""),
+                "event_meeting_link": _meeting_link(event),
                 "event_timezone": event.get("timeZone", ""),
                 "event_all_day": event_all_day,
             })
         except Exception as e:
-            logger.error(f"Failed to create calendar event: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _calendar_failure(e, "create the calendar event")
 
     @tool(
         path="/tools/calendar/update_calendar_event",
@@ -453,7 +541,16 @@ class GoogleCalendar:
         Returns:
             tuple[bool, str]: True if the event is updated, False otherwise
         """
+        if bool(event_start_time) != bool(event_end_time):
+            return False, json.dumps({
+                "error": "To move an event, give both the new start time and the new end time."
+            })
         try:
+            new_times = (
+                _event_times(event_start_time, event_end_time, event_timezone, all_day=bool(event_all_day))
+                if event_start_time and event_end_time
+                else None
+            )
             # Use GoogleCalendarDataSource method to get event
             event = await self.client.events_get(
                 calendarId="primary",
@@ -479,17 +576,8 @@ class GoogleCalendar:
                         }
                     ],
                 }
-            if event_timezone:
-                event["timeZone"] = event_timezone
-
-            if event_start_time and event_end_time:
-                event_start_time_iso, event_end_time_iso = prepare_iso_timestamps(event_start_time, event_end_time)
-                if event_all_day:
-                    event["start"] = {"date": event_start_time_iso.split("T")[0]}
-                    event["end"] = {"date": event_end_time_iso.split("T")[0]}
-                else:
-                    event["start"] = {"dateTime": event_start_time_iso}
-                    event["end"] = {"dateTime": event_end_time_iso}
+            if new_times:
+                event["start"], event["end"] = new_times
 
             # Use GoogleCalendarDataSource method to update event
             # sendUpdates="all" ensures Google sends update notification emails to all attendees
@@ -505,18 +593,17 @@ class GoogleCalendar:
                 "message": f"Event updated successfully! Event ID: {updated_event.get('id', '')}",
                 "event_id": updated_event.get("id", ""),
                 "event_title": updated_event.get("summary", ""),
-                "event_start_time": updated_event.get("start", {}).get("dateTime", ""),
-                "event_end_time": updated_event.get("end", {}).get("dateTime", ""),
+                "event_start_time": _event_when(updated_event.get("start")),
+                "event_end_time": _event_when(updated_event.get("end")),
                 "event_location": updated_event.get("location", ""),
                 "event_organizer": updated_event.get("organizer", {}).get("email", ""),
                 "event_attendees": updated_event.get("attendees", []),
-                "event_meeting_link": updated_event.get("conferenceData", {}).get("entryPoints", [{}])[0].get("uri", ""),
+                "event_meeting_link": _meeting_link(updated_event),
                 "event_timezone": updated_event.get("timeZone", ""),
                 "event_all_day": event_all_day,
             })
         except Exception as e:
-            logger.error(f"Failed to update calendar event: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _calendar_failure(e, "update the calendar event")
 
     @tool(
         path="/tools/calendar/create_meet_link",
@@ -569,19 +656,13 @@ class GoogleCalendar:
             if not event_end_time:
                 return False, json.dumps({"error": "Event end time is required"})
 
-            event_start_time_iso, event_end_time_iso = prepare_iso_timestamps(event_start_time, event_end_time)
+            start, end = _event_times(event_start_time, event_end_time, event_timezone)
 
             event_config = {
                 "summary": event_title or "Meeting",
                 "description": event_description,
-                "start": {
-                    "dateTime": event_start_time_iso,
-                    "timeZone": event_timezone or "UTC",
-                },
-                "end": {
-                    "dateTime": event_end_time_iso,
-                    "timeZone": event_timezone or "UTC",
-                },
+                "start": start,
+                "end": end,
                 "location": event_location,
                 "attendees": [{"email": email} for email in event_attendees_emails] if event_attendees_emails else [],
                 # conferenceData.createRequest tells the Calendar API to auto-generate a Meet room
@@ -604,32 +685,21 @@ class GoogleCalendar:
                 sendUpdates="all"
             )
 
-            # Extract the Meet link from the response
-            meet_link = ""
-            conference_data = event.get("conferenceData", {})
-            entry_points = conference_data.get("entryPoints", [])
-            for ep in entry_points:
-                if ep.get("entryPointType") == "video":
-                    meet_link = ep.get("uri", "")
-                    break
-            # Fallback: check hangoutLink field (older API responses)
-            if not meet_link:
-                meet_link = event.get("hangoutLink", "")
+            meet_link = _meeting_link(event)
 
             return True, json.dumps({
                 "success": True,
                 "event_id": event.get("id", ""),
                 "event_title": event.get("summary", ""),
-                "event_start_time": event.get("start", {}).get("dateTime", ""),
-                "event_end_time": event.get("end", {}).get("dateTime", ""),
+                "event_start_time": _event_when(event.get("start")),
+                "event_end_time": _event_when(event.get("end")),
                 "event_location": event.get("location", ""),
                 "meet_link": meet_link,
                 "event_attendees": event.get("attendees", []),
                 "message": f"Google Meet link created and attached to calendar event. Meet link: {meet_link}"
             })
         except Exception as e:
-            logger.error(f"Failed to create Meet link: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _calendar_failure(e, "create the Meet link")
 
     @tool(
         path="/tools/calendar/delete_calendar_event",
@@ -662,8 +732,7 @@ class GoogleCalendar:
                 "message": f"Event {event_id} deleted successfully"
             })
         except Exception as e:
-            logger.error(f"Failed to delete calendar event: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _calendar_failure(e, "delete the calendar event")
 
     @tool(
         path="/tools/calendar/get_calendar_list",
@@ -683,8 +752,7 @@ class GoogleCalendar:
             calendars = await self.client.calendar_list_list()
             return True, json.dumps(calendars)
         except Exception as e:
-            logger.error(f"Failed to get calendar list: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _calendar_failure(e, "list your calendars")
 
     @tool(
         path="/tools/calendar/get_calendar_list_by_id",
@@ -713,5 +781,4 @@ class GoogleCalendar:
             )
             return True, json.dumps(calendar)
         except Exception as e:
-            logger.error(f"Failed to get calendar by ID: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _calendar_failure(e, "get the calendar")

@@ -61,9 +61,7 @@
     "@pipeshub-ai/mcp": "2.4.2",
     "@qdrant/js-client-rest": "^1.14.1",
     "@slack/bolt": "^4.6.0",
-    "@tryfabric/mack": "^1.2.1",
     "@types/bcrypt": "^5.0.2",
-    "@types/express-session": "^1.18.1",
     "@types/mongodb": "^4.0.6",
     "@types/multer": "^1.4.12",
     "@types/nodemailer": "^6.4.17",
@@ -71,7 +69,7 @@
     "arangojs": "^10.1.1",
     "async-mutex": "^0.5.0",
     "aws-sdk": "^2.1534.0",
-    "axios": "^1.18.0",
+    "axios": "^1.20.0",
     "axios-retry": "^4.5.0",
     "bcryptjs": "^3.0.2",
     "bullmq": "^5.56.1",
@@ -81,7 +79,6 @@
     "etcd3": "^1.1.2",
     "express": "^4.22.1",
     "express-rate-limit": "^8.6.2",
-    "express-session": "^1.18.2",
     "form-data": "^4.0.6",
     "google-auth-library": "^9.15.1",
     "handlebars": "^4.7.9",
@@ -96,9 +93,9 @@
     "kafkajs": "^2.2.4",
     "marked": "^16.4.2",
     "mongodb": "^6.14.2",
-    "mongoose": "^8.9.2",
+    "mongoose": "^8.24.1",
     "morgan": "^1.12.0",
-    "multer": "^2.3.0",
+    "multer": "^2.4.0",
     "nodemailer": "^9.1.1",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
@@ -115,7 +112,7 @@
   },
   "overrides": {
     "bn.js": "4.12.3",
-    "qs": "6.14.1",
-    "fast-xml-parser": "5.3.4"
+    "qs": "6.16.0",
+    "fast-xml-parser": "5.7.0"
   }
 }

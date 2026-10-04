@@ -330,7 +330,8 @@ describe('CrawlingSchedulerService', () => {
       const job = await service.scheduleJob('google', 'conn-1', {
         scheduleType: CrawlingScheduleType.DAILY,
         isEnabled: true,
-        scheduleConfig: { hour: 2, minute: 0 },
+        hour: 2,
+        minute: 0,
       } as any, 'org-1', 'user-1')
 
       expect(job.id).to.equal('job-abc')
@@ -366,7 +367,8 @@ describe('CrawlingSchedulerService', () => {
       await service.scheduleJob('google', 'conn-1', {
         scheduleType: CrawlingScheduleType.DAILY,
         isEnabled: true,
-        scheduleConfig: { hour: 2, minute: 0 },
+        hour: 2,
+        minute: 0,
       } as any, 'org-1', 'user-1', { priority: 1, maxRetries: 5 })
 
       const opts = queueStub.add.firstCall.args[2]
@@ -400,7 +402,8 @@ describe('CrawlingSchedulerService', () => {
       await service.scheduleJob('google', 'conn-1', {
         scheduleType: CrawlingScheduleType.DAILY,
         isEnabled: true,
-        scheduleConfig: { hour: 2, minute: 0 },
+        hour: 2,
+        minute: 0,
       } as any, 'org-1', 'user-1', { metadata: { source: 'test' } })
 
       const jobData = queueStub.add.firstCall.args[1]
@@ -663,25 +666,125 @@ describe('CrawlingSchedulerService', () => {
   // getQueueStats
   // -------------------------------------------------------------------------
   describe('getQueueStats', () => {
-    it('should return queue statistics', async () => {
+    const daily = { pattern: '0 2 * * *', tz: 'UTC' }
+    const hourly = { pattern: '0 * * * *', tz: 'UTC' }
+    const run = (orgId: string, name = 'crawl-google-c1', repeat?: typeof daily) => ({
+      name,
+      data: { orgId },
+      opts: repeat ? { repeat } : {},
+    })
+
+    it("counts only the given org's runs, schedules and paused jobs", async () => {
       if (!service) return
       const q = (service as any).queue
-      sinon.stub(q, 'getWaiting').resolves([1, 2])
-      sinon.stub(q, 'getActive').resolves([3])
-      sinon.stub(q, 'getCompleted').resolves([4, 5, 6])
-      sinon.stub(q, 'getFailed').resolves([])
-      sinon.stub(q, 'getDelayed').resolves([7])
-      sinon.stub(q, 'getRepeatableJobs').resolves([{ key: 'r1' }])
+      sinon.stub(q, 'getWaiting').resolves([run('org-1'), run('org-2')])
+      sinon.stub(q, 'getActive').resolves([run('org-1')])
+      sinon.stub(q, 'getCompleted').resolves([run('org-1'), run('org-1'), run('org-2')])
+      sinon.stub(q, 'getFailed').resolves([run('org-2')])
+      const queued = [run('org-1', 'crawl-google-c1', daily), run('org-2', 'crawl-google-c2', hourly)]
+      sinon.stub(q, 'getDelayed').resolves(queued)
+      sinon.stub(q, 'getJobs').resolves(queued)
+      sinon.stub(q, 'getRepeatableJobs').resolves([
+        { key: 'r1', name: 'crawl-google-c1', ...daily },
+        { key: 'r2', name: 'crawl-google-c2', ...hourly },
+      ])
+      const pausedJobs = (service as any).pausedJobs as Map<string, { orgId: string }>
+      pausedJobs.set('crawl-google-p1-org-1', { orgId: 'org-1' })
+      pausedJobs.set('crawl-google-p2-org-2', { orgId: 'org-2' })
 
-      const stats = await service.getQueueStats()
+      const stats = await service.getQueueStats('org-1')
 
-      expect(stats.waiting).to.equal(2)
-      expect(stats.active).to.equal(1)
-      expect(stats.completed).to.equal(3)
-      expect(stats.failed).to.equal(0)
-      expect(stats.delayed).to.equal(1)
+      expect(stats).to.deep.equal({
+        waiting: 1,
+        active: 1,
+        completed: 2,
+        failed: 0,
+        delayed: 1,
+        paused: 1,
+        repeatable: 1,
+        total: 6,
+      })
+    })
+
+    it("does not count another org's schedule that uses the same cron pattern", async () => {
+      if (!service) return
+      const q = (service as any).queue
+      for (const method of ['getWaiting', 'getActive', 'getCompleted', 'getFailed']) {
+        sinon.stub(q, method).resolves([])
+      }
+      const queued = [run('org-1', 'crawl-google-c1', daily), run('org-2', 'crawl-google-c2', daily)]
+      sinon.stub(q, 'getDelayed').resolves(queued)
+      sinon.stub(q, 'getJobs').resolves(queued)
+      sinon.stub(q, 'getRepeatableJobs').resolves([
+        { key: 'r1', name: 'crawl-google-c1', ...daily },
+        { key: 'r2', name: 'crawl-google-c2', ...daily },
+      ])
+
+      const stats = await service.getQueueStats('org-1')
+
       expect(stats.repeatable).to.equal(1)
-      expect(stats.total).to.equal(7) // 2+1+3+0+1+0(paused)
+      expect(stats.delayed).to.equal(1)
+    })
+
+    it('reports nothing for an org that has no jobs', async () => {
+      if (!service) return
+      const q = (service as any).queue
+      for (const method of ['getWaiting', 'getActive', 'getCompleted', 'getFailed', 'getDelayed', 'getJobs']) {
+        sinon.stub(q, method).resolves([run('org-1', 'crawl-google-c1', daily)])
+      }
+      sinon.stub(q, 'getRepeatableJobs').resolves([{ key: 'r1', name: 'crawl-google-c1', ...daily }])
+      ;(service as any).pausedJobs.set('crawl-google-p1-org-1', { orgId: 'org-1' })
+
+      const stats = await service.getQueueStats('org-3')
+
+      expect(stats).to.deep.equal({
+        waiting: 0,
+        active: 0,
+        completed: 0,
+        failed: 0,
+        delayed: 0,
+        paused: 0,
+        repeatable: 0,
+        total: 0,
+      })
+    })
+
+    it('matches a schedule to its org through a run that is already due', async () => {
+      if (!service) return
+      const q = (service as any).queue
+      for (const method of ['getWaiting', 'getActive', 'getCompleted', 'getFailed', 'getDelayed']) {
+        sinon.stub(q, method).resolves([])
+      }
+      // Every run carries a priority, so a due run sits in `prioritized`.
+      const getJobs = sinon.stub(q, 'getJobs').resolves([run('org-1', 'crawl-google-c1', daily)])
+      sinon.stub(q, 'getRepeatableJobs').resolves([{ key: 'r1', name: 'crawl-google-c1', ...daily }])
+
+      const stats = await service.getQueueStats('org-1')
+
+      expect(stats.repeatable).to.equal(1)
+      expect(getJobs.firstCall.args[0]).to.have.members(['waiting', 'delayed', 'prioritized', 'active'])
+    })
+
+    it('checks every same-named run of the org, not just one', async () => {
+      if (!service) return
+      const q = (service as any).queue
+      for (const method of ['getWaiting', 'getActive', 'getCompleted', 'getFailed', 'getDelayed']) {
+        sinon.stub(q, method).resolves([])
+      }
+      // A connector's one-time runs and its repeating run share its name.
+      sinon.stub(q, 'getJobs').resolves([
+        run('org-1', 'crawl-google-c1'),
+        run('org-1', 'crawl-google-c1', hourly),
+        run('org-1', 'crawl-google-c1'),
+      ])
+      sinon.stub(q, 'getRepeatableJobs').resolves([
+        { key: 'r1', name: 'crawl-google-c1', ...daily },
+        { key: 'r2', name: 'crawl-google-c1', ...hourly },
+      ])
+
+      const stats = await service.getQueueStats('org-1')
+
+      expect(stats.repeatable).to.equal(1)
     })
 
     it('should throw on queue failure', async () => {
@@ -689,7 +792,7 @@ describe('CrawlingSchedulerService', () => {
       sinon.stub((service as any).queue, 'getWaiting').rejects(new Error('fail'))
 
       try {
-        await service.getQueueStats()
+        await service.getQueueStats('org-1')
         expect.fail('Should have thrown')
       } catch (error) {
         expect((error as Error).message).to.equal('fail')
@@ -831,7 +934,7 @@ describe('CrawlingSchedulerService - additional coverage', () => {
   })
 
   describe('removeJobInternal - error handling', () => {
-    it('should handle errors during repeatable job removal gracefully', async () => {
+    it('should throw when a repeatable job cannot be removed', async () => {
       if (!service) return
 
       const q = (service as any).queue
@@ -839,18 +942,21 @@ describe('CrawlingSchedulerService - additional coverage', () => {
         { pattern: '0 * * * *', tz: 'UTC', key: 'k1', endDate: null },
       ])
       sinon.stub(q, 'getJobs')
+        .resolves([])
         .onFirstCall().resolves([{
           data: { connector: 'google', connectorId: 'conn-1', orgId: 'org-1' },
           opts: { repeat: { pattern: '0 * * * *', tz: 'UTC' } },
         }])
-        .onSecondCall().resolves([])
       sinon.stub(q, 'removeRepeatable').rejects(new Error('Remove failed'))
 
-      // Should not throw - error is caught internally
-      await (service as any).removeJobInternal('google', 'conn-1', 'org-1')
+      let thrown: unknown
+      await (service as any).removeJobInternal('google', 'conn-1', 'org-1').catch((e: unknown) => {
+        thrown = e
+      })
+      expect((thrown as Error).message).to.include('schedule could not be removed')
     })
 
-    it('should handle errors during job instance removal', async () => {
+    it('should not fail when trimming old finished runs fails', async () => {
       if (!service) return
 
       const q = (service as any).queue
@@ -868,24 +974,49 @@ describe('CrawlingSchedulerService - additional coverage', () => {
         timestamp: i,
         remove: sinon.stub().rejects(new Error('remove failed')),
       }))
-      sinon.stub(q, 'getJobs').resolves(manyJobs)
+      sinon.stub(q, 'getJobs').callsFake(async (types: unknown) => ((types as string[]).includes('completed') ? manyJobs : []))
 
-      // Should not throw
       await (service as any).removeJobInternal('google', 'conn-1', 'org-1')
+      expect(manyJobs.filter((j) => j.remove.called)).to.have.length(5)
     })
 
-    it('should warn when removeJobInternal encounters queue error', async () => {
+    it('should throw when a queued run is still pending after remove fails', async () => {
+      if (!service) return
+
+      const q = (service as any).queue
+      sinon.stub(q, 'getRepeatableJobs').resolves([])
+      const pending = {
+        data: { connector: 'google', connectorId: 'conn-1', orgId: 'org-1' },
+        id: 'j1',
+        timestamp: 1,
+        remove: sinon.stub().rejects(new Error('remove failed')),
+        getState: sinon.stub().resolves('prioritized'),
+      }
+      sinon.stub(q, 'getJobs').callsFake(async (types: unknown) => ((types as string[]).includes('prioritized') ? [pending] : []))
+
+      let thrown: unknown
+      await (service as any).removeJobInternal('google', 'conn-1', 'org-1').catch((e: unknown) => {
+        thrown = e
+      })
+      expect((thrown as { statusCode?: number }).statusCode).to.equal(500)
+      expect((thrown as Error).message).to.include('could not be cancelled')
+    })
+
+    it('should rethrow when the queue cannot be read, so callers do not report success', async () => {
       if (!service) return
 
       sinon.stub((service as any).queue, 'getRepeatableJobs').rejects(new Error('queue down'))
 
-      // Should not throw - outer catch handles it
-      await (service as any).removeJobInternal('google', 'conn-1', 'org-1')
+      let thrown: unknown
+      await (service as any).removeJobInternal('google', 'conn-1', 'org-1').catch((e: unknown) => {
+        thrown = e
+      })
+      expect((thrown as Error).message).to.equal('queue down')
     })
   })
 
   describe('removeAllJobs - error handling in job removal', () => {
-    it('should handle error when removing individual jobs', async () => {
+    it('should not fail when a running or finished job cannot be removed', async () => {
       if (!service) return
 
       const q = (service as any).queue
@@ -895,13 +1026,33 @@ describe('CrawlingSchedulerService - additional coverage', () => {
         id: 'j1',
         remove: sinon.stub().rejects(new Error('remove fail')),
       }
-      sinon.stub(q, 'getJobs').resolves([mockJob])
+      sinon.stub(q, 'getJobs').callsFake(async (types: unknown) => ((types as string[]).includes('completed') ? [mockJob] : []))
 
-      // Should not throw - individual failures are caught
       await service.removeAllJobs('org-1')
+      expect(mockJob.remove.calledOnce).to.be.true
     })
 
-    it('should handle error when removing repeatable jobs', async () => {
+    it('should throw when a queued job cannot be removed', async () => {
+      if (!service) return
+
+      const q = (service as any).queue
+      sinon.stub(q, 'getRepeatableJobs').resolves([])
+      const mockJob = {
+        data: { connector: 'google', connectorId: 'conn-1', orgId: 'org-1' },
+        id: 'j1',
+        remove: sinon.stub().rejects(new Error('remove fail')),
+        getState: sinon.stub().resolves('delayed'),
+      }
+      sinon.stub(q, 'getJobs').callsFake(async (types: unknown) => ((types as string[]).includes('delayed') ? [mockJob] : []))
+
+      let thrown: unknown
+      await service.removeAllJobs('org-1').catch((e: unknown) => {
+        thrown = e
+      })
+      expect((thrown as Error).message).to.include('could not be removed')
+    })
+
+    it('should throw and keep the schedule run when a repeatable job cannot be removed', async () => {
       if (!service) return
 
       const q = (service as any).queue
@@ -913,12 +1064,17 @@ describe('CrawlingSchedulerService - additional coverage', () => {
         data: { connector: 'google', connectorId: 'conn-1', orgId: 'org-1' },
         opts: { repeat: { pattern: '0 * * * *', tz: 'UTC' } },
         id: 'j1',
+        name: 'crawl-google-conn-1',
         remove: sinon.stub().resolves(),
       }
-      sinon.stub(q, 'getJobs').resolves([mockJob])
+      sinon.stub(q, 'getJobs').callsFake(async (types: unknown) => ((types as string[]).includes('delayed') ? [mockJob] : []))
 
-      // Should not throw
-      await service.removeAllJobs('org-1')
+      let thrown: unknown
+      await service.removeAllJobs('org-1').catch((e: unknown) => {
+        thrown = e
+      })
+      expect((thrown as Error).message).to.include('could not be removed')
+      expect(mockJob.remove.called).to.be.false
     })
 
     it('should skip already processed job names in removeAllJobs', async () => {
@@ -1150,14 +1306,24 @@ describe('CrawlingSchedulerService - additional coverage', () => {
       if (!service) return
 
       const q = (service as any).queue
-      sinon.stub(q, 'getWaiting').resolves([{}, {}])
-      sinon.stub(q, 'getActive').resolves([{}])
-      sinon.stub(q, 'getCompleted').resolves([{}, {}, {}])
+      const daily = { pattern: '0 2 * * *', tz: 'UTC' }
+      const hourly = { pattern: '0 * * * *', tz: 'UTC' }
+      const job = { data: { orgId: 'org-1' }, opts: {} }
+      sinon.stub(q, 'getWaiting').resolves([job, job])
+      sinon.stub(q, 'getActive').resolves([job])
+      sinon.stub(q, 'getCompleted').resolves([job, job, job])
       sinon.stub(q, 'getFailed').resolves([])
-      sinon.stub(q, 'getDelayed').resolves([{}])
-      sinon.stub(q, 'getRepeatableJobs').resolves([{}, {}])
+      sinon.stub(q, 'getDelayed').resolves([job])
+      sinon.stub(q, 'getJobs').resolves([
+        { name: 'crawl-google-c1', data: { orgId: 'org-1' }, opts: { repeat: daily } },
+        { name: 'crawl-google-c2', data: { orgId: 'org-1' }, opts: { repeat: hourly } },
+      ])
+      sinon.stub(q, 'getRepeatableJobs').resolves([
+        { name: 'crawl-google-c1', ...daily },
+        { name: 'crawl-google-c2', ...hourly },
+      ])
 
-      const stats = await service.getQueueStats()
+      const stats = await service.getQueueStats('org-1')
       expect(stats.waiting).to.equal(2)
       expect(stats.active).to.equal(1)
       expect(stats.completed).to.equal(3)
@@ -1173,7 +1339,7 @@ describe('CrawlingSchedulerService - additional coverage', () => {
       sinon.stub((service as any).queue, 'getWaiting').rejects(new Error('Queue error'))
 
       try {
-        await service.getQueueStats()
+        await service.getQueueStats('org-1')
         expect.fail('Should have thrown')
       } catch (error: any) {
         expect(error.message).to.equal('Queue error')

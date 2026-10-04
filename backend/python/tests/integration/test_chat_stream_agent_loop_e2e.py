@@ -277,6 +277,9 @@ class TestChatStreamAgentLoopEndToEnd:
                 {"virtualRecordId": "vr-attach-1", "mimeType": "application/pdf", "fileName": "board_deck.pdf"},
             ],
         })
+        graph = AsyncMock()
+        graph.get_records_by_virtual_record_id.return_value = ["rec-attach-1"]
+        graph.check_record_access_with_details.return_value = {"id": "rec-attach-1"}
 
         with (
             patch(
@@ -292,7 +295,7 @@ class TestChatStreamAgentLoopEndToEnd:
             response = await askAIStream(
                 request=request,
                 retrieval_service=_mock_retrieval_service(),
-                graph_provider=MagicMock(),
+                graph_provider=graph,
                 config_service=_mock_config_service(),
                 cancellation_registry=_mock_cancellation_registry(),
             )
@@ -400,3 +403,50 @@ class TestWebSearchCitationEndToEnd:
         assert "[1]" in completion["answer"]
         assert completion["confidence"] == "High"
         assert "Confidence:" not in completion["answer"]
+
+
+def _non_streaming_request(body: dict) -> MagicMock:
+    request = _mock_request(body)
+    request.is_disconnected = AsyncMock(return_value=False)
+    return request
+
+
+@pytest.mark.usefixtures("_no_connectors", "_agent_loop_llm", "_fake_agent_run")
+class TestChatNonStreamingAgentLoopEndToEnd:
+    """`POST /chat` (`askAI`) over the same real chain as `/chat/stream`: the
+    JSON body must be the stream's final completion, not a second pipeline."""
+
+    @pytest.mark.parametrize("chat_mode", ["internal_search", "web_search", "agent", "quick"])
+    async def test_returns_the_completion_as_json(self, chat_mode):
+        from app.api.routes.chatbot import askAI
+
+        response = await askAI(
+            request=_non_streaming_request({"query": "What is our refund policy?", "chatMode": chat_mode}),
+            retrieval_service=_mock_retrieval_service(),
+            graph_provider=MagicMock(),
+            config_service=_mock_config_service(),
+            cancellation_registry=_mock_cancellation_registry(),
+        )
+
+        assert response.status_code == 200
+        body = json.loads(response.body)
+        assert body["answer"] == "The answer, with citations."
+        assert body["answerMatchType"] == "Match Found"
+
+    async def test_missing_llm_is_a_424_with_a_user_facing_message(self):
+        from app.api.routes.chatbot import askAI
+
+        with patch("app.api.routes.chatbot.get_llm_for_chat", new=AsyncMock(return_value=None)):
+            response = await askAI(
+                request=_non_streaming_request({"query": "hello"}),
+                retrieval_service=_mock_retrieval_service(),
+                graph_provider=MagicMock(),
+                config_service=_mock_config_service(),
+                cancellation_registry=_mock_cancellation_registry(),
+            )
+
+        assert response.status_code == 424
+        body = json.loads(response.body)
+        assert body["status"] == "error"
+        assert body["code"] == "llm_initialization_failed"
+        assert body["message"]

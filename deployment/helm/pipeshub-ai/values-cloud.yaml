@@ -51,7 +51,7 @@
 #     so OAuth callbacks resolve correctly. Otherwise leave it unset.
 #
 # Provider-specific storage class hints:
-#   - EKS:  global.storageClass=gp3                persistence.storageClass=efs-sc        (EFS CSI)
+#   - EKS:  use values-eks.yaml (gp3 only, no NFS). Do not use this file on EKS.
 #   - GKE:  global.storageClass=standard-rwo       persistence.storageClass=filestore-csi (Filestore CSI)
 #   - AKS:  global.storageClass=managed-csi        persistence.storageClass=azurefile-csi (Azure Files CSI)
 #   - On-prem: any block class (Longhorn/Ceph)     persistence.storageClass=<rwx class>

@@ -17,6 +17,7 @@ from msgraph.generated.chats.chats_request_builder import (  # type: ignore
     ChatsRequestBuilder,
 )
 from msgraph.generated.users.item.events.events_request_builder import EventsRequestBuilder
+from msgraph.generated.users.item.user_item_request_builder import UserItemRequestBuilder
 from msgraph.generated.models.aad_user_conversation_member import AadUserConversationMember  # type: ignore
 from msgraph.generated.models.chat import Chat  #type: ignore
 from msgraph.generated.models.chat_message import ChatMessage  # type: ignore
@@ -33,6 +34,7 @@ from msgraph.generated.models.recurrence_range import RecurrenceRange  # type: i
 from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType  # type: ignore
 from msgraph.generated.models.item_body import ItemBody  # type: ignore
 from msgraph.generated.models.team import Team  #type: ignore
+from msgraph.generated.models.user import User  # type: ignore
 from msgraph.generated.models.body_type import BodyType
 from msgraph.generated.models.chat_info import ChatInfo
 from msgraph.generated.models.online_meeting import OnlineMeeting
@@ -460,6 +462,13 @@ class TeamsDataSource:
         except Exception as e:
             logger.error(f"Error handling Teams response: {e}")
             return TeamsResponse(success=False, error=str(e))
+
+    async def _get_user_by_id(self, user_id: str) -> Optional[User]:
+        """Load one user by id or UPN (GET /users/{id}) with the fields the chat helpers read."""
+        query = UserItemRequestBuilder.UserItemRequestBuilderGetQueryParameters(select=_BASIC_USER_SELECT_FIELDS)
+        return await self.client.users.by_user_id(user_id).get(
+            request_configuration=RequestConfiguration(query_parameters=query)
+        )
 
     def get_data_source(self) -> 'TeamsDataSource':
         """Get the underlying Teams client."""
@@ -897,11 +906,15 @@ class TeamsDataSource:
         self,
         user_identifier: str,
         message: str,
+        user_id: Optional[str] = None,
     ) -> TeamsResponse:
 
         """
         Send a direct message to a user by resolving user identifier and posting
         in an existing 1:1 chat.
+
+        Pass user_id when the caller has already resolved the person: it is loaded directly
+        instead of matching user_identifier against the first page of the directory.
         """
         try:
             logger.info(
@@ -915,25 +928,28 @@ class TeamsDataSource:
             # -------------------------------------------
             # STEP 1: Resolve target user
             # -------------------------------------------
-            logger.info("teams_send_message_to_user: step_1_fetch_users")
-            users = await self.client.users.get()
-            users_list = users.value or []
-            logger.info(
-                "teams_send_message_to_user: step_1_users_fetched count=%s",
-                len(users_list),
-            )
-
-            normalized_identifier = user_identifier.strip().lower()
             target_user = None
-            for user in users_list:
-                if (
-                    normalized_identifier in (user.display_name or "").lower()
-                    or normalized_identifier in (user.mail or "").lower()
-                    or normalized_identifier in (user.user_principal_name or "").lower()
-                    or user_identifier.strip() == user.id
-                ):
-                    target_user = user
-                    break
+            if user_id:
+                target_user = await self._get_user_by_id(user_id)
+            else:
+                logger.info("teams_send_message_to_user: step_1_fetch_users")
+                users = await self.client.users.get()
+                users_list = users.value or []
+                logger.info(
+                    "teams_send_message_to_user: step_1_users_fetched count=%s",
+                    len(users_list),
+                )
+
+                normalized_identifier = user_identifier.strip().lower()
+                for user in users_list:
+                    if (
+                        normalized_identifier in (user.display_name or "").lower()
+                        or normalized_identifier in (user.mail or "").lower()
+                        or normalized_identifier in (user.user_principal_name or "").lower()
+                        or user_identifier.strip() == user.id
+                    ):
+                        target_user = user
+                        break
 
             if not target_user:
                 logger.warning(
@@ -1425,7 +1441,9 @@ class TeamsDataSource:
         hours: Optional[int] = None,
         days: Optional[int] = None,
         top: Optional[int] = 50,
+        user_id: Optional[str] = None,
     ) -> TeamsResponse:
+        """Read the 1:1 chat with a user; pass user_id to load an already-resolved user directly."""
 
         try:
             logger.info(
@@ -1438,25 +1456,27 @@ class TeamsDataSource:
                 top,
             )
 
-            logger.info("teams_get_conversation_with_user: step_1_fetch_users")
-            users = await self.client.users.get()
-            users_list = users.value or []
-            logger.info(
-                "teams_get_conversation_with_user: step_1_users_fetched count=%s",
-                len(users_list),
-            )
-
             target_user = None
+            if user_id:
+                target_user = await self._get_user_by_id(user_id)
+            else:
+                logger.info("teams_get_conversation_with_user: step_1_fetch_users")
+                users = await self.client.users.get()
+                users_list = users.value or []
+                logger.info(
+                    "teams_get_conversation_with_user: step_1_users_fetched count=%s",
+                    len(users_list),
+                )
 
-            for user in users_list:
-                if (
-                    user_identifier.lower() in (user.display_name or "").lower()
-                    or user_identifier.lower() in (user.mail or "").lower()
-                    or user_identifier.lower() in (user.user_principal_name or "").lower()
-                    or user_identifier == user.id
-                ):
-                    target_user = user
-                    break
+                for user in users_list:
+                    if (
+                        user_identifier.lower() in (user.display_name or "").lower()
+                        or user_identifier.lower() in (user.mail or "").lower()
+                        or user_identifier.lower() in (user.user_principal_name or "").lower()
+                        or user_identifier == user.id
+                    ):
+                        target_user = user
+                        break
 
             if not target_user:
                 logger.warning(
@@ -1714,6 +1734,7 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error="query is required")
         try:
             candidates: List[Dict[str, str]] = []
+            first_failure: TeamsResponse | None = None
             if team_id and channel_id:
                 candidates.append({"team_id": team_id, "channel_id": channel_id})
             elif team_id:
@@ -1736,6 +1757,7 @@ class TeamsDataSource:
                         continue
                     channels_response = await self.teams_get_channels(team_id=current_team_id)
                     if not channels_response.success:
+                        first_failure = first_failure or channels_response
                         continue
                     channels = self._extract_collection_items(channels_response.data)
                     for channel in channels:
@@ -1744,13 +1766,18 @@ class TeamsDataSource:
                             candidates.append({"team_id": current_team_id, "channel_id": current_channel_id})
 
             results: List[Dict[str, Any]] = []
-            for candidate in candidates[:50]:
+            channels_read = 0
+            searched_channels_cap = 50
+            truncated = len(candidates) > searched_channels_cap
+            for candidate in candidates[:searched_channels_cap]:
                 messages_response = await self.teams_get_channel_messages(
                     team_id=candidate["team_id"],
                     channel_id=candidate["channel_id"],
                 )
                 if not messages_response.success:
+                    first_failure = first_failure or messages_response
                     continue
+                channels_read += 1
                 messages = self._extract_collection_items(messages_response.data)
                 for message in messages[: max(top_per_channel, 1)]:
                     message_dict = self._to_simple_dict(message)
@@ -1760,14 +1787,32 @@ class TeamsDataSource:
                         message_dict["channel_id"] = candidate["channel_id"]
                         results.append(message_dict)
 
-            return TeamsResponse(
-                success=True,
-                data={
-                    "results": results,
-                    "count": len(results),
-                    "query": query,
-                },
-            )
+            # Some channels were not searched, so "nothing matches" is not something we know.
+            if not results and first_failure is not None:
+                return first_failure
+            if not results and truncated:
+                return TeamsResponse(
+                    success=False,
+                    error=(
+                        f"Searched only the first {searched_channels_cap} of {len(candidates)} channels, and none "
+                        "of them matched. Narrow the search to one team (team_id) or one channel (team_id "
+                        "and channel_id) and try again."
+                    ),
+                )
+            complete = first_failure is None and not truncated
+            data: dict[str, Any] = {
+                "results": results,
+                "count": len(results),
+                "query": query,
+                "complete": complete,
+            }
+            if not complete:
+                data["message"] = (
+                    f"Only the first {searched_channels_cap} of {len(candidates)} channels were searched"
+                    if first_failure is None
+                    else "Some channels could not be searched"
+                ) + ", so there may be more matches. Narrow the search to a team or a channel to cover it fully."
+            return TeamsResponse(success=True, data=data)
         except Exception as e:
             logger.error(f"Error in teams_search_messages: {e}")
             return TeamsResponse(success=False, error=str(e))
@@ -5478,6 +5523,9 @@ class TeamsDataSource:
         """
         try:
             response = await self.client.teams.by_team_id(team_id).channels.by_channel_id(channel_id).patch(body=body)
+            # Graph answers a successful channel PATCH with 204 No Content.
+            if response is None:
+                return TeamsResponse(success=True, data={"team_id": team_id, "channel_id": channel_id})
             return self._handle_teams_response(response)
         except Exception as e:
             logger.error(f"Error in teams_update_channels: {e}")

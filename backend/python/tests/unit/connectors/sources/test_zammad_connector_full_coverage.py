@@ -18,6 +18,7 @@ from app.connectors.sources.zammad.connector import (
     ZAMMAD_LINK_OBJECT_MAP,
     ZAMMAD_LINK_TYPE_MAP,
     ZammadConnector,
+    ZammadReadError,
 )
 from app.models.entities import (
     AppUser,
@@ -2345,7 +2346,7 @@ class TestFetchTicketAttachmentsAutoResponse:
         result = await connector._fetch_ticket_attachments({"id": 42}, parent)
         assert len(result) == 0
 
-    async def test_api_failure_returns_empty(self, connector):
+    async def test_api_failure_raises(self, connector):
         ds = _mock_ds()
         ds.list_ticket_articles = AsyncMock(return_value=_resp(success=False))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
@@ -2354,8 +2355,8 @@ class TestFetchTicketAttachmentsAutoResponse:
         parent.id = "p1"
         parent.external_record_id = "42"
 
-        result = await connector._fetch_ticket_attachments({"id": 42}, parent)
-        assert result == []
+        with pytest.raises(ZammadReadError):
+            await connector._fetch_ticket_attachments({"id": 42}, parent)
 
     async def test_skips_attachment_without_id(self, connector):
         ds = _mock_ds()
@@ -2982,9 +2983,11 @@ class TestSyncTicketsForGroupsCheckpoint:
         rg.name = "Support"
 
         connector._get_group_sync_checkpoint = AsyncMock(return_value=1000)
+        connector._get_burst_resume = AsyncMock(return_value=None)
+        connector._get_read_failures = AsyncMock(return_value={})
         connector._update_group_sync_checkpoint = AsyncMock()
 
-        async def _empty_gen(group_id, group_name, last_sync_time):
+        async def _empty_gen(group_id, group_name, last_sync_time, burst_resume=None, failures=None):
             return
             yield
 
@@ -3002,9 +3005,11 @@ class TestSyncTicketsForGroupsCheckpoint:
         ticket.source_updated_at = None
 
         connector._get_group_sync_checkpoint = AsyncMock(return_value=None)
+        connector._get_burst_resume = AsyncMock(return_value=None)
+        connector._get_read_failures = AsyncMock(return_value={})
         connector._update_group_sync_checkpoint = AsyncMock()
 
-        async def _gen(group_id, group_name, last_sync_time):
+        async def _gen(group_id, group_name, last_sync_time, burst_resume=None, failures=None):
             yield [(ticket, [])]
 
         connector._fetch_tickets_for_group_batch = _gen
@@ -3022,9 +3027,11 @@ class TestSyncTicketsForGroupsCheckpoint:
         file_rec = MagicMock(spec=FileRecord)
 
         connector._get_group_sync_checkpoint = AsyncMock(return_value=None)
+        connector._get_burst_resume = AsyncMock(return_value=None)
+        connector._get_read_failures = AsyncMock(return_value={})
         connector._update_group_sync_checkpoint = AsyncMock()
 
-        async def _gen(group_id, group_name, last_sync_time):
+        async def _gen(group_id, group_name, last_sync_time, burst_resume=None, failures=None):
             yield [(ticket, []), (file_rec, [])]
 
         connector._fetch_tickets_for_group_batch = _gen

@@ -18,13 +18,16 @@ your own values file layered on top).
 | Preset | File | Use for | Footprint |
 |--------|------|---------|-----------|
 | Local  | `values-local.yaml` | kind, minikube, k3d, k3s, Docker Desktop | 1× app, 1× Mongo/Kafka/Redis/Qdrant/Neo4j, RWO storage |
-| Cloud HA | `values-cloud.yaml` | EKS, GKE, AKS, any managed K8s | 3× app + HPA, 3-node Mongo replica set, 3× Kafka/Zookeeper/Qdrant, RWX storage |
+| AWS EKS | `values-eks.yaml` | Amazon EKS. No NFS. One command: `deployment/helm/aws/deploy.sh --domain HOST --region REGION`. Guide: [docs/deployment/aws-eks.md](../../../docs/deployment/aws-eks.md) | gp3 per database, MongoDB ×3, Redis master+replica, Qdrant ×3, Neo4j ×1 |
+| Cloud HA | `values-cloud.yaml` | GKE, AKS, any cluster that already has RWX storage | 2× app + HPA, Bitnami Mongo, Kafka. Not for EKS |
 
 Both files document the required `--set` overrides at the top.
 
 ## Quick start
 
 ### 1. Build chart dependencies
+
+MongoDB and Redis are vendored in `deployment/helm/vendor`. This packages those local charts. It does not log in to Docker Hub.
 
 ```bash
 helm dependency build ./deployment/helm/pipeshub-ai
@@ -145,7 +148,7 @@ Provider-specific values for the storage classes:
 
 | Provider | `global.storageClass` (block, stateful pods) | `persistence.storageClass` (RWX, shared app PVC) |
 |----------|----------------------------------------------|--------------------------------------------------|
-| AWS EKS  | `gp3`                                        | `efs-sc` (EFS CSI)                               |
+| AWS EKS | use [values-eks.yaml](values-eks.yaml); do not create an EFS class | not used |
 | GCP GKE  | `standard-rwo`                               | `filestore-csi`                                  |
 | Azure AKS| `managed-csi`                                | `azurefile-csi`                                  |
 | On-prem  | any block (Longhorn/Ceph)                    | any RWX (NFS, CephFS, GlusterFS)                 |
