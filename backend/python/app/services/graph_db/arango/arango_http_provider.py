@@ -8785,7 +8785,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return await self.delete_google_drive_record(record_id, user_id, record, transaction)
             elif connector_name == Connectors.GOOGLE_MAIL.value:
                 return await self.delete_gmail_record(record_id, user_id, record, transaction)
-            elif connector_name == Connectors.OUTLOOK.value:
+            elif connector_name in (Connectors.OUTLOOK.value, Connectors.OUTLOOK_INDIVIDUAL.value):
                 return await self.delete_outlook_record(record_id, user_id, record, transaction)
             elif connector_name == Connectors.LOCAL_FS.value:
                 return await self.delete_local_fs_record(record_id, user_id, record, transaction)
@@ -14913,10 +14913,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             self.logger.debug(f"✅ Deleted Outlook record {record_id} with {len(attachment_ids)} attachments")
 
+            connector_name = record.get("connectorName") or Connectors.OUTLOOK.value
             payload = await self._create_deleted_record_event_payload(record, mail_record)
             event_data = None
             if payload:
-                payload["connectorName"] = Connectors.OUTLOOK.value
+                payload["connectorName"] = connector_name
                 payload["origin"] = OriginTypes.CONNECTOR.value
                 event_data = {
                     "eventType": "deleteRecord",
@@ -14927,7 +14928,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return {
                 "success": True,
                 "record_id": record_id,
-                "connector": Connectors.OUTLOOK.value,
+                "connector": connector_name,
                 "attachments_deleted": len(attachment_ids),
                 "eventData": event_data,
             }

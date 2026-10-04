@@ -5378,6 +5378,20 @@ class TestDeleteRecordRouting:
             mock_outlook.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_routes_outlook_personal_to_outlook(self, connected_provider) -> None:
+        connected_provider.http_client.get_document.return_value = {
+            "_key": "r1", "orgId": "org1", "connectorName": "OUTLOOK PERSONAL", "origin": "CONNECTOR"
+        }
+        with patch.object(
+            connected_provider, "delete_outlook_record",
+            new_callable=AsyncMock,
+            return_value={"success": True}
+        ) as mock_outlook:
+            result = await connected_provider.delete_record("r1", "u1", "org1")
+            assert result["success"] is True
+            mock_outlook.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_routes_to_local_fs(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {
             "_key": "r1", "orgId": "org1", "connectorName": "LOCAL_FS", "origin": "CONNECTOR"
