@@ -29,7 +29,9 @@ from ai_models_setup import list_configured_llm_models, setup_test_llm_model  # 
 from local_auth import obtain_local_oauth_credentials, obtain_user_session_token  # noqa: E402
 from pipeshub_client import PipeshubClient  # noqa: E402
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [provision-sdk] %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s [provision-sdk] %(message)s"
+)
 log = logging.getLogger("provision-sdk")
 
 _TIMEOUT = 30
@@ -53,7 +55,9 @@ def create_org(base_url: str, email: str, password: str) -> None:
         log.info("Created org and admin user")
         return
     # A rerun against the same instance: the login below fails if the org is not ours.
-    log.info("Org not created (HTTP %s); assuming it already exists", response.status_code)
+    log.info(
+        "Org not created (HTTP %s); assuming it already exists", response.status_code
+    )
 
 
 def mark_onboarding_configured(base_url: str) -> None:
@@ -89,7 +93,9 @@ def main() -> int:
     email = os.getenv("PIPESHUB_TEST_USER_EMAIL", "").strip()
     password = os.getenv("PIPESHUB_TEST_USER_PASSWORD", "").strip()
     if not email or not password:
-        log.error("PIPESHUB_TEST_USER_EMAIL and PIPESHUB_TEST_USER_PASSWORD are required")
+        log.error(
+            "PIPESHUB_TEST_USER_EMAIL and PIPESHUB_TEST_USER_PASSWORD are required"
+        )
         return 2
 
     create_org(base_url, email, password)
