@@ -110,6 +110,42 @@ class TestKnowledgeToolsetGate:
         ), messages
 
 
+class TestStoragePatternMatchGate:
+    """Grep over record storage is a knowledge tool: an agent with no knowledge,
+    or a `web_search` turn, must not be offered it."""
+
+    @staticmethod
+    async def _load(*, has_knowledge: bool) -> list[str]:
+        from app.agents.actions.storage_search.storage_search import StoragePatternMatch
+
+        fake_registry = MagicMock()
+        fake_registry.get_all_toolsets.return_value = {
+            "storagepatternmatch": {
+                "class": StoragePatternMatch,
+                "isInternal": True,
+                "description": "Storage pattern match",
+                "essential": False,
+            },
+        }
+        with patch(
+            "app.agents.registry.toolset_registry.get_toolset_registry",
+            return_value=fake_registry,
+        ), patch(
+            "app.agents.agent_loop.tool_loader.ClientFactoryRegistry.get_factory",
+            return_value=None,
+        ):
+            registry = await PipesHubToolLoader().load(_make_context(has_knowledge=has_knowledge))
+        return list(registry.names())
+
+    async def test_has_knowledge_true_registers_storage_pattern_match(self) -> None:
+        names = await self._load(has_knowledge=True)
+        assert any("storage_pattern_match" in name for name in names), names
+
+    async def test_has_knowledge_false_skips_storage_pattern_match(self) -> None:
+        names = await self._load(has_knowledge=False)
+        assert not any("storage_pattern_match" in name for name in names), names
+
+
 class TestBuildDynamicToolsWebSearchGate:
     """`web_search`/`agent` set `state["web_search_config"]`; `internal_search`
     leaves it `None` -- the sole gate on whether `web_search`/`fetch_url`

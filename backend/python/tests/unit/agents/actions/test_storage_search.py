@@ -73,6 +73,7 @@ def _make_state(**overrides) -> dict:
         "config_service": config_service,
         "graph_provider": _make_graph_provider(),
         "logger": MagicMock(),
+        "has_knowledge": True,
     }
     state.update(overrides)
     return state
@@ -1571,6 +1572,55 @@ class TestNoUnauthorizedRecordLeaves:
         assert ok_run is False and "not part of this agent's knowledge" in out_run
         assert ok_find is False and "not part of this agent's knowledge" in out_find
         mock_run.assert_not_called()
+
+    # Each as build_initial_state and chat_stream produce it. An agent without
+    # knowledge (or with internal search off) carries NO_KB_SELECTED; a project
+    # chat with nothing selected carries strictScope; web_search mode forces
+    # has_knowledge off.
+    @pytest.mark.parametrize(
+        "scope",
+        [
+            {"filters": {"apps": [], "kb": ["NO_KB_SELECTED"]}, "apps": [],
+             "kb": ["NO_KB_SELECTED"], "agent_knowledge": [], "has_knowledge": False},
+            {"filters": {"apps": [], "kb": ["NO_KB_SELECTED"]}, "apps": [],
+             "kb": ["NO_KB_SELECTED"], "agent_knowledge": [], "has_knowledge": True},
+            {"filters": {"apps": [], "kb": [], "strictScope": True}, "apps": [],
+             "kb": [], "agent_knowledge": [], "has_knowledge": True},
+            {"filters": {}, "apps": None, "kb": None, "agent_knowledge": [],
+             "has_knowledge": False},
+        ],
+        ids=["agent_no_knowledge", "internal_search_off", "strict_scope_empty", "web_search_mode"],
+    )
+    @pytest.mark.asyncio
+    async def test_empty_scope_refuses_and_never_runs_command(self, tmp_path, scope) -> None:
+        tool = _make_tool(connector_dir=str(tmp_path), **scope)
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess",
+            new_callable=AsyncMock,
+            return_value=(True, "record_x.json"),
+        ) as mock_run:
+            ok_run, out_run = await tool.run_command("c", 'grep -ri "salary" .')
+            ok_find, out_find = await tool.find_records("c", 'grep -ril "salary" .')
+        assert ok_run is False and "no knowledge sources" in out_run
+        assert ok_find is False and "no knowledge sources" in out_find
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_chat_mode_unscoped_still_searches_user_accessible_connector(self, tmp_path) -> None:
+        """Internal-search chat with no source filter means all the user can reach."""
+        tool = _make_tool(
+            connector_dir=str(tmp_path),
+            filters={}, apps=None, kb=None, agent_knowledge=[], has_knowledge=True,
+        )
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess",
+            new_callable=AsyncMock,
+            return_value=(True, "3"),
+        ) as mock_run:
+            ok, out = await tool.run_command("c", 'grep -rl "salary" . | wc -l')
+        assert ok is True, out
+        mock_run.assert_awaited_once()
+        assert tool._scope_connector_ids() is None
 
     @pytest.mark.asyncio
     async def test_agent_scope_bounds_the_permission_check(self, tmp_path):

@@ -47,13 +47,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Normalized (`ToolsetRegistry._normalize_toolset_name`) names of the two
-# internal toolsets ("Retrieval", "KnowledgeHub") whose tools are useless —
-# and actively misleading, since every call fails with "No knowledge sources
-# configured" — when the agent has no knowledge attached. `.as_internal()`
+# Normalized (`ToolsetRegistry._normalize_toolset_name`) names of the four
+# internal toolsets ("KnowledgeGraph", "Retrieval", "KnowledgeHub",
+# "Storage Pattern Match") that must not load when the agent has no knowledge
+# attached: their calls either fail with "No knowledge sources configured" or
+# would search record storage the agent was never given. `.as_internal()`
 # exempts them from the external-toolset "configured on this agent" check
 # below, so they need their own gate on `context.has_knowledge` instead.
-_KNOWLEDGE_TOOLSETS = frozenset({"knowledgegraph", "retrieval", "knowledgehub"})
+_KNOWLEDGE_TOOLSETS = frozenset({"knowledgegraph", "retrieval", "knowledgehub", "storagepatternmatch"})
 
 # Group names of the legacy internal toolsets that execute model-generated
 # code through `app.sandbox.manager.get_executor()`. `.as_internal()` exempts

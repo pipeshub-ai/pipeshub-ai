@@ -232,6 +232,35 @@ async def test_unscopable_command_falls_back_to_full_grep(tmp_path):
     assert graph.get_nodes_by_field_in.await_args.args[:3] == ("recordGroups", "id", ["rg1"])
 
 
+@pytest.mark.skipif(shutil.which("grep") is None, reason="needs grep")
+@pytest.mark.asyncio
+async def test_fan_out_searches_the_connectors_it_resolved(tmp_path) -> None:
+    """The tool refuses a state with no knowledge scope, so the fan-out must hand
+    it the connectors it already resolved, which also bound the permission check."""
+    vrid = "3107958a-8b30-4852-a9e2-7814000e7d19"
+    (tmp_path / f"record_{vrid}.json").write_text(_record_json("PST-34", "pipeshub valuation"))
+    graph = MagicMock()
+    graph.get_accessible_containers = AsyncMock(
+        return_value=AccessibleContainers(app_ids=frozenset({"c1"}), app_ids_trusted=frozenset({"c1"}))
+    )
+    graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={vrid: "rid-1"})
+    graph.get_records_by_record_ids = AsyncMock(return_value=[{"_key": "rid-1", "recordName": "PST-34"}])
+
+    with patch.object(
+        StoragePatternMatch, "_resolve_connector_path",
+        AsyncMock(return_value=(str(tmp_path), None)),
+    ):
+        records = await run_pattern_match(
+            config_service=MagicMock(), org_id="org1", user_id="u1",
+            graph_provider=graph, command='grep -rli "valuation" .', connector_ids=["c1"],
+            logger_instance=MagicMock(),
+        )
+
+    assert [r["virtual_record_id"] for r in records] == [vrid]
+    scope = graph.filter_accessible_virtual_record_ids.await_args.kwargs["scope_connector_ids"]
+    assert scope == frozenset({"c1"})
+
+
 class TestGrepSearchRegexes:
     def test_value_flags_are_not_taken_as_the_pattern(self):
         regexes = _grep_search_regexes('grep -m 5 -A 2 -rci "billion" .')
@@ -278,6 +307,7 @@ async def test_find_records_keeps_results_when_ranking_fails(tmp_path):
     config.get_config = AsyncMock(return_value={"storageType": "local"})
     tool = StoragePatternMatch({
         "org_id": "org1", "user_id": "u1", "config_service": config, "graph_provider": graph,
+        "has_knowledge": True,
     })
     tool._resolve_connector_path = AsyncMock(return_value=(str(tmp_path), None))
 
