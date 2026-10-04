@@ -162,7 +162,7 @@ describe('Knowledge base routes over HTTP: who may call what', () => {
       it(`keeps a ${status} from the connector service on every change route`, async () => {
         const token = sessionToken(h, OUTSIDER)
         const changes = KB_ROUTES.filter((r) => r.method !== 'GET' && r.forwards?.includes(KB_ID) && !r.form)
-        expect(changes).to.have.length(9)
+        expect(changes).to.have.length(10)
         for (const route of changes) {
           h.backend.reset()
           const [method, path] = route.forwards!.split(' ') as [string, string]
