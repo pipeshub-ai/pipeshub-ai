@@ -12009,6 +12009,9 @@ class TestDeleteRecordSuccessPaths:
             connected_provider, "get_user_kb_permission",
             new_callable=AsyncMock, return_value="OWNER"
         ), patch.object(
+            connected_provider, "_get_all_edge_collections",
+            new_callable=AsyncMock, return_value=["belongsTo", "belongsToTopic"]
+        ), patch.object(
             connected_provider, "delete_records_and_relations",
             new_callable=AsyncMock, return_value=True
         ):
@@ -16307,8 +16310,38 @@ class TestDeleteDriveAnyonePermissions:
 class TestDeleteKbSpecificEdges:
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
+        connected_provider._get_all_edge_collections = AsyncMock(return_value=["belongsTo"])
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
         await connected_provider._delete_kb_specific_edges("r1", transaction="txn1")
+
+    @pytest.mark.asyncio
+    async def test_enrichment_edges_are_removed_with_the_record(self, connected_provider) -> None:
+        """The taxonomy edges enrichment writes are not in the KB list, and must not outlive the record."""
+        connected_provider._get_all_edge_collections = AsyncMock(return_value=[
+            "isOfType", "belongsToCategory", "belongsToTopic", "belongsToLanguage", "belongsToDepartment",
+        ])
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+
+        await connected_provider._delete_kb_specific_edges("r1", transaction="txn1")
+
+        calls = connected_provider.http_client.execute_aql.await_args_list
+        swept = [c.args[1]["@edge_collection"] for c in calls]
+        assert sorted(swept) == sorted({
+            "isOfType", "recordRelations", "belongsTo", "permission",
+            "belongsToCategory", "belongsToTopic", "belongsToLanguage", "belongsToDepartment",
+        })
+        assert all(c.args[1]["record_from"] == c.args[1]["record_to"] == "records/r1" for c in calls)
+        assert all(c.kwargs["txn_id"] == "txn1" for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_graph_definition_fails_the_delete(self, connected_provider) -> None:
+        """Deleting with only part of the edge list would leave dangling edges and report success."""
+        connected_provider._get_all_edge_collections = AsyncMock(side_effect=Exception("graph not found"))
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+
+        with pytest.raises(Exception, match="graph not found"):
+            await connected_provider._delete_kb_specific_edges("r1")
+        connected_provider.http_client.execute_aql.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

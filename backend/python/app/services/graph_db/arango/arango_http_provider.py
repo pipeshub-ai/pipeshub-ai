@@ -15164,8 +15164,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_id: str,
         transaction: str | None = None
     ) -> None:
-        """Delete KB-specific edges."""
-        kb_edge_collections = self.connector_delete_permissions[Connectors.KNOWLEDGE_BASE.value]["edge_collections"]
+        """Delete every edge touching a KB record, as the folder delete and Neo4j's DETACH DELETE do.
+
+        Enrichment links a record to taxonomy nodes (belongsToCategory, belongsToTopic, ...)
+        that the fixed KB list never named; left in place they point at a record that is gone.
+        """
+        kb_edge_collections = list(dict.fromkeys([
+            *self.connector_delete_permissions[Connectors.KNOWLEDGE_BASE.value]["edge_collections"],
+            *await self._get_all_edge_collections(),
+        ]))
 
         edge_deletion_query = """
         FOR edge IN @@edge_collection
