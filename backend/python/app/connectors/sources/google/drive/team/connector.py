@@ -1669,7 +1669,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         file_name = file_metadata.get("name")
 
         if not pass_folder_filter(file_metadata, tracked_folder_ids):
-            await self._delete_on_scope_exit(file_id, file_name, tracked_folder_ids)
+            # A user the item is only shared with sees no parent, which says nothing about
+            # where it lives; a real move out shows its new parent in the owner's feed.
+            if file_metadata.get("parents"):
+                await self._delete_on_scope_exit(file_id, file_name, tracked_folder_ids)
             return []
 
         items = [file_metadata]
