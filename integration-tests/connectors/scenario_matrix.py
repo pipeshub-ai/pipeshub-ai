@@ -213,10 +213,20 @@ def new_token() -> str:
     return f"mx{uuid.uuid4().hex[:10]}"
 
 
+def body_marker(token: str) -> str:
+    """Words only an item's body holds.
+
+    Adapters name items after the bare token, and many connectors index the name
+    with the body (a page's heading, a table's DDL), so the bare old token stays
+    in the vectors of an item whose body was replaced.
+    """
+    return f"The {token} review"
+
+
 def item_text(role: Role, token: str) -> str:
     return (
         f"Scenario matrix {role.value} note {token}. "
-        f"The {token} review covers the quarterly budget, hiring plan and launch city."
+        f"{body_marker(token)} covers the quarterly budget, hiring plan and launch city."
     )
 
 
@@ -513,6 +523,14 @@ class MatrixRun:
                 f"source text within {timeout}s ({detail})."
             ) from exc
 
+    async def wait_content_replaced(
+        self, item: SourceItem, timeout: int = INDEX_TIMEOUT_SEC,
+    ) -> RecordView:
+        """Wait until an edited item's vectors hold its new body and none of its old one."""
+        return await self.wait_vectors_hold(
+            item, item.token, absent=[body_marker(item.extra["old_token"])], timeout=timeout,
+        )
+
     def _search(self, query: str, as_user: "SecondUser | None"):
         if as_user is None:
             return search_connector_as_admin(self.client, self.connector_id, query)
@@ -721,8 +739,7 @@ class ConnectorScenarioMatrix:
         await run.mutate_round()
         before = run.added[Role.CONTENT]
         item = run.item(Role.CONTENT)
-        old_token = item.extra["old_token"]
-        view = await run.wait_vectors_hold(item, item.token, absent=[old_token])
+        view = await run.wait_content_replaced(item)
         assert view.changed_since(before), (
             f"{run.adapter.source}: the record's version and revision did not move after the edit"
         )

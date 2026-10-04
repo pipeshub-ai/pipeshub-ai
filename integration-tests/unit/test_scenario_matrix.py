@@ -194,8 +194,10 @@ class _Source:
     ``lag`` syncs, like a change feed that has not caught up yet.
     """
 
-    def __init__(self, lag: int = 0) -> None:
+    def __init__(self, lag: int = 0, *, index_names: bool = False) -> None:
         self.lag = lag
+        # Like a connector that indexes a page's heading or a table's DDL with its body.
+        self.index_names = index_names
         self.files: dict[str, dict[str, Any]] = {}
         self.graph: dict[str, dict[str, Any]] = {}
         self.vectors: dict[str, list[str]] = {}
@@ -214,7 +216,7 @@ class _Source:
                     id=f"rec-{ext}", recordName=f["name"], virtualRecordId=vrid,
                     version=version, externalRecordId=ext, externalRevisionId=f["etag"],
                 )
-                self.vectors[vrid] = [f["text"]]
+                self.vectors[vrid] = [f"{f['name']}\n{f['text']}" if self.index_names else f["text"]]
         for ext in [e for e in self.graph if e not in self.files]:
             self.vectors.pop(self.graph.pop(ext)["virtualRecordId"], None)
 
@@ -328,6 +330,39 @@ async def test_vectors_that_still_hold_the_old_text_do_not_count(monkeypatch) ->
     src.vectors[view.virtual_record_id] = ["new mxnew", "leftover mxold"]
     with pytest.raises(AssertionError, match=r"old text still present: \['mxold'\]"):
         await run.wait_vectors_hold(item, "mxnew", absent=["mxold"], timeout=1)
+
+
+async def test_an_old_token_left_only_in_the_items_name_is_not_stale_text(monkeypatch) -> None:
+    monkeypatch.setattr(sm, "POLL_INTERVAL_SEC", 0.05)
+    src = _Source(index_names=True)
+    run = _run(src, _NO_SHARE_OR_FILTER)
+    await run.add_round()
+    old_token = run.item(Role.CONTENT).token
+    await run.mutate_round()
+    content = run.item(Role.CONTENT)
+    assert old_token in content.record_name
+
+    view = await run.wait_content_replaced(content)
+
+    assert view.changed_since(run.added[Role.CONTENT])
+    # The bare token is still there, in the name, so it cannot be what "old text" means.
+    with pytest.raises(AssertionError, match="never matched"):
+        await run.wait_vectors_hold(content, content.token, absent=[old_token], timeout=1)
+
+
+async def test_an_old_body_left_in_the_vectors_still_fails_the_edit(monkeypatch) -> None:
+    monkeypatch.setattr(sm, "POLL_INTERVAL_SEC", 0.05)
+    src = _Source(index_names=True)
+    run = _run(src, _NO_SHARE_OR_FILTER)
+    await run.add_round()
+    old_text = run.item(Role.CONTENT).text
+    await run.mutate_round()
+    content = run.item(Role.CONTENT)
+    view = await run.record(content)
+    src.vectors[view.virtual_record_id].append(old_text)
+
+    with pytest.raises(AssertionError, match=r"old text still present: \['The mx"):
+        await run.wait_content_replaced(content, timeout=1)
 
 
 class _ScrollClient:
