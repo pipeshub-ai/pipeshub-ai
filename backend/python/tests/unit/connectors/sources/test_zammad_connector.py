@@ -1364,23 +1364,29 @@ class TestZammadSyncRoles:
 class TestZammadSyncKnowledgeBases:
     """Tests for _sync_knowledge_bases."""
 
-    async def test_no_kb_answers(self, zammad_connector):
+    async def test_no_kb_answers(self, zammad_connector) -> None:
         zammad_connector._get_kb_sync_checkpoint = AsyncMock(return_value=None)
+        zammad_connector._update_kb_sync_checkpoint = AsyncMock()
         mock_ds = MagicMock()
-        mock_ds.search_kb_answers = AsyncMock(return_value=_make_response(success=True, data=None))
+        mock_ds.init_knowledge_base = AsyncMock(return_value=_make_response(success=True, data={}))
         zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         await zammad_connector._sync_knowledge_bases()
 
-    async def test_kb_incremental_builds_query(self, zammad_connector):
+        zammad_connector._update_kb_sync_checkpoint.assert_not_awaited()
+
+    async def test_listing_with_a_non_object_answer_keeps_the_sync_point(self, zammad_connector) -> None:
         zammad_connector._get_kb_sync_checkpoint = AsyncMock(return_value=1700000000000)
+        zammad_connector._update_kb_sync_checkpoint = AsyncMock()
         mock_ds = MagicMock()
-        mock_ds.search_kb_answers = AsyncMock(return_value=_make_response(success=False))
+        listing = {"KnowledgeBaseAnswer": {"1": {"id": 1, "updated_at": "2024-06-01T00:00:00Z"}, "2": None}}
+        mock_ds.init_knowledge_base = AsyncMock(return_value=_make_response(success=True, data=listing))
         zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         await zammad_connector._sync_knowledge_bases()
-        call_kwargs = mock_ds.search_kb_answers.await_args
-        assert "updated_at" in call_kwargs.kwargs.get("query", "")
+
+        zammad_connector._update_kb_sync_checkpoint.assert_not_awaited()
+        zammad_connector.data_entities_processor.on_new_records.assert_not_called()
 
 # =============================================================================
 # Merged from test_zammad_connector_full_coverage.py
@@ -1469,7 +1475,6 @@ def _mock_ds():
     ds.list_ticket_articles = AsyncMock(return_value=_resp(success=False))
     ds.list_links = AsyncMock(return_value=_resp(success=False))
     ds.search_tickets = AsyncMock(return_value=_resp(success=False))
-    ds.search_kb_answers = AsyncMock(return_value=_resp(success=False))
     ds.get_kb_answer = AsyncMock(return_value=_resp(success=False))
     ds.get_kb_answer_attachment = AsyncMock(return_value=_resp(success=False))
     ds.get_ticket_attachment = AsyncMock(return_value=_resp(success=False))
@@ -1681,7 +1686,7 @@ class TestProcessKBEntitiesFromFirstPage:
         category_map = {}
         cat_perms_map = {}
 
-        await connector._process_kb_entities_from_first_page(assets, kb_map, category_map, cat_perms_map)
+        await connector._process_kb_entities(assets, kb_map, category_map, cat_perms_map)
 
         assert 1 in kb_map
         assert kb_map[1].name == "My KB"
@@ -1700,7 +1705,7 @@ class TestProcessKBEntitiesFromFirstPage:
         category_map = {}
         cat_perms_map = {}
 
-        await connector._process_kb_entities_from_first_page(assets, kb_map, category_map, cat_perms_map)
+        await connector._process_kb_entities(assets, kb_map, category_map, cat_perms_map)
         assert len(kb_map) == 0
 
     async def test_category_with_permissions_effective(self, connector):
@@ -1728,7 +1733,7 @@ class TestProcessKBEntitiesFromFirstPage:
         category_map = {}
         cat_perms_map = {}
 
-        await connector._process_kb_entities_from_first_page(assets, kb_map, category_map, cat_perms_map)
+        await connector._process_kb_entities(assets, kb_map, category_map, cat_perms_map)
         assert cat_perms_map[5]["editor_role_ids"] == [10]
         assert cat_perms_map[5]["reader_role_ids"] == [20]
 
@@ -1757,7 +1762,7 @@ class TestProcessKBEntitiesFromFirstPage:
         kb_map = {}
         cat_perms_map = {}
 
-        await connector._process_kb_entities_from_first_page(assets, kb_map, category_map, cat_perms_map)
+        await connector._process_kb_entities(assets, kb_map, category_map, cat_perms_map)
         assert category_map[7].parent_external_group_id == "cat_3"
 
     async def test_category_permission_api_error(self, connector):
@@ -1783,7 +1788,7 @@ class TestProcessKBEntitiesFromFirstPage:
         category_map = {}
         cat_perms_map = {}
 
-        await connector._process_kb_entities_from_first_page(assets, kb_map, category_map, cat_perms_map)
+        await connector._process_kb_entities(assets, kb_map, category_map, cat_perms_map)
         assert cat_perms_map[5]["editor_role_ids"] == []
 
 
@@ -1814,9 +1819,8 @@ class TestSyncKBAnswersPaginated:
         category_map = {5: cat_rg}
         cat_perms_map = {5: {"kb_id": 1, "editor_role_ids": [], "reader_role_ids": []}}
 
-        total, max_ts = await connector._sync_kb_answers_paginated(
-            query="*", limit=50, start_offset=0,
-            first_page_assets=first_assets, first_result_count=1,
+        total, max_ts, _ = await connector._sync_kb_answers(
+            answers=first_assets.get("KnowledgeBaseAnswer", {}), assets=first_assets,
             category_map=category_map, category_permissions_map=cat_perms_map
         )
 
@@ -1824,39 +1828,22 @@ class TestSyncKBAnswersPaginated:
         assert max_ts > 0
         connector.data_entities_processor.on_new_records.assert_awaited()
 
-    async def test_pagination_continues(self, connector):
+    async def test_answers_are_written_in_batches(self, connector) -> None:
         connector.base_url = "https://z.example.com"
         ds = _mock_ds()
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector.indexing_filters = None
 
-        page2_data = {
-            "_result_count": 1,
+        listing = {
             "KnowledgeBaseAnswer": {
-                "2": {
-                    "id": 2,
-                    "category_id": 5,
-                    "translation_ids": [],
-                    "created_at": "",
-                    "updated_at": "2024-07-01T00:00:00Z",
-                    "published_at": "2024-07-01",
-                }
-            },
-            "KnowledgeBaseAnswerTranslation": {},
-            "KnowledgeBaseAnswerTranslationContent": {},
-        }
-        ds.search_kb_answers = AsyncMock(return_value=_resp(success=True, data=page2_data))
-        connector._get_fresh_datasource = AsyncMock(return_value=ds)
-
-        first_assets = {
-            "KnowledgeBaseAnswer": {
-                "1": {
-                    "id": 1, "category_id": 5, "translation_ids": [],
-                    "created_at": "", "updated_at": "2024-06-01T00:00:00Z",
+                str(i): {
+                    "id": i, "category_id": 5, "translation_ids": [],
+                    "created_at": "", "updated_at": f"2024-06-01T00:00:{i:02d}Z",
                     "published_at": "2024-06-01",
                 }
+                for i in range(1, 56)
             },
             "KnowledgeBaseAnswerTranslation": {},
-            "KnowledgeBaseAnswerTranslationContent": {},
         }
 
         cat_rg = MagicMock()
@@ -1864,22 +1851,24 @@ class TestSyncKBAnswersPaginated:
         category_map = {5: cat_rg}
         cat_perms_map = {5: {"kb_id": 1, "editor_role_ids": [], "reader_role_ids": []}}
 
-        total, _ = await connector._sync_kb_answers_paginated(
-            query="*", limit=50, start_offset=0,
-            first_page_assets=first_assets, first_result_count=50,
+        total, max_ts, failed = await connector._sync_kb_answers(
+            answers=listing["KnowledgeBaseAnswer"], assets=listing,
             category_map=category_map, category_permissions_map=cat_perms_map
         )
 
-        assert total == 2
+        assert total == 55
+        assert failed == []
+        assert max_ts == connector._parse_zammad_datetime("2024-06-01T00:00:55Z")
+        batches = [len(call.args[0]) for call in connector.data_entities_processor.on_new_records.await_args_list]
+        assert batches == [50, 5]
 
     async def test_empty_answer_assets_stops(self, connector):
         ds = _mock_ds()
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         first_assets = {}
-        total, max_ts = await connector._sync_kb_answers_paginated(
-            query="*", limit=50, start_offset=0,
-            first_page_assets=first_assets, first_result_count=0,
+        total, max_ts, _ = await connector._sync_kb_answers(
+            answers=first_assets.get("KnowledgeBaseAnswer", {}), assets=first_assets,
             category_map={}, category_permissions_map={}
         )
         assert total == 0
@@ -1901,9 +1890,8 @@ class TestSyncKBAnswersPaginated:
 
         connector._create_answer_with_permissions = MagicMock(side_effect=Exception("bad"))
 
-        total, _ = await connector._sync_kb_answers_paginated(
-            query="*", limit=50, start_offset=0,
-            first_page_assets=first_assets, first_result_count=1,
+        total, _, _ = await connector._sync_kb_answers(
+            answers=first_assets.get("KnowledgeBaseAnswer", {}), assets=first_assets,
             category_map={}, category_permissions_map={}
         )
         assert total == 0
@@ -1940,9 +1928,8 @@ class TestSyncKBAnswersPaginated:
         category_map = {5: cat_rg}
         cat_perms_map = {5: {"kb_id": 1, "editor_role_ids": [], "reader_role_ids": []}}
 
-        await connector._sync_kb_answers_paginated(
-            query="*", limit=50, start_offset=0,
-            first_page_assets=first_assets, first_result_count=1,
+        await connector._sync_kb_answers(
+            answers=first_assets.get("KnowledgeBaseAnswer", {}), assets=first_assets,
             category_map=category_map, category_permissions_map=cat_perms_map
         )
 
@@ -1974,9 +1961,8 @@ class TestSyncKBAnswersPaginated:
         category_map = {5: cat_rg}
         cat_perms_map = {5: {"kb_id": 1, "editor_role_ids": [], "reader_role_ids": []}}
 
-        await connector._sync_kb_answers_paginated(
-            query="*", limit=50, start_offset=0,
-            first_page_assets=first_assets, first_result_count=1,
+        await connector._sync_kb_answers(
+            answers=first_assets.get("KnowledgeBaseAnswer", {}), assets=first_assets,
             category_map=category_map, category_permissions_map=cat_perms_map
         )
 
@@ -2009,9 +1995,8 @@ class TestSyncKBAnswersPaginated:
         category_map = {5: cat_rg}
         cat_perms_map = {5: {"kb_id": 1, "editor_role_ids": [], "reader_role_ids": []}}
 
-        total, _ = await connector._sync_kb_answers_paginated(
-            query="*", limit=50, start_offset=0,
-            first_page_assets=first_assets, first_result_count=1,
+        total, _, _ = await connector._sync_kb_answers(
+            answers=first_assets.get("KnowledgeBaseAnswer", {}), assets=first_assets,
             category_map=category_map, category_permissions_map=cat_perms_map
         )
         assert total == 1
@@ -2023,8 +2008,7 @@ class TestSyncKnowledgeBases:
         ds = _mock_ds()
         connector.indexing_filters = None
 
-        search_data = {
-            "_result_count": 1,
+        listing = {
             "KnowledgeBase": {"1": {"translation_ids": []}},
             "KnowledgeBaseTranslation": {},
             "KnowledgeBaseCategory": {},
@@ -2039,7 +2023,7 @@ class TestSyncKnowledgeBases:
             "KnowledgeBaseAnswerTranslation": {},
             "KnowledgeBaseAnswerTranslationContent": {},
         }
-        ds.search_kb_answers = AsyncMock(return_value=_resp(success=True, data=search_data))
+        ds.init_knowledge_base = AsyncMock(return_value=_resp(success=True, data=listing))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._get_kb_sync_checkpoint = AsyncMock(return_value=None)
         connector._update_kb_sync_checkpoint = AsyncMock()
@@ -2048,20 +2032,47 @@ class TestSyncKnowledgeBases:
 
         connector._update_kb_sync_checkpoint.assert_awaited()
 
-    async def test_incremental_sync(self, connector):
+    async def test_incremental_sync_writes_only_answers_changed_since_the_sync_point(self, connector) -> None:
+        connector.base_url = "https://z.example.com"
         ds = _mock_ds()
-        ds.search_kb_answers = AsyncMock(return_value=_resp(success=True, data=None))
+        connector.indexing_filters = None
+        listing = {
+            "KnowledgeBaseAnswer": {
+                "1": {"id": 1, "category_id": None, "translation_ids": [],
+                      "created_at": "", "updated_at": "2023-01-01T00:00:00Z", "published_at": "2023-01-01"},
+                "2": {"id": 2, "category_id": None, "translation_ids": [],
+                      "created_at": "", "updated_at": "2024-06-01T00:00:00Z", "published_at": "2024-06-01"},
+            },
+        }
+        ds.init_knowledge_base = AsyncMock(return_value=_resp(success=True, data=listing))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._get_kb_sync_checkpoint = AsyncMock(return_value=1700000000000)
+        connector._update_kb_sync_checkpoint = AsyncMock()
 
         await connector._sync_knowledge_bases()
 
-        call_kwargs = ds.search_kb_answers.await_args
-        assert "updated_at" in call_kwargs.kwargs.get("query", call_kwargs.args[0] if call_kwargs.args else "")
+        written = [r.external_record_id for call in connector.data_entities_processor.on_new_records.await_args_list
+                   for r, _ in call.args[0]]
+        assert written == ["kb_answer_2"]
+        connector._update_kb_sync_checkpoint.assert_awaited_once_with(
+            connector._parse_zammad_datetime("2024-06-01T00:00:00Z") + 1000
+        )
+
+    async def test_failed_listing_keeps_the_sync_point(self, connector) -> None:
+        ds = _mock_ds()
+        ds.init_knowledge_base = AsyncMock(return_value=_resp(success=False, message="init_knowledge_base failed"))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector._get_kb_sync_checkpoint = AsyncMock(return_value=1700000000000)
+        connector._update_kb_sync_checkpoint = AsyncMock()
+
+        await connector._sync_knowledge_bases()
+
+        connector._update_kb_sync_checkpoint.assert_not_awaited()
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
 
     async def test_no_data_returns_early(self, connector):
         ds = _mock_ds()
-        ds.search_kb_answers = AsyncMock(return_value=_resp(success=True, data=None))
+        ds.init_knowledge_base = AsyncMock(return_value=_resp(success=True, data={}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._get_kb_sync_checkpoint = AsyncMock(return_value=None)
         connector._update_kb_sync_checkpoint = AsyncMock()
@@ -2074,8 +2085,7 @@ class TestSyncKnowledgeBases:
         ds = _mock_ds()
         connector.indexing_filters = None
 
-        search_data = {
-            "_result_count": 1,
+        listing = {
             "KnowledgeBase": {},
             "KnowledgeBaseTranslation": {},
             "KnowledgeBaseCategory": {},
@@ -2090,7 +2100,7 @@ class TestSyncKnowledgeBases:
             "KnowledgeBaseAnswerTranslation": {},
             "KnowledgeBaseAnswerTranslationContent": {},
         }
-        ds.search_kb_answers = AsyncMock(return_value=_resp(success=True, data=search_data))
+        ds.init_knowledge_base = AsyncMock(return_value=_resp(success=True, data=listing))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._get_kb_sync_checkpoint = AsyncMock(return_value=None)
         connector._update_kb_sync_checkpoint = AsyncMock()

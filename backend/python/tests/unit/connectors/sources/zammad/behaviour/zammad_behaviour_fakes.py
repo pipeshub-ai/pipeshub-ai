@@ -11,6 +11,7 @@ values Neo4j cannot hold as a node property.
 
 from __future__ import annotations
 
+import json
 import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -36,6 +37,20 @@ def iso(epoch_ms: int) -> str:
 
 def epoch_ms(day: int) -> int:
     return int(T0.timestamp() * 1000) + day * 86_400_000
+
+
+class FakeHttpResponse:
+    """What the HTTP client hands ``ZammadDataSource``: a status and a JSON body."""
+
+    def __init__(self, status: int, body: object) -> None:
+        self.status = status
+        self._body = body
+
+    def text(self) -> str:
+        return json.dumps(self._body)
+
+    def json(self) -> object:
+        return self._body
 
 
 @dataclass

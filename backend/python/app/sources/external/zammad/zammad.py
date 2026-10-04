@@ -613,10 +613,16 @@ class ZammadDataSource:
     async def init_knowledge_base(
         self
     ) -> ZammadResponse:
-        """Initialize knowledge base
+        """List every knowledge base, category and answer the account can see.
+
+        Zammad 6.0 and later answer with one assets map, not paged, keyed by
+        type (KnowledgeBase, KnowledgeBaseCategory, KnowledgeBaseAnswer,
+        KnowledgeBaseAnswerTranslation, ...). Answer bodies are not included.
 
         Returns:
-            ZammadResponse
+            ZammadResponse with that assets map. It is empty when the account
+            has no knowledge-base role and the knowledge base is not public,
+            where Zammad answers with an empty list.
         """
         url = f"{self.base_url}/api/v1/knowledge_bases/init"
         request_body = None
@@ -632,10 +638,22 @@ class ZammadDataSource:
 
             response_text = response.text()
             status_ok = response.status < SUCCESS_CODE_IS_LESS_THAN
+            json_data = response.json() if response_text else None
+            error = None
+            if json_data == []:
+                json_data = {}
+            if not isinstance(json_data, dict):
+                error = "unexpected knowledge base listing response"
+            elif json_data.get("error"):
+                error = str(json_data["error"])
+            if error:
+                status_ok = False
             return ZammadResponse(
                 success=status_ok,
-                data=response.json() if response_text else None,
-                message="init_knowledge_base succeeded" if status_ok else "init_knowledge_base failed"
+                data=json_data if status_ok else None,
+                error=error,
+                message="init_knowledge_base succeeded" if status_ok else "init_knowledge_base failed",
+                status_code=response.status,
             )
         except Exception as e:
             return ZammadResponse(
@@ -1115,7 +1133,6 @@ class ZammadDataSource:
         # Build URL without query parameters
         url = f"{self.base_url}/api/v1/knowledge_bases/{kb_id}/answers/{id}"
 
-        # Build query parameters (like search_kb_answers does)
         query_params = {
             "full": "1"
         }
@@ -2376,9 +2393,15 @@ class ZammadDataSource:
             status_ok = response.status < SUCCESS_CODE_IS_LESS_THAN
             json_data = response.json() if response_text else []
 
-            if isinstance(json_data, list):
-                data = [ticket for ticket in json_data if isinstance(ticket, dict)]
+            if isinstance(json_data, list) and all(isinstance(ticket, dict) for ticket in json_data):
+                data = json_data
                 error = None
+            elif isinstance(json_data, list):
+                # Dropping the entry would shorten the page, and a short page ends
+                # the listing before the tickets after it are read.
+                data = None
+                error = "ticket search returned an entry that is not a ticket object"
+                status_ok = False
             else:
                 # An error body, or a shape this method does not know, read as
                 # "no tickets" would end a listing early, so it is a failure.
@@ -2450,91 +2473,6 @@ class ZammadDataSource:
                 success=False,
                 error=str(e),
                 message="count_tickets failed: " + str(e)
-            )
-
-    async def search_kb_answers(
-        self,
-        query: str,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None
-    ) -> ZammadResponse:
-        """Search KB answers using global search API with objects=KnowledgeBaseAnswerTranslation
-
-        Args:
-            query: str (required) - Search query (use "*" for all, or "updated_at:[timestamp TO *]" for incremental)
-            limit: Optional[int] - Number of results to return
-            offset: Optional[int] - Number of results to skip for pagination
-
-        Returns:
-            ZammadResponse with full assets dict containing:
-            - KnowledgeBase
-            - KnowledgeBaseCategory (with permissions_effective)
-            - KnowledgeBaseAnswer (with visibility fields and attachments)
-            - KnowledgeBaseAnswerTranslation
-            - KnowledgeBaseCategoryTranslation
-            - KnowledgeBaseTranslation
-        """
-        url = f"{self.base_url}/api/v1/search"
-        query_params = {"objects": "KnowledgeBaseAnswerTranslation"}
-
-        if query is not None:
-            query_params["query"] = query
-        if limit is not None:
-            query_params["limit"] = str(limit)
-        if offset is not None:
-            query_params["offset"] = str(offset)
-
-        request_body = None
-
-        try:
-            request = HTTPRequest(
-                url=url,
-                method="GET",
-                headers={"Content-Type": "application/json"},
-                body=request_body,
-                query=query_params
-            )
-            response = await self.http_client.execute(request)
-
-            response_text = response.text()
-            status_ok = response.status < SUCCESS_CODE_IS_LESS_THAN
-
-            # Return full assets dict with result count for proper pagination
-            data = None
-            if response_text:
-                json_data = response.json()
-                if isinstance(json_data, dict):
-                    # Response structure:
-                    # {
-                    #   "assets": {
-                    #     "KnowledgeBase": {...},
-                    #     "KnowledgeBaseCategory": {...},
-                    #     "KnowledgeBaseAnswer": {...},
-                    #     "KnowledgeBaseAnswerTranslation": {...},
-                    #     ...
-                    #   },
-                    #   "result": [{"type": "KnowledgeBaseAnswerTranslation", "id": 1}, ...]
-                    # }
-                    assets = json_data.get("assets", {})
-                    result = json_data.get("result", [])
-                    # Include result_count for pagination
-                    data = {
-                        **assets,
-                        "_result_count": len(result)
-                    }
-                else:
-                    data = {}
-
-            return ZammadResponse(
-                success=status_ok,
-                data=data,
-                message="search_kb_answers succeeded" if status_ok else "search_kb_answers failed"
-            )
-        except Exception as e:
-            return ZammadResponse(
-                success=False,
-                error=str(e),
-                message="search_kb_answers failed: " + str(e)
             )
 
     async def get_ticket_history(

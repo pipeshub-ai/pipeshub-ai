@@ -7,7 +7,6 @@ first one, while ``/api/v1/tickets/search`` pages by ``page``/``per_page``.
 Which tickets a query matches, and their order, comes from ``FakeZammad``.
 """
 
-import json
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -17,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 
 import pytest
-from zammad_behaviour_fakes import FakeZammad, epoch_ms
+from zammad_behaviour_fakes import FakeHttpResponse, FakeZammad, epoch_ms
 
 from app.connectors.sources.zammad.connector import ZammadConnector
 from app.models.entities import Record, TicketRecord
@@ -33,24 +32,12 @@ TICKETS = 120
 SEARCH_CALL_CAP = 200
 
 
-class FakeHttpResponse:
-    def __init__(self, status: int, body: object) -> None:
-        self.status = status
-        self._body = body
-
-    def text(self) -> str:
-        return json.dumps(self._body)
-
-    def json(self) -> object:
-        return self._body
-
-
 class FakeZammad64:
     """The parts of Zammad 6.4.1's REST API the ticket sync calls."""
 
     def __init__(
         self, ticket_count: int, *, pages_tickets_search: bool = True, fails_at_page: int | None = None,
-        one_timestamp: bool = False,
+        one_timestamp: bool = False, junk_at_page: int | None = None,
     ) -> None:
         self.index = FakeZammad(groups={GROUP_ID: "Support"})
         for ticket_id in range(1, ticket_count + 1):
@@ -59,6 +46,7 @@ class FakeZammad64:
         self.tickets = list(self.index.tickets.values())
         self.pages_tickets_search = pages_tickets_search
         self.fails_at_page = fails_at_page
+        self.junk_at_page = junk_at_page
         self.search_calls: list[tuple[str, dict[str, str]]] = []
 
     async def execute(self, request: HTTPRequest) -> FakeHttpResponse:
@@ -99,7 +87,10 @@ class FakeZammad64:
         start = (page - 1) * per_page
         rows = self._matching(params["query"])[start:start + per_page]
         # Expanded tickets carry association names next to the ids.
-        return FakeHttpResponse(200, [{**t, "group": "Support", "state": "open"} for t in rows])
+        page_rows: list[object] = [{**t, "group": "Support", "state": "open"} for t in rows]
+        if page == self.junk_at_page:
+            page_rows[len(page_rows) // 2] = None
+        return FakeHttpResponse(200, page_rows)
 
 
 class FakeRecords:
@@ -204,6 +195,21 @@ async def test_a_search_that_fails_after_one_good_page_leaves_the_sync_point_alo
     # Page 1 held the newest tickets; a sync point past them would hide the 70 older ones for good.
     assert "last_sync_time" not in connector.tickets_sync_point.points.get("Support", {})
     assert any("search index unavailable" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_page_with_an_entry_that_is_not_a_ticket_leaves_the_sync_point_alone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Page 2 holds 50 entries, one of them not a ticket. Read as 49 tickets, it would look
+    # like the last page and the sync point would move past the 21 tickets never read.
+    zammad, records = FakeZammad64(TICKETS, junk_at_page=2), FakeRecords()
+    with _connector(zammad, records) as connector, caplog.at_level(logging.WARNING):
+        await _sync_group(connector)
+
+    assert _pages(zammad) == [("1", "50"), WINDOW_PROBE, ("2", "50")]
+    assert len(records.ticket_ids()) == 50
+    assert "last_sync_time" not in connector.tickets_sync_point.points.get("Support", {})
+    assert any("not a ticket object" in r.getMessage() for r in caplog.records)
 
 
 async def test_a_search_that_keeps_answering_with_the_first_page_stops_with_an_error(
