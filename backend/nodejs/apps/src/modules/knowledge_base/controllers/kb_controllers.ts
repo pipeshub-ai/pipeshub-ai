@@ -666,7 +666,13 @@ export const createFolder =
     try {
       const { userId, orgId } = req.user || {};
       const { kbId } = req.params as { kbId: string };
-      const { folderId } = req.query as { folderId?: string };
+      // For the subfolder route (/:kbId/folder/:folderId/subfolder) the parent
+      // id is a path parameter; the root-folder route passes it as a query
+      // param. Prefer the path param so the subfolder route is never silently
+      // downgraded to a root-folder creation.
+      const folderId: string | undefined =
+        (req.params as { folderId?: string }).folderId ??
+        (req.query as { folderId?: string }).folderId;
       const { folderName } = req.body;
 
       if (!userId || !orgId) {

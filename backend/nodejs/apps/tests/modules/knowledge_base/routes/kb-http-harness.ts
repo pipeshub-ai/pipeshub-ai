@@ -367,6 +367,10 @@ export const KB_ROUTES: KbRoute[] = [
   { method: 'DELETE', pattern: '/:kbId', path: `/${KB_ID}`, scope: 'kb:delete', forwards: `DELETE /api/v1/kb/${KB_ID}`, reply: { status: 200, body: { success: true } } },
   { method: 'POST', pattern: '/:kbId/upload', path: `/${KB_ID}/upload`, form: () => pdfForm('a.pdf'), scope: 'kb:upload', forwards: `GET /api/v1/kb/${KB_ID}`, reply: { status: 200, body: { id: KB_ID, userRole: 'OWNER' } } },
   { method: 'POST', pattern: '/:kbId/folder', path: `/${KB_ID}/folder`, json: { folderName: 'Specs' }, scope: 'kb:write', forwards: `POST /api/v1/kb/${KB_ID}/folder`, reply: { status: 201, body: { id: FOLDER_ID } } },
+  // The folderId in the URL is a path parameter; the handler must forward it to
+  // the connector subfolder endpoint rather than falling back to the root-folder
+  // endpoint (which would create under the KB root instead of the parent folder).
+  { method: 'POST', pattern: '/:kbId/folder/:folderId/subfolder', path: `/${KB_ID}/folder/${FOLDER_ID}/subfolder`, json: { folderName: 'Child' }, scope: 'kb:write', forwards: `POST /api/v1/kb/${KB_ID}/folder/${FOLDER_ID}/subfolder`, reply: { status: 201, body: { id: 'new-child-id' } } },
   { method: 'PUT', pattern: '/:kbId/folder/:folderId', path: `/${KB_ID}/folder/${FOLDER_ID}`, json: { folderName: 'Specs v2' }, scope: 'kb:write', forwards: `PUT /api/v1/kb/${KB_ID}/folder/${FOLDER_ID}`, reply: { status: 200, body: { success: true } } },
   { method: 'DELETE', pattern: '/:kbId/folder/:folderId', path: `/${KB_ID}/folder/${FOLDER_ID}`, scope: 'kb:delete', forwards: `DELETE /api/v1/kb/${KB_ID}/folder/${FOLDER_ID}`, reply: { status: 200, body: { success: true } } },
   { method: 'POST', pattern: '/:kbId/permissions', path: `/${KB_ID}/permissions`, json: { userIds: [MEMBER._id], teamIds: [], role: 'READER' }, scope: 'kb:write', forwards: `POST /api/v1/kb/${KB_ID}/permissions`, reply: { status: 201, body: { success: true } } },
