@@ -10120,6 +10120,16 @@ components:
                     example: llm
                   modelFriendlyName:
                     type: string
+                  defaultReasoningEffort:
+                    type: string
+                    enum: [none, low, medium, high, max]
+                    description: >-
+                      The model's own reasoning effort, read from its stored
+                      configuration. It applies only when the chat request sets
+                      no `reasoningEffort` and the agent has no
+                      `defaultReasoningEffort`. Omitted when nothing valid is
+                      stored; `none` is a legacy value that runs as `low`.
+                    example: low
         usesOrgDefault:
           type: boolean
           description: |

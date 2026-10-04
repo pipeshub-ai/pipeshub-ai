@@ -1636,7 +1636,7 @@ export function isModelReasoningCapable(
 
 /**
  * The model's own default reasoning effort for `model` in `ctxKey`'s list, or
- * `null` when none is stored. Agent-configured model lists don't carry it.
+ * `null` when none is stored.
  */
 export function getModelDefaultReasoningEffort(
   ctxKey: string,
