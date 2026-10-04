@@ -484,7 +484,6 @@ class TestRedisFilterTranslation:
 # ===========================================================================
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 
 def _make_redis_service():

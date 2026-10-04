@@ -79,51 +79,6 @@ def _make_mock_data_store_provider(existing_record=None):
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-@pytest.fixture()
-def mock_logger():
-    return logging.getLogger("test.dropbox_ind.cov")
-
-
-@pytest.fixture()
-def mock_data_entities_processor():
-    proc = MagicMock()
-    proc.org_id = "org-dbx-cov"
-    proc.on_new_app_users = AsyncMock()
-    proc.on_new_record_groups = AsyncMock()
-    proc.on_new_records = AsyncMock()
-    proc.get_app_creator_user = AsyncMock(return_value=MagicMock(email="user@test.com"))
-    return proc
-
-
-@pytest.fixture()
-def mock_data_store_provider():
-    return _make_mock_data_store_provider()
-
-
-@pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "credentials": {"access_token": "test_token", "refresh_token": "test_refresh"},
-        "auth": {"oauthConfigId": "oauth-1"},
-    })
-    return svc
-
-
-@pytest.fixture()
-def dropbox_connector(mock_logger, mock_data_entities_processor,
-                      mock_data_store_provider, mock_config_service):
-    with patch("app.connectors.sources.dropbox_individual.connector.DropboxIndividualApp"):
-        connector = DropboxIndividualConnector(
-            logger=mock_logger,
-            data_entities_processor=mock_data_entities_processor,
-            data_store_provider=mock_data_store_provider,
-            config_service=mock_config_service,
-            connector_id="dbx-cov-1",
-            scope="personal",
-            created_by="test-user-id",
-        )
-    return connector
 
 
 # ===========================================================================

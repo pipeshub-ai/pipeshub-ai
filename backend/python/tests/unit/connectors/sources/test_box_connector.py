@@ -21,11 +21,9 @@ from app.models.entities import AppUser, AppUserGroup, RecordGroupType, RecordTy
 from app.models.permission import EntityType, Permission, PermissionType
 import asyncio
 from app.connectors.core.registry.filters import (
-    FilterCollection,
     FilterOperator,
     SyncFilterKey,
 )
-from app.models.entities import AppUser, RecordGroupType, RecordType
 
 
 # ---------------------------------------------------------------------------
@@ -113,46 +111,6 @@ def mock_data_entities_processor():
     proc.remove_user_access_to_record = AsyncMock()
     proc.reindex_existing_records = AsyncMock()
     return proc
-
-
-@pytest.fixture()
-def mock_data_store_provider():
-    return _make_mock_data_store_provider()
-
-
-@pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "auth": {
-            "clientId": "box-client-id",
-            "clientSecret": "box-client-secret",
-            "enterpriseId": "box-ent-123",
-        },
-    })
-    return svc
-
-
-@pytest.fixture()
-def box_connector(mock_logger, mock_data_entities_processor,
-                  mock_data_store_provider, mock_config_service):
-    with patch("app.connectors.sources.box.connector.BoxApp"):
-        connector = BoxConnector(
-            logger=mock_logger,
-            data_entities_processor=mock_data_entities_processor,
-            data_store_provider=mock_data_store_provider,
-            config_service=mock_config_service,
-            connector_id="box-conn-1",
-            scope="team",
-            created_by="test-user",
-        )
-    connector.sync_filters = FilterCollection()
-    connector.indexing_filters = FilterCollection()
-    connector.data_source = AsyncMock()
-    connector.box_cursor_sync_point = AsyncMock()
-    connector.box_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
-    connector.box_cursor_sync_point.update_sync_point = AsyncMock()
-    return connector
 
 
 # ===========================================================================

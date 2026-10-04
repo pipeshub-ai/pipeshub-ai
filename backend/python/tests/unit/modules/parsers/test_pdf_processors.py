@@ -164,7 +164,6 @@ class TestHyperlinkTextInjection:
 
     def test_extract_layout_regions_includes_hyperlink_url(self):
         pytest.importorskip("reportlab")
-        from io import BytesIO
 
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas

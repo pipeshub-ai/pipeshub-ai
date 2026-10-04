@@ -12,14 +12,10 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     map_msgraph_role_to_permission_type,
 )
 from app.models.permission import PermissionType
-from unittest.mock import AsyncMock, MagicMock, patch
 from app.connectors.sources.microsoft.common.msgraph_client import (
     DeltaGetResponse,
     GroupDeltaGetResponse,
-    MSGraphClient,
     PermissionChange,
-    RecordUpdate,
-    map_msgraph_role_to_permission_type,
 )
 
 

@@ -93,7 +93,6 @@ class TestFetchFullRecordToolImageDelivery:
         from app.agent_loop_lib.core.messages import image_data_url
 
         assert image_parts[0].source.type == "base64"
-        from app.agent_loop_lib.core.messages import image_data_url
 
         assert image_data_url(image_parts[0].source) == _MIN_PNG_DATA_URI
         assert "pending_tool_images" not in context.tool_state

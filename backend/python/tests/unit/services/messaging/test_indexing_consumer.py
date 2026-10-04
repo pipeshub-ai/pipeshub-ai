@@ -56,25 +56,6 @@ def logger():
     return logging.getLogger("test_indexing_cov")
 
 
-@pytest.fixture
-def plain_config():
-    return KafkaConsumerConfig(
-        topics=["idx-topic"],
-        client_id="idx-consumer",
-        group_id="idx-group",
-        auto_offset_reset="earliest",
-        enable_auto_commit=False,
-        bootstrap_servers=["broker:9092"],
-        ssl=False,
-        sasl=None,
-    )
-
-
-@pytest.fixture
-def consumer(logger, plain_config):
-    return IndexingKafkaConsumer(logger, plain_config, retry_manager=None, producer=None)
-
-
 def _make_message(topic="test-topic", partition=0, offset=0, value=None):
     msg = MagicMock()
     msg.topic = topic

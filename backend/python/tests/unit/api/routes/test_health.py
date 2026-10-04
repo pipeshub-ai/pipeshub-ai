@@ -11,26 +11,6 @@ from tests.support.vector_db import make_collection_registry
 MODULE = "app.api.routes.health"
 
 
-@pytest.fixture
-def mock_request():
-    req = MagicMock()
-    app = MagicMock()
-    container = MagicMock()
-    container.logger.return_value = MagicMock()
-    container.config_service.return_value = MagicMock()
-    app.container = container
-
-    retrieval_svc = AsyncMock()
-    retrieval_svc.collection_name = "test_collection"
-    retrieval_svc.vector_db_service = AsyncMock()
-    retrieval_svc.get_current_embedding_model_name = AsyncMock(return_value="model-a")
-    retrieval_svc.get_embedding_model_name = MagicMock(return_value="model-a")
-    container.retrieval_service = AsyncMock(return_value=retrieval_svc)
-
-    req.app = app
-    return req
-
-
 class TestLlmHealthCheck:
     @pytest.mark.asyncio
     async def test_success(self, mock_request):

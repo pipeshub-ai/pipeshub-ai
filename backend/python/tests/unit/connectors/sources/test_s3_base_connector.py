@@ -26,12 +26,11 @@ from app.connectors.sources.s3.connector import S3Connector
 from app.models.entities import RecordType, User
 from fastapi import HTTPException
 from app.connectors.core.registry.filters import (
-    FilterCollection,
     FilterOption,
     FilterOptionsResponse,
     IndexingFilterKey,
 )
-from app.models.entities import FileRecord, Record, RecordType
+from app.models.entities import FileRecord, Record
 
 
 # ---------------------------------------------------------------------------

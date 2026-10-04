@@ -29,23 +29,13 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 import uuid
 from fastapi import HTTPException
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import MimeTypes, OriginTypes
 from app.models.entities import (
-    AppUser,
-    AppUserGroup,
     CommentRecord,
     FileRecord,
     Record,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
-    WebpageRecord,
 )
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator, SyncFilterKey
-from app.connectors.sources.atlassian.confluence_datacenter.connector import (
-    PSEUDO_USER_GROUP_PREFIX,
-    ConfluenceDataCenterConnector,
-)
 
 
 # ===========================================================================

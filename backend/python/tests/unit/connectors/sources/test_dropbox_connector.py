@@ -123,51 +123,6 @@ def mock_data_entities_processor():
     return proc
 
 
-@pytest.fixture()
-def mock_data_store_provider():
-    return _make_mock_data_store_provider()
-
-
-@pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "credentials": {
-            "access_token": "test-access-token",
-            "refresh_token": "test-refresh-token",
-            "isTeam": True,
-        },
-        "auth": {
-            "oauthConfigId": "oauth-config-123",
-        },
-    })
-    return svc
-
-
-@pytest.fixture()
-def connector(mock_logger, mock_data_entities_processor,
-              mock_data_store_provider, mock_config_service):
-    with patch("app.connectors.sources.dropbox.connector.DropboxApp"):
-        conn = DropboxConnector(
-            logger=mock_logger,
-            data_entities_processor=mock_data_entities_processor,
-            data_store_provider=mock_data_store_provider,
-            config_service=mock_config_service,
-            connector_id="conn-123",
-            scope="team",
-            created_by="test-user",
-        )
-    conn.sync_filters = FilterCollection()
-    conn.indexing_filters = FilterCollection()
-    conn.data_source = AsyncMock()
-    conn.dropbox_cursor_sync_point = AsyncMock()
-    conn.dropbox_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
-    conn.dropbox_cursor_sync_point.update_sync_point = AsyncMock()
-    conn.user_sync_point = AsyncMock()
-    conn.user_group_sync_point = AsyncMock()
-    return conn
-
-
 # ===========================================================================
 # Dropbox helper functions
 # ===========================================================================

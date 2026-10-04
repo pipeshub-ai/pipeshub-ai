@@ -18,9 +18,8 @@ import asyncio
 import hashlib
 from io import BytesIO
 from fastapi import HTTPException
-from app.connectors.sources.rss.connector import RSSConnector
 from app.connectors.sources.web.fetch_strategy import FetchResponse
-from app.models.entities import FileRecord, RecordType
+from app.models.entities import FileRecord
 
 
 # ---------------------------------------------------------------------------

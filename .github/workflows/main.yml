@@ -146,6 +146,19 @@ jobs:
             echo "No Python files changed, skipping ruff."
           fi
 
+      # A class or function defined twice in one test module replaces the
+      # first, and pytest never runs it. Unlike the step above, this one fails.
+      - name: Fail on shadowed tests (F811) in changed test files
+        run: |
+          MERGE_BASE=$(git merge-base origin/main HEAD)
+          CHANGED_TESTS=$(git diff --diff-filter=d --name-only $MERGE_BASE -- 'backend/python/tests/*.py' | sed 's|^backend/python/||' || true)
+          if [ -z "$CHANGED_TESTS" ]; then
+            echo "No Python test files changed, skipping the F811 check."
+            exit 0
+          fi
+          cd backend/python
+          echo "$CHANGED_TESTS" | xargs ruff check --select F811 --output-format=concise
+
   pyright-type-check-pr:
     runs-on: ubuntu-latest
 
