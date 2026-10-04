@@ -247,6 +247,10 @@ class EntityVectorStore:
             self.collection_name, info.dense_dimension, self._embedding_size,
         )
         async with self._init_lock:
+            # Checked again: a re-initialisation that held the lock meanwhile
+            # may already have the new model, which a reset would undo.
+            if info.dense_dimension == self._embedding_size:
+                return
             self._initialized = False
             self._init_failed_at = None
             self._generation += 1

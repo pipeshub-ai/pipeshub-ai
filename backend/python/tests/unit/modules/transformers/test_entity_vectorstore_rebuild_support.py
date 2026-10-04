@@ -392,3 +392,22 @@ async def test_an_embedding_in_flight_across_a_reset_is_not_cached() -> None:
     release.set()
     assert (await in_flight)[0] == [0.1, 0.2]
     assert "pricing" not in store._query_vector_cache
+
+
+async def test_a_reset_waiting_on_a_reinitialisation_keeps_the_fresh_state() -> None:
+    """The dimension check passes while another call re-initialises under the
+    lock; once that call has the new model, the waiting reset must not undo it."""
+    import asyncio
+
+    store, _ = TestARecreatedCollectionReachesRunningServices._searching_store(collection_dimension=4)
+    store._query_vector_cache.clear()
+    generation = store._generation
+    await store._init_lock.acquire()
+    waiting = asyncio.create_task(store._reset_if_collection_changed())
+    await asyncio.sleep(0.05)
+    # The re-initialisation holding the lock finishes with the new model.
+    store._embedding_size, store._initialized = 4, True
+    store._init_lock.release()
+    await waiting
+    assert store._initialized is True
+    assert store._generation == generation
