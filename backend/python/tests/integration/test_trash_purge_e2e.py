@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from neo4j.exceptions import TransientError
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -67,8 +68,10 @@ from app.connectors.services.trash_purge import (
     TrashPurger,
 )
 from app.connectors.sources.dropbox.connector import DropboxConnector
+from app.exceptions.graph_db_exceptions import GraphLockUnavailableError
 from app.models.entities import FileRecord, RecordGroup, RecordGroupType, RecordType
 from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
+from app.services.graph_db.common.utils import TRASH_STATE_FIELDS
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.test_soft_delete_e2e import _connect_arango, _connect_neo4j
@@ -498,6 +501,154 @@ async def test_a_restore_still_running_when_the_purge_deletes_wins(world: _World
     doc = await world.stored("restored")
     assert doc is not None and doc["isDeleted"] is False
     assert await world.graph.get_document(record_id, FILES) is not None
+
+
+async def _neo4j_tx(world: _World, query: str, **params: object):  # noqa: ANN202
+    """An open Neo4j transaction that has run *query*: its write locks are held until commit."""
+    session = world.graph.client.driver.session(database="neo4j")
+    tx = await session.begin_transaction()
+    await tx.run(query, **params)
+    return session, tx
+
+
+async def _arango_sync_tx(world: _World, query: str, bind: dict) -> str:
+    """An open ArangoDB transaction declared the way every sync's is: all collections, for writing."""
+    from app.connectors.core.base.data_store.graph_data_store import write_collections
+    http = world.graph.http_client
+    txn = await http.begin_transaction(write_collections, write_collections)
+    await http.execute_aql(query, bind, txn_id=txn)
+    return txn
+
+
+async def _while_held(world: _World, held: object, purge: object) -> tuple[object, bool]:
+    """Start *purge*, let it reach the held locks, then commit *held* and wait for the purge.
+
+    Returns what the purge returned (or raised) and whether *held* committed: on
+    Neo4j the two can deadlock, and Neo4j then aborts one of them.
+    """
+    task = asyncio.create_task(purge)
+    await asyncio.sleep(1.5)
+    committed = True
+    if isinstance(world.graph, Neo4jProvider):
+        session, tx = held
+        try:
+            await tx.commit()
+        except TransientError:
+            committed = False
+        await session.close()
+    else:
+        await world.graph.http_client.commit_transaction(held)
+    try:
+        return await task, committed
+    except GraphLockUnavailableError as exc:
+        return exc, committed
+
+
+def _restore_query(world: _World) -> str:
+    fields = ", ".join(f"{f}: null" for f in TRASH_STATE_FIELDS)
+    return f"UPDATE @key WITH {{ isDeleted: false, {fields} }} IN {RECORDS} OPTIONS {{ keepNull: false }}"
+
+
+async def test_a_child_restored_after_the_purge_looked_keeps_its_folder(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restoring a child writes only the child; the folder must not go and leave it parentless."""
+    await world.trash("child", "upload", "folder")
+    folder, child = world.ids["folder"], world.ids["child"]
+    cutoff = get_epoch_timestamp_in_ms() + DAY_MS
+
+    if isinstance(world.graph, Neo4jProvider):
+        held = await _neo4j_tx(
+            world, "MATCH (r:Record {id: $id}) SET r.isDeleted = false, r.deletedAtTimestamp = null", id=child
+        )
+        result, _ = await _while_held(world, held, world.graph.purge_trashed_records([folder], world.org_id, cutoff))
+    else:
+        real_query = world.graph.execute_query
+
+        async def restore_once_the_purge_has_looked(query: str, *args: object, **kwargs: object) -> object:
+            rows = await real_query(query, *args, **kwargs)
+            if "LET target = FIRST(" in query:
+                await world.graph.http_client.execute_aql(_restore_query(world), {"key": child})
+            return rows
+
+        monkeypatch.setattr(world.graph, "execute_query", restore_once_the_purge_has_looked)
+        result = await world.graph.purge_trashed_records([folder], world.org_id, cutoff)
+
+    assert result["purged"] == []
+    assert await world.stored("folder") is not None
+    assert (await world.stored("child"))["isDeleted"] is False
+    assert child in await _children(world, "folder")
+
+
+async def test_a_child_linked_while_the_purge_runs_keeps_its_parent(world: _World) -> None:
+    await world.trash("restored")
+    parent, child = world.ids["restored"], world.ids["unmarked"]
+    cutoff = get_epoch_timestamp_in_ms() + DAY_MS
+
+    if isinstance(world.graph, Neo4jProvider):
+        held = await _neo4j_tx(
+            world,
+            "MATCH (p:Record {id: $p}), (c:Record {id: $c}) "
+            "CREATE (p)-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD', createdAtTimestamp: 1, "
+            "updatedAtTimestamp: 1}]->(c)",
+            p=parent, c=child,
+        )
+    else:
+        held = await _arango_sync_tx(
+            world,
+            f"INSERT {{ _from: @p, _to: @c, relationshipType: 'PARENT_CHILD', createdAtTimestamp: 1, "
+            f"updatedAtTimestamp: 1 }} INTO {CollectionNames.RECORD_RELATIONS.value}",
+            {"p": f"{RECORDS}/{parent}", "c": f"{RECORDS}/{child}"},
+        )
+    result, linked = await _while_held(world, held, world.graph.purge_trashed_records([parent], world.org_id, cutoff))
+
+    # Whichever side Neo4j aborts on a deadlock, no committed edge hangs from a removed record.
+    assert linked or isinstance(world.graph, Neo4jProvider)
+    if linked:
+        assert not isinstance(result, dict) or result["purged"] == [], result
+        assert await world.stored("restored") is not None
+        assert child in await _children(world, "restored")
+
+
+async def test_a_kept_group_that_gets_a_record_while_the_purge_runs_stays(world: _World) -> None:
+    group_id = f"rg-{uuid.uuid4().hex[:12]}"
+    now = get_epoch_timestamp_in_ms()
+    await world.graph.batch_upsert_nodes(
+        [{"id": group_id, "groupName": "Team", "externalGroupId": f"ext-{group_id}",
+          "groupType": RecordGroupType.DRIVE.value, "connectorName": Connectors.GOOGLE_DRIVE.value,
+          "connectorId": world.drive_id, "createdAtTimestamp": now, "updatedAtTimestamp": now,
+          "isDeletedAtSource": True, "deletedAtSourceTimestamp": now}],
+        collection=GROUPS,
+    )
+    world.ids["group"] = group_id
+    record = world.ids["unmarked"]
+
+    if isinstance(world.graph, Neo4jProvider):
+        held = await _neo4j_tx(
+            world,
+            "MATCH (r:Record {id: $r}), (g:RecordGroup {id: $g}) "
+            "CREATE (r)-[:BELONGS_TO {createdAtTimestamp: 1, updatedAtTimestamp: 1}]->(g)",
+            r=record, g=group_id,
+        )
+    else:
+        held = await _arango_sync_tx(
+            world,
+            f"INSERT {{ _from: @r, _to: @g, createdAtTimestamp: 1, updatedAtTimestamp: 1 }} "
+            f"INTO {CollectionNames.BELONGS_TO.value}",
+            {"r": f"{RECORDS}/{record}", "g": f"{GROUPS}/{group_id}"},
+        )
+    removed, attached = await _while_held(world, held, world.graph.purge_trash_kept_record_groups(world.org_id))
+
+    # Whichever side Neo4j aborts on a deadlock, no committed edge points at a removed group.
+    assert attached or isinstance(world.graph, Neo4jProvider)
+    if attached:
+        assert removed == [] or isinstance(removed, GraphLockUnavailableError), removed
+        assert await world.graph.get_document(group_id, GROUPS) is not None
+
+
+async def _children(world: _World, name: str) -> set[str]:
+    edges = await world.graph.get_edges_from_node(f"{RECORDS}/{world.ids[name]}", CollectionNames.RECORD_RELATIONS.value)
+    return {(e.get("_to") or e.get("to_id") or "").split("/")[-1] for e in edges}
 
 
 async def test_a_group_kept_for_the_trash_goes_with_its_last_record(world: _World) -> None:

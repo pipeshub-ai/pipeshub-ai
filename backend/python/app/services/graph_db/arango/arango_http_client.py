@@ -221,13 +221,21 @@ class ArangoHTTPClient:
 
     # ==================== Transaction Management ====================
 
-    async def begin_transaction(self, read: List[str], write: List[str]) -> str:
+    async def begin_transaction(
+        self,
+        read: List[str],
+        write: List[str],
+        exclusive: list[str] | None = None,
+        lock_timeout_seconds: float | None = None,
+    ) -> str:
         """
         Begin a database transaction.
 
         Args:
             read: Collections to read from
             write: Collections to write to
+            exclusive: Collections no other transaction may write until this one ends
+            lock_timeout_seconds: How long to wait for those locks before failing
 
         Returns:
             str: Transaction ID
@@ -238,9 +246,11 @@ class ArangoHTTPClient:
             "collections": {
                 "read": read,
                 "write": write,
-                "exclusive": []
+                "exclusive": exclusive or []
             }
         }
+        if lock_timeout_seconds is not None:
+            payload["lockTimeout"] = lock_timeout_seconds
 
         try:
             session = await self._get_session()

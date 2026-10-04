@@ -4446,10 +4446,12 @@ class IGraphDBProvider(ABC):
         ``deletedAtTimestamp`` is set and at most ``deleted_before``, and it has
         failed fewer than ``max_attempts`` purges. The walk is keyset by
         (``deletedAtTimestamp``, key), starting after ``after``. Records of a
-        connector being deleted (``status`` DELETING) are left out of the page
-        but still move the cursor. Returns ``records`` (``trash_purge_row``
-        shapes) and ``next``, the ``after`` for the next page, or None after the
-        last one. A failed read raises.
+        connector being deleted (``status`` DELETING), and records that still
+        have a PARENT_CHILD or ATTACHMENT child of any state, are left out of
+        the page but still move the cursor; ``held`` counts the second kind,
+        which wait until their children are purged. Returns ``records``
+        (``trash_purge_row`` shapes), ``held`` and ``next``, the ``after`` for
+        the next page, or None after the last one. A failed read raises.
         """
         raise NotImplementedError
 
@@ -4468,11 +4470,13 @@ class IGraphDBProvider(ABC):
         Each record is checked again inside the delete, after its write lock is
         taken: it must still be in the trash in ``org_id``, since
         ``deleted_before`` or earlier, under ``max_attempts`` failures, with its
-        connector not being deleted and no live record under it (PARENT_CHILD or
-        ATTACHMENT). A record restored meanwhile is left alone. All or nothing;
-        a failure raises and removes nothing. Returns ``purged`` (the
-        ``trash_purge_row`` of each record removed, read in the same write) and
-        ``kept`` (the ids left in place).
+        connector not being deleted and no record under it at all (PARENT_CHILD
+        or ATTACHMENT, live or trashed), including one linked while the purge
+        runs. A record restored meanwhile is left alone. All or nothing; a
+        failure raises and removes nothing, and ``GraphLockUnavailableError``
+        means the locks could not be taken, which says nothing about the
+        records. Returns ``purged`` (the ``trash_purge_row`` of each record
+        removed, read in the same write) and ``kept`` (the ids left in place).
         """
         raise NotImplementedError
 
@@ -4522,7 +4526,7 @@ class IGraphDBProvider(ABC):
         It goes with its edges once no record, live or trashed, and no child
         group belongs to it (BELONGS_TO, INHERIT_PERMISSIONS or
         ``recordGroupId``) and its connector is not being deleted, checked again
-        inside the delete. A group the source lists again has the mark cleared
+        inside the delete, so a record attached while it runs keeps the group. A group the source lists again has the mark cleared
         by its upsert and is never removed here. A group with no ``orgId`` (one
         a sync created from a record) belongs to its connector's org. Returns
         the ids removed, at most ``limit``. A failure raises.

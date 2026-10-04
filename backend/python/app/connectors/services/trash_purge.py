@@ -20,7 +20,9 @@ A run walks each org's trash oldest first, in pages, by
 
 A crash or a broker outage after step 2 leaves the outbox entry; the next tick
 publishes the events of every record in it that is gone from the graph and
-drops the rest. A page the graph refuses is retried record by record, and a
+drops the rest. A record that still has a child, trashed or not, waits: the
+org is walked again while a walk both removed something and passed over such
+a record, so a trashed tree goes leaves first, one level per walk, in one run. A page the graph refuses is retried record by record, and a
 record that fails is counted (``purgeAttempts``) and left out after
 ``maxAttempts``. Then the record groups kept only for the trash
 (``isDeletedAtSource``) go once nothing belongs to them.
@@ -45,6 +47,7 @@ from app.connectors.services.vector_cleanup_events import (
     build_stored_document_cleanup_events,
 )
 from app.connectors.sources.local_fs.connector import LOCAL_FS_STORAGE_PATH_PREFIX
+from app.exceptions.graph_db_exceptions import GraphLockUnavailableError
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
@@ -189,6 +192,9 @@ class PurgeRun:
     org_ids: list[str]
     org_index: int = 0
     after: list | None = None
+    # This walk of the current org: removed, and passed over for having children.
+    pass_purged: int = 0
+    pass_held: int = 0
     purged: int = 0
     kept: int = 0
     failed: int = 0
@@ -203,6 +209,8 @@ class PurgeRun:
             org_ids=[str(o) for o in raw.get("org_ids") or []],
             org_index=int(raw.get("org_index") or 0),
             after=list(raw["after"]) if raw.get("after") else None,
+            pass_purged=int(raw.get("pass_purged") or 0),
+            pass_held=int(raw.get("pass_held") or 0),
             purged=int(raw.get("purged") or 0),
             kept=int(raw.get("kept") or 0),
             failed=int(raw.get("failed") or 0),
@@ -288,6 +296,9 @@ class TrashPurger:
         self.clock = clock
         self.sleep = sleep
         self.monotonic = monotonic
+        # Failed in this tick: a later walk of the same org skips them, so one
+        # run spends one attempt each.
+        self._failed: set[str] = set()
 
     async def tick(self) -> str:
         """Start, resume or skip a run; return what happened."""
@@ -350,15 +361,30 @@ class TrashPurger:
                     limit=settings.page_size,
                     max_attempts=settings.max_attempts,
                 )
-                rows = page.get("records") or []
+                rows = [row for row in page.get("records") or [] if row["id"] not in self._failed]
+                run.pass_held += int(page.get("held") or 0)
                 if rows:
-                    published = await self._purge_page(org_id, rows, run, settings)
+                    try:
+                        published = await self._purge_page(org_id, rows, run, settings)
+                    except GraphLockUnavailableError as exc:
+                        self.logger.warning("Trash purge %s paused: %s", run.run_id, exc)
+                        await self._save_state(state)
+                        return Outcome.PAUSED
                     processed += len(rows)
                     if not published:
                         await self._save_state(state)
                         return Outcome.PAUSED
                 nxt = page.get("next")
                 run.after = list(nxt) if nxt else None
+                if run.after is None and run.pass_purged and run.pass_held:
+                    # Their children went in this walk, so some of them may go in the next.
+                    self.logger.debug(
+                        "Trash purge %s: walking org %s again for %d record(s) whose children were in the trash",
+                        run.run_id, org_id, run.pass_held,
+                    )
+                    run.pass_purged = run.pass_held = 0
+                    await self._save_state(state)
+                    continue
                 await self._save_state(state)
                 if run.after is None:
                     break
@@ -367,6 +393,7 @@ class TrashPurger:
             run.groups += await self._purge_kept_groups(org_id)
             run.org_index += 1
             run.after = None
+            run.pass_purged = run.pass_held = 0
             await self._save_state(state)
         await self._finish(state, settings)
         return Outcome.FINISHED
@@ -390,6 +417,9 @@ class TrashPurger:
                 ids, org_id, run.cutoff, max_attempts=settings.max_attempts
             )
             purged, kept = list(result.get("purged") or []), list(result.get("kept") or [])
+        except GraphLockUnavailableError:
+            # Nothing was attempted; the saved page owes nothing until it runs.
+            raise
         except Exception as exc:
             self.logger.warning(
                 "Trash purge: the graph refused a page of %d record(s) in org %s; retrying one by one: %s",
@@ -397,6 +427,7 @@ class TrashPurger:
             )
             purged, kept = await self._purge_one_by_one(org_id, ids, run, settings)
         run.purged += len(purged)
+        run.pass_purged += len(purged)
         run.kept += len(kept)
         record_purged("purged", len(purged))
         record_purged("kept", len(kept))
@@ -422,7 +453,10 @@ class TrashPurger:
                 result = await self.graph.purge_trashed_records(
                     [record_id], org_id, run.cutoff, max_attempts=settings.max_attempts
                 )
+            except GraphLockUnavailableError:
+                raise
             except Exception as exc:
+                self._failed.add(record_id)
                 run.failed += 1
                 record_purged("failed", 1)
                 self.logger.warning(

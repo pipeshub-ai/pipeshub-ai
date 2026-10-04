@@ -46,6 +46,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.exceptions.graph_db_exceptions import (
+    GraphLockUnavailableError,
     GraphQueryError,
     PermissionVerificationUnavailableError,
 )
@@ -339,6 +340,12 @@ _EDGE_MOVE_BATCH = 5000
 # Promotions to these statuses leave the primary with taxonomy to copy to its
 # duplicates; see update_queued_duplicates_status.
 _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
+
+
+# A record with any of these children waits for them to be purged first.
+_CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
+# Waiting this long for the purge's exclusive locks means syncs are busy; the next tick tries again.
+_PURGE_LOCK_TIMEOUT_SECONDS = 30
 
 
 class ArangoHTTPProvider(IGraphDBProvider):
@@ -14030,6 +14037,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         payload = await self._create_deleted_record_event_payload(rec, type_doc)
         return trash_purge_row(rec["_key"], rec, type_doc, payload)
 
+    async def _begin_purge_transaction(self, *, read: list[str], write: list[str], exclusive: list[str]) -> str:
+        try:
+            return await self.http_client.begin_transaction(
+                read, write, exclusive=exclusive, lock_timeout_seconds=_PURGE_LOCK_TIMEOUT_SECONDS
+            )
+        except Exception as exc:
+            raise GraphLockUnavailableError(f"Could not lock {exclusive} for the purge: {exc}") from exc
+
     async def get_purgeable_trashed_records(
         self,
         org_id: str,
@@ -14056,6 +14071,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 SORT r.deletedAtTimestamp, r._key
                 LIMIT @limit
                 LET app = DOCUMENT(CONCAT(@apps, "/", r.connectorId))
+                LET held = LENGTH(
+                    FOR child, e IN 1..1 OUTBOUND r._id @@record_relations
+                        FILTER e.relationshipType IN @containment
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
                 LET type_doc = FIRST(
                     FOR e IN @@is_of_type
                         FILTER e._from == r._id
@@ -14063,7 +14084,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER t != null
                         RETURN t
                 )
-                RETURN { rec: r, type_doc: type_doc, skip: app != null AND app.status == @deleting }
+                RETURN { rec: r, type_doc: type_doc, held: held, skip: app != null AND app.status == @deleting }
             """,
             bind_vars={
                 "org_id": org_id,
@@ -14075,14 +14096,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "limit": limit,
                 "deleting": APP_STATUS_DELETING,
                 "apps": CollectionNames.APPS.value,
+                "containment": list(_CONTAINMENT_RELATIONS),
                 "@records": CollectionNames.RECORDS.value,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
             },
             transaction=transaction,
         ) or []
-        records = [await self._trash_purge_row(row["rec"], row.get("type_doc")) for row in rows if not row.get("skip")]
+        records = [
+            await self._trash_purge_row(row["rec"], row.get("type_doc"))
+            for row in rows if not row.get("skip") and not row.get("held")
+        ]
         last = rows[-1]["rec"] if len(rows) >= limit else None
-        return {"records": records, "next": (last["deletedAtTimestamp"], last["_key"]) if last else None}
+        return {
+            "records": records,
+            "held": sum(1 for row in rows if row.get("held") and not row.get("skip")),
+            "next": (last["deletedAtTimestamp"], last["_key"]) if last else None,
+        }
 
     async def purge_trashed_records(
         self,
@@ -14101,16 +14131,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
         node_collections = [CollectionNames.RECORDS.value, *set(RECORD_TYPE_COLLECTION_MAPPING.values())]
         txn_id = transaction
         if transaction is None:
-            txn_id = await self.begin_transaction(
+            # Exclusive on the containment edges: a snapshot cannot see a child
+            # edge another transaction adds, and adding one writes nothing this
+            # REMOVE conflicts with. Every sync transaction declares that
+            # collection at its begin, so it waits for this one, or this one for it.
+            txn_id = await self._begin_purge_transaction(
                 read=[*edge_collections, *node_collections, CollectionNames.APPS.value],
                 write=[*edge_collections, *node_collections],
+                exclusive=[CollectionNames.RECORD_RELATIONS.value],
             )
         try:
-            # Checked inside the transaction. A restore that commits after its
-            # snapshot conflicts with the REMOVE below, which aborts the purge
-            # rather than delete a live record.
+            # Checked inside the transaction. A restore of the record that commits
+            # after its snapshot conflicts with the REMOVE below, which aborts the
+            # purge rather than delete a live record. Any child, trashed or not,
+            # keeps it: restoring a child writes only the child.
             due = await self.execute_query(
-                f"""
+                """
                 FOR key IN @keys
                     LET rec = DOCUMENT(@records, key)
                     FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted == true
@@ -14120,8 +14156,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER app == null OR app.status != @deleting
                     FILTER LENGTH(
                         FOR child, e IN 1..1 OUTBOUND rec._id @@record_relations
-                            FILTER e.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
-                            FILTER {aql_live_record("child")}
+                            FILTER e.relationshipType IN @containment
                             LIMIT 1
                             RETURN 1
                     ) == 0
@@ -14130,20 +14165,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER e._from == rec._id
                             LET t = DOCUMENT(e._to)
                             FILTER t != null
-                            RETURN {{
+                            RETURN {
                                 collection: PARSE_IDENTIFIER(e._to).collection,
                                 key: PARSE_IDENTIFIER(e._to).key,
                                 full_id: e._to,
                                 doc: t
-                            }}
+                            }
                     )
-                    RETURN {{ record: rec, type_target: target }}
+                    RETURN { record: rec, type_target: target }
                 """,
                 bind_vars={
                     "keys": keys_in,
                     "org_id": org_id,
                     "cutoff": deleted_before,
                     "max_attempts": max_attempts,
+                    "containment": list(_CONTAINMENT_RELATIONS),
                     "deleting": APP_STATUS_DELETING,
                     "records": CollectionNames.RECORDS.value,
                     "apps": CollectionNames.APPS.value,
@@ -14249,14 +14285,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> list[str]:
         """See ``IGraphDBProvider.purge_trash_kept_record_groups``."""
         edge_collections = await self._get_all_edge_collections()
+        membership = [
+            CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value, CollectionNames.RECORDS.value,
+        ]
         txn_id = transaction
         if transaction is None:
-            txn_id = await self.begin_transaction(
-                read=[
-                    *edge_collections,
-                    CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value, CollectionNames.APPS.value,
-                ],
-                write=[*edge_collections, CollectionNames.RECORD_GROUPS.value],
+            # Exclusive on what makes a group non-empty: a new BELONGS_TO edge, or a
+            # record naming the group, written by a transaction this snapshot
+            # cannot see would not conflict with the REMOVE. Sync transactions
+            # declare these collections at their begin, so they wait for this one.
+            txn_id = await self._begin_purge_transaction(
+                read=[*(c for c in edge_collections if c not in membership), CollectionNames.APPS.value],
+                write=[*(c for c in edge_collections if c not in membership), CollectionNames.RECORD_GROUPS.value],
+                exclusive=membership,
             )
         try:
             # A sync that lists the group again clears the mark in its upsert;

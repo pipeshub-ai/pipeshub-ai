@@ -55,6 +55,7 @@ from app.config.constants.neo4j import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.exceptions.graph_db_exceptions import (
+    GraphLockUnavailableError,
     GraphQueryError,
     PermissionVerificationUnavailableError,
 )
@@ -214,6 +215,8 @@ _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus
 
 # Written, then removed or deleted, inside one purge statement to take a node's write lock.
 _PURGE_LOCK = "purgeLock"
+# A record with any of these children waits for them to be purged first.
+_CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
 
 
 class Neo4jProvider(IGraphDBProvider):
@@ -12032,6 +12035,13 @@ class Neo4jProvider(IGraphDBProvider):
         payload = await self._create_deleted_record_event_payload(rec, type_doc)
         return trash_purge_row(rec["id"], rec, type_doc, payload)
 
+    async def _purge_write(self, query: str, *, parameters: dict, txn_id: str | None) -> list:
+        try:
+            return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id)
+        except TransientError as exc:
+            # A deadlock with a sync that links a record here: Neo4j aborted this side.
+            raise GraphLockUnavailableError(f"The purge lost a lock race and will try again: {exc}") from exc
+
     async def get_purgeable_trashed_records(
         self,
         org_id: str,
@@ -12060,7 +12070,10 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
             WITH r, app, head(collect(t)) AS t
             RETURN properties(r) AS rec, properties(t) AS type_doc,
-                   coalesce(app.status, '') = $deleting AS skip
+                   coalesce(app.status, '') = $deleting AS skip,
+                   EXISTS {
+                       MATCH (r)-[c:RECORD_RELATION]->(:Record) WHERE c.relationshipType IN $containment
+                   } AS held
             ORDER BY r.deletedAtTimestamp, r.id
             """,
             parameters={
@@ -12072,13 +12085,21 @@ class Neo4jProvider(IGraphDBProvider):
                 "max_attempts": max_attempts,
                 "limit": limit,
                 "deleting": APP_STATUS_DELETING,
+                "containment": list(_CONTAINMENT_RELATIONS),
             },
             txn_id=transaction,
         )
         rows = rows or []
-        records = [await self._trash_purge_row(row["rec"], row.get("type_doc")) for row in rows if not row.get("skip")]
+        records = [
+            await self._trash_purge_row(row["rec"], row.get("type_doc"))
+            for row in rows if not row.get("skip") and not row.get("held")
+        ]
         last = rows[-1]["rec"] if len(rows) >= limit else None
-        return {"records": records, "next": (last["deletedAtTimestamp"], last["id"]) if last else None}
+        return {
+            "records": records,
+            "held": sum(1 for row in rows if row.get("held") and not row.get("skip")),
+            "next": (last["deletedAtTimestamp"], last["id"]) if last else None,
+        }
 
     async def purge_trashed_records(
         self,
@@ -12096,7 +12117,11 @@ class Neo4jProvider(IGraphDBProvider):
         # are on. Setting a property takes the record's write lock, so the checks
         # after it read a restore that committed after the MATCH, and a restore
         # still running waits for this delete (Neo4j's lost-update pattern).
-        rows = await self.client.execute_query(
+        # Creating a relationship locks both ends, so a child linked meanwhile
+        # is seen too, or the two deadlock and Neo4j aborts one. Any child keeps
+        # the record, trashed or not: restoring a child writes only the child,
+        # and would not wait for this lock.
+        rows = await self._purge_write(
             f"""
             UNWIND $keys AS key
             MATCH (r:Record {{id: key}})
@@ -12110,8 +12135,7 @@ class Neo4jProvider(IGraphDBProvider):
                 AND coalesce(r.purgeAttempts, 0) < $max_attempts
                 AND coalesce(app.status, '') <> $deleting
                 AND NOT EXISTS {{
-                    MATCH (r)-[c:RECORD_RELATION]->(child:Record)
-                    WHERE c.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND {cypher_live_record("child")}
+                    MATCH (r)-[c:RECORD_RELATION]->(:Record) WHERE c.relationshipType IN $containment
                 }}
             ) AS due
             FOREACH (_ IN CASE WHEN due THEN [] ELSE [1] END | REMOVE r.{_PURGE_LOCK})
@@ -12128,6 +12152,7 @@ class Neo4jProvider(IGraphDBProvider):
                 "cutoff": deleted_before,
                 "max_attempts": max_attempts,
                 "deleting": APP_STATUS_DELETING,
+                "containment": list(_CONTAINMENT_RELATIONS),
             },
             txn_id=transaction,
         )
@@ -12202,8 +12227,9 @@ class Neo4jProvider(IGraphDBProvider):
             }
         """
         # Locked before the second look, as in purge_trashed_records: a sync that
-        # lists the group again clears the mark in its upsert, which takes the same lock.
-        rows = await self.client.execute_query(
+        # lists the group again clears the mark in its upsert, and one that adds a
+        # BELONGS_TO edge locks the group to create it; both take the same lock.
+        rows = await self._purge_write(
             f"""
             MATCH (g:RecordGroup)
             WHERE g.isDeletedAtSource = true

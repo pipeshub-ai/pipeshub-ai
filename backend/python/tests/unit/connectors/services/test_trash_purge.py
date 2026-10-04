@@ -29,6 +29,7 @@ from app.connectors.services.trash_purge import (
     TrashPurger,
     stored_document_ids,
 )
+from app.exceptions.graph_db_exceptions import GraphLockUnavailableError
 from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
 from app.services.graph_db.common.utils import trash_purge_row
 
@@ -48,7 +49,10 @@ NOW = _ms(2026, 10, 4, 3)
 class _Graph:
     def __init__(self) -> None:
         self.records: dict[str, dict] = {}
+        # parent key -> child keys (PARENT_CHILD or ATTACHMENT), whatever the child's state.
+        self.children: dict[str, set[str]] = {}
         self.app_status: dict[str, str] = {}
+        self.lock_unavailable = False
         self.refuse: set[str] = set()
         self.refuse_counting = False
         self.groups_removed: list[str] = []
@@ -69,6 +73,9 @@ class _Graph:
             and (rec.get("purgeAttempts") or 0) < max_attempts
         )
 
+    def _has_children(self, key: str) -> bool:
+        return bool(self.children.get(key, set()) & set(self.records))
+
     def _row(self, rec: dict) -> dict:
         payload = {"orgId": rec["orgId"], "recordId": rec["_key"], "virtualRecordId": rec.get("virtualRecordId"),
                    "connectorId": rec["connectorId"], "version": rec.get("version", 1)}
@@ -85,14 +92,21 @@ class _Graph:
         if after:
             due = [r for r in due if (r["deletedAtTimestamp"], r["_key"]) > tuple(after)]
         page = due[:limit]
-        rows = [self._row(r) for r in page if self.app_status.get(r["connectorId"]) != "DELETING"]
+        live_connector = [r for r in page if self.app_status.get(r["connectorId"]) != "DELETING"]
+        rows = [self._row(r) for r in live_connector if not self._has_children(r["_key"])]
         last = page[-1] if len(page) >= limit else None
-        return {"records": rows, "next": (last["deletedAtTimestamp"], last["_key"]) if last else None}
+        return {
+            "records": rows,
+            "held": sum(1 for r in live_connector if self._has_children(r["_key"])),
+            "next": (last["deletedAtTimestamp"], last["_key"]) if last else None,
+        }
 
     async def purge_trashed_records(
         self, record_ids, org_id, deleted_before, *, max_attempts=5, transaction=None,
     ) -> dict:
         self.calls.append("purge")
+        if self.lock_unavailable:
+            raise GraphLockUnavailableError("syncs hold the locks")
         if self.refuse & set(record_ids):
             raise RuntimeError("graph refused the write")
         purged, kept = [], []
@@ -100,7 +114,7 @@ class _Graph:
             rec = self.records.get(key)
             if (
                 rec is not None and rec["orgId"] == org_id and self._due(rec, deleted_before, max_attempts)
-                and self.app_status.get(rec["connectorId"]) != "DELETING"
+                and self.app_status.get(rec["connectorId"]) != "DELETING" and not self._has_children(key)
             ):
                 purged.append(self._row(self.records.pop(key)))
             else:
@@ -331,7 +345,61 @@ class TestTick:
         assert graph.calls == [] and STATE_KEY not in kv.values and kv.outbox() == {}
 
 
+class TestTrees:
+    async def test_a_trashed_tree_goes_leaves_first_in_one_run(self, flag) -> None:
+        graph, kv, broker = _Graph(), _KV({"pageSize": 2}), _Broker()
+        for key in ("root", "mid", "leaf_a", "leaf_b"):
+            graph.trash(key, days_ago=20)
+        graph.children = {"root": {"mid"}, "mid": {"leaf_a", "leaf_b"}}
+
+        assert await _purger(graph, kv, broker).tick() == Outcome.FINISHED
+
+        assert graph.records == {}
+        order = broker.deleted()
+        assert set(order[:2]) == {"leaf_a", "leaf_b"} and order[2:] == ["mid", "root"]
+        assert kv.values[STATE_KEY]["lastCounts"]["purged"] == 4
+
+    async def test_a_record_with_a_live_child_stays_and_the_walk_ends(self, flag) -> None:
+        graph, kv = _Graph(), _KV()
+        graph.trash("folder", days_ago=20)
+        graph.trash("other", days_ago=20)
+        graph.records["child"] = {"_key": "child", "orgId": ORG, "connectorId": "kb-1", "isDeleted": False}
+        graph.children = {"folder": {"child"}}
+
+        assert await _purger(graph, kv).tick() == Outcome.FINISHED
+
+        assert set(graph.records) == {"folder", "child"}
+        assert graph.calls.count("list") == 2, "a second walk finds nothing more to remove"
+
+    async def test_a_failure_is_tried_once_per_run_however_many_walks(self, flag) -> None:
+        graph, kv = _Graph(), _KV()
+        graph.trash("bad", days_ago=20)
+        graph.trash("parent", days_ago=20)
+        graph.trash("leaf", days_ago=20)
+        graph.children = {"parent": {"leaf"}}
+        graph.refuse = {"bad"}
+
+        assert await _purger(graph, kv).tick() == Outcome.FINISHED
+
+        assert set(graph.records) == {"bad"}
+        assert graph.records["bad"]["purgeAttempts"] == 1
+
+
 class TestPageFailures:
+    async def test_locks_that_cannot_be_taken_pause_without_counting_a_failure(self, flag) -> None:
+        graph, kv = _Graph(), _KV()
+        graph.trash("a", days_ago=20)
+        graph.lock_unavailable = True
+
+        assert await _purger(graph, kv).tick() == Outcome.PAUSED
+        assert "purgeAttempts" not in graph.records["a"]
+        assert kv.values[STATE_KEY]["status"] == "running"
+
+        graph.lock_unavailable = False
+        broker = _Broker()
+        assert await _purger(graph, kv, broker).tick() == Outcome.FINISHED
+        assert broker.deleted() == ["a"], "the saved page owed nothing; the run removed it once"
+
     async def test_events_the_broker_refuses_stay_owed_for_the_records_that_went(self, flag) -> None:
         graph, kv, broker = _Graph(), _KV(), _Broker()
         graph.trash("a", days_ago=20)
