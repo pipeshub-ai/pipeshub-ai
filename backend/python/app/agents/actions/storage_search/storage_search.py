@@ -1631,9 +1631,11 @@ class StoragePatternMatch:
         """Run a read-only Linux command scoped to the connector's record directory."""
         org_id = self.state.get("org_id", "")
         logger.info(
-            "[storage_pattern_match] org_id=%s connector_id=%s command=%r record_date=%s",
-            org_id, connector_id, command, record_date,
+            "[storage_pattern_match] org_id=%s connector_id=%s command_len=%d record_date=%s",
+            org_id, connector_id, len(command), record_date,
         )
+        # Grep patterns carry the user's search terms.
+        logger.debug("[storage_pattern_match] command=%r", command)
 
         # 1. Validate the command (allowlist + security checks) and the scope.
         valid, err = _validate_command(command)
@@ -1689,8 +1691,8 @@ class StoragePatternMatch:
             output = filtered
 
         logger.info(
-            "[storage_pattern_match] result: success=%s output_len=%d output=%r",
-            success, len(output), output[:500],
+            "[storage_pattern_match] result: connector_id=%s success=%s output_len=%d",
+            connector_id, success, len(output),
         )
         return success, output
 
@@ -1755,9 +1757,10 @@ class StoragePatternMatch:
         """Run a command and parse record file paths from output into structured metadata."""
         org_id = self.state.get("org_id", "")
         logger.info(
-            "[storage_pattern_match.find_records] org_id=%s connector_id=%s command=%r max_results=%d",
-            org_id, connector_id, command, max_results,
+            "[storage_pattern_match.find_records] org_id=%s connector_id=%s command_len=%d max_results=%d",
+            org_id, connector_id, len(command), max_results,
         )
+        logger.debug("[storage_pattern_match.find_records] command=%r", command)
 
         max_results = min(max(max_results, 1), _MAX_FIND_RECORDS)
 
@@ -1781,9 +1784,11 @@ class StoragePatternMatch:
             command, cwd=connector_dir, max_stdout_bytes=max_stdout_bytes,
             max_output_chars=max_output_chars,
         )
+        # Not even at DEBUG: this stdout is from before the permission check,
+        # so it can name records the user may not read.
         logger.info(
-            "[find_records] subprocess result: success=%s output_len=%d output_preview=%r",
-            success, len(output), output[:500],
+            "[find_records] subprocess result: connector_id=%s success=%s output_len=%d",
+            connector_id, success, len(output),
         )
 
         # The command ran over every record in the connector, readable or not,
