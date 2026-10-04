@@ -27,6 +27,7 @@ class Topic(str, Enum):
     """Well-known messaging topics."""
 
     RECORD_EVENTS = "record-events"
+    CODE_GRAPH_EVENTS = "code-graph-events"
     ENTITY_EVENTS = "entity-events"
     AI_CONFIG_EVENTS = "ai-config-events"
     SYNC_EVENTS = "sync-events"

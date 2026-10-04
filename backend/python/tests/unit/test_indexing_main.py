@@ -2351,3 +2351,30 @@ class TestRepublishClaimIsWrittenBeforeTheSend:
         assert len(writes) == 2
         assert isinstance(writes[0]["lastRepublishedAt"], int)   # the claim
         assert writes[1] == {"lastRepublishedAt": None}          # cleared on failure
+
+
+class TestStopKafkaConsumersClosesRecordHandler:
+    async def test_record_handler_redis_is_released(self) -> None:
+        """The handler caches one Redis client for edge-build coordination;
+        shutdown has to release it."""
+        from app.indexing_main import stop_kafka_consumers
+
+        mock_container = _make_container()
+        mock_container.kafka_consumers = []
+        handler = MagicMock()
+        handler.aclose = AsyncMock()
+        mock_container.record_event_handler = handler
+
+        await stop_kafka_consumers(mock_container)
+
+        handler.aclose.assert_awaited_once()
+
+    async def test_a_container_without_a_handler_is_fine(self) -> None:
+        from app.indexing_main import stop_kafka_consumers
+
+        class Container:
+            pass
+        c = Container()
+        c.logger = MagicMock(return_value=MagicMock())
+
+        await stop_kafka_consumers(c)
