@@ -571,18 +571,11 @@ async def test_each_connectors_delete_puts_the_record_in_the_trash(world: _World
 OUTLOOK_PERSONAL = _ConnectorDelete(Connectors.OUTLOOK_INDIVIDUAL, "by external id", MailRecord, RecordType.MAIL)
 
 
+# ArangoDB refuses this delete until #3855 reaches this branch; the unit test
+# test_arango_sync_delete_of_an_outlook_personal_mail_reaches_the_outlook_branch pins it
+# until then. CI fails any integration run with a skip, and an xfail is reported as one.
 @pytest.mark.parametrize("world", ["neo4j"], indirect=True)
 async def test_an_outlook_personal_delete_puts_the_record_in_the_trash(world: _World) -> None:
-    await _assert_the_connector_delete_trashes(world, OUTLOOK_PERSONAL)
-
-
-@pytest.mark.parametrize("world", ["arango"], indirect=True)
-@pytest.mark.xfail(strict=True, reason=(
-    "ArangoHTTPProvider.delete_record routes by connector name and answers 'Unsupported connector: "
-    "OUTLOOK PERSONAL', so the Outlook Personal connector's delete_record_by_external_id raises on "
-    "ArangoDB with the trash on or off; already on main, Neo4j's delete_record is generic"
-))
-async def test_an_outlook_personal_delete_puts_the_record_in_the_trash_on_arango(world: _World) -> None:
     await _assert_the_connector_delete_trashes(world, OUTLOOK_PERSONAL)
 
 
@@ -853,15 +846,8 @@ def _table(w: _World, name: str, connector_id: str, *, references: str | None = 
     return table
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "Chat's foreign-key enrichment (app/utils/chat_helpers.py, "
-    "enrich_virtual_record_id_to_result_with_fk_children) follows FOREIGN_KEY edges with "
-    "get_parent_record_ids_by_relation_type and get_virtual_record_ids_for_record_ids, which "
-    "return trashed records by design, and never checks isDeleted. The trash keeps the edges "
-    "and the stored content, so a dropped table's DDL and sample rows still reach chat answers "
-    "until the purge"
-))
 async def test_chat_does_not_pull_in_a_trashed_table_through_a_foreign_key(world: _World) -> None:
+    # The trash keeps the foreign-key edges and the stored content until the purge.
     connector_id = f"postgres-{uuid.uuid4().hex[:10]}"
     world.connectors.append(connector_id)
     for name in ("customers", "orders"):
