@@ -13453,7 +13453,8 @@ components:
       description: |
         Success response from getAIModelsProviders. Returns the stored models
         bucket map. Each entry's `configuration` includes only `model`,
-        `modelFriendlyName`, and `dimensions` when those keys were stored.
+        `modelFriendlyName`, `dimensions`, and `defaultReasoningEffort` when
+        those keys were stored.
       required:
         - status
         - models
@@ -13477,7 +13478,7 @@ components:
         Success response from getModelsByType. Returns stored provider entries
         for a single model type bucket (not the flattened available-models shape).
         Each entry's `configuration` includes only `model`, `modelFriendlyName`,
-        and `dimensions` when stored.
+        `dimensions`, and `defaultReasoningEffort` when stored.
       required:
         - status
         - models
@@ -14285,7 +14286,7 @@ components:
         Provider-specific configuration stored on each AI model entry.
 
         **Read shape:** user-facing GET responses return only `model`,
-        `modelFriendlyName`, `dimensions` and `defaultReasoningEffort` (when stored).
+        `modelFriendlyName`, `dimensions`, and `defaultReasoningEffort` (when stored).
         Values are copied as-is; other keys including credentials are omitted.
 
         **Write shape:** create and update still accept the full provider payload
@@ -39245,7 +39246,8 @@ paths:
       summary: Get models by type
       description: |
         Get all configured models of a specific type. Each entry's `configuration`
-        includes only `model`, `modelFriendlyName`, and `dimensions` when stored.
+        includes only `model`, `modelFriendlyName`, `dimensions`, and
+        `defaultReasoningEffort` when stored.
       operationId: getModelsByType
       security:
         - bearerAuth: []
@@ -41435,8 +41437,8 @@ paths:
       summary: Get AI models configuration
       description: |
         Retrieve the AI models configuration for the organization. Each entry's
-        `configuration` includes only `model`, `modelFriendlyName`, and
-        `dimensions` when stored.
+        `configuration` includes only `model`, `modelFriendlyName`, `dimensions`,
+        and `defaultReasoningEffort` when stored.
       operationId: getAIModelsConfig
       security:
         - bearerAuth: []
@@ -41492,7 +41494,8 @@ paths:
         Retrieve all configured AI model provider entries grouped by model type
         (admin-only). Returns the stored KV shape under `models`, not the flattened
         list from getAvailableModelsByType. Each entry's `configuration` includes
-        only `model`, `modelFriendlyName`, and `dimensions` when stored.
+        only `model`, `modelFriendlyName`, `dimensions`, and
+        `defaultReasoningEffort` when stored.
       operationId: getAIModelsProviders
       security:
         - bearerAuth: []
