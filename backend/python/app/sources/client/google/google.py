@@ -15,6 +15,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_PARSER_SCOPES,
     GOOGLE_SERVICE_SCOPES,
+    GOOGLE_TOOLSET_SCOPES,
     SERVICES_WITH_PARSER_SCOPES,
 )
 from app.sources.client.iclient import IClient
@@ -516,8 +517,13 @@ class GoogleClient(IClient):
             # Don't fail immediately - allow tool to work until token expires
             # The token will work for initial requests, but refresh will fail
 
-        # Get optimized scopes
-        optimized_scopes = cls._get_optimized_scopes(service_name, scopes)
+        # The service defaults add parser and read-only scopes the toolset's consent
+        # screen never asks for, and Google refuses a refresh that names any of them.
+        consented_scopes = GOOGLE_TOOLSET_SCOPES.get(service_name)
+        if consented_scopes is None:
+            optimized_scopes = cls._get_optimized_scopes(service_name, scopes)
+        else:
+            optimized_scopes = merge_scopes(consented_scopes, scopes)
 
         try:
             # Create Google credentials

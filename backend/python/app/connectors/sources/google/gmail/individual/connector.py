@@ -66,6 +66,7 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.google.common.apps import GmailIndividualApp
 from app.connectors.sources.google.common.connector_google_exceptions import (
     GoogleMailError,
+    is_missing_scope_error,
 )
 from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
@@ -848,6 +849,16 @@ class GoogleGmailIndividualConnector(BaseConnector):
                             f"✅ Fetched Drive file metadata for {drive_file_id}: {filename} ({size} bytes, {mime_type})"
                         )
                 except Exception as e:
+                    if is_missing_scope_error(e):
+                        # A record here could never be downloaded, so it would only
+                        # sit in the index as a failed file.
+                        self.logger.info(
+                            f"Skipping the Google Drive file {drive_file_id} linked from message "
+                            f"{message_id}: this Gmail connection is allowed to read mail but "
+                            "not Google Drive, so the file can't be opened. The email itself "
+                            "is still indexed."
+                        )
+                        return None
                     self.logger.warning(
                         f"⚠️ Failed to fetch Drive file metadata for {drive_file_id}: {str(e)}"
                     )
