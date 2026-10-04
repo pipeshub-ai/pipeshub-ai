@@ -16912,12 +16912,9 @@ class Neo4jProvider(IGraphDBProvider):
             collection, to_key, org_id, found=bool(target.get("n")), target_org=target.get("orgId"),
             provenance=provenance, only_merged_from=only_merged_from,
         )
-        # Found once, then moved by id: a batch that matched again would
-        # rescan a hub's edges of every other org each time.
-        rows = await self.client.execute_query(
-            match + "RETURN elementId(e) AS id", parameters=parameters, txn_id=transaction,
-        )
-        ids = [row["id"] for row in rows or []]
+        # A batch of ids at a time, never all of a hub's at once; each batch
+        # leaves the node, so the next read finds the rest.
+        find = match + "RETURN elementId(e) AS id LIMIT $batch"
         # Field names are interpolated, not parameters: they come from the
         # whitelist checked above, and dynamic property writes need Neo4j 5.24+.
         # Returning an edge to its legacy node clears its merge history too.
@@ -16950,12 +16947,22 @@ class Neo4jProvider(IGraphDBProvider):
             RETURN count(*) AS moved
         """
         total = 0
-        for i in range(0, len(ids), _EDGE_MOVE_BATCH):
+        while True:
             rows = await self.client.execute_query(
-                query, parameters={**parameters, "ids": ids[i:i + _EDGE_MOVE_BATCH]}, txn_id=transaction,
+                find, parameters={**parameters, "batch": _EDGE_MOVE_BATCH}, txn_id=transaction,
             )
-            total += int((rows or [{}])[0].get("moved") or 0)
-        return total
+            ids = [row["id"] for row in rows or []]
+            if not ids:
+                return total
+            rows = await self.client.execute_query(
+                query, parameters={**parameters, "ids": ids}, txn_id=transaction,
+            )
+            moved = int((rows or [{}])[0].get("moved") or 0)
+            total += moved
+            if not moved:
+                # Read but not moved (changed underneath): reading again
+                # would return the same batch for ever.
+                return total
 
     async def find_legacy_taxonomy_nodes(
         self,
@@ -16974,15 +16981,23 @@ class Neo4jProvider(IGraphDBProvider):
             raise RuntimeError("Neo4j client is not connected")
         label = collection_to_label(collection)
         rel = edge_collection_to_relationship(TAXONOMY_EDGE_COLLECTIONS[collection])
+        # Legacy nodes predate per-org nodes and no longer grow, so a page
+        # walks them in key order (the id index) and stops once it has enough;
+        # starting from the org's records would walk all of them every page.
         rows = await self.client.execute_query(
             f"""
-            MATCH (r:Record {{orgId: $org_id}})-[:{rel}]->(n:{label})
-            WHERE n.orgId IS NULL AND ($after_key IS NULL OR n.id > $after_key)
-            RETURN n.id AS _key, n.name AS name, count(DISTINCT r) AS records
-            ORDER BY _key
+            MATCH (n:{label}) WHERE n.orgId IS NULL AND n.id > $after_key
+            WITH n ORDER BY n.id
+            CALL {{
+                WITH n
+                MATCH (r:Record {{orgId: $org_id}})-[:{rel}]->(n)
+                RETURN count(DISTINCT r) AS records
+            }}
+            WITH n, records WHERE records > 0
+            RETURN n.id AS _key, n.name AS name, records
             LIMIT $limit
             """,
-            parameters={"org_id": org_id, "limit": max(1, int(limit)), "after_key": after_key},
+            parameters={"org_id": org_id, "limit": max(1, int(limit)), "after_key": after_key or ""},
             txn_id=transaction,
         )
         return [dict(row) for row in rows or []]

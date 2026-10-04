@@ -54,16 +54,26 @@ def test_edge_schema_declares_merged_from() -> None:
     assert taxonomy_edge_schema["rule"]["properties"]["mergedFrom"] == {"type": ["string", "null"]}
 
 
-def _neo4j_move(ids: list[str], *, target_org: str | None = "org-1", found: int = 1) -> Neo4jProvider:
-    """Answers the target check, the id lookup, then one move per batch."""
+def _neo4j_move(
+    ids: list[str], *, target_org: str | None = "org-1", found: int = 1, stuck: bool = False,
+) -> Neo4jProvider:
+    """Answers the target check, then per batch the id lookup (at most a
+    batch of the edges still on the node) and the move, which takes the
+    moved edges off the node unless ``stuck``."""
     p = _neo4j()
+    left = list(ids)
 
     async def answer(query: str, **kwargs: object) -> list[dict]:
+        params: dict = kwargs["parameters"]  # type: ignore[assignment]
         if "RETURN count(t) AS n" in query:
             return [{"n": found, "orgId": target_org}]
         if "RETURN elementId(e) AS id" in query:
-            return [{"id": i} for i in ids]
-        return [{"moved": len(kwargs["parameters"]["ids"])}]  # type: ignore[index]
+            return [{"id": i} for i in left[: params["batch"]]]
+        if stuck:
+            return [{"moved": 0}]
+        for i in params["ids"]:
+            left.remove(i)
+        return [{"moved": len(params["ids"])}]
 
     p.client.execute_query = AsyncMock(side_effect=answer)
     return p
@@ -77,8 +87,8 @@ class TestMoveEdgesNeo4j:
     async def test_moves_org_edges_keeping_properties(self) -> None:
         p = _neo4j_move(["e1", "e2", "e3"])
         moved = await p.move_taxonomy_edges(TOPICS, "a", "b", "org-1", set_merged_from="a")
-        _, find, query = _queries(p)
-        params = p.client.execute_query.await_args.kwargs["parameters"]
+        _, find, query, *_ = _queries(p)
+        params = p.client.execute_query.await_args_list[2].kwargs["parameters"]
         assert moved == 3
         assert "MATCH (r:Record)-[e:BELONGS_TO_TOPIC]->(:Topics {id: $from_key})" in find
         assert "WHERE r.orgId = $org_id" in find
@@ -97,14 +107,21 @@ class TestMoveEdgesNeo4j:
             "from_key": "a", "to_key": "b", "org_id": "org-1", "set_merged_from": "a", "only_merged_from": None,
         }
 
-    async def test_a_hub_node_is_found_once_and_moved_in_batches(self) -> None:
+    async def test_a_hub_node_is_read_and_moved_a_batch_at_a_time(self) -> None:
+        """Never every edge id at once: a hub's millions would sit in memory
+        and in one result set."""
         p = _neo4j_move([f"e{i}" for i in range(10007)])
         assert await p.move_taxonomy_edges(TOPICS, "a", "b", "org-1", set_merged_from="a") == 10007
-        queries = _queries(p)
-        assert len(queries) == 5
-        assert sum("RETURN elementId(e) AS id" in q for q in queries) == 1
-        sizes = [len(c.kwargs["parameters"]["ids"]) for c in p.client.execute_query.await_args_list[2:]]
-        assert sizes == [5000, 5000, 7]
+        reads = [c for c in p.client.execute_query.await_args_list if "RETURN elementId(e) AS id" in c.args[0]]
+        assert all("LIMIT $batch" in c.args[0] for c in reads)
+        assert len(reads) == 4  # three batches, then the read that finds none
+        moves = [c for c in p.client.execute_query.await_args_list if "WHERE elementId(e) IN $ids" in c.args[0]]
+        assert [len(c.kwargs["parameters"]["ids"]) for c in moves] == [5000, 5000, 7]
+
+    async def test_a_batch_that_moves_nothing_stops_the_loop(self) -> None:
+        p = _neo4j_move(["e1", "e2"], stuck=True)
+        assert await p.move_taxonomy_edges(TOPICS, "a", "b", "org-1", set_merged_from="a") == 0
+        assert len(_queries(p)) == 3
 
     async def test_a_missing_target_is_refused_before_any_write(self) -> None:
         p = _neo4j_move(["e1"], found=0)
@@ -130,7 +147,7 @@ class TestMoveEdgesNeo4j:
         p = _neo4j_move(["e1"], target_org=None)  # back onto the legacy node
         await p.move_taxonomy_edges(TOPICS, "b", "L", "org-1", set_merged_from=None,
                                     only_merged_from="L", provenance="migratedFrom")
-        _, find, query = _queries(p)
+        _, find, query, *_ = _queries(p)
         assert "e.migratedFrom = $only_merged_from" in find
         assert "n.migratedFrom = CASE" in query and "n.mergedFrom = null" in query
 
@@ -157,7 +174,7 @@ class TestMoveEdgesNeo4j:
     async def test_subcategory_uses_its_level_label(self) -> None:
         p = _neo4j_move(["e1"])
         await p.move_taxonomy_edges(SUB2, "a", "b", "org-1", set_merged_from="a")
-        _, find, query = _queries(p)
+        _, find, query, *_ = _queries(p)
         assert "-[e:BELONGS_TO_CATEGORY]->(:Subcategories2 {id: $from_key})" in find
         assert "from:Subcategories2" in query
 
@@ -167,15 +184,18 @@ def _arango_move(keys: list[str], *, target: dict | None = None) -> ArangoHTTPPr
     batch; dedupe drops the first key of each batch."""
     p = _arango()
     target = {"orgId": "org-1"} if target is None else target
+    left = list(keys)
 
     async def answer(query: str, **kwargs: object) -> list:
         binds: dict = kwargs["bind_vars"]  # type: ignore[assignment]
         if "LET t = DOCUMENT(@to_id)" in query:
             return [target or None]
         if "RETURN e._key" in query:
-            return list(keys)
+            return left[: binds["batch"]]
         if "REMOVE e" in query:
             return [1]
+        for key in binds["keys"]:  # the repoint takes the batch off the node
+            left.remove(key)
         return [1] * (len(binds["keys"]) - 1)
 
     p.http_client.execute_aql = AsyncMock(side_effect=answer)
@@ -187,7 +207,8 @@ class TestMoveEdgesArango:
         p = _arango_move(["k1", "k2", "k3"])
         moved = await p.move_taxonomy_edges(TOPICS, "a", "b", "org-1", set_merged_from="a")
         calls = p.http_client.execute_aql.await_args_list
-        (_, find, dedupe, repoint) = (c.args[0] for c in calls)
+        (_, find, dedupe, repoint, again) = (c.args[0] for c in calls)
+        assert again == find
         assert moved == 3
         assert "FILTER e._to == @from_id" in find
         assert "FILTER rec != null AND rec.orgId == @org_id" in find
@@ -199,17 +220,19 @@ class TestMoveEdgesArango:
             # By primary key, re-checked against the node the edge left.
             assert "FILTER e._key IN @keys AND e._to == @from_id" in query
             assert "DOCUMENT(e._from)" not in query
-        binds = calls[-1].kwargs["bind_vars"]
+        assert "LIMIT @batch" in find
+        binds = calls[3].kwargs["bind_vars"]
         assert binds["provenance"] == "mergedFrom" and binds["keys"] == ["k1", "k2", "k3"]
         assert binds["@edges"] == "belongsToTopic"
         assert binds["from_id"] == "topics/a" and binds["to_id"] == "topics/b"
 
-    async def test_a_hub_node_is_found_once_and_moved_in_batches(self) -> None:
+    async def test_a_hub_node_is_read_and_moved_a_batch_at_a_time(self) -> None:
         p = _arango_move([f"k{i}" for i in range(10007)])
         assert await p.move_taxonomy_edges(TOPICS, "a", "b", "org-1", set_merged_from="a") == 10007
         calls = p.http_client.execute_aql.await_args_list
-        assert sum("RETURN e._key" in c.args[0] for c in calls) == 1
-        assert [len(c.kwargs["bind_vars"]["keys"]) for c in calls[2:]] == [5000, 5000, 5000, 5000, 7, 7]
+        assert sum("RETURN e._key" in c.args[0] for c in calls) == 4
+        writes = [c for c in calls if "@keys" in c.args[0]]
+        assert [len(c.kwargs["bind_vars"]["keys"]) for c in writes] == [5000, 5000, 5000, 5000, 7, 7]
 
     @pytest.mark.parametrize(("target", "provenance", "only", "error"), [
         ({}, "mergedFrom", None, "not found"),
@@ -251,23 +274,32 @@ class TestMoveEdgesValidation:
 
 
 class TestLegacyNodes:
+    """Legacy nodes (no orgId) predate per-org nodes and no longer grow, so
+    pages walk them in key order and stop at the page size; walking the
+    org's records instead repeats every record on every page."""
+
     async def test_neo4j(self) -> None:
         p = _neo4j([{"_key": "L", "name": "Pricing", "records": 4}])
         rows = await p.find_legacy_taxonomy_nodes(TOPICS, "org-1", 50)
         query = p.client.execute_query.await_args.args[0]
-        assert "MATCH (r:Record {orgId: $org_id})-[:BELONGS_TO_TOPIC]->(n:Topics)" in query
-        assert "WHERE n.orgId IS NULL AND ($after_key IS NULL OR n.id > $after_key)" in query
+        params = p.client.execute_query.await_args.kwargs["parameters"]
+        assert "MATCH (n:Topics) WHERE n.orgId IS NULL AND n.id > $after_key" in query
+        assert "MATCH (r:Record {orgId: $org_id})-[:BELONGS_TO_TOPIC]->(n)" in query
+        assert query.index("ORDER BY n.id") < query.index("WHERE records > 0") < query.index("LIMIT $limit")
+        assert params["after_key"] == ""
         assert rows == [{"_key": "L", "name": "Pricing", "records": 4}]
 
     async def test_arango(self) -> None:
         p = _arango([{"_key": "L", "name": "Pricing", "records": 4}])
-        await p.find_legacy_taxonomy_nodes(TOPICS, "org-1", 50)
+        await p.find_legacy_taxonomy_nodes(TOPICS, "org-1", 50, after_key="K")
         query = p.http_client.execute_aql.await_args.args[0]
-        # From the org's records out, not a scan of every org's edges.
-        assert query.index("FILTER rec.orgId == @org_id") < query.index("OUTBOUND rec @@edges")
-        assert "FILTER node.orgId == null" in query
-        assert "AGGREGATE records = COUNT_DISTINCT(rec._key)" in query
-        assert "FILTER @after_key == null OR node._key > @after_key" in query
+        binds = p.http_client.execute_aql.await_args.kwargs["bind_vars"]
+        assert "FOR node IN @@nodes" in query
+        assert "FILTER node.orgId == null AND node._key > @after_key" in query
+        assert "INBOUND node @@edges" in query and "rec.orgId == @org_id" in query
+        assert query.index("SORT node._key") < query.index("FILTER records > 0") < query.index("LIMIT @limit")
+        # Never null: a constant filter would let the optimizer drop the key bound.
+        assert binds["after_key"] == "K" and binds["@nodes"] == TOPICS
 
 
 class TestMergedNodesAreNotTargets:

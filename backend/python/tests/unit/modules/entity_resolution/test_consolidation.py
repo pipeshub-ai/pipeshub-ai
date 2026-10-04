@@ -460,10 +460,12 @@ class TestLegacyMigration:
         assert next(e for e in graph.edges if e.record == "r1").merged_from is None
 
 
-async def test_entity_store_is_optional() -> None:
+async def test_without_an_entity_store_the_index_is_reported_unrefreshed() -> None:
+    """The CLI runs on without a store it could not open; the loser's point
+    then stays, and the rebuild sweep skips merged nodes, so it must say so."""
     graph = _merge_fixture()
     result = await _consolidator(graph, None).merge(TOPICS, ORG, "win", "lose", dry_run=False)
-    assert result.edges_moved == 2
+    assert (result.edges_moved, result.index_refreshed) == (2, False)
 
 
 async def test_store_failures_are_reported_not_raised() -> None:

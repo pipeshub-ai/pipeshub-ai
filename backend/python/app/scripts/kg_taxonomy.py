@@ -183,7 +183,7 @@ async def execute(
         try:
             entity_store = await open_store()
         except Exception:
-            logger.warning("kg_taxonomy: entity store unavailable; the background rebuild refreshes the index")
+            logger.warning("kg_taxonomy: entity store unavailable; changes are reported as index not refreshed")
             entity_store = None
         return await run(args, make_consolidator(entity_store), out)
     except ValueError as exc:

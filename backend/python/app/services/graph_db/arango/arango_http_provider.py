@@ -17723,9 +17723,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             collection, to_key, org_id, found=found is not None, target_org=(found or {}).get("orgId"),
             provenance=provenance, only_merged_from=only_merged_from,
         )
-        # Found once, then moved by key: a batch that matched again would
-        # rescan a hub's edges of every other org each time.
-        keys = await self.http_client.execute_aql(match + "RETURN e._key", bind_vars=bind_vars, txn_id=transaction)
+        # A batch of keys at a time, never all of a hub's at once; each batch
+        # leaves the node, so the next read finds the rest.
+        find = match + "LIMIT @batch RETURN e._key"
         by_key = """
             FOR e IN @@edges
                 FILTER e._key IN @keys AND e._to == @from_id
@@ -17757,15 +17757,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
             "set_merged_from": set_merged_from,
         }
         total = 0
-        keys = list(keys or [])
-        for i in range(0, len(keys), _EDGE_MOVE_BATCH):
-            batch = keys[i:i + _EDGE_MOVE_BATCH]
+        while True:
+            batch = await self.http_client.execute_aql(
+                find, bind_vars={**bind_vars, "batch": _EDGE_MOVE_BATCH}, txn_id=transaction,
+            )
+            if not batch:
+                return total
+            moved = 0
             for query, query_binds in ((dedupe, binds), (repoint, repoint_binds)):
                 rows = await self.http_client.execute_aql(
-                    query, bind_vars={**query_binds, "keys": batch}, txn_id=transaction,
+                    query, bind_vars={**query_binds, "keys": list(batch)}, txn_id=transaction,
                 )
-                total += len(rows or [])
-        return total
+                moved += len(rows or [])
+            total += moved
+            if not moved:
+                # Read but not moved (changed underneath): reading again
+                # would return the same batch for ever.
+                return total
 
     async def find_legacy_taxonomy_nodes(
         self,
@@ -17780,26 +17788,29 @@ class ArangoHTTPProvider(IGraphDBProvider):
             raise ValueError(f"{collection!r} is not a taxonomy collection")
         if not org_id:
             return []
-        # From the org's records (indexed on orgId) out over their edges, not
-        # a scan of every org's edges.
+        # Legacy nodes predate per-org nodes and no longer grow, so a page
+        # walks them in key order and stops once it has enough; starting from
+        # the org's records would walk all of them again for every page.
         rows = await self.http_client.execute_aql(
-            f"""
-            FOR rec IN {CollectionNames.RECORDS.value}
-                FILTER rec.orgId == @org_id
-                FOR node, e IN 1..1 OUTBOUND rec @@edges
-                    FILTER PARSE_IDENTIFIER(node._id).collection == @collection
-                    FILTER node.orgId == null
-                    FILTER @after_key == null OR node._key > @after_key
-                    COLLECT key = node._key, name = node.name AGGREGATE records = COUNT_DISTINCT(rec._key)
-                    SORT key
-                    LIMIT @limit
-                    RETURN {{ _key: key, name: name, records: records }}
+            """
+            FOR node IN @@nodes
+                FILTER node.orgId == null AND node._key > @after_key
+                SORT node._key
+                LET records = LENGTH(
+                    FOR rec IN 1..1 INBOUND node @@edges
+                        FILTER rec.orgId == @org_id
+                        RETURN DISTINCT rec._key
+                )
+                FILTER records > 0
+                LIMIT @limit
+                RETURN { _key: node._key, name: node.name, records: records }
             """,
             bind_vars={
+                "@nodes": collection,
                 "@edges": TAXONOMY_EDGE_COLLECTIONS[collection],
-                "collection": collection,
                 "org_id": org_id,
-                "after_key": after_key,
+                # Never null: a constant filter lets the optimizer drop the bound.
+                "after_key": after_key or "",
                 "limit": max(1, int(limit)),
             },
             txn_id=transaction,

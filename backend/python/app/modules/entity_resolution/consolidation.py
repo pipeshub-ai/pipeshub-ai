@@ -378,7 +378,9 @@ class TaxonomyConsolidator:
         org nodes; it skips merged and legacy ones, so re-run the merge or
         the unmigrate for those."""
         if self.store is None:
-            return True
+            # Nothing refreshed: the CLI runs on without a store it could not
+            # open, and the rebuild sweep skips merged and legacy nodes.
+            return False
         entity_type, _ = taxonomy_entity_type(collection)
         try:
             if drop:

@@ -129,9 +129,9 @@ python -m app.scripts.kg_taxonomy unmigrate-legacy ...
   or the unmigrate.
 - Edges only move onto a node of the same org; undoing a migration is the one
   move allowed back onto a legacy node.
-- Finding legacy nodes walks the org's records and their taxonomy edges, so
-  run it off-peak on large tenants. A move finds its edges once, then moves
-  them by id in batches of 5,000.
+- Finding legacy nodes walks the legacy nodes in key order and counts each
+  one's records of the org, so run it off-peak on large installs. A move reads
+  and moves its edges 5,000 at a time.
 - Dry runs only read, so they work with a read-only graph user; `--apply`
   first applies the graph schema.
 - Exit codes: 0 done; 1 some items failed or left the index unrefreshed; 2

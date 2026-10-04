@@ -363,3 +363,25 @@ async def test_edges_never_move_onto_another_orgs_node_or_a_legacy_one(backend) 
         with pytest.raises(ValueError, match="not a node of org"):
             await provider.move_taxonomy_edges(TOPICS, f"a-{run}", to, org, set_merged_from=f"a-{run}")
     assert [t for t, _, _ in await db.edges(f"r1-{run}")] == [f"a-{run}"]
+
+
+async def test_legacy_nodes_are_paged_in_key_order_with_this_orgs_counts(backend) -> None:
+    """Pages walk the legacy nodes by key and count only this org's
+    records; a legacy node only another org uses is not listed."""
+    provider, db, run = backend
+    org, other = f"org-{run}", f"other-{run}"
+    keys = [f"legacy{i}-{run}" for i in range(5)]
+    for i, key in enumerate(keys):
+        await db.topic(key, f"Legacy {i}", None)
+        if i != 2:
+            await db.link(f"r{i}a-{run}", org, key)
+            await db.link(f"r{i}b-{run}", org, key)
+        await db.link(f"x{i}-{run}", other, key)
+    seen, after = [], None
+    while True:
+        page = await provider.find_legacy_taxonomy_nodes(TOPICS, org, 2, after_key=after)
+        seen += [(r["_key"], r["records"]) for r in page if r["_key"].endswith(run)]
+        if len(page) < 2:
+            break
+        after = page[-1]["_key"]
+    assert seen == [(k, 2) for i, k in enumerate(keys) if i != 2]
