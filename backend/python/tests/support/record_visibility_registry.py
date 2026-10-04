@@ -107,6 +107,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.ALL,
         "a deleted connector's shared content is handed to a holder; a trashed one needs it for a restore",
     ),
+    "get_file_paths_for_records": (Rule.ALL, _BY_KEY + "; the code graph maps block owners to their paths"),
     "get_child_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
     "get_parent_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
     "get_record_relations_batch": (Rule.ALL, _STRUCTURE),
@@ -166,4 +167,6 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "restore_records": (Rule.WRITE, "all or nothing: only records still in the trash under the batch named"),
     "purge_trashed_records": (Rule.WRITE, "removes only records still in the trash and due, checked in the delete"),
     "record_purge_failure": (Rule.WRITE, "counts only on records still in the trash"),
+    "delete_blocks_for_records": (Rule.WRITE, ""),
+    "batch_upsert_record_relations": (Rule.WRITE, ""),
 }

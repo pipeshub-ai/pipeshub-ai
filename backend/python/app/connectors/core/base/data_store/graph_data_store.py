@@ -352,6 +352,9 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_record_by_key(self, key: str) -> None:
         self._memo_forget_record(key)
+        # A code file's blocks hang off it by recordId, not by an edge, so removing
+        # the record vertex alone strands the whole file's symbol projection.
+        await self.graph_provider.delete_blocks_for_records([key], transaction=self.txn)
         # The node with its edges: on Neo4j that is the same single DETACH DELETE,
         # and on ArangoDB the edges no longer dangle after the record is gone.
         return await self.graph_provider.delete_nodes_and_edges(

@@ -49,7 +49,10 @@ from app.connectors.core.sync.sync_coordinator import (
     set_coordinator,
 )
 from app.connectors.core.sync.sync_runner import drain_queued_syncs, join_cleanup_tasks
-from app.connectors.core.sync.task_manager import reindex_task_manager
+from app.connectors.core.sync.task_manager import (
+    code_edge_build_task_manager,
+    reindex_task_manager,
+)
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.api.artifacts_router import artifacts_router
 from app.connectors.sources.localKB.api.kb_router import kb_router
@@ -74,6 +77,7 @@ from app.edition_services import (
     stop_sync_reaper,
     sync_executor_enabled,
 )
+from app.modules.code_graph.edge_build_reconciler import reconcile_forever
 from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
@@ -547,6 +551,27 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_prov
         consumers.append(("sync", sync_consumer))
         logger.info("✅ Sync consumer started")
 
+        # 3. Create Code Graph Consumer
+        logger.info(f"🚀 Starting Code Graph Consumer (broker: {broker_type})...")
+        code_graph_config = await MessagingUtils.create_code_graph_consumer_config(
+            app_container
+        )
+        code_graph_consumer = MessagingFactory.create_consumer(
+            broker_type=broker_type,
+            logger=logger,
+            config=code_graph_config,
+            retry_manager=retry_manager,
+        )
+        code_graph_message_handler = (
+            await KafkaUtils.create_code_graph_message_handler(
+                app_container,
+                graph_provider,
+            )
+        )
+        await code_graph_consumer.start(code_graph_message_handler)
+        consumers.append(("code_graph", code_graph_consumer))
+        logger.info("✅ Code graph consumer started")
+
         logger.info(f"✅ All {len(consumers)} consumers started successfully")
         return consumers
 
@@ -621,6 +646,11 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
         except Exception as e:
             logger.warning(f"Error cancelling reindex tasks at shutdown: {e}")
 
+        try:
+            await code_edge_build_task_manager.cancel_all()
+        except Exception as e:
+            logger.warning(f"Error cancelling code edge build tasks at shutdown: {e}")
+
         # cancel_all only waits for the sync tasks; a finalizer detached by a
         # second cancel is still writing IDLE, releasing its lease and
         # publishing. Closing Redis and the producer under it is what leaves
@@ -638,6 +668,14 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
                 await coordinator.stop()
         except Exception as e:
             logger.warning(f"Error stopping sync lease manager at shutdown: {e}")
+
+        code_edge_build_redis = vars(container).get("code_edge_build_redis")
+        if code_edge_build_redis is not None:
+            try:
+                await code_edge_build_redis.aclose()
+                container.code_edge_build_redis = None
+            except Exception as e:
+                logger.warning(f"Error closing code edge build Redis client: {e}")
 
         # Stop messaging producer
         await stop_messaging_producer(container)
@@ -864,6 +902,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(f"Could not release queued syncs at startup: {e}")
 
+        # After the consumers, so the reconciler shares the event service (and
+        # its lock client and task manager) the code-graph consumer created.
+        try:
+            code_graph_event_service = await KafkaUtils.create_code_graph_event_service(
+                app_container, graph_provider
+            )
+            app.state.code_edge_build_reconcile_task = asyncio.create_task(
+                reconcile_forever(graph_provider, code_graph_event_service, logger),
+                name="code_edge_build_reconcile",
+            )
+            logger.info("✅ Code edge build reconciler started")
+        except Exception as e:
+            logger.error(f"❌ Failed to start code edge build reconciler: {str(e)}", exc_info=True)
+
     post_startup_task = asyncio.create_task(_post_startup(), name="connector_post_startup")
     app_container.post_startup_task = post_startup_task
 
@@ -903,7 +955,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except (asyncio.CancelledError, Exception):
             pass
     logger.info("🔄 Shut down application started")
-    for task_name in ("connector_metrics_task", "trash_purge_task", "storage_release_task", "stored_content_heal_task"):
+    # The code-edge reconciler stops before the task managers drain, so its
+    # sweep cannot start a build into the unwind.
+    for task_name in (
+        "connector_metrics_task", "trash_purge_task", "storage_release_task",
+        "stored_content_heal_task", "code_edge_build_reconcile_task",
+    ):
         task = getattr(app.state, task_name, None)
         if task is not None and not task.done():
             task.cancel()

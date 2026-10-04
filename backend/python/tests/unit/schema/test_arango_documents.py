@@ -109,6 +109,7 @@ class TestDocumentSchemaInventory:
             "agent_skill_versions_schema",
             "agent_skill_candidates_schema",
             "code_file_record_schema",
+            "block_schema",
             "agent_skills_schema",
             "agent_skill_versions_schema",
             "agent_skill_candidates_schema",

@@ -280,6 +280,22 @@ class TestInternalExplorationAgent:
         # No connector inventory was configured, so no routing-rules block.
         assert "Retrieval Routing" not in internal.system_prompt
 
+    def test_source_catalog_is_rendered_with_the_childs_own_tools(self) -> None:
+        """`render()` resolves every tool it names through `granted(...)`, so
+        called without `tool_names` it drops bullets for tools the child DOES
+        hold — `fetch_record` among them, which the playbook then tells it to
+        call. The names have to be threaded through."""
+        registry = _full_registry()
+        context = make_context(
+            agent_knowledge=[
+                {"displayName": "Confluence", "type": "confluence", "connectorId": "conn-1"},
+            ],
+        )
+        _compose(registry, context=context)
+
+        prompt = registry.resolve_by_name("internal_exploration_agent")._spec.system_prompt
+        assert "knowledgegraph__fetch_record(record_ids=[...])" in prompt
+
     def test_full_record_fetch_policy_names_the_dynamic_tool(self) -> None:
         """Regression guard — the policy must name the dynamic tool and
         explain how to call it (the 'when in doubt, call it' bias is
