@@ -164,7 +164,7 @@ class TestNeo4jTaxonomyAliases:
         })
         await provider.add_taxonomy_aliases(
             TOPICS, key, ["Onboarding checklist", "New hire onboarding"],
-            ["onboarding checklist", "new hire onboarding"],
+            ["onboarding checklist", "new hire onboarding"], org_id=org_id,
         )
         captured = _capture_queries(provider)
 
@@ -188,7 +188,7 @@ class TestNeo4jTaxonomyAliases:
         writers = 12
 
         await asyncio.gather(*(
-            provider.add_taxonomy_aliases(TOPICS, key, [f"Release {i}"], [f"release {i}"])
+            provider.add_taxonomy_aliases(TOPICS, key, [f"Release {i}"], [f"release {i}"], org_id=org_id)
             for i in range(writers)
         ))
 
@@ -376,13 +376,13 @@ class TestArangoTaxonomyWritesUnderConcurrentTransactions:
         provider, org_id = arango
         key, node = _topic(org_id, "Release")
         await provider.create_taxonomy_node_if_absent(TOPICS, node)
-        await provider.add_taxonomy_aliases(TOPICS, key, ["Release notes"], ["release notes"])
+        await provider.add_taxonomy_aliases(TOPICS, key, ["Release notes"], ["release notes"], org_id=org_id)
         t1 = await provider.begin_transaction(read=[TOPICS], write=[TOPICS])
         t2 = await provider.begin_transaction(read=[TOPICS], write=[TOPICS])
         try:
             for txn in (t1, t2):
                 await provider.add_taxonomy_aliases(
-                    TOPICS, key, ["Release notes"], ["release notes"], transaction=txn,
+                    TOPICS, key, ["Release notes"], ["release notes"], transaction=txn, org_id=org_id,
                 )
         finally:
             for txn in (t1, t2):
@@ -468,7 +468,7 @@ async def _write_in_flight(
         txn = await provider.begin_transaction(read=[TOPICS], write=[TOPICS])
         if alias_update:
             await provider.add_taxonomy_aliases(
-                TOPICS, node["id"], [alias], [alias.casefold()], transaction=txn,
+                TOPICS, node["id"], [alias], [alias.casefold()], transaction=txn, org_id=node["orgId"],
             )
         else:
             await provider.create_taxonomy_node_if_absent(TOPICS, dict(node), transaction=txn)
@@ -631,3 +631,171 @@ class TestConcurrentEnrichmentOfOneNewTopic:
             assert [e["_to"] for e in edges] == [f"{TOPICS}/{key}"]
             record = await provider.get_document(record_id, CollectionNames.RECORDS.value)
             assert record["extractionStatus"] == "COMPLETED"
+
+
+class TestAliasWritesAreOrgScoped:
+    """An org's spellings never land on a legacy node all orgs share, or on
+    another org's node (KG-25)."""
+
+    async def test_neo4j(self, neo4j) -> None:
+        provider, org_id = neo4j
+        mine, theirs, legacy = (f"{org_id}-{n}" for n in ("mine", "theirs", "legacy"))
+        await provider.client.execute_query(
+            "CREATE (:Topics {id: $mine, name: 'A', normalizedName: 'a', orgId: $org}) "
+            "CREATE (:Topics {id: $theirs, name: 'A', normalizedName: 'a', orgId: $org + '-other'}) "
+            "CREATE (:Topics {id: $legacy, name: 'A', itOrg: $org})",
+            parameters={"mine": mine, "theirs": theirs, "legacy": legacy, "org": org_id},
+        )
+        try:
+            for key in (mine, theirs, legacy):
+                await provider.add_taxonomy_aliases(TOPICS, key, ["Alpha"], ["alpha"], org_id=org_id)
+            rows = await provider.client.execute_query(
+                "MATCH (n:Topics) WHERE n.id IN $ids RETURN n.id AS id, n.aliases AS aliases",
+                parameters={"ids": [mine, theirs, legacy]},
+            )
+            aliases = {r["id"]: r["aliases"] for r in rows}
+            assert aliases == {mine: ["Alpha"], theirs: None, legacy: None}
+        finally:
+            await provider.client.execute_query(
+                "MATCH (n:Topics) WHERE n.id IN $ids DETACH DELETE n",
+                parameters={"ids": [theirs, legacy]},
+            )
+
+    async def test_arango(self, arango) -> None:
+        provider, org_id = arango
+        mine, theirs, legacy = (f"{org_id}-{n}" for n in ("mine", "theirs", "legacy"))
+        await provider.http_client.execute_aql(
+            f"FOR d IN @docs INSERT d INTO {TOPICS}",
+            {"docs": [
+                {"_key": mine, "name": "A", "normalizedName": "a", "orgId": org_id},
+                {"_key": theirs, "name": "A", "normalizedName": "a", "orgId": f"{org_id}-other"},
+                {"_key": legacy, "name": "A"},
+            ]},
+        )
+        try:
+            for key in (mine, theirs, legacy):
+                await provider.add_taxonomy_aliases(TOPICS, key, ["Alpha"], ["alpha"], org_id=org_id)
+            rows = await provider.http_client.execute_aql(
+                f"FOR d IN {TOPICS} FILTER d._key IN @keys RETURN {{k: d._key, a: d.aliases}}",
+                {"keys": [mine, theirs, legacy]},
+            )
+            assert {r["k"]: r["a"] for r in rows} == {mine: ["Alpha"], theirs: None, legacy: None}
+        finally:
+            await provider.http_client.execute_aql(
+                f"FOR d IN {TOPICS} FILTER d._key IN @keys REMOVE d IN {TOPICS}",
+                {"keys": [theirs, legacy]},
+            )
+
+
+async def _assert_fenced_clear(provider: Neo4jProvider | ArangoHTTPProvider, key: str) -> None:
+    """The flag clear is fenced on the due time the sweep read: a stale fence
+    changes nothing, the current one merges (other fields are kept), and the
+    attempt counter fits ArangoDB's strict records schema."""
+    records = CollectionNames.RECORDS.value
+    cleared = {"duplicateReconcilePending": False, "duplicateReconcileAttempts": 2,
+               "duplicateReconcileDueAt": None}
+    stale = {"duplicateReconcilePending": True, "duplicateReconcileDueAt": 999}
+    assert await provider.update_node_fields_if_match(key, records, cleared, stale) is False
+    current = {"duplicateReconcilePending": True, "duplicateReconcileDueAt": 1000}
+    assert await provider.update_node_fields_if_match(key, records, cleared, current) is True
+    doc = await provider.get_document(key, records)
+    assert doc["duplicateReconcilePending"] is False
+    assert doc["duplicateReconcileAttempts"] == 2
+    assert doc.get("duplicateReconcileDueAt") is None
+    assert doc["orgId"]  # merged, not replaced
+    absent = {"duplicateReconcileDueAt": None, "duplicateReconcilePending": False}
+    assert await provider.update_node_fields_if_match(
+        key, records, {"duplicateReconcileAttempts": 3}, absent,
+    ) is True
+
+
+class TestPendingDuplicateReconcile:
+    """The retry sweep's query, and the attempt counter on ArangoDB's strict
+    records schema (KG-51)."""
+
+    async def test_neo4j(self, neo4j) -> None:
+        provider, org_id = neo4j
+        await provider.client.execute_query(
+            "UNWIND $rows AS row CREATE (r:Record) SET r = row",
+            parameters={"rows": [
+                {"id": f"{org_id}-old", "orgId": org_id, "duplicateReconcilePending": True,
+                 "duplicateReconcileDueAt": 1000},
+                {"id": f"{org_id}-new", "orgId": org_id, "duplicateReconcilePending": True,
+                 "duplicateReconcileDueAt": 9000},
+                {"id": f"{org_id}-done", "orgId": org_id, "duplicateReconcilePending": False,
+                 "duplicateReconcileDueAt": 1000},
+            ]},
+        )
+        rows = await provider.get_records_pending_duplicate_reconcile(due_before_ms=5000, limit=100)
+        mine = [r for r in rows if r["_key"].startswith(org_id)]
+        assert mine == [{"_key": f"{org_id}-old", "duplicateReconcileAttempts": None,
+                         "duplicateReconcileDueAt": 1000}]
+        await _assert_fenced_clear(provider, f"{org_id}-old")
+
+    async def test_arango(self, arango) -> None:
+        provider, org_id = arango
+        from app.config.constants.arangodb import Connectors, OriginTypes
+        from app.models.entities import Record, RecordType
+
+        def _record(suffix: str, **fields: object) -> dict[str, Any]:
+            doc = Record(
+                id=f"{org_id}-{suffix}", org_id=org_id, record_name="doc", record_type=RecordType.FILE,
+                external_record_id=f"ext-{suffix}", version=0, origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.KNOWLEDGE_BASE, connector_id="c-it",
+            ).to_arango_base_record()
+            return {**doc, **fields}
+
+        docs = [
+            _record("old", duplicateReconcilePending=True, duplicateReconcileDueAt=1000),
+            _record("new", duplicateReconcilePending=True, duplicateReconcileDueAt=9000),
+            _record("done", duplicateReconcilePending=False, duplicateReconcileDueAt=1000),
+        ]
+        await provider.http_client.execute_aql(
+            f"FOR d IN @docs INSERT d INTO {CollectionNames.RECORDS.value}", {"docs": docs},
+        )
+        rows = await provider.get_records_pending_duplicate_reconcile(due_before_ms=5000, limit=100)
+        mine = [r for r in rows if r["_key"].startswith(org_id)]
+        assert mine == [{"_key": f"{org_id}-old", "duplicateReconcileAttempts": None,
+                         "duplicateReconcileDueAt": 1000}]
+        await _assert_fenced_clear(provider, f"{org_id}-old")
+
+
+class TestDuplicatePathRowsCarryTheNodesOrg:
+    async def test_neo4j(self, neo4j) -> None:
+        provider, org_id = neo4j
+        rec, mine, legacy = f"{org_id}-rec", f"{org_id}-t-mine", f"{org_id}-t-legacy"
+        await provider.client.execute_query(
+            "CREATE (r:Record {id: $rec, orgId: $org}) "
+            "CREATE (a:Topics {id: $mine, name: 'Mine', orgId: $org}) "
+            "CREATE (b:Topics {id: $legacy, name: 'Legacy', itOrg: $org}) "
+            "CREATE (r)-[:BELONGS_TO_TOPIC]->(a) CREATE (r)-[:BELONGS_TO_TOPIC]->(b)",
+            parameters={"rec": rec, "mine": mine, "legacy": legacy, "org": org_id},
+        )
+        try:
+            rows = await provider.get_taxonomy_entities_for_record(rec)
+            assert {r["entityId"]: r["orgId"] for r in rows} == {mine: org_id, legacy: None}
+        finally:
+            await provider.client.execute_query(
+                "MATCH (n:Topics {id: $legacy}) DETACH DELETE n", parameters={"legacy": legacy},
+            )
+
+    async def test_arango(self, arango) -> None:
+        provider, org_id = arango
+        mine, legacy = f"{org_id}-t-mine", f"{org_id}-t-legacy"
+        await provider.http_client.execute_aql(
+            f"FOR d IN @docs INSERT d INTO {TOPICS}",
+            {"docs": [{"_key": mine, "name": "Mine", "orgId": org_id}, {"_key": legacy, "name": "Legacy"}]},
+        )
+        rec = f"{org_id}-rec"
+        await provider.http_client.execute_aql(
+            f"FOR t IN @targets INSERT {{_from: CONCAT('records/', @rec), _to: CONCAT('{TOPICS}/', t), "
+            f"createdAtTimestamp: 1}} INTO {CollectionNames.BELONGS_TO_TOPIC.value}",
+            {"targets": [mine, legacy], "rec": rec},
+        )
+        try:
+            rows = await provider.get_taxonomy_entities_for_record(rec)
+            assert {r["entityId"]: r["orgId"] for r in rows} == {mine: org_id, legacy: None}
+        finally:
+            await provider.http_client.execute_aql(
+                f"FOR d IN {TOPICS} FILTER d._key == @k REMOVE d IN {TOPICS}", {"k": legacy},
+            )

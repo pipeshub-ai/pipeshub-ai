@@ -3,6 +3,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.exceptions.graph_db_exceptions import GraphQueryError
+from app.services.graph_db.interface.graph_db_provider import (
+    DUPLICATE_RECONCILE_GRACE_MS,
+)
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 
@@ -2553,7 +2556,12 @@ class TestDuplicateAndSyncOperations:
         assert updated_count == 2
         payload = neo4j_provider.batch_update_nodes.await_args.args[0]
         # The primary's reconcile flag rides in the same write as the promotion.
-        assert payload[-1] == {"id": "rec-1", "duplicateReconcilePending": True}
+        # Re-armed with a fresh due time and attempt count, so a record that
+        # gave up before gets the full retry budget again.
+        assert payload[-1] == {
+            "id": "rec-1", "duplicateReconcilePending": True,
+            "duplicateReconcileAttempts": 0, "duplicateReconcileDueAt": 101 + DUPLICATE_RECONCILE_GRACE_MS,
+        }
         assert len(payload) == 3
         assert payload[0]["indexingStatus"] == "COMPLETED"
         assert payload[0]["extractionStatus"] == "COMPLETED"
@@ -2578,10 +2586,13 @@ class TestDuplicateAndSyncOperations:
         await neo4j_provider.update_queued_duplicates_status("rec-1", "FAILED")
         failed_payload = neo4j_provider.batch_update_nodes.await_args_list[0].args[0]
         assert failed_payload[0]["extractionStatus"] == "FAILED"
+        # A failed primary has no taxonomy to copy (KG-51).
+        assert all("duplicateReconcilePending" not in row for row in failed_payload)
 
         await neo4j_provider.update_queued_duplicates_status("rec-1", "EMPTY")
         empty_payload = neo4j_provider.batch_update_nodes.await_args_list[1].args[0]
         assert empty_payload[0]["extractionStatus"] == "EMPTY"
+        assert empty_payload[-1]["duplicateReconcilePending"] is True
 
     @pytest.mark.asyncio
     async def test_update_queued_duplicates_status_includes_reason(

@@ -166,6 +166,9 @@ from app.services.graph_db.common.utils import (
 )
 from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
+    DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
+    DUPLICATE_RECONCILE_DUE_AT_FIELD,
+    DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     STRICT_SCOPE_FILTER_KEY,
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
@@ -185,6 +188,7 @@ from app.services.graph_db.taxonomy import (
     subcategory_level,
 )
 from app.services.graph_db.entity_index_queries import (
+    ENTITY_INDEX_SOURCES,
     build_entity_index_candidate_aql,
     build_entity_index_source_page_aql,
     entity_index_source,
@@ -305,6 +309,12 @@ EDGE_COLLECTIONS = [
     (CollectionNames.SOLD_IN.value, sold_in_schema),
     (CollectionNames.MEMBER_OF.value, member_of_schema),
 ]
+
+
+
+# Promotions to these statuses leave the primary with taxonomy to copy to its
+# duplicates; see update_queued_duplicates_status.
+_RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
 
 
 class ArangoHTTPProvider(IGraphDBProvider):
@@ -741,6 +751,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 ["orgId", "normalizedAliases[*]"],
             )
 
+        # ==================== ENTITY INDEX SOURCES ====================
+        # The entity index rebuild pages each source by scope, then key; without
+        # _key trailing the scope every page re-sorts the whole scope. Records'
+        # (connectorId, _key) is created below.
+        for spec in ENTITY_INDEX_SOURCES.values():
+            if spec.collection != CollectionNames.RECORDS.value:
+                await self.http_client.ensure_persistent_index(
+                    spec.collection, [spec.scope_field, "_key"],
+                )
+
         # ==================== RECORD INDEXES (Highest Priority) ====================
         # Records are the most queried entity, especially in permission checks
 
@@ -790,6 +810,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["indexingStatus"],
+        )
+
+        # SINGLE: duplicateReconcilePending. The reconcile retry sweep looks for
+        # the few records with it set; unindexed that is a full scan per tick.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["duplicateReconcilePending", "duplicateReconcileDueAt"],
         )
 
         # COMPOUND: the reindex keyset walk filters on all three then sorts by _key.
@@ -4151,6 +4178,65 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
         return [dict(row) for row in results or []]
 
+    async def update_node_fields_if_match(
+        self,
+        key: str,
+        collection: str,
+        updates: dict[str, Any],
+        expected: dict[str, Any],
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.update_node_fields_if_match`."""
+        if not expected:
+            raise ValueError("update_node_fields_if_match needs an expectation")
+        bind_vars: dict[str, Any] = {"@collection": collection, "key": key, "updates": dict(updates)}
+        filters = []
+        for i, (field, value) in enumerate(expected.items()):
+            bind_vars[f"f{i}"] = field
+            if value is None:
+                filters.append(f"FILTER doc[@f{i}] == null")
+            else:
+                bind_vars[f"v{i}"] = value
+                filters.append(f"FILTER doc[@f{i}] == @v{i}")
+        newline = "\n                "
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR doc IN @@collection
+                FILTER doc._key == @key
+                {newline.join(filters)}
+                UPDATE doc WITH @updates IN @@collection
+                RETURN 1
+            """,
+            bind_vars=bind_vars,
+            txn_id=transaction,
+        )
+        return bool(rows)
+
+    async def get_records_pending_duplicate_reconcile(
+        self,
+        due_before_ms: int,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """See :meth:`IGraphDBProvider.get_records_pending_duplicate_reconcile`."""
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.duplicateReconcilePending == true
+                FILTER NOT_NULL(r.duplicateReconcileDueAt, 0) < @due_before_ms
+                FILTER {aql_live_record("r")}
+                LIMIT @limit
+                RETURN {{
+                    _key: r._key,
+                    duplicateReconcileAttempts: r.duplicateReconcileAttempts,
+                    duplicateReconcileDueAt: r.duplicateReconcileDueAt,
+                }}
+            """,
+            bind_vars={"due_before_ms": due_before_ms, "limit": max(1, int(limit))},
+            txn_id=transaction,
+        )
+        return [dict(row) for row in rows or []]
+
     async def get_app_needing_vector_membership_backfill(
         self,
         transaction: str | None = None,
@@ -7098,8 +7184,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Same batch as the promotion: a crash after it would otherwise
             # leave the duplicates COMPLETED with no taxonomy and nothing to
-            # trigger the copy, since a redelivery finds nothing QUEUED.
-            updated_records.append({"id": record_id, DUPLICATE_RECONCILE_PENDING_FIELD: True})
+            # trigger the copy, since a redelivery finds nothing QUEUED. Only
+            # an indexed primary has anything to copy.
+            if new_indexing_status in _RECONCILED_STATUSES:
+                updated_records.append({
+                    "id": record_id,
+                    DUPLICATE_RECONCILE_PENDING_FIELD: True,
+                    DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,
+                    DUPLICATE_RECONCILE_DUE_AT_FIELD: current_timestamp + DUPLICATE_RECONCILE_GRACE_MS,
+                })
 
             success = await self.batch_update_nodes(
                 updated_records, CollectionNames.RECORDS.value, transaction
@@ -17283,6 +17376,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     entityId: v._key,
                     name: NOT_NULL(v.name, v.departmentName, v._key),
                     aliases: NOT_NULL(v.aliases, []),
+                    orgId: v.orgId,
                     _collection: PARSE_IDENTIFIER(v._id).collection,
                 }}
         """
@@ -17610,12 +17704,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         aliases: list[str],
         normalized_aliases: list[str],
         *,
+        org_id: str,
         max_aliases: int = 20,
         transaction: str | None = None,
     ) -> None:
         """See :meth:`IGraphDBProvider.add_taxonomy_aliases`."""
         if not is_taxonomy_collection(collection):
             raise ValueError(f"{collection!r} is not a taxonomy collection")
+        if not org_id:
+            raise ValueError("add_taxonomy_aliases needs an org")
         pairs = _alias_pairs(aliases, normalized_aliases)
         if not key or not pairs:
             return
@@ -17623,7 +17720,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # to their common length first so an already-skewed node heals.
         query = f"""
             FOR doc IN {collection}
-                FILTER doc._key == @key
+                FILTER doc._key == @key AND doc.orgId == @org_id
                 LET stored_displays = NOT_NULL(doc.aliases, [])
                 LET stored_normals = NOT_NULL(doc.normalizedAliases, [])
                 LET paired = MIN([LENGTH(stored_displays), LENGTH(stored_normals)])
@@ -17654,6 +17751,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         bind_vars = {
             "key": key,
+            "org_id": org_id,
             "aliases": [display for display, _ in pairs],
             "normalized": [normalized for _, normalized in pairs],
             "max_aliases": max(1, max_aliases),

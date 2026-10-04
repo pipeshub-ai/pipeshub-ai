@@ -446,6 +446,7 @@ EXERCISED_HERE: dict[str, str] = {
     "get_failed_records_with_active_users": "test_failed_records",
     "get_record_by_weburl": "test_weburl_lookup",
     "get_entity_candidate_records": "test_entity_candidate_records",
+    "get_records_pending_duplicate_reconcile": "test_duplicate_reconcile_sweep",
     "get_records_by_virtual_record_id": "test_vector_delete_authority",
     "get_virtual_record_ids_shared_outside_connector": "test_content_shared_outside_a_deleted_connector",
     "get_knowledge_hub_children": "test_knowledge_hub_browse",
@@ -544,6 +545,16 @@ async def test_entity_candidate_records(world: _World) -> None:
     got = await world.graph.get_entity_candidate_records(refs, world.org_id)
     assert [row["_key"] for row in got[("record", world.ids["live"])]] == [world.ids["live"]]
     assert got[("record", world.ids["trashed"])] == []
+
+
+async def test_duplicate_reconcile_sweep(world: _World) -> None:
+    for name in ("live", "trashed"):
+        await world.graph.update_node(world.ids[name], CollectionNames.RECORDS.value, {
+            "duplicateReconcilePending": True, "duplicateReconcileDueAt": 0,
+        })
+    got = await world.graph.get_records_pending_duplicate_reconcile(due_before_ms=1, limit=1000)
+    mine = {row["_key"] for row in got} & {world.ids["live"], world.ids["trashed"]}
+    assert mine == {world.ids["live"]}
 
 
 async def test_vector_delete_authority(world: _World) -> None:
