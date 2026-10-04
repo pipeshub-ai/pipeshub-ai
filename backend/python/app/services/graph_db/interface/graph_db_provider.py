@@ -6000,13 +6000,19 @@ class IGraphDBProvider(ABC):
         ``migratedFrom`` also clears ``mergedFrom``: an edge back on its legacy
         node has no merge history left.
 
+        ``to_key`` must be a node of ``org_id``; only a ``migratedFrom``
+        restore may land on a legacy node (no ``orgId``). Trashed records'
+        edges move too, so a restored record finds its taxonomy. Matching
+        edges are found once and moved by id in batches.
+
         Returns:
             How many edges matched (with ``dry_run``, how many would move).
 
         Raises:
             ValueError: for a non-taxonomy collection, a missing key or org,
                 ``from_key == to_key``, an unknown provenance field, or (when
-                not a dry run) a ``to_key`` node that does not exist.
+                not a dry run) a ``to_key`` node that does not exist or is
+                not one ``org_id``'s edges may land on.
             Exception: on query failure.
         """
         pass
@@ -6022,8 +6028,9 @@ class IGraphDBProvider(ABC):
     ) -> list[dict[str, Any]]:
         """Legacy nodes of ``collection`` (no ``orgId``) that records of
         ``org_id`` link to, with how many distinct such records each has,
-        ordered by key after ``after_key``. Walks the org's records and their
-        edges; meant for an offline migration, not a request path.
+        ordered by key after ``after_key``. Walks the org's records, trashed
+        ones included, and their edges; meant for an offline migration, not
+        a request path.
 
         Returns:
             ``[{"_key", "name", "records"}]``, at most ``limit``.

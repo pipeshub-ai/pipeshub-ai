@@ -15,7 +15,13 @@ from app.modules.entity_resolution.consolidation import (
     MigrationResult,
     TaxonomyNode,
 )
-from app.scripts.kg_taxonomy import build_parser, run
+from app.scripts.kg_taxonomy import (
+    EXIT_FAILED,
+    EXIT_INVALID,
+    build_parser,
+    execute,
+    run,
+)
 from app.services.graph_db.taxonomy import TAXONOMY_COLLECTIONS
 
 TOPICS = "topics"
@@ -27,10 +33,10 @@ def _consolidator() -> MagicMock:
                            (TaxonomyNode(TOPICS, "l", "bug-bash", "o"),))
     c.duplicate_groups = AsyncMock(side_effect=lambda coll, org: [group] if coll == TOPICS else [])
     c.merge = AsyncMock(side_effect=lambda *a, dry_run: MergeResult(3, dry_run))
-    c.unmerge = AsyncMock(return_value=2)
+    c.unmerge = AsyncMock(side_effect=lambda *a, dry_run: MergeResult(2, dry_run))
     c.legacy_nodes = AsyncMock(side_effect=lambda coll, org: [LegacyNode("L", "Pricing", 4)] if coll == TOPICS else [])
     c.migrate_legacy = AsyncMock(side_effect=lambda *a, dry_run: MigrationResult("T", 4, dry_run))
-    c.unmigrate_legacy = AsyncMock(return_value=4)
+    c.unmigrate_legacy = AsyncMock(side_effect=lambda *a, dry_run: MigrationResult("T", 4, dry_run))
     return c
 
 
@@ -115,3 +121,95 @@ async def test_an_invalid_single_merge_is_an_invalid_command() -> None:
         await run(build_parser().parse_args(
             ["merge", "--org", "o", "--collection", TOPICS, "--winner", "w", "--loser", "x"],
         ), consolidator, io.StringIO())
+
+
+@pytest.mark.parametrize(("argv", "result"), [
+    (["unmerge", "--org", "o", "--collection", TOPICS, "--loser", "l", "--apply"],
+     MergeResult(2, False, index_refreshed=False)),
+    (["unmigrate-legacy", "--org", "o", "--collection", TOPICS, "--legacy", "L", "--target", "T", "--apply"],
+     MigrationResult("T", 4, False, index_refreshed=False)),
+])
+async def test_an_undo_that_left_the_index_unrefreshed_is_partial(argv: list[str], result: object) -> None:
+    consolidator, out = _consolidator(), io.StringIO()
+    consolidator.unmerge = consolidator.unmigrate_legacy = AsyncMock(return_value=result)
+    code = await run(build_parser().parse_args(argv), consolidator, out)
+    (line,) = [json.loads(x) for x in out.getvalue().splitlines()]
+    assert code == 1
+    assert line["index_refreshed"] is False and line["dry_run"] is False
+
+
+async def test_an_undo_reports_what_it_moved() -> None:
+    _, lines, _ = await _run(["unmerge", "--org", "o", "--collection", TOPICS, "--loser", "l"])
+    assert lines == [{"action": "unmerge", "collection": TOPICS, "loser": "l", "edges": 2,
+                      "dry_run": True, "index_refreshed": True}]
+    _, lines, _ = await _run(["unmigrate-legacy", "--org", "o", "--collection", TOPICS,
+                              "--legacy", "L", "--target", "T"])
+    assert lines == [{"action": "unmigrate-legacy", "collection": TOPICS, "legacy": "L", "target": "T",
+                      "edges": 4, "dry_run": True, "index_refreshed": True}]
+
+
+async def test_a_failed_listing_skips_that_collection_and_is_partial() -> None:
+    consolidator, out = _consolidator(), io.StringIO()
+    consolidator.legacy_nodes = AsyncMock(side_effect=lambda coll, org: (
+        [LegacyNode("L", "Pricing", 4)] if coll == TOPICS else (_ for _ in ()).throw(RuntimeError("timeout"))
+    ))
+    code = await run(build_parser().parse_args(["migrate-legacy", "--org", "o", "--apply"]), consolidator, out)
+    lines = [json.loads(x) for x in out.getvalue().splitlines()]
+    assert code == 1
+    assert consolidator.migrate_legacy.await_count == 1
+    assert len([x for x in lines if "timeout" in x.get("error", "")]) == len(TAXONOMY_COLLECTIONS) - 1
+
+
+def _provider() -> MagicMock:
+    provider = MagicMock()
+    provider.ensure_schema = AsyncMock()
+    provider.disconnect = AsyncMock()
+    return provider
+
+
+async def _execute(argv: list[str], consolidator: MagicMock, provider: MagicMock) -> tuple[int, str]:
+    err = io.StringIO()
+    code = await execute(
+        build_parser().parse_args(argv), provider, lambda store: consolidator,
+        AsyncMock(return_value=None), MagicMock(), io.StringIO(), err,
+    )
+    return code, err.getvalue()
+
+
+@pytest.mark.parametrize(("argv", "applies"), [
+    (["duplicates", "--org", "o"], False),
+    (["legacy", "--org", "o"], False),
+    (["consolidate", "--org", "o"], False),
+    (["consolidate", "--org", "o", "--apply"], True),
+])
+async def test_the_schema_is_applied_only_by_a_command_that_writes(argv: list[str], applies: bool) -> None:
+    """A dry run must work against a read-only graph user."""
+    provider = _provider()
+    code, _ = await _execute(argv, _consolidator(), provider)
+    assert code == 0
+    assert provider.ensure_schema.await_count == int(applies)
+    provider.disconnect.assert_awaited_once()
+
+
+async def test_an_invalid_command_exits_2_and_a_crash_exits_3() -> None:
+    consolidator, provider = _consolidator(), _provider()
+    consolidator.merge = AsyncMock(side_effect=ValueError("loser not found"))
+    argv = ["merge", "--org", "o", "--collection", TOPICS, "--winner", "w", "--loser", "x"]
+    code, err = await _execute(argv, consolidator, provider)
+    assert (code, json.loads(err)) == (EXIT_INVALID, {"error": "loser not found"})
+    consolidator.merge = AsyncMock(side_effect=RuntimeError("graph down"))
+    code, err = await _execute(argv, consolidator, provider)
+    assert code == EXIT_FAILED and "graph down" in err
+    assert EXIT_FAILED not in (0, 1, EXIT_INVALID)
+    assert provider.disconnect.await_count == 2
+
+
+async def test_an_unreachable_graph_exits_3(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    from app.containers import indexing
+    from app.scripts import kg_taxonomy
+
+    container = MagicMock()
+    container.graph_provider = AsyncMock(side_effect=ConnectionError("refused"))
+    monkeypatch.setattr(indexing.IndexingAppContainer, "init", MagicMock(return_value=container))
+    assert await kg_taxonomy._main(["duplicates", "--org", "o"]) == EXIT_FAILED
+    assert "refused" in json.loads(capsys.readouterr().err)["error"]

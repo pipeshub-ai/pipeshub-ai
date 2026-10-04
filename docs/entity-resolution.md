@@ -123,12 +123,21 @@ python -m app.scripts.kg_taxonomy unmigrate-legacy ...
 - `migrate-legacy` moves one org's edges from a legacy node onto that org's
   canonical node for the same name, created if absent. Other orgs keep the
   legacy node.
-- Entity points are refreshed as each change is made; if that fails, the
-  background rebuild's sweep repairs them.
+- Entity points are refreshed as each change is made. If that fails, the
+  command reports `index_refreshed: false` and exits 1. The background sweep
+  repairs live org nodes but skips merged and legacy ones, so re-run the merge
+  or the unmigrate.
+- Edges only move onto a node of the same org; undoing a migration is the one
+  move allowed back onto a legacy node.
 - Finding legacy nodes walks the org's records and their taxonomy edges, so
-  run it off-peak on large tenants. Edges move in batches of 5,000.
-- Bulk commands carry on past a failed item, print it with `error`, and exit
-  1; each item is idempotent, so a re-run finishes it.
+  run it off-peak on large tenants. A move finds its edges once, then moves
+  them by id in batches of 5,000.
+- Dry runs only read, so they work with a read-only graph user; `--apply`
+  first applies the graph schema.
+- Exit codes: 0 done; 1 some items failed or left the index unrefreshed; 2
+  invalid request; 3 a single-item command failed. Bulk commands carry on
+  past a failed item or collection, print it with `error`, and exit 1; each
+  item is idempotent, so a re-run finishes it.
 - Known limits:
   - `unmerge` restores only edges that moved. When a record linked to both
     nodes, the loser's edge (and its `extractedName`) is dropped rather than

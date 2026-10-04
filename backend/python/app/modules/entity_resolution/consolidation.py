@@ -194,15 +194,18 @@ class TaxonomyConsolidator:
             await self.graph.update_node(loser.key, collection, {
                 MERGED_INTO_FIELD: winner.key, MERGED_AT_FIELD: self.now_ms(),
             })
-            await self._flatten(collection, loser.key, winner.key)
             # Records linked to the loser while the edges moved.
             moved += await self.graph.move_taxonomy_edges(
                 collection, loser.key, winner.key, org_id, set_merged_from=loser.key,
             )
+        # Also on a re-run: a crash after the mark above skipped it.
+        await self._flatten(collection, org_id, loser.key, winner.key)
         refreshed = await self._refresh_index(collection, org_id, keep=[winner.key], drop=[loser.key])
         return MergeResult(moved, dry_run=False, index_refreshed=refreshed)
 
-    async def unmerge(self, collection: str, org_id: str, loser_key: str, *, dry_run: bool = True) -> int:
+    async def unmerge(
+        self, collection: str, org_id: str, loser_key: str, *, dry_run: bool = True,
+    ) -> MergeResult:
         """Undo ``merge``: move the edges the merge moved back to the loser
         and clear its redirect. Aliases the winner learned are kept."""
         _check_collection(collection)
@@ -219,10 +222,10 @@ class TaxonomyConsolidator:
             "planned" if dry_run else "applied", org_id, winner_key, loser.key, restored,
         )
         if dry_run:
-            return restored
+            return MergeResult(restored, dry_run=True)
         await self.graph.update_node(loser.key, collection, {MERGED_INTO_FIELD: None, MERGED_AT_FIELD: None})
-        await self._refresh_index(collection, org_id, keep=[winner_key, loser.key], drop=[])
-        return restored
+        refreshed = await self._refresh_index(collection, org_id, keep=[winner_key, loser.key], drop=[])
+        return MergeResult(restored, dry_run=False, index_refreshed=refreshed)
 
     # ------------------------------------------------------------------
     # Legacy nodes
@@ -292,7 +295,7 @@ class TaxonomyConsolidator:
 
     async def unmigrate_legacy(
         self, collection: str, org_id: str, legacy_key: str, target_key: str, *, dry_run: bool = True,
-    ) -> int:
+    ) -> MigrationResult:
         """Undo ``migrate_legacy`` for one org, wherever later merges moved
         the edges."""
         _check_collection(collection)
@@ -301,9 +304,14 @@ class TaxonomyConsolidator:
             collection, target_key, legacy_key, org_id,
             set_merged_from=None, only_merged_from=legacy_key, provenance=_MIGRATED, dry_run=dry_run,
         )
-        if not dry_run:
-            await self._refresh_index(collection, org_id, keep=[target_key], drop=[])
-        return restored
+        self.logger.info(
+            "kg_taxonomy: legacy unmigrate %s | org=%s legacy=%s target=%s edges=%d",
+            "planned" if dry_run else "applied", org_id, legacy_key, target_key, restored,
+        )
+        if dry_run:
+            return MigrationResult(target_key, restored, dry_run=True)
+        refreshed = await self._refresh_index(collection, org_id, keep=[target_key, legacy_key], drop=[])
+        return MigrationResult(target_key, restored, dry_run=False, index_refreshed=refreshed)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -335,15 +343,15 @@ class TaxonomyConsolidator:
                 raise ValueError(f"redirect cycle or overlong chain at {collection}/{key}: {seen}")
             key = node.merged_into
 
-    async def _flatten(self, collection: str, loser_key: str, winner_key: str) -> None:
-        """Point nodes that redirected to the loser at the winner, so no
-        redirect leads to a node that is itself merged."""
+    async def _flatten(self, collection: str, org_id: str, loser_key: str, winner_key: str) -> None:
+        """Point the org's nodes that redirected to the loser at the winner,
+        so no redirect leads to a node that is itself merged."""
         rows = await self.graph.get_nodes_by_field_in(
-            collection, MERGED_INTO_FIELD, [loser_key], return_fields=["id"], raise_on_error=True,
+            collection, MERGED_INTO_FIELD, [loser_key], return_fields=["id", "orgId"], raise_on_error=True,
         )
         for row in rows or []:
             key = row.get("id") or row.get("_key")
-            if key and key != winner_key:
+            if key and key != winner_key and row.get("orgId") == org_id:
                 await self.graph.update_node(key, collection, {MERGED_INTO_FIELD: winner_key})
 
     async def _migration_target(self, collection: str, org_id: str, normalized: str) -> tuple[str, bool]:
@@ -366,7 +374,9 @@ class TaxonomyConsolidator:
     async def _refresh_index(self, collection: str, org_id: str, *, keep: list[str], drop: list[str]) -> bool:
         """Re-project ``keep`` from the graph and delete the org's points of
         ``drop``. The graph change already happened, so a failure is logged
-        and reported, not raised; the rebuild sweep repairs it later."""
+        and reported as partial, not raised. The rebuild sweep repairs live
+        org nodes; it skips merged and legacy ones, so re-run the merge or
+        the unmigrate for those."""
         if self.store is None:
             return True
         entity_type, _ = taxonomy_entity_type(collection)

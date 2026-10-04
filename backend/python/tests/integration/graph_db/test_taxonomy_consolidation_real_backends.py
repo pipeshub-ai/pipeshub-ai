@@ -198,7 +198,7 @@ async def test_merge_then_unmerge(backend) -> None:
     assert await consolidator.duplicate_groups(TOPICS, org) == []
 
     restored = await consolidator.unmerge(TOPICS, org, lose, dry_run=False)
-    assert restored == 1
+    assert restored.edges_moved == 1
     assert await db.edges(f"r1-{run}") == [(lose, "bug-bash", None)]
     assert await db.edges(f"r2-{run}") == [(win, None, None)]
 
@@ -230,7 +230,7 @@ async def test_legacy_migration_then_undo(backend) -> None:
     assert [r["id"] for r in found] == [target]
 
     restored = await consolidator.unmigrate_legacy(TOPICS, org, legacy, target, dry_run=False)
-    assert restored == 1
+    assert restored.edges_moved == 1
     assert await db.edges(f"r1-{run}") == [(legacy, "pricing strategy", None)]
 
 
@@ -254,10 +254,10 @@ async def test_chained_merges_keep_origins_and_undo_one_link_at_a_time(backend) 
     (node,) = await provider.get_nodes_by_field_in(TOPICS, "id", [a], return_fields=["id", "mergedInto"])
     assert node["mergedInto"] == c
 
-    assert await consolidator.unmerge(TOPICS, org, a, dry_run=False) == 1
+    assert (await consolidator.unmerge(TOPICS, org, a, dry_run=False)).edges_moved == 1
     assert await db.edges(f"ra-{run}") == [(a, "bug-bash", None)]
     assert await db.edges(f"rb-{run}") == [(c, None, b)]
-    assert await consolidator.unmerge(TOPICS, org, b, dry_run=False) == 1
+    assert (await consolidator.unmerge(TOPICS, org, b, dry_run=False)).edges_moved == 1
     assert await db.edges(f"rb-{run}") == [(b, None, None)]
 
 
@@ -300,9 +300,9 @@ async def test_migrate_then_merge_then_undo_both(backend) -> None:
     await consolidator.merge(TOPICS, org, winner, target, dry_run=False)
     assert [t for t, _, _ in await db.edges(f"r1-{run}")] == [winner]
 
-    assert await consolidator.unmerge(TOPICS, org, target, dry_run=False) == 1
+    assert (await consolidator.unmerge(TOPICS, org, target, dry_run=False)).edges_moved == 1
     assert [t for t, _, _ in await db.edges(f"r1-{run}")] == [target]
-    assert await consolidator.unmigrate_legacy(TOPICS, org, legacy, target, dry_run=False) == 1
+    assert (await consolidator.unmigrate_legacy(TOPICS, org, legacy, target, dry_run=False)).edges_moved == 1
     assert await db.edges(f"r1-{run}") == [(legacy, "pricing strategy", None)]
 
 
@@ -313,4 +313,53 @@ async def test_moving_to_a_missing_node_is_refused(backend) -> None:
     await db.link(f"r1-{run}", org, f"a-{run}")
     with pytest.raises(ValueError, match="not found"):
         await provider.move_taxonomy_edges(TOPICS, f"a-{run}", f"missing-{run}", org, set_merged_from=f"a-{run}")
+    assert [t for t, _, _ in await db.edges(f"r1-{run}")] == [f"a-{run}"]
+
+
+async def test_a_shared_legacy_hub_moves_only_this_orgs_edges_in_batches(
+    backend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Edges are found once and moved by id, so batching across a hub that
+    other orgs share still moves every edge of this org and none of theirs."""
+    from app.services.graph_db.arango import arango_http_provider
+    from app.services.graph_db.neo4j import neo4j_provider
+
+    monkeypatch.setattr(neo4j_provider, "_EDGE_MOVE_BATCH", 2)
+    monkeypatch.setattr(arango_http_provider, "_EDGE_MOVE_BATCH", 2)
+    provider, db, run = backend
+    org, other = f"org-{run}", f"other-{run}"
+    legacy = f"legacy-{run}"
+    await db.topic(legacy, "Pricing strategy", None)
+    for i in range(5):
+        await db.link(f"x{i}-{run}", other, legacy)
+        await db.link(f"r{i}-{run}", org, legacy)
+    consolidator = _consolidator(provider)
+
+    result = await consolidator.migrate_legacy(TOPICS, org, legacy, dry_run=False)
+    target = result.target_key
+    if isinstance(db, _Arango):
+        db.keys[TOPICS].add(target)
+    else:
+        await db.q("MATCH (n:Topics {id: $k}) SET n.itRun = $run", k=target, run=run)
+    assert result.edges_moved == 5
+    for i in range(5):
+        assert [t for t, _, _ in await db.edges(f"r{i}-{run}")] == [target]
+        assert [t for t, _, _ in await db.edges(f"x{i}-{run}")] == [legacy]
+
+    restored = await consolidator.unmigrate_legacy(TOPICS, org, legacy, target, dry_run=False)
+    assert restored.edges_moved == 5
+    for i in range(5):
+        assert [t for t, _, _ in await db.edges(f"r{i}-{run}")] == [legacy]
+
+
+async def test_edges_never_move_onto_another_orgs_node_or_a_legacy_one(backend) -> None:
+    provider, db, run = backend
+    org = f"org-{run}"
+    await db.topic(f"a-{run}", "Alpha", org)
+    await db.topic(f"theirs-{run}", "Alpha", f"other-{run}")
+    await db.topic(f"legacy-{run}", "Alpha", None)
+    await db.link(f"r1-{run}", org, f"a-{run}")
+    for to in (f"theirs-{run}", f"legacy-{run}"):
+        with pytest.raises(ValueError, match="not a node of org"):
+            await provider.move_taxonomy_edges(TOPICS, f"a-{run}", to, org, set_merged_from=f"a-{run}")
     assert [t for t, _, _ in await db.edges(f"r1-{run}")] == [f"a-{run}"]

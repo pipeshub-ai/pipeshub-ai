@@ -115,8 +115,11 @@ class FakeGraph:
                                   provenance: str = "mergedFrom",
                                   dry_run: bool = False, transaction: str | None = None) -> int:
         field_name = "merged_from" if provenance == "mergedFrom" else "migrated_from"
-        if not dry_run and (collection, to_key) not in self.nodes:
-            raise ValueError(f"{collection}/{to_key} not found")
+        target = self.nodes.get((collection, to_key))
+        legacy_restore = provenance == "migratedFrom" and only_merged_from is not None
+        if not dry_run and (target is None or (
+                target.get("orgId") != org_id and not (legacy_restore and target.get("orgId") is None))):
+            raise ValueError(f"{collection}/{to_key} is not a node of org {org_id}")
         moved = 0
         for edge in list(self.edges):
             if edge.target != (collection, from_key) or self.record_orgs.get(edge.record) != org_id:
@@ -357,7 +360,7 @@ class TestUnmerge:
         consolidator = _consolidator(graph, store)
         await consolidator.merge(TOPICS, ORG, "win", "lose", dry_run=False)
         restored = await consolidator.unmerge(TOPICS, ORG, "lose", dry_run=False)
-        assert restored == 1  # r2's duplicate edge was dropped by the merge
+        assert restored.edges_moved == 1  # r2's duplicate edge was dropped by the merge
         assert graph.targets("r1") == [(TOPICS, "lose")]
         assert next(e for e in graph.edges if e.record == "r1").merged_from is None
         assert "mergedInto" not in graph.nodes[(TOPICS, "lose")]
@@ -452,7 +455,7 @@ class TestLegacyMigration:
         consolidator = _consolidator(graph)
         result = await consolidator.migrate_legacy(TOPICS, ORG, "L", dry_run=False)
         restored = await consolidator.unmigrate_legacy(TOPICS, ORG, "L", result.target_key, dry_run=False)
-        assert restored == 2
+        assert restored.edges_moved == 2
         assert graph.targets("r1") == [(TOPICS, "L")]
         assert next(e for e in graph.edges if e.record == "r1").merged_from is None
 
@@ -504,10 +507,10 @@ class TestChains:
         consolidator = _consolidator(graph)
         await consolidator.merge(TOPICS, ORG, "b", "a", dry_run=False)
         await consolidator.merge(TOPICS, ORG, "c", "b", dry_run=False)
-        assert await consolidator.unmerge(TOPICS, ORG, "a", dry_run=False) == 1
+        assert (await consolidator.unmerge(TOPICS, ORG, "a", dry_run=False)).edges_moved == 1
         assert graph.targets("ra") == [(TOPICS, "a")]
         assert graph.targets("rb") == [(TOPICS, "c")]
-        assert await consolidator.unmerge(TOPICS, ORG, "b", dry_run=False) == 1
+        assert (await consolidator.unmerge(TOPICS, ORG, "b", dry_run=False)).edges_moved == 1
         assert graph.targets("rb") == [(TOPICS, "b")]
 
     async def test_migration_survives_a_later_merge_and_still_undoes(self) -> None:
@@ -519,7 +522,31 @@ class TestChains:
         moved = next(e for e in graph.edges if e.record == "r1")
         assert (moved.migrated_from, moved.merged_from) == ("L", result.target_key)
         restored = await consolidator.unmigrate_legacy(TOPICS, ORG, "L", result.target_key, dry_run=False)
-        assert restored == 2 and graph.targets("r1") == [(TOPICS, "L")]
+        assert restored.edges_moved == 2 and graph.targets("r1") == [(TOPICS, "L")]
+
+    async def test_a_rerun_after_a_crash_before_flatten_still_flattens(self) -> None:
+        graph = _chain_fixture()
+        consolidator = _consolidator(graph)
+        await consolidator.merge(TOPICS, ORG, "b", "a", dry_run=False)
+        flatten = consolidator._flatten
+        consolidator._flatten = AsyncMock(side_effect=RuntimeError("crash"))  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError):
+            await consolidator.merge(TOPICS, ORG, "c", "b", dry_run=False)
+        consolidator._flatten = flatten  # type: ignore[method-assign]
+        await consolidator.merge(TOPICS, ORG, "c", "b", dry_run=False)
+        assert graph.nodes[(TOPICS, "a")]["mergedInto"] == "c"
+        await consolidator.unmerge(TOPICS, ORG, "b", dry_run=False)
+        await consolidator.unmerge(TOPICS, ORG, "a", dry_run=False)
+        assert [graph.targets(r) for r in ("ra", "rb", "rc")] == [
+            [(TOPICS, "a")], [(TOPICS, "b")], [(TOPICS, "c")],
+        ]
+
+    async def test_flatten_leaves_another_orgs_redirects_alone(self) -> None:
+        graph = _chain_fixture()
+        graph.node(TOPICS, "foreign", "bug bash", OTHER, mergedInto="a")
+        consolidator = _consolidator(graph)
+        await consolidator.merge(TOPICS, ORG, "b", "a", dry_run=False)
+        assert graph.nodes[(TOPICS, "foreign")]["mergedInto"] == "a"
 
     async def test_a_redirect_cycle_is_refused(self) -> None:
         graph = _chain_fixture()
@@ -570,9 +597,9 @@ class TestMigrationAndMergeHistoriesAreSeparate:
         edge = next(e for e in graph.edges if e.record == "r1")
         assert (edge.merged_from, edge.migrated_from) == (target, "L")
 
-        assert await consolidator.unmerge(TOPICS, ORG, target, dry_run=False) == 2
+        assert (await consolidator.unmerge(TOPICS, ORG, target, dry_run=False)).edges_moved == 2
         assert graph.targets("r1") == [(TOPICS, target)]
-        assert await consolidator.unmigrate_legacy(TOPICS, ORG, "L", target, dry_run=False) == 2
+        assert (await consolidator.unmigrate_legacy(TOPICS, ORG, "L", target, dry_run=False)).edges_moved == 2
         assert graph.targets("r1") == [(TOPICS, "L")]
         edge = next(e for e in graph.edges if e.record == "r1")
         assert (edge.merged_from, edge.migrated_from) == (None, None)
@@ -583,5 +610,45 @@ class TestMigrationAndMergeHistoriesAreSeparate:
         target = (await consolidator.migrate_legacy(TOPICS, ORG, "L", dry_run=False)).target_key
         graph.node(TOPICS, "w", "Pricing strategy!", ORG, created=0)
         await consolidator.merge(TOPICS, ORG, "w", target, dry_run=False)
-        assert await consolidator.unmigrate_legacy(TOPICS, ORG, "L", target, dry_run=False) == 2
+        assert (await consolidator.unmigrate_legacy(TOPICS, ORG, "L", target, dry_run=False)).edges_moved == 2
         assert graph.targets("r1") == [(TOPICS, "L")]
+
+
+class TestUndoReportsTheIndex:
+    async def test_unmerge_reports_an_index_it_could_not_refresh(self) -> None:
+        graph, store = _merge_fixture(), FakeStore()
+        consolidator = _consolidator(graph, store)
+        await consolidator.merge(TOPICS, ORG, "win", "lose", dry_run=False)
+        store.upsert_entities_batch = AsyncMock(side_effect=RuntimeError("vector db down"))
+        result = await consolidator.unmerge(TOPICS, ORG, "lose", dry_run=False)
+        assert (result.edges_moved, result.dry_run, result.index_refreshed) == (1, False, False)
+        assert "mergedInto" not in graph.nodes[(TOPICS, "lose")]
+
+    async def test_a_planned_unmerge_writes_nothing(self) -> None:
+        graph = _merge_fixture()
+        consolidator = _consolidator(graph)
+        await consolidator.merge(TOPICS, ORG, "win", "lose", dry_run=False)
+        graph.writes.clear()
+        result = await consolidator.unmerge(TOPICS, ORG, "lose", dry_run=True)
+        assert (result.edges_moved, result.dry_run) == (1, True)
+        assert graph.writes == []
+
+    async def test_unmigrate_reports_an_index_it_could_not_refresh(self) -> None:
+        graph, store = _legacy_fixture(), FakeStore()
+        consolidator = _consolidator(graph, store)
+        target = (await consolidator.migrate_legacy(TOPICS, ORG, "L", dry_run=False)).target_key
+        store.upsert_entities_batch = AsyncMock(side_effect=RuntimeError("vector db down"))
+        result = await consolidator.unmigrate_legacy(TOPICS, ORG, "L", target, dry_run=False)
+        assert (result.target_key, result.edges_moved, result.index_refreshed) == (target, 2, False)
+
+    async def test_unmigrate_puts_the_legacy_node_back_in_the_orgs_index(self) -> None:
+        graph, store = _legacy_fixture(), FakeStore()
+        consolidator = _consolidator(graph, store)
+        target = (await consolidator.migrate_legacy(TOPICS, ORG, "L", dry_run=False)).target_key
+        store.upserts.clear()
+        result = await consolidator.unmigrate_legacy(TOPICS, ORG, "L", target, dry_run=False)
+        assert result.index_refreshed is True
+        assert [(e.entity_id, e.org_id) for e in store.upserts] == [("L", ORG)]
+        # The target lost its only records, so its point goes.
+        assert (ORG, EntityType.TOPIC.value, [target]) in store.deletes
+

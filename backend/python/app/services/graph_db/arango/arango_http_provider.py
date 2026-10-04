@@ -185,6 +185,8 @@ from app.services.graph_db.taxonomy import (
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
     alias_pairs as _alias_pairs,
+    check_edge_move,
+    check_edge_move_target,
     is_taxonomy_collection,
     subcategory_level,
 )
@@ -317,19 +319,6 @@ EDGE_COLLECTIONS = [
 # Edges one statement moves; a hub node's millions go in batches.
 _EDGE_MOVE_BATCH = 5000
 
-
-_EDGE_PROVENANCE_FIELDS = frozenset({"mergedFrom", "migratedFrom"})
-
-
-def _check_edge_move(collection: str, from_key: str, to_key: str, org_id: str, provenance: str) -> None:
-    if provenance not in _EDGE_PROVENANCE_FIELDS:
-        raise ValueError(f"{provenance!r} is not an edge provenance field")
-    if not is_taxonomy_collection(collection):
-        raise ValueError(f"{collection!r} is not a taxonomy collection")
-    if not from_key or not to_key or not org_id:
-        raise ValueError("moving taxonomy edges needs both keys and an org")
-    if from_key == to_key:
-        raise ValueError("cannot move taxonomy edges onto the same node")
 
 # Promotions to these statuses leave the primary with taxonomy to copy to its
 # duplicates; see update_queued_duplicates_status.
@@ -17705,7 +17694,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None,
     ) -> int:
         """See :meth:`IGraphDBProvider.move_taxonomy_edges`."""
-        _check_edge_move(collection, from_key, to_key, org_id, provenance)
+        check_edge_move(collection, from_key, to_key, org_id, provenance)
         match = """
             FOR e IN @@edges
                 FILTER e._to == @from_id
@@ -17726,24 +17715,35 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return int((rows or [0])[0] or 0)
         target = await self.http_client.execute_aql(
-            "RETURN DOCUMENT(@to_id) != null", bind_vars={"to_id": f"{collection}/{to_key}"}, txn_id=transaction,
+            "LET t = DOCUMENT(@to_id) RETURN t == null ? null : { orgId: t.orgId }",
+            bind_vars={"to_id": f"{collection}/{to_key}"}, txn_id=transaction,
         )
-        if not (target or [False])[0]:
-            raise ValueError(f"{collection}/{to_key} not found")
-        bind_vars |= {"to_id": f"{collection}/{to_key}", "batch": _EDGE_MOVE_BATCH}
-        # Two statements, each idempotent, so a crash between them is
-        # finished by a re-run: drop edges whose record already links to the
-        # target, then point the rest at it. A forward move keeps an edge's
-        # first mergedFrom; a restore clears it. Batched for hub nodes.
-        dedupe = match + """
+        found = (target or [None])[0]
+        check_edge_move_target(
+            collection, to_key, org_id, found=found is not None, target_org=(found or {}).get("orgId"),
+            provenance=provenance, only_merged_from=only_merged_from,
+        )
+        # Found once, then moved by key: a batch that matched again would
+        # rescan a hub's edges of every other org each time.
+        keys = await self.http_client.execute_aql(match + "RETURN e._key", bind_vars=bind_vars, txn_id=transaction)
+        by_key = """
+            FOR e IN @@edges
+                FILTER e._key IN @keys AND e._to == @from_id
+        """
+        binds = {
+            "@edges": bind_vars["@edges"], "from_id": bind_vars["from_id"], "to_id": f"{collection}/{to_key}",
+        }
+        # Two statements per batch, each idempotent, so a crash between them
+        # is finished by a re-run: drop edges whose record already links to
+        # the target, then point the rest at it. A forward move keeps an
+        # edge's first provenance; a restore clears it.
+        dedupe = by_key + """
                 FILTER LENGTH(FOR d IN @@edges FILTER d._from == e._from AND d._to == @to_id
                               LIMIT 1 RETURN 1) > 0
-                LIMIT @batch
                 REMOVE e IN @@edges
                 RETURN 1
         """
-        repoint = match + """
-                LIMIT @batch
+        repoint = by_key + """
                 UPDATE e WITH MERGE(
                     { _to: @to_id },
                     { [@provenance]: @only_merged_from == null
@@ -17752,13 +17752,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 ) IN @@edges
                 RETURN 1
         """
+        repoint_binds = {
+            **binds, "provenance": provenance, "only_merged_from": only_merged_from,
+            "set_merged_from": set_merged_from,
+        }
         total = 0
-        for query, binds in ((dedupe, bind_vars), (repoint, {**bind_vars, "set_merged_from": set_merged_from})):
-            while True:
-                rows = await self.http_client.execute_aql(query, bind_vars=binds, txn_id=transaction)
+        keys = list(keys or [])
+        for i in range(0, len(keys), _EDGE_MOVE_BATCH):
+            batch = keys[i:i + _EDGE_MOVE_BATCH]
+            for query, query_binds in ((dedupe, binds), (repoint, repoint_binds)):
+                rows = await self.http_client.execute_aql(
+                    query, bind_vars={**query_binds, "keys": batch}, txn_id=transaction,
+                )
                 total += len(rows or [])
-                if len(rows or []) < _EDGE_MOVE_BATCH:
-                    break
         return total
 
     async def find_legacy_taxonomy_nodes(

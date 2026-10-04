@@ -81,3 +81,33 @@ __all__ = [
     "is_taxonomy_collection",
     "subcategory_level",
 ]
+
+
+EDGE_PROVENANCE_FIELDS = frozenset({"mergedFrom", "migratedFrom"})
+
+
+def check_edge_move(collection: str, from_key: str, to_key: str, org_id: str, provenance: str) -> None:
+    """Validate a ``move_taxonomy_edges`` call before it touches the graph."""
+    if provenance not in EDGE_PROVENANCE_FIELDS:
+        raise ValueError(f"{provenance!r} is not an edge provenance field")
+    if not is_taxonomy_collection(collection):
+        raise ValueError(f"{collection!r} is not a taxonomy collection")
+    if not from_key or not to_key or not org_id:
+        raise ValueError("moving taxonomy edges needs both keys and an org")
+    if from_key == to_key:
+        raise ValueError("cannot move taxonomy edges onto the same node")
+
+
+def check_edge_move_target(
+    collection: str, to_key: str, org_id: str, *, found: bool, target_org: str | None,
+    provenance: str, only_merged_from: str | None,
+) -> None:
+    """An org's edges may only land on that org's node, or back on the
+    legacy node (no ``orgId``) they were migrated from."""
+    if not found:
+        raise ValueError(f"{collection}/{to_key} not found")
+    if target_org == org_id:
+        return
+    if target_org is None and provenance == "migratedFrom" and only_merged_from == to_key:
+        return
+    raise ValueError(f"{collection}/{to_key} is not a node of org {org_id}")

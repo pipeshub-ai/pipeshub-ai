@@ -54,47 +54,84 @@ def test_edge_schema_declares_merged_from() -> None:
     assert taxonomy_edge_schema["rule"]["properties"]["mergedFrom"] == {"type": ["string", "null"]}
 
 
+def _neo4j_move(ids: list[str], *, target_org: str | None = "org-1", found: int = 1) -> Neo4jProvider:
+    """Answers the target check, the id lookup, then one move per batch."""
+    p = _neo4j()
+
+    async def answer(query: str, **kwargs: object) -> list[dict]:
+        if "RETURN count(t) AS n" in query:
+            return [{"n": found, "orgId": target_org}]
+        if "RETURN elementId(e) AS id" in query:
+            return [{"id": i} for i in ids]
+        return [{"moved": len(kwargs["parameters"]["ids"])}]  # type: ignore[index]
+
+    p.client.execute_query = AsyncMock(side_effect=answer)
+    return p
+
+
+def _queries(p: Neo4jProvider) -> list[str]:
+    return [c.args[0] for c in p.client.execute_query.await_args_list]
+
+
 class TestMoveEdgesNeo4j:
     async def test_moves_org_edges_keeping_properties(self) -> None:
-        p = _neo4j([{"moved": 3, "n": 1}])
+        p = _neo4j_move(["e1", "e2", "e3"])
         moved = await p.move_taxonomy_edges(TOPICS, "a", "b", "org-1", set_merged_from="a")
-        query = p.client.execute_query.await_args.args[0]
+        _, find, query = _queries(p)
         params = p.client.execute_query.await_args.kwargs["parameters"]
         assert moved == 3
-        assert "MATCH (r:Record)-[e:BELONGS_TO_TOPIC]->(:Topics {id: $from_key})" in query
-        assert "WHERE r.orgId = $org_id" in query
+        assert "MATCH (r:Record)-[e:BELONGS_TO_TOPIC]->(:Topics {id: $from_key})" in find
+        assert "WHERE r.orgId = $org_id" in find
+        # Each batch seeks its edges by id instead of expanding the hub again.
+        assert "MATCH ()-[e:BELONGS_TO_TOPIC]->() WHERE elementId(e) IN $ids" in query
+        assert "from:Topics AND from.id = $from_key AND r.orgId = $org_id" in query
+        assert "($only_merged_from IS NULL OR e.mergedFrom = $only_merged_from)" in query
         assert "SET n = properties(e)" in query
         # A forward move keeps an edge's first origin; a restore sets it.
         assert "THEN coalesce(e.mergedFrom, $set_merged_from)" in query
         assert "n.mergedFrom = null" not in query  # only a legacy restore clears merge history
         assert "OPTIONAL MATCH (r)-[x:BELONGS_TO_TOPIC]->(target)" in query
         assert "WITH r, e, target, count(x) AS existing" in query
-        assert query.index("WITH r, e LIMIT $batch") < query.index("DELETE e")
-        assert params["batch"] == 5000
+        assert params["ids"] == ["e1", "e2", "e3"]
         assert {k: params[k] for k in ("from_key", "to_key", "org_id", "set_merged_from", "only_merged_from")} == {
             "from_key": "a", "to_key": "b", "org_id": "org-1", "set_merged_from": "a", "only_merged_from": None,
         }
 
-    async def test_a_hub_node_is_moved_in_batches(self) -> None:
-        p = _neo4j()
-        p.client.execute_query = AsyncMock(
-            side_effect=[[{"n": 1}], [{"moved": 5000}], [{"moved": 5000}], [{"moved": 7}]],
-        )
+    async def test_a_hub_node_is_found_once_and_moved_in_batches(self) -> None:
+        p = _neo4j_move([f"e{i}" for i in range(10007)])
         assert await p.move_taxonomy_edges(TOPICS, "a", "b", "org-1", set_merged_from="a") == 10007
-        assert p.client.execute_query.await_count == 4
+        queries = _queries(p)
+        assert len(queries) == 5
+        assert sum("RETURN elementId(e) AS id" in q for q in queries) == 1
+        sizes = [len(c.kwargs["parameters"]["ids"]) for c in p.client.execute_query.await_args_list[2:]]
+        assert sizes == [5000, 5000, 7]
 
     async def test_a_missing_target_is_refused_before_any_write(self) -> None:
-        p = _neo4j([{"n": 0}])
+        p = _neo4j_move(["e1"], found=0)
         with pytest.raises(ValueError, match="not found"):
             await p.move_taxonomy_edges(TOPICS, "a", "b", "org-1", set_merged_from="a")
         assert p.client.execute_query.await_count == 1
 
+    @pytest.mark.parametrize(("target_org", "provenance", "only"), [
+        ("org-2", "mergedFrom", None),
+        (None, "mergedFrom", None),
+        (None, "migratedFrom", None),  # a migration goes to an org node, never a legacy one
+        ("org-2", "migratedFrom", "b"),
+        (None, "migratedFrom", "L"),  # migrated from another legacy node
+    ])
+    async def test_a_target_outside_the_org_is_refused(self, target_org, provenance, only) -> None:
+        p = _neo4j_move(["e1"], target_org=target_org)
+        with pytest.raises(ValueError, match="not a node of org"):
+            await p.move_taxonomy_edges(TOPICS, "a", "b", "org-1", set_merged_from=None,
+                                        only_merged_from=only, provenance=provenance)
+        assert p.client.execute_query.await_count == 1
+
     async def test_migration_provenance_is_its_own_field(self) -> None:
-        p = _neo4j([{"moved": 1, "n": 1}])
+        p = _neo4j_move(["e1"], target_org=None)  # back onto the legacy node
         await p.move_taxonomy_edges(TOPICS, "b", "L", "org-1", set_merged_from=None,
                                     only_merged_from="L", provenance="migratedFrom")
-        query = p.client.execute_query.await_args.args[0]
-        assert "e.migratedFrom = $only_merged_from" in query
+        _, find, query = _queries(p)
+        assert "e.migratedFrom = $only_merged_from" in find
         assert "n.migratedFrom = CASE" in query and "n.mergedFrom = null" in query
 
     async def test_unknown_provenance_field_is_rejected(self) -> None:
@@ -102,10 +139,14 @@ class TestMoveEdgesNeo4j:
             await _neo4j().move_taxonomy_edges(TOPICS, "a", "b", "o", set_merged_from="a", provenance="x}) DELETE e //")
 
     async def test_only_merged_from_restricts_the_edges(self) -> None:
-        p = _neo4j([{"moved": 1, "n": 1}])
+        p = _neo4j_move(["e1"])
         await p.move_taxonomy_edges(TOPICS, "b", "a", "org-1", set_merged_from=None, only_merged_from="a")
-        query = p.client.execute_query.await_args.args[0]
-        assert "($only_merged_from IS NULL OR e.mergedFrom = $only_merged_from)" in query
+        assert "($only_merged_from IS NULL OR e.mergedFrom = $only_merged_from)" in _queries(p)[1]
+
+    async def test_nothing_to_move_writes_nothing(self) -> None:
+        p = _neo4j_move([])
+        assert await p.move_taxonomy_edges(TOPICS, "a", "b", "org-1", set_merged_from="a") == 0
+        assert p.client.execute_query.await_count == 2
 
     async def test_dry_run_only_counts(self) -> None:
         p = _neo4j([{"moved": 2}])
@@ -114,31 +155,81 @@ class TestMoveEdgesNeo4j:
         assert "DELETE" not in query and "CREATE" not in query
 
     async def test_subcategory_uses_its_level_label(self) -> None:
-        p = _neo4j([{"moved": 0, "n": 1}])
+        p = _neo4j_move(["e1"])
         await p.move_taxonomy_edges(SUB2, "a", "b", "org-1", set_merged_from="a")
-        query = p.client.execute_query.await_args.args[0]
-        assert "-[e:BELONGS_TO_CATEGORY]->(:Subcategories2 {id: $from_key})" in query
+        _, find, query = _queries(p)
+        assert "-[e:BELONGS_TO_CATEGORY]->(:Subcategories2 {id: $from_key})" in find
+        assert "from:Subcategories2" in query
+
+
+def _arango_move(keys: list[str], *, target: dict | None = None) -> ArangoHTTPProvider:
+    """Answers the target check, the key lookup, then dedupe and repoint per
+    batch; dedupe drops the first key of each batch."""
+    p = _arango()
+    target = {"orgId": "org-1"} if target is None else target
+
+    async def answer(query: str, **kwargs: object) -> list:
+        binds: dict = kwargs["bind_vars"]  # type: ignore[assignment]
+        if "LET t = DOCUMENT(@to_id)" in query:
+            return [target or None]
+        if "RETURN e._key" in query:
+            return list(keys)
+        if "REMOVE e" in query:
+            return [1]
+        return [1] * (len(binds["keys"]) - 1)
+
+    p.http_client.execute_aql = AsyncMock(side_effect=answer)
+    return p
 
 
 class TestMoveEdgesArango:
     async def test_drops_duplicates_then_repoints_the_rest(self) -> None:
-        p = _arango()
-        p.http_client.execute_aql = AsyncMock(side_effect=[[True], [1], [1, 1]])
+        p = _arango_move(["k1", "k2", "k3"])
         moved = await p.move_taxonomy_edges(TOPICS, "a", "b", "org-1", set_merged_from="a")
-        _, (dedupe, *_), (repoint, *_) = (c.args for c in p.http_client.execute_aql.await_args_list)
+        calls = p.http_client.execute_aql.await_args_list
+        (_, find, dedupe, repoint) = (c.args[0] for c in calls)
         assert moved == 3
+        assert "FILTER e._to == @from_id" in find
+        assert "FILTER rec != null AND rec.orgId == @org_id" in find
+        assert "FILTER @only_merged_from == null OR e[@provenance] == @only_merged_from" in find
         assert "REMOVE e IN @@edges" in dedupe
         assert "d._from == e._from AND d._to == @to_id" in dedupe
         assert "NOT_NULL(e[@provenance], @set_merged_from)" in repoint
-        assert "LIMIT @batch" in dedupe and "LIMIT @batch" in repoint
         for query in (dedupe, repoint):
-            assert "FILTER e._to == @from_id" in query
-            assert "FILTER rec != null AND rec.orgId == @org_id" in query
-            assert "FILTER @only_merged_from == null OR e[@provenance] == @only_merged_from" in query
-        binds = p.http_client.execute_aql.await_args.kwargs["bind_vars"]
-        assert binds["provenance"] == "mergedFrom"
+            # By primary key, re-checked against the node the edge left.
+            assert "FILTER e._key IN @keys AND e._to == @from_id" in query
+            assert "DOCUMENT(e._from)" not in query
+        binds = calls[-1].kwargs["bind_vars"]
+        assert binds["provenance"] == "mergedFrom" and binds["keys"] == ["k1", "k2", "k3"]
         assert binds["@edges"] == "belongsToTopic"
         assert binds["from_id"] == "topics/a" and binds["to_id"] == "topics/b"
+
+    async def test_a_hub_node_is_found_once_and_moved_in_batches(self) -> None:
+        p = _arango_move([f"k{i}" for i in range(10007)])
+        assert await p.move_taxonomy_edges(TOPICS, "a", "b", "org-1", set_merged_from="a") == 10007
+        calls = p.http_client.execute_aql.await_args_list
+        assert sum("RETURN e._key" in c.args[0] for c in calls) == 1
+        assert [len(c.kwargs["bind_vars"]["keys"]) for c in calls[2:]] == [5000, 5000, 5000, 5000, 7, 7]
+
+    @pytest.mark.parametrize(("target", "provenance", "only", "error"), [
+        ({}, "mergedFrom", None, "not found"),
+        ({"orgId": "org-2"}, "mergedFrom", None, "not a node of org"),
+        ({"orgId": None}, "mergedFrom", None, "not a node of org"),
+    ])
+    async def test_a_bad_target_is_refused_before_any_write(self, target, provenance, only, error) -> None:
+        p = _arango_move(["k1"], target=target)
+        with pytest.raises(ValueError, match=error):
+            await p.move_taxonomy_edges(TOPICS, "a", "b", "org-1", set_merged_from=None,
+                                        only_merged_from=only, provenance=provenance)
+        assert p.http_client.execute_aql.await_count == 1
+
+    async def test_a_migration_restore_may_land_on_the_legacy_node(self) -> None:
+        p = _arango_move(["k1"], target={"orgId": None})
+        assert await p.move_taxonomy_edges(TOPICS, "t", "L", "org-1", set_merged_from=None,
+                                           only_merged_from="L", provenance="migratedFrom") == 1
+        with pytest.raises(ValueError, match="not a node of org"):
+            await p.move_taxonomy_edges(TOPICS, "t", "L2", "org-1", set_merged_from=None,
+                                        only_merged_from="L", provenance="migratedFrom")
 
     async def test_dry_run_only_counts(self) -> None:
         p = _arango([2])

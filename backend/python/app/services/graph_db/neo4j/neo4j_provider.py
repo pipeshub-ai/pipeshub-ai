@@ -131,6 +131,8 @@ from app.services.graph_db.taxonomy import (
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
     alias_pairs as _alias_pairs,
+    check_edge_move,
+    check_edge_move_target,
     is_taxonomy_collection,
     subcategory_level,
 )
@@ -192,19 +194,6 @@ _METADATA_FILTERS: tuple[tuple[str, str, str, str, str], ...] = (
 # Edges one statement moves; a hub node's millions go in batches.
 _EDGE_MOVE_BATCH = 5000
 
-
-_EDGE_PROVENANCE_FIELDS = frozenset({"mergedFrom", "migratedFrom"})
-
-
-def _check_edge_move(collection: str, from_key: str, to_key: str, org_id: str, provenance: str) -> None:
-    if provenance not in _EDGE_PROVENANCE_FIELDS:
-        raise ValueError(f"{provenance!r} is not an edge provenance field")
-    if not is_taxonomy_collection(collection):
-        raise ValueError(f"{collection!r} is not a taxonomy collection")
-    if not from_key or not to_key or not org_id:
-        raise ValueError("moving taxonomy edges needs both keys and an org")
-    if from_key == to_key:
-        raise ValueError("cannot move taxonomy edges onto the same node")
 
 # Promotions to these statuses leave the primary with taxonomy to copy to its
 # duplicates; see update_queued_duplicates_status.
@@ -16895,7 +16884,7 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: str | None = None,
     ) -> int:
         """See :meth:`IGraphDBProvider.move_taxonomy_edges`."""
-        _check_edge_move(collection, from_key, to_key, org_id, provenance)
+        check_edge_move(collection, from_key, to_key, org_id, provenance)
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
         label = collection_to_label(collection)
@@ -16908,19 +16897,27 @@ class Neo4jProvider(IGraphDBProvider):
         parameters = {
             "from_key": from_key, "to_key": to_key, "org_id": org_id,
             "set_merged_from": set_merged_from, "only_merged_from": only_merged_from,
-            "batch": _EDGE_MOVE_BATCH,
         }
         if dry_run:
             rows = await self.client.execute_query(
                 match + "RETURN count(e) AS moved", parameters=parameters, txn_id=transaction,
             )
             return int((rows or [{}])[0].get("moved") or 0)
-        exists = await self.client.execute_query(
-            f"MATCH (t:{label} {{id: $to_key}}) RETURN count(t) AS n",
+        found = await self.client.execute_query(
+            f"MATCH (t:{label} {{id: $to_key}}) RETURN count(t) AS n, head(collect(t.orgId)) AS orgId",
             parameters={"to_key": to_key}, txn_id=transaction,
         )
-        if not int((exists or [{}])[0].get("n") or 0):
-            raise ValueError(f"{collection}/{to_key} not found")
+        target = (found or [{}])[0]
+        check_edge_move_target(
+            collection, to_key, org_id, found=bool(target.get("n")), target_org=target.get("orgId"),
+            provenance=provenance, only_merged_from=only_merged_from,
+        )
+        # Found once, then moved by id: a batch that matched again would
+        # rescan a hub's edges of every other org each time.
+        rows = await self.client.execute_query(
+            match + "RETURN elementId(e) AS id", parameters=parameters, txn_id=transaction,
+        )
+        ids = [row["id"] for row in rows or []]
         # Field names are interpolated, not parameters: they come from the
         # whitelist checked above, and dynamic property writes need Neo4j 5.24+.
         # Returning an edge to its legacy node clears its merge history too.
@@ -16929,11 +16926,16 @@ class Neo4jProvider(IGraphDBProvider):
         )
         # A relationship's end node cannot change in Cypher, so each edge is
         # recreated on the target with its properties, then deleted. A forward
-        # move keeps the edge's first mergedFrom, so a chain of merges still
-        # knows where each edge came from; a restore clears it. Batched so a
-        # hub node does not become one statement over millions of edges.
-        query = match + f"""
-            WITH r, e LIMIT $batch
+        # move keeps the edge's first provenance, so a chain of merges still
+        # knows where each edge came from; a restore clears it.
+        # Matched by id alone so the planner seeks each edge; naming the
+        # from node lets it expand the whole hub instead. The match is
+        # re-checked because Neo4j may reuse a deleted edge's id.
+        query = f"""
+            MATCH ()-[e:{rel}]->() WHERE elementId(e) IN $ids
+            WITH e, startNode(e) AS r, endNode(e) AS from
+            WHERE r:Record AND from:{label} AND from.id = $from_key AND r.orgId = $org_id
+              AND ($only_merged_from IS NULL OR e.{provenance} = $only_merged_from)
             MATCH (target:{label} {{id: $to_key}})
             OPTIONAL MATCH (r)-[x:{rel}]->(target)
             WITH r, e, target, count(x) AS existing
@@ -16948,12 +16950,12 @@ class Neo4jProvider(IGraphDBProvider):
             RETURN count(*) AS moved
         """
         total = 0
-        while True:
-            rows = await self.client.execute_query(query, parameters=parameters, txn_id=transaction)
-            moved = int((rows or [{}])[0].get("moved") or 0)
-            total += moved
-            if moved < _EDGE_MOVE_BATCH:
-                return total
+        for i in range(0, len(ids), _EDGE_MOVE_BATCH):
+            rows = await self.client.execute_query(
+                query, parameters={**parameters, "ids": ids[i:i + _EDGE_MOVE_BATCH]}, txn_id=transaction,
+            )
+            total += int((rows or [{}])[0].get("moved") or 0)
+        return total
 
     async def find_legacy_taxonomy_nodes(
         self,
