@@ -7804,7 +7804,16 @@ async def delete_connector_instance(
                 f"Sync services may continue running. Proceeding with deletion event."
             )
 
-        # 6. Publish the async deletion event — consumed by the sync consumer (before status update so a failed publish cannot leave the connector stuck in DELETING)
+        # 6. Mark the connector DELETING before publishing: this service's own
+        # consumer runs the deletion and can finish before this request does, and
+        # a write after it would hit a node that no longer exists.
+        await graph_provider.update_node(
+            connector_id,
+            CollectionNames.APPS.value,
+            {"status": "DELETING", "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+        )
+
+        # 7. Publish the async deletion event — consumed by the sync consumer
         event_type = f"{connector_type.replace(' ', '').lower()}.delete"
         delete_message = {
             "eventType": event_type,
@@ -7820,18 +7829,17 @@ async def delete_connector_instance(
             },
             "timestamp": get_epoch_timestamp_in_ms(),
         }
-        await producer.send_message(topic="sync-events", message=delete_message)
+        try:
+            await producer.send_message(topic="sync-events", message=delete_message)
+        except Exception:
+            # Nothing will delete it, so it must not stay in DELETING.
+            await graph_provider.update_node(
+                connector_id,
+                CollectionNames.APPS.value,
+                {"status": None, "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+            )
+            raise
         logger.info(f"✅ Published {event_type} deletion event for connector {connector_id}")
-
-        # 7. Mark connector as DELETING in the graph DB so the UI can reflect it
-        await graph_provider.batch_upsert_nodes(
-            [{
-                "id": connector_id,
-                "status": "DELETING",
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            }],
-            CollectionNames.APPS.value
-        )
 
         return JSONResponse(
             status_code=202,
