@@ -965,7 +965,6 @@ class TestBuildFromServicesIndividualScopeEdgeCases:
 
 
 class TestToolsetRefreshScopes:
-    @pytest.mark.asyncio
     @staticmethod
     def _consent_scopes(module_path: str, class_name: str) -> list[str]:
         toolset_cls = getattr(importlib.import_module(module_path), class_name)
