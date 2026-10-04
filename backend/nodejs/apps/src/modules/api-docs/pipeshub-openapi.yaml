@@ -39424,8 +39424,10 @@ paths:
                           type: string
                           enum: [none, low, medium, high, max]
                           description: >-
-                            The model's own reasoning effort, used when a chat
-                            request chooses none. Read from
+                            The model's own reasoning effort. It applies only
+                            when the chat request sets no `reasoningEffort` and
+                            the agent has no `defaultReasoningEffort`; a level
+                            the user picks always wins. Read from
                             `configuration.defaultReasoningEffort`, falling back
                             to a top-level `defaultReasoningEffort`. Present on
                             every model expanded from the entry, and left out
