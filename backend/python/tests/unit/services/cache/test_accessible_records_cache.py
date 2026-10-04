@@ -4,6 +4,7 @@ guarantee that a broken Redis can never fail or stall a search."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from types import SimpleNamespace
@@ -696,6 +697,67 @@ class TestFailedInvalidationIsNotDropped:
         await asyncio.wait_for(task, 2.0)
         assert cache._pending_deletes == {}
         assert "Gave up" in logger.error.call_args.args[0]
+
+
+class TestRetryAcrossWorkerRestarts:
+    """Stopping the consumer cancels every task on its worker loop, including a
+    retry that still has keys to drop. The next worker loop must pick those
+    keys up rather than leave the old list cached until its TTL runs out."""
+
+    async def test_keys_left_by_a_cancelled_retry_are_dropped_from_the_next_loop(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(
+            AccessibleRecordsCache, "INVALIDATION_RETRY_DELAYS_SECONDS", (0.05,), raising=False
+        )
+        redis = _FlakyPipelineRedis(failures=1)
+        cache = _cache(redis)
+        stranded = cache._kb_key(ORG, KB)
+        await cache.get_or_compute_kb(ORG, KB, _loader({"v": "r"}))
+        await cache.get_or_compute_kb(ORG, "kb-2", _loader({"v": "r"}))
+
+        await cache.invalidate_kb(ORG, KB)
+        deadline = cache._pending_deletes[stranded]
+        [task] = list(cache._retry_tasks.values())
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        # Redis is back and the breaker has closed by the time the new loop runs,
+        # so its next invalidation succeeds inline rather than queueing.
+        cache._down_until = 0.0
+
+        with worker_loop() as worker:
+            await on_loop(worker, cache.invalidate_kb(ORG, "kb-2"))
+            assert cache._pending_deletes.get(stranded) == deadline, "its deadline was moved"
+            await _wait_for(lambda: stranded not in redis.strings)
+            await cache.close()
+
+    async def test_a_finished_retry_frees_its_loop_slot(self) -> None:
+        cache = _cache(BrokenRedis())
+        await cache.invalidate_kb(ORG, KB)
+        [task] = list(cache._retry_tasks.values())
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert cache._retry_tasks == {}
+
+    async def test_requeueing_a_pending_key_moves_its_deadline_later(self) -> None:
+        """A second invalidation is for a newer change, and an entry written
+        after the first one can live a full TTL from now, so the retry must
+        not give up on the first change's deadline."""
+        cache = _cache(BrokenRedis())
+        key = cache._kb_key(ORG, KB)
+        await cache.invalidate_kb(ORG, KB)
+        first = cache._pending_deletes[key]
+        await asyncio.sleep(0.01)
+
+        await cache.invalidate_kb(ORG, KB)
+
+        assert cache._pending_deletes[key] > first
+        assert len(cache._retry_tasks) == 1
+        await cache.close()
 
 
 class TestInvalidationFromTheIndexingWorkerLoop:

@@ -34,7 +34,6 @@ import json
 import os
 import threading
 import time
-import weakref
 import zlib
 from typing import TYPE_CHECKING
 
@@ -119,9 +118,8 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         # Shared by both loops of the indexing service, hence the thread lock.
         self._pending_deletes: dict[str, float] = {}
         self._pending_lock = threading.Lock()
-        self._retry_tasks: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop, asyncio.Task[None]
-        ] = weakref.WeakKeyDictionary()
+        # At most one retry task per loop; each clears its own slot when it ends.
+        self._retry_tasks: dict[asyncio.AbstractEventLoop, asyncio.Task[None]] = {}
         # REDIS_KEY_NAMESPACE (R9): set by `create()` from the provider;
         # stays empty when a raw `redis_client` is injected directly without
         # a namespace (mostly tests), same as an unset namespace.
@@ -369,6 +367,10 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
                 "background until it works or they expire in %ss",
                 list(keys), str(e), self._ttl,
             )
+            return
+        # Keys can be left pending by a retry task that was cancelled with its
+        # loop (a consumer restarting its worker thread); pick them up here.
+        self._ensure_retry_task()
 
     async def _delete_now(self, keys: "list[str] | tuple[str, ...]") -> None:
         async with self._client().pipeline(transaction=False) as pipe:
@@ -381,14 +383,37 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
 
         Pending keys are coalesced in one map, so any number of callers share
         a single retry loop per event loop."""
+        # Re-queueing a pending key moves its deadline later on purpose: this
+        # call is for a newer change, and an entry written after the earlier
+        # one can live a full TTL from now.
         expires_at = time.monotonic() + self._ttl
-        loop = asyncio.get_running_loop()
         with self._pending_lock:
             for key in keys:
                 self._pending_deletes[key] = expires_at
+        self._ensure_retry_task()
+
+    def _ensure_retry_task(self) -> None:
+        """Start this loop's retry task if keys are pending and none is running.
+
+        The task drains the whole shared map, including keys another loop's
+        task left behind, and keeps their deadlines as they are."""
+        loop = asyncio.get_running_loop()
+        with self._pending_lock:
+            if not self._pending_deletes:
+                return
             task = self._retry_tasks.get(loop)
-            if task is None or task.done():
-                self._retry_tasks[loop] = loop.create_task(self._retry_pending_deletes())
+            if task is not None and not task.done():
+                return
+            task = loop.create_task(self._retry_pending_deletes())
+            self._retry_tasks[loop] = task
+        task.add_done_callback(lambda done: self._forget_retry_task(loop, done))
+
+    def _forget_retry_task(
+        self, loop: asyncio.AbstractEventLoop, task: "asyncio.Task[None]"
+    ) -> None:
+        with self._pending_lock:
+            if self._retry_tasks.get(loop) is task:
+                del self._retry_tasks[loop]
 
     async def _retry_pending_deletes(self) -> None:
         delays = self.INVALIDATION_RETRY_DELAYS_SECONDS
