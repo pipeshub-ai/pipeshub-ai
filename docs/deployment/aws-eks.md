@@ -323,6 +323,15 @@ kubectl exec -n "$NAMESPACE" deploy/pipeshub-ai -c dind -- docker info --format 
 
 Expect a version number. The first `run_code` call pulls `pipeshubai/pipeshub-sandbox:0.8.0` into that pod's daemon.
 
+The app reaches that daemon only through the `docker-proxy` sidecar, which refuses anything a sandbox run does not need:
+
+```bash
+kubectl exec -n "$NAMESPACE" deploy/pipeshub-ai -c docker-proxy -- \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:2375/_ping', timeout=3).read())"
+```
+
+Expect `b'OK'`. If `docker-proxy` is crash-looping, `image.tag` predates the proxy. Upgrade it, or set `sandbox.proxy.image` to a newer app image.
+
 ## 8. Store files in S3
 
 Create a private, encrypted bucket:

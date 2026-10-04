@@ -328,11 +328,10 @@ config:
   # beyond rlimits. Pinned here so a chart install is isolated by default,
   # matching what every docker-compose file already does.
   #
-  # "docker" needs a reachable Docker daemon: mount the host socket via
-  # `extraVolumes`/`extraVolumeMounts`, or point DOCKER_HOST at a
-  # daemon/DinD sidecar. Without one, `run_code` fails at provision with a
-  # daemon error — set sandboxMode to "local" deliberately if that is what
-  # you want on this cluster, and understand the isolation you are giving up.
+  # "docker" needs a reachable Docker daemon: enable the DinD sidecar
+  # (`sandbox.dind`) or set `dockerHost`. The chart refuses to install
+  # without one, and refuses a Docker socket mounted into the application
+  # container through `extraVolumeMounts`.
   sandboxMode: "docker"
   # Required alongside sandboxMode "local", which the service refuses
   # otherwise: local runs generated code with this pod's identity, network
@@ -361,7 +360,10 @@ config:
   sandboxDiskQuota: "10g"
   # Address of the Docker daemon for SANDBOX_MODE=docker. Leave empty to use
   # the DinD sidecar (see `sandbox.dind`) when it is enabled, or set it to
-  # reach a daemon you run yourself, e.g. "tcp://docker-daemon.svc:2375".
+  # reach a daemon you run yourself, e.g. "tcp://docker-proxy.svc:2375".
+  # The chart cannot secure that daemon: put the same policy proxy in front of
+  # it (`python -m app.docker_proxy_main` from this image, as the DinD sidecar
+  # does) and never point this at a raw, unauthenticated dockerd.
   dockerHost: ""
 
   # Light records take their own cluster-wide indexing lease pool. Leave false
@@ -434,8 +436,11 @@ sandbox:
   #   - Pod Security Admission `restricted` and OpenShift's default SCC will
   #     REJECT this pod. You need a `privileged`/`baseline` namespace label or
   #     a matching SCC.
-  #   - Every container in this pod can reach the daemon on localhost:2375 and
-  #     therefore has root on the node. Do not co-locate untrusted sidecars.
+  #   - The application container never talks to the daemon. dockerd listens
+  #     only on a unix socket in an emptyDir that is mounted into `dind` and
+  #     the `docker-proxy` sidecar (see `sandbox.proxy`), and nothing else.
+  #     Anything that can mount that volume, or that runs in those two
+  #     containers, has root on the node.
   #
   # Alternatives that avoid a privileged container entirely:
   #   - SANDBOX_MODE=e2b with E2B_API_KEY (execution moves off-cluster)
@@ -446,9 +451,8 @@ sandbox:
     enabled: false
     image: "docker:27-dind"
     pullPolicy: "IfNotPresent"
-    # The daemon listens on plain TCP bound to the pod's localhost. TLS is
-    # off because the socket never leaves the pod's network namespace;
-    # exposing this port beyond the pod would be handing out node root.
+    # Loopback port of the policy proxy the application connects to
+    # (DOCKER_HOST). The daemon itself has no TCP listener.
     port: 2375
     resources:
       requests:
@@ -463,6 +467,29 @@ sandbox:
     storage:
       sizeLimit: "20Gi"
       existingClaim: ""
+
+  # Docker API policy proxy, deployed with the DinD sidecar. It runs
+  # app.docker_proxy_main from the application image (`image` above), so that
+  # image must include it. It admits only the calls the coding sandbox makes:
+  # creates from the allowed images with no privileged mode, host mounts,
+  # devices or host namespaces, acting only on containers it created.
+  proxy:
+    # Full image reference. Empty runs the application image, which keeps the
+    # proxy and the app on one version; set it only when `image.tag` predates
+    # the proxy.
+    image: ""
+    logLevel: "INFO"
+    # Comma-separated images sandbox containers may be created from. Empty
+    # allows only config.sandboxDockerImage; a value replaces it, so list
+    # that image too.
+    allowedImages: ""
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "64Mi"
+      limits:
+        cpu: "500m"
+        memory: "256Mi"
 
 # IMPORTANT: Set a stable secret key for production deployments!
 # If not set, a random key is generated on each install. This causes issues

@@ -109,19 +109,18 @@ in the application's configuration, or run_code will fail at provision.
 
 {{- else if eq $path "dind" }}
 
-run_code executes in throwaway containers on the `dind` sidecar
-({{ include "pipeshub-ai.dockerHost" . }}).
+run_code executes in throwaway containers on the `dind` sidecar. The
+application reaches it only through the `docker-proxy` sidecar
+({{ include "pipeshub-ai.dockerHost" . }}), which refuses privileged
+containers, host mounts, devices, host namespaces and images other than
+{{ .Values.sandbox.proxy.allowedImages | default .Values.config.sandboxDockerImage }}.
 
 {{- else if eq $path "external" }}
 
 run_code executes on the Docker daemon at {{ .Values.config.dockerHost }}.
 That daemon runs untrusted, model-generated code: it should be dedicated to
-this purpose and reachable only by this deployment.
-
-{{- else }}
-
-run_code executes on the Docker daemon reached through the socket you mounted.
-A mounted host socket is root on the node for anything that can reach it.
+this purpose, reachable only by this deployment, and fronted by the policy
+proxy (python -m app.docker_proxy_main) rather than exposed raw.
 
 {{- end }}
 
@@ -132,8 +131,12 @@ A mounted host socket is root on the node for anything that can reach it.
   * It can escape to the node. Pod Security Admission `restricted` and
     OpenShift's default SCC will reject this pod; label the namespace
     `privileged`/`baseline` or grant a matching SCC.
-  * Anything in this pod can reach the daemon on localhost:{{ .Values.sandbox.dind.port }}
-    and therefore has root on the node. Do not add untrusted sidecars here.
+  * dockerd has no TCP listener. Its unix socket lives in the `dind-sock`
+    emptyDir, mounted only into `dind` and `docker-proxy`; never mount that
+    volume into another container.
+  * `docker-proxy` runs app.docker_proxy_main from {{ .Values.sandbox.proxy.image | default (include "pipeshub-ai.image" (dict "image" .Values.image "global" .Values.global)) }}.
+    An image built before the Docker API proxy was added lacks it, and the
+    sidecar crash-loops; set sandbox.proxy.image to a newer one.
 {{- if not .Values.sandbox.dind.storage.existingClaim }}
   * /var/lib/docker is an emptyDir, so {{ .Values.config.sandboxDockerImage }}
     is re-pulled after every pod restart. Set
