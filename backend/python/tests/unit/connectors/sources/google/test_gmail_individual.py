@@ -2719,6 +2719,7 @@ class TestStreamFromDrive:
                 await connector_fullcov._stream_from_drive(
                     "drive-id", record, "file.txt", "text/plain"
                 )
+        assert exc.value.status_code == 409
         assert "Reconnect the Gmail connector" in exc.value.detail
         from_info.assert_not_called()
 

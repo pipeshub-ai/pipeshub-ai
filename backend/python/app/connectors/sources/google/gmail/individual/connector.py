@@ -1201,7 +1201,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 # A personal connection has no service account to fall back on.
                 self.logger.error(f"Failed to create Drive client: {e}")
                 raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    status_code=HttpStatusCode.CONFLICT.value,
                     detail="Couldn't connect to Google Drive to download this file. Reconnect the Gmail connector, then try again."
                 ) from e
 
