@@ -3,7 +3,8 @@
 It stands in for ``aiohttp.ClientSession`` inside ``oauth_service``, so the real
 ``OAuthProvider`` builds and sends the request. It follows Airtable's OAuth
 reference, which Zoom's matches for apps with a secret: the Basic header is
-required when the app has a secret and forbidden when it does not, a secret in
+required when the app has a secret and forbidden when it does not, the header's
+id and secret are each form-encoded as RFC 6749 section 2.3.1 says, a secret in
 the body is refused, and a public (PKCE) client names itself with ``client_id``
 in the body.
 """
@@ -13,6 +14,7 @@ from __future__ import annotations
 import base64
 from json import dumps
 from typing import Any
+from urllib.parse import unquote_plus
 
 HTTP_OK = 200
 HTTP_BAD_REQUEST = 400
@@ -38,8 +40,7 @@ class FakeBasicAuthTokenEndpoint:
         if "client_secret" in form:
             return HTTP_UNAUTHORIZED, {"error": "invalid_client", "error_description": "client_secret must not be sent in the body"}
         if self.client_secret:
-            expected = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
-            if authorization != f"Basic {expected}":
+            if _basic_credentials(authorization) != (self.client_id, self.client_secret):
                 return HTTP_UNAUTHORIZED, {"error": "invalid_client"}
         else:
             if authorization is not None:
@@ -60,6 +61,16 @@ class FakeBasicAuthTokenEndpoint:
             "token_type": "Bearer",
             "expires_in": 3600,
         }
+
+
+def _basic_credentials(authorization: str | None) -> tuple[str, str] | None:
+    # Read the header as RFC 6749 section 2.3.1 defines it: each part form-encoded.
+    if not authorization or not authorization.startswith("Basic "):
+        return None
+    username, sep, password = base64.b64decode(authorization[len("Basic "):]).decode().partition(":")
+    if not sep:
+        return None
+    return unquote_plus(username), unquote_plus(password)
 
 
 class _Session:

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, Optional
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import parse_qs, quote_plus, urlencode
 
 from aiohttp import ClientSession
 
@@ -264,7 +264,10 @@ class OAuthProvider:
         headers = {}
 
         if use_basic_auth and self.config.client_secret:
-            credentials = f"{self.config.client_id}:{self.config.client_secret}"
+            # RFC 6749 section 2.3.1: form-encode each part, so a ":" in the id can't move the split.
+            client_id = quote_plus(self.config.client_id, safe="")
+            client_secret = quote_plus(self.config.client_secret, safe="")
+            credentials = f"{client_id}:{client_secret}"
             encoded_credentials = base64.b64encode(credentials.encode()).decode()
             headers["Authorization"] = f"Basic {encoded_credentials}"
 

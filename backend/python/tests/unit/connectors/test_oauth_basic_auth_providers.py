@@ -6,6 +6,7 @@ run the real ``get_oauth_config`` and ``OAuthProvider`` against a token endpoint
 that refuses a secret in the body.
 """
 
+import base64
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -24,9 +25,9 @@ def _registered_token_url(toolset: str) -> str:
     return toolset_class._toolset_metadata["config"]["auth"]["oauthConfigs"]["OAUTH"]["tokenUrl"]
 
 
-def _provider(token_url: str, client_secret: str) -> OAuthProvider:
+def _provider(token_url: str, client_secret: str, client_id: str = "app-client-id") -> OAuthProvider:
     config = get_oauth_config({
-        "clientId": "app-client-id",
+        "clientId": client_id,
         "clientSecret": client_secret,
         "redirectUri": "https://pipeshub.example/toolsets/oauth/callback",
         "tokenUrl": token_url,
@@ -51,6 +52,22 @@ async def test_code_exchange_and_refresh_send_the_secret_only_in_a_basic_header(
     assert token.access_token == "access-1"
     assert refreshed.access_token == "access-2"
     assert all("client_secret" not in form for _, form in endpoint.requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("toolset", ["airtable", "zoom"])
+async def test_basic_header_form_encodes_the_id_and_secret_separately(toolset: str) -> None:
+    token_url = _registered_token_url(toolset)
+    endpoint = FakeBasicAuthTokenEndpoint(token_url, "app:id/1", "s3cr+t/%=:x")
+    provider = _provider(token_url, "s3cr+t/%=:x", client_id="app:id/1")
+
+    with patch.object(oauth_service, "ClientSession", endpoint.client_session):
+        token = await provider.exchange_code_for_token("auth-code", code_verifier="verifier")
+        refreshed = await provider.refresh_access_token(token.refresh_token)
+
+    assert refreshed.access_token == "access-2"
+    expected = "Basic " + base64.b64encode(b"app%3Aid%2F1:s3cr%2Bt%2F%25%3D%3Ax").decode()
+    assert [headers["Authorization"] for headers, _ in endpoint.requests] == [expected, expected]
 
 
 @pytest.mark.asyncio
