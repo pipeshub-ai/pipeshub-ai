@@ -2659,6 +2659,16 @@ async function sendEvent(eventService: EntitiesEventProducer | AiConfigEventProd
   }
 }
 
+const MODEL_TYPES_WITHOUT_BULK_HEALTH_CHECK = [
+  'ocr',
+  'slm',
+  'reasoning',
+  'multiModal',
+  'imageGeneration',
+  'tts',
+  'stt',
+] as const;
+
 export const createAIModelsConfig =
   (
     keyValueStoreService: KeyValueStoreService,
@@ -2671,6 +2681,8 @@ export const createAIModelsConfig =
       if (!aiConfig) {
         throw new BadRequestError('Invalid configuration passed');
       }
+      aiConfig.llm = aiConfig.llm ?? [];
+      aiConfig.embedding = aiConfig.embedding ?? [];
 
       // Handle LLM health check
       if (aiConfig.llm.length > 0) {
@@ -2717,6 +2729,30 @@ export const createAIModelsConfig =
             'Failed to do health check of embedding configuration, check credentials again',
             aiResponseData?.data,
           );
+        }
+      }
+
+      // The llm and embedding health checks above refuse an endpoint the
+      // deployment may not call; every other model type is checked here.
+      const otherModels = MODEL_TYPES_WITHOUT_BULK_HEALTH_CHECK.flatMap(
+        (modelType) => aiConfig[modelType] ?? [],
+      );
+      if (otherModels.length > 0) {
+        const endpointCheck = (await new AIServiceCommand({
+          uri: `${appConfig.aiBackend}/api/v1/model-endpoint-check`,
+          method: HttpMethod.POST,
+          headers: req.headers as Record<string, string>,
+          body: otherModels,
+        }).execute()) as AIServiceResponse;
+
+        if (endpointCheck?.statusCode !== 200) {
+          const fallback = 'Failed to check the model endpoints, try again';
+          if (endpointCheck?.statusCode === 400) {
+            throw new BadRequestError(
+              healthCheckFailureMessage(endpointCheck.data, fallback),
+            );
+          }
+          throw new InternalServerError(fallback, endpointCheck?.data);
         }
       }
 

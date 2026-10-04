@@ -51,7 +51,7 @@ class TestOpenAICompatMultimodalProvider:
         )
         client = _client(_response({"data": [{"index": 0, "embedding": [0.1, 0.2]}]}))
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch("app.services.embeddings.multimodal.openai_compat_provider.guarded_async_client", return_value=client):
             results = await provider.embed_images(["aW1hZ2U="])
 
         assert [r.embedding for r in results] == [[0.1, 0.2]]
@@ -69,7 +69,7 @@ class TestOpenAICompatMultimodalProvider:
         )
         client = _client(_response({"data": [{"index": 0, "embedding": [0.5]}]}))
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch("app.services.embeddings.multimodal.openai_compat_provider.guarded_async_client", return_value=client):
             await provider.embed_images(["data:image/png;base64,aW1hZ2U="])
 
         assert client.post.await_args.kwargs["json"]["input"] == [
@@ -90,7 +90,7 @@ class TestOpenAICompatMultimodalProvider:
             _response({"data": [{"index": 0, "embedding": [0.1, 0.2]}]}),
         )
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch("app.services.embeddings.multimodal.openai_compat_provider.guarded_async_client", return_value=client):
             results = await provider.embed_images(["aW1hZ2U="])
 
         assert [r.embedding for r in results] == [[0.1, 0.2]]
@@ -109,7 +109,7 @@ class TestOpenAICompatMultimodalProvider:
         )
         client = _client(*[_response({}, raises=RuntimeError("boom"))] * 3)
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch("app.services.embeddings.multimodal.openai_compat_provider.guarded_async_client", return_value=client):
             results = await provider.embed_images(["aW1hZ2U=", "b3RoZXI="])
 
         assert [r.index for r in results] == [0, 1]
@@ -129,7 +129,7 @@ class TestOpenAICompatMultimodalProvider:
             {"index": 0, "embedding": [0.0]},
         ]}))
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch("app.services.embeddings.multimodal.openai_compat_provider.guarded_async_client", return_value=client):
             results = await provider.embed_images(["aW1hZ2Uw", "aW1hZ2Ux"])
 
         assert [(r.index, r.embedding) for r in results] == [(0, [0.0]), (1, [1.0])]
@@ -143,7 +143,7 @@ class TestOpenAICompatMultimodalProvider:
         )
         client = _client(_response({"data": [{"index": 0, "embedding": [0.1]}]}))
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch("app.services.embeddings.multimodal.openai_compat_provider.guarded_async_client", return_value=client):
             results = await provider.embed_images(["aW1hZ2Uw", "aW1hZ2Ux"])
 
         assert [r.index for r in results] == [0, 1]
@@ -157,7 +157,7 @@ class TestOpenAICompatMultimodalProvider:
         )
         client = _client(_response({"data": []}))
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch("app.services.embeddings.multimodal.openai_compat_provider.guarded_async_client", return_value=client):
             results = await provider.embed_images(["not valid base64!!"])
 
         assert results[0].error == "invalid image data"
@@ -179,7 +179,7 @@ class TestOpenAICompatMultimodalProvider:
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch("app.services.embeddings.multimodal.openai_compat_provider.guarded_async_client", return_value=client):
             results = await provider.embed_images(images)
 
         assert sorted(r.index for r in results) == list(range(20))

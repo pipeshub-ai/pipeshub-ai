@@ -180,14 +180,20 @@ def literal_ip(host: str) -> IPAddress | None:
 
 
 def is_never_allowed_address(ip: IPAddress) -> bool:
-    """Link-local and cloud metadata addresses: nothing a user or admin configures may
+    """Link-local, unspecified and cloud metadata addresses: nothing a user or admin configures may
     reach them, whatever else a deployment allows."""
     if isinstance(ip, ipaddress.IPv6Address):
         if ip.ipv4_mapped:
             ip = ip.ipv4_mapped
         elif ip in _NAT64_WELL_KNOWN_PREFIX:
             ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
-    return ip.is_link_local or ip in _CLOUD_METADATA_ADDRESSES or ip == _AWS_IPV6_METADATA_ADDRESS
+    # 0.0.0.0 and :: name no host; the kernel dials them as "this machine", whatever listens there.
+    return (
+        ip.is_link_local
+        or ip.is_unspecified
+        or ip in _CLOUD_METADATA_ADDRESSES
+        or ip == _AWS_IPV6_METADATA_ADDRESS
+    )
 
 
 def _hostname_is_blocked(hostname: str) -> bool:

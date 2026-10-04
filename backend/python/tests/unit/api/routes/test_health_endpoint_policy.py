@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -188,3 +189,32 @@ class TestProviderErrorsStayInTheLog:
             message = await health._probe_vision(MagicMock(), MagicMock())
 
         assert message == "Model doesn't support images/vision."
+
+
+class TestEndpointOnlyCheck:
+    """Model types the bulk save has no health check for are still held to the endpoint policy."""
+
+    async def test_every_config_is_accepted_when_all_endpoints_are_allowed(self, default_mode: None) -> None:
+        response = await health.model_endpoint_check([_config("http://localhost:11434"), _config(None)])
+        assert response.status_code == 200
+
+    async def test_a_refused_endpoint_anywhere_in_the_list_is_a_config_error(self, default_mode: None) -> None:
+        response = await health.model_endpoint_check([_config("https://api.example/v1"), _config("http://169.254.169.254/")])
+        assert response.status_code == 400
+        assert "never allowed" in _body(response)["message"]
+
+    async def test_a_base_url_is_held_to_the_same_policy(self, default_mode: None) -> None:
+        config = {"provider": "ollama", "configuration": {"model": "m", "baseUrl": "http://169.254.169.254/"}}
+        response = await health.model_endpoint_check([config])
+        assert response.status_code == 400
+
+    async def test_a_name_that_does_not_resolve_is_a_config_error(
+        self, default_mode: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def nxdomain(host: str) -> list:
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+        monkeypatch.setattr(aimodels, "_resolved_addresses", nxdomain)
+        response = await health.model_endpoint_check([_config("https://typo.example/v1")])
+        assert response.status_code == 400
+        assert "does not resolve" in _body(response)["message"]
