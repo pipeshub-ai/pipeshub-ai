@@ -2703,7 +2703,7 @@ class TestStreamFromDrive:
                 )
 
     @pytest.mark.asyncio
-    async def test_stream_from_drive_client_failure_with_service_account(self, connector_fullcov):
+    async def test_stream_from_drive_client_failure_is_reported_not_retried_as_service_account(self, connector_fullcov):
         connector_fullcov.config = {"credentials": {"auth": {"type": "service_account"}}}
         record = MagicMock()
         record.id = "rec-1"
@@ -2714,18 +2714,13 @@ class TestStreamFromDrive:
             side_effect=Exception("auth fail"),
         ), patch(
             "google.oauth2.service_account.Credentials.from_service_account_info",
-            return_value=MagicMock(),
-        ), patch(
-            "app.connectors.sources.google.gmail.individual.connector.build",
-            return_value=MagicMock(),
-        ), patch(
-            "app.connectors.sources.google.gmail.individual.connector.create_stream_record_response"
-        ) as mock_stream:
-            mock_stream.return_value = MagicMock()
-            result = await connector_fullcov._stream_from_drive(
-                "drive-id", record, "file.txt", "text/plain"
-            )
-            mock_stream.assert_called_once()
+        ) as from_info:
+            with pytest.raises(HTTPException) as exc:
+                await connector_fullcov._stream_from_drive(
+                    "drive-id", record, "file.txt", "text/plain"
+                )
+        assert "Reconnect the Gmail connector" in exc.value.detail
+        from_info.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stream_from_drive_no_service_account_creds(self, connector_fullcov):
