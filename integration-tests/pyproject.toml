@@ -33,7 +33,7 @@ dependencies = [
   "cachetools==6.2.4",
   "cloudscraper==1.2.71",
   "cryptography==50.0.0",
-  "curl-cffi==0.14.0",
+  "curl-cffi==0.15.0",
   "dependency-injector==4.44.0",
   "discord.py==2.6.3",
   "docling==2.94.0",
