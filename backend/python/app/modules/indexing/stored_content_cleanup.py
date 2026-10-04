@@ -30,6 +30,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.vector_db.membership import remaining_record_keys
 
 if TYPE_CHECKING:
@@ -59,7 +60,8 @@ class StoredContentCleanup:
     ) -> list[str]:
         """Purge the envelopes of virtual records no record uses, then drop their mapping rows.
 
-        An id a record still uses is left as it is. Returns the ids whose purge
+        An id a record still uses, a record in the trash included, is left as it
+        is: the purge releases it with that record. Returns the ids whose purge
         failed; their mapping rows are kept for a retry.
         """
         ids = [v for v in dict.fromkeys(virtual_record_ids) if v]
@@ -69,7 +71,7 @@ class StoredContentCleanup:
 
         async def purge(vrid: str) -> None:
             records = await self.graph_provider.get_records_by_virtual_record_id(
-                virtual_record_id=vrid, raise_on_error=True
+                virtual_record_id=vrid, raise_on_error=True, visibility=RecordVisibility.ALL
             )
             if remaining_record_keys(records):
                 in_use.add(vrid)

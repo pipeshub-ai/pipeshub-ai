@@ -132,7 +132,7 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     key: 'ENABLE_SOFT_DELETE',
     label: 'Move Deleted Records to the Trash',
     description:
-      'When you delete a record, move it to the trash instead of removing it straight away. It disappears from search, chat and lists at once, and its search data is removed, but the record, its file and its sharing are kept. A record in the trash can be restored through the records API, and a record a connector sync put there comes back when the source has it again; restoring re-indexes it. Nothing empties the trash. Disable to delete records immediately, as before.',
+      'When you delete a record, move it to the trash instead of removing it straight away. It disappears from search, chat and lists at once, and its search data is removed, but the record, its file and its sharing are kept. A record in the trash can be restored through the records API, and a record a connector sync put there comes back when the source has it again; restoring re-indexes it. Every two weeks a cleanup permanently removes records that have been in the trash for at least 14 days, with their files; this cannot be undone. While this setting is off the cleanup pauses, so records already in the trash stay there. Disable to delete records immediately, as before.',
     defaultEnabled: false,
   },
   {

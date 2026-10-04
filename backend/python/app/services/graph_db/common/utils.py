@@ -381,3 +381,35 @@ def uploaded_document_id(record: Dict[str, Any], type_doc: Optional[Dict[str, An
     if isinstance(document_id, str) and _STORAGE_DOCUMENT_ID.match(document_id):
         return document_id
     return None
+
+
+def is_storage_document_id(value: object) -> bool:
+    return isinstance(value, str) and _STORAGE_DOCUMENT_ID.match(value) is not None
+
+
+def trash_purge_row(
+    key: str, record: dict[str, Any], type_doc: dict[str, Any] | None, delete_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """What the purge needs about one record in the trash, the same on both stores.
+
+    ``deleteRecordPayload`` is the hard delete's own ``deleteRecord`` payload, so
+    indexing cleans a purged record exactly as it cleans a deleted one.
+    """
+    type_doc = type_doc or {}
+    return {
+        "id": key,
+        "orgId": record.get("orgId"),
+        "connectorId": record.get("connectorId"),
+        "connectorName": record.get("connectorName"),
+        "origin": record.get("origin"),
+        "deletedAtTimestamp": record.get("deletedAtTimestamp"),
+        "virtualRecordId": record.get("virtualRecordId"),
+        "storageDocumentId": record.get("storageDocumentId"),
+        "filePath": type_doc.get("path"),
+        "uploadDocumentId": uploaded_document_id(record, type_doc),
+        "deleteRecordPayload": {
+            **delete_payload,
+            "connectorName": record.get("connectorName"),
+            "origin": record.get("origin"),
+        },
+    }

@@ -172,9 +172,11 @@ from app.services.graph_db.common.utils import (
     select_canonical_chain_names,
     soft_delete_request_result,
     soft_delete_result,
+    trash_purge_row,
     uploaded_document_id,
 )
 from app.services.graph_db.entity_index_queries import (
+    APP_STATUS_DELETING,
     ENTITY_INDEX_SOURCES,
     build_entity_index_candidate_aql,
     build_entity_index_source_page_aql,
@@ -14023,6 +14025,297 @@ class ArangoHTTPProvider(IGraphDBProvider):
             transaction=transaction,
         ) or []
         return [key for key in rows if key is not None]
+
+    async def _trash_purge_row(self, rec: dict, type_doc: dict | None) -> dict:
+        payload = await self._create_deleted_record_event_payload(rec, type_doc)
+        return trash_purge_row(rec["_key"], rec, type_doc, payload)
+
+    async def get_purgeable_trashed_records(
+        self,
+        org_id: str,
+        deleted_before: int,
+        *,
+        after: tuple[int, str] | None = None,
+        limit: int = 500,
+        max_attempts: int = 5,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """See ``IGraphDBProvider.get_purgeable_trashed_records``."""
+        after_ts, after_key = after if after else (None, None)
+        # The lower bound excludes null, which lets the sparse
+        # records[deletedAtTimestamp, _key] index serve the walk. The connector
+        # check runs after the LIMIT, so a deleting connector's rows still move the cursor.
+        rows = await self.execute_query(
+            """
+            FOR r IN @@records
+                FILTER r.deletedAtTimestamp >= @lower AND r.deletedAtTimestamp <= @cutoff
+                FILTER @after_ts == null OR r.deletedAtTimestamp > @after_ts
+                    OR (r.deletedAtTimestamp == @after_ts AND r._key > @after_key)
+                FILTER r.isDeleted == true AND r.orgId == @org_id
+                FILTER r.purgeAttempts == null OR r.purgeAttempts < @max_attempts
+                SORT r.deletedAtTimestamp, r._key
+                LIMIT @limit
+                LET app = DOCUMENT(CONCAT(@apps, "/", r.connectorId))
+                LET type_doc = FIRST(
+                    FOR e IN @@is_of_type
+                        FILTER e._from == r._id
+                        LET t = DOCUMENT(e._to)
+                        FILTER t != null
+                        RETURN t
+                )
+                RETURN { rec: r, type_doc: type_doc, skip: app != null AND app.status == @deleting }
+            """,
+            bind_vars={
+                "org_id": org_id,
+                "lower": after_ts if after_ts is not None else 0,
+                "cutoff": deleted_before,
+                "after_ts": after_ts,
+                "after_key": after_key,
+                "max_attempts": max_attempts,
+                "limit": limit,
+                "deleting": APP_STATUS_DELETING,
+                "apps": CollectionNames.APPS.value,
+                "@records": CollectionNames.RECORDS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+            },
+            transaction=transaction,
+        ) or []
+        records = [await self._trash_purge_row(row["rec"], row.get("type_doc")) for row in rows if not row.get("skip")]
+        last = rows[-1]["rec"] if len(rows) >= limit else None
+        return {"records": records, "next": (last["deletedAtTimestamp"], last["_key"]) if last else None}
+
+    async def purge_trashed_records(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        deleted_before: int,
+        *,
+        max_attempts: int = 5,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """See ``IGraphDBProvider.purge_trashed_records``."""
+        keys_in = list(dict.fromkeys(record_ids))
+        if not keys_in:
+            return {"purged": [], "kept": []}
+        edge_collections = await self._get_all_edge_collections()
+        node_collections = [CollectionNames.RECORDS.value, *set(RECORD_TYPE_COLLECTION_MAPPING.values())]
+        txn_id = transaction
+        if transaction is None:
+            txn_id = await self.begin_transaction(
+                read=[*edge_collections, *node_collections, CollectionNames.APPS.value],
+                write=[*edge_collections, *node_collections],
+            )
+        try:
+            # Checked inside the transaction. A restore that commits after its
+            # snapshot conflicts with the REMOVE below, which aborts the purge
+            # rather than delete a live record.
+            due = await self.execute_query(
+                f"""
+                FOR key IN @keys
+                    LET rec = DOCUMENT(@records, key)
+                    FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted == true
+                    FILTER rec.deletedAtTimestamp != null AND rec.deletedAtTimestamp <= @cutoff
+                    FILTER rec.purgeAttempts == null OR rec.purgeAttempts < @max_attempts
+                    LET app = DOCUMENT(CONCAT(@apps, "/", rec.connectorId))
+                    FILTER app == null OR app.status != @deleting
+                    FILTER LENGTH(
+                        FOR child, e IN 1..1 OUTBOUND rec._id @@record_relations
+                            FILTER e.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+                            FILTER {aql_live_record("child")}
+                            LIMIT 1
+                            RETURN 1
+                    ) == 0
+                    LET target = FIRST(
+                        FOR e IN @@is_of_type
+                            FILTER e._from == rec._id
+                            LET t = DOCUMENT(e._to)
+                            FILTER t != null
+                            RETURN {{
+                                collection: PARSE_IDENTIFIER(e._to).collection,
+                                key: PARSE_IDENTIFIER(e._to).key,
+                                full_id: e._to,
+                                doc: t
+                            }}
+                    )
+                    RETURN {{ record: rec, type_target: target }}
+                """,
+                bind_vars={
+                    "keys": keys_in,
+                    "org_id": org_id,
+                    "cutoff": deleted_before,
+                    "max_attempts": max_attempts,
+                    "deleting": APP_STATUS_DELETING,
+                    "records": CollectionNames.RECORDS.value,
+                    "apps": CollectionNames.APPS.value,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                },
+                transaction=txn_id,
+            ) or []
+            keys = [row["record"]["_key"] for row in due]
+            if keys:
+                _, failed_edges = await self._delete_edges_by_node_ids(
+                    txn_id, [f"{CollectionNames.RECORDS.value}/{k}" for k in keys], edge_collections
+                )
+                if failed_edges:
+                    raise RuntimeError(f"Could not remove the edges of purged records from {failed_edges}")
+                targets = [row["type_target"] for row in due if row.get("type_target")]
+                if targets:
+                    await self._delete_isoftype_targets_from_collected(txn_id, targets, edge_collections)
+                removed, failed_batches = await self._delete_nodes_by_keys(
+                    txn_id, keys, CollectionNames.RECORDS.value
+                )
+                if failed_batches or removed != len(keys):
+                    raise RuntimeError(f"Removed {removed} of {len(keys)} purged records")
+            if transaction is None:
+                await self.commit_transaction(txn_id)
+        except Exception:
+            if transaction is None and txn_id:
+                await self.rollback_transaction(txn_id)
+            raise
+        purged = [
+            await self._trash_purge_row(row["record"], (row.get("type_target") or {}).get("doc")) for row in due
+        ]
+        gone = set(keys)
+        return {"purged": purged, "kept": [k for k in keys_in if k not in gone]}
+
+    async def record_purge_failure(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        error: str,
+        transaction: str | None = None,
+    ) -> int:
+        """See ``IGraphDBProvider.record_purge_failure``."""
+        if not record_ids:
+            return 0
+        rows = await self.execute_query(
+            """
+            FOR key IN @keys
+                LET r = DOCUMENT(@records, key)
+                FILTER r != null AND r.orgId == @org_id AND r.isDeleted == true
+                UPDATE r WITH { purgeAttempts: (r.purgeAttempts || 0) + 1, purgeLastError: @error } IN @@records
+                RETURN NEW._key
+            """,
+            bind_vars={
+                "keys": list(dict.fromkeys(record_ids)),
+                "org_id": org_id,
+                "error": error,
+                "records": CollectionNames.RECORDS.value,
+                "@records": CollectionNames.RECORDS.value,
+            },
+            transaction=transaction,
+        ) or []
+        return len(rows)
+
+    async def get_trash_purge_stats(
+        self,
+        org_id: str,
+        max_attempts: int = 5,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """See ``IGraphDBProvider.get_trash_purge_stats``."""
+        rows = await self.execute_query(
+            """
+            FOR r IN @@records
+                FILTER r.deletedAtTimestamp >= 0 AND r.isDeleted == true AND r.orgId == @org_id
+                LET stuck = r.purgeAttempts != null AND r.purgeAttempts >= @max_attempts
+                COLLECT AGGREGATE
+                    trashed = COUNT(1),
+                    stuck_count = SUM(stuck ? 1 : 0),
+                    oldest = MIN(stuck ? null : r.deletedAtTimestamp)
+                RETURN { trashed: trashed, stuck: stuck_count, oldest: oldest }
+            """,
+            bind_vars={
+                "org_id": org_id,
+                "max_attempts": max_attempts,
+                "@records": CollectionNames.RECORDS.value,
+            },
+            transaction=transaction,
+        ) or []
+        row = rows[0] if rows else {}
+        return {
+            "trashed": int(row.get("trashed") or 0),
+            "stuck": int(row.get("stuck") or 0),
+            "oldestDeletedAt": row.get("oldest"),
+        }
+
+    async def purge_trash_kept_record_groups(
+        self,
+        org_id: str,
+        *,
+        limit: int = 100,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """See ``IGraphDBProvider.purge_trash_kept_record_groups``."""
+        edge_collections = await self._get_all_edge_collections()
+        txn_id = transaction
+        if transaction is None:
+            txn_id = await self.begin_transaction(
+                read=[
+                    *edge_collections,
+                    CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value, CollectionNames.APPS.value,
+                ],
+                write=[*edge_collections, CollectionNames.RECORD_GROUPS.value],
+            )
+        try:
+            # A sync that lists the group again clears the mark in its upsert;
+            # committed after this snapshot, that write conflicts with the REMOVE.
+            keys = await self.execute_query(
+                """
+                FOR g IN @@groups
+                    FILTER g.isDeletedAtSource == true
+                    LET app = DOCUMENT(CONCAT(@apps, "/", g.connectorId))
+                    // A group a sync creates from a record carries no orgId; its connector does.
+                    FILTER g.orgId == @org_id OR (g.orgId IN [null, ""] AND app != null AND app.orgId == @org_id)
+                    FILTER app == null OR app.status != @deleting
+                    FILTER LENGTH(
+                        FOR member IN 1..1 INBOUND g._id @@belongs_to, @@inherit_permissions
+                            FILTER IS_SAME_COLLECTION(@records, member) OR IS_SAME_COLLECTION(@groups, member)
+                            LIMIT 1
+                            RETURN 1
+                    ) == 0
+                    FILTER LENGTH(
+                        FOR r IN @@records_c
+                            FILTER r.connectorId == g.connectorId AND r.recordGroupId == g._key
+                            LIMIT 1
+                            RETURN 1
+                    ) == 0
+                    LIMIT @limit
+                    RETURN g._key
+                """,
+                bind_vars={
+                    "org_id": org_id,
+                    "limit": limit,
+                    "deleting": APP_STATUS_DELETING,
+                    "apps": CollectionNames.APPS.value,
+                    "records": CollectionNames.RECORDS.value,
+                    "groups": CollectionNames.RECORD_GROUPS.value,
+                    "@groups": CollectionNames.RECORD_GROUPS.value,
+                    "@records_c": CollectionNames.RECORDS.value,
+                    "@belongs_to": CollectionNames.BELONGS_TO.value,
+                    "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
+                },
+                transaction=txn_id,
+            ) or []
+            if keys:
+                _, failed_edges = await self._delete_edges_by_node_ids(
+                    txn_id, [f"{CollectionNames.RECORD_GROUPS.value}/{k}" for k in keys], edge_collections
+                )
+                if failed_edges:
+                    raise RuntimeError(f"Could not remove the edges of kept record groups from {failed_edges}")
+                removed, failed_batches = await self._delete_nodes_by_keys(
+                    txn_id, keys, CollectionNames.RECORD_GROUPS.value
+                )
+                if failed_batches or removed != len(keys):
+                    raise RuntimeError(f"Removed {removed} of {len(keys)} kept record groups")
+            if transaction is None:
+                await self.commit_transaction(txn_id)
+        except Exception:
+            if transaction is None and txn_id:
+                await self.rollback_transaction(txn_id)
+            raise
+        return list(keys)
 
     async def delete_single_record(
         self,

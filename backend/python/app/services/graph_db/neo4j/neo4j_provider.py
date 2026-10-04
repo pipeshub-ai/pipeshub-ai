@@ -114,9 +114,11 @@ from app.services.graph_db.common.utils import (
     select_canonical_chain_names,
     soft_delete_request_result,
     soft_delete_result,
+    trash_purge_row,
     uploaded_document_id,
 )
 from app.services.graph_db.entity_index_queries import (
+    APP_STATUS_DELETING,
     ENTITY_INDEX_SOURCES,
     build_entity_index_candidate_cypher,
     build_entity_index_source_page_cypher,
@@ -208,6 +210,10 @@ _EDGE_MOVE_BATCH = 5000
 # Promotions to these statuses leave the primary with taxonomy to copy to its
 # duplicates; see update_queued_duplicates_status.
 _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
+
+
+# Written, then removed or deleted, inside one purge statement to take a node's write lock.
+_PURGE_LOCK = "purgeLock"
 
 
 class Neo4jProvider(IGraphDBProvider):
@@ -12016,6 +12022,205 @@ class Neo4jProvider(IGraphDBProvider):
                 "batch_id": batch_id,
                 "now": get_epoch_timestamp_in_ms(),
             },
+            txn_id=transaction,
+        )
+        return [row["id"] for row in rows or []]
+
+    async def _trash_purge_row(self, rec: dict, type_doc: dict | None) -> dict:
+        rec = {k: v for k, v in rec.items() if k != _PURGE_LOCK}
+        type_doc = dict(type_doc) if type_doc else None
+        payload = await self._create_deleted_record_event_payload(rec, type_doc)
+        return trash_purge_row(rec["id"], rec, type_doc, payload)
+
+    async def get_purgeable_trashed_records(
+        self,
+        org_id: str,
+        deleted_before: int,
+        *,
+        after: tuple[int, str] | None = None,
+        limit: int = 500,
+        max_attempts: int = 5,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """See ``IGraphDBProvider.get_purgeable_trashed_records``."""
+        after_ts, after_key = after if after else (None, None)
+        # The range on deletedAtTimestamp is the record_deleted_at index, which
+        # only the trash is in. The connector check runs after the LIMIT, so a
+        # deleting connector's rows still move the cursor.
+        rows = await self.client.execute_query(
+            """
+            MATCH (r:Record)
+            WHERE r.deletedAtTimestamp >= $lower AND r.deletedAtTimestamp <= $cutoff
+              AND ($after_ts IS NULL OR r.deletedAtTimestamp > $after_ts
+                   OR (r.deletedAtTimestamp = $after_ts AND r.id > $after_key))
+              AND r.isDeleted = true AND r.orgId = $org_id
+              AND coalesce(r.purgeAttempts, 0) < $max_attempts
+            WITH r ORDER BY r.deletedAtTimestamp, r.id LIMIT $limit
+            OPTIONAL MATCH (app:App {id: r.connectorId})
+            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
+            WITH r, app, head(collect(t)) AS t
+            RETURN properties(r) AS rec, properties(t) AS type_doc,
+                   coalesce(app.status, '') = $deleting AS skip
+            ORDER BY r.deletedAtTimestamp, r.id
+            """,
+            parameters={
+                "org_id": org_id,
+                "lower": after_ts if after_ts is not None else 0,
+                "cutoff": deleted_before,
+                "after_ts": after_ts,
+                "after_key": after_key,
+                "max_attempts": max_attempts,
+                "limit": limit,
+                "deleting": APP_STATUS_DELETING,
+            },
+            txn_id=transaction,
+        )
+        rows = rows or []
+        records = [await self._trash_purge_row(row["rec"], row.get("type_doc")) for row in rows if not row.get("skip")]
+        last = rows[-1]["rec"] if len(rows) >= limit else None
+        return {"records": records, "next": (last["deletedAtTimestamp"], last["id"]) if last else None}
+
+    async def purge_trashed_records(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        deleted_before: int,
+        *,
+        max_attempts: int = 5,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """See ``IGraphDBProvider.purge_trashed_records``."""
+        if not record_ids:
+            return {"purged": [], "kept": []}
+        # One statement, because each commits on its own unless explicit transactions
+        # are on. Setting a property takes the record's write lock, so the checks
+        # after it read a restore that committed after the MATCH, and a restore
+        # still running waits for this delete (Neo4j's lost-update pattern).
+        rows = await self.client.execute_query(
+            f"""
+            UNWIND $keys AS key
+            MATCH (r:Record {{id: key}})
+            WHERE r.orgId = $org_id
+            SET r.{_PURGE_LOCK} = true
+            WITH r
+            OPTIONAL MATCH (app:App {{id: r.connectorId}})
+            WITH r, (
+                r.isDeleted = true
+                AND r.deletedAtTimestamp IS NOT NULL AND r.deletedAtTimestamp <= $cutoff
+                AND coalesce(r.purgeAttempts, 0) < $max_attempts
+                AND coalesce(app.status, '') <> $deleting
+                AND NOT EXISTS {{
+                    MATCH (r)-[c:RECORD_RELATION]->(child:Record)
+                    WHERE c.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND {cypher_live_record("child")}
+                }}
+            ) AS due
+            FOREACH (_ IN CASE WHEN due THEN [] ELSE [1] END | REMOVE r.{_PURGE_LOCK})
+            WITH r, due WHERE due
+            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
+            WITH r, properties(r) AS rec, collect(t) AS types, collect(properties(t)) AS type_docs
+            FOREACH (t IN types | DETACH DELETE t)
+            DETACH DELETE r
+            RETURN rec, head(type_docs) AS type_doc
+            """,
+            parameters={
+                "keys": list(dict.fromkeys(record_ids)),
+                "org_id": org_id,
+                "cutoff": deleted_before,
+                "max_attempts": max_attempts,
+                "deleting": APP_STATUS_DELETING,
+            },
+            txn_id=transaction,
+        )
+        purged = [await self._trash_purge_row(row["rec"], row.get("type_doc")) for row in rows or []]
+        gone = {row["id"] for row in purged}
+        return {"purged": purged, "kept": [k for k in dict.fromkeys(record_ids) if k not in gone]}
+
+    async def record_purge_failure(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        error: str,
+        transaction: str | None = None,
+    ) -> int:
+        """See ``IGraphDBProvider.record_purge_failure``."""
+        if not record_ids:
+            return 0
+        rows = await self.client.execute_query(
+            """
+            UNWIND $keys AS key
+            MATCH (r:Record {id: key})
+            WHERE r.orgId = $org_id AND r.isDeleted = true
+            SET r.purgeAttempts = coalesce(r.purgeAttempts, 0) + 1, r.purgeLastError = $error
+            RETURN r.id AS id
+            """,
+            parameters={"keys": list(dict.fromkeys(record_ids)), "org_id": org_id, "error": error},
+            txn_id=transaction,
+        )
+        return len(rows or [])
+
+    async def get_trash_purge_stats(
+        self,
+        org_id: str,
+        max_attempts: int = 5,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """See ``IGraphDBProvider.get_trash_purge_stats``."""
+        rows = await self.client.execute_query(
+            """
+            MATCH (r:Record)
+            WHERE r.deletedAtTimestamp >= 0 AND r.isDeleted = true AND r.orgId = $org_id
+            RETURN count(r) AS trashed,
+                   count(CASE WHEN coalesce(r.purgeAttempts, 0) >= $max_attempts THEN 1 END) AS stuck,
+                   min(CASE WHEN coalesce(r.purgeAttempts, 0) < $max_attempts THEN r.deletedAtTimestamp END)
+                       AS oldest
+            """,
+            parameters={"org_id": org_id, "max_attempts": max_attempts},
+            txn_id=transaction,
+        )
+        row = (rows or [{}])[0]
+        return {
+            "trashed": int(row.get("trashed") or 0),
+            "stuck": int(row.get("stuck") or 0),
+            "oldestDeletedAt": row.get("oldest"),
+        }
+
+    async def purge_trash_kept_record_groups(
+        self,
+        org_id: str,
+        *,
+        limit: int = 100,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """See ``IGraphDBProvider.purge_trash_kept_record_groups``."""
+        empty = """
+            NOT EXISTS {
+                MATCH (member)-[:BELONGS_TO|INHERIT_PERMISSIONS]->(g)
+                WHERE member:Record OR member:RecordGroup
+            }
+            AND NOT EXISTS {
+                MATCH (r:Record {connectorId: g.connectorId}) WHERE r.recordGroupId = g.id
+            }
+        """
+        # Locked before the second look, as in purge_trashed_records: a sync that
+        # lists the group again clears the mark in its upsert, which takes the same lock.
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (g:RecordGroup)
+            WHERE g.isDeletedAtSource = true
+            OPTIONAL MATCH (app:App {{id: g.connectorId}})
+            // A group a sync creates from a record carries no orgId; its connector does.
+            WITH g, app WHERE (g.orgId = $org_id OR (coalesce(g.orgId, '') = '' AND app.orgId = $org_id))
+              AND coalesce(app.status, '') <> $deleting AND {empty}
+            WITH g LIMIT $limit
+            SET g.{_PURGE_LOCK} = true
+            WITH g, (g.isDeletedAtSource = true AND {empty}) AS due
+            FOREACH (_ IN CASE WHEN due THEN [] ELSE [1] END | REMOVE g.{_PURGE_LOCK})
+            WITH g, due WHERE due
+            WITH g, g.id AS id
+            DETACH DELETE g
+            RETURN id
+            """,
+            parameters={"org_id": org_id, "limit": limit, "deleting": APP_STATUS_DELETING},
             txn_id=transaction,
         )
         return [row["id"] for row in rows or []]

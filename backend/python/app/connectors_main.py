@@ -553,6 +553,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     post_startup_task = asyncio.create_task(_post_startup(), name="connector_post_startup")
     app_container.post_startup_task = post_startup_task
 
+    # Needs the producer started above; a Redis lease keeps it to one replica.
+    from app.connectors.services.trash_purge import run_trash_purge_loop
+    app.state.trash_purge_task = asyncio.create_task(
+        run_trash_purge_loop(app_container, graph_provider), name="trash_purge"
+    )
+
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
     # Avoid triggering another startup scan here to prevent duplicate scheduling attempts.
 
@@ -566,13 +572,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except (asyncio.CancelledError, Exception):
             pass
     logger.info("🔄 Shut down application started")
-    connector_metrics_task = getattr(app.state, "connector_metrics_task", None)
-    if connector_metrics_task is not None and not connector_metrics_task.done():
-        connector_metrics_task.cancel()
-        try:
-            await connector_metrics_task
-        except (asyncio.CancelledError, Exception):
-            pass
+    for task_name in ("connector_metrics_task", "trash_purge_task"):
+        task = getattr(app.state, task_name, None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
     try:

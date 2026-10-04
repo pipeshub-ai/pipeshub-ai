@@ -1532,6 +1532,17 @@ class TestRecordGroup:
         assert arango["connectorName"] == "DRIVE"
         assert arango["groupType"] == "DRIVE"
 
+    def test_a_record_group_upsert_takes_back_a_group_kept_for_the_trash(self) -> None:
+        """The source listing the group again clears the mark the purge removes it by."""
+        from app.models.entities import RecordGroup, RecordGroupType
+        rg = RecordGroup(
+            name="Team", external_group_id="ext-1", connector_name=Connectors.GOOGLE_DRIVE,
+            connector_id="conn-1", group_type=RecordGroupType.DRIVE,
+        )
+        arango = rg.to_arango_base_record_group()
+        assert arango["isDeletedAtSource"] is False
+        assert arango["deletedAtSourceTimestamp"] is None
+
     def test_from_arango_base_record_group(self):
         from app.models.entities import RecordGroup, RecordGroupType
         doc = {
