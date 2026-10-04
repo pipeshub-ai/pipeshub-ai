@@ -217,6 +217,12 @@ export const AuthApi = {
     );
   },
 
+  /** Redeem the single-use code a web SAML sign-in hands to the success page; the binder rides as a cookie. */
+  async exchangeSamlWebCode(code: string): Promise<SignInResponse> {
+    const { data } = await publicAuthClient.post<SignInResponse>('/api/v1/saml/exchange', { code });
+    return data;
+  },
+
   /** Redeem the single-use code a desktop SAML sign-in hands back by deep link. */
   async exchangeSamlDesktopCode(code: string, codeVerifier: string): Promise<SignInResponse> {
     const { data } = await publicAuthClient.post<SignInResponse>(

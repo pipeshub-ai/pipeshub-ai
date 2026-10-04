@@ -46,6 +46,13 @@ import {
 } from '../schema/orgAuthConfiguration.schema';
 import { EntitiesEventProducer } from '../../user_management/services/entity_events.service';
 import { Org } from '../../user_management/schema/org.schema';
+import { createAuthRateLimiter } from '../../../libs/middlewares/rate-limit.middleware';
+import {
+  clearLegacySamlTokenCookies,
+  clearSamlHandoffCookie,
+  readSamlHandoffCookie,
+  setSamlHandoffCookie,
+} from '../utils/samlHandoffCookie';
 
 export const isValidEmail = (email: string) => {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); // Basic email regex
@@ -56,6 +63,15 @@ const desktopExchangeValidationSchema = z.object({
   body: z.object({
     code: z.string().min(1),
     codeVerifier: z.string().min(1),
+  }),
+  query: z.object({}),
+  params: z.object({}),
+  headers: z.object({}),
+});
+
+const webExchangeValidationSchema = z.object({
+  body: z.object({
+    code: z.string().regex(/^[0-9a-f]{64}$/),
   }),
   query: z.object({}),
   params: z.object({}),
@@ -76,6 +92,7 @@ export function createSamlRouter(container: Container) {
   const samlDesktopHandoffService = container.get<SamlDesktopHandoffService>('SamlDesktopHandoffService');
 
   const logger = container.get<Logger>('Logger');
+  const exchangeRateLimiter = createAuthRateLimiter(logger, config.maxAuthRequestsPerMinute);
 
   /**
    * A desktop sign-in ran in the user's browser, so its outcome goes to the
@@ -103,7 +120,7 @@ export function createSamlRouter(container: Container) {
 
   router.use(attachContainerMiddleware(container));
   // No server-side login session: sign-in state travels in RelayState and the
-  // Redis sign-in session, and the callback sets its own token cookies.
+  // Redis sign-in session, and the callback hands tokens over by one-time code.
   router.use(passport.initialize());
 
   router.get(
@@ -269,20 +286,13 @@ export function createSamlRouter(container: Container) {
           return res.redirect(desktopSuccessUrl({ state: desktop.state, code }));
         }
 
-        res.cookie("accessToken", accessToken, {
-          secure: true,
-          sameSite: "none",
-          maxAge: 60 * 60 * 1000,
+        const { code, binder } = await samlDesktopHandoffService.issueForBrowser({
+          accessToken,
+          refreshToken,
         });
-
-        res.cookie("refreshToken", refreshToken, {
-          secure: true,
-          sameSite: "none",
-          maxAge: 7 * 24 * 60 * 60 * 1000,
-        });
-
-
-        res.redirect(`${config.frontendUrl}/auth/sign-in/samlSso/success`);
+        setSamlHandoffCookie(res, binder);
+        // A fragment is never sent to a server, so the code stays out of access logs and Referer.
+        return res.redirect(`${config.frontendUrl}/auth/sign-in/samlSso/success#code=${code}`);
       } catch (error) {
         logger.error('SAML callback error', { error: error instanceof Error ? error.message : String(error) });
         return redirectSamlError(req, res, 'unknown');
@@ -298,6 +308,24 @@ export function createSamlRouter(container: Container) {
       try {
         const { code, codeVerifier } = req.body as { code: string; codeVerifier: string };
         res.status(200).json(await samlDesktopHandoffService.redeem(code, codeVerifier));
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Unauthenticated by design: the code plus the HttpOnly binder cookie are the credential.
+  router.post(
+    '/exchange',
+    exchangeRateLimiter,
+    ValidationMiddleware.validate(webExchangeValidationSchema),
+    async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
+      try {
+        const binder = readSamlHandoffCookie(req) ?? '';
+        clearSamlHandoffCookie(res);
+        clearLegacySamlTokenCookies(res);
+        const { code } = req.body as { code: string };
+        res.status(200).json(await samlDesktopHandoffService.redeem(code, binder));
       } catch (error) {
         next(error);
       }

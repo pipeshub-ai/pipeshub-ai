@@ -27,6 +27,7 @@ import { DISABLED_ACCOUNT_SIGN_IN_MESSAGE } from '../../../../src/modules/auth/u
 import { SessionService } from '../../../../src/modules/auth/services/session.service';
 import { SamlController } from '../../../../src/modules/auth/controller/saml.controller';
 import { createSamlRouter } from '../../../../src/modules/auth/routes/saml.routes';
+import { SamlDesktopHandoffService } from '../../../../src/modules/auth/services/samlDesktopHandoff.service';
 import type { Logger } from '../../../../src/libs/services/logger.service';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
@@ -1606,9 +1607,22 @@ describe('UserAccountController sign-in flow', () => {
       cookieSecret: 'saml-cookie-secret',
     };
 
+    // Shares the Redis-backed store the session service uses.
+    const handoffService = (): SamlDesktopHandoffService => {
+      const redis = createMockRedisService();
+      redis.set.callsFake(async (key: string, value: unknown) => {
+        redisStore.set(key, JSON.stringify(value));
+      });
+      redis.get.callsFake(async (key: string) => {
+        const raw = redisStore.get(key);
+        return raw === undefined ? null : JSON.parse(raw);
+      });
+      return new SamlDesktopHandoffService(redis as unknown as ICacheService);
+    };
+
     // The real callback that runs after passport has checked the IdP's
     // assertion; passport's output (req.user) is the only thing faked.
-    function samlCallback(): RequestHandler {
+    function samlCallback(handoff: SamlDesktopHandoffService): RequestHandler {
       const container = new Container();
       const bind = (id: string, value: unknown): void => {
         container.bind(id).toConstantValue(value);
@@ -1616,8 +1630,7 @@ describe('UserAccountController sign-in flow', () => {
       bind('AppConfig', appConfig);
       bind('AuthMiddleware', { scopedTokenValidator: () => sinon.stub() });
       bind('SessionService', sessionService);
-      // These are web sign-ins; the desktop handoff is never reached.
-      bind('SamlDesktopHandoffService', {});
+      bind('SamlDesktopHandoffService', handoff);
       bind('IamService', iamService);
       bind('JitProvisioningService', jitService);
       bind('ConfigurationManagerService', configService);
@@ -1642,12 +1655,20 @@ describe('UserAccountController sign-in flow', () => {
         cookie: sinon.stub(),
       };
       const relayState = Buffer.from(JSON.stringify({ orgId, sessionToken })).toString('base64');
-      await samlCallback()(
+      const handoff = handoffService();
+      await samlCallback(handoff)(
         fakeRequest({ user: { email, orgId }, body: { RelayState: relayState } }),
         res as unknown as Response,
         sinon.stub() as unknown as NextFunction,
       );
-      return { redirect: String(res.redirect.firstCall?.args[0]), cookies: res.cookie };
+      const redirect = String(res.redirect.firstCall?.args[0]);
+      const binder = res.cookie.getCalls().find((c) => c.args[0] === 'saml_handoff')?.args[1];
+      const code = redirect.split('#code=')[1];
+      const accessToken =
+        code && typeof binder === 'string'
+          ? (await handoff.redeem(code, binder)).accessToken
+          : undefined;
+      return { redirect: redirect.split('#')[0], cookies: res.cookie, accessToken };
     }
 
     async function passStepOneAsAlice(steps: string[][] = [['password'], ['samlSso']]) {
@@ -1732,7 +1753,7 @@ describe('UserAccountController sign-in flow', () => {
       });
 
       try {
-        const { redirect, cookies } = await samlSignsInAs(newcomer.email, token);
+        const { redirect, accessToken } = await samlSignsInAs(newcomer.email, token);
 
         expect(jitService.provisionUser.firstCall.args.slice(0, 4)).to.deep.equal([
           newcomer.email,
@@ -1741,9 +1762,8 @@ describe('UserAccountController sign-in flow', () => {
           'saml',
         ]);
         expect(redirect).to.equal('http://app/auth/sign-in/samlSso/success');
-        const access = cookies.getCalls().find((c) => c.args[0] === 'accessToken');
         expect(
-          (jwt.verify(String(access?.args[1]), JWT_SECRET) as TokenClaims).userId,
+          (jwt.verify(String(accessToken), JWT_SECRET) as TokenClaims).userId,
         ).to.equal(newcomer._id);
       } finally {
         delete directory[newcomer.email];
@@ -1753,12 +1773,11 @@ describe('UserAccountController sign-in flow', () => {
     it("signs Alice in when the SAML step is Alice's own account", async () => {
       const token = await passStepOneAsAlice();
 
-      const { redirect, cookies } = await samlSignsInAs(alice.email, token);
+      const { redirect, accessToken } = await samlSignsInAs(alice.email, token);
 
       expect(redirect).to.equal('http://app/auth/sign-in/samlSso/success');
-      const access = cookies.getCalls().find((c) => c.args[0] === 'accessToken');
       expect(
-        (jwt.verify(String(access?.args[1]), JWT_SECRET) as TokenClaims).userId,
+        (jwt.verify(String(accessToken), JWT_SECRET) as TokenClaims).userId,
       ).to.equal(alice._id);
     });
   });

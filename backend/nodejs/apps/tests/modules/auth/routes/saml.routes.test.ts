@@ -20,11 +20,33 @@ import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { AuthSessionRequest } from '../../../../src/modules/auth/middlewares/types';
+import { SamlDesktopHandoffService } from '../../../../src/modules/auth/services/samlDesktopHandoff.service';
+import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware';
 import type { Profile, SAML } from '@node-saml/passport-saml';
 
 // Passport keeps registered strategies behind an untyped accessor.
 const registeredSamlStrategy = () =>
   (passport as unknown as { _strategy(name: string): passport.Strategy | undefined })._strategy('saml');
+
+const inMemoryCache = () => {
+  const store = new Map<string, unknown>();
+  return {
+    set: async (k: string, v: unknown) => {
+      store.set(k, v);
+    },
+    get: async <T>(k: string) => (store.get(k) as T) ?? null,
+    delete: async (k: string) => {
+      store.delete(k);
+    },
+    increment: async (k: string) => {
+      const next = ((store.get(k) as number | undefined) ?? 0) + 1;
+      store.set(k, next);
+      return next;
+    },
+    disconnect: async () => undefined,
+    isConnected: () => true,
+  };
+};
 
 const humanAccountQuery = () =>
   ({
@@ -162,6 +184,9 @@ describe('createSamlRouter', () => {
         data: { _id: '507f1f77bcf86cd799439012', email: profile.email, orgId: profile.orgId, hasLoggedIn: true },
       });
       sinon.stub(Users, 'findOne').returns(humanAccountQuery());
+      container
+        .rebind<SamlDesktopHandoffService>('SamlDesktopHandoffService')
+        .toConstantValue(new SamlDesktopHandoffService(inMemoryCache()));
     });
 
     afterEach(() => {
@@ -169,11 +194,17 @@ describe('createSamlRouter', () => {
       else passport.unuse('saml');
     });
 
-    const send = async (method: 'GET' | 'POST', path: string) => {
+    const listen = () => {
       const app = express();
       app.use(express.urlencoded({ extended: true }));
+      app.use(express.json());
       app.use(createSamlRouter(container));
-      const server = app.listen(0);
+      app.use(ErrorMiddleware.handleError());
+      return app.listen(0);
+    };
+
+    const send = async (method: 'GET' | 'POST', path: string) => {
+      const server = listen();
       try {
         const { port } = server.address() as AddressInfo;
         const relayState = Buffer.from(JSON.stringify({ orgId: profile.orgId })).toString('base64');
@@ -188,17 +219,95 @@ describe('createSamlRouter', () => {
       }
     };
 
-    it('completes sign-in from the callback and sets no express-session cookie', async () => {
+    const signIn = async () => {
       const response = await send('POST', '/signIn/callback');
+      const location = response.headers.get('location') ?? '';
+      const binderCookie = response.headers.getSetCookie().find((c) => c.startsWith('saml_handoff='));
+      return {
+        response,
+        location,
+        code: new URL(location).hash.replace(/^#code=/, ''),
+        binder: binderCookie?.split(';')[0]?.slice('saml_handoff='.length) ?? '',
+      };
+    };
+
+    const exchange = async (code: string, binder?: string) => {
+      const server = listen();
+      try {
+        const { port } = server.address() as AddressInfo;
+        return await fetch(`http://127.0.0.1:${port}/exchange`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(binder !== undefined ? { cookie: `other=1; saml_handoff=${binder}` } : {}),
+          },
+          body: JSON.stringify({ code }),
+        });
+      } finally {
+        server.close();
+      }
+    };
+
+    it('completes sign-in from the callback and sets no express-session cookie', async () => {
+      const { response, location } = await signIn();
 
       expect(response.status).to.equal(302);
-      expect(response.headers.get('location')).to.equal(`${mockConfig.frontendUrl}/auth/sign-in/samlSso/success`);
+      expect(location).to.match(
+        new RegExp(`^${mockConfig.frontendUrl}/auth/sign-in/samlSso/success#code=[0-9a-f]{64}$`),
+      );
       const cookies = response.headers.getSetCookie();
-      expect(cookies.some((c) => c.startsWith('accessToken='))).to.equal(true);
-      expect(cookies.some((c) => c.startsWith('refreshToken='))).to.equal(true);
       expect(cookies.some((c) => c.startsWith('connect.sid='))).to.equal(false);
       const sessionService = container.get<SessionService>('SessionService');
       expect((sessionService.completeAuthentication as sinon.SinonStub).calledOnce).to.equal(true);
+    });
+
+    it('hands tokens over by code and an HttpOnly binder cookie, never in a cookie or the URL', async () => {
+      const { response, location } = await signIn();
+
+      const cookies = response.headers.getSetCookie();
+      expect(cookies.filter((c) => /^(accessToken|refreshToken)=/.test(c))).to.deep.equal([]);
+      const binderCookies = cookies.filter((c) => c.startsWith('saml_handoff='));
+      expect(binderCookies).to.have.length(1);
+      expect(binderCookies[0]).to.match(/;\s*HttpOnly/i);
+      expect(binderCookies[0]).to.match(/;\s*Secure/i);
+      expect(binderCookies[0]).to.match(/;\s*SameSite=Lax/i);
+      expect(binderCookies[0]).to.match(/;\s*Path=\/api\/v1\/saml(;|$)/i);
+      expect(location).to.not.match(/eyJ[A-Za-z0-9_-]+\./);
+    });
+
+    it('exchange returns tokens once for the binder that came with the code', async () => {
+      const { code, binder } = await signIn();
+
+      const response = await exchange(code, binder);
+
+      expect(response.status).to.equal(200);
+      const body = (await response.json()) as { accessToken: string; refreshToken: string };
+      expect(body.accessToken).to.match(/^eyJ/);
+      expect(body.refreshToken).to.match(/^eyJ/);
+      const cleared = response.headers.getSetCookie();
+      for (const name of ['saml_handoff', 'accessToken', 'refreshToken']) {
+        const cookie = cleared.find((c) => c.startsWith(`${name}=;`));
+        expect(cookie, name).to.match(/Expires=Thu, 01 Jan 1970/);
+      }
+      expect(cleared.find((c) => c.startsWith('accessToken='))).to.match(/SameSite=None/);
+      expect(cleared.find((c) => c.startsWith('saml_handoff='))).to.match(/Path=\/api\/v1\/saml/);
+
+      expect((await exchange(code, binder)).status).to.equal(401);
+    });
+
+    it('exchange refuses a code without its own binder and burns it', async () => {
+      const first = await signIn();
+      const second = await signIn();
+
+      expect((await exchange(first.code)).status).to.equal(401);
+      expect((await exchange(first.code, second.binder)).status).to.equal(401);
+      expect((await exchange(first.code, first.binder)).status).to.equal(401);
+    });
+
+    it('exchange rejects a malformed code', async () => {
+      const { binder } = await signIn();
+
+      expect((await exchange('not-a-code', binder)).status).to.equal(400);
     });
 
     it('sets no express-session cookie on other SAML routes', async () => {
@@ -371,8 +480,8 @@ describe('createSamlRouter', () => {
       const router = createSamlRouter(container);
       const routes = router.stack.filter((layer: any) => layer.route);
 
-      // GET /signIn, POST /signIn/callback, POST /desktop/exchange, POST /updateAppConfig
-      expect(routes.length).to.equal(4);
+      // GET /signIn, POST /signIn/callback, POST /exchange, POST /desktop/exchange, POST /updateAppConfig
+      expect(routes.length).to.equal(5);
     });
   });
 
@@ -730,6 +839,7 @@ describe('SAML Routes - handler coverage', () => {
     container.bind<any>('SessionService').toConstantValue(mockSessionService)
     mockHandoffService = {
       issue: sinon.stub().resolves('a'.repeat(64)),
+      issueForBrowser: sinon.stub().resolves({ code: 'b'.repeat(64), binder: 'binder' }),
       redeem: sinon.stub().resolves({ accessToken: 'at', refreshToken: 'rt' }),
     }
     container.bind<any>('SamlDesktopHandoffService').toConstantValue(mockHandoffService)
@@ -1019,6 +1129,19 @@ describe('SAML Routes - handler coverage', () => {
       expect(mockHandoffService.redeem.calledWith('c', 'v')).to.be.true
       expect(res.json.firstCall.args[0]).to.deep.equal({ accessToken: 'at', refreshToken: 'rt' })
     })
+
+    it('keeps the web handoff out of a desktop sign-in', async () => {
+      const handler = findHandler('/signIn/callback', 'post')
+      mockSamlController.parseRelayState.returns(desktopRelay)
+      mockIamService.getUserByEmail.resolves({
+        statusCode: 200,
+        data: { _id: '507f1f77bcf86cd799439012', email: 'test@test.com', orgId: desktopRelay.orgId, hasLoggedIn: true },
+      })
+
+      await handler(samlReq(), mockRes(), sinon.stub())
+
+      expect(mockHandoffService.issueForBrowser.called).to.be.false
+    })
   })
 
   describe('POST /signIn/callback - existing user success flow', () => {
@@ -1076,10 +1199,28 @@ describe('SAML Routes - handler coverage', () => {
 
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.cookie.called).to.be.true
-        expect(res.redirect.calledOnce).to.be.true
-      }
+      expect(next.called).to.be.false
+      expect(res.cookie.calledOnceWith('saml_handoff', 'binder')).to.be.true
+      expect(res.redirect.firstCall.args[0]).to.equal(
+        `http://localhost:3000/auth/sign-in/samlSso/success#code=${'b'.repeat(64)}`,
+      )
+    })
+
+    it('hands an IdP-initiated sign-in (no RelayState) to the web exchange', async () => {
+      const handler = findHandler('/signIn/callback', 'post')
+      mockSamlController.parseRelayState.returns({})
+      mockIamService.getUserByEmail.resolves({
+        statusCode: 200,
+        data: { _id: '507f1f77bcf86cd799439012', email: 'test@test.com', orgId: '507f1f77bcf86cd799439011', hasLoggedIn: true },
+      })
+      const req = { user: { email: 'test@test.com' }, body: {}, query: {}, headers: {} }
+      const res = mockRes()
+
+      await handler(req, res, sinon.stub())
+
+      expect(mockHandoffService.issueForBrowser.calledOnce).to.be.true
+      expect(res.cookie.calledOnceWith('saml_handoff', 'binder')).to.be.true
+      expect(res.redirect.firstCall.args[0]).to.include('/auth/sign-in/samlSso/success#code=')
     })
 
     it('should redirect for first-time login', async () => {
