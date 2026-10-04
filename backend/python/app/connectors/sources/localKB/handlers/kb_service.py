@@ -130,8 +130,6 @@ class KnowledgeBaseService:
         self.processor_for_kb = processor_for_kb
         # Needed to resolve the storage endpoint for upload signed-url routes.
         self.config_service = config_service
-        # Entities-collection cleanup on KB delete; optional so this class stays
-        # constructible without it (e.g. in tests).
 
     def _mutation_failure(self, result: object, action: str) -> dict:
         """Turn a failed graph-provider write into something a person can act on.

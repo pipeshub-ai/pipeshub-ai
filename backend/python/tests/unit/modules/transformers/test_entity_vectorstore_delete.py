@@ -708,3 +708,33 @@ class TestStaleSearchPages:
         assert _membership(entities, "topic:t1") == (["conn-c"], [])
         assert _membership(entities, "topic:t2") == (["conn-d"], [])
         assert reads.count(["topic:t0"]) == 1
+
+
+class TestNoProgressBehindAStalePage:
+    @pytest.mark.asyncio
+    async def test_a_point_whose_write_never_takes_raises_even_behind_a_stepped_past_page(self) -> None:
+        """On OpenSearch a handled page keeps coming back first and is stepped
+        past, so the stuck page never repeats back to back; counting writes
+        per point still stops the loop."""
+        stale = _entity_point("t0", "topic", ["conn-a", "conn-b"], [])
+        entities = _Entities(
+            _entity_point("t0", "topic", ["conn-b"], []),  # already stripped
+            _entity_point("t1", "topic", ["conn-a", "conn-c"], []),
+        )
+        entities.search_view = {"topic:t0": stale, "topic:t1": entities.points["topic:t1"]}
+        writes: list[list[str]] = []
+
+        async def _no_effect(collection_name, ids, payload) -> None:
+            writes.append(sorted(ids))
+
+        entities.update_payload_by_ids = _no_effect
+        real_scroll = entities.scroll
+
+        async def _bounded(*args, **kwargs):
+            assert len(entities.scrolls) < 50, "the cleanup loop never stopped"
+            return await real_scroll(*args, **kwargs)
+
+        entities.scroll = _bounded
+        with pytest.raises(RuntimeError, match="no progress"):
+            await _store_over(entities)._shrink_connector_membership("org-1", "conn-a", [], page_size=1)
+        assert writes == [["topic:t1"], ["topic:t1"]]

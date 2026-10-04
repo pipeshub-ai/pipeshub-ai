@@ -51,7 +51,7 @@ import contextlib
 import time
 import uuid
 import weakref
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -139,8 +139,9 @@ _CONFIDENCE_THRESHOLD = 0.0
 # A failed initialisation (embedding endpoint down, dimension mismatch) is not
 # retried for this long, so every caller does not re-send a probe embedding.
 _INIT_RETRY_SECONDS = 30.0
-# Times connector cleanup processes the same unchanged page before giving up.
-_CLEANUP_PAGE_ATTEMPTS = 2
+# Times connector cleanup writes one point before giving up on it: a write
+# that does not take leaves the point needing the same write again.
+_CLEANUP_WRITE_ATTEMPTS = 2
 
 _QUERY_VECTOR_CACHE_SIZE = 64
 
@@ -881,8 +882,9 @@ class EntityVectorStore:
 
         The locks serialise this with writers in the same indexing process
         only; another instance can still re-tag a point between the re-read
-        and the write. A page whose writes do not take is retried, then
-        raises, as does a full page of points without an id. Two cleanups of
+        and the write. A point whose write does not take is written once
+        more, then the cleanup raises, as it does on a full page of points
+        without an id. Two cleanups of
         one connector running at once on Redis can step past each other's
         pages with a numeric offset; the second run's final check logs what
         is left.
@@ -902,8 +904,10 @@ class EntityVectorStore:
             must={"metadata.orgId": org_id, CONNECTOR_IDS_FIELD: connector_id},
             must_not={"metadata.entityType": scoped_types},
         )
-        previous_page: set[str] = set()
-        attempts = 0
+        # Counted per point, not per repeated page: on OpenSearch a handled
+        # page keeps coming back first and is stepped past, so a stuck page
+        # never repeats back to back.
+        writes: Counter[str] = Counter()
         offset: str | None = None
         # Points a fresh read showed are done (stripped or gone). Search lags
         # by-id writes on OpenSearch, so they keep coming back until the next
@@ -922,16 +926,8 @@ class EntityVectorStore:
             )
             if not page.points:
                 break
-            page_ids = {point.id for point in page.points}
-            attempts = attempts + 1 if page_ids == previous_page else 1
-            if attempts > _CLEANUP_PAGE_ATTEMPTS:
-                raise RuntimeError(
-                    f"Connector cleanup made no progress on {len(page_ids)} points "
-                    f"(org={org_id} connector={connector_id}); a retry resumes it"
-                )
-            previous_page = page_ids
             result = await self._strip_or_delete(
-                page.points, org_id, connector_id, group_ids, membership_lookup, handled=handled,
+                page.points, org_id, connector_id, group_ids, membership_lookup, handled=handled, writes=writes,
             )
             if result is _Page.ALREADY_DONE:
                 # Search lags by-id writes (OpenSearch refreshes every 30 s), so
@@ -1020,6 +1016,7 @@ class EntityVectorStore:
         membership_lookup: MembershipLookup | None = None,
         *,
         handled: set[str] | None = None,
+        writes: Counter[str] | None = None,
     ) -> _Page:
         """Apply step 2 to one page.
 
@@ -1068,6 +1065,17 @@ class EntityVectorStore:
                 stripped.setdefault((connectors, groups), []).append(point_id)
             if not stripped and not exclusive:
                 return _Page.ALREADY_DONE
+            if writes is not None:
+                exclusive_ids = {(t, e) for t, ids in exclusive.items() for e in ids}
+                to_write = [p for ids in stripped.values() for p in ids]
+                to_write += [point_id for point_id, t, e in refs if (t, e) in exclusive_ids]
+                stuck = [p for p in to_write if writes[p] >= _CLEANUP_WRITE_ATTEMPTS]
+                if stuck:
+                    raise RuntimeError(
+                        f"Connector cleanup made no progress on {len(stuck)} points "
+                        f"(org={org_id} connector={connector_id}); a retry resumes it"
+                    )
+                writes.update(to_write)
 
             for (connectors, groups), point_ids in stripped.items():
                 await self.vector_db_service.update_payload_by_ids(

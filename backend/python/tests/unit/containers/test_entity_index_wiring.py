@@ -28,8 +28,12 @@ async def test_factory_passes_the_recreate_flag() -> None:
 
 def test_only_indexing_recreates() -> None:
     assert IndexingAppContainer.entity_vector_store.kwargs.get("recreate_on_dimension_mismatch") is True
-    for container in (QueryAppContainer, ConnectorAppContainer):
-        assert not container.entity_vector_store.kwargs.get("recreate_on_dimension_mismatch")
+    assert not QueryAppContainer.entity_vector_store.kwargs.get("recreate_on_dimension_mismatch")
+
+
+def test_the_connector_service_has_no_entity_store() -> None:
+    """Its entity cleanup is published to the indexing service."""
+    assert not hasattr(ConnectorAppContainer, "entity_vector_store")
 
 
 def test_indexing_starts_and_stops_the_rebuild_loop() -> None:

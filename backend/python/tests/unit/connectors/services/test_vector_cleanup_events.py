@@ -12,6 +12,7 @@ import pytest
 
 from app.config.constants.arangodb import EventTypes
 from app.connectors.services.vector_cleanup_events import (
+    MAX_RECORD_GROUP_IDS_PER_EVENT,
     MAX_VIRTUAL_RECORD_IDS_PER_EVENT,
     build_connector_cleanup_events,
     build_connector_vector_cleanup_events,
@@ -201,3 +202,33 @@ class TestEntityCleanupEvent:
         )
         assert unknown[-1]["payload"]["recordGroupIds"] is None
         assert empty[-1]["payload"]["recordGroupIds"] == []
+
+
+class TestManyRecordGroups:
+    """Salesforce makes a record group per Case and Deal, so a connector can
+    have tens of thousands; an event over Kafka's cap fails to publish and
+    the cleanup is lost."""
+
+    GROUPS = [f"{i:08d}-0000-4000-8000-000000000000" for i in range(30_000)]
+
+    def _events(self) -> list[dict]:
+        return build_connector_cleanup_events(
+            org_id="org-1", connector_id="conn-1", vector_membership_backfilled=True,
+            connector_name="SALESFORCE", record_group_ids=self.GROUPS,
+        )
+
+    def test_every_event_stays_under_the_kafka_cap(self) -> None:
+        for event in self._events():
+            assert len(json.dumps(event).encode()) < KAFKA_DEFAULT_MAX_REQUEST_BYTES
+
+    def test_the_entity_event_lets_the_store_recover_the_groups(self) -> None:
+        """None, not a truncated list: the store then reads the connector's
+        groups from its own record and record-group points."""
+        assert self._events()[-1]["payload"]["recordGroupIds"] is None
+
+    def test_a_connector_with_fewer_groups_still_names_them(self) -> None:
+        events = build_connector_cleanup_events(
+            org_id="org-1", connector_id="conn-1", vector_membership_backfilled=True,
+            record_group_ids=self.GROUPS[:MAX_RECORD_GROUP_IDS_PER_EVENT],
+        )
+        assert all(len(e["payload"]["recordGroupIds"]) == MAX_RECORD_GROUP_IDS_PER_EVENT for e in events)
