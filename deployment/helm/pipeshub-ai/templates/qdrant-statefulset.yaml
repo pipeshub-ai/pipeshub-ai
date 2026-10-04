@@ -67,6 +67,10 @@ spec:
       app.kubernetes.io/component: qdrant
   template:
     metadata:
+      {{- if include "pipeshub-ai.createSecrets" . }}
+      annotations:
+        checksum/qdrant-api-key: {{ include "pipeshub-ai.qdrantApiKeyChecksum" . }}
+      {{- end }}
       labels:
         {{- include "pipeshub-ai.labels" . | nindent 8 }}
         app.kubernetes.io/component: qdrant
