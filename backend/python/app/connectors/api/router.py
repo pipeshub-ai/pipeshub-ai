@@ -7782,7 +7782,17 @@ async def delete_connector_instance(
 
         producer = container.messaging_producer
 
-        # 5. Stop any running sync for this connector
+        # 5. Mark the connector DELETING before any event goes out. This
+        # service's own consumer runs the deletion and can finish before this
+        # request does, so a later write would hit a node that no longer exists;
+        # and a failed write here leaves the connector and its sync untouched.
+        await graph_provider.update_node(
+            connector_id,
+            CollectionNames.APPS.value,
+            {"status": "DELETING", "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+        )
+
+        # 6. Stop any running sync for this connector
         try:
             disable_message = {
                 "eventType": "appDisabled",
@@ -7803,15 +7813,6 @@ async def delete_connector_instance(
                 f"❌ Failed to send appDisabled event for connector {connector_id}: {e}. "
                 f"Sync services may continue running. Proceeding with deletion event."
             )
-
-        # 6. Mark the connector DELETING before publishing: this service's own
-        # consumer runs the deletion and can finish before this request does, and
-        # a write after it would hit a node that no longer exists.
-        await graph_provider.update_node(
-            connector_id,
-            CollectionNames.APPS.value,
-            {"status": "DELETING", "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
-        )
 
         # 7. Publish the async deletion event — consumed by the sync consumer
         event_type = f"{connector_type.replace(' ', '').lower()}.delete"

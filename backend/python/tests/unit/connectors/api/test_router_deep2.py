@@ -1343,6 +1343,8 @@ class TestDeleteConnectorInstanceDeep:
                 )
         assert exc_info.value.status_code == 500
         assert "Failed to initiate connector deletion" in exc_info.value.detail
+        # The status write comes first, so a failed one stops nothing and deletes nothing.
+        producer.send_message.assert_not_called()
 
     async def test_successful_deletion_flow(self):
         """Lines 5460-5519: full success path with event publishing and DELETING status."""
@@ -1377,10 +1379,10 @@ class TestDeleteConnectorInstanceDeep:
             )
 
         assert result.status_code == 202
-        # DELETING is written before the delete event: its consumer runs in this
+        # DELETING is written before any event: the delete's consumer runs in this
         # service and can finish first, and a later write would hit a deleted node.
-        assert calls[0] == "appDisabled"
-        assert calls[1] == "status=DELETING"
+        assert calls[0] == "status=DELETING"
+        assert calls[1] == "appDisabled"
         assert calls[2].endswith(".delete") and len(calls) == 3
         graph_provider.batch_upsert_nodes.assert_not_called()
 
