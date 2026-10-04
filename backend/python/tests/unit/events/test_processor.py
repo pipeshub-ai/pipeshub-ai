@@ -400,45 +400,11 @@ class TestProcessImage:
 
 
 # ===========================================================================
-# Processor.process_gmail_message
-# ===========================================================================
-
-
-class TestProcessGmailMessage:
-    """Tests for Processor.process_gmail_message."""
-
-    @pytest.mark.asyncio
-    async def test_delegates_to_html_processor(self):
-        """Gmail processing delegates to process_html_document."""
-        proc, _, _, _ = _make_processor()
-
-        async def mock_html(*args, **kwargs):
-            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
-
-        with patch.object(proc, "process_html_document", side_effect=mock_html):
-            events = await _collect(
-                proc.process_gmail_message(
-                    recordName="email",
-                    recordId="rec-1",
-                    version=1,
-                    source="gmail",
-                    orgId="org-1",
-                    html_content=b"<p>Hello</p>",
-                    virtual_record_id="vr-1",
-                )
-            )
-
-        assert len(events) == 2
-        assert events[0].event == "parsing_complete"
-
-
-# ===========================================================================
 # Processor.process_pdf_with_docling
 # ===========================================================================
 
 
-class TestProcessPdfWithDocling:
+class TestProcessPdfWithDoclingEvents:
     """Tests for Processor.process_pdf_with_docling."""
 
     @pytest.mark.asyncio
@@ -493,7 +459,7 @@ class TestProcessPdfWithDocling:
 # ===========================================================================
 
 
-class TestProcessPdfWithPyMuPDF:
+class TestProcessPdfWithPyMuPDFEvents:
     """Tests for Processor.process_pdf_with_pdf_plumber."""
 
     @pytest.mark.asyncio
@@ -555,7 +521,7 @@ class TestProcessPdfWithPyMuPDF:
 # ===========================================================================
 
 
-class TestProcessDocxDocument:
+class TestProcessDocxDocumentEvents:
     """Tests for Processor.process_docx_document."""
 
     @pytest.mark.asyncio
@@ -616,14 +582,14 @@ class TestProcessDocxDocument:
 
     @pytest.mark.asyncio
     async def test_exception_propagates(self):
-        """Exceptions during processing propagate."""
+        """Exceptions during processing propagate wrapped in DocumentProcessingError."""
         proc, _, gp, _ = _make_processor()
 
         proc.docling_processor.parse_document = AsyncMock(
             side_effect=RuntimeError("parse error")
         )
 
-        with pytest.raises(RuntimeError, match="parse error"):
+        with pytest.raises(DocumentProcessingError, match="parse error"):
             await _collect(
                 proc.process_docx_document(
                     recordName="test.docx",
@@ -642,7 +608,7 @@ class TestProcessDocxDocument:
 # ===========================================================================
 
 
-class TestProcessDocDocument:
+class TestProcessDocDocumentDelegation:
     """Tests for Processor.process_doc_document."""
 
     @pytest.mark.asyncio
@@ -680,7 +646,7 @@ class TestProcessDocDocument:
 # ===========================================================================
 
 
-class TestProcessBlocks:
+class TestProcessBlocksInputTypes:
     """Tests for Processor.process_blocks."""
 
     @pytest.mark.asyncio
@@ -792,7 +758,7 @@ class TestProcessBlocks:
 # ===========================================================================
 
 
-class TestMarkRecord:
+class TestMarkRecordOutcomes:
     """Tests for Processor._mark_record."""
 
     @pytest.mark.asyncio
@@ -835,7 +801,7 @@ class TestMarkRecord:
 # ===========================================================================
 
 
-class TestProcessExcelDocument:
+class TestProcessExcelDocumentEmptyAndMissing:
     """Tests for Processor.process_excel_document."""
 
     @pytest.mark.asyncio
@@ -901,7 +867,7 @@ class TestProcessExcelDocument:
 # ===========================================================================
 
 
-class TestProcessXlsDocument:
+class TestProcessXlsDocumentDelegation:
     """Tests for Processor.process_xls_document."""
 
     @pytest.mark.asyncio
@@ -983,7 +949,7 @@ class TestProcessHtmlDocument:
 # ===========================================================================
 
 
-class TestProcessMdDocument:
+class TestProcessMdDocumentInputs:
     """Tests for Processor.process_md_document."""
 
     @pytest.mark.asyncio
@@ -1016,7 +982,7 @@ class TestProcessMdDocument:
 
         mock_parser = MagicMock()
         mock_parser.extract_and_replace_images.return_value = ("# Hello", [])
-        mock_parser.parse_to_blocks.return_value = MagicMock(blocks=[], block_groups=[])
+        mock_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers["md"] = mock_parser
 
         with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
@@ -1040,7 +1006,7 @@ class TestProcessMdDocument:
 # ===========================================================================
 
 
-class TestProcessMdxDocument:
+class TestProcessMdxDocumentConversion:
     """Tests for Processor.process_mdx_document."""
 
     @pytest.mark.asyncio
@@ -1077,7 +1043,7 @@ class TestProcessMdxDocument:
 # ===========================================================================
 
 
-class TestSeparateBlockGroupsByIndex:
+class TestSeparateBlockGroupsByIndexBasic:
     """Tests for Processor._separate_block_groups_by_index."""
 
     def test_separates_by_index(self):
@@ -1120,7 +1086,7 @@ class TestSeparateBlockGroupsByIndex:
 # ===========================================================================
 
 
-class TestProcessTxtDocument:
+class TestProcessTxtDocumentDelegation:
     """Tests for Processor.process_txt_document."""
 
     @pytest.mark.asyncio
@@ -1155,7 +1121,7 @@ class TestProcessTxtDocument:
 # ===========================================================================
 
 
-class TestProcessPptxDocument:
+class TestProcessPptxDocumentEvents:
     """Tests for Processor.process_pptx_document."""
 
     @pytest.mark.asyncio

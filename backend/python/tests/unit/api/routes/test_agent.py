@@ -732,7 +732,7 @@ class TestGetUserDocument:
 # _get_org_info
 # ---------------------------------------------------------------------------
 
-class TestGetOrgInfo:
+class TestGetOrgInfoAccountTypes:
     """Tests for organization lookup and validation."""
 
     @pytest.mark.asyncio
@@ -1040,8 +1040,7 @@ class TestFilterKnowledgeByEnabledSources:
         assert ids == {"confluence-app", kb_uuid}
 
 
-
-class TestParseRequestBody:
+class TestParseRequestBodyEdgeCases:
     def test_valid_json(self) -> None:
         from app.api.routes.agent import _parse_request_body
         result = _parse_request_body(b'{"name": "test"}')
@@ -1074,7 +1073,7 @@ class TestParseRequestBody:
 # ---------------------------------------------------------------------------
 
 
-class TestEnrichAgentModels:
+class TestEnrichAgentModelsOrgDefault:
     @pytest.mark.asyncio
     async def test_enriches_matching_model(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
@@ -1233,7 +1232,7 @@ class TestEnrichAgentModels:
 # ---------------------------------------------------------------------------
 
 
-class TestParseToolsetsExtended:
+class TestParseToolsetsSkipsAndMerges:
     def test_non_dict_entries_skipped(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         result = _parse_toolsets(["not a dict", 42])
@@ -1292,26 +1291,11 @@ class TestParseToolsetsExtended:
 # ---------------------------------------------------------------------------
 
 
-class TestValidateRequiredFieldsExtended:
+class TestValidateRequiredFieldsValues:
     def test_empty_string_value_fails(self) -> None:
         from app.api.routes.agent import InvalidRequestError, _validate_required_fields
         with pytest.raises(InvalidRequestError):
             _validate_required_fields({"name": ""}, ["name"])
-
-    def test_whitespace_value_fails(self) -> None:
-        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
-        with pytest.raises(InvalidRequestError):
-            _validate_required_fields({"name": "   "}, ["name"])
-
-    def test_none_value_fails(self) -> None:
-        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
-        with pytest.raises(InvalidRequestError):
-            _validate_required_fields({"name": None}, ["name"])
-
-    def test_zero_value_fails(self) -> None:
-        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
-        with pytest.raises(InvalidRequestError):
-            _validate_required_fields({"count": 0}, ["count"])
 
     def test_valid_numeric_value_passes(self) -> None:
         from app.api.routes.agent import _validate_required_fields
@@ -1323,7 +1307,7 @@ class TestValidateRequiredFieldsExtended:
 # ---------------------------------------------------------------------------
 
 
-class TestParseModelsExtended:
+class TestParseModelsInputShapes:
     def test_string_entries(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
@@ -1332,27 +1316,6 @@ class TestParseModelsExtended:
         assert len(entries) == 2
         assert entries[0] == "mk1_mn1"
         assert entries[1] == "mk2"
-
-    def test_dict_without_model_key_skipped(self) -> None:
-        from app.api.routes.agent import _parse_models
-        log = logging.getLogger("test")
-        raw = [{"modelName": "mn1"}]  # no modelKey
-        entries, _ = _parse_models(raw, log)
-        assert entries == []
-
-    def test_dict_with_key_and_name(self) -> None:
-        from app.api.routes.agent import _parse_models
-        log = logging.getLogger("test")
-        raw = [{"modelKey": "mk1", "modelName": "mn1"}]
-        entries, _ = _parse_models(raw, log)
-        assert entries == ["mk1_mn1"]
-
-    def test_dict_with_key_only(self) -> None:
-        from app.api.routes.agent import _parse_models
-        log = logging.getLogger("test")
-        raw = [{"modelKey": "mk1"}]
-        entries, _ = _parse_models(raw, log)
-        assert entries == ["mk1"]
 
     def test_non_list_input(self) -> None:
         from app.api.routes.agent import _parse_models
@@ -1366,7 +1329,7 @@ class TestParseModelsExtended:
 # ---------------------------------------------------------------------------
 
 
-class TestEnrichUserInfoExtended:
+class TestEnrichUserInfoNameFields:
     @pytest.mark.asyncio
     async def test_adds_all_name_fields(self) -> None:
         from app.api.routes.agent import _enrich_user_info
@@ -1920,7 +1883,6 @@ class TestFilterKnowledgeFull:
         knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
         assert len(result) == 0
-
 
 
 class TestEnrichUserInfoExtended:

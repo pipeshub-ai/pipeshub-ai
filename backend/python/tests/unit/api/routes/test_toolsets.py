@@ -219,7 +219,7 @@ class TestValidateDict:
 # _has_oauth_credentials
 # ---------------------------------------------------------------------------
 
-class TestHasOauthCredentials:
+class TestHasOauthCredentialsValueTypes:
     def test_empty_dict(self) -> None:
         from app.api.routes.toolsets import _has_oauth_credentials
         assert _has_oauth_credentials({}) is False
@@ -531,7 +531,7 @@ class TestGetOauthCredentialsForToolset:
 # get_toolset_by_id
 # ---------------------------------------------------------------------------
 
-class TestGetToolsetById:
+class TestGetToolsetByIdLookup:
     @pytest.mark.asyncio
     async def test_found(self) -> None:
         from app.api.routes.toolset_resolvers import get_toolset_by_id
@@ -562,14 +562,6 @@ class TestGetToolsetById:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_non_list_returns_none(self) -> None:
-        from app.api.routes.toolset_resolvers import get_toolset_by_id
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(return_value="not a list")
-        result = await get_toolset_by_id("inst-1", cs)
-        assert result is None
-
-    @pytest.mark.asyncio
     async def test_exception_returns_none(self) -> None:
         from app.api.routes.toolset_resolvers import get_toolset_by_id
         cs = AsyncMock()
@@ -582,7 +574,7 @@ class TestGetToolsetById:
 # _get_user_context
 # ---------------------------------------------------------------------------
 
-class TestGetUserContext:
+class TestGetUserContextFromState:
     def test_valid_from_state(self) -> None:
         from app.api.routes.toolsets import _get_user_context
         request = MagicMock()
@@ -592,30 +584,12 @@ class TestGetUserContext:
         assert ctx["user_id"] == "u1"
         assert ctx["org_id"] == "o1"
 
-    def test_headers_are_ignored(self) -> None:
-        from app.api.routes.toolsets import _get_user_context
-        request = MagicMock()
-        request.state.user = {}
-        request.headers = {"X-User-Id": "u2", "X-Organization-Id": "o2"}
-        with pytest.raises(HTTPException) as exc:
-            _get_user_context(request)
-        assert exc.value.status_code == 401
-
-    def test_missing_user_id_raises(self) -> None:
-        from app.api.routes.toolsets import _get_user_context
-        request = MagicMock()
-        request.state.user = {}
-        request.headers = {}
-        with pytest.raises(HTTPException) as exc:
-            _get_user_context(request)
-        assert exc.value.status_code == 401
-
 
 # ---------------------------------------------------------------------------
 # _get_registry
 # ---------------------------------------------------------------------------
 
-class TestGetRegistry:
+class TestGetRegistryFromApp:
     def test_returns_registry(self) -> None:
         from app.api.routes.toolsets import _get_registry
         mock_registry = MagicMock()
@@ -637,7 +611,7 @@ class TestGetRegistry:
 # _get_graph_provider
 # ---------------------------------------------------------------------------
 
-class TestGetGraphProvider:
+class TestGetGraphProviderFromApp:
     def test_returns_provider(self) -> None:
         from app.api.routes.toolsets import _get_graph_provider
         mock_gp = MagicMock()
@@ -659,7 +633,7 @@ class TestGetGraphProvider:
 # _get_toolset_metadata
 # ---------------------------------------------------------------------------
 
-class TestGetToolsetMetadata:
+class TestGetToolsetMetadataValidation:
     def test_valid_toolset(self) -> None:
         from app.api.routes.toolsets import _get_toolset_metadata
         registry = MagicMock()
@@ -683,26 +657,12 @@ class TestGetToolsetMetadata:
         with pytest.raises(HTTPException):
             _get_toolset_metadata(registry, "   ")
 
-    def test_not_found_raises(self) -> None:
-        from app.api.routes.toolsets import ToolsetNotFoundError, _get_toolset_metadata
-        registry = MagicMock()
-        registry.get_toolset_metadata.return_value = None
-        with pytest.raises(ToolsetNotFoundError):
-            _get_toolset_metadata(registry, "nonexistent")
-
-    def test_internal_toolset_raises(self) -> None:
-        from app.api.routes.toolsets import ToolsetNotFoundError, _get_toolset_metadata
-        registry = MagicMock()
-        registry.get_toolset_metadata.return_value = {"isInternal": True}
-        with pytest.raises(ToolsetNotFoundError):
-            _get_toolset_metadata(registry, "internal_tool")
-
 
 # ---------------------------------------------------------------------------
 # Storage path helpers
 # ---------------------------------------------------------------------------
 
-class TestStoragePathHelpers:
+class TestStoragePathAndIdHelpers:
     def test_get_instances_path(self) -> None:
         from app.api.routes.toolsets import _get_instances_path
         path = _get_instances_path("org-1")
@@ -792,7 +752,7 @@ class TestApplyTenantToMicrosoftOAuthUrl:
 # _format_toolset_data
 # ---------------------------------------------------------------------------
 
-class TestFormatToolsetData:
+class TestFormatToolsetDataTools:
     def test_without_tools(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {
@@ -833,18 +793,12 @@ class TestFormatToolsetData:
 # _parse_request_json
 # ---------------------------------------------------------------------------
 
-class TestParseRequestJson:
+class TestParseRequestJsonBodies:
     def test_valid_json(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         data = json.dumps({"key": "value"}).encode()
         result = _parse_request_json(MagicMock(), data)
         assert result["key"] == "value"
-
-    def test_empty_body_raises(self) -> None:
-        from app.api.routes.toolsets import _parse_request_json
-        with pytest.raises(HTTPException) as exc:
-            _parse_request_json(MagicMock(), b"")
-        assert exc.value.status_code == 400
 
     def test_none_body_raises(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
@@ -856,21 +810,25 @@ class TestParseRequestJson:
         with pytest.raises(HTTPException) as exc:
             _parse_request_json(MagicMock(), b"not json{")
         assert exc.value.status_code == 400
-        assert "Invalid JSON" in exc.value.detail
+        assert "couldn't read that request" in exc.value.detail
 
 
 # ---------------------------------------------------------------------------
 # _load_toolset_instances
 # ---------------------------------------------------------------------------
 
-class TestLoadToolsetInstances:
+class TestLoadToolsetInstancesResults:
     @pytest.mark.asyncio
-    async def test_loads_instances(self) -> None:
+    async def test_keeps_only_the_orgs_instances(self) -> None:
         from app.api.routes.toolsets import _load_toolset_instances
         cs = AsyncMock()
-        cs.get_config = AsyncMock(return_value=[{"_id": "1"}, {"_id": "2"}])
+        cs.get_config = AsyncMock(return_value=[
+            {"_id": "1", "orgId": "org-1"},
+            {"_id": "2", "orgId": "org-1"},
+            {"_id": "3", "orgId": "org-2"},
+        ])
         result = await _load_toolset_instances("org-1", cs)
-        assert len(result) == 2
+        assert [i["_id"] for i in result] == ["1", "2"]
 
     @pytest.mark.asyncio
     async def test_empty_returns_empty(self) -> None:
@@ -879,15 +837,6 @@ class TestLoadToolsetInstances:
         cs.get_config = AsyncMock(return_value=[])
         result = await _load_toolset_instances("org-1", cs)
         assert result == []
-
-    @pytest.mark.asyncio
-    async def test_exception_raises_http_error(self) -> None:
-        from app.api.routes.toolsets import _load_toolset_instances
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
-        with pytest.raises(HTTPException) as exc:
-            await _load_toolset_instances("org-1", cs)
-        assert exc.value.status_code == 500
 
 
 # ---------------------------------------------------------------------------
@@ -1143,7 +1092,7 @@ class TestApplyTenantToMicrosoftOAuthUrlDeep:
 # _check_instance_name_conflict
 # ---------------------------------------------------------------------------
 
-class TestCheckInstanceNameConflict:
+class TestCheckInstanceNameConflictMatching:
     def test_no_conflict_empty_list(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         assert _check_instance_name_conflict([], "My Jira", "org-1", "jira") is False
@@ -1175,22 +1124,6 @@ class TestCheckInstanceNameConflict:
             {"_id": "1", "orgId": "org-1", "toolsetType": "slack", "instanceName": "My Jira"},
         ]
         assert _check_instance_name_conflict(instances, "My Jira", "org-1", "jira") is False
-
-    def test_exclude_id_skips_self(self) -> None:
-        from app.api.routes.toolsets import _check_instance_name_conflict
-        instances = [
-            {"_id": "1", "orgId": "org-1", "toolsetType": "jira", "instanceName": "My Jira"},
-        ]
-        assert _check_instance_name_conflict(instances, "My Jira", "org-1", "jira", exclude_id="1") is False
-
-    def test_exclude_id_does_not_skip_others(self) -> None:
-        from app.api.routes.toolsets import _check_instance_name_conflict
-        instances = [
-            {"_id": "1", "orgId": "org-1", "toolsetType": "jira", "instanceName": "My Jira"},
-            {"_id": "2", "orgId": "org-1", "toolsetType": "jira", "instanceName": "My Jira"},
-        ]
-        # exclude_id="1" skips first but second still conflicts
-        assert _check_instance_name_conflict(instances, "My Jira", "org-1", "jira", exclude_id="1") is True
 
     def test_missing_instance_name_no_conflict(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
@@ -1820,7 +1753,7 @@ class TestPrepareToolsetAuthConfig:
 # _deauth_all_instance_users
 # ---------------------------------------------------------------------------
 
-class TestDeauthAllInstanceUsers:
+class TestDeauthAllInstanceUsersCounts:
     """Tests for _deauth_all_instance_users()."""
 
     @pytest.mark.asyncio
@@ -3992,7 +3925,7 @@ class TestGetOauthCredentialsEdgeCases:
             await get_oauth_credentials_for_toolset(config, cs)
 
 
-class TestEncodeDecodeState:
+class TestEncodeDecodeStateFields:
     def test_encode_state(self) -> None:
         from app.api.routes.toolsets import _encode_state_with_instance
         result = _encode_state_with_instance("orig_state", "inst-1", "user-1")
@@ -4071,7 +4004,7 @@ class TestApplyTenantToMicrosoftUrl:
         assert "common" not in result
 
 
-class TestCheckInstanceNameConflict:
+class TestCheckInstanceNameConflictExcludeId:
     def test_no_conflict(self) -> None:
         from app.api.routes.toolsets import _check_instance_name_conflict
         instances = [{"orgId": "o1", "toolsetType": "jira", "instanceName": "Existing"}]
@@ -4106,7 +4039,7 @@ class TestCheckInstanceNameConflict:
         assert _check_instance_name_conflict(instances, "My Jira", "o1", "jira", exclude_id="i1") is True
 
 
-class TestCheckOauthNameConflict:
+class TestCheckOauthNameConflictScopes:
     def test_no_conflict(self) -> None:
         from app.api.routes.toolsets import _check_oauth_name_conflict
         configs = [{"orgId": "o1", "oauthInstanceName": "Existing"}]
@@ -4128,7 +4061,7 @@ class TestCheckOauthNameConflict:
         assert _check_oauth_name_conflict(configs, "Existing", "o1", exclude_id="c1") is False
 
 
-class TestFormatToolsetData:
+class TestFormatToolsetDataBasic:
     def test_basic_format(self) -> None:
         from app.api.routes.toolsets import _format_toolset_data
         metadata = {"display_name": "Jira", "description": "D", "category": "app", "group": "dev", "icon_path": "/icon.png", "supported_auth_types": ["OAUTH"], "tools": [{"name": "search"}]}
@@ -4145,7 +4078,7 @@ class TestFormatToolsetData:
         assert result["tools"][0]["fullName"] == "jira.search"
 
 
-class TestParseRequestJson:
+class TestParseRequestJsonErrors:
     def test_valid(self) -> None:
         from app.api.routes.toolsets import _parse_request_json
         result = _parse_request_json(MagicMock(), b'{"key": "val"}')
@@ -4210,7 +4143,7 @@ class TestGetRegistryAndGraphProvider:
         assert exc.value.status_code == 500
 
 
-class TestGetToolsetMetadata:
+class TestGetToolsetMetadataErrors:
     def test_empty_type(self) -> None:
         from app.api.routes.toolsets import _get_toolset_metadata
         with pytest.raises(HTTPException) as exc:

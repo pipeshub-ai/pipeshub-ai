@@ -1053,7 +1053,7 @@ class TestAiterLlmStream:
 # ---------------------------------------------------------------------------
 # create_stream_record_response
 # ---------------------------------------------------------------------------
-class TestCreateStreamRecordResponse:
+class TestCreateStreamRecordResponseFilenames:
     """Tests for create_stream_record_response."""
 
     def test_basic_response(self):
@@ -1101,7 +1101,7 @@ class TestCreateStreamRecordResponse:
 # ---------------------------------------------------------------------------
 # stream_content
 # ---------------------------------------------------------------------------
-class TestStreamContent:
+class TestStreamContentUrlTypes:
     """Tests for stream_content(signed_url, ...)."""
 
     async def test_non_string_url_raises_type_error(self):

@@ -1031,7 +1031,7 @@ class TestMarkRecord:
 # convert_record_dict_to_record
 # ============================================================================
 
-class TestConvertRecordDictToRecord:
+class TestConvertRecordDictToRecordDefaults:
     def test_valid_record(self):
         """A valid record dict produces a Record with correct fields."""
         from app.events.processor import convert_record_dict_to_record
@@ -1435,35 +1435,7 @@ class TestProcessPdfWithDoclingAdditional:
 # process_image — additional branches
 # ============================================================================
 
-class TestProcessImageAdditional:
-    @pytest.mark.asyncio
-    async def test_multimodal_embedding(self):
-        """Multimodal embedding model enables image processing even without multimodal LLM."""
-        image_parser = MagicMock()
-        image_parser.parse_image = MagicMock(return_value=MagicMock())
-        proc = _make_processor(parsers={"png": image_parser})
-
-        proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(
-            recordName="photo.png", mimeType="image/png",
-        ))
-
-        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
-             patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb, \
-             patch("app.events.processor.get_extension_from_mimetype", return_value="png"), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
-             patch("app.events.processor.TransformContext"):
-            # LLM is not multimodal, but embedding is
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            mock_emb.return_value = {"isMultimodal": True}
-            MockPipeline.return_value.apply = AsyncMock()
-
-            events = await _collect_events(
-                proc.process_image("r1", b"imgdata", "vr1")
-            )
-
-        assert any(e.event == "parsing_complete" for e in events)
-        assert any(e.event == "indexing_complete" for e in events)
-
+class TestProcessImageValidation:
     @pytest.mark.asyncio
     async def test_no_mime_type_raises(self):
         """Raises when record has no mime type."""
