@@ -655,8 +655,8 @@ class TestStreamFromDriveFileStreamGenerator:
         assert captured_gen is not None
 
     @pytest.mark.asyncio
-    async def test_stream_from_drive_client_build_failure_asks_to_reconnect(self):
-        """A Drive client that can't be built is a reconnect (409), not a server error."""
+    async def test_stream_from_drive_settings_failure_is_not_a_reconnect(self):
+        """A failure that isn't about the user's sign-in is a server error, not a reconnect."""
         connector = _make_connector()
         record = MagicMock()
         record.id = "rec-1"
@@ -671,7 +671,8 @@ class TestStreamFromDriveFileStreamGenerator:
                 await connector._stream_from_drive(
                     "drive-id", record, "file.txt", "text/plain"
                 )
-            assert exc_info.value.status_code == HttpStatusCode.CONFLICT.value
+            assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+            assert "settings" in exc_info.value.detail
 
 
 # ===========================================================================

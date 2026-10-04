@@ -64,6 +64,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.google.common.apps import GmailIndividualApp
 from app.connectors.sources.google.common.connector_google_exceptions import (
+    GoogleAuthError,
     GoogleMailError,
     is_missing_scope_error,
 )
@@ -1197,12 +1198,18 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 )
                 drive_service = user_drive_client.get_client()
                 self.logger.info("Using user OAuth credentials for Drive access")
-            except Exception as e:
-                # A personal connection has no service account to fall back on.
+            # A personal connection has no service account to fall back on.
+            except GoogleAuthError as e:
                 self.logger.error(f"Failed to create Drive client: {e}")
                 raise HTTPException(
                     status_code=HttpStatusCode.CONFLICT.value,
                     detail="Couldn't connect to Google Drive to download this file. Reconnect the Gmail connector, then try again."
+                ) from e
+            except Exception as e:
+                self.logger.error(f"Failed to load the Drive client's settings: {e}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="Couldn't load the Gmail connector's settings to download this file. Try again in a moment; if it keeps failing, check the connector's configuration."
                 ) from e
 
             drive_data_source = GoogleDriveDataSource(

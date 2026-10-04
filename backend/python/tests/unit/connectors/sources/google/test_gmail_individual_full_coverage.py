@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
+
+from app.connectors.sources.google.common.connector_google_exceptions import GoogleAuthError
 from fastapi import HTTPException
 from googleapiclient.errors import HttpError
 
@@ -645,7 +647,7 @@ class TestStreamFromDrive:
         with patch(
             "app.connectors.sources.google.gmail.individual.connector.GoogleClient.build_from_services",
             new_callable=AsyncMock,
-            side_effect=Exception("auth fail"),
+            side_effect=GoogleAuthError("auth fail"),
         ), patch(
             "google.oauth2.service_account.Credentials.from_service_account_info",
         ) as from_info:
