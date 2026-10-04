@@ -95,6 +95,16 @@ class LegacyNode:
 
 
 @dataclass(frozen=True)
+class StrayNode:
+    """A merged node that records of the org still link to."""
+
+    key: str
+    name: str
+    merged_into: str
+    records: int
+
+
+@dataclass(frozen=True)
 class MergeResult:
     edges_moved: int
     dry_run: bool
@@ -226,6 +236,37 @@ class TaxonomyConsolidator:
         await self.graph.update_node(loser.key, collection, {MERGED_INTO_FIELD: None, MERGED_AT_FIELD: None})
         refreshed = await self._refresh_index(collection, org_id, keep=[winner_key, loser.key], drop=[])
         return MergeResult(restored, dry_run=False, index_refreshed=refreshed)
+
+    async def stray_nodes(self, collection: str, org_id: str) -> list[StrayNode]:
+        """The org's merged nodes that its records still link to, paged
+        through in key order."""
+        _check_collection(collection)
+        nodes: list[StrayNode] = []
+        after: str | None = None
+        while True:
+            rows = await self.graph.find_merged_taxonomy_nodes_with_edges(
+                collection, org_id, _LEGACY_PAGE, after_key=after,
+            )
+            for row in rows:
+                key = row.get("_key") or row.get("id")
+                if key and row.get("mergedInto"):
+                    nodes.append(StrayNode(
+                        str(key), str(row.get("name") or ""), str(row["mergedInto"]), int(row.get("records") or 0),
+                    ))
+            if len(rows) < _LEGACY_PAGE:
+                return nodes
+            after = str(rows[-1].get("_key") or rows[-1].get("id"))
+
+    async def sweep(self, collection: str, org_id: str, key: str, *, dry_run: bool = True) -> MergeResult:
+        """Move edges linked to merged node ``key`` since its merge on to
+        the node its redirect ends at: a re-run of that merge, so the edges
+        keep ``mergedFrom`` and ``unmerge`` still restores them."""
+        _check_collection(collection)
+        node = (await self._nodes(collection, [key])).get(key)
+        if node is None or node.org_id != org_id or not node.merged_into:
+            raise ValueError(f"{collection}/{key} is not a merged node of org {org_id}")
+        winner = await self._final(collection, org_id, node.merged_into)
+        return await self.merge(collection, org_id, winner.key, key, dry_run=dry_run)
 
     # ------------------------------------------------------------------
     # Legacy nodes

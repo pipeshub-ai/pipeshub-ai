@@ -191,6 +191,11 @@ class TestArango:
             by_fields.setdefault(tuple(call.args[1]), set()).add(call.args[0])
         assert by_fields[("orgId", "normalizedName")] == set(TAXONOMY_COLLECTIONS)
         assert by_fields[("orgId", "normalizedAliases[*]")] == set(TAXONOMY_COLLECTIONS)
+        # Redirect lookups (consolidation's flatten, the stray-edge sweep)
+        # seek merged nodes by mergedInto; sparse, since few nodes have it.
+        merged = [c for c in p.http_client.ensure_persistent_index.await_args_list if c.args[1] == ["mergedInto"]]
+        assert {c.args[0] for c in merged} == set(TAXONOMY_COLLECTIONS)
+        assert all(c.kwargs.get("sparse") is True for c in merged)
 
 
 class TestNeo4j:
@@ -287,6 +292,8 @@ class TestNeo4j:
         assert any("FOR (n:Topics) ON (n.orgId, n.normalizedName)" in s for s in statements)
         assert any("FOR (n:Subcategories3) ON (n.orgId, n.normalizedName)" in s for s in statements)
         assert any("FOR (n:Topics) ON (n.orgId)" in s for s in statements)
+        for label in ("Topics", "Categories", "Languages", "Subcategories1", "Subcategories2", "Subcategories3"):
+            assert any(f"FOR (n:{label}) ON (n.mergedInto)" in s for s in statements), label
 
     def test_alias_nodes_have_a_composite_uniqueness_constraint(self) -> None:
         p = _neo4j()

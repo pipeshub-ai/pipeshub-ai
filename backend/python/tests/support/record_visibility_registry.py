@@ -125,6 +125,9 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "find_legacy_taxonomy_nodes": (
         Rule.ALL, "counts a trashed record's legacy edges, which migrate-legacy must move as well",
     ),
+    "find_merged_taxonomy_nodes_with_edges": (
+        Rule.ALL, "counts a trashed record's edges on a merged node, which the sweep must move as well",
+    ),
     "get_record_path": (Rule.ALL, _STRUCTURE),
     "get_record_path_segments": (Rule.ALL, "storage path of a record the caller already resolved"),
     "get_records_in_delete_batch": (

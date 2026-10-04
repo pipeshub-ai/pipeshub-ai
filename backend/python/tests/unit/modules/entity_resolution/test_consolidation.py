@@ -177,6 +177,20 @@ class FakeGraph:
         return [{"_key": k, "name": self.nodes[(collection, k)]["name"], "records": n}
                 for k, n in sorted(counts.items()) if after_key is None or k > after_key][:limit]
 
+    async def find_merged_taxonomy_nodes_with_edges(self, collection: str, org_id: str, limit: int,
+                                                    after_key: str | None = None,
+                                                    transaction: str | None = None) -> list[dict]:
+        counts: dict[str, set[str]] = {}
+        for edge in self.edges:
+            c, k = edge.target
+            node = self.nodes.get(edge.target)
+            if c == collection and node and node.get("orgId") == org_id and node.get("mergedInto") \
+                    and self.record_orgs.get(edge.record) == org_id:
+                counts.setdefault(k, set()).add(edge.record)
+        return [{"_key": k, "name": self.nodes[(collection, k)]["name"],
+                 "mergedInto": self.nodes[(collection, k)]["mergedInto"], "records": len(r)}
+                for k, r in sorted(counts.items()) if after_key is None or k > after_key][:limit]
+
     async def get_taxonomy_entity_membership(self, refs: list[dict], org_id: str,
                                              transaction: str | None = None) -> dict:
         out = {}
@@ -656,6 +670,61 @@ class TestUndoReportsTheIndex:
         # The target lost its only records, so its point goes.
         assert (ORG, EntityType.TOPIC.value, [target]) in store.deletes
 
+
+
+class TestStrayEdges:
+    """Indexing that resolved to a node just before it was merged links to it
+    afterwards; the sweep moves those edges on to where the node redirects."""
+
+    async def test_a_record_linked_after_the_merge_is_found_and_swept(self) -> None:
+        graph, store = _merge_fixture(), FakeStore()
+        consolidator = _consolidator(graph, store)
+        await consolidator.merge(TOPICS, ORG, "win", "lose", dry_run=False)
+        assert await consolidator.stray_nodes(TOPICS, ORG) == []
+        graph.link("late", ORG, TOPICS, "lose", extracted="pricing")
+        graph.link("theirs", OTHER, TOPICS, "lose")
+        (stray,) = await consolidator.stray_nodes(TOPICS, ORG)
+        assert (stray.key, stray.merged_into, stray.records) == ("lose", "win", 1)
+
+        planned = await consolidator.sweep(TOPICS, ORG, "lose", dry_run=True)
+        assert (planned.edges_moved, planned.dry_run) == (1, True)
+        assert graph.targets("late") == [(TOPICS, "lose")]
+
+        result = await consolidator.sweep(TOPICS, ORG, "lose", dry_run=False)
+        assert (result.edges_moved, result.index_refreshed) == (1, True)
+        assert graph.targets("late") == [(TOPICS, "win")]
+        assert next(e for e in graph.edges if e.record == "late").merged_from == "lose"
+        assert graph.targets("theirs") == [(TOPICS, "lose")]
+        assert await consolidator.stray_nodes(TOPICS, ORG) == []
+        # Still undoable: the swept edge goes back with the rest.
+        await consolidator.unmerge(TOPICS, ORG, "lose", dry_run=False)
+        assert graph.targets("late") == [(TOPICS, "lose")]
+
+    async def test_a_stray_on_a_chain_goes_to_the_end_of_it(self) -> None:
+        graph = _chain_fixture()
+        consolidator = _consolidator(graph)
+        await consolidator.merge(TOPICS, ORG, "b", "a", dry_run=False)
+        await consolidator.merge(TOPICS, ORG, "c", "b", dry_run=False)
+        graph.nodes[(TOPICS, "a")]["mergedInto"] = "b"  # an older redirect not yet flattened
+        graph.link("late", ORG, TOPICS, "a")
+        await consolidator.sweep(TOPICS, ORG, "a", dry_run=False)
+        assert graph.targets("late") == [(TOPICS, "c")]
+        assert graph.nodes[(TOPICS, "a")]["mergedInto"] == "b"  # the loser's own redirect is the merge's to keep
+
+    async def test_strays_are_paged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.modules.entity_resolution import consolidation
+
+        monkeypatch.setattr(consolidation, "_LEGACY_PAGE", 2)
+        graph = FakeGraph()
+        graph.node(TOPICS, "w", "W", ORG)
+        for i in range(5):
+            graph.node(TOPICS, f"l{i}", f"L{i}", ORG, mergedInto="w")
+            graph.link(f"r{i}", ORG, TOPICS, f"l{i}")
+        assert [n.key for n in await _consolidator(graph).stray_nodes(TOPICS, ORG)] == [f"l{i}" for i in range(5)]
+
+    async def test_sweeping_a_node_that_was_never_merged_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="not a merged node"):
+            await _consolidator(_merge_fixture()).sweep(TOPICS, ORG, "lose", dry_run=False)
 
 
 async def test_the_graph_double_caps_aliases_at_the_providers_limit_when_none_is_given() -> None:

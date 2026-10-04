@@ -6641,6 +6641,27 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def find_merged_taxonomy_nodes_with_edges(
+        self,
+        collection: str,
+        org_id: str,
+        limit: int,
+        after_key: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Nodes of ``org_id`` in ``collection`` that were merged into another
+        (``mergedInto`` set) yet still have record edges from the org's
+        records, trashed ones included, with how many distinct such records
+        each has, ordered by key after ``after_key``. Indexing that resolved
+        to a node just before it was merged links to it afterwards; these are
+        the edges a re-run of the merge would move.
+
+        Returns:
+            ``[{"_key", "name", "mergedInto", "records"}]``, at most ``limit``.
+        """
+        pass
+
+    @abstractmethod
     async def create_taxonomy_node_if_absent(
         self,
         collection: str,
