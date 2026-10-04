@@ -9,7 +9,6 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
@@ -452,15 +451,6 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
             content={"detail": "Internal server error"},
         )
 
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Trace context — outermost, before auth.
 app.add_middleware(RequestContextMiddleware)

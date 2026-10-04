@@ -1602,3 +1602,29 @@ class TestRefreshConnectorMetrics:
                 await refresh_connector_metrics(gp, logger, interval_s=60)
 
         logger.warning.assert_called()
+
+
+class TestCorsPolicy:
+    """Browsers reach this service only through the Node API, so it must not grant CORS."""
+
+    def test_no_cors_middleware(self) -> None:
+        from starlette.middleware.cors import CORSMiddleware
+
+        from app.connectors_main import app
+        assert all(m.cls is not CORSMiddleware for m in app.user_middleware)
+
+    def test_cross_origin_preflight_is_not_granted(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from app.connectors_main import app
+        evil = "https://evil.example"
+        response = TestClient(app, raise_server_exceptions=False).options(
+            "/api/v1/chat",
+            headers={
+                "Origin": evil,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+        assert response.headers.get("access-control-allow-origin") is None
+        assert response.headers.get("access-control-allow-credentials") is None
