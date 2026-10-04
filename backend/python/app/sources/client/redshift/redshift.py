@@ -28,8 +28,32 @@ logger = logging.getLogger(__name__)
 
 try:
     import redshift_connector
+    from packaging.version import Version
+    from redshift_connector.utils import redshift_types, type_utils
+    from redshift_connector.utils.oids import RedshiftOID
 except ImportError:
     redshift_connector = None
+
+_SAFE_INT2VECTOR_DRIVER = "2.1.14"
+
+
+def _int2vector_in(data: bytes, idx: int, length: int) -> list[int]:
+    text = data[idx : idx + length].decode(type_utils._client_encoding).strip()
+    return [int(x) for x in text.split()] if text else []
+
+
+def _patch_int2vector_decoder() -> None:
+    # Older drivers eval() int2vector column text, so whichever server we connect to
+    # could run code here (CVE-2026-8838). Remove once the pin is >= 2.1.14.
+    if redshift_connector is None or Version(redshift_connector.__version__) >= Version(_SAFE_INT2VECTOR_DRIVER):
+        return
+    type_utils.vector_in = _int2vector_in
+    # Each Connection deep-copies this table, so patching it covers new connections.
+    fmt, _ = redshift_types[RedshiftOID.SMALLINT_VECTOR]
+    redshift_types[RedshiftOID.SMALLINT_VECTOR] = (fmt, _int2vector_in)
+
+
+_patch_int2vector_decoder()
 
 
 class RedshiftClient:
