@@ -29,7 +29,7 @@ describe('maskConfigSecrets', () => {
         provider: 'azureOpenAI',
         configuration: {
           model: 'text-embedding-3-small', modelName: 'GPT-4o', modelFriendlyName: 'abc',
-          region: 'us-east-1', dimensions: '',
+          region: 'us-east-1', dimensions: '', defaultReasoningEffort: 'low',
           apiKey: 'sk-secret123', endpoint: 'https://api.openai.com',
           deploymentName: 'my-deployment', awsAccessKeyId: 'AKIA', awsAccessSecretKey: 'shh',
           serviceAccountJson: '{"private_key":"x"}',
@@ -42,6 +42,7 @@ describe('maskConfigSecrets', () => {
         model: 'text-embedding-3-small',
         modelFriendlyName: 'abc',
         dimensions: '',
+        defaultReasoningEffort: 'low',
       })
       expect(Object.keys(result)).to.have.members([...AI_PUBLIC_CONFIG_KEYS])
       expect(strip(entry).provider).to.equal('azureOpenAI')

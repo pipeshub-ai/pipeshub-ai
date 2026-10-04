@@ -78,7 +78,8 @@ class TestShadowMode:
         assert ctx.entity_resolution is None
         assert meta.topics == ["Bug bash testing", "BUG BASH TESTING"]
         assert meta.languages == ["en"]
-        assert {name for name, _ in fake_graph.calls} == {"find_taxonomy_nodes"}
+        # Reads only: tier 0, and the merge-redirect check for new names.
+        assert {name for name, _ in fake_graph.calls} == {"find_taxonomy_nodes", "get_nodes_by_field_in"}
         assert resolution is not None and resolution.decisions_for_log()
         shadow_lines = [c.args[0] for c in resolver.logger.info.call_args_list if "shadow" in c.args[0]]
         assert shadow_lines

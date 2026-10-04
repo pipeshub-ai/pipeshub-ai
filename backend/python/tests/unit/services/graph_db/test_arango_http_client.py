@@ -1693,3 +1693,18 @@ class TestCreateDatabaseAdditional:
 
         with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=mock_session):
             assert await client.create_database("new_db") is True
+
+
+class TestExecuteAqlMaxRuntime:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("max_runtime", "options"), [(2.5, {"maxRuntime": 2.5}), (None, None)])
+    async def test_max_runtime_becomes_a_cursor_option(
+        self, client: ArangoHTTPClient, max_runtime: float | None, options: dict | None,
+    ) -> None:
+        mock_session = MagicMock()
+        mock_session.post.return_value = MockResponse(201, json_data={"result": [1], "hasMore": False})
+
+        with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=mock_session):
+            await client.execute_aql("RETURN 1", max_runtime=max_runtime)
+
+        assert mock_session.post.call_args.kwargs["json"].get("options") == options

@@ -21,6 +21,14 @@ Two events, chosen by whether the connector's points carry membership arrays:
     alone cannot distinguish a healthy connector from one whose points it never
     managed to tag.
 
+``deleteConnectorEntities`` — ``{orgId, connectorId, connectorName, recordGroupIds}``
+    Always published, last (``build_connector_cleanup_events``): the
+    connector's footprint in the entities collection. A connector or KB can
+    have entity points with no indexed record (a synced record group), when
+    neither event above is sent. ``recordGroupIds`` is null when the graph
+    did not say or the connector has more groups than fit in one event,
+    which lets the store recover them from its own points.
+
 Consumers route on ``eventType``, never on which keys a payload happens to
 carry. That matters during a rolling upgrade: an old consumer meets an event
 type it does not know, fails the message and dead-letters it, which is visible
@@ -47,6 +55,10 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # ~195 KB of ids per message, well inside the 1 MiB default request cap with
 # room for the envelope.
 MAX_VIRTUAL_RECORD_IDS_PER_EVENT = 5000
+# Record groups named in one connector event, for the same cap. A connector
+# with more (Salesforce makes one per Case and Deal) names none; see
+# _bounded_groups.
+MAX_RECORD_GROUP_IDS_PER_EVENT = 5000
 
 
 def build_connector_vector_cleanup_events(
@@ -73,7 +85,10 @@ def build_connector_vector_cleanup_events(
                     "orgId": org_id,
                     "connectorId": connector_id,
                     "connectorName": connector_name,
-                    "recordGroupIds": _unique_non_empty(record_group_ids),
+                    # Over the cap, shared points keep the deleted groups'
+                    # ids, which no user can reach any more; an event over
+                    # Kafka's cap would leave every embedding behind instead.
+                    "recordGroupIds": _bounded_groups(record_group_ids) or [],
                 },
             )
         ]
@@ -160,12 +175,56 @@ def build_stored_document_cleanup_events(
     ]
 
 
+def build_connector_cleanup_events(
+    *,
+    org_id: str,
+    connector_id: str,
+    vector_membership_backfilled: bool,
+    vector_membership_backfill_exhausted: bool = False,
+    connector_name: str | None = None,
+    record_group_ids: Sequence[str] | None = None,
+    virtual_record_ids: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Every event one connector/KB deletion publishes: the record-vector
+    cleanup (``build_connector_vector_cleanup_events``), then the entity
+    cleanup, which the indexing service runs and retries."""
+    events = build_connector_vector_cleanup_events(
+        org_id=org_id,
+        connector_id=connector_id,
+        vector_membership_backfilled=vector_membership_backfilled,
+        vector_membership_backfill_exhausted=vector_membership_backfill_exhausted,
+        connector_name=connector_name,
+        record_group_ids=record_group_ids,
+        virtual_record_ids=virtual_record_ids,
+    )
+    events.append(_event(
+        EventTypes.DELETE_CONNECTOR_ENTITIES.value,
+        {
+            "orgId": org_id,
+            "connectorId": connector_id,
+            "connectorName": connector_name,
+            # None when unknown or over the cap: the store then reads the
+            # groups from the connector's own record and record-group points.
+            "recordGroupIds": _bounded_groups(record_group_ids),
+        },
+    ))
+    return events
+
+
 def _event(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "eventType": event_type,
         "timestamp": get_epoch_timestamp_in_ms(),
         "payload": payload,
     }
+
+
+def _bounded_groups(record_group_ids: Sequence[str] | None) -> list[str] | None:
+    """The groups to name in one event, or None when unknown or too many to fit."""
+    if record_group_ids is None:
+        return None
+    groups = _unique_non_empty(record_group_ids)
+    return groups if len(groups) <= MAX_RECORD_GROUP_IDS_PER_EVENT else None
 
 
 def _unique_non_empty(values: Sequence[str] | None) -> list[str]:
@@ -206,7 +265,9 @@ def log_cleanup_publish_failure(
         )
         logger.debug("Unpublished storage document ids for %s: %s", subject, documents)
         return
-    if ids:
+    if event_type == EventTypes.DELETE_CONNECTOR_ENTITIES.value:
+        where, detail = "entity cleanup", "entity points of this connector"
+    elif ids:
         where = (
             f"chunk {payload.get('chunkIndex', 0) + 1}/"
             f"{payload.get('chunkCount', 1)}"

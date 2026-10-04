@@ -53,11 +53,6 @@ async def get_kb_service(request: Request) -> KnowledgeBaseService:
     graph_provider = request.app.state.graph_provider
     kafka_service = container.kafka_service()
     config_service = container.config_service()
-    entity_vector_store = None
-    try:
-        entity_vector_store = await container.entity_vector_store()
-    except Exception as e:
-        logger.warning(f"Entity vector store unavailable for KB service: {e}")
     request_org_id = request.state.user.get("orgId")
     # Deferred: EventService pulls in every connector module via ConnectorFactory.
     from app.edition_services import EventService
@@ -96,7 +91,6 @@ async def get_kb_service(request: Request) -> KnowledgeBaseService:
         kafka_service=kafka_service,
         processor_for_kb=processor_for_kb,
         config_service=config_service,
-        entity_vector_store=entity_vector_store,
     )
 
 

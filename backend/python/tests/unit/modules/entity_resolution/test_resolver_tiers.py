@@ -487,8 +487,10 @@ class TestWinnerCheckedAgainstTheGraph:
             "r1", "acme", metadata_factory(topics=["Bug bash session", "Release checklist v2"]),
         ))
 
+        # The first lookup is the winner check; a second may follow for the
+        # merge-redirect check of names that ended up new.
         lookups = [args for name, args in fake_graph.calls if name == "get_nodes_by_field_in"]
-        assert len(lookups) == 1
+        assert 1 <= len(lookups) <= 2
         collection, field, ids = lookups[0]
         assert (collection, field) == (TOPICS, "id")
         assert set(ids) <= {"k-bug", "k-rel"}

@@ -227,6 +227,8 @@ class TestAbstractMethodInventory:
         "get_records_by_status",
         "get_app_needing_vector_membership_backfill",
         "get_records_pending_duplicate_reconcile",
+        "move_taxonomy_edges",
+        "find_legacy_taxonomy_nodes",
         "update_node_fields_if_match",
         "get_entity_index_candidate",
         "page_entity_index_source",
@@ -257,6 +259,7 @@ class TestAbstractMethodInventory:
         # Knowledge-graph taxonomy entities
         "get_taxonomy_entities_for_record",
         "get_entity_candidate_records",
+        "get_permitted_entity_records",
         "get_taxonomy_entity_membership",
         "find_taxonomy_nodes",
         "create_taxonomy_node_if_absent",

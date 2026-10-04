@@ -13,9 +13,9 @@ export type ResponseTab = 'answer' | 'sources' | 'citation';
 
 /**
  * Platform-normalized reasoning effort levels. `null`/absent means "no
- * explicit user choice" — the backend applies `DEFAULT_REASONING_EFFORT`
- * ("high") for any reasoning-capable model rather than deferring to the
- * provider's own default.
+ * explicit user choice" — the backend applies the model's own default
+ * effort, else `DEFAULT_REASONING_EFFORT` ("high"), for any reasoning-capable
+ * model rather than deferring to the provider's own default.
  *
  * `'none'` is kept in the type for backward compatibility with
  * already-persisted conversations/agents, but is no longer offered as a
@@ -29,8 +29,8 @@ export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max';
 
 /**
  * Effective reasoning effort applied by the backend (`_reasoning_effort_kwargs`
- * in `backend/python/app/utils/aimodels.py`) when the user hasn't explicitly
- * picked one. Kept in sync with `DEFAULT_REASONING_EFFORT` there.
+ * in `backend/python/app/utils/aimodels.py`) when neither the user, the agent
+ * nor the model set one. Kept in sync with `DEFAULT_REASONING_EFFORT` there.
  */
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'high';
 

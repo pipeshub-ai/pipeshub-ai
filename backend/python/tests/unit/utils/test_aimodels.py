@@ -19,6 +19,7 @@ from app.utils.aimodels import (
     get_embedding_model,
     get_generator_model,
     is_multimodal_llm,
+    model_default_reasoning_effort,
 )
 from app.utils.llm_api_mode_store import REASONING_MANDATORY_FALLBACK_EFFORT, LLMApiMode
 
@@ -1782,3 +1783,75 @@ class TestGetGeneratorModelApiModeWiring:
         call_kwargs = mock_cls.call_args.kwargs
         assert call_kwargs["reasoning"] == {"effort": "high"}
         assert call_kwargs["use_responses_api"] is True
+
+
+class TestModelDefaultReasoningEffort:
+    """The admin's per-model default sits between an explicit request effort
+    and the platform default. The settings API saves it under
+    ``configuration``; a top-level key is read only as a fallback."""
+
+    def test_nested_default_is_read(self) -> None:
+        config = {"configuration": {"defaultReasoningEffort": "medium"}}
+        assert model_default_reasoning_effort(config) == "medium"
+
+    def test_top_level_default_is_read_when_configuration_has_none(self) -> None:
+        assert model_default_reasoning_effort({"defaultReasoningEffort": "low"}) == "low"
+
+    def test_nested_default_wins_over_top_level(self) -> None:
+        config = {"defaultReasoningEffort": "high", "configuration": {"defaultReasoningEffort": "low"}}
+        assert model_default_reasoning_effort(config) == "low"
+
+    @pytest.mark.parametrize("value", [None, "", "  "])
+    def test_absent_or_blank_means_no_default(self, value) -> None:
+        assert model_default_reasoning_effort({"configuration": {"defaultReasoningEffort": value}}) is None
+
+    def test_unknown_value_is_rejected_with_a_plain_message(self) -> None:
+        config = {"configuration": {"defaultReasoningEffort": "extreme"}}
+        with pytest.raises(ValueError, match="default reasoning effort is 'extreme', which isn't a valid choice"):
+            model_default_reasoning_effort(config)
+
+    def test_model_default_is_used_when_request_gives_none(self) -> None:
+        config = {"isReasoning": True, "configuration": {"defaultReasoningEffort": "low"}}
+        assert _reasoning_effort_kwargs(None, config) == {"reasoning_effort": "low"}
+
+    def test_request_effort_overrides_model_default(self) -> None:
+        config = {"isReasoning": True, "configuration": {"defaultReasoningEffort": "low"}}
+        assert _reasoning_effort_kwargs("medium", config) == {"reasoning_effort": "medium"}
+
+    def test_model_default_goes_through_the_provider_map(self) -> None:
+        config = {"isReasoning": True, "configuration": {"defaultReasoningEffort": "max"}}
+        assert _reasoning_effort_kwargs(None, config, provider=LLMProvider.LM_STUDIO.value) == {
+            "reasoning_effort": "high"
+        }
+
+    def test_model_default_none_is_floored_like_a_request_none(self) -> None:
+        config = {"isReasoning": True, "configuration": {"defaultReasoningEffort": "none"}}
+        assert _reasoning_effort_kwargs(None, config) == {
+            "reasoning_effort": REASONING_MANDATORY_FALLBACK_EFFORT
+        }
+
+    def test_non_reasoning_model_ignores_the_default(self) -> None:
+        config = {"isReasoning": False, "configuration": {"defaultReasoningEffort": "extreme"}}
+        assert _reasoning_effort_kwargs(None, config) == {}
+
+    def test_no_default_still_means_high(self) -> None:
+        config = {"isReasoning": True, "configuration": {"model": "m"}}
+        assert _reasoning_effort_kwargs(None, config) == {"reasoning_effort": "high"}
+
+    def test_bedrock_uses_the_model_default(self) -> None:
+        from app.utils.aimodels import _bedrock_additional_model_request_fields
+
+        config = {"isReasoning": True, "configuration": {"defaultReasoningEffort": "low"}}
+        fields = _bedrock_additional_model_request_fields(
+            None, config, provider_in_bedrock="openai", model_name="openai.gpt-oss-120b-1:0",
+        )
+        assert fields == {"reasoning_effort": "low"}
+
+    def test_bedrock_request_effort_overrides_model_default(self) -> None:
+        from app.utils.aimodels import _bedrock_additional_model_request_fields
+
+        config = {"isReasoning": True, "configuration": {"defaultReasoningEffort": "low"}}
+        fields = _bedrock_additional_model_request_fields(
+            "medium", config, provider_in_bedrock="openai", model_name="openai.gpt-oss-120b-1:0",
+        )
+        assert fields == {"reasoning_effort": "medium"}

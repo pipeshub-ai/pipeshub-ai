@@ -121,6 +121,7 @@ class ResolutionStats:
     in_record_merges: int = 0
     new_nodes: int = 0
     alias_cap_hits: int = 0
+    merge_redirects: int = 0
     latency_ms: int = 0
 
     def as_dict(self) -> dict[str, int]:

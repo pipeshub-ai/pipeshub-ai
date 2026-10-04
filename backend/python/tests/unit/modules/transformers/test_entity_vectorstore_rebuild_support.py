@@ -126,24 +126,25 @@ class TestEmbeddingModelOnPoints:
 class TestFailureCount:
     async def test_clean_write_reports_no_failures(self) -> None:
         store, _ = _store(_StatefulVectorDB())
-        assert await store.upsert_entities_batch([_topic("t1"), _topic("t2")]) == 0
+        assert (await store.upsert_entities_batch([_topic("t1"), _topic("t2")])).failed == 0
 
     async def test_failed_write_counts_every_entity_in_the_batch(self) -> None:
         db = _StatefulVectorDB()
         db.fail_upserts = True
         store, _ = _store(db)
         entities = [_topic(f"t{i}") for i in range(5)]
-        assert await store.upsert_entities_batch(entities, batch_size=2) == 5
+        assert (await store.upsert_entities_batch(entities, batch_size=2)).failed == 5
 
     async def test_skipped_merge_on_unknown_membership_counts_as_failed(self) -> None:
         db = _StatefulVectorDB()
         db.fail_reads = True
         store, _ = _store(db)
-        assert await store.upsert_entities_batch([_topic()]) == 1
+        assert (await store.upsert_entities_batch([_topic()])).failed == 1
 
     async def test_empty_name_is_skipped_not_failed(self) -> None:
         store, _ = _store(_StatefulVectorDB())
-        assert await store.upsert_entities_batch([_topic(name="  ")]) == 0
+        outcome = await store.upsert_entities_batch([_topic(name="  ")])
+        assert (outcome.failed, outcome.skipped) == (0, 1)
 
 
 def _mock_db() -> MagicMock:

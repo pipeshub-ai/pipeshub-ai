@@ -163,6 +163,7 @@ from app.services.graph_db.common.utils import (
     SOFT_DELETE_CHUNK,
     TRASHED_EXTERNAL_ID_PREFIX,
     EntityCandidateRows,
+    PermittedEntityRows,
     build_connector_stats_response,
     dedupe_agents_by_id,
     empty_soft_delete_result,
@@ -195,7 +196,10 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.graph_db.taxonomy import (
     TAXONOMY_COLLECTIONS,
+    TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
+    check_edge_move,
+    check_edge_move_target,
     is_taxonomy_collection,
     subcategory_level,
 )
@@ -269,6 +273,8 @@ NODE_COLLECTIONS = [
 ]
 
 _WRITE_CONFLICT_ATTEMPTS = 6
+# Candidates per permitted-records query; see _walk_permitted_windows.
+_PERMITTED_WALK_CHUNK = 100
 _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
 _T = TypeVar("_T")
 
@@ -319,6 +325,11 @@ EDGE_COLLECTIONS = [
     (CollectionNames.MEMBER_OF.value, member_of_schema),
 ]
 
+
+
+
+# Edges one statement moves; a hub node's millions go in batches.
+_EDGE_MOVE_BATCH = 5000
 
 
 # Promotions to these statuses leave the primary with taxonomy to copy to its
@@ -3112,7 +3123,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         query: str,
         bind_vars: dict | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> list[dict] | None:
         """
         Execute AQL query - FULLY ASYNC.
@@ -3121,13 +3133,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
             query: AQL query string
             bind_vars: Query bind variables
             transaction: Optional transaction ID
+            timeout_seconds: Server-side limit (cursor ``maxRuntime``)
 
         Returns:
             Optional[List[Dict]]: Query results
         """
         try:
             return await self.http_client.execute_aql(
-                query, bind_vars, txn_id=transaction
+                query, bind_vars, txn_id=transaction,
+                **({"max_runtime": timeout_seconds} if timeout_seconds is not None else {}),
             )
         except Exception as e:
             self.logger.error(f"❌ Query execution failed: {str(e)}")
@@ -17601,7 +17615,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     }
     _ENTITY_CANDIDATE_RECORD_FIELDS: tuple[str, ...] = (
         "_key", "recordName", "recordType", "connectorId", "virtualRecordId",
-        "webUrl", "sourceLastModifiedTimestamp", "updatedAtTimestamp",
+        "webUrl", "hideWeburl", "sourceLastModifiedTimestamp", "updatedAtTimestamp",
     )
 
     async def _get_taxonomy_entities_for_record_via_edge(
@@ -17686,6 +17700,43 @@ class ArangoHTTPProvider(IGraphDBProvider):
         fields = ", ".join(f'"{f}": {var}.{f}' for f in cls._ENTITY_CANDIDATE_RECORD_FIELDS)
         return f"{{{fields}}}"
 
+    def _entity_candidate_scan_aql(
+        self, entity_type: str, *, filter_record_types: bool
+    ) -> tuple[str, str]:
+        """``(scope, scan_expr)`` for a non-record entity type: ``scope``
+        binds per-ref variables, ``scan_expr`` evaluates to at most
+        ``@scan_cap`` candidate record documents of ``ref``."""
+        records = CollectionNames.RECORDS.value
+        edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[entity_type]
+        targets = ", ".join(f'CONCAT("{c}/", ref.id)' for c in target_collections)
+        record_type_filter = (
+            "FILTER rec.recordType IN @record_types" if filter_record_types else ""
+        )
+        scan_subquery = f"""(
+                    FOR edge IN {edge_collection}
+                        FILTER edge._to IN targets
+                        FILTER STARTS_WITH(edge._from, "{records}/")
+                        LET rec = DOCUMENT(edge._from)
+                        FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
+                        FILTER rec.indexingStatus == @completed
+                        FILTER rec.connectorId IN ref.connectorIds
+                        {record_type_filter}
+                        LIMIT @scan_cap
+                        RETURN rec
+                )"""
+        scope = f"LET targets = [{targets}]"
+        if entity_type == EntityType.RECORD_GROUP.value:
+            scope = (
+                f'LET rg = DOCUMENT(CONCAT("{CollectionNames.RECORD_GROUPS.value}/", ref.id))\n                '
+                + scope
+            )
+            return scope, f"(rg != null AND rg.orgId == @org_id) ? {scan_subquery} : []"
+        return scope, scan_subquery
+
+    _ENTITY_CANDIDATE_SORT = (
+        "SORT NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) DESC, key ASC"
+    )
+
     def _entity_candidate_records_aql(
         self, entity_type: str, *, filter_record_types: bool
     ) -> str:
@@ -17705,46 +17756,234 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN {{id: ref.id, rows: (ok AND @offset == 0) ? [{projection}] : []}}
             """
 
-        edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[entity_type]
-        targets = ", ".join(f'CONCAT("{c}/", ref.id)' for c in target_collections)
-        record_type_filter = (
-            "FILTER rec.recordType IN @record_types" if filter_record_types else ""
+        scope, scan_expr = self._entity_candidate_scan_aql(
+            entity_type, filter_record_types=filter_record_types
         )
-        scan_subquery = f"""(
-                    FOR edge IN {edge_collection}
-                        FILTER edge._to IN targets
-                        FILTER STARTS_WITH(edge._from, "{records}/")
-                        LET rec = DOCUMENT(edge._from)
-                        FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
-                        FILTER rec.indexingStatus == @completed
-                        FILTER rec.connectorId IN ref.connectorIds
-                        {record_type_filter}
-                        LIMIT @scan_cap
-                        RETURN rec
-                )"""
-        if entity_type == EntityType.RECORD_GROUP.value:
-            scope = (
-                f'LET rg = DOCUMENT(CONCAT("{CollectionNames.RECORD_GROUPS.value}/", ref.id))'
-            )
-            scan_expr = f"(rg != null AND rg.orgId == @org_id) ? {scan_subquery} : []"
-        else:
-            scope = ""
-            scan_expr = scan_subquery
         return f"""
             FOR ref IN @refs
                 {scope}
-                LET targets = [{targets}]
                 LET scanned = {scan_expr}
                 LET rows = (
                     FOR rec IN scanned
                         COLLECT key = rec._key INTO grouped KEEP rec
                         LET r = grouped[0].rec
-                        SORT NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) DESC, key ASC
+                        {self._ENTITY_CANDIDATE_SORT}
                         LIMIT @offset, @limit
                         RETURN {self._entity_candidate_record_projection("r")}
                 )
                 RETURN {{id: ref.id, rows: rows, capped: LENGTH(scanned) >= @scan_cap}}
             """
+
+    def _permitted_entity_records_aql(
+        self, entity_type: str, *, filter_record_types: bool
+    ) -> str:
+        """Walk each ref's candidate window in order, keeping up to ``@limit``
+        rows the user ``u`` may read, each with its position in the window.
+        The role subquery runs only for rows app access does not grant: AQL
+        hoists subqueries out of expressions, so a ternary would not skip it,
+        but a loop over an empty array does."""
+        records = CollectionNames.RECORDS.value
+        record_role = self._get_permission_role_aql("record", "rec", "u")
+        projection = self._entity_candidate_record_projection("rec")
+        if entity_type == EntityType.RECORD.value:
+            record_type_check = (
+                "AND one.recordType IN @record_types" if filter_record_types else ""
+            )
+            window = f"""
+                LET one = DOCUMENT(CONCAT("{records}/", ref.id))
+                LET win = (one != null AND @offset == 0 AND one.orgId == @org_id
+                    AND one.isDeleted != true AND one.indexingStatus == @completed
+                    AND one.connectorId IN ref.connectorIds {record_type_check}) ? [one] : []
+                LET capped = false"""
+        else:
+            scope, scan_expr = self._entity_candidate_scan_aql(
+                entity_type, filter_record_types=filter_record_types
+            )
+            window = f"""
+                {scope}
+                LET scanned = {scan_expr}
+                LET win = (
+                    FOR rec IN scanned
+                        COLLECT key = rec._key INTO grouped KEEP rec
+                        LET r = grouped[0].rec
+                        {self._ENTITY_CANDIDATE_SORT}
+                        LIMIT @offset, @window
+                        RETURN r
+                )
+                LET capped = LENGTH(scanned) >= @scan_cap"""
+        return f"""
+            LET u = DOCUMENT(@users_col, @user_key)
+            FILTER u != null
+            FOR ref IN @refs
+                {window}
+                LET hits = (
+                    FOR pos IN (LENGTH(win) > 0 ? 0..(LENGTH(win) - 1) : [])
+                        LET rec = win[pos]
+                        LET app_granted = rec.connectorId IN @app_level_connector_ids
+                        // Domain, "anyone" and link shares grant no access, as in
+                        // every other access check.
+                        LET checked = (
+                            FOR needed IN (app_granted ? [] : [1])
+                                {record_role}
+                                LET role = IS_ARRAY(permission_role)
+                                    ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                                    : permission_role
+                                RETURN role != null AND role != ""
+                        )
+                        FILTER app_granted OR checked[0] == true
+                        LIMIT @limit
+                        RETURN {{pos: pos, row: {projection}}}
+                )
+                RETURN {{id: ref.id, hits: hits, window_size: LENGTH(win), capped: capped}}
+            """
+
+    async def get_permitted_entity_records(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        user_key: str,
+        *,
+        app_level_connector_ids: list[str],
+        record_types: list[str] | None = None,
+        limit_per_entity: int = 20,
+        offset: int = 0,
+        window: int = 200,
+        timeout_seconds: float | None = None,
+    ) -> dict[tuple[str, str], PermittedEntityRows]:
+        """See :meth:`IGraphDBProvider.get_permitted_entity_records`."""
+        if not refs or not org_id or not user_key:
+            return {}
+
+        limit = max(1, limit_per_entity)
+        results: dict[tuple[str, str], PermittedEntityRows] = {}
+        for ref_type, connectors_by_id in self._entity_refs_by_type(refs).items():
+            for ref_id in connectors_by_id:
+                results.setdefault((ref_type, ref_id), PermittedEntityRows())
+            query_refs = [
+                {"id": ref_id, "connectorIds": connector_ids}
+                for ref_id, connector_ids in connectors_by_id.items()
+                if connector_ids
+            ]
+            if not query_refs:
+                continue
+            bind_vars: dict[str, Any] = {
+                "org_id": org_id,
+                "limit": limit,
+                "completed": ProgressStatus.COMPLETED.value,
+                "users_col": CollectionNames.USERS.value,
+                "user_key": user_key,
+                "app_level_connector_ids": list(app_level_connector_ids),
+            }
+            if record_types:
+                bind_vars["record_types"] = list(record_types)
+            query = self._permitted_entity_records_aql(ref_type, filter_record_types=bool(record_types))
+            for key, rows in (await self._walk_permitted_windows(
+                query, bind_vars, query_refs, ref_type,
+                offset=max(0, offset), window=max(1, window), limit=limit,
+                timeout_seconds=timeout_seconds,
+            )).items():
+                results[(ref_type, key)] = rows
+        return results
+
+    async def _walk_permitted_windows(
+        self,
+        query: str,
+        bind_vars: dict[str, Any],
+        refs: list[dict[str, Any]],
+        ref_type: str,
+        *,
+        offset: int,
+        window: int,
+        limit: int,
+        timeout_seconds: float | None,
+    ) -> dict[str, PermittedEntityRows]:
+        """Run the permitted-records query over ``window`` in chunks of
+        ``_PERMITTED_WALK_CHUNK`` candidates, dropping each ref once it has
+        ``limit`` rows or its candidates run out.
+
+        AQL evaluates a subquery for every row of a block before a later
+        LIMIT applies, so one query over the whole window does the full
+        permission work (and holds its intermediate results) even when the
+        first rows already answer it; chunks restore the early stop.
+        """
+        started = time.monotonic()
+        hits: dict[str, list[dict[str, Any]]] = {ref["id"]: [] for ref in refs}
+        sizes: dict[str, int] = dict.fromkeys(hits, 0)
+        capped: dict[str, bool] = dict.fromkeys(hits, False)
+        short: set[str] = set()
+        pending = list(refs)
+        walked = 0
+        single = ref_type == EntityType.RECORD.value
+        while pending and walked < window:
+            size = window - walked if single else min(_PERMITTED_WALK_CHUNK, window - walked)
+            binds = {**bind_vars, "refs": pending, "offset": offset + walked}
+            # Arango rejects bind vars the query does not reference.
+            if not single:
+                binds["window"] = size
+                binds["scan_cap"] = ENTITY_CANDIDATE_SCAN_CAP
+            remaining = None
+            if timeout_seconds is not None:
+                remaining = timeout_seconds - (time.monotonic() - started)
+                if remaining <= 0:
+                    # As a server-side cancel would: rows from part of the
+                    # window would misstate how much of it was examined.
+                    raise TimeoutError(
+                        f"permitted-records walk exceeded {timeout_seconds:.1f}s "
+                        f"after {walked} of {window} candidates"
+                    )
+                remaining = max(0.1, remaining)
+            rows = await self.execute_query(
+                query, bind_vars=binds,
+                **({"timeout_seconds": remaining} if remaining is not None else {}),
+            )
+            # No row for a ref (an unknown user returns none) ends its walk.
+            answered: set[str] = set()
+            for row in rows or []:
+                ref_id = str((row or {}).get("id") or "")
+                if ref_id not in hits:
+                    continue
+                answered.add(ref_id)
+                for hit in row.get("hits") or []:
+                    hits[ref_id].append({**hit, "pos": int(hit.get("pos") or 0) + walked})
+                got = int(row.get("window_size") or 0)
+                sizes[ref_id] += got
+                capped[ref_id] = capped[ref_id] or bool(row.get("capped"))
+                if got < size:
+                    short.add(ref_id)
+            short.update(r["id"] for r in pending if r["id"] not in answered)
+            walked += size
+            if single:
+                short.update(hits)
+            pending = [r for r in pending if r["id"] not in short and len(hits[r["id"]]) < limit]
+        return {
+            # A ref stopped by its limit has more candidates than were read;
+            # only a short chunk gives the window's true size.
+            ref_id: PermittedEntityRows.from_window(
+                ref_hits, limit=limit,
+                window_size=sizes[ref_id] if ref_id in short else max(sizes[ref_id], window),
+                capped=capped[ref_id],
+            )
+            for ref_id, ref_hits in hits.items()
+        }
+
+    def _entity_refs_by_type(self, refs: list[dict[str, Any]]) -> dict[str, dict[str, list[str]]]:
+        """``{type: {id: connector_ids}}`` for supported refs, first occurrence
+        of each kept (a union would widen a ref's scope)."""
+        connectors_by_type: dict[str, dict[str, list[str]]] = defaultdict(dict)
+        for ref in refs:
+            ref_id = str(ref.get("id") or "")
+            ref_type = ref.get("type")
+            if not ref_id or not (
+                ref_type == EntityType.RECORD.value
+                or ref_type in self._ENTITY_CANDIDATE_EDGE_TARGETS
+            ):
+                continue
+            if ref_id in connectors_by_type[ref_type]:
+                continue
+            connectors_by_type[ref_type][ref_id] = list(dict.fromkeys(
+                str(c) for c in ref.get("connectorIds") or [] if c
+            ))
+        return connectors_by_type
 
     async def get_entity_candidate_records(
         self,
@@ -17760,24 +17999,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if not refs or not org_id:
             return {}
 
-        connectors_by_type: dict[str, dict[str, list[str]]] = defaultdict(dict)
-        for ref in refs:
-            ref_id = str(ref.get("id") or "")
-            ref_type = ref.get("type")
-            if not ref_id or not (
-                ref_type == EntityType.RECORD.value
-                or ref_type in self._ENTITY_CANDIDATE_EDGE_TARGETS
-            ):
-                continue
-            if ref_id in connectors_by_type[ref_type]:
-                # First ref wins, as on Neo4j: a union would widen a ref's scope.
-                continue
-            connectors_by_type[ref_type][ref_id] = list(dict.fromkeys(
-                str(c) for c in ref.get("connectorIds") or [] if c
-            ))
-
         results: dict[tuple[str, str], EntityCandidateRows] = {}
-        for ref_type, connectors_by_id in connectors_by_type.items():
+        for ref_type, connectors_by_id in self._entity_refs_by_type(refs).items():
             for ref_id in connectors_by_id:
                 results.setdefault((ref_type, ref_id), EntityCandidateRows())
             # A ref without connectors can never match a row, so it is not sent.
@@ -17897,12 +18120,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET by_name = (
                 FOR doc IN {collection}
                     FILTER doc.orgId == @org_id AND doc.normalizedName IN @names
+                    FILTER doc.mergedInto == null
                     RETURN doc
             )
             LET by_alias = (
                 FOR name IN @names
                     FOR doc IN {collection}
                         FILTER doc.orgId == @org_id AND name IN doc.normalizedAliases
+                        FILTER doc.mergedInto == null
                         RETURN doc
             )
             FOR doc IN UNION_DISTINCT(by_name, by_alias)
@@ -17920,6 +18145,143 @@ class ArangoHTTPProvider(IGraphDBProvider):
             transaction=transaction,
         )
         return rows or []
+
+    async def move_taxonomy_edges(
+        self,
+        collection: str,
+        from_key: str,
+        to_key: str,
+        org_id: str,
+        *,
+        set_merged_from: str | None,
+        only_merged_from: str | None = None,
+        provenance: str = "mergedFrom",
+        dry_run: bool = False,
+        transaction: str | None = None,
+    ) -> int:
+        """See :meth:`IGraphDBProvider.move_taxonomy_edges`."""
+        check_edge_move(collection, from_key, to_key, org_id, provenance)
+        match = """
+            FOR e IN @@edges
+                FILTER e._to == @from_id
+                FILTER @only_merged_from == null OR e[@provenance] == @only_merged_from
+                LET rec = DOCUMENT(e._from)
+                FILTER rec != null AND rec.orgId == @org_id
+        """
+        bind_vars: dict[str, Any] = {
+            "provenance": provenance,
+            "@edges": TAXONOMY_EDGE_COLLECTIONS[collection],
+            "from_id": f"{collection}/{from_key}",
+            "org_id": org_id,
+            "only_merged_from": only_merged_from,
+        }
+        if dry_run:
+            rows = await self.http_client.execute_aql(
+                match + "COLLECT WITH COUNT INTO n RETURN n", bind_vars=bind_vars, txn_id=transaction,
+            )
+            return int((rows or [0])[0] or 0)
+        target = await self.http_client.execute_aql(
+            "LET t = DOCUMENT(@to_id) RETURN t == null ? null : { orgId: t.orgId }",
+            bind_vars={"to_id": f"{collection}/{to_key}"}, txn_id=transaction,
+        )
+        found = (target or [None])[0]
+        check_edge_move_target(
+            collection, to_key, org_id, found=found is not None, target_org=(found or {}).get("orgId"),
+            provenance=provenance, only_merged_from=only_merged_from,
+        )
+        # A batch of keys at a time, never all of a hub's at once; each batch
+        # leaves the node, so the next read finds the rest.
+        find = match + "LIMIT @batch RETURN e._key"
+        by_key = """
+            FOR e IN @@edges
+                FILTER e._key IN @keys AND e._to == @from_id
+        """
+        binds = {
+            "@edges": bind_vars["@edges"], "from_id": bind_vars["from_id"], "to_id": f"{collection}/{to_key}",
+        }
+        # Two statements per batch, each idempotent, so a crash between them
+        # is finished by a re-run: drop edges whose record already links to
+        # the target, then point the rest at it. A forward move keeps an
+        # edge's first provenance; a restore clears it.
+        dedupe = by_key + """
+                FILTER LENGTH(FOR d IN @@edges FILTER d._from == e._from AND d._to == @to_id
+                              LIMIT 1 RETURN 1) > 0
+                REMOVE e IN @@edges
+                RETURN 1
+        """
+        repoint = by_key + """
+                UPDATE e WITH MERGE(
+                    { _to: @to_id },
+                    { [@provenance]: @only_merged_from == null
+                        ? NOT_NULL(e[@provenance], @set_merged_from) : @set_merged_from },
+                    @only_merged_from != null AND @provenance == "migratedFrom" ? { mergedFrom: null } : {}
+                ) IN @@edges
+                RETURN 1
+        """
+        repoint_binds = {
+            **binds, "provenance": provenance, "only_merged_from": only_merged_from,
+            "set_merged_from": set_merged_from,
+        }
+        total = 0
+        while True:
+            batch = await self.http_client.execute_aql(
+                find, bind_vars={**bind_vars, "batch": _EDGE_MOVE_BATCH}, txn_id=transaction,
+            )
+            if not batch:
+                return total
+            moved = 0
+            for query, query_binds in ((dedupe, binds), (repoint, repoint_binds)):
+                rows = await self.http_client.execute_aql(
+                    query, bind_vars={**query_binds, "keys": list(batch)}, txn_id=transaction,
+                )
+                moved += len(rows or [])
+            total += moved
+            if not moved:
+                # Read but not moved (changed underneath): reading again
+                # would return the same batch for ever.
+                return total
+
+    async def find_legacy_taxonomy_nodes(
+        self,
+        collection: str,
+        org_id: str,
+        limit: int,
+        after_key: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_legacy_taxonomy_nodes`."""
+        if not is_taxonomy_collection(collection):
+            raise ValueError(f"{collection!r} is not a taxonomy collection")
+        if not org_id:
+            return []
+        # Legacy nodes predate per-org nodes and no longer grow, so a page
+        # walks them in key order and stops once it has enough; starting from
+        # the org's records would walk all of them again for every page.
+        rows = await self.http_client.execute_aql(
+            """
+            FOR node IN @@nodes
+                FILTER node.orgId == null AND node._key > @after_key
+                SORT node._key
+                LET records = LENGTH(
+                    FOR rec IN 1..1 INBOUND node @@edges
+                        FILTER rec.orgId == @org_id
+                        RETURN DISTINCT rec._key
+                )
+                FILTER records > 0
+                LIMIT @limit
+                RETURN { _key: node._key, name: node.name, records: records }
+            """,
+            bind_vars={
+                "@nodes": collection,
+                "@edges": TAXONOMY_EDGE_COLLECTIONS[collection],
+                "org_id": org_id,
+                # Never null: a constant filter lets the optimizer drop the bound.
+                "after_key": after_key or "",
+                "limit": max(1, int(limit)),
+            },
+            txn_id=transaction,
+        )
+        return [dict(row) for row in rows or []]
 
     async def create_taxonomy_node_if_absent(
         self,

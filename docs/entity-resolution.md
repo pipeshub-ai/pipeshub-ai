@@ -83,7 +83,76 @@ without aliases, and another org's node is skipped.
 
 Subcategories only resolve within their own level, and per-org nodes never
 link across orgs. Legacy global nodes created before the feature are not
-migrated; a reindex moves a record onto canonical nodes.
+migrated automatically; a reindex moves a record onto canonical nodes, and an
+operator can migrate them (see Consolidation).
+
+## Consolidation
+
+Nodes that should have been one (created while the model was unavailable, or
+by two instances at once) stay separate until merged. Legacy nodes stay
+shared until migrated. Both are operator commands, dry runs unless `--apply`
+is given:
+
+```
+python -m app.scripts.kg_taxonomy duplicates --org ORG
+python -m app.scripts.kg_taxonomy consolidate --org ORG [--collection topics] [--apply]
+python -m app.scripts.kg_taxonomy merge|unmerge ...
+python -m app.scripts.kg_taxonomy legacy --org ORG
+python -m app.scripts.kg_taxonomy migrate-legacy --org ORG [--apply]
+python -m app.scripts.kg_taxonomy unmigrate-legacy ...
+```
+
+- `consolidate` only merges nodes of one org and collection whose names share
+  a spelling key: they differ in case, spacing or punctuation, never in words.
+  The oldest node wins.
+- A merge is a redirect, not a delete:
+  - the loser keeps its data and gets `mergedInto` and `mergedAt`;
+  - its record edges move to the winner with `extractedName` kept and
+    `mergedFrom` set;
+  - the winner learns the loser's spellings as aliases.
+- Lookups, the entity index and the stale-point sweep skip merged nodes.
+- A newly extracted name whose deterministic key is a merged node resolves
+  to the node it was merged into. Otherwise the record would link back to the
+  hidden node whenever the winner's alias list is full.
+- Merges record `mergedFrom` on the edges they move and migrations record
+  `migratedFrom`, so undoing one never hides the other's edges. An edge keeps
+  the origin of its first move, and a merge re-points older redirects at the
+  new winner. Chained merges (A into B, then B into C) therefore undo one node
+  at a time, and undo follows redirects to wherever the edges are now.
+- `unmerge` moves the marked edges back.
+- `migrate-legacy` moves one org's edges from a legacy node onto that org's
+  canonical node for the same name, created if absent. Other orgs keep the
+  legacy node.
+- Entity points are refreshed as each change is made. If that fails, the
+  command reports `index_refreshed: false` and exits 1. The background sweep
+  repairs live org nodes but skips merged and legacy ones, so re-run the merge
+  or the unmigrate.
+- Edges only move onto a node of the same org; undoing a migration is the one
+  move allowed back onto a legacy node.
+- Finding legacy nodes walks the legacy nodes in key order and counts each
+  one's records of the org, so run it off-peak on large installs. A move reads
+  and moves its edges 5,000 at a time.
+- Dry runs only read, so they work with a read-only graph user; `--apply`
+  first applies the graph schema.
+- Exit codes: 0 done; 1 some items failed or left the index unrefreshed; 2
+  invalid request; 3 a single-item command failed, or the graph or its schema
+  was unavailable before anything was written. Bulk commands carry on past a
+  failed item or collection, print it with `error`, and exit 1; each item is
+  idempotent, so a re-run finishes it.
+- Known limits:
+  - `unmerge` restores only edges that moved. When a record linked to both
+    nodes, the loser's edge (and its `extractedName`) is dropped rather than
+    duplicated, so it is not recreated.
+  - Undoing the middle of a chain (B in A into B into C) leaves A redirecting
+    to C.
+  - A loser spelling that did not fit in the winner's alias list can still
+    become a new node when a later record extracts it, unless it is the
+    loser's own name.
+  - Aliases the winner learned are kept after `unmerge`. On Neo4j, the alias
+    nodes then point at both nodes.
+  - Indexing that resolved to the loser just before the merge can link to it
+    after the merge finished; re-running the merge moves those edges.
+  - Category hierarchy edges are not moved; nothing reads them today.
 
 ## Entity index rebuild
 
@@ -159,6 +228,35 @@ line.
 
 ## Operational notes
 
+- Entity index writes are counted in
+  `pipeshub_entity_index_writes_total{operation,outcome}` (written,
+  membership_only, unchanged, skipped, failed). The ids of entities not
+  written are logged at warning, capped at 20 plus a count. A rising
+  `failed` count means the vector store is refusing entity writes; the
+  rebuild repairs the points once it recovers.
+- Deleting a connector or a KB publishes `deleteConnectorEntities`, and the
+  indexing service removes the connector's entity points:
+  - shared taxonomy points lose the connector and its record groups, and the
+    rest are deleted;
+  - a failure is retried, then dead-lettered;
+  - before any graph row goes, the deleting service records the cleanup in
+    the KV store (`/services/entityCleanup/pending/<connectorId>`) and does not
+    delete if it cannot; the event's handler clears it when the cleanup
+    finishes. The rebuild loop reads the intents every 5 minutes and runs any
+    older than 15 minutes (a lost publish, a dead-lettered message) once the
+    connector's app document is gone, backing off on failure; a failed read
+    of the app document never counts as gone. An intent whose app still
+    exists a day later (its delete was reverted) is dropped;
+  - each page is re-read by id and written by id, so a record indexed on the
+    same indexing instance during the cleanup keeps its connector (the locks
+    are per process; another instance's write can still be lost until that
+    record is reindexed or the rebuild repairs the point);
+  - deploy the indexing service before the connector service: an older
+    indexing service dead-letters `deleteConnectorEntities`, and those
+    messages then need replaying.
+- Embedding runs before the per-entity locks are taken. The locks only cover
+  the read, merge and write, so records sharing a popular entity do not wait
+  on each other's embedding call.
 - The `entities` vector collection has a `metadata.level` payload index. The
   store ensures its payload indexes on every start (index creation is
   idempotent on every backend), so an existing collection picks it up too.
