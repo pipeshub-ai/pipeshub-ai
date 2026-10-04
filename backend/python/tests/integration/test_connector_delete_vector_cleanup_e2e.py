@@ -282,8 +282,14 @@ async def test_an_outlook_personal_delete_by_external_id_removes_the_mail(world:
 
     records = CollectionNames.RECORDS.value
     assert await world.graph.get_document(world.ids["personal_email"], records) is None
-    removed = {world.vrid("personal_email")}
-    if await world.graph.get_document(world.ids["personal_attachment"], records) is None:
-        removed.add(world.vrid("personal_attachment"))
-    assert world.producer.deleted_vrids() == removed
+    attachment = await world.graph.get_document(world.ids["personal_attachment"], records)
+    if isinstance(world.graph, Neo4jProvider):
+        # Neo4j's delete_record removes the record alone, as it does for Outlook.
+        assert attachment is not None
+        assert world.producer.deleted_vrids() == {world.vrid("personal_email")}
+    else:
+        assert attachment is None, "ArangoDB's Outlook delete removes the mail's attachments"
+        assert world.producer.deleted_vrids() == {
+            world.vrid("personal_email"), world.vrid("personal_attachment"),
+        }
     assert {e["payload"]["connectorName"] for e in world.producer.events} == {Connectors.OUTLOOK_INDIVIDUAL.value}
