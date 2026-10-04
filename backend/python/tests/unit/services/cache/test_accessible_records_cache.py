@@ -615,6 +615,26 @@ class _FlakyPipelineRedis(FakeRedis):
         return super().pipeline(transaction)
 
 
+class _UnresponsiveRedis(FakeRedis):
+    """Deletes hang for the client's socket timeout and fail, until it answers again."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.responsive = False
+
+    def pipeline(self, transaction: bool = False) -> _FakePipeline:
+        if self.responsive:
+            return super().pipeline(transaction)
+        redis = self
+
+        class _HangingPipeline(_FakePipeline):
+            async def execute(self) -> list:
+                await asyncio.sleep(AccessibleRecordsCache.OP_TIMEOUT_SECONDS)
+                raise TimeoutError("redis did not answer")
+
+        return _HangingPipeline(redis)
+
+
 async def _wait_for(condition, timeout: float = 2.0) -> None:
     deadline = time.monotonic() + timeout
     while not condition():
@@ -641,15 +661,27 @@ class TestFailedInvalidationIsNotDropped:
         assert cache._pending_deletes == {}
         await cache.close()
 
-    async def test_an_open_breaker_does_not_skip_invalidation(self) -> None:
-        redis = FakeRedis()
+    async def test_an_open_breaker_queues_the_delete_without_waiting(self, monkeypatch) -> None:
+        """A dead Redis must cost the indexing handler nothing per record: with
+        the breaker open the delete is handed to the retry and the call
+        returns at once, and the retry still drops the key once Redis is back."""
+        monkeypatch.setattr(
+            AccessibleRecordsCache, "INVALIDATION_RETRY_DELAYS_SECONDS", (0.01,), raising=False
+        )
+        redis = _UnresponsiveRedis()
         cache = _cache(redis)
         await cache.get_or_compute_kb(ORG, KB, _loader({"v": "r"}))
         cache._down_until = time.monotonic() + AccessibleRecordsCache.DOWN_BACKOFF_SECONDS
 
-        await cache.invalidate_kb(ORG, KB)
+        started = time.monotonic()
+        await asyncio.gather(*(cache.invalidate_kb(ORG, KB) for _ in range(20)))
+        elapsed = time.monotonic() - started
 
-        assert cache._kb_key(ORG, KB) not in redis.strings
+        assert elapsed < AccessibleRecordsCache.OP_TIMEOUT_SECONDS / 4, elapsed
+        assert len(cache._retry_tasks) == 1, "concurrent invalidations must share one retry"
+        redis.responsive = True
+        await _wait_for(lambda: cache._kb_key(ORG, KB) not in redis.strings, timeout=10.0)
+        await cache.close()
 
     async def test_retrying_stops_once_the_entries_have_expired(self, monkeypatch) -> None:
         monkeypatch.setattr(

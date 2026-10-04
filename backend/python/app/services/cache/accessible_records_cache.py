@@ -349,16 +349,26 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         redis-py's ``ClusterPipeline`` routes each command to the right
         node; on standalone this is one round trip either way.
 
-        Deliberately not gated on the read breaker: it exists to keep a dead
-        Redis from slowing searches, and skipping a delete while it is open
-        is what left an entry serving the old list until its TTL ran out."""
+        Never skipped while the read breaker is open -- that is what left an
+        entry serving the old list until its TTL ran out -- but not attempted
+        inline either: the caller is an indexing handler, and a dead Redis
+        must cost it one timeout, not one per record. The keys go to the
+        background retry instead."""
         if not self._enabled:
+            return
+        if time.monotonic() < self._down_until:
+            self._retry_later(keys)
             return
         try:
             await self._delete_now(keys)
         except Exception as e:
             self._mark_down("delete", e)
-            self._retry_later(keys, e)
+            self._retry_later(keys)
+            self.logger.warning(
+                "Could not drop accessible-records cache entries %s (%s); retrying in the "
+                "background until it works or they expire in %ss",
+                list(keys), str(e), self._ttl,
+            )
 
     async def _delete_now(self, keys: "list[str] | tuple[str, ...]") -> None:
         async with self._client().pipeline(transaction=False) as pipe:
@@ -366,8 +376,11 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
                 pipe.delete(key)
             await pipe.execute()
 
-    def _retry_later(self, keys: tuple[str, ...], error: Exception) -> None:
-        """Keep retrying a failed delete on this loop without holding up the caller."""
+    def _retry_later(self, keys: tuple[str, ...]) -> None:
+        """Queue keys for the one retry task on this loop, starting it if none runs.
+
+        Pending keys are coalesced in one map, so any number of callers share
+        a single retry loop per event loop."""
         expires_at = time.monotonic() + self._ttl
         loop = asyncio.get_running_loop()
         with self._pending_lock:
@@ -376,11 +389,6 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             task = self._retry_tasks.get(loop)
             if task is None or task.done():
                 self._retry_tasks[loop] = loop.create_task(self._retry_pending_deletes())
-        self.logger.warning(
-            "Could not drop accessible-records cache entries %s (%s); retrying in the "
-            "background until it works or they expire in %ss",
-            list(keys), str(error), self._ttl,
-        )
 
     async def _retry_pending_deletes(self) -> None:
         delays = self.INVALIDATION_RETRY_DELAYS_SECONDS
