@@ -187,6 +187,9 @@ class EntityVectorStore:
         self._init_failed_at: float | None = None
         self._init_lock = asyncio.Lock()
         self._query_vector_cache: OrderedDict[str, tuple[list[float], Any]] = OrderedDict()
+        # Bumped by each reset; a query embedded under an older generation is
+        # returned but not cached (see ``_query_vectors``).
+        self._generation = 0
 
         # Per-entity locks guarding the membership read-merge-write below; see
         # ``_entity_lock``. Weakly held so the map does not grow with every
@@ -246,6 +249,7 @@ class EntityVectorStore:
         async with self._init_lock:
             self._initialized = False
             self._init_failed_at = None
+            self._generation += 1
             self._query_vector_cache.clear()
 
     async def collection_exists(self) -> bool:
@@ -1147,12 +1151,17 @@ class EntityVectorStore:
         if cached is not None:
             self._query_vector_cache.move_to_end(query)
             return cached
+        generation = self._generation
         loop = asyncio.get_running_loop()
         dense_vec = await loop.run_in_executor(None, self._dense_embeddings.embed_query, query)
         sparse_vec = None
         if self._sparse_embedder:
             sparse_results = await self._sparse_embedder.embed_documents([query])
             sparse_vec = sparse_results[0] if sparse_results else None
+        if generation != self._generation:
+            # The store reset while this was in flight: the vector is the old
+            # model's, and cached it would fail every later search for the text.
+            return dense_vec, sparse_vec
         self._query_vector_cache[query] = (dense_vec, sparse_vec)
         if len(self._query_vector_cache) > _QUERY_VECTOR_CACHE_SIZE:
             self._query_vector_cache.popitem(last=False)

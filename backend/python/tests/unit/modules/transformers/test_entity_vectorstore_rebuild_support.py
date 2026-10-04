@@ -366,3 +366,29 @@ class TestARecreatedCollectionReachesRunningServices:
         reinit.assert_awaited_once()
         request = db.query_nearest_points.await_args.kwargs["requests"][0]
         assert len(request.dense_query) == 4
+
+
+async def test_an_embedding_in_flight_across_a_reset_is_not_cached() -> None:
+    """A query embedded by the old model, finishing after the store reset for
+    a recreated collection, must not be cached: the next search for that text
+    would reuse the old dimension and fail until the entry ages out."""
+    import asyncio
+    import threading
+
+    store, db = TestARecreatedCollectionReachesRunningServices._searching_store(collection_dimension=4)
+    store._query_vector_cache.clear()
+    started, release = threading.Event(), threading.Event()
+
+    def _old_model_embed(text: str) -> list[float]:
+        started.set()
+        release.wait(5)
+        return [0.1, 0.2]
+
+    store._dense_embeddings.embed_query = MagicMock(side_effect=_old_model_embed)
+    in_flight = asyncio.create_task(store._query_vectors("pricing"))
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+    await store._reset_if_collection_changed()
+    release.set()
+    assert (await in_flight)[0] == [0.1, 0.2]
+    assert "pricing" not in store._query_vector_cache
