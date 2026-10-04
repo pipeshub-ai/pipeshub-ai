@@ -1,7 +1,7 @@
 """Against real servers: ``get_permitted_entity_records`` returns exactly
 what the earlier client-side check returned (candidates, then
-``filter_nodes_with_permission_role``, then the "anyone" lookup, with
-app-level connectors passing on app access), in the same order, on Neo4j
+``filter_nodes_with_permission_role``, with app-level connectors passing
+on app access; "anyone" shares grant nothing, as in every access check), in the same order, on Neo4j
 5.26 and ArangoDB 3.12.
 
 A seeded random fixture covers every grant path (direct, group, role, team,
@@ -231,21 +231,8 @@ async def old_reference(provider: Neo4jProvider | ArangoHTTPProvider, org: str, 
     allowed = await provider.filter_nodes_with_permission_role(
         [{"id": key, "type": "record"} for key in need], f"{org}-u", org, raise_on_error=True,
     )
-    refused = [key for key in need if key not in allowed]
-    if kind == "neo4j":
-        rows = await provider.client.execute_query(
-            "MATCH (a:Anyone) WHERE a.file_key IN $ids AND a.organization = $org "
-            "AND coalesce(a.active, true) = true RETURN DISTINCT a.file_key AS id",
-            parameters={"ids": refused, "org": org},
-        )
-        allowed |= {row["id"] for row in rows}
-    else:
-        rows = await provider.http_client.execute_aql(
-            "FOR a IN anyone FILTER a.file_key IN @ids AND a.organization == @org AND a.active == true "
-            "RETURN DISTINCT a.file_key",
-            {"ids": refused, "org": org},
-        )
-        allowed |= set(rows)
+    # Like every other access check (#3691): domain, "anyone" and link
+    # shares grant no access, so the reference never reads them.
     visible = app_level | allowed
     return [row["_key"] for row in candidates if row["_key"] in visible]
 

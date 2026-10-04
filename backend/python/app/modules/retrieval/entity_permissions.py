@@ -243,8 +243,8 @@ async def _fetch_permitted(
     deadline: float,
 ) -> dict[tuple[str, str], PermittedEntityRows]:
     """Permitted rows of one candidate window per ref, checked in the query.
-    App-level rows pass on app access; the rest on a permission role or an
-    "anyone" share."""
+    App-level rows pass on app access; the rest on a permission role.
+    Domain, "anyone" and link shares grant no access, as in every check."""
     timeout = max(0.0, deadline - time.monotonic()) + SERVER_TIMEOUT_GRACE_SECONDS
     try:
         return await graph_provider.get_permitted_entity_records(

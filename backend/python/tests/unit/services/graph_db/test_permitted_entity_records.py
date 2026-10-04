@@ -52,7 +52,7 @@ class TestNeo4jQuery:
         assert query.index("LIMIT $scan_cap") < query.index("ORDER BY") < query.index("SKIP $offset LIMIT $window")
         assert query.index("SKIP $offset LIMIT $window") < query.index("UNWIND range(0, size(win) - 1) AS pos")
         assert "rec.connectorId IN $app_level_connector_ids" in query
-        assert "MATCH (a:Anyone)" in query and "coalesce(a.active, true) = true" in query
+        assert "(a:Anyone)" not in query  # "anyone" shares grant no access (#3691)
         assert "permission_role IS NOT NULL" in query
         assert query.index("UNWIND range(0, size(win) - 1)") < query.index("LIMIT $limit")
 
@@ -79,7 +79,7 @@ class TestArangoQuery:
         query = p.execute_query.await_args.args[0]
         assert query.index("LIMIT @scan_cap") < query.index("SORT") < query.index("LIMIT @offset, @window")
         assert "FOR needed IN (app_granted ? [] : [1])" in query
-        assert "a.active == true" in query
+        assert "FOR a IN anyone" not in query  # "anyone" shares grant no access (#3691)
         assert query.index("FILTER app_granted OR checked[0] == true") < query.index("LIMIT @limit")
 
     async def test_binds_and_server_timeout(self) -> None:
@@ -116,6 +116,27 @@ class TestArangoQuery:
         ])
         rows = (await p.get_permitted_entity_records([TOPIC_REF], "org1", "ukey", **{**KWARGS, "window": 400}))[("topic", "t1")]
         assert (rows.window_size, rows.examined) == (130, 130)
+        assert p.execute_query.await_count == 2
+
+    async def test_a_walk_past_its_deadline_raises_before_the_next_chunk(self) -> None:
+        """Each chunk got at least 0.1 s, so a walk of many chunks could
+        overrun the caller's deadline by that much per chunk; and partial
+        rows would misstate how much of the window was examined."""
+        from unittest.mock import patch
+
+        p = _arango([])
+        clock = {"now": 100.0}
+
+        async def slow_chunk(*args: object, **kwargs: object) -> list:
+            clock["now"] += 2.0  # each chunk takes 2 s against a 3 s budget
+            return [{"id": "t1", "hits": [], "window_size": 100, "capped": False}]
+
+        p.execute_query = AsyncMock(side_effect=slow_chunk)
+        with patch("app.services.graph_db.arango.arango_http_provider.time.monotonic", side_effect=lambda: clock["now"]), \
+                pytest.raises(TimeoutError):
+            await p.get_permitted_entity_records(
+                [TOPIC_REF], "org1", "ukey", timeout_seconds=3.0, **{**KWARGS, "window": 2000},
+            )
         assert p.execute_query.await_count == 2
 
     async def test_record_refs_send_no_window_binds(self) -> None:
@@ -173,17 +194,13 @@ class TestPermittedEntityRows:
         assert [r["_key"] for r in rows] == ["0", "1"] and rows.examined == 2
 
 
-class TestAnyoneLookupIsIndexed:
-    """The walk looks an "anyone" share up per row; unindexed it scans every
-    org's shares per row (21 s for 800 rows with 20k shares on Neo4j)."""
+class TestAnyoneSharesGrantNothing:
+    """As in every access check since #3691: an entity is not reached through
+    a record shared with "anyone", which neither backend's walk reads."""
 
-    def test_neo4j(self) -> None:
-        statements = _neo4j([])._generate_performance_indexes()
-        assert any("FOR (n:Anyone) ON (n.file_key, n.organization)" in s for s in statements)
-
-    async def test_arango(self) -> None:
-        p = _arango([])
-        p.http_client.ensure_persistent_index = AsyncMock()
-        await p._ensure_indexes()
-        calls = [c.args for c in p.http_client.ensure_persistent_index.await_args_list]
-        assert ("anyone", ["file_key", "organization"]) in calls
+    async def test_neither_walk_reads_anyone_shares(self) -> None:
+        neo4j, arango = _neo4j([]), _arango([])
+        await neo4j.get_permitted_entity_records([TOPIC_REF], "org1", "ukey", **KWARGS)
+        await arango.get_permitted_entity_records([TOPIC_REF], "org1", "ukey", **KWARGS)
+        assert "(a:Anyone)" not in neo4j.client.execute_query.call_args.args[0]
+        assert all("FOR a IN anyone" not in c.args[0] for c in arango.execute_query.await_args_list)

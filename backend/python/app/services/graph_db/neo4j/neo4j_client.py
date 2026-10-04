@@ -539,8 +539,10 @@ class Neo4jClient:
             query: Cypher query string
             parameters: Query parameters
             txn_id: Optional transaction ID (if None, creates auto-commit transaction)
-            timeout: Server-side limit in seconds for an auto-commit query.
-                Ignored inside a transaction, which has its own limit.
+            timeout: Server-side limit in seconds for an auto-commit query,
+                including one run on a transaction's session when explicit
+                transactions are off. Ignored inside an explicit transaction,
+                which has its own limit.
 
         Returns:
             List[Dict]: Query results as list of dictionaries
@@ -560,18 +562,21 @@ class Neo4jClient:
             session = self._active_sessions[txn_id]
             lock = self._session_locks.get(txn_id)
             # With explicit transactions on, queries run inside the open
-            # transaction; otherwise on the session, where each is its own
-            # auto-commit.
-            runner = self._active_txs.get(txn_id, session)
+            # transaction, which carries its own limit from when it began;
+            # otherwise on the session, where each is its own auto-commit and
+            # takes the requested limit like any other.
+            tx = self._active_txs.get(txn_id)
+            runner = tx if tx is not None else session
+            statement = Query(query, timeout=timeout) if tx is None and timeout is not None else query
 
             try:
                 if lock:
                     # Serialize access to the session to prevent concurrent operations
                     async with lock:
-                        result = await runner.run(query, parameters)
+                        result = await runner.run(statement, parameters)
                         return await result.data()
                 # Fallback if lock doesn't exist (shouldn't happen)
-                result = await runner.run(query, parameters)
+                result = await runner.run(statement, parameters)
                 return await result.data()
             except (ClientError, ServiceUnavailable, SessionExpired) as e:
                 _report_neo4j_failure(e)

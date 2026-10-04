@@ -540,13 +540,6 @@ class Neo4jProvider(IGraphDBProvider):
                 f"FOR (n:{label}) ON (n.{spec.scope_field}, n.id)"
             )
 
-        # "Anyone" shares are looked up per record by (file_key, organization),
-        # once per walked row in get_permitted_entity_records; without this
-        # each lookup scans every org's shares.
-        indexes.append(
-            "CREATE INDEX anyone_file_key_org IF NOT EXISTS "
-            "FOR (n:Anyone) ON (n.file_key, n.organization)"
-        )
 
         # ==================== RECORD INDEXES (Highest Priority) ====================
         # Records are the most queried entity, especially in permission checks
@@ -16727,7 +16720,8 @@ class Neo4jProvider(IGraphDBProvider):
         """Walk ``win`` in order and collect up to ``$limit`` rows the user
         ``u`` may read, each with its position in the window. The UNION yields
         one row when any grant holds and none otherwise; the role fragment
-        yields no row when the user has no role."""
+        yields no row when the user has no role. Domain, "anyone" and link
+        shares grant no access, as in every other access check."""
         record_role = self._get_permission_role_cypher("record", "rec", "u")
         projection = self._ENTITY_CANDIDATE_RECORD_PROJECTION
         return f"""
@@ -16738,15 +16732,6 @@ class Neo4jProvider(IGraphDBProvider):
                 CALL {{
                   WITH rec, u
                   WITH rec WHERE rec.connectorId IN $app_level_connector_ids
-                  RETURN true AS granted
-                  UNION
-                  WITH rec, u
-                  WITH rec WHERE NOT rec.connectorId IN $app_level_connector_ids
-                    AND EXISTS {{
-                      MATCH (a:Anyone)
-                      WHERE a.file_key = rec.id AND a.organization = $org_id
-                        AND coalesce(a.active, true) = true
-                    }}
                   RETURN true AS granted
                   UNION
                   WITH rec, u

@@ -772,13 +772,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     spec.collection, [spec.scope_field, "_key"],
                 )
 
-        # "Anyone" shares are looked up per record by (file_key, organization),
-        # once per walked row in get_permitted_entity_records.
-        await self.http_client.ensure_persistent_index(
-            CollectionNames.ANYONE.value,
-            ["file_key", "organization"],
-        )
-
         # ==================== RECORD INDEXES (Highest Priority) ====================
         # Records are the most queried entity, especially in permission checks
 
@@ -17576,20 +17569,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FOR pos IN (LENGTH(win) > 0 ? 0..(LENGTH(win) - 1) : [])
                         LET rec = win[pos]
                         LET app_granted = rec.connectorId IN @app_level_connector_ids
+                        // Domain, "anyone" and link shares grant no access, as in
+                        // every other access check.
                         LET checked = (
                             FOR needed IN (app_granted ? [] : [1])
-                                LET shared = LENGTH(
-                                    FOR a IN {CollectionNames.ANYONE.value}
-                                        FILTER a.file_key == rec._key AND a.organization == @org_id
-                                        FILTER a.active == true
-                                        LIMIT 1
-                                        RETURN 1
-                                ) > 0
                                 {record_role}
                                 LET role = IS_ARRAY(permission_role)
                                     ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
                                     : permission_role
-                                RETURN shared OR (role != null AND role != "")
+                                RETURN role != null AND role != ""
                         )
                         FILTER app_granted OR checked[0] == true
                         LIMIT @limit
@@ -17682,10 +17670,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not single:
                 binds["window"] = size
                 binds["scan_cap"] = ENTITY_CANDIDATE_SCAN_CAP
-            remaining = (
-                None if timeout_seconds is None
-                else max(0.1, timeout_seconds - (time.monotonic() - started))
-            )
+            remaining = None
+            if timeout_seconds is not None:
+                remaining = timeout_seconds - (time.monotonic() - started)
+                if remaining <= 0:
+                    # As a server-side cancel would: rows from part of the
+                    # window would misstate how much of it was examined.
+                    raise TimeoutError(
+                        f"permitted-records walk exceeded {timeout_seconds:.1f}s "
+                        f"after {walked} of {window} candidates"
+                    )
+                remaining = max(0.1, remaining)
             rows = await self.execute_query(
                 query, bind_vars=binds,
                 **({"timeout_seconds": remaining} if remaining is not None else {}),

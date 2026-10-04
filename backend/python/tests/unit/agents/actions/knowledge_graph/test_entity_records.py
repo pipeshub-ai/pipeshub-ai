@@ -157,10 +157,6 @@ class TestFindRecordsByEntity:
         assert "url=" not in text
 
 
-def test_candidate_rows_carry_the_hide_url_flag() -> None:
-    assert "hideWeburl" in Neo4jProvider._ENTITY_CANDIDATE_RECORD_PROJECTION
-    assert "hideWeburl" in ArangoHTTPProvider._ENTITY_CANDIDATE_RECORD_FIELDS
-
     @pytest.mark.asyncio
     async def test_shortened_record_id_is_resolved(self, patched) -> None:
         state = _state(enable_record_id_shortening=True)
@@ -267,3 +263,8 @@ class TestEmptyWindow:
         assert text not in (NO_ACCESSIBLE_RECORDS_MSG, NO_FURTHER_RECORDS_MSG)
         assert 'cursor="1000"' in text
         assert 'entity_id="t1"' in text
+
+
+def test_candidate_rows_carry_the_hide_url_flag() -> None:
+    assert "hideWeburl" in Neo4jProvider._ENTITY_CANDIDATE_RECORD_PROJECTION
+    assert "hideWeburl" in ArangoHTTPProvider._ENTITY_CANDIDATE_RECORD_FIELDS

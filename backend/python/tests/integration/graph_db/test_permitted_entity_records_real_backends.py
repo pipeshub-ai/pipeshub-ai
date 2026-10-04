@@ -5,9 +5,10 @@ one fixture (KG-11, KG-37, KG-38).
 The fixture links one topic to:
   - 70 newest records the user cannot read (more than the old 60-row probe);
   - older readable records, one per grant: app-level connector, direct user
-    permission, user -> group -> record, user -> record group inherited by
-    the record, and an active "anyone" share;
-  - an inactive "anyone" share and a record with no grant, which stay hidden.
+    permission, user -> group -> record, and user -> record group inherited
+    by the record;
+  - records shared with "anyone" (active or not) and a record with no grant,
+    which stay hidden: "anyone" shares grant no access in any check (#3691).
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
     up -d --wait neo4j-graph-it arango-graph-it
@@ -55,8 +56,8 @@ RECORD_LEVEL = "conf-it"
 APP_LEVEL = "kb-it"
 NOISE = 70
 # Newest first among the readable records.
-READABLE = ("app", "direct", "group", "inherited", "anyone")
-HIDDEN = ("anyone-off", "denied")
+READABLE = ("app", "direct", "group", "inherited")
+HIDDEN = ("anyone", "anyone-off", "denied")
 
 logger = logging.getLogger("permitted-entity-records-it")
 

@@ -403,3 +403,32 @@ class TestServerTimeout:
             await client.execute_query("RETURN 1")
 
         assert built[0].sessions[0].ran == ["RETURN 1"]
+
+
+class TestServerTimeoutInASession:
+    @pytest.mark.asyncio
+    async def test_a_session_query_keeps_its_timeout(self, ensure_db) -> None:
+        """Without explicit transactions a "transaction" is a session whose
+        queries each auto-commit, so the requested limit must go with them."""
+        from neo4j import Query
+
+        driver = _driver([])
+        with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", return_value=driver):
+            client = _client()
+            await client.connect()
+            txn = await client.begin_transaction([], [])
+            await client.execute_query("RETURN 1", txn_id=txn, timeout=2.5)
+
+        (ran,) = driver.sessions[-1].ran
+        assert isinstance(ran, Query) and ran.timeout == 2.5 and ran.text == "RETURN 1"
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_transaction_keeps_the_limit_it_began_with(self, ensure_db) -> None:
+        driver = _driver([])
+        with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", return_value=driver):
+            client = _client(explicit_transactions=True)
+            await client.connect()
+            txn = await client.begin_transaction([], [])
+            await client.execute_query("RETURN 1", txn_id=txn, timeout=2.5)
+
+        assert driver.sessions[-1].transactions[0].ran == ["RETURN 1"]

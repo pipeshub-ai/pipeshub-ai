@@ -1,7 +1,7 @@
 """A stand-in for ``IGraphDBProvider.get_permitted_entity_records`` built
 from a candidate fixture, applying the provider's contract in Python: walk
 the window in order, keep rows in the ref's connectors that app access, a
-permission role or an "anyone" share grants, stop at the limit."""
+permission role grants, stop at the limit."""
 from __future__ import annotations
 
 import inspect
@@ -17,12 +17,11 @@ def permitted_records(
     build: CandidateBuilder,
     *,
     permitted: Iterable[str] = (),
-    anyone: Iterable[str] = (),
 ) -> Callable[..., Any]:
     """``build(refs, org_id, record_types=, limit_per_entity=, offset=)``
     returns candidates keyed by entity id or ``(type, id)``; it is asked for
     one window (``limit_per_entity`` is the window size)."""
-    granted = set(permitted) | set(anyone)
+    granted = set(permitted)
 
     async def _permitted(
         refs: list[dict],

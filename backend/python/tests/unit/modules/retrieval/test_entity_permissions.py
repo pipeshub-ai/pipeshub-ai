@@ -53,12 +53,12 @@ def _hit(entity_id: str, entity_type: str, score: float, **extra) -> dict:
     return {"entityId": entity_id, "entityType": entity_type, "name": entity_id, "score": score, **extra}
 
 
-def _graph(candidates=None, permitted=None, anyone=None) -> MagicMock:
+def _graph(candidates=None, permitted=None) -> MagicMock:
     """``candidates`` builds the candidate fixture (keyed by entity id); the
     in-query permission check is applied to it by ``permitted_records``."""
     graph = MagicMock()
     graph.get_permitted_entity_records = AsyncMock(side_effect=permitted_records(
-        candidates or (lambda *a, **k: {}), permitted=permitted or (), anyone=anyone or (),
+        candidates or (lambda *a, **k: {}), permitted=permitted or (),
     ))
     return graph
 
@@ -594,28 +594,6 @@ class TestListingDeadline:
         assert [r["_key"] for r in page.records] == ["d0"]
         assert page.next_cursor == str(ep.LISTING_WINDOW_MIN)
         assert graph.get_permitted_entity_records.await_count == 1
-
-
-class TestAnyoneGrant:
-    """KG-37: a record shared with anyone in the org is visible to the entity
-    tools as it is to content search, within the user's connectors only."""
-
-    @pytest.mark.asyncio
-    async def test_a_record_shared_with_anyone_keeps_its_entity(self) -> None:
-        store = _store([_hit("t1", "topic", 0.9)])
-        graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("pub", "conf-1")]}, anyone={"pub"})
-
-        hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
-
-        assert [h.entity_id for h in hits] == ["t1"]
-
-    @pytest.mark.asyncio
-    async def test_a_connector_outside_the_users_apps_is_never_granted(self) -> None:
-        page = await list_accessible_entity_records(
-            _graph(candidates=lambda refs, org, **k: {"t1": [_row("pub", "s3-1")]}, anyone={"pub"}),
-            _context(), entity_id="t1", entity_type="topic",
-        )
-        assert page.records == []
 
 
 class TestPermissionInTheQuery:
