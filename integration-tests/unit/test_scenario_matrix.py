@@ -40,6 +40,7 @@ from connectors.scenario_matrix import (
     apply_static_marks,
     static_marks_for,
 )
+from connectors.web.web_scenario_matrix_test import WebAdapter
 from helper.vector_store import VectorStoreProbe
 
 pytestmark = pytest.mark.unit
@@ -194,8 +195,10 @@ class _Source:
     ``lag`` syncs, like a change feed that has not caught up yet.
     """
 
-    def __init__(self, lag: int = 0) -> None:
+    def __init__(self, lag: int = 0, *, placeholder_on_delete: bool = False) -> None:
         self.lag = lag
+        # Like the Web crawler: a gone page still linked is listed again as a failed page.
+        self.placeholder_on_delete = placeholder_on_delete
         self.files: dict[str, dict[str, Any]] = {}
         self.graph: dict[str, dict[str, Any]] = {}
         self.vectors: dict[str, list[str]] = {}
@@ -216,7 +219,15 @@ class _Source:
                 )
                 self.vectors[vrid] = [f["text"]]
         for ext in [e for e in self.graph if e not in self.files]:
-            self.vectors.pop(self.graph.pop(ext)["virtualRecordId"], None)
+            if self.graph[ext]["indexingStatus"] == "FAILED":
+                continue
+            gone = self.graph.pop(ext)
+            self.vectors.pop(gone["virtualRecordId"], None)
+            if self.placeholder_on_delete:
+                self.graph[ext] = _node(
+                    id=f"placeholder-{ext}", recordName=gone["recordName"], virtualRecordId=None,
+                    indexingStatus="FAILED", externalRecordId=ext, externalRevisionId=None,
+                )
 
 
 class _Graph:
@@ -230,7 +241,7 @@ class _Graph:
         return _model(
             id=node["id"], record_name=node["recordName"], external_record_id=ext,
             external_revision_id=node["externalRevisionId"], version=node["version"],
-            virtual_record_id=node["virtualRecordId"],
+            virtual_record_id=node["virtualRecordId"], indexing_status=node["indexingStatus"],
         )
 
     async def get_record_by_name(self, connector_id: str, name: str) -> dict[str, Any] | None:
@@ -276,8 +287,8 @@ class _Adapter(ScenarioAdapter):
         self.src.sync()
 
 
-def _run(src: _Source, unsupported: dict[str, str]) -> MatrixRun:
-    run = MatrixRun(_Adapter(src), unsupported=unsupported, vector=_Vectors(src))  # type: ignore[arg-type]
+def _run(src: _Source, unsupported: dict[str, str], adapter: _Adapter | None = None) -> MatrixRun:
+    run = MatrixRun(adapter or _Adapter(src), unsupported=unsupported, vector=_Vectors(src))  # type: ignore[arg-type]
 
     async def settle() -> None:
         return None
@@ -328,6 +339,45 @@ async def test_vectors_that_still_hold_the_old_text_do_not_count(monkeypatch) ->
     src.vectors[view.virtual_record_id] = ["new mxnew", "leftover mxold"]
     with pytest.raises(AssertionError, match=r"old text still present: \['mxold'\]"):
         await run.wait_vectors_hold(item, "mxnew", absent=["mxold"], timeout=1)
+
+
+class _WebLikeAdapter(_Adapter):
+    is_removed = WebAdapter.is_removed
+
+
+async def test_a_delete_that_leaves_a_failed_placeholder_counts_where_the_adapter_says_so() -> None:
+    src = _Source(placeholder_on_delete=True)
+    run = _run(src, _NO_SHARE_OR_FILTER, _WebLikeAdapter(src))
+    await run.add_round()
+    before = run.added[Role.DELETE]
+
+    await run.mutate_round()
+
+    left = await run.record(run.item(Role.DELETE))
+    assert left is not None and left.id != before.id and left.indexing_status == "FAILED"
+    assert await run.is_removed(run.item(Role.DELETE), before)
+    await run.wait_gone(run.item(Role.DELETE), timeout=1, before=before)
+
+
+async def test_a_record_that_is_still_there_is_never_removed() -> None:
+    src = _Source()
+    run = _run(src, _NO_SHARE_OR_FILTER, _WebLikeAdapter(src))
+    await run.add_round()
+    keep = run.item(Role.KEEP)
+    view = await run.record(keep)
+
+    assert not await run.is_removed(keep, run.added[Role.KEEP])
+    failed_in_place = RecordView.of(_node(id=view.id, indexingStatus="FAILED"))
+    assert not run.adapter.is_removed(failed_in_place, run.added[Role.KEEP])
+
+
+async def test_by_default_a_placeholder_left_behind_is_not_a_delete() -> None:
+    src = _Source(placeholder_on_delete=True)
+    run = _run(src, _NO_SHARE_OR_FILTER)
+    await run.add_round()
+
+    with pytest.raises(AssertionError, match="did not happen after 3 incremental syncs"):
+        await run.mutate_round()
 
 
 class _ScrollClient:

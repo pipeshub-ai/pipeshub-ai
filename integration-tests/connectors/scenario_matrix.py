@@ -320,6 +320,10 @@ class ScenarioAdapter:
     async def cleanup(self) -> None:
         """Remove what the adapter made at the source, including any share it left behind."""
 
+    def is_removed(self, now: "RecordView | None", before: "RecordView") -> bool:
+        """Whether the record ``before`` described is gone, given what the graph holds now."""
+        return now is None
+
 
 def needs(*actions: Action) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Record which source actions a scenario test relies on, for ``apply_static_marks``."""
@@ -555,8 +559,15 @@ class MatrixRun:
                 f"{last.get('status', 'none')}, {seen})."
             ) from exc
 
-    async def wait_gone(self, item: SourceItem, timeout: int = SYNC_TIMEOUT_SEC) -> None:
+    async def is_removed(self, item: SourceItem, before: RecordView) -> bool:
+        return self.adapter.is_removed(await self.record(item), before)
+
+    async def wait_gone(
+        self, item: SourceItem, timeout: int = SYNC_TIMEOUT_SEC, *, before: RecordView | None = None,
+    ) -> None:
         async def _gone() -> bool:
+            if before is not None:
+                return await self.is_removed(item, before)
             return await self.record(item) is None
 
         try:
@@ -664,7 +675,7 @@ class MatrixRun:
                 await self.adapter.delete_item(self.items[Role.DELETE])
 
                 async def _deleted() -> bool:
-                    return await self.record(self.items[Role.DELETE]) is None
+                    return await self.is_removed(self.items[Role.DELETE], self.added[Role.DELETE])
 
                 # Otherwise a delete that never lands fails the content and rename tests too.
                 if not self.is_known_bug("incr_delete"):
@@ -803,7 +814,8 @@ class ConnectorScenarioMatrix:
         before = run.added[Role.DELETE]
         item = run.item(Role.DELETE)
         # A known-bug delete is expected to stay; there is no point waiting the full timeout.
-        await run.wait_gone(item, timeout=60 if run.is_known_bug("incr_delete") else SYNC_TIMEOUT_SEC)
+        await run.wait_gone(item, timeout=60 if run.is_known_bug("incr_delete") else SYNC_TIMEOUT_SEC,
+                            before=before)
         assert before.virtual_record_id
         await run.vector.assert_embeddings_gone(before.virtual_record_id)
         await run.wait_search(item.text, before.virtual_record_id, expect=False,
@@ -854,7 +866,7 @@ class ConnectorScenarioMatrix:
         # repeating that here would hide every other full-sync check behind it.
         if (Role.DELETE in run.items and run.supports(Action.DELETE)
                 and not run.is_known_bug("incr_delete")):
-            assert await run.record(run.item(Role.DELETE)) is None, (
+            assert await run.is_removed(run.item(Role.DELETE), run.added[Role.DELETE]), (
                 f"{run.adapter.source}: the full sync brought back an item deleted at the source"
             )
 
