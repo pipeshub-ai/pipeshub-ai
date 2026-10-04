@@ -7,11 +7,10 @@ refused, the refresh token as well as the access token, since a live refresh
 token can mint a fresh access token at will.
 
 The public entry point is Node (port 3000), which checks the account's recent
-session-ending events on every request. The Python services behind it check a
-session token's signature and expiry only (``app/api/middlewares/auth.py``), so
-an ended session still passes there until its token expires. Those checks are
-marked ``xfail(strict=True)``: they fail today, and the day the gap closes they
-pass, strict mode turns that into a failure, and the mark comes off.
+session-ending events on every request. The Python services behind it ask Node
+whether a session is still live (``resolve_request_role`` in
+``app/api/middlewares/auth.py``) and reuse the answer for
+``SESSION_CHECK_CACHE_SECONDS``, which the integration stacks set to 2.
 
 Lockout is the only way an account becomes blocked: there is no admin action
 that blocks a user, only one that unblocks. The tests lock an account through
@@ -71,17 +70,6 @@ PYTHON_ROUTE = "/api/v1/connectors/registry"
 # Signing context for refresh and reset tokens (backend/nodejs/apps/src/libs/utils/jwtKeys.ts).
 _USER_ACTION_KEY_CONTEXT = b"pipeshub/jwt/user-action/v1"
 _REFRESH_SCOPE = "token:refresh"
-
-PYTHON_SESSION_GAP = (
-    "The Python services verify a session token's signature and expiry but not "
-    "whether the session has since been ended by a password change, lockout or "
-    "deletion (backend/python/app/api/middlewares/auth.py; Node consults that "
-    "only for OAuth and personal access tokens). Remove this mark once they do."
-)
-python_session_gap = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason=PYTHON_SESSION_GAP
-)
-
 
 @dataclass(frozen=True)
 class Session:
@@ -269,19 +257,9 @@ def _assert_access_refused_at_python(sessions: TwoSessions, which: str, event: s
             "before the event, so a refusal afterwards would prove nothing."
         )
     status = _python_status(sessions.user, sessions.session(which).access)
-    if status == 401:
-        return
-    # The xfail stands for exactly one answer: the token still accepted (200).
-    # Anything else is a different problem and must not be absorbed by it.
-    if status != 200:
-        pytest.fail(
-            f"An access token from the {which} session, issued before {event}, got "
-            f"HTTP {status} from the Python service: neither refused (401) nor "
-            "the known gap (200)."
-        )
-    raise AssertionError(
-        f"An access token from the {which} session, issued before {event}, still "
-        f"works at the Python service (HTTP {status})."
+    assert status == 401, (
+        f"An access token from the {which} session, issued before {event}, got "
+        f"HTTP {status} from the Python service instead of being refused (401)."
     )
 
 
@@ -378,7 +356,6 @@ class TestPasswordChangeEndsEverySession:
             after_password_change, which, "the password change", user_account_client
         )
 
-    @python_session_gap
     @SESSIONS
     def test_the_python_services_refuse_access_tokens_from_before_the_change(
         self, after_password_change: TwoSessions, which: str
@@ -403,7 +380,6 @@ class TestLockedAccountEndsEverySession:
             after_lockout, which, "the account was locked", user_account_client
         )
 
-    @python_session_gap
     @SESSIONS
     def test_the_python_services_refuse_access_tokens_from_before_the_lock(
         self, after_lockout: TwoSessions, which: str
@@ -466,7 +442,6 @@ class TestDeletedUserEndsEverySession:
             user_account_client,
         )
 
-    @python_session_gap
     @SESSIONS
     def test_the_python_services_refuse_access_tokens_from_before_the_deletion(
         self, after_deletion: TwoSessions, which: str
