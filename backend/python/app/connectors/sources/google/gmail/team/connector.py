@@ -80,6 +80,7 @@ from app.connectors.sources.google.common.impersonation import (
     is_delegation_error,
     resolve_explicit_user,
 )
+from app.connectors.sources.google.common.scopes import GMAIL_WORKSPACE_DELEGATED_SCOPES
 from app.connectors.sources.google.gmail.talon_utils import quotations
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
@@ -340,7 +341,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                     config_service=self.config_service,
                     is_individual=False,  # This is a workspace connector
                     version="v1",
-                    connector_instance_id=self.connector_id
+                    connector_instance_id=self.connector_id,
+                    delegated_scopes=GMAIL_WORKSPACE_DELEGATED_SCOPES["gmail"],
                 )
 
                 # Create Google Gmail Data Source from the client
@@ -773,7 +775,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                         is_individual=False,  # Workspace connector
                         version="v3",
                         user_email=user_email,  # Use this user's credentials
-                        connector_instance_id=self.connector_id
+                        connector_instance_id=self.connector_id,
+                        delegated_scopes=GMAIL_WORKSPACE_DELEGATED_SCOPES["drive"],
                     )
 
 
@@ -1745,7 +1748,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                 is_individual=False,  # Workspace connector
                 version="v1",
                 user_email=user_email,  # Impersonate this user
-                connector_instance_id=self.connector_id
+                connector_instance_id=self.connector_id,
+                delegated_scopes=GMAIL_WORKSPACE_DELEGATED_SCOPES["gmail"],
             )
 
             user_gmail_data_source = GoogleGmailDataSource(
@@ -2413,7 +2417,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                         is_individual=False,  # Workspace connector
                         version="v3",
                         user_email=user_email,  # Use this user's credentials
-                        connector_instance_id=self.connector_id
+                        connector_instance_id=self.connector_id,
+                        delegated_scopes=GMAIL_WORKSPACE_DELEGATED_SCOPES["drive"],
                     )
                     drive_service = user_drive_client.get_client()
                     self.logger.info(f"Using user OAuth credentials for Drive access: {user_email}")

@@ -8,6 +8,7 @@ import asyncio
 import base64
 import logging
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
@@ -269,6 +270,65 @@ def connector():
         conn.gmail_data_source.client = MagicMock()
         conn.config = {"credentials": {"auth": {"type": "service_account"}}}
         yield conn
+
+
+_GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
+_DRIVE_READONLY = "https://www.googleapis.com/auth/drive.readonly"
+
+
+class TestDelegatedScopesAreReadOnly:
+    """Google refuses a delegated token request naming any scope the admin did not
+    grant, and the setup docs tell admins to grant read-only scopes. These run the
+    real GoogleClient so the check covers the scopes that reach Google."""
+
+    @asynccontextmanager
+    async def _record_delegated_scopes(self) -> AsyncIterator[dict[str, list[list[str]]]]:
+        from app.sources.client.google import google as google_client_module
+
+        requested: dict[str, list[list[str]]] = {}
+
+        def fake_credentials(info, scopes, subject) -> MagicMock:
+            return MagicMock(scopes=list(scopes), subject=subject)
+
+        def fake_build(service_name, version, credentials, **kwargs) -> MagicMock:
+            requested.setdefault(service_name, []).append(credentials.scopes)
+            return MagicMock()
+
+        with patch(
+            "app.connectors.sources.google.gmail.team.connector.GoogleClient",
+            google_client_module.GoogleClient,
+        ), patch.object(google_client_module, "service_account") as mock_sa, patch.object(
+            google_client_module, "build", side_effect=fake_build
+        ):
+            mock_sa.Credentials.from_service_account_info.side_effect = fake_credentials
+            yield requested
+
+    @pytest.mark.asyncio
+    async def test_init_asks_only_for_gmail_readonly(self, connector) -> None:
+        async with self._record_delegated_scopes() as requested:
+            assert await connector.init() is True
+
+        assert requested["gmail"] == [[_GMAIL_READONLY]]
+
+    @pytest.mark.asyncio
+    async def test_impersonated_mailbox_asks_only_for_gmail_readonly(self, connector) -> None:
+        async with self._record_delegated_scopes() as requested:
+            await connector._create_user_gmail_client("user@example.com")
+
+        assert requested["gmail"] == [[_GMAIL_READONLY]]
+
+    @pytest.mark.asyncio
+    async def test_drive_attachment_download_asks_only_for_drive_readonly(self, connector) -> None:
+        async with self._record_delegated_scopes() as requested:
+            with patch(
+                "app.connectors.sources.google.gmail.team.connector.create_stream_record_response"
+            ):
+                await connector._stream_from_drive(
+                    "drive-id", _make_mock_record(), "file.txt", "text/plain",
+                    user_email="user@example.com",
+                )
+
+        assert requested["drive"] == [[_DRIVE_READONLY]]
 
 
 # ===========================================================================
