@@ -1,0 +1,630 @@
+# SDK test cases. Speakeasy turns each workflow into one test per SDK (TypeScript, Python, Go).
+#
+# All three SDK suites run side by side against one app, so a workflow must check only what it
+# created, by ID, never by count or by position in a list other suites can write to.
+# A step whose output a later step uses needs a response-body condition, or Speakeasy skips the test.
+# Speakeasy cannot generate tests for streaming operations, and reading a list item by position breaks the
+# TypeScript build; tests that need either live in integration-tests/sdk_tests/handwritten.
+arazzo: 1.0.1
+info:
+  title: Test Suite
+  summary: Created from source_specs/pipeshub-sdk-openapi.yaml
+  version: 0.0.1
+x-speakeasy-test-server:
+  baseUrl: "x-env: PIPESHUB_API_URL; http://localhost:3000/api/v1"
+x-speakeasy-test-security:
+  value:
+    oauth2:
+      clientId: "x-env: PIPESHUB_CLIENT_ID"
+      clientSecret: "x-env: PIPESHUB_CLIENT_SECRET"
+      tokenURL: "x-env: PIPESHUB_TOKEN_URL; http://localhost:3000/api/v1/oauth2/token"
+sourceDescriptions:
+  - name: source_specs/pipeshub-sdk-openapi.yaml
+    url: https://pipeshub.com
+    type: openapi
+workflows:
+  - workflowId: getCurrentOrganization
+    steps:
+      - stepId: test
+        operationId: getCurrentOrganization
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+    x-speakeasy-test-group: Organizations
+
+  - workflowId: getAvailableModelsByType
+    steps:
+      - stepId: listLlmModels
+        operationId: getAvailableModelsByType
+        parameters:
+          - name: modelType
+            in: path
+            value: llm
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/status == success
+    x-speakeasy-test-group: AI Models Providers
+
+  - workflowId: getWebSearchProviders
+    steps:
+      - stepId: listProviders
+        operationId: getWebSearchProviders
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/status == success
+    x-speakeasy-test-group: Web Search
+
+  - workflowId: agentLifecycle
+    steps:
+      - stepId: createAgent
+        operationId: createAgent
+        requestBody:
+          contentType: application/json
+          payload:
+            name: sdk-test-agent-lifecycle
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/agent/name == sdk-test-agent-lifecycle
+        outputs:
+          agentKey: $response.body#/agent/_key
+      - stepId: getAgent
+        operationId: getAgent
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/agent/name == sdk-test-agent-lifecycle
+      - stepId: updateAgent
+        operationId: updateAgent
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+        requestBody:
+          contentType: application/json
+          payload:
+            name: sdk-test-agent-lifecycle-renamed
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/status == success
+      - stepId: getRenamedAgent
+        operationId: getAgent
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/agent/name == sdk-test-agent-lifecycle-renamed
+      - stepId: listAgents
+        operationId: listAgents
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: deleteAgent
+        operationId: deleteAgent
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+        successCriteria:
+          - condition: $statusCode == 200
+    x-speakeasy-test-group: Agents
+
+  - workflowId: agentConversationRead
+    steps:
+      - stepId: createAgent
+        operationId: createAgent
+        requestBody:
+          contentType: application/json
+          payload:
+            name: sdk-test-agent-conversation-read
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/agent/name == sdk-test-agent-conversation-read
+        outputs:
+          agentKey: $response.body#/agent/_key
+      - stepId: createConversation
+        operationId: createAgentConversation
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+        requestBody:
+          contentType: application/json
+          payload:
+            query: Reply with the single word OK.
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/conversation/status == Complete
+        outputs:
+          conversationId: $response.body#/conversation/_id
+      - stepId: listConversations
+        operationId: listAgentConversations
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: getConversation
+        operationId: getAgentConversationById
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/conversation/status == Complete
+      - stepId: deleteConversation
+        operationId: deleteAgentConversationById
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        successCriteria:
+          - condition: $statusCode == 200
+      - stepId: deleteAgent
+        operationId: deleteAgent
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+        successCriteria:
+          - condition: $statusCode == 200
+    x-speakeasy-test-group: Agents
+
+  - workflowId: agentConversationTitle
+    steps:
+      - stepId: createAgent
+        operationId: createAgent
+        requestBody:
+          contentType: application/json
+          payload:
+            name: sdk-test-agent-conversation-title
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/agent/name == sdk-test-agent-conversation-title
+        outputs:
+          agentKey: $response.body#/agent/_key
+      - stepId: createConversation
+        operationId: createAgentConversation
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+        requestBody:
+          contentType: application/json
+          payload:
+            query: Reply with the single word OK.
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/conversation/status == Complete
+        outputs:
+          conversationId: $response.body#/conversation/_id
+      - stepId: updateTitle
+        operationId: updateAgentConversationTitle
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        requestBody:
+          contentType: application/json
+          payload:
+            title: sdk-test-title
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/conversation/title == sdk-test-title
+      - stepId: deleteConversation
+        operationId: deleteAgentConversationById
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        successCriteria:
+          - condition: $statusCode == 200
+      - stepId: deleteAgent
+        operationId: deleteAgent
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+        successCriteria:
+          - condition: $statusCode == 200
+    x-speakeasy-test-group: Agents
+
+  - workflowId: agentConversationArchive
+    steps:
+      - stepId: createAgent
+        operationId: createAgent
+        requestBody:
+          contentType: application/json
+          payload:
+            name: sdk-test-agent-conversation-archive
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/agent/name == sdk-test-agent-conversation-archive
+        outputs:
+          agentKey: $response.body#/agent/_key
+      - stepId: createConversation
+        operationId: createAgentConversation
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+        requestBody:
+          contentType: application/json
+          payload:
+            query: Reply with the single word OK.
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/conversation/status == Complete
+        outputs:
+          conversationId: $response.body#/conversation/_id
+      - stepId: archiveConversation
+        operationId: archiveAgentConversation
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/status == archived
+      - stepId: listArchives
+        operationId: listAgentConversationArchives
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: listArchivesGrouped
+        operationId: listAgentArchivedConversationsGrouped
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: unarchiveConversation
+        operationId: unarchiveAgentConversation
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/status == unarchived
+      - stepId: deleteConversation
+        operationId: deleteAgentConversationById
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        successCriteria:
+          - condition: $statusCode == 200
+      - stepId: deleteAgent
+        operationId: deleteAgent
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+        successCriteria:
+          - condition: $statusCode == 200
+    x-speakeasy-test-group: Agents
+
+  - workflowId: conversationRead
+    steps:
+      - stepId: createConversation
+        operationId: createConversation
+        requestBody:
+          contentType: application/json
+          payload:
+            query: Reply with the single word OK.
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/conversation/status == Complete
+        outputs:
+          conversationId: $response.body#/conversation/_id
+      - stepId: listConversations
+        operationId: getAllConversations
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: getConversation
+        operationId: getConversationById
+        parameters:
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/conversation/status == Complete
+      - stepId: deleteConversation
+        operationId: deleteConversationById
+        parameters:
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/status == deleted
+    x-speakeasy-test-group: Conversations
+
+  - workflowId: conversationTitle
+    steps:
+      - stepId: createConversation
+        operationId: createConversation
+        requestBody:
+          contentType: application/json
+          payload:
+            query: Reply with the single word OK.
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/conversation/status == Complete
+        outputs:
+          conversationId: $response.body#/conversation/_id
+      - stepId: updateTitle
+        operationId: updateConversationTitle
+        parameters:
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        requestBody:
+          contentType: application/json
+          payload:
+            title: sdk-test-title
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/conversation/title == sdk-test-title
+      - stepId: deleteConversation
+        operationId: deleteConversationById
+        parameters:
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        successCriteria:
+          - condition: $statusCode == 200
+    x-speakeasy-test-group: Conversations
+
+  - workflowId: conversationArchive
+    steps:
+      - stepId: createConversation
+        operationId: createConversation
+        requestBody:
+          contentType: application/json
+          payload:
+            query: Reply with the single word OK.
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/conversation/status == Complete
+        outputs:
+          conversationId: $response.body#/conversation/_id
+      - stepId: archiveConversation
+        operationId: archiveConversation
+        parameters:
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/status == archived
+      - stepId: unarchiveConversation
+        operationId: unarchiveConversation
+        parameters:
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/status == unarchived
+      - stepId: deleteConversation
+        operationId: deleteConversationById
+        parameters:
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        successCriteria:
+          - condition: $statusCode == 200
+    x-speakeasy-test-group: Conversations
+
+  - workflowId: knowledgeBaseLifecycle
+    steps:
+      - stepId: createKnowledgeBase
+        operationId: createKnowledgeBase
+        requestBody:
+          contentType: application/json
+          payload:
+            kbName: sdk-test-kb-lifecycle
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/name == sdk-test-kb-lifecycle
+        outputs:
+          kbId: $response.body#/id
+      - stepId: getKnowledgeBase
+        operationId: getKnowledgeBase
+        parameters:
+          - name: kbId
+            in: path
+            value: $steps.createKnowledgeBase.outputs.kbId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/name == sdk-test-kb-lifecycle
+      - stepId: updateKnowledgeBase
+        operationId: updateKnowledgeBase
+        parameters:
+          - name: kbId
+            in: path
+            value: $steps.createKnowledgeBase.outputs.kbId
+        requestBody:
+          contentType: application/json
+          payload:
+            kbName: sdk-test-kb-lifecycle-renamed
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: getRenamedKnowledgeBase
+        operationId: getKnowledgeBase
+        parameters:
+          - name: kbId
+            in: path
+            value: $steps.createKnowledgeBase.outputs.kbId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/name == sdk-test-kb-lifecycle-renamed
+      - stepId: listKnowledgeBases
+        operationId: listKnowledgeBases
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: listKnowledgeHubRootNodes
+        operationId: getKnowledgeHubRootNodes
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: deleteKnowledgeBase
+        operationId: deleteKnowledgeBase
+        parameters:
+          - name: kbId
+            in: path
+            value: $steps.createKnowledgeBase.outputs.kbId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+    x-speakeasy-test-group: Knowledge Base
+
+  - workflowId: folderLifecycle
+    steps:
+      - stepId: createKnowledgeBase
+        operationId: createKnowledgeBase
+        requestBody:
+          contentType: application/json
+          payload:
+            kbName: sdk-test-folder-lifecycle
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/name == sdk-test-folder-lifecycle
+        outputs:
+          kbId: $response.body#/id
+      - stepId: createFolder
+        operationId: createFolder
+        parameters:
+          - name: kbId
+            in: path
+            value: $steps.createKnowledgeBase.outputs.kbId
+        requestBody:
+          contentType: application/json
+          payload:
+            folderName: sdk-test-folder
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/name == sdk-test-folder
+        outputs:
+          folderId: $response.body#/id
+      - stepId: updateFolder
+        operationId: updateFolder
+        parameters:
+          - name: kbId
+            in: path
+            value: $steps.createKnowledgeBase.outputs.kbId
+          - name: folderId
+            in: path
+            value: $steps.createFolder.outputs.folderId
+        requestBody:
+          contentType: application/json
+          payload:
+            folderName: sdk-test-folder-renamed
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: listKnowledgeBaseChildren
+        operationId: getKnowledgeHubChildNodes
+        parameters:
+          - name: parentType
+            in: path
+            value: app
+          - name: parentId
+            in: path
+            value: $steps.createKnowledgeBase.outputs.kbId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: deleteFolder
+        operationId: deleteFolder
+        parameters:
+          - name: kbId
+            in: path
+            value: $steps.createKnowledgeBase.outputs.kbId
+          - name: folderId
+            in: path
+            value: $steps.createFolder.outputs.folderId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: deleteKnowledgeBase
+        operationId: deleteKnowledgeBase
+        parameters:
+          - name: kbId
+            in: path
+            value: $steps.createKnowledgeBase.outputs.kbId
+        successCriteria:
+          - condition: $statusCode == 200
+    x-speakeasy-test-group: Knowledge Base
