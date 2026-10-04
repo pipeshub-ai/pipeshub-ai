@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import random
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
@@ -60,6 +62,19 @@ REQUEST_TIMEOUT = 15
 # asyncio.sleep yields to the event loop, so other concurrent domain fetches are
 # never blocked while one URL is backing off.
 MAX_RATE_LIMIT_BACKOFF = 300  # 5 minutes
+
+
+def _hop_deadline(timeout: float) -> float:
+    """How long to wait for one request run on a fetch thread. curl ends a transfer at ``timeout``
+    by itself, and a requests read can overrun it by one socket read at most, so a request still
+    running at twice the timeout has wedged."""
+    return 2 * timeout
+
+
+# Blocking requests run here rather than in the loop's default executor. A request that wedges
+# keeps its thread past its deadline, and must not take one of the threads that DNS lookups and
+# every other connector in the process share.
+_FETCH_THREADS = ThreadPoolExecutor(max_workers=32, thread_name_prefix="web-fetch")
 
 # ---------------------------------------------------------------------------
 # Shared stealth headers
@@ -253,10 +268,67 @@ def _declared_too_large(headers: Mapping[str, str], max_bytes: int | None) -> bo
     return max_bytes is not None and bool(length) and str(length).isdigit() and int(length) > max_bytes
 
 
-def _read_capped(chunks: Iterable[bytes], max_bytes: int | None) -> tuple[bytes, bool]:
+class _Abandoned(Exception):
+    pass
+
+
+class _Abandon:
+    """Set once nobody waits for a request any longer, so its thread stops reading too."""
+
+    def __init__(self) -> None:
+        self._set = threading.Event()
+        self._response: Any = None
+
+    def is_set(self) -> bool:
+        return self._set.is_set()
+
+    def watch(self, response: Any) -> None:  # noqa: ANN401 -- a requests Response
+        """Hand over the response whose socket ``set`` shuts, then stop if it is no longer wanted."""
+        self._response = response
+        if self._set.is_set():
+            raise _Abandoned
+
+    def forget(self) -> None:
+        self._response = None
+
+    def set(self) -> None:
+        self._set.set()
+        response = self._response
+        if response is not None:
+            # A read blocked in another thread returns once its socket is shut for reading.
+            with contextlib.suppress(Exception):
+                response.raw.shutdown()
+
+
+async def _hop_in_thread(
+    url: str, timeout: int, logger: logging.Logger, strategy: str, hop: Callable[..., _Hop],
+) -> _Hop:
+    """Run ``hop`` on a fetch thread for at most the hop deadline. Past it the hop is told to stop,
+    and TimeoutError is raised, which the strategies handle as a request that timed out."""
+    abandon = _Abandon()
+    deadline = _hop_deadline(timeout)
+    running = asyncio.get_running_loop().run_in_executor(
+        _FETCH_THREADS, functools.partial(hop, abandon=abandon),
+    )
+    try:
+        return await asyncio.wait_for(running, deadline)
+    except TimeoutError:
+        abandon.set()
+        logger.warning("⚠️ [%s] Gave up on %s after %g seconds", strategy, url, deadline)
+        raise
+    except asyncio.CancelledError:
+        abandon.set()
+        raise
+
+
+def _read_capped(
+    chunks: Iterable[bytes], max_bytes: int | None, abandon: _Abandon | None = None,
+) -> tuple[bytes, bool]:
     """Read a streamed body, stopping as soon as it passes ``max_bytes``."""
     body = bytearray()
     for chunk in chunks:
+        if abandon is not None and abandon.is_set():
+            raise _Abandoned
         body.extend(chunk)
         if max_bytes is not None and len(body) > max_bytes:
             return b"", True
@@ -364,25 +436,36 @@ async def _hops_aiohttp(
     return None
 
 
-def _sync_hop(client: _RequestsLike, url: str, headers: dict, timeout: int, max_bytes: int | None) -> _Hop:
-    """One GET on a cloudscraper scraper, redirects not followed."""
+def _sync_hop(
+    client: _RequestsLike, url: str, headers: dict, timeout: int, max_bytes: int | None,
+    abandon: _Abandon | None = None,
+) -> _Hop:
+    """One GET on a cloudscraper scraper, redirects not followed.
+
+    requests' ``timeout`` limits each socket read, not the whole body, so a site that trickles
+    bytes would keep this reading until ``abandon`` shuts its socket.
+    """
     response = client.get(url, headers=headers, timeout=timeout, allow_redirects=False, stream=True)
     try:
+        if abandon is not None:
+            abandon.watch(response)
         hop_headers = dict(response.headers)
         answered_by = str(response.url) if getattr(response, "url", None) else None
         if response.status_code in _HEAD_REDIRECT_CODES:
             return _Hop(response.status_code, hop_headers, url=answered_by)
         if _declared_too_large(hop_headers, max_bytes):
             return _Hop(response.status_code, hop_headers, too_large=True, url=answered_by)
-        body, too_large = _read_capped(response.iter_content(_READ_CHUNK), max_bytes)
+        body, too_large = _read_capped(response.iter_content(_READ_CHUNK), max_bytes, abandon)
         return _Hop(response.status_code, hop_headers, body, too_large, url=answered_by)
     finally:
+        if abandon is not None:
+            abandon.forget()
         response.close()
 
 
 def _curl_hop(
     session: _RequestsLike, busy: threading.Lock, url: str, headers: dict, timeout: int,
-    max_bytes: int | None, pin: PublicTarget,
+    max_bytes: int | None, pin: PublicTarget, abandon: _Abandon | None = None,
 ) -> _Hop:
     """One GET on a curl_cffi Session, redirects not followed. The answer must have come from
     ``pin``'s address (curl reports it as ``primary_ip``).
@@ -391,7 +474,7 @@ def _curl_hop(
     timeout, a refused connection) resets one curl handle from two threads at once, which
     corrupts the heap and aborts the whole connector service. A declared size past the cap is
     refused by curl itself at the headers (CURLOPT_MAXFILESIZE); an undeclared one is capped as
-    it arrives.
+    it arrives. Once ``abandon`` is set, the next bytes to arrive stop the transfer.
     """
     from curl_cffi.const import CurlECode, CurlOpt
     from curl_cffi.curl import CURL_WRITEFUNC_ERROR
@@ -407,6 +490,8 @@ def _curl_hop(
 
     def collect(chunk: bytes) -> int:
         nonlocal too_large
+        if abandon is not None and abandon.is_set():
+            return CURL_WRITEFUNC_ERROR
         body.extend(chunk)
         if max_bytes is not None and len(body) > max_bytes:
             too_large = True
@@ -434,9 +519,16 @@ def _curl_hop(
     return _Hop(status_code, hop_headers, bytes(body))
 
 
-def _close_when_idle(session: _RequestsLike, busy: threading.Lock) -> None:
-    with busy, contextlib.suppress(Exception):
-        session.close()
+def _close_when_idle(session: _RequestsLike, busy: threading.Lock, wait: float) -> None:
+    # A request wedged past its deadline still holds ``busy``: its session is left open, not
+    # freed under it, and this thread goes back to the pool.
+    if not busy.acquire(timeout=wait):
+        return
+    try:
+        with contextlib.suppress(Exception):
+            session.close()
+    finally:
+        busy.release()
 
 
 async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) -> FetchResponse | None:
@@ -469,8 +561,9 @@ async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) 
             pin = pins.setdefault((pin.host, pin.port), pin)
             request_url, session.curl_options = _curl_pinned_request(url, pin)
             # request_url is only the pinned spelling of url; curl never moves on its own here.
-            return await loop.run_in_executor(
-                None, _curl_hop, session, busy, request_url, headers, timeout, walk.max_bytes, pin,
+            return await _hop_in_thread(
+                url, timeout, logger, "curl_cffi",
+                functools.partial(_curl_hop, session, busy, request_url, headers, timeout, walk.max_bytes, pin),
             )
 
         try:
@@ -480,7 +573,7 @@ async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) 
         finally:
             # Off the event loop: a cancelled crawl can leave a request about to start on this
             # session, and the close waits for it to end.
-            loop.run_in_executor(None, _close_when_idle, session, busy)
+            loop.run_in_executor(_FETCH_THREADS, _close_when_idle, session, busy, _hop_deadline(timeout))
     logger.warning(f"⚠️ [curl_cffi(h2=True)] All profiles exhausted for {walk.url}")
     return None
 
@@ -503,7 +596,6 @@ async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logge
     except ImportError:
         logger.error("❌ [cloudscraper] Not installed")
         return None
-    loop = asyncio.get_running_loop()
     try:
         scraper = cloudscraper.create_scraper(
             browser={"browser": "chrome", "platform": "windows", "mobile": False}
@@ -516,7 +608,10 @@ async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logge
         if pin is None:
             raise ConnectionError(f"{url} did not resolve")
         _pin_scraper(scraper, tls_adapter, pin)
-        return await loop.run_in_executor(None, _sync_hop, scraper, url, headers, timeout, walk.max_bytes)
+        return await _hop_in_thread(
+            url, timeout, logger, "cloudscraper",
+            functools.partial(_sync_hop, scraper, url, headers, timeout, walk.max_bytes),
+        )
 
     try:
         return await _walk_hops(walk, get, "cloudscraper")
