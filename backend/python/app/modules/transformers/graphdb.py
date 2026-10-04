@@ -221,6 +221,7 @@ class GraphDBTransformer(Transformer):
                         entity.key,
                         list(entity.new_aliases),
                         [normalize_name(alias) for alias in entity.new_aliases],
+                        org_id=resolution.org_id,
                     )
                 except Exception as exc:
                     # An alias only saves a later model call; losing the

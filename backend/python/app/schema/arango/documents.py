@@ -327,6 +327,9 @@ record_schema = {
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
             # Promoted duplicates of this record still need its taxonomy copied.
             "duplicateReconcilePending": {"type": "boolean"},
+            # app.modules.indexing.duplicate_reconcile
+            "duplicateReconcileAttempts": {"type": ["integer", "null"]},
+            "duplicateReconcileDueAt": {"type": ["number", "null"]},
             "lastIndexTimestamp": {"type": ["number", "null"]},
             "lastExtractionTimestamp": {"type": ["number", "null"]},
             "summaryDocumentId": {"type": ["string", "null"]},

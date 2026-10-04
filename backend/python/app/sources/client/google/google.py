@@ -320,8 +320,10 @@ class GoogleClient(IClient):
             # If using shared OAuth config, fetch credentials from there
             if oauth_config_id and not (client_id and client_secret):
                 try:
-                    # Get connector type from config or derive from service_name
-                    connector_type = service_name.lower().replace(" ", "")
+                    # The shared app lives under the instance's own connector type: a
+                    # Gmail instance opening a Drive attachment asks for "drive", but its
+                    # OAuth app is stored under /services/oauth/gmail.
+                    connector_type = (auth_cfg.get("connectorType") or service_name).lower().replace(" ", "")
                     oauth_config_path = f"/services/oauth/{connector_type}"
                     oauth_configs = await config_service.get_config(oauth_config_path, default=[])
 

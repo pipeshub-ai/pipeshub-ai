@@ -350,6 +350,16 @@ class TestSalesforceConstants:
         assert DISCUSSIONS_SYNC_POINT_KEY == "discussions"
 
 
+class TestInstanceUrlFormField:
+
+    def test_example_is_an_api_host_not_the_login_host(self) -> None:
+        """API calls go to instance_url, and login.salesforce.com refuses them."""
+        fields = SalesforceConnector._connector_metadata["config"]["auth"]["schemas"]["OAUTH"]["fields"]
+        instance_url = next(f for f in fields if f["name"] == "instance_url")
+        assert "login.salesforce.com" not in instance_url["placeholder"]
+        assert instance_url["placeholder"].endswith(".my.salesforce.com")
+
+
 # ===========================================================================
 # RecordUpdate dataclass
 # ===========================================================================

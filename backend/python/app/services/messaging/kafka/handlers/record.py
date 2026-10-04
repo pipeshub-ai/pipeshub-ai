@@ -30,6 +30,7 @@ from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import EntityType
+from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
 from app.modules.transformers.transformer import TransformContext
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.common.record_visibility import is_live_record
@@ -325,7 +326,8 @@ class RecordEventHandler(BaseEventService):
 
         The flag is set by the promotion write itself (both providers), so no
         crash between promotion and copy can lose it; an attempt that fails
-        leaves it for the primary's next event.
+        leaves it for ``retry_pending_duplicate_reconciles`` in stale-record
+        recovery.
         """
         for attempt in range(RECONCILE_ATTEMPTS):
             if attempt:
@@ -343,7 +345,7 @@ class RecordEventHandler(BaseEventService):
                     )
                 return
         self.logger.warning(
-            "Duplicates of record %s still need reconciling; left pending for its next event",
+            "Duplicates of record %s still need reconciling; left pending for the recovery retry",
             record_id,
         )
 
@@ -364,69 +366,16 @@ class RecordEventHandler(BaseEventService):
         finished — this fills in the taxonomy-edge copy and entities-vector
         sync that path was missing.
 
-        Idempotent: edge copy is UPSERT/MERGE-based and membership sync
-        recomputes from the graph, so re-running it for an already-reconciled
-        sibling is harmless. Returns whether every sibling was reconciled;
-        failures are logged, and the caller keeps the pending flag.
+        Idempotent; returns whether every sibling was reconciled. See
+        ``DuplicateReconciler``, which the stale-record recovery loop also
+        uses to retry a reconcile left pending.
         """
-        if not virtual_record_id:
-            return True
-        try:
-            sibling_keys = await self.event_processor.graph_provider.get_records_by_virtual_record_id(
-                virtual_record_id
-            )
-            sibling_keys = [
-                key for key in (sibling_keys or []) if key and key != record_id
-            ]
-            if not sibling_keys:
-                return True
-
-            graph_provider = self.event_processor.graph_provider
-            source_doc = await graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
-            org_id = (source_doc or {}).get("orgId")
-            if not org_id:
-                return True
-
-            sink = getattr(self.event_processor, "sink_orchestrator", None)
-            complete = True
-            for sibling_key in sibling_keys:
-                sibling_doc = await graph_provider.get_document(
-                    sibling_key, CollectionNames.RECORDS.value
-                )
-                # get_records_by_virtual_record_id is not org-scoped; a
-                # virtualRecordId shared across orgs must not carry this
-                # org's taxonomy to another tenant's record.
-                if sibling_doc is None or sibling_doc.get("orgId") != org_id:
-                    if sibling_doc is not None:
-                        self.logger.warning(
-                            "Skipping cross-org duplicate %s for record %s (vrid=%s)",
-                            sibling_key,
-                            record_id,
-                            virtual_record_id,
-                        )
-                    continue
-                # The copy reports failure as False rather than raising.
-                if not await graph_provider.copy_document_relationships(record_id, sibling_key):
-                    self.logger.warning(
-                        "Taxonomy copy to duplicate %s of record %s failed", sibling_key, record_id,
-                    )
-                    complete = False
-                    continue
-                if sink is not None:
-                    await sink.sync_entities_for_duplicate(sibling_doc)
-
-            await self.event_processor.sync_vector_membership(virtual_record_id)
-            return complete
-        except Exception as e:
-            self.logger.warning(
-                "Failed to reconcile promoted duplicates for record %s (vrid=%s): %s",
-                record_id,
-                virtual_record_id,
-                e,
-            )
-            return False
+        return await DuplicateReconciler(
+            graph_provider=self.event_processor.graph_provider,
+            sink=getattr(self.event_processor, "sink_orchestrator", None),
+            sync_vector_membership=self.event_processor.sync_vector_membership,
+            logger=self.logger,
+        ).reconcile(record_id, virtual_record_id)
 
     async def _publish_reindex_event(self, record_id: str, payload: dict) -> None:
         if not self.producer:

@@ -4322,7 +4322,27 @@ class TestUpdateQueuedDuplicatesStatus:
             call_args = mock_update.call_args[0][0]
             assert call_args[0]["extractionStatus"] == "EMPTY"
             # The primary's reconcile flag rides in the same write as the promotion.
-            assert call_args[-1] == {"id": "r1", "duplicateReconcilePending": True}
+            assert call_args[-1]["id"] == "r1"
+            assert call_args[-1]["duplicateReconcilePending"] is True
+            assert call_args[-1]["duplicateReconcileAttempts"] == 0
+            assert call_args[-1]["duplicateReconcileDueAt"] > 0
+
+    @pytest.mark.asyncio
+    async def test_failed_promotion_sets_no_reconcile_flag(self, connected_provider) -> None:
+        """A failed primary has no taxonomy to copy; the flag would only send
+        the reconcile retry after nothing (KG-51)."""
+        connected_provider.http_client.execute_aql.side_effect = [
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123"}],
+            [{"_key": "r2", "md5Checksum": "abc123"}],
+        ]
+        with patch.object(
+            connected_provider, "batch_update_nodes",
+            new_callable=AsyncMock, return_value=True
+        ) as mock_update:
+            await connected_provider.update_queued_duplicates_status("r1", "FAILED")
+            payload = mock_update.call_args[0][0]
+            assert all("duplicateReconcilePending" not in row for row in payload)
+            assert [row["id"] for row in payload] == ["r2"]
 
     @pytest.mark.asyncio
     async def test_failed_status_includes_reason(self, connected_provider):
@@ -5714,7 +5734,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 38
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 47
 
 
 # ---------------------------------------------------------------------------
@@ -8295,7 +8315,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 38
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 47
 
 
 # ---------------------------------------------------------------------------

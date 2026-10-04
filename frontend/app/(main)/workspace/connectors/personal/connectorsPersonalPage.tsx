@@ -465,6 +465,8 @@ function PersonalConnectorsPageContent() {
         if (!isProcessedError(err)) {
           addToast({ variant: 'error', title: 'Could not update connector' });
         }
+        // A failed toggle may still have been committed server-side; show what's really there.
+        await refreshConnectorRowQuiet(instance._key).catch(() => {});
       }
     },
     [

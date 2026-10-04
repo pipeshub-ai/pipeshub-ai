@@ -971,11 +971,12 @@ class GraphTransactionStore(TransactionStore):
         aliases: list[str],
         normalized_aliases: list[str],
         *,
+        org_id: str,
         max_aliases: int = 20,
     ) -> None:
         await self.graph_provider.add_taxonomy_aliases(
             collection, key, aliases, normalized_aliases,
-            max_aliases=max_aliases, transaction=self.txn,
+            org_id=org_id, max_aliases=max_aliases, transaction=self.txn,
         )
 
 

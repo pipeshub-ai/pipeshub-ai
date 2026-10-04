@@ -187,6 +187,9 @@ class EntityVectorStore:
         self._init_failed_at: float | None = None
         self._init_lock = asyncio.Lock()
         self._query_vector_cache: OrderedDict[str, tuple[list[float], Any]] = OrderedDict()
+        # Bumped by each reset; a query embedded under an older generation is
+        # returned but not cached (see ``_query_vectors``).
+        self._generation = 0
 
         # Per-entity locks guarding the membership read-merge-write below; see
         # ``_entity_lock``. Weakly held so the map does not grow with every
@@ -222,6 +225,36 @@ class EntityVectorStore:
                 raise
             self._init_failed_at = None
             self._initialized = True
+
+    async def _reset_if_collection_changed(self) -> None:
+        """After a failed search: when the collection no longer has the
+        dimension this store initialised with, drop the initialisation so the
+        next call re-reads the model config and the collection.
+
+        The indexing service recreates the collection for a new model
+        (``recreate_on_dimension_mismatch``); a query or connector service
+        initialised before would otherwise send old-model vectors, and fail,
+        until it restarts. Checked only on failure, so a healthy search costs
+        no extra round trip."""
+        try:
+            info = await self.vector_db_service.get_collection_info(self.collection_name)
+        except Exception:
+            return
+        if not (info.exists and info.dense_dimension) or info.dense_dimension == self._embedding_size:
+            return
+        self.logger.warning(
+            "Entity collection '%s' now has dimension %s, this store %s; re-initialising",
+            self.collection_name, info.dense_dimension, self._embedding_size,
+        )
+        async with self._init_lock:
+            # Checked again: a re-initialisation that held the lock meanwhile
+            # may already have the new model, which a reset would undo.
+            if info.dense_dimension == self._embedding_size:
+                return
+            self._initialized = False
+            self._init_failed_at = None
+            self._generation += 1
+            self._query_vector_cache.clear()
 
     async def collection_exists(self) -> bool:
         """Needs no embeddings. Delete paths skip when it is False (nothing to
@@ -1092,6 +1125,7 @@ class EntityVectorStore:
             )
         except Exception as exc:
             self.logger.error("Entity search failed for query '%s': %s", query, exc)
+            await self._reset_if_collection_changed()
             raise
 
         results_for_query = batch_results[0] if batch_results else []
@@ -1121,12 +1155,17 @@ class EntityVectorStore:
         if cached is not None:
             self._query_vector_cache.move_to_end(query)
             return cached
+        generation = self._generation
         loop = asyncio.get_running_loop()
         dense_vec = await loop.run_in_executor(None, self._dense_embeddings.embed_query, query)
         sparse_vec = None
         if self._sparse_embedder:
             sparse_results = await self._sparse_embedder.embed_documents([query])
             sparse_vec = sparse_results[0] if sparse_results else None
+        if generation != self._generation:
+            # The store reset while this was in flight: the vector is the old
+            # model's, and cached it would fail every later search for the text.
+            return dense_vec, sparse_vec
         self._query_vector_cache[query] = (dense_vec, sparse_vec)
         if len(self._query_vector_cache) > _QUERY_VECTOR_CACHE_SIZE:
             self._query_vector_cache.popitem(last=False)
@@ -1187,9 +1226,13 @@ class EntityVectorStore:
             )
             for text, dense, sparse in zip(texts, dense_vecs, sparse_vecs)
         ]
-        batch_results = await self.vector_db_service.query_nearest_points(
-            collection_name=self.collection_name, requests=requests,
-        )
+        try:
+            batch_results = await self.vector_db_service.query_nearest_points(
+                collection_name=self.collection_name, requests=requests,
+            )
+        except Exception:
+            await self._reset_if_collection_changed()
+            raise
 
         for position, index in enumerate(indices):
             hits = batch_results[position] if position < len(batch_results) else []

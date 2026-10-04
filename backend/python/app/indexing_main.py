@@ -19,6 +19,10 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.modules.indexing.duplicate_reconcile import (
+    DuplicateReconciler,
+    retry_pending_duplicate_reconciles,
+)
 from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
 from app.modules.indexing.vector_membership_backfill import (
     run_vector_membership_backfill_loop,
@@ -536,6 +540,27 @@ async def recover_in_progress_records(
                 logger=logger,
                 page_size=page_size,
             )
+
+        # A primary whose handler could not copy its taxonomy to promoted
+        # duplicates keeps duplicateReconcilePending; a redelivery finds
+        # nothing QUEUED, so nothing else would retry it.
+        try:
+            event_processor = app_container.event_processor()
+            if inspect.isawaitable(event_processor):
+                event_processor = await event_processor
+            total_records += await retry_pending_duplicate_reconciles(
+                graph_provider=graph_provider,
+                reconciler=DuplicateReconciler(
+                    graph_provider=graph_provider,
+                    sink=getattr(event_processor, "sink_orchestrator", None),
+                    sync_vector_membership=event_processor.sync_vector_membership,
+                    logger=logger,
+                ),
+                logger=logger,
+                page_size=page_size,
+            )
+        except Exception as exc:
+            logger.warning(f"Duplicate reconcile retry skipped this pass: {exc}")
 
         if total_records == 0:
             logger.debug("No stale in-progress records to recover")

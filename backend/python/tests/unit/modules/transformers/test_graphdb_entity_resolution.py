@@ -108,7 +108,8 @@ class TestWithResolution:
         provider.create_taxonomy_node_if_absent.assert_not_awaited()
         store.add_taxonomy_aliases.assert_not_awaited()
         provider.add_taxonomy_aliases.assert_awaited_once_with(
-            TOPICS, "k-bug", ["Bug bash testing session"], ["bug bash testing session"]
+            TOPICS, "k-bug", ["Bug bash testing session"], ["bug bash testing session"],
+            org_id="org-1",
         )
         (record,) = [t for t in touched if t.entity_type is EntityType.TOPIC]
         assert record.aliases == ["old", "Bug bash testing session"]
