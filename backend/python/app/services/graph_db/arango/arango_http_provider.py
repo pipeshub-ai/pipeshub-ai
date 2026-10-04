@@ -6257,6 +6257,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         active: bool = True,
         is_external: bool = False,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Retrieve all organisations from the graph.
@@ -6293,6 +6294,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return results if results else []
         except Exception as e:
             self.logger.error(f"❌ Get all orgs failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def batch_upsert_records(
@@ -14149,18 +14152,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 """
                 FOR key IN @keys
                     LET rec = DOCUMENT(@records, key)
-                    FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted == true
-                    FILTER rec.deletedAtTimestamp != null AND rec.deletedAtTimestamp <= @cutoff
-                    FILTER rec.purgeAttempts == null OR rec.purgeAttempts < @max_attempts
+                    FILTER rec != null AND rec.orgId == @org_id
                     LET app = DOCUMENT(CONCAT(@apps, "/", rec.connectorId))
-                    FILTER app == null OR app.status != @deleting
-                    FILTER LENGTH(
-                        FOR child, e IN 1..1 OUTBOUND rec._id @@record_relations
-                            FILTER e.relationshipType IN @containment
-                            LIMIT 1
-                            RETURN 1
-                    ) == 0
-                    LET target = FIRST(
+                    LET due = rec.isDeleted == true
+                        AND rec.deletedAtTimestamp != null AND rec.deletedAtTimestamp <= @cutoff
+                        AND (rec.purgeAttempts == null OR rec.purgeAttempts < @max_attempts)
+                        AND (app == null OR app.status != @deleting)
+                        AND LENGTH(
+                            FOR child, e IN 1..1 OUTBOUND rec._id @@record_relations
+                                FILTER e.relationshipType IN @containment
+                                LIMIT 1
+                                RETURN 1
+                        ) == 0
+                    LET target = !due ? null : FIRST(
                         FOR e IN @@is_of_type
                             FILTER e._from == rec._id
                             LET t = DOCUMENT(e._to)
@@ -14172,7 +14176,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                 doc: t
                             }
                     )
-                    RETURN { record: rec, type_target: target }
+                    RETURN { record: rec, type_target: target, due: due }
                 """,
                 bind_vars={
                     "keys": keys_in,
@@ -14188,6 +14192,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 },
                 transaction=txn_id,
             ) or []
+            kept = [row["record"]["_key"] for row in due if not row["due"]]
+            due = [row for row in due if row["due"]]
             keys = [row["record"]["_key"] for row in due]
             if keys:
                 _, failed_edges = await self._delete_edges_by_node_ids(
@@ -14212,8 +14218,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         purged = [
             await self._trash_purge_row(row["record"], (row.get("type_target") or {}).get("doc")) for row in due
         ]
-        gone = set(keys)
-        return {"purged": purged, "kept": [k for k in keys_in if k not in gone]}
+        # A missing id is in neither list: it may be one an earlier attempt already removed.
+        return {"purged": purged, "kept": kept}
 
     async def record_purge_failure(
         self,

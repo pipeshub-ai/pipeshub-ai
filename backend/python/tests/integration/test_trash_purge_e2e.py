@@ -65,6 +65,7 @@ from app.connectors.services.trash_purge import (
     OUTBOX_DIRECTORY,
     STATE_KEY,
     Outcome,
+    TrashPurgeError,
     TrashPurger,
 )
 from app.connectors.sources.dropbox.connector import DropboxConnector
@@ -86,6 +87,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 logger = logging.getLogger("trash-purge-it")
 
 DAY_MS = 24 * 60 * 60 * 1000
+# The fixture scopes the run to the test's org; these tests use the real listing.
+_LIST_ORGS = TrashPurger._org_ids
 RECORDS = CollectionNames.RECORDS.value
 FILES = CollectionNames.FILES.value
 GROUPS = CollectionNames.RECORD_GROUPS.value
@@ -322,7 +325,7 @@ async def _seed(w: _World) -> None:
 
 async def _remove(graph: IGraphDBProvider, w: _World) -> None:
     connectors = [w.kb_id, w.drive_id, w.local_fs_id, w.web_id, w.dropbox_id]
-    ids = [*w.ids.values(), w.user_key, w.topic_id, *connectors]
+    ids = [*w.ids.values(), w.user_key, w.topic_id, w.org_id, *connectors]
     if isinstance(graph, Neo4jProvider):
         await graph.client.execute_query(
             "MATCH (n) WHERE n.id IN $ids OR n.connectorId IN $connectors "
@@ -334,7 +337,8 @@ async def _remove(graph: IGraphDBProvider, w: _World) -> None:
         ids += await graph.http_client.execute_aql(
             f"FOR d IN {collection} FILTER d.connectorId IN @c RETURN d._key", {"c": connectors}
         ) or []
-    for collection in (RECORDS, FILES, GROUPS, CollectionNames.USERS.value, APPS, CollectionNames.TOPICS.value):
+    for collection in (RECORDS, FILES, GROUPS, CollectionNames.USERS.value, APPS, CollectionNames.TOPICS.value,
+                       CollectionNames.ORGS.value):
         await graph.http_client.execute_aql(
             f"FOR d IN {collection} FILTER d._key IN @ids REMOVE d IN {collection}", {"ids": ids}
         )
@@ -567,7 +571,7 @@ async def test_a_child_restored_after_the_purge_looked_keeps_its_folder(
 
         async def restore_once_the_purge_has_looked(query: str, *args: object, **kwargs: object) -> object:
             rows = await real_query(query, *args, **kwargs)
-            if "LET target = FIRST(" in query:
+            if "LET target = " in query and "@containment" in query:
                 await world.graph.http_client.execute_aql(_restore_query(world), {"key": child})
             return rows
 
@@ -748,6 +752,101 @@ async def test_stored_copies_of_uploads_local_fs_and_web_are_scheduled_for_remov
     assert sorted(world.broker.deleted_record_ids()) == sorted(
         world.ids[n] for n in ("upload", "local_copy", "web_page", "drive_file")
     )
+
+
+async def test_a_delete_whose_answer_is_lost_still_sends_its_cleanup(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The delete commits, then the client fails before the purged rows come back."""
+    await world.trash("upload", "restored")
+    batch = (await world.stored("restored"))["deleteBatchId"]
+    lose_the_answer = False
+
+    if isinstance(world.graph, Neo4jProvider):
+        real_query = world.graph.client.execute_query
+
+        async def run_then_lose(query: str, *args: object, **kwargs: object) -> object:
+            nonlocal lose_the_answer
+            rows = await real_query(query, *args, **kwargs)
+            if lose_the_answer and "DETACH DELETE r" in query:
+                lose_the_answer = False
+                raise ConnectionResetError("connection lost after the statement committed")
+            return rows
+
+        monkeypatch.setattr(world.graph.client, "execute_query", run_then_lose)
+    else:
+        real_commit = world.graph.commit_transaction
+
+        async def commit_then_lose(txn: str) -> None:
+            nonlocal lose_the_answer
+            await real_commit(txn)
+            if lose_the_answer:
+                lose_the_answer = False
+                raise ConnectionResetError("connection lost after the commit")
+
+        monkeypatch.setattr(world.graph, "commit_transaction", commit_then_lose)
+
+    real_purge = world.graph.purge_trashed_records
+    first = True
+
+    async def restore_one_then_purge(record_ids: list[str], *args: object, **kwargs: object) -> dict:
+        nonlocal first, lose_the_answer
+        if first:
+            first = False
+            await world.graph.restore_records([{"id": world.ids["restored"]}], batch)
+            lose_the_answer = True
+        return await real_purge(record_ids, *args, **kwargs)
+
+    monkeypatch.setattr(world.graph, "purge_trashed_records", restore_one_then_purge)
+
+    assert await world.tick(15) == Outcome.FINISHED
+
+    assert await world.stored("upload") is None
+    assert (await world.stored("restored"))["isDeleted"] is False
+    assert world.broker.deleted_record_ids() == [world.ids["upload"]], "nothing for the record still there"
+    assert world.broker.stored_documents() == {world.kb_id: [world.docs["upload"]]}
+    assert world.kv.outbox() == {}
+
+
+async def test_a_failed_org_listing_starts_no_run(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(TrashPurger, "_org_ids", _LIST_ORGS)
+    now = get_epoch_timestamp_in_ms()
+    await world.graph.batch_upsert_nodes(
+        [{"id": world.org_id, "accountType": "enterprise", "name": "Purge org", "isActive": True,
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+        collection=CollectionNames.ORGS.value,
+    )
+    await world.trash("upload")
+    failing = True
+
+    if isinstance(world.graph, Neo4jProvider):
+        real = world.graph.client.execute_query
+
+        async def maybe_fail(query: str, *args: object, **kwargs: object) -> object:
+            if failing and ":Organization" in query:
+                raise ConnectionResetError("graph unavailable")
+            return await real(query, *args, **kwargs)
+
+        monkeypatch.setattr(world.graph.client, "execute_query", maybe_fail)
+    else:
+        real = world.graph.http_client.execute_aql
+
+        async def maybe_fail(query: str, *args: object, **kwargs: object) -> object:
+            if failing and f"FOR org IN {CollectionNames.ORGS.value}" in query:
+                raise ConnectionResetError("graph unavailable")
+            return await real(query, *args, **kwargs)
+
+        monkeypatch.setattr(world.graph.http_client, "execute_aql", maybe_fail)
+
+    with pytest.raises(TrashPurgeError):
+        await world.tick(15)
+    assert STATE_KEY not in world.kv.values, "no run saved, so the next tick is still due"
+    assert (await world.stored("upload"))["isDeleted"] is True
+
+    failing = False
+    assert await world.tick(15) == Outcome.FINISHED
+    assert await world.stored("upload") is None
+    assert world.state()["lastStartedAt"] is not None
 
 
 async def test_events_the_broker_refused_are_published_by_the_next_tick(world: _World) -> None:
