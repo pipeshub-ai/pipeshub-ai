@@ -8468,16 +8468,17 @@ class TestUpdateAgent:
     @pytest.mark.asyncio
     async def test_update_fails(self, connected_provider):
         with patch.object(
-            connected_provider, "get_agent",
+            connected_provider, "check_agent_permission",
             new_callable=AsyncMock, return_value={"can_edit": True}
         ), patch.object(
             connected_provider, "update_node",
             new_callable=AsyncMock, return_value=None
-        ):
+        ) as update_node:
             result = await connected_provider.update_agent(
                 "agent1", {"name": "New"}, "u1", "org1"
             )
             assert result is False
+            update_node.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
