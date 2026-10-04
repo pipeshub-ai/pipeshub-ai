@@ -10,9 +10,10 @@ A skill reaches the model one of two ways. The model may call ``load_skill``
 skill before the model starts, which emits no event but counts an activation
 on the skill's graph node. Either one is the skill being loaded.
 
-The coding tool runs in the stack's own sandbox (the local subprocess sandbox:
-the integration compose sets no SANDBOX_MODE), so nothing here is skipped for
-want of one.
+The coding tool runs in the stack's own sandbox: the integration compose sets
+SANDBOX_MODE=local with SANDBOX_ALLOW_LOCAL=true. Without both the product turns
+run_code off, and the model falls back to web lookups for the hash and to saving
+the .docx as plain text.
 """
 
 from __future__ import annotations
@@ -129,7 +130,8 @@ def first_docx(docx_turn: DocxTurn, conversations_client: ConversationsClient) -
 def coding_turn(conversations_client: ConversationsClient, it_model: ItModel) -> Iterator[RunTrace]:
     text = f"pipeshub-integration-{uuid.uuid4().hex[:8]}"
     trace = stream_chat(conversations_client, _chat_body(it_model, (
-        f"What are the first 16 hex characters of the SHA-256 digest of the exact text {text} ?"
+        f"What are the first 16 hex characters of the SHA-256 digest of the exact text {text} ? "
+        "Work it out yourself rather than looking it up online."
     )))
     try:
         yield trace
@@ -160,10 +162,15 @@ class TestCodingTool:
 
 
 class TestArtifacts:
-    def test_the_document_is_visible_in_the_chat(self, first_docx: ArtifactRef, pipeshub_client: PipeshubClient) -> None:
+    def test_the_document_is_visible_in_the_chat(
+        self, docx_turn: DocxTurn, first_docx: ArtifactRef, pipeshub_client: PipeshubClient
+    ) -> None:
         resp = _download(pipeshub_client, first_docx.artifact_id)
         assert resp.status_code == 200, f"{resp.status_code} {resp.text[:300]}"
-        assert resp.content[:2] == _ZIP_MAGIC, "the artifact is not a .docx (zip) file"
+        assert resp.content[:2] == _ZIP_MAGIC, (
+            f"the artifact is not a .docx (zip) file: starts {resp.content[:60]!r} "
+            f"({len(resp.content)} bytes); {docx_turn.trace.describe()}"
+        )
 
     def test_the_stream_announced_the_same_artifact(self, docx_turn: DocxTurn, first_docx: ArtifactRef) -> None:
         streamed = _docx_refs(docx_turn.trace.streamed_artifacts)
@@ -191,5 +198,7 @@ class TestArtifacts:
         v2 = _download(pipeshub_client, first_docx.artifact_id, 2)
         assert v1.status_code == 200, f"version 1: {v1.status_code} {v1.text[:300]}"
         assert v2.status_code == 200, f"version 2: {v2.status_code} {v2.text[:300]}"
-        assert v1.content[:2] == _ZIP_MAGIC and v2.content[:2] == _ZIP_MAGIC
+        assert v1.content[:2] == _ZIP_MAGIC and v2.content[:2] == _ZIP_MAGIC, (
+            f"not .docx (zip) files: version 1 starts {v1.content[:60]!r}, version 2 starts {v2.content[:60]!r}"
+        )
         assert v1.content != v2.content, "version 1 and version 2 have the same bytes"
