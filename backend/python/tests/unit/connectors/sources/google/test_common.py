@@ -1,8 +1,11 @@
 """Tests for Google connector common utilities: apps, scopes, exceptions, datasource_refresh."""
 
+import copy
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from google.oauth2.credentials import Credentials
 
 from app.connectors.sources.google.common.apps import (
     GmailIndividualApp,
@@ -435,8 +438,7 @@ class TestDatasourceRefresh:
             # Verify credentials were replaced on the client
             assert mock_client._http.credentials == mock_new_creds
 
-            # Verify debug log for access token change (not info for refresh token)
-            mock_logger.debug.assert_any_call("🔄 Access token changed, updating credentials")
+            mock_logger.info.assert_any_call("Using the Google %s token saved in connector settings", "Google")
 
     async def test_updates_credentials_with_token_expiry(self):
         """When credentials change and token_expiry_ms is present, expiry is set."""
@@ -532,3 +534,83 @@ class TestDatasourceRefresh:
                 logger=mock_logger,
                 # service_name defaults to "Google"
             )
+
+
+class _Settings:
+    """One connector's settings document, read and written like etcd."""
+
+    def __init__(self, credentials: dict) -> None:
+        self.config = {"auth": {"connectorScope": "personal"}, "credentials": credentials}
+        self.writes: list[dict] = []
+
+    async def get_config(self, path: str, *_: object, **__: object) -> dict:
+        return copy.deepcopy(self.config)
+
+    async def set_config(self, path: str, value: dict) -> bool:
+        self.writes.append(copy.deepcopy(value))
+        self.config = copy.deepcopy(value)
+        return True
+
+
+def _oauth_client(credentials: Credentials) -> tuple[MagicMock, MagicMock]:
+    google_client = MagicMock()
+    google_client.get_client.return_value._http.credentials = credentials
+    data_source = MagicMock()
+    data_source.execute = AsyncMock(side_effect=lambda operation: operation())
+    return google_client, data_source
+
+
+class TestRefreshTokenRotation:
+    async def _check(self, google_client: MagicMock, data_source: MagicMock, settings: _Settings) -> None:
+        from app.connectors.sources.google.common.datasource_refresh import (
+            refresh_google_datasource_credentials,
+        )
+
+        await refresh_google_datasource_credentials(
+            google_client=google_client,
+            data_source=data_source,
+            config_service=settings,
+            connector_id="test-connector",
+            logger=MagicMock(),
+            service_name="Drive",
+        )
+
+    async def test_a_refresh_token_google_rotated_in_memory_is_saved(self) -> None:
+        expiry = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=30)
+        credentials = Credentials(token="at-1", refresh_token="rt-1", client_id="c", client_secret="s")
+        credentials.expiry = expiry
+        settings = _Settings({
+            "access_token": "at-1",
+            "refresh_token": "rt-1",
+            "created_at": datetime.now().isoformat(),  # noqa: DTZ005 - OAuthToken saves local time
+            "expires_in": 1800,
+            "scope": "drive",
+        })
+        google_client, data_source = _oauth_client(credentials)
+        await self._check(google_client, data_source, settings)
+        assert settings.writes == []
+
+        credentials.token = "at-2"
+        credentials._refresh_token = "rt-2"
+        credentials.expiry = expiry + timedelta(minutes=30)
+        await self._check(google_client, data_source, settings)
+
+        assert google_client.get_client()._http.credentials is credentials
+        saved = settings.config["credentials"]
+        assert (saved["access_token"], saved["refresh_token"], saved["scope"]) == ("at-2", "rt-2", "drive")
+
+    async def test_a_refresh_token_saved_by_re_authentication_replaces_the_one_in_memory(self) -> None:
+        credentials = Credentials(token="at-1", refresh_token="rt-1", client_id="c", client_secret="s")
+        settings = _Settings({"access_token": "at-1", "refresh_token": "rt-1"})
+        google_client, data_source = _oauth_client(credentials)
+        await self._check(google_client, data_source, settings)
+
+        # A refresh in memory that lands after the user re-authenticated must not win.
+        credentials.token = "at-2"
+        credentials.expiry = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1)
+        settings.config["credentials"] = {"access_token": "at-new", "refresh_token": "rt-new"}
+        await self._check(google_client, data_source, settings)
+
+        adopted = google_client.get_client()._http.credentials
+        assert (adopted.token, adopted.refresh_token) == ("at-new", "rt-new")
+        assert settings.writes == []

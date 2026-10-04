@@ -152,6 +152,75 @@ class LocalStorageAdapter implements StorageServiceInterface {
   }
 
   /**
+   * Removes the file a document (or one of its versions) points at. A file that
+   * is already gone counts as removed, so a retried purge succeeds.
+   */
+  async deleteObject(document: Document): Promise<void> {
+    const localPath = this.getLocalPathFromUrl(
+      document.local?.localPath ?? document.local?.url,
+    );
+    if (localPath === null || localPath === '') {
+      throw new StorageNotFoundError('Local file path not found');
+    }
+    const fullPath = this.assertInsideMount(
+      path.join(this.mountPath, localPath),
+    );
+    const located = await this.locateInsideRealMount(fullPath);
+    if (located === null) {
+      return;
+    }
+    try {
+      await fs.unlink(located.target);
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'ENOENT') {
+        throw error;
+      }
+    }
+    await this.removeEmptyFoldersAbove(located.target, located.mountRoot);
+  }
+
+  /**
+   * Where a file really is once symlinked folders are followed, which must still
+   * be inside the mount (itself followed, since the mount may be reached through
+   * a link). Null when its folder is already gone.
+   */
+  private async locateInsideRealMount(
+    fullPath: string,
+  ): Promise<{ target: string; mountRoot: string } | null> {
+    let folder: string;
+    try {
+      folder = await fs.realpath(path.dirname(fullPath));
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOENT') {
+        return null;
+      }
+      throw error;
+    }
+    const mountRoot = await fs.realpath(this.mountPath);
+    const target = path.join(folder, path.basename(fullPath));
+    if (!target.startsWith(mountRoot + path.sep)) {
+      throw new StorageValidationError('Invalid document path');
+    }
+    return { target, mountRoot };
+  }
+
+  private async removeEmptyFoldersAbove(
+    filePath: string,
+    mountRoot: string,
+  ): Promise<void> {
+    let folder = path.dirname(filePath);
+    while (folder.startsWith(mountRoot + path.sep)) {
+      try {
+        await fs.rmdir(folder);
+      } catch {
+        // Not empty, or already gone: nothing above it can be empty either.
+        return;
+      }
+      folder = path.dirname(folder);
+    }
+  }
+
+  /**
    * Uploads a document to local storage
    */
   async uploadDocumentToStorageService(
@@ -394,6 +463,174 @@ class LocalStorageAdapter implements StorageServiceInterface {
     }
   }
 
+  async deleteTree(storagePath: string): Promise<StorageServiceResponse<void>> {
+    try {
+      const relativePath = this.sanitizePath(storagePath);
+      const fullPath = path.join(this.mountPath, relativePath);
+      this.assertInsideMount(fullPath);
+      await fs.rm(fullPath, { recursive: true, force: true });
+      await this.pruneEmptyAncestors(relativePath);
+      this.logger.info('Local storage delete successful', { path: relativePath });
+      return { statusCode: 200, data: undefined };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to delete object from local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async copyObject(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>> {
+    try {
+      const srcRelative = this.sanitizePath(sourcePath);
+      const dstRelative = this.sanitizePath(destinationPath);
+      const srcFull = path.join(this.mountPath, srcRelative);
+      const dstFull = path.join(this.mountPath, dstRelative);
+      await fs.mkdir(path.dirname(dstFull), { recursive: true });
+      await fs.copyFile(srcFull, dstFull);
+      const destUrl = this.getFileUrl(dstRelative);
+      this.logger.info('Local storage copy successful', { src: srcRelative, dst: dstRelative });
+      return { statusCode: 200, data: destUrl };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to copy object in local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async renameObject(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>> {
+    try {
+      const srcRelative = this.sanitizePath(sourcePath);
+      const dstRelative = this.sanitizePath(destinationPath);
+      const srcFull = path.join(this.mountPath, srcRelative);
+      const dstFull = path.join(this.mountPath, dstRelative);
+      await fs.mkdir(path.dirname(dstFull), { recursive: true });
+      try {
+        await fs.rename(srcFull, dstFull);
+      } catch (renameError: any) {
+        const code = renameError?.code;
+        if (code === 'EXDEV') {
+          await fs.copyFile(srcFull, dstFull);
+          await fs.rm(srcFull, { force: true });
+        } else if (code === 'ENOTEMPTY' || code === 'EPERM' || code === 'EEXIST') {
+          await fs.copyFile(srcFull, dstFull);
+          await fs.rm(srcFull, { force: true });
+        } else {
+          throw renameError;
+        }
+      }
+      await this.pruneEmptyAncestors(srcRelative);
+      const destUrl = this.getFileUrl(dstRelative);
+      this.logger.info('Local storage rename successful', { src: srcRelative, dst: dstRelative });
+      return { statusCode: 200, data: destUrl };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to rename object in local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async copyTree(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>> {
+    try {
+      const srcRelative = this.sanitizePath(sourcePrefix);
+      const dstRelative = this.sanitizePath(destinationPrefix);
+      const srcFull = path.join(this.mountPath, srcRelative);
+      const dstFull = path.join(this.mountPath, dstRelative);
+      await fs.mkdir(path.dirname(dstFull), { recursive: true });
+      await fs.cp(srcFull, dstFull, { recursive: true });
+      this.logger.info('Local storage tree copy successful', { src: srcRelative, dst: dstRelative });
+      return { statusCode: 200, data: undefined };
+    } catch (error) {
+      // A missing source tree means there was nothing to copy - treat as a no-op success.
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        this.logger.info('Local storage tree copy skipped: source prefix does not exist', {
+          src: sourcePrefix,
+        });
+        return { statusCode: 200, data: undefined };
+      }
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to copy tree in local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async renameTree(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>> {
+    try {
+      const srcRelative = this.sanitizePath(sourcePrefix);
+      const dstRelative = this.sanitizePath(destinationPrefix);
+      const srcFull = path.join(this.mountPath, srcRelative);
+      const dstFull = path.join(this.mountPath, dstRelative);
+      await fs.mkdir(path.dirname(dstFull), { recursive: true });
+      try {
+        await fs.rename(srcFull, dstFull);
+      } catch (renameError: any) {
+        const code = renameError?.code;
+        if (code === 'EXDEV' || code === 'ENOTEMPTY' || code === 'EPERM' || code === 'EEXIST') {
+          // EXDEV: cross-device — can't rename, must copy.
+          // ENOTEMPTY/EPERM/EEXIST: destination already exists (race
+          // between indexer creating docs at the new path and a
+          // concurrent connector move). Merge source into destination
+          // and remove the source.
+          await fs.cp(srcFull, dstFull, { recursive: true });
+          await fs.rm(srcFull, { recursive: true, force: true });
+        } else {
+          throw renameError;
+        }
+      }
+      await this.pruneEmptyAncestors(srcRelative);
+      this.logger.info('Local storage tree rename successful', { src: srcRelative, dst: dstRelative });
+      return { statusCode: 200, data: undefined };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        // The caller decides whether a missing tree is fine; a silent success
+        // here let rows be pointed at files that were never there.
+        throw new StorageNotFoundError('Source prefix does not exist in local storage', {
+          src: sourcePrefix,
+        });
+      }
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to rename tree in local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * Walk upward from the given relative path, removing each directory
+   * that is empty, stopping at the first non-empty ancestor or at the
+   * mount root. Safe to call on any path — non-empty or non-existent
+   * directories are silently skipped.
+   */
+  private async pruneEmptyAncestors(relativePath: string): Promise<void> {
+    let current = path.dirname(relativePath);
+    while (current && current !== '.' && current !== '/') {
+      const full = path.join(this.mountPath, current);
+      try {
+        const entries = await fs.readdir(full);
+        if (entries.length > 0) break;
+        await fs.rmdir(full);
+      } catch {
+        break;
+      }
+      current = path.dirname(current);
+    }
+  }
+
   /**
    * Utility methods
    */
@@ -407,6 +644,10 @@ class LocalStorageAdapter implements StorageServiceInterface {
         },
       });
     }
+  }
+
+  getObjectUrl(storageKey: string): string {
+    return this.getFileUrl(this.sanitizePath(storageKey));
   }
 
   private getFileUrl(filePath: string): string {
@@ -498,7 +739,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       throw new StorageValidationError('Invalid document path');
     }
 
-    if (unified.split('/').some((segment) => segment === '..')) {
+    if (unified.split('/').some((segment) => segment === '..' || segment === '.')) {
       throw new StorageValidationError('Invalid document path');
     }
 

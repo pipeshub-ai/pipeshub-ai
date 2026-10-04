@@ -24,6 +24,7 @@ from docling.document_converter import DocumentConverter
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlocksContainer
 from app.modules.parsers.html_parser import url_utils
+from app.modules.parsers.text_decoding import decode_text
 from app.utils.converters.caption_map import apply_caption_map
 
 
@@ -189,10 +190,7 @@ class DoclingHtmlParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
-        if isinstance(content, bytes):
-            html_content = content.decode("utf-8")
-        else:
-            html_content = content
+        html_content = decode_text(content, html=True)
 
         html_content = html_content.strip()
 

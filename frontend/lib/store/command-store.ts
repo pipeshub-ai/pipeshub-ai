@@ -13,6 +13,10 @@ import { create } from 'zustand';
  *   from the *action* ("navigate to /chat", "reset thread") so multiple
  *   entry points share a single implementation without prop-drilling.
  *
+ * If nothing is registered, `dispatch` returns false and remembers the
+ * command. The next `register` for that name runs immediately — so New Chat
+ * from /artifacts/ can navigate to /chat/ and still reset the thread.
+ *
  * **Example — new chat:**
  * ```tsx
  * // In ChatPage (registers handler):
@@ -32,6 +36,8 @@ type CommandHandler = (payload?: unknown) => void;
 interface CommandState {
   /** Internal handler registry — keyed by command name */
   handlers: Record<string, CommandHandler>;
+  /** Commands dispatched before a page registered a handler. */
+  pending: Record<string, boolean>;
 
   /** Register a named command handler. Overwrites any previous handler for the same name. */
   register: (name: string, handler: CommandHandler) => void;
@@ -39,17 +45,29 @@ interface CommandState {
   /** Unregister a named command handler. */
   unregister: (name: string) => void;
 
-  /** Dispatch (execute) a named command with an optional payload. No-op if no handler is registered. */
-  dispatch: (name: string, payload?: unknown) => void;
+  /**
+   * Run the registered handler. Returns false when none is mounted so the
+   * caller can navigate to a page that will register and flush the command.
+   */
+  dispatch: (name: string, payload?: unknown) => boolean;
 }
 
 export const useCommandStore = create<CommandState>((set, get) => ({
   handlers: {},
+  pending: {},
 
-  register: (name, handler) =>
-    set((state) => ({
-      handlers: { ...state.handlers, [name]: handler },
-    })),
+  register: (name, handler) => {
+    const shouldFlush = Boolean(get().pending[name]);
+    set((state) => {
+      const pending = { ...state.pending };
+      delete pending[name];
+      return {
+        handlers: { ...state.handlers, [name]: handler },
+        pending,
+      };
+    });
+    if (shouldFlush) handler();
+  },
 
   unregister: (name) =>
     set((state) => {
@@ -59,6 +77,13 @@ export const useCommandStore = create<CommandState>((set, get) => ({
 
   dispatch: (name, payload) => {
     const handler = get().handlers[name];
-    if (handler) handler(payload);
+    if (handler) {
+      handler(payload);
+      return true;
+    }
+    set((state) => ({
+      pending: { ...state.pending, [name]: true },
+    }));
+    return false;
   },
 }));

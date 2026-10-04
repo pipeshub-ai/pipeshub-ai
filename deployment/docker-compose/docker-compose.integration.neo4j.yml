@@ -54,11 +54,18 @@ services:
       - NODE_ENV=${NODE_ENV:-development}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      # The Web and RSS connectors crawl the web-fixtures service, which is on the private Docker network.
+      - WEB_CONNECTOR_ALLOWED_HOSTS=web-fixtures
       - STRICT_MODE=${STRICT_MODE:-false}
+      # The session-revocation checks look within seconds of a sign-out; the product default is 30s.
+      - SESSION_CHECK_CACHE_SECONDS=${SESSION_CHECK_CACHE_SECONDS:-2}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       # Security settings - allow override with custom secret
       - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
+      # Signs service tokens. Fixed so the storage suite can mint tokens this
+      # stack accepts; the app only reads it on the first boot of a fresh volume.
+      - SCOPED_JWT_SECRET=${SCOPED_JWT_SECRET:-pipeshub-integration-scoped-jwt-secret-test-only}
 
       # Public endpoints
       - CONNECTOR_PUBLIC_BACKEND=${CONNECTOR_PUBLIC_BACKEND:-}
@@ -124,6 +131,7 @@ services:
       # Rate limit config
       - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-5000}
       - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
+      - MAX_AUTH_REQUESTS_PER_MINUTE=${MAX_AUTH_REQUESTS_PER_MINUTE:-1000}
 
       # Set to true to replace secrets in config API responses with **** markers
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
@@ -134,6 +142,9 @@ services:
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      # One minute rather than twenty, so the expired-link test waits a minute, not
+      # twenty. Only forgot-password links use it; invites have their own lifetime.
+      - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-60s}
       
       # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
@@ -143,6 +154,9 @@ services:
       # Set an explicit integer only to pin a hard ceiling.
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-}
+
+      # Storage config
+      - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-true}
 
       - OPIK_API_KEY=${OPIK_API_KEY:-}
       - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
@@ -247,6 +261,39 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+  # An external MCP server that agent tests register and call, so "an agent
+  # calls an MCP tool" is checked without a third-party service. Its call log
+  # is read through the published port (integration-tests/helper/mcp_fixture.py).
+  mcp-fixture:
+    image: python:3.12.11-alpine3.22@sha256:efcdfa6a6b2fd2afb9c7dfa9a5b288a6f68338b5cfdebe6b637d986067d85757
+    restart: always
+    command: ["python", "/srv/server.py", "--port", "8080"]
+    volumes:
+      - ../../integration-tests/mcp_fixture:/srv:ro
+    ports:
+      - "127.0.0.1:8097:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/__fixture__/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # A local model server for the weekly Ollama run of the AI model tests
+  # (.github/workflows/integration-tests-ollama.yml). Off unless the ollama
+  # profile is on; the job pulls its small models after start-up.
+  ollama:
+    image: ollama/ollama:0.34.4@sha256:8262851b2846b87c649eddf3e76beb270c52f4d1bc94559f47efde16b0841551
+    profiles: ["ollama"]
+    restart: always
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          memory: 4G
 
   # MariaDB, like postgres-source, is a connector *source* for the MariaDB
   # connector's tests, not a store the platform uses.
@@ -371,12 +418,12 @@ services:
   # is created by minio-init rather than by the tests, which never create or
   # delete buckets.
   minio:
-    # MinIO no longer publishes these images on Docker Hub (the minio/minio and
-    # minio/mc repositories now return "repository does not exist"), so pull the
-    # identical release tags from quay.io, MinIO's own registry, pinned by
-    # manifest digest because quay is a historical archive rather than a
-    # maintained channel, so a re-pushed tag would not change what CI pulls.
-    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
+    # MinIO has withdrawn its public images: Docker Hub's minio/minio and
+    # minio/mc are gone, and quay.io/minio/* now answers 401 to anonymous pulls
+    # (since 2026-09-24). Chainguard's MinIO build is public; the -dev variant
+    # carries a shell and mc, which the healthcheck and minio-init need, so one
+    # image serves both. Pinned by digest so a rebuild cannot change what CI runs.
+    image: cgr.dev/chainguard/minio:latest-dev@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2
     restart: always
     command: server /data --console-address ":9001"
     environment:
@@ -392,7 +439,8 @@ services:
       retries: 20
 
   minio-init:
-    image: quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z@sha256:aead63c77f9db9107f1696fb08ecb0faeda23729cde94b0f663edf4fe09728e3
+    # The same image: it has mc and a shell for the bucket setup below.
+    image: cgr.dev/chainguard/minio:latest-dev@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2
     depends_on:
       minio:
         condition: service_healthy
@@ -524,6 +572,26 @@ services:
       start_period: 30s
 
 
+  # The SMB connector syncs from this Samba share. Behind its own profile so
+  # only the shard that runs the SMB suite starts it. The connector reaches it
+  # by service name; the test process writes files through the published port.
+  smb-source:
+    image: dockurr/samba:4.23.10@sha256:404f91bdf317d390241a41165579cd25199f34171b44677d877c75dc40184042
+    profiles: ["smb-source"]
+    restart: always
+    environment:
+      NAME: ${SMB_SHARE:-pipeshubtest}
+      USER: ${SMB_USERNAME:-pipeshubtest}
+      PASS: ${SMB_PASSWORD:-pipeshubtest123}
+      RW: "true"
+    ports:
+      - "127.0.0.1:1445:445"
+    healthcheck:
+      test: ["CMD-SHELL", "smbclient --configfile=/etc/samba.conf -L //localhost -U \"$$USER%$$PASS\" -m SMB3 >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
   # Zammad is a connector *source*, like bookstack-source, behind its own
   # profile because it is the heaviest of them: the workflow sets
   # COMPOSE_PROFILES=zammad-source only for the shard that runs its tests.
@@ -650,6 +718,8 @@ volumes:
   pipeshub_data:
     driver: local
   pipeshub_root_local:
+    driver: local
+  ollama_models:
     driver: local
   pipeshub_hf_cache:
     driver: local

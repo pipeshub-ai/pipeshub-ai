@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.edition_config import (
     agent_router,
@@ -255,6 +256,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
 
+        # Collections created before keyword scoring was fixed (Qdrant IDF,
+        # OpenSearch stemming) are updated in place. A deployment that only
+        # serves search never reaches the indexing write path that would
+        # otherwise do it, so it has to happen here too.
+        async def _reconcile_lexical_scoring() -> None:
+            try:
+                changed = await retrieval_service.collection_registry.reconcile_lexical_scoring()
+                if changed:
+                    logger.info(f"Updated keyword scoring on collection(s) {changed}")
+            except Exception as reconcile_error:
+                logger.warning(f"Keyword-scoring reconcile failed (non-fatal): {reconcile_error}")
+
+        app.state.lexical_reconcile_task = asyncio.create_task(_reconcile_lexical_scoring())
+
     # Prepare the coding sandbox backend before a user needs it. On Docker
     # that means pulling the sandbox image and creating the egress network —
     # otherwise the first `run_code` of a deployment pays for both inside a
@@ -295,7 +310,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ Coding sandbox warmup complete (%s)", settings.backend)
         except Exception as warmup_error:
             app.state.sandbox_health = {
-                "backend": os.getenv("SANDBOX_MODE", "local").lower(),
+                "backend": (os.getenv("SANDBOX_MODE") or "").strip().lower() or "unset",
                 "available": False,
                 "reason": f"{type(warmup_error).__name__}: {warmup_error}",
             }
@@ -340,6 +355,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cancel background warmup tasks if still running.
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
+        "lexical_reconcile_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():
@@ -490,7 +506,8 @@ app.include_router(speech_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(skills_router, prefix="/api/v1/skills")
 app.include_router(toolsets_router)
-app.include_router(health_router, prefix="/api/v1")
+# These routes call whatever provider URL the body names, so only admins may reach them.
+app.include_router(health_router, prefix="/api/v1", dependencies=[Depends(require_admin_caller)])
 app.include_router(ai_models_registry_router, prefix="/api/v1")
 if agent_sharing_router is not None:
     app.include_router(agent_sharing_router, prefix="/api/v1/agent")

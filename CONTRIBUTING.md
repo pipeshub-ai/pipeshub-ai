@@ -339,6 +339,22 @@ pytest --cov=app --cov-report=term-missing
 pytest -n auto
 ```
 
+### Running Frontend Unit Tests
+
+Unit tests use **Vitest** and live in `__tests__` folders beside the code they test under `frontend/app/` and `frontend/lib/`, named `*.test.ts` or `*.test.tsx`.
+
+```bash
+cd frontend
+
+# Run all unit tests
+npm run test:unit
+
+# Run them with coverage, as CI does (reports land in coverage/unit)
+npm run test:unit:coverage
+```
+
+CI runs the coverage command and fails when coverage drops below the minimum set in `coverage.thresholds` in `frontend/vitest.config.ts`. If your change trips it, add tests rather than lowering the minimum.
+
 ### Running Frontend E2E Tests (Playwright)
 
 The frontend (`frontend/`) uses [Playwright](https://playwright.dev/) for end-to-end testing. Tests cover authentication, navigation, workspace settings, entity CRUD (users, groups, teams), chat, and knowledge base pages. **Authoritative E2E details** live in [`frontend/tests/e2e/README.md`](frontend/tests/e2e/README.md); the following is a contributor-oriented summary.

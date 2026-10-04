@@ -13,7 +13,7 @@ exclude_lines =
     if __name__ == .__main__
     if TYPE_CHECKING
     raise NotImplementedError
-    pass
+    ^\s*pass\s*(#.*)?$
     @abstractmethod
 
 show_missing = True

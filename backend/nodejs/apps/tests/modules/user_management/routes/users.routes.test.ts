@@ -11,6 +11,7 @@ import { AuthService } from '../../../../src/modules/user_management/services/au
 import { EntitiesEventProducer } from '../../../../src/modules/user_management/services/entity_events.service';
 import { OrgController } from '../../../../src/modules/user_management/controller/org.controller';
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
+import { ValidationError } from '../../../../src/libs/errors/validation.error';
 
 describe('User Routes', () => {
   let container: Container;
@@ -735,6 +736,37 @@ describe('User Routes', () => {
       expect(mockUserController.getUsersByIds.calledOnce).to.be.true;
     });
 
+    it('POST /by-ids rejects an empty user ID with a plain message', async () => {
+      const router = createUserRouter(container);
+      const { mockReq, mockRes, mockNext } = createMockReqRes();
+      mockReq.params = {};
+      mockReq.body = { userIds: [''] };
+      const validationMiddleware = findValidationMiddleware(router, '/by-ids', 'post');
+
+      expect(validationMiddleware).to.not.be.undefined;
+      await validationMiddleware(mockReq, mockRes, mockNext);
+
+      expect(mockNext.calledOnce).to.be.true;
+      const error = mockNext.firstCall.args[0];
+      expect(error).to.be.an.instanceOf(ValidationError);
+      expect(error.message).to.equal(
+        'Each user ID must be a 24-character user ID. Remove any empty or incomplete IDs and try again.',
+      );
+      expect(mockUserController.getUsersByIds.called).to.be.false;
+    });
+
+    it('POST /by-ids rejects an empty list with a plain message', async () => {
+      const router = createUserRouter(container);
+      const { mockReq, mockRes, mockNext } = createMockReqRes();
+      mockReq.params = {};
+      mockReq.body = { userIds: [] };
+      const validationMiddleware = findValidationMiddleware(router, '/by-ids', 'post');
+
+      await validationMiddleware(mockReq, mockRes, mockNext);
+
+      expect(mockNext.firstCall.args[0].message).to.equal('Send at least one user ID to look up.');
+    });
+
     it('GET /email/exists handler should call userController.checkUserExistsByEmail', async () => {
       const router = createUserRouter(container);
       const handler = findRouteHandler(router, '/email/exists', 'get');
@@ -1228,7 +1260,7 @@ describe('User Routes - handler coverage', () => {
       expect(res.json.firstCall.args[0].message).to.equal('User has admin access')
     })
 
-    it('should call next with Admin access required when user is not admin', async () => {
+    it('should refuse with 403 and the shared admin message when user is not admin', async () => {
       const handler = findHandler('/internal/:id/adminCheck', 'get')
       const userAdminService = require('../../../../src/modules/user_management/services/user-admin.service')
       sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false)
@@ -1241,8 +1273,34 @@ describe('User Routes - handler coverage', () => {
       const next = sinon.stub()
 
       await handler(req, res, next)
+      expect(res.status.called).to.be.false
       expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args[0].message).to.equal('Admin access required')
+      expect(next.firstCall.args[0].statusCode).to.equal(403)
+      expect(next.firstCall.args[0].message).to.equal(
+        'You need admin access to do this. Ask an admin in your organisation.',
+      )
+    })
+
+    it("should refuse with 403 when the token asks about another user's id", async () => {
+      const handler = findHandler('/internal/:id/adminCheck', 'get')
+      const userAdminService = require('../../../../src/modules/user_management/services/user-admin.service')
+      const isAdminStub = sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true)
+
+      const req = {
+        params: { id: '507f1f77bcf86cd799439099' },
+        tokenPayload: { userId, orgId },
+      } as any
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await handler(req, res, next)
+      expect(isAdminStub.called).to.be.false
+      expect(res.status.called).to.be.false
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].statusCode).to.equal(403)
+      expect(next.firstCall.args[0].message).to.equal(
+        'You can only check your own admin access.',
+      )
     })
   })
 

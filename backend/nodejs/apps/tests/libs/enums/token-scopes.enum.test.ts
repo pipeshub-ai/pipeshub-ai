@@ -33,6 +33,10 @@ describe('TokenScopes', () => {
   it('should have CONVERSATION_CREATE as "conversation:create"', () => {
     expect(TokenScopes.CONVERSATION_CREATE).to.equal('conversation:create');
   });
+
+  it('should have CONVERSATION_PERMISSIONS as "conversation:permissions"', () => {
+    expect(TokenScopes.CONVERSATION_PERMISSIONS).to.equal('conversation:permissions');
+  });
   it('should have VALIDATE_EMAIL as "email:validate"', () => {
     expect(TokenScopes.VALIDATE_EMAIL).to.equal('email:validate');
   });
@@ -45,8 +49,20 @@ describe('TokenScopes', () => {
     expect(TokenScopes.EMAIL_VERIFIED).to.equal('email:verified');
   });
 
-  it('should have exactly 11 scopes', () => {
-    expect(Object.keys(TokenScopes)).to.have.lengthOf(11);
+  it('should have DESKTOP_COMMAND as "desktop:command"', () => {
+    expect(TokenScopes.DESKTOP_COMMAND).to.equal('desktop:command');
+  });
+
+  it('should have CALLER_ROLE as "caller:role"', () => {
+    expect(TokenScopes.CALLER_ROLE).to.equal('caller:role');
+  });
+
+  it('should have SLACK_BOT_VERIFY as "slack-bot:verify"', () => {
+    expect(TokenScopes.SLACK_BOT_VERIFY).to.equal('slack-bot:verify');
+  });
+
+  it('should have exactly 14 scopes', () => {
+    expect(Object.keys(TokenScopes)).to.have.lengthOf(14);
   });
 
   it('should contain only the expected keys', () => {
@@ -58,10 +74,13 @@ describe('TokenScopes', () => {
       'TOKEN_REFRESH',
       'STORAGE_TOKEN',
       'CONVERSATION_CREATE',
+      'CONVERSATION_PERMISSIONS',
       'VALIDATE_EMAIL',
       'ORG_EMAIL_VERIFY',
       'EMAIL_VERIFIED',
       'DESKTOP_COMMAND',
+      'CALLER_ROLE',
+      'SLACK_BOT_VERIFY',
     ];
     expect(Object.keys(TokenScopes)).to.have.members(expectedKeys);
   });
@@ -102,6 +121,9 @@ describe('isUserActionScope', () => {
       TokenScopes.USER_LOOKUP,
       TokenScopes.STORAGE_TOKEN,
       TokenScopes.CONVERSATION_CREATE,
+      TokenScopes.DESKTOP_COMMAND,
+      TokenScopes.CALLER_ROLE,
+      TokenScopes.SLACK_BOT_VERIFY,
       'not:a:scope',
     ].forEach((scope) => expect(isUserActionScope(scope)).to.be.false);
   });

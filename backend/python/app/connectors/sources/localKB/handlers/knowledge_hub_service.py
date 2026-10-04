@@ -6,7 +6,8 @@ import traceback
 from collections import Counter
 from typing import Any
 
-from app.config.constants.arangodb import ProgressStatus
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     AppliedFilters,
     AvailableFilters,
@@ -26,7 +27,8 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     SortField,
     SortOrder,
 )
-from app.models.entities import RecordType
+from app.models.entities import RecordType, substitute_user_email
+from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.user_messages import action_failed, not_found
 
@@ -65,9 +67,39 @@ class KnowledgeHubService:
         self,
         logger: logging.Logger,
         graph_provider: IGraphDBProvider,
+        config_service: ConfigurationService | None = None,
+        excluded_app_ids: frozenset[str] | None = None,
     ) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
+        # The Acme Corp demo, for someone who switched it off. Callers that
+        # already know it pass `excluded_app_ids`; otherwise it is read per
+        # request from `config_service`.
+        self._config_service = config_service
+        self._excluded_app_ids = excluded_app_ids
+
+    async def _excluded_apps(self, user_id: str, org_id: str) -> frozenset[str]:
+        if self._excluded_app_ids is not None:
+            return self._excluded_app_ids
+        if self._config_service is None:
+            return frozenset()
+        try:
+            return await excluded_demo_connector_ids(
+                self.graph_provider, self._config_service, org_id, user_id
+            )
+        except Exception as exc:
+            self.logger.warning("demo data setting unreadable for user=%s: %s", user_id, exc)
+            return frozenset()
+
+    async def _belongs_to(self, node_id: str, node_type: str | None, app_ids: frozenset[str]) -> bool:
+        """Whether a browsed node is one of `app_ids` or sits inside one."""
+        if not app_ids:
+            return False
+        if node_type in ("app", "kb"):
+            return node_id in app_ids
+        collection = CollectionNames.RECORD_GROUPS.value if node_type == "recordGroup" else CollectionNames.RECORDS.value
+        doc = await self.graph_provider.get_document(node_id, collection)
+        return bool(doc) and doc.get("connectorId") in app_ids
 
     async def _resolve_user(self, user_id: str, org_id: str) -> Any | None:
         """Resolve graph user node from external userId. EE overrides for org-scoped lookup."""
@@ -156,6 +188,11 @@ class KnowledgeHubService:
                     filters=FiltersInfo(applied=AppliedFilters()),
                 )
             user_key = user.get('_key')
+            excluded = await self._excluded_apps(user_id, org_id)
+            # A deep link into switched-off demo data answers like a missing node,
+            # so neither its name nor its breadcrumbs come back, in any mode.
+            if parent_id and await self._belongs_to(parent_id, parent_type, excluded):
+                raise BrowseRequestError(not_found("This item"), 404)
 
             # Get nodes based on request type.
             # `flattened`, when explicitly passed by the caller, always wins.
@@ -197,6 +234,7 @@ class KnowledgeHubService:
                     include_filters=(parent_id is None) or (include and 'availableFilters' in include),
                     record_group_ids=record_group_ids,
                     depth=depth,
+                    excluded_app_ids=excluded,
                 )
             else:
                 # Browse mode - get direct children of parent only
@@ -220,10 +258,16 @@ class KnowledgeHubService:
                     size=size,
                     only_containers=only_containers,
                     record_group_ids=record_group_ids,
+                    excluded_app_ids=excluded,
                 )
                 # In browse mode, fetch available filters only if requested
                 if include and 'availableFilters' in include:
-                    available_filters = await self._get_available_filters(user_key, org_id)
+                    available_filters = await self._get_available_filters(user_key, org_id, excluded)
+
+            user_email = user.get('email')
+            for item in items:
+                if item.webUrl:
+                    item.webUrl = substitute_user_email(item.webUrl, user_email, item.connector)
 
             # Permissions are now included directly from queries (userRole field)
             # No need for separate batch permission fetch
@@ -306,7 +350,7 @@ class KnowledgeHubService:
                     response.filters.available = available_filters
 
                 if 'breadcrumbs' in include and parent_id:
-                    response.breadcrumbs = await self._get_breadcrumbs(parent_id)
+                    response.breadcrumbs = await self._get_breadcrumbs(parent_id, user_key, org_id)
 
                 if 'counts' in include:
                     # TODO(Counts): Per-type breakdown only reflects current page items, not all
@@ -393,6 +437,7 @@ class KnowledgeHubService:
         size: dict[str, int | None] | None,
         only_containers: bool,
         record_group_ids: list[str] | None = None,
+        excluded_app_ids: frozenset[str] = frozenset(),
     ) -> tuple[list[NodeItem], int, AvailableFilters | None]:
         """Get children nodes for a given parent using unified provider method."""
         if parent_id is None:
@@ -400,7 +445,11 @@ class KnowledgeHubService:
             return await self._get_root_level_nodes(
                 user_key, org_id, skip, limit, sort_by, sort_order,
                 node_types, origins, connector_ids, only_containers=only_containers,
+                excluded_app_ids=excluded_app_ids,
             )
+
+        if await self._belongs_to(parent_id, parent_type, excluded_app_ids):
+            return [], 0, None
 
         # Validate that the node exists and type matches
         await self._validate_node_existence_and_type(parent_id, parent_type, user_key, org_id)
@@ -455,10 +504,13 @@ class KnowledgeHubService:
         origins: list[str] | None,
         connector_ids: list[str] | None,
         only_containers: bool,
+        excluded_app_ids: frozenset[str] = frozenset(),
     ) -> tuple[list[NodeItem], int, AvailableFilters | None]:
         """Get root level nodes (Apps, including Collection App)"""
         try:
-            user_apps_ids = await self._get_user_app_ids(user_key, org_id)
+            user_apps_ids = [
+                a for a in await self._get_user_app_ids(user_key, org_id) if a not in excluded_app_ids
+            ]
 
             # Filter apps by connector_ids if provided
             if connector_ids:
@@ -499,11 +551,13 @@ class KnowledgeHubService:
             self.logger.error(f"❌ Failed to get root level nodes: {str(e)}")
             raise
 
-    async def _get_available_filters(self, user_key: str, org_id: str) -> AvailableFilters:
+    async def _get_available_filters(
+        self, user_key: str, org_id: str, excluded_app_ids: frozenset[str] = frozenset()
+    ) -> AvailableFilters:
         """Get filter options (dynamic Apps + static others)"""
         try:
             options = await self.graph_provider.get_knowledge_hub_filter_options(user_key, org_id)
-            apps_data = options.get('apps', [])
+            apps_data = [a for a in options.get('apps', []) if a.get('id') not in excluded_app_ids]
 
             # App/Connector options with connectorType
             app_options = [
@@ -595,6 +649,7 @@ class KnowledgeHubService:
         include_filters: bool = False,
         record_group_ids: list[str] | None = None,
         depth: int | None = None,
+        excluded_app_ids: frozenset[str] = frozenset(),
     ) -> tuple[list[NodeItem], int, AvailableFilters | None]:
         """
         Search for nodes (global or scoped within parent).
@@ -662,6 +717,7 @@ class KnowledgeHubService:
                 parent_type=parent_type,
                 record_group_ids=record_group_ids,
                 depth=depth,
+                exclude_app_ids=excluded_app_ids,
             )
 
             nodes_data = result.get('nodes', [])
@@ -673,7 +729,7 @@ class KnowledgeHubService:
             # Get available filters if requested
             available_filters = None
             if include_filters:
-                available_filters = await self._get_available_filters(user_key, org_id)
+                available_filters = await self._get_available_filters(user_key, org_id, excluded_app_ids)
 
             return items, total_count, available_filters
 
@@ -739,13 +795,17 @@ class KnowledgeHubService:
             )
         return None
 
-    async def _get_breadcrumbs(self, node_id: str) -> list[BreadcrumbItem]:
+    async def _get_breadcrumbs(
+        self, node_id: str, user_key: str, org_id: str
+    ) -> list[BreadcrumbItem]:
         """
-        Get breadcrumb trail for a node using the optimized provider method.
+        Get breadcrumb trail for a node, filtered to what this user can see.
         """
         try:
             # Use the provider's optimized AQL query
-            breadcrumbs_data = await self.graph_provider.get_knowledge_hub_breadcrumbs(node_id=node_id)
+            breadcrumbs_data = await self.graph_provider.get_knowledge_hub_breadcrumbs(
+                node_id=node_id, user_key=user_key, org_id=org_id
+            )
 
             # Convert to BreadcrumbItem objects
             return [
@@ -845,6 +905,7 @@ class KnowledgeHubService:
             parentId=doc.get('parentId'),
             origin=origin,
             connector=doc.get('connector'),
+            connectorId=doc.get('connectorId'),
             recordType=doc.get('recordType'),
             recordGroupType=doc.get('recordGroupType'),
             indexingStatus=doc.get('indexingStatus'),

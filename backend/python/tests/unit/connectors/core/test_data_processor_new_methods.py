@@ -29,6 +29,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +240,14 @@ class TestDelegateMethods:
             connector_id="conn-1",
             parent_external_record_id="parent-ext-1",
             record_type="FILE",
+            visibility=RecordVisibility.LIVE,
         )
+
+    @pytest.mark.asyncio
+    async def test_get_records_by_parent_passes_a_visibility_on(self):
+        proc, tx = _make_processor()
+        await proc.get_records_by_parent("conn-1", "parent-ext-1", visibility=RecordVisibility.ALL)
+        assert tx.get_records_by_parent.await_args.kwargs["visibility"] is RecordVisibility.ALL
 
     @pytest.mark.asyncio
     async def test_get_records_in_record_group_pages_by_the_group_key(self):
@@ -261,6 +269,7 @@ class TestDelegateMethods:
             record_group_id="rg-key",
             limit=100,
             after_key="after",
+            visibility=RecordVisibility.LIVE,
         )
 
     @pytest.mark.asyncio
@@ -320,6 +329,7 @@ class TestDelegateMethods:
             is_placeholder=True,
             after_key=None,
             exclude_statuses=None,
+            visibility=RecordVisibility.LIVE,
         )
 
     @pytest.mark.asyncio

@@ -62,6 +62,7 @@ from openapi_schema_validator import (  # noqa: E402
 
 logger = logging.getLogger("ai-model-providers-integration-test")
 
+_ADMIN_ACCESS_REQUIRED = "You need admin access to do this. Ask an admin in your organisation."
 _MODEL_TYPE_LLM = "llm"
 _AI_MODEL_BUCKET_KEYS = (
     "ocr",
@@ -635,11 +636,11 @@ class TestAddAIModelProviderNonAdmin(AIModelsTestBase):
             headers=second_user.headers,
             auth=False,
         )
-        assert resp.status_code == 400, (
-            f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 403, (
+            f"Expected 403 for a non-admin, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert body.get("error", {}).get("message") == "Admin access required", body
+        assert body.get("error", {}).get("message") == _ADMIN_ACCESS_REQUIRED, body
         _assert_error_envelope_matches_spec(body)
 
 
@@ -825,11 +826,11 @@ class TestUpdateAIModelProviderNonAdmin(AIModelsTestBase):
             headers=second_user.headers,
             auth=False,
         )
-        assert resp.status_code == 400, (
-            f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 403, (
+            f"Expected 403 for a non-admin, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert body.get("error", {}).get("message") == "Admin access required", body
+        assert body.get("error", {}).get("message") == _ADMIN_ACCESS_REQUIRED, body
         _assert_error_envelope_matches_spec(body)
 
 
@@ -1015,11 +1016,11 @@ class TestDeleteAIModelProviderNonAdmin(AIModelsTestBase):
             headers=second_user.headers,
             auth=False,
         )
-        assert resp.status_code == 400, (
-            f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 403, (
+            f"Expected 403 for a non-admin, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert body.get("error", {}).get("message") == "Admin access required", body
+        assert body.get("error", {}).get("message") == _ADMIN_ACCESS_REQUIRED, body
         _assert_error_envelope_matches_spec(body)
 
 
@@ -1148,11 +1149,11 @@ class TestGetAIModelsProvidersNonAdmin(AIModelsTestBase):
 
     def test_non_admin_list_rejected(self, second_user: SecondUser) -> None:
         resp = self.ai.get("/", headers=second_user.headers, auth=False)
-        assert resp.status_code == 400, (
-            f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 403, (
+            f"Expected 403 for a non-admin, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert body.get("error", {}).get("message") == "Admin access required", body
+        assert body.get("error", {}).get("message") == _ADMIN_ACCESS_REQUIRED, body
         _assert_error_envelope_matches_spec(body)
 
 
@@ -1250,11 +1251,11 @@ class TestGetModelsByTypeNonAdmin(AIModelsTestBase):
         resp = self.ai.get(
             f"/{_MODEL_TYPE_LLM}", headers=second_user.headers, auth=False
         )
-        assert resp.status_code == 400, (
-            f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 403, (
+            f"Expected 403 for a non-admin, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert body.get("error", {}).get("message") == "Admin access required", body
+        assert body.get("error", {}).get("message") == _ADMIN_ACCESS_REQUIRED, body
         _assert_error_envelope_matches_spec(body)
 
 

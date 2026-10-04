@@ -86,6 +86,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
@@ -908,6 +909,21 @@ class LocalFsConnector(BaseConnector):
         document_id = record_path[len(LOCAL_FS_STORAGE_PATH_PREFIX) :].strip()
         return document_id or None
 
+    async def _storage_document_id_of(self, record: Record) -> str | None:
+        """The storage blob a push-flow record points at, or None.
+
+        Only a FileRecord carries ``path``; the external-id lookup answers a base
+        Record, so the file record is read by id. A read that fails raises, and
+        the caller keeps the id owed. None means the files row itself is gone,
+        and with it the only pointer to a blob, so there is nothing to clean up.
+        """
+        if not isinstance(record, FileRecord) and record.record_type == RecordType.FILE:
+            file_record = await self.data_entities_processor.get_file_record_by_id(record.id)
+            if file_record is None:
+                return None
+            record = file_record
+        return self._storage_document_id_from_path(getattr(record, "path", None))
+
     async def _bulk_get_records_by_external_ids(
         self, external_ids: List[str]
     ) -> Dict[str, Record]:
@@ -1407,9 +1423,7 @@ class LocalFsConnector(BaseConnector):
             record = existing_records.get(external_id)
             try:
                 if record is not None:
-                    document_id = self._storage_document_id_from_path(
-                        getattr(record, "path", None)
-                    )
+                    document_id = await self._storage_document_id_of(record)
                     await self.data_entities_processor.on_record_deleted(
                         record_id=record.id,
                     )
@@ -2061,11 +2075,14 @@ class LocalFsConnector(BaseConnector):
         listed: dict[str, Record] = {}
         offset = 0
         while True:
+            # Every record, trash included: the retire path decides what a trashed
+            # one needs, and a listing that hid it would leave it behind for good.
             records = await self.data_entities_processor.get_records_by_status(
                 self.connector_id,
                 status_filters,
                 limit=FULL_SYNC_RESET_BATCH_SIZE,
                 offset=offset,
+                visibility=RecordVisibility.ALL,
             )
             if not records:
                 break

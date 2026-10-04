@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from app.services.messaging.config import MessageBrokerType
+from tests.support.host_header import POISONED_HOSTS, request_with_host
 
 
 # ---------------------------------------------------------------------------
@@ -52,16 +53,6 @@ def _mock_os_getenv(data_store="arangodb"):
             return MessageBrokerType.KAFKA.value
         return default
     return _getenv
-
-
-def _patch_kb_entities_processor():
-    mock_proc = MagicMock()
-    mock_proc.initialize = AsyncMock()
-    return patch(
-        "app.connectors_main.DataSourceEntitiesProcessor",
-        return_value=mock_proc,
-        create=True,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -723,7 +714,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock) as mock_shutdown,
             patch("os.getenv", side_effect=_mock_os_getenv("arangodb")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -765,7 +755,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -805,7 +794,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -844,7 +832,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, side_effect=RuntimeError("kafka fail")),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -880,7 +867,6 @@ class TestLifespan:
             patch("app.connectors_main.startup_service.initialize", new_callable=AsyncMock),
             patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock, side_effect=RuntimeError("producer fail")),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -920,7 +906,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -959,7 +944,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock, side_effect=RuntimeError("shutdown fail")),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -1122,6 +1106,34 @@ class TestAuthenticateRequestsMiddleware:
             await authenticate_requests(mock_request, mock_call_next)
 
         mock_auth.assert_awaited_once_with(mock_request)
+
+    @pytest.mark.parametrize("host", POISONED_HOSTS)
+    async def test_poisoned_host_header_does_not_skip_auth(self, host):
+        """A Host header naming an excluded path does not replace the request path."""
+        from app.connectors_main import authenticate_requests, app
+
+        request = request_with_host("/api/v1/x", host)
+        mock_call_next = AsyncMock(return_value=MagicMock(spec=JSONResponse))
+        app.container = MagicMock()
+
+        with patch("app.connectors_main.authMiddleware", new_callable=AsyncMock, return_value=request) as mock_auth:
+            await authenticate_requests(request, mock_call_next)
+
+        mock_auth.assert_awaited_once_with(request)
+
+    async def test_health_path_of_a_real_request_skips_auth(self):
+        """The exclusion still applies to a real request for /health."""
+        from app.connectors_main import authenticate_requests, app
+
+        request = request_with_host("/health")
+        mock_call_next = AsyncMock(return_value=MagicMock(spec=JSONResponse))
+        app.container = MagicMock()
+
+        with patch("app.connectors_main.authMiddleware", new_callable=AsyncMock) as mock_auth:
+            await authenticate_requests(request, mock_call_next)
+
+        mock_auth.assert_not_awaited()
+        mock_call_next.assert_awaited_once_with(request)
 
 
 # ---------------------------------------------------------------------------

@@ -352,8 +352,9 @@ export interface IAIResponse {
   citations: ICitation[];
   confidence?: ConfidenceLevel;
   /** Set by Python's `AnswerFinalizer` cancelled branch (Phase 3) — `RUN_FINISHED`/
-   * `complete` payload for a cooperatively-stopped run carries the partial answer. */
-  status?: 'stopped';
+   * `complete` payload for a cooperatively-stopped run carries the partial answer.
+   * `waiting_input` is an ask_user_question pause: empty answer is expected. */
+  status?: 'stopped' | 'waiting_input';
   reason: string;
   answerMatchType: AnswerMatchType;
   documentIndexes: string[];

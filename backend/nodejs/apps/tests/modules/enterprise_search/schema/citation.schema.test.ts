@@ -93,6 +93,47 @@ describe('enterprise_search/schema/citation.schema', () => {
       expect(metadataSchema.path('blockText')).to.exist
     })
 
+    it('keeps the connector instance id, not only the kind of source', () => {
+      // `connector` is e.g. SLACK, shared by every Slack instance; the UI needs
+      // the instance to tell a demo connector's records from real ones.
+      const metadataSchema = Citation.schema.path('metadata').schema
+      expect(metadataSchema.path('connectorId')).to.exist
+      expect(metadataSchema.path('connectorId').instance).to.equal('String')
+
+      const citation = new Citation({
+        content: 'c',
+        chunkIndex: 1,
+        citationType: 'vectordb|document',
+        metadata: {
+          orgId: 'o1',
+          mimeType: 'text/markdown',
+          recordId: 'r1',
+          recordName: 'INC-2031',
+          origin: 'CONNECTOR',
+          connector: 'JIRA',
+          connectorId: 'demo-connector-1',
+        },
+      })
+      expect(citation.metadata.connectorId).to.equal('demo-connector-1')
+    })
+
+    it('publishes connectorId in the citation metadata the API returns', () => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const yaml = require('js-yaml')
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { readFileSync } = require('fs')
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { join } = require('path')
+      const spec = yaml.load(
+        readFileSync(
+          join(__dirname, '..', '..', '..', '..', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml'),
+          'utf8',
+        ),
+      ) as { components: { schemas: Record<string, { properties: Record<string, unknown> }> } }
+      const published = spec.components.schemas.PersistedSemanticSearchCitationMetadata
+      expect(published.properties).to.have.property('connectorId')
+    })
+
     it('should have recordVersion with default 0', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
       const rvPath = metadataSchema.path('recordVersion')

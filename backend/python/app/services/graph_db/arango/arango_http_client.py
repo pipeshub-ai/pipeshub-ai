@@ -8,6 +8,7 @@ ArangoDB REST API Documentation: https://www.arangodb.com/docs/stable/http/
 """
 
 import asyncio
+import threading
 from logging import Logger
 from typing import Any, Dict, List, Optional, Union
 
@@ -20,12 +21,18 @@ from app.exceptions.graph_db_exceptions import GraphQueryError
 ARANGO_ERROR_DOCUMENT_NOT_FOUND = 1202
 ARANGO_ERROR_SCHEMA_DUPLICATE = 1207
 
+# Maximum open connections for each event loop's session (aiohttp's default).
+# The client holds one session per loop, so its total is this times the
+# number of loops that use it.
+DEFAULT_POOL_LIMIT = 100
+
 
 class ArangoHTTPClient:
     """Fully async HTTP client for ArangoDB REST API
 
     Uses session-per-event-loop pattern to handle Windows async compatibility.
-    Sessions are reused within the same event loop but recreated if the loop changes.
+    Each event loop gets its own session, reused within that loop. A call from
+    one loop never closes the session of another.
     """
 
     def __init__(
@@ -34,7 +41,8 @@ class ArangoHTTPClient:
         username: str,
         password: str,
         database: str,
-        logger: Logger
+        logger: Logger,
+        pool_limit: int = DEFAULT_POOL_LIMIT
     ) -> None:
         """
         Initialize ArangoDB HTTP client.
@@ -45,47 +53,51 @@ class ArangoHTTPClient:
             password: Database password
             database: Database name
             logger: Logger instance
+            pool_limit: Maximum open connections per event loop's session
         """
         self.base_url = base_url.rstrip('/')
         self.database = database
         self.username = username
         self.password = password
         self.auth = aiohttp.BasicAuth(username, password)
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._session_loop: Optional[asyncio.AbstractEventLoop] = None
+        # One session per event loop. The indexing service calls this client
+        # from the consumer's worker loop and the main loop at the same time,
+        # and a session may only be used and closed on its own loop.
+        self._sessions: Dict[asyncio.AbstractEventLoop, aiohttp.ClientSession] = {}
+        # Those loops run on different threads, so changes to the table are
+        # serialised. Nothing awaits while it is held.
+        self._sessions_lock = threading.Lock()
+        self.pool_limit = pool_limit
         self.logger = logger
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """
         Get or create a session for the current event loop.
 
-        This handles Windows async compatibility by detecting event loop changes
-        and creating new sessions when needed. Sessions are reused within the
-        same event loop for efficiency.
+        Each event loop gets its own session, so a call from one loop never
+        closes a session that requests on another loop are still using.
+        Sessions are reused within the same event loop for efficiency.
 
         Returns:
             aiohttp.ClientSession: Session for the current event loop
         """
-        try:
-            current_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            current_loop = None
+        current_loop = asyncio.get_running_loop()
+        with self._sessions_lock:
+            session = self._sessions.get(current_loop)
 
-        # Check if we need a new session (no session, or loop changed)
-        if self._session is None or self._session_loop != current_loop:
-            # Close old session if exists
-            if self._session is not None:
-                try:
-                    await self._session.close()
-                except Exception:
-                    pass  # Ignore errors closing old session
+            if session is None or session.closed:
+                # Forget sessions whose loop has been closed; they can no longer be used.
+                for loop in [loop for loop in self._sessions if loop.is_closed()]:
+                    self._sessions.pop(loop, None)
 
-            # Create new session for current loop
-            self._session = aiohttp.ClientSession(auth=self.auth)
-            self._session_loop = current_loop
-            self.logger.debug("🔄 Created new HTTP session for current event loop")
+                session = aiohttp.ClientSession(
+                    auth=self.auth,
+                    connector=aiohttp.TCPConnector(limit=self.pool_limit),
+                )
+                self._sessions[current_loop] = session
+                self.logger.debug("🔄 Created new HTTP session for current event loop")
 
-        return self._session
+        return session
 
     async def connect(self) -> bool:
         """
@@ -112,14 +124,21 @@ class ArangoHTTPClient:
             return False
 
     async def disconnect(self) -> None:
-        """Close HTTP session"""
-        if self._session:
-            try:
-                await self._session.close()
-            except Exception:
-                pass
-            self._session = None
-            self._session_loop = None
+        """Close HTTP sessions"""
+        with self._sessions_lock:
+            sessions, self._sessions = self._sessions, {}
+        if sessions:
+            current_loop = asyncio.get_running_loop()
+            for loop, session in sessions.items():
+                try:
+                    if loop is current_loop:
+                        await session.close()
+                    elif loop.is_running():
+                        # A session must be closed on the loop that owns it
+                        future = asyncio.run_coroutine_threadsafe(session.close(), loop)
+                        await asyncio.wait_for(asyncio.wrap_future(future), timeout=5)
+                except Exception:
+                    pass
             self.logger.info("✅ Disconnected from ArangoDB")
 
     # ==================== Error Checking Helpers ====================
@@ -290,6 +309,7 @@ class ArangoHTTPClient:
         collection: str,
         key: str,
         txn_id: Optional[str] = None,
+        *,
         raise_on_error: bool = False
     ) -> Optional[Dict]:
         """
@@ -475,7 +495,9 @@ class ArangoHTTPClient:
         query: str,
         bind_vars: Optional[Dict] = None,
         txn_id: Optional[str] = None,
-        batch_size: int = 1000
+        batch_size: int = 1000,
+        options: dict | None = None,
+        max_runtime: float | None = None,
     ) -> List[Dict]:
         """
         Execute AQL query.
@@ -485,6 +507,9 @@ class ArangoHTTPClient:
             bind_vars: Query bind variables
             txn_id: Optional transaction ID
             batch_size: Batch size for cursor
+            options: Cursor options, e.g. optimizer rules for one query
+            max_runtime: Server-side limit in seconds; the server kills the
+                query past it
 
         Returns:
             List[Dict]: Query results
@@ -500,6 +525,11 @@ class ArangoHTTPClient:
             "count": True,
             "batchSize": batch_size
         }
+        if options or max_runtime is not None:
+            payload["options"] = {
+                **(options or {}),
+                **({"maxRuntime": max_runtime} if max_runtime is not None else {}),
+            }
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
@@ -864,6 +894,9 @@ class ArangoHTTPClient:
         self,
         collection_name: str,
         fields: List[str],
+        unique: bool = False,  # noqa: FBT001, FBT002 - positional, as callers have always passed it
+        *,
+        sparse: bool = False,
     ) -> bool:
         """
         Create a persistent index on a collection (idempotent).
@@ -871,15 +904,22 @@ class ArangoHTTPClient:
         Args:
             collection_name: Collection to index
             fields: List of field names for the compound index
+            sparse: Leave out documents where any indexed field is null or
+                missing, so an index over a rarely-set field stays small
+            unique: Enforce uniqueness. Creation fails outright if the collection
+                already holds duplicates, so callers must tolerate a False return.
 
         Returns:
             bool: True if index exists or was created
         """
         url = f"{self.base_url}/_db/{self.database}/_api/index?collection={collection_name}"
-        payload = {
+        payload: dict[str, Any] = {
             "type": "persistent",
             "fields": fields,
+            "unique": unique,
         }
+        if sparse:
+            payload["sparse"] = True
         try:
             session = await self._get_session()
             async with session.post(url, json=payload) as resp:

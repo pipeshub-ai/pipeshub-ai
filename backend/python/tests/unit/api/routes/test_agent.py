@@ -219,6 +219,13 @@ class TestGetUserContext:
             _get_user_context(request)
 
 
+def _readable_graph() -> MagicMock:
+    graph = MagicMock()
+    graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
+    graph.check_record_access_with_details = AsyncMock(return_value={"record": {}})
+    return graph
+
+
 class TestBuildPriorRoutingMessages:
     """Covers _build_prior_routing_messages (replaces legacy _build_routing_context)."""
 
@@ -323,12 +330,35 @@ class TestBuildPriorRoutingMessages:
             },
             blob_store=blob,
             org_id="org-x",
+            user_id="u1",
+            graph_provider=_readable_graph(),
             is_multimodal_llm=False,
         )
         assert len(msgs) == 1
         assert isinstance(msgs[0], HumanMessage)
         assert isinstance(msgs[0].content, list)
         blob.get_record_from_storage.assert_awaited_once_with("vr-pdf", "org-x")
+
+    @pytest.mark.asyncio
+    async def test_attachment_the_caller_cannot_read_is_not_loaded(self) -> None:
+        from app.api.routes.agent import _build_prior_routing_messages
+        blob = MagicMock()
+        blob.get_record_from_storage = AsyncMock()
+        graph = _readable_graph()
+        graph.check_record_access_with_details = AsyncMock(return_value=None)
+        history = {
+            "previous_conversations": [{
+                "role": "user_query",
+                "content": "read this",
+                "attachments": [{"mimeType": "application/pdf", "virtualRecordId": "vr-other"}],
+            }],
+        }
+        for caller in ({"user_id": "u1", "graph_provider": graph}, {}):
+            msgs = await _build_prior_routing_messages(
+                history, blob_store=blob, org_id="org-x", is_multimodal_llm=False, **caller,
+            )
+            assert msgs[0].content == "read this"
+        blob.get_record_from_storage.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_skips_pdf_row_when_vrid_missing(self) -> None:
@@ -380,6 +410,8 @@ class TestBuildPriorRoutingMessages:
             },
             blob_store=blob,
             org_id="org-i",
+            user_id="u1",
+            graph_provider=_readable_graph(),
             is_multimodal_llm=True,
         )
         assert isinstance(msgs[0], HumanMessage)
@@ -2017,10 +2049,10 @@ class TestCreateKnowledgeEdges:
         graph_provider = AsyncMock()
         graph_provider.batch_upsert_nodes = AsyncMock(return_value=None)
         sources = {"c1": {"connectorId": "c1", "filters": {}}}
-        result = await _create_knowledge_edges(
-            "agent1", sources, "uk1", graph_provider, logging.getLogger("test")
-        )
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await _create_knowledge_edges(
+                "agent1", sources, "uk1", graph_provider, logging.getLogger("test")
+            )
 
     @pytest.mark.asyncio
     async def test_successful_creation(self) -> None:
@@ -2332,11 +2364,14 @@ class TestCloneAgentTemplate:
         from app.api.routes.agent import clone_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_template = AsyncMock(return_value={"name": "T1"})
         services["graph_provider"].clone_agent_template = AsyncMock(return_value="cloned-id")
 
         request = MagicMock()
 
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services):
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
             result = await clone_agent_template(request, "t1")
             assert result.status_code == 200
 
@@ -2347,11 +2382,14 @@ class TestCloneAgentTemplate:
         from app.api.routes.agent import clone_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_template = AsyncMock(return_value={"name": "T1"})
         services["graph_provider"].clone_agent_template = AsyncMock(return_value=None)
 
         request = MagicMock()
 
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services):
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
             with pytest.raises(HTTPException) as exc:
                 await clone_agent_template(request, "t1")
             assert exc.value.status_code == 500
@@ -3053,6 +3091,12 @@ class TestAgentChat:
     of."""
 
     @staticmethod
+    def _request() -> MagicMock:
+        request = MagicMock()
+        request.is_disconnected = AsyncMock(return_value=False)
+        return request
+
+    @staticmethod
     def _sse_streaming_response(frames: list[str]):
         from fastapi.responses import StreamingResponse
 
@@ -3073,7 +3117,7 @@ class TestAgentChat:
             f"event: complete\ndata: {json.dumps(completion_data)}\n\n",
         ])
 
-        request = MagicMock()
+        request = self._request()
         with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=streaming_response) as mock_chat_stream:
             result = await chat(request, "a1")
 
@@ -3092,7 +3136,7 @@ class TestAgentChat:
             f"event: error\ndata: {json.dumps(error_payload)}\n\n",
         ])
 
-        request = MagicMock()
+        request = self._request()
         with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=streaming_response):
             result = await chat(request, "a1")
 
@@ -3110,7 +3154,7 @@ class TestAgentChat:
 
         streaming_response = self._sse_streaming_response([])
 
-        request = MagicMock()
+        request = self._request()
         with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=streaming_response):
             result = await chat(request, "a1")
 
@@ -3127,7 +3171,7 @@ class TestAgentChat:
 
         passthrough = JSONResponse(status_code=400, content={"status": "error", "message": "bad"})
 
-        request = MagicMock()
+        request = self._request()
         with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=passthrough):
             result = await chat(request, "a1")
 
@@ -3253,6 +3297,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value=None)
@@ -3283,6 +3328,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3326,6 +3372,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3369,6 +3416,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3423,6 +3471,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3474,6 +3523,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3515,6 +3565,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3686,8 +3737,8 @@ class TestKnowledgeEdgeFailures2:
         from app.api.routes.agent import _create_knowledge_edges
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("fail"))
-        result = await _create_knowledge_edges("a1", {"c1": {"connectorId": "c1", "filters": {}}}, "uk1", gp, logging.getLogger("test"))
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await _create_knowledge_edges("a1", {"c1": {"connectorId": "c1", "filters": {}}}, "uk1", gp, logging.getLogger("test"))
 
     @pytest.mark.asyncio
     async def test_batch_create_edges_exception(self) -> None:
@@ -3695,8 +3746,8 @@ class TestKnowledgeEdgeFailures2:
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(return_value=True)
         gp.batch_create_edges = AsyncMock(side_effect=Exception("fail"))
-        result = await _create_knowledge_edges("a1", {"c1": {"connectorId": "c1", "filters": {}}}, "uk1", gp, logging.getLogger("test"))
-        assert len(result) == 1
+        with pytest.raises(Exception, match="fail"):
+            await _create_knowledge_edges("a1", {"c1": {"connectorId": "c1", "filters": {}}}, "uk1", gp, logging.getLogger("test"))
 
 class TestAllErrorPaths:
     @pytest.mark.asyncio
@@ -4012,8 +4063,8 @@ class TestCreateKnowledgeEdgesFullCoverage:
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(return_value=False)
         knowledge = {"c1": {"connectorId": "c1", "filters": {}}}
-        result = await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
 
     @pytest.mark.asyncio
     async def test_success(self) -> None:
@@ -4034,8 +4085,8 @@ class TestCreateKnowledgeEdgesFullCoverage:
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("err"))
         knowledge = {"c1": {"connectorId": "c1", "filters": {}}}
-        result = await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
-        assert result == []
+        with pytest.raises(Exception, match="err"):
+            await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
 
 
 class TestServiceAccountAgentRoutes:
@@ -4116,6 +4167,7 @@ class TestServiceAccountAgentRoutes:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1",
@@ -4176,6 +4228,7 @@ class TestServiceAccountAgentRoutes:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "_key": "sa-org-a",

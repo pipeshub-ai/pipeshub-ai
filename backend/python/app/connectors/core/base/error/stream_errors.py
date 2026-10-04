@@ -363,14 +363,18 @@ def _unwrap_retry_error(exc: BaseException) -> BaseException | None:
 
 def _extract_retry_after(exc: BaseException) -> str | None:
     """Read a Retry-After header off an SDK exception's response, if present."""
-    headers = getattr(getattr(exc, "response", None), "headers", None)
-    if headers is None:
-        return None
-    try:
-        value = headers.get("Retry-After") or headers.get("retry-after")
-    except Exception:
-        return None
-    return sanitize_retry_after(value)
+    # ``response`` for httpx/requests-style errors; ``response_info`` for the Box SDK's BoxAPIError.
+    for attr in ("response", "response_info"):
+        headers = getattr(getattr(exc, attr, None), "headers", None)
+        if headers is None:
+            continue
+        try:
+            value = headers.get("Retry-After") or headers.get("retry-after")
+        except Exception:
+            continue
+        if value is not None:
+            return sanitize_retry_after(value)
+    return None
 
 
 # Transport-level failures, matched without importing every HTTP client.

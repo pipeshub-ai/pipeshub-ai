@@ -201,13 +201,16 @@ const attachmentRefSchema = z.object({
   source: z.enum(['upload', 'paste-text']).optional(),
 });
 
+/** A chat message's text, the same limit on a new chat and on every follow-up. */
+const chatQuerySchema = z
+  .string({ required_error: 'Query is required' })
+  .min(1, { message: 'Query is required' })
+  .max(100000, {
+    message: 'Query exceeds maximum length of 100000 characters',
+  });
+
 const enterpriseSearchCreateBodySchema = z.object({
-    query: z
-      .string({ required_error: 'Query is required' })
-      .min(1, { message: 'Query is required' })
-      .max(100000, {
-        message: 'Query exceeds maximum length of 100000 characters',
-      }),
+    query: chatQuerySchema,
     recordIds: z.array(objectId('record ID')).optional(),
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
@@ -366,7 +369,7 @@ export const getAgentConversationByIdSchema = z.object({
 // ---------------------------------------------------------------------------
 
 const addMessageBodySchema = z.object({
-    query: z.string().min(1, { message: 'Query is required' }),
+    query: chatQuerySchema,
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
     attachments: z.array(attachmentRefSchema).optional(),
@@ -417,6 +420,27 @@ export const agentAddMessageParamsSchema = z.object({
     ...conversationIdParam,
   }),
   body: agentAddMessageBodySchema,
+});
+
+// ---------------------------------------------------------------------------
+// Agent non-streaming: create + add message (`chatMode` defaults to `quick`)
+// ---------------------------------------------------------------------------
+
+export const agentCreateConversationSchema = z.object({
+  params: z.object(agentKeyParam),
+  body: agentStreamCreateBodySchema.extend({
+    chatMode: agentChatModeSchema.optional(),
+  }),
+});
+
+export const agentAddMessageSchema = z.object({
+  params: z.object({
+    ...agentKeyParam,
+    ...conversationIdParam,
+  }),
+  body: agentAddMessageBodySchema.extend({
+    chatMode: agentChatModeSchema.optional(),
+  }),
 });
 
 // ---------------------------------------------------------------------------

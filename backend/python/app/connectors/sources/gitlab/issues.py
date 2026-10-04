@@ -25,6 +25,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
+from app.connectors.core.base.sync_point.sync_point import FailedItems
 from app.models.entities import Record, RecordGroupType, RecordType, TicketRecord, ItemType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.models.blocks import (
@@ -102,8 +103,9 @@ class IssuesSync:
         # earlier batch failed would move the checkpoint past the failed
         # items and they would never be re-fetched.
         watermarks: dict[str, int] = {}
+        failed = FailedItems()
         for i in range(0, len(all_issues), c.batch_size):
-            batch_records = await self._build_issue_records(all_issues[i : i + c.batch_size])
+            batch_records = await self._build_issue_records(all_issues[i : i + c.batch_size], failed)
             if not await self.process_new_records(batch_records, watermarks):
                 self.logger.warning(
                     "Issue batch failed for project %s at offset %s; stopping so the "
@@ -111,16 +113,27 @@ class IssuesSync:
                     project_id, i,
                 )
                 return
+        if failed.count:
+            self.logger.warning(
+                "%s issue(s) in project %s could not be fully synced; the checkpoint stays "
+                "before the earliest one so the next sync retries them.",
+                failed.count, project_id,
+            )
         for group_id, last_sync_time in watermarks.items():
-            await self._update_sync_checkpoint(group_id, last_sync_time)
+            await self._update_sync_checkpoint(group_id, failed.checkpoint(last_sync_time))
 
     # ------------------------------------------------------------------
     # Record building
     # ------------------------------------------------------------------
 
-    async def _build_issue_records(self, issue_batch: list[Any]) -> list[RecordUpdate]:
-        """Build TicketRecord + attachment records from a batch of GitLab issues."""
-        c = self.c
+    async def _build_issue_records(
+        self, issue_batch: list[Any], failed: FailedItems | None = None
+    ) -> list[RecordUpdate]:
+        """Build TicketRecord + attachment records from a batch of GitLab issues.
+
+        An issue that cannot be built is counted in ``failed`` so the caller keeps
+        the checkpoint before it; the rest of the batch still syncs.
+        """
         record_updates_batch: list[RecordUpdate] = []
         attachment_records_cnt = 0
         issues_enabled = self._issues_indexing_enabled()
@@ -128,39 +141,45 @@ class IssuesSync:
         for issue in issue_batch:
             record_update = await self._process_issue_incident_task_to_ticket(issue)
             if not record_update:
+                count_failed_work_item(failed, issue)
                 continue
             if not issues_enabled:
                 record_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
             record_updates_batch.append(record_update)
 
-            # Description attachments
-            markdown_content_raw: str = getattr(issue, "description", "") or ""
-            attachments, _ = await c.attachments.parse_gitlab_uploads(markdown_content_raw)
-            if attachments:
-                file_record_updates = await c.attachments.make_file_records_from_list(
-                    attachments=attachments, record=record_update.record
+            try:
+                attachment_records = await self._issue_attachment_records(issue, record_update.record)
+            except Exception as e:
+                self.logger.warning(
+                    "Could not collect attachments of issue %s in project %s; it will be retried: %s",
+                    getattr(issue, "iid", "?"), getattr(issue, "project_id", "?"), e,
                 )
-                if file_record_updates:
-                    if not issues_enabled:
-                        for ru in file_record_updates:
-                            ru.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                    record_updates_batch.extend(file_record_updates)
-                    attachment_records_cnt += len(file_record_updates)
-
-            # Note attachments follow the parent issue's indexing flag
-            attachment_records = await c.attachments.make_files_records_from_notes(
-                issue, record_update.record
-            )
-            if attachment_records:
-                if not issues_enabled:
-                    for ru in attachment_records:
-                        ru.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                record_updates_batch.extend(attachment_records)
-                attachment_records_cnt += len(attachment_records)
+                count_failed_work_item(failed, issue)
+                continue
+            # Attachments follow the parent issue's indexing flag
+            if not issues_enabled:
+                for ru in attachment_records:
+                    ru.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+            record_updates_batch.extend(attachment_records)
+            attachment_records_cnt += len(attachment_records)
 
         if attachment_records_cnt:
             self.logger.debug("Added %s attachments for issues batch", attachment_records_cnt)
         return record_updates_batch
+
+    async def _issue_attachment_records(self, issue: object, record: Record) -> list[RecordUpdate]:
+        """File records for uploads linked from an issue's description and its comments."""
+        c = self.c
+        records: list[RecordUpdate] = []
+        markdown_content_raw: str = getattr(issue, "description", "") or ""
+        attachments, _ = await c.attachments.parse_gitlab_uploads(markdown_content_raw)
+        if attachments:
+            records.extend(
+                await c.attachments.make_file_records_from_list(attachments=attachments, record=record)
+                or []
+            )
+        records.extend(await c.attachments.make_files_records_from_notes(issue, record) or [])
+        return records
 
     async def _process_issue_incident_task_to_ticket(self, issue: Any) -> RecordUpdate | None:
         """Map a single GitLab work-item to a TicketRecord RecordUpdate."""
@@ -430,4 +449,16 @@ class IssuesSync:
             return True
         from app.connectors.core.registry.filters import IndexingFilterKey
         return c.indexing_filters.is_enabled(IndexingFilterKey.ISSUES)
+
+
+def count_failed_work_item(failed: FailedItems | None, item: object) -> None:
+    """Record a work item that did not sync, holding the checkpoint before its update time."""
+    if failed is None:
+        return
+    updated_at = getattr(item, "updated_at", None)
+    try:
+        cutoff = parse_timestamp(updated_at) if updated_at else None
+    except (TypeError, ValueError):
+        cutoff = None
+    failed.add(cutoff)
 

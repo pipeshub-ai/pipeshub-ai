@@ -53,7 +53,7 @@ export function DeleteAgentDialog({
             zIndex: 999,
             cursor: 'pointer',
           }}
-          onClick={() => !isDeleting && onOpenChange(false)}
+          onClick={() => !isDeleting && handleOpenChange(false)}
         />
       )}
       <Dialog.Content
@@ -99,7 +99,7 @@ export function DeleteAgentDialog({
             <Button
               variant="outline"
               color="gray"
-              onClick={() => onOpenChange(false)}
+              onClick={() => handleOpenChange(false)}
               disabled={isDeleting}
             >
               {t('action.cancel')}

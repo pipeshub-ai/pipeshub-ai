@@ -30,6 +30,7 @@ for _p in (_ROOT, _RV_HELPER):
         sys.path.insert(0, s)
 
 from helper.agui_sse import (
+    decode_sse_envelope,
     is_root_error,
     is_root_finished,
     iter_sse_envelopes,
@@ -37,6 +38,7 @@ from helper.agui_sse import (
     run_finished_result,
 )
 from helper.clients.conversations_client import AgentConversationsClient
+from helper.conversation_seeds import seed_query
 from openapi_search_validator import assert_matches_component_schema
 from openapi_schema_validator import (
     assert_request_body_matches_openapi_operation,
@@ -1042,7 +1044,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             content_type = (resp.headers.get("Content-Type") or "").lower()
             for envelope in iter_sse_envelopes(resp):
                 assert_matches_component_schema(
-                    envelope,
+                    decode_sse_envelope(envelope),
                     "AgentRegenerateSSEEvent",
                 )
                 parsed_data: Any
@@ -1131,7 +1133,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
             self.agent_key,
-            query=f"agent-regenerate-happy-{uuid4().hex}",
+            query=seed_query(f"agent-regenerate-happy-{uuid4().hex}"),
             created_conversations=created_conversations,
         )
         message_id, _ = self._conversation_last_bot_and_user_message_ids(
@@ -1214,7 +1216,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
     ) -> None:
         conversation_id = self._stream_create_agent_conversation_id(
             self.agent_key,
-            query=f"agent-regenerate-body-{label}-{uuid4().hex}",
+            query=seed_query(f"agent-regenerate-body-{label}-{uuid4().hex}"),
             created_conversations=created_conversations,
         )
         message_id, _ = self._conversation_last_bot_and_user_message_ids(

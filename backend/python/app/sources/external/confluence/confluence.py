@@ -123,15 +123,16 @@ class ConfluenceDataSource:
         """Resolve an attachment ``_links.download`` path to a full URL.
 
         Data Center returns paths like ``/download/attachments/{pageId}/{file}``
-        relative to the Confluence site origin (not ``/rest/api``).
+        relative to the site's base address, which keeps any context path the
+        site is served under (``https://host/confluence``), not to the bare host.
         """
         if download_path.startswith("http://") or download_path.startswith("https://"):
             return download_path
-        parsed = urlparse(self.base_url)
-        origin = f"{parsed.scheme}://{parsed.netloc}"
-        if download_path.startswith("/"):
-            return f"{origin}{download_path}"
-        return f"{self.base_url.rstrip('/')}/{download_path}"
+        site_root = self._v1_rest_api_base()[: -len("/rest/api")]
+        parsed = urlparse(site_root)
+        if parsed.path and download_path.startswith(f"{parsed.path}/"):
+            return f"{parsed.scheme}://{parsed.netloc}{download_path}"
+        return f"{site_root}/{download_path.lstrip('/')}"
 
     async def _stream_download_url(
         self,
@@ -433,6 +434,41 @@ class ConfluenceDataSource:
             method="GET",
             url=url,
             headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def list_space_content_v1(
+        self,
+        space_key: str,
+        content_type: str,
+        status: str = "current",
+        start: int | None = None,
+        limit: int = 100,
+        expand: str | None = None,
+        headers: dict[str, Any] | None = None,
+    ) -> HTTPResponse:
+        """``GET /rest/api/content?spaceKey=&type=&status=`` — a space's pages or blog posts from the database.
+
+        Unlike ``/content/search`` it does not go through the search index, so it
+        is what exists, as far as the caller's account can see.
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        url = f"{self._v1_rest_api_base()}/content"
+        _query: dict[str, Any] = {"spaceKey": space_key, "type": content_type, "status": status, "limit": limit}
+        if start is not None:
+            _query["start"] = start
+        if expand:
+            _query["expand"] = expand
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(dict(headers or {})),
             path={},
             query=_as_str_dict(_query),
             body=None,
@@ -2835,6 +2871,7 @@ class ConfluenceDataSource:
         page_ids: Optional[List[str]] = None,
         page_ids_operator: Optional[Literal["in", "not_in"]] = None,
         include_children: bool = False,
+        within_ids: Optional[List[str]] = None,
         order_by: Optional[Literal["lastModified", "created", "title"]] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
         expand: Optional[str] = None,
@@ -2862,6 +2899,7 @@ class ConfluenceDataSource:
             page_ids: Filter specific pages by IDs (includes children if include_children=True)
             page_ids_operator: "in" to include pages, "not_in" to exclude (default: "in")
             include_children: Include child pages of specified page_ids (default: False)
+            within_ids: Only these page ids, on top of any ``page_ids`` filter
             order_by: CQL sort field - lastModified, created, or title (default: None, API default).
                       Must be specified together with sort_order, or neither.
             sort_order: Sort direction - asc or desc (default: None, API default).
@@ -2900,6 +2938,9 @@ class ConfluenceDataSource:
         # Add space filter if provided
         if space_key:
             cql_parts.append(f"space='{space_key}'")
+
+        if within_ids:
+            cql_parts.append(f"id in ({', '.join(within_ids)})")
 
         # Add page IDs filter with children support
         if page_ids:
@@ -2972,6 +3013,7 @@ class ConfluenceDataSource:
         space_key: Optional[str] = None,
         blogpost_ids: Optional[List[str]] = None,
         blogpost_ids_operator: Optional[Literal["in", "not_in"]] = None,
+        within_ids: Optional[List[str]] = None,
         order_by: Optional[Literal["lastModified", "created", "title"]] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
         expand: Optional[str] = None,
@@ -2997,6 +3039,7 @@ class ConfluenceDataSource:
             space_key: Filter blogposts by specific space key
             blogpost_ids: Filter specific blogposts by IDs
             blogpost_ids_operator: "in" to include blogposts, "not_in" to exclude (default: "in")
+            within_ids: Only these blog post ids, on top of any ``blogpost_ids`` filter
             order_by: CQL sort field - lastModified, created, or title (default: None, API default).
                       Must be specified together with sort_order, or neither.
             sort_order: Sort direction - asc or desc (default: None, API default).
@@ -3035,6 +3078,9 @@ class ConfluenceDataSource:
         # Add space filter if provided
         if space_key:
             cql_parts.append(f"space='{space_key}'")
+
+        if within_ids:
+            cql_parts.append(f"id in ({', '.join(within_ids)})")
 
         # Add blogpost IDs filter (no children for blogposts)
         if blogpost_ids:
@@ -9066,7 +9112,9 @@ class ConfluenceDataSource:
         content_type: Optional[str] = None,
         expand: str = "version,space,history.lastUpdated,ancestors",
         limit: int = 200,
-        headers: Optional[Dict[str, Any]] = None
+        headers: Optional[Dict[str, Any]] = None,
+        start: Optional[int] = None,
+        cursor: Optional[str] = None,
     ) -> HTTPResponse:
         """Search for content (pages/blogs) by their titles using CQL.
 
@@ -9081,6 +9129,8 @@ class ConfluenceDataSource:
             expand: Comma-separated properties to expand
             limit: Max results to return (default: 200)
             headers: Additional headers
+            start: Offset of the page to read, from the previous page's ``_links.next``
+            cursor: Cursor of the page to read, from the previous page's ``_links.next``
 
         Returns:
             HTTPResponse with matching content items
@@ -9116,6 +9166,10 @@ class ConfluenceDataSource:
 
         if expand:
             _query['expand'] = expand
+        if start is not None:
+            _query['start'] = start
+        if cursor:
+            _query['cursor'] = cursor
 
         # v1 content search (Cloud + DC)
         url = f"{self._v1_rest_api_base()}/content/search"

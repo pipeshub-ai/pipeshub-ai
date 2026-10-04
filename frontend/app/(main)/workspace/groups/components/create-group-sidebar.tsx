@@ -11,6 +11,7 @@ import {
 } from '../../components';
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
+import { groupSaveRefusalMessage } from '../save-error';
 import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
 
 // ========================================
@@ -54,6 +55,11 @@ export function CreateGroupSidebar({
   } = usePaginatedUserOptions({
     enabled: isCreatePanelOpen,
     idField: 'userId',
+      // Service accounts are offered here, each marked, because membership is
+    // how one is given anything to read — the create panel tells an
+    // administrator to grant access through groups and teams.
+    includeServiceAccounts: true,
+    serviceAccountBadge: t('workspace.serviceAccounts.memberBadge'),
   });
 
   // Form validation
@@ -90,13 +96,14 @@ export function CreateGroupSidebar({
       // Close panel and refresh parent list
       closeCreatePanel();
       onCreateSuccess?.();
-    } catch {
+    } catch (error) {
       addToast({
         variant: 'error',
         title: t(
           'workspace.groups.create.errorGeneric',
           'Failed to create group'
         ),
+        description: groupSaveRefusalMessage(error),
         duration: 5000,
       });
     } finally {

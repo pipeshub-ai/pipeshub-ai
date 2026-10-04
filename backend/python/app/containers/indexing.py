@@ -7,6 +7,9 @@ from app.connectors.services.kafka_service import KafkaService
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.health.health import Health
+from app.services.vector_db.const.const import (
+    VECTOR_DB_ENTITIES_COLLECTION_NAME,
+)
 from app.utils.logger import create_logger
 
 load_dotenv(override=True)
@@ -49,6 +52,13 @@ class IndexingAppContainer(BaseAppContainer):
         vector_db_service=vector_db_service,
     )
 
+    blob_storage = providers.Resource(
+        container_utils.create_blob_storage,
+        logger=logger,
+        config_service=config_service,
+        graph_provider=graph_provider,
+    )
+
     indexing_pipeline = providers.Resource(
         container_utils.create_indexing_pipeline,
         logger=logger,
@@ -56,6 +66,7 @@ class IndexingAppContainer(BaseAppContainer):
         graph_provider=graph_provider,
         vector_db_service=vector_db_service,
         collection_registry=collection_registry,
+        blob_storage=blob_storage,
     )
 
     document_extractor = providers.Resource(
@@ -63,13 +74,6 @@ class IndexingAppContainer(BaseAppContainer):
         logger=logger,
         graph_provider=graph_provider,
         config_service=config_service,
-    )
-
-    blob_storage = providers.Resource(
-        container_utils.create_blob_storage,
-        logger=logger,
-        config_service=config_service,
-        graph_provider=graph_provider,
     )
 
     graphdb = providers.Resource(
@@ -87,6 +91,27 @@ class IndexingAppContainer(BaseAppContainer):
         collection_registry=collection_registry,
     )
 
+    entity_vector_store = providers.Resource(
+        container_utils.create_entity_vector_store,
+        logger=logger,
+        config_service=config_service,
+        vector_db_service=vector_db_service,
+        collection_name=VECTOR_DB_ENTITIES_COLLECTION_NAME,
+        # Indexing runs the entity index rebuild, which refills a recreated
+        # collection; query and connectors keep raising until it does.
+        recreate_on_dimension_mismatch=True,
+    )
+
+    # Canonicalises extracted taxonomy names before graph/vector writes —
+    # see app.modules.entity_resolution. Always on.
+    entity_resolver = providers.Resource(
+        container_utils.create_entity_resolver,
+        logger=logger,
+        config_service=config_service,
+        graph_provider=graph_provider,
+        entity_vector_store=entity_vector_store,
+    )
+
     sink_orchestrator = providers.Resource(
         container_utils.create_sink_orchestrator,
         logger=logger,
@@ -95,6 +120,8 @@ class IndexingAppContainer(BaseAppContainer):
         vector_store=vector_store,
         graph_provider=graph_provider,
         config_service=config_service,
+        entity_vector_store=entity_vector_store,
+        entity_resolver=entity_resolver,
     )
 
 
@@ -127,6 +154,7 @@ class IndexingAppContainer(BaseAppContainer):
 
     extraction_client = providers.Resource(
         container_utils.create_extraction_client,
+        config_service=config_service,
     )
 
     event_processor = providers.Resource(
@@ -167,6 +195,19 @@ async def initialize_container(container: IndexingAppContainer) -> bool:
         # Store the resolved graph_provider in the container to avoid coroutine reuse
         container._graph_provider = graph_provider
         logger.info("✅ Graph Database Provider initialized and connected")
+
+        # Idempotent, and not only the connector service's job: this service
+        # writes taxonomy nodes and alias nodes whose uniqueness constraints
+        # and indexes must exist before the first write, whichever service
+        # starts first after an upgrade. Not fatal: the connector service runs
+        # the same bootstrap.
+        if await graph_provider.ensure_schema():
+            logger.info("✅ Schema ensured")
+        else:
+            logger.warning(
+                "⚠️ Graph schema bootstrap failed; taxonomy and alias constraints "
+                "may be missing until a service that runs it starts successfully"
+            )
 
         await Health.system_health_check(container)
         return True

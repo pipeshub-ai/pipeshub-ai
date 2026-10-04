@@ -37,6 +37,7 @@ import {
   DocumentInfoResponse,
   extractUserId,
   normalizeExtension,
+  toObjectId,
   validateFileAndDocumentName,
   writeToStorage,
 } from '../utils/utils';
@@ -53,9 +54,9 @@ import { DocumentModel } from '../schema/document.schema';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 import {
   maxFileSizeForPipesHubService,
-  endpoint,
   STORAGE_WRITE_FAILED_MESSAGE,
 } from '../constants/constants';
+import { storedServiceEndpoint } from '../utils/service-endpoint';
 import { Logger } from '../../../libs/services/logger.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
@@ -228,7 +229,7 @@ export class UploadDocumentService {
     await placeholderDoc.save();
 
     res.setHeader('Location', storageURL);
-    res.setHeader('x-document-id', documentId as string);
+    res.setHeader('x-document-id', String(documentId));
     res.setHeader('x-document-name', documentName as string);
     res.status(HTTP_STATUS.PERMANENT_REDIRECT).json(placeholderDocument);
   }
@@ -291,9 +292,9 @@ export class UploadDocumentService {
     const documentInfo: Partial<Document> = {
       documentName,
       alternateDocumentName,
-      orgId: new mongoose.Types.ObjectId(orgId),
+      orgId: toObjectId(orgId, 'organization'),
       isVersionedFile: isVersioned,
-      initiatorUserId: userId ? new mongoose.Types.ObjectId(userId) : null,
+      initiatorUserId: userId ? toObjectId(userId, 'user') : null,
       permissions,
       sizeInBytes: size,
       customMetadata,
@@ -446,11 +447,11 @@ export class UploadDocumentService {
     if (isValidStorageVendor(storageTypeKey)) {
       // TODO : Move this to the local storage provider
       if (storageTypeKey === StorageVendor.Local) {
-        const url =
-          (await this.keyValueStoreService.get<string>(endpoint)) || '{}';
-
-        const storageServiceEndpoint =
-          JSON.parse(url).storage.endpoint || this.defaultConfig.endpoint;
+        const storageServiceEndpoint = await storedServiceEndpoint(
+          this.keyValueStoreService,
+          'storage',
+          this.defaultConfig.endpoint,
+        );
         localPath = storedPath;
         // normalize the url to the local storage
         const baseUrl = storedPath.replace(

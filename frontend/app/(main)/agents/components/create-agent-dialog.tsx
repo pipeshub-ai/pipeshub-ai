@@ -17,6 +17,7 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { AgentsApi } from '@/app/(main)/agents/api';
+import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import { ServiceAccountConfirmDialog } from '@/app/(main)/agents/agent-builder/components/service-account-confirm-dialog';
 
 type AgentType = 'user' | 'service';
@@ -24,13 +25,6 @@ type AgentType = 'user' | 'service';
 export interface CreateAgentDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-}
-
-function extractApiError(e: unknown, fallback: string): string {
-  const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  if (typeof detail === 'string' && detail.trim()) return detail.trim();
-  if (e instanceof Error && e.message) return e.message;
-  return fallback;
 }
 
 export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps) {
@@ -110,7 +104,7 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
       // the button stays disabled until this component unmounts.
       router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}`);
     } catch (e: unknown) {
-      setError(extractApiError(e, t('agentBuilder.saveFailed')));
+      setError(getUserFacingErrorMessage(e, t('agentBuilder.saveFailed')));
     } finally {
       // Only unlock on failure — on success we stay locked until unmount.
       if (!succeeded) {
@@ -144,7 +138,7 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
       succeeded = true;
       router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}&sa=1`);
     } catch (e: unknown) {
-      setServiceError(extractApiError(e, t('agentBuilder.svcAcctEnableFailed')));
+      setServiceError(getUserFacingErrorMessage(e, t('agentBuilder.svcAcctEnableFailed')));
     } finally {
       if (!succeeded) {
         serviceCreateRef.current = false;

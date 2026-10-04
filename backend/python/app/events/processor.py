@@ -34,12 +34,15 @@ from app.models.blocks import (
 from app.models.entities import Record, RecordType
 from app.modules.parsers.code_parser.lang_config import config_for_extension, detect_language
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
+from app.modules.parsers.epub.epub_reader import read_epub
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+from app.modules.parsers.text_decoding import decode_text
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
+from app.services.parsing.interface import ParseError
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
@@ -77,6 +80,8 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         record_name=record_dict.get("recordName"),
         record_type=RecordType(record_dict.get("recordType", "FILE")),
         record_status=ProgressStatus(record_dict.get("indexingStatus", "NOT_STARTED")),
+        indexing_status=record_dict.get("indexingStatus", ProgressStatus.QUEUED.value),
+        extraction_status=record_dict.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
         external_record_id=record_dict.get("externalRecordId"),
         version=record_dict.get("version", 1),
         origin=origin,
@@ -1404,38 +1409,15 @@ class Processor:
 
             llm, _ = await self._get_llm_for_role("indexing", reasoning_effort="low")
 
-            # Try different encodings to decode binary data
-            encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
-            all_rows = None
-            for encoding in encodings:
-                try:
-                    self.logger.debug(
-                        f"Attempting to decode delimited file with {encoding} encoding"
-                    )
-                    # Decode binary data to string
-                    csv_text = file_binary.decode(encoding)
+            try:
+                all_rows = parser.read_raw_rows(io.StringIO(decode_text(file_binary)))
+                self.logger.info(f"✅ Successfully parsed delimited file. Rows: {len(all_rows)}")
+            except Exception as e:
+                self.logger.warning(f"Failed to read rows from delimited file {recordName}: {str(e)}")
+                all_rows = None
 
-                    # Create string stream from decoded text
-                    csv_stream = io.StringIO(csv_text)
-
-                    # Read raw rows for table detection
-                    all_rows = parser.read_raw_rows(csv_stream)
-
-
-                    self.logger.info(
-                        f"✅ Successfully parsed delimited file with {encoding} encoding. Rows: {len(all_rows)}"
-                    )
-                    break
-                except UnicodeDecodeError:
-                    self.logger.debug(f"Failed to decode with {encoding} encoding")
-                    continue
-                except Exception as e:
-                    self.logger.debug(f"Failed to process delimited file with {encoding} encoding: {str(e)}")
-                    continue
-
-
-            if all_rows is None or not all_rows:
-                self.logger.info(f"Unable to decode delimited file with any supported encoding or it is empty for record: {recordName}. Setting indexing status to EMPTY.")
+            if not all_rows:
+                self.logger.info(f"Delimited file could not be read or is empty for record: {recordName}. Setting indexing status to EMPTY.")
 
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -1617,6 +1599,31 @@ class Processor:
                 doc_id=recordId,
                 details={"error": str(e)},
             ) from e
+
+    async def process_epub_document(
+        self,
+        recordName: str,
+        recordId: str,
+        version: int,
+        source: str,
+        orgId: str,
+        epub_binary: bytes,
+        virtual_record_id: str,
+        event_type: str | None = None,
+        prev_virtual_record_id: str | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Process an EPUB book as the HTML document its chapters make up."""
+        self.logger.info(f"🚀 Starting EPUB document processing for record: {recordName}")
+        try:
+            book = await asyncio.to_thread(read_epub, epub_binary)
+        except ParseError as e:
+            # DocumentProcessingError is what marks a file failure as final;
+            # a bare ParseError would be retried as if it were an outage.
+            raise DocumentProcessingError(e.message, doc_id=recordId, details=e.details) from e
+        async for event in self.process_html_document(
+            recordName, recordId, version, source, orgId, book.to_html(), virtual_record_id, event_type, prev_virtual_record_id
+        ):
+            yield event
 
     async def process_mdx_document(
         self, recordName: str, recordId: str, version: str, source: str, orgId: str, mdx_content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
@@ -1847,29 +1854,10 @@ class Processor:
         )
 
         try:
-            # Try different encodings to decode the binary content
-            encodings = ["utf-8", "utf-8-sig", "latin-1", "iso-8859-1"]
-            text_content = None
-
-            for encoding in encodings:
-                try:
-                    text_content = txt_binary.decode(encoding)
-                    self.logger.debug(
-                        f"Successfully decoded text with {encoding} encoding"
-                    )
-                    break
-                except UnicodeDecodeError:
-                    continue
-
-            if text_content is None:
-                raise ValueError(
-                    "Unable to decode text file with any supported encoding"
-                )
-
             async for event in self.process_md_document(
                 recordName=recordName,
                 recordId=recordId,
-                md_binary=text_content,
+                md_binary=decode_text(txt_binary),
                 virtual_record_id=virtual_record_id,
                 event_type=event_type,
                 prev_virtual_record_id=prev_virtual_record_id,

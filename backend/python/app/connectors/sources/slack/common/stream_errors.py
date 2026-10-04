@@ -22,6 +22,7 @@ from app.connectors.core.base.error.stream_errors import (
 _SLACK_ERROR_STATUS: dict[str, int] = {
     "invalid_auth": HttpStatusCode.UNAUTHORIZED.value,
     "token_revoked": HttpStatusCode.UNAUTHORIZED.value,
+    "token_expired": HttpStatusCode.UNAUTHORIZED.value,
     "account_inactive": HttpStatusCode.UNAUTHORIZED.value,
     "not_authed": HttpStatusCode.UNAUTHORIZED.value,
     "missing_scope": HttpStatusCode.FORBIDDEN.value,

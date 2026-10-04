@@ -6,10 +6,17 @@ export const TokenScopes = Object.freeze({
   TOKEN_REFRESH: 'token:refresh',
   STORAGE_TOKEN: 'storage:token',
   CONVERSATION_CREATE: 'conversation:create',
+  CONVERSATION_PERMISSIONS: 'conversation:permissions',
   VALIDATE_EMAIL: 'email:validate',
   ORG_EMAIL_VERIFY: 'org:email:verify',
   EMAIL_VERIFIED: 'email:verified',
   DESKTOP_COMMAND: 'desktop:command',
+  // Held only by the Python services, on their caller-role lookups, so the
+  // global rate limiter can tell those from client traffic (rate-limit.middleware).
+  CALLER_ROLE: 'caller:role',
+  // Slack bot process only. Narrower than FETCH_CONFIG because the route it
+  // guards returns Slack workspace credentials for every org.
+  SLACK_BOT_VERIFY: 'slack-bot:verify',
 } as const);
 
 // Create a type for the TokenScopes keys

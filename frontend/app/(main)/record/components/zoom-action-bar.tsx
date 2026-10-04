@@ -1,5 +1,7 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
+
 import { Box, Flex, IconButton, Text, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
@@ -22,6 +24,7 @@ export function ZoomActionBar({
   minZoom,
   maxZoom,
 }: ZoomActionBarProps) {
+  const { t } = useTranslation();
   const percentage = Math.round(zoomLevel * 100);
   const isAtMin = zoomLevel <= minZoom;
   const isAtMax = zoomLevel >= maxZoom;
@@ -40,41 +43,41 @@ export function ZoomActionBar({
         userSelect: 'none',
       }}
     >
-      <Tooltip content="Zoom in" side="left">
+      <Tooltip content={t('chat.zoomIn')} side="left">
         <IconButton
           variant="ghost"
           color="gray"
           size="1"
           onClick={onZoomIn}
           disabled={isAtMax}
-          aria-label="Zoom in"
+          aria-label={t('chat.zoomIn')}
           style={{ width: 32, height: 32, padding: 0 }}
         >
           <MaterialIcon name="zoom_in" size={ICON_SIZE} />
         </IconButton>
       </Tooltip>
 
-      <Tooltip content="Zoom out" side="left">
+      <Tooltip content={t('chat.zoomOut')} side="left">
         <IconButton
           variant="ghost"
           color="gray"
           size="1"
           onClick={onZoomOut}
           disabled={isAtMin}
-          aria-label="Zoom out"
+          aria-label={t('chat.zoomOut')}
           style={{ width: 32, height: 32, padding: 0 }}
         >
           <MaterialIcon name="zoom_out" size={ICON_SIZE} />
         </IconButton>
       </Tooltip>
 
-      <Tooltip content="Fit to screen" side="left">
+      <Tooltip content={t('filePreview.fitToScreen')} side="left">
         <IconButton
           variant="ghost"
           color="gray"
           size="1"
           onClick={onFitScreen}
-          aria-label="Fit to screen"
+          aria-label={t('filePreview.fitToScreen')}
           style={{ width: 32, height: 32, padding: 0 }}
         >
           <MaterialIcon name="fit_screen" size={ICON_SIZE} />

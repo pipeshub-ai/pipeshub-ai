@@ -28,8 +28,13 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.services.resource_governor.feedback import get_default_downstream_feedback
+from app.services.vector_db.membership import (
+    EMPTY_CONFIRM_DELAY_SECONDS,
+    remaining_record_keys,
+)
 from app.utils.jwt import mint_service_token
 from app.utils.request_context import inject_request_headers
+from app.utils.storage_path import build_hierarchical_storage_path
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.worker_scaling import scaled
 
@@ -60,6 +65,18 @@ def _decode_json(raw: "bytes | str") -> Any:  # noqa: ANN401 - stored records ar
     except Exception:
         return json.loads(raw) if isinstance(raw, str) else json.loads(raw.decode("utf-8"))
 _COMPRESSION_THRESHOLD_ENV = "PIPESHUB_RECORD_COMPRESSION_THRESHOLD_BYTES"
+
+
+def _json_utf8_bytes(obj: Any) -> bytes:  # noqa: ANN401 - stored records are free-form
+    """Stored records keep non-ASCII text as written, so `grep Borgartún` matches.
+
+    A lone surrogate (from broken text extraction) cannot be encoded as UTF-8;
+    such a record falls back to ASCII escapes rather than failing to store.
+    """
+    try:
+        return json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        return json.dumps(obj).encode("utf-8")
 
 
 def compression_threshold_bytes() -> int:
@@ -126,9 +143,19 @@ class TransientStorageError(aiohttp.ClientError):
     """A storage response (502/503/504) that a retry can reasonably fix."""
 
 
+class StorageDocumentNotFoundError(aiohttp.ClientError):
+    """The storage service has no live document with this id (404).
+
+    Deleted or never created, so repeating the request cannot help. A write
+    can replace the document; a read has nothing to return.
+    """
+
+
 def _storage_status_error(status: int, message: str) -> aiohttp.ClientError:
     if status in _TRANSIENT_STORAGE_STATUSES:
         return TransientStorageError(message)
+    if status == HttpStatusCode.NOT_FOUND.value:
+        return StorageDocumentNotFoundError(message)
     return aiohttp.ClientError(message)
 
 
@@ -350,25 +377,45 @@ def _versioned_json_form(
     record_id: str,
     *,
     compressed: bool,
+    document_path: str | None = None,
+    connector_id: str | None = None,
+    record_group_id: str | None = None,
 ) -> aiohttp.FormData:
-    """Multipart body for a versioned JSON document under ``records/<vrid>``.
+    """Multipart body for a JSON document upload.
+
+    When *document_path* is supplied the document is stored at that
+    hierarchical path as a non-versioned file (used by the blob-tree
+    storage layout).  Otherwise it falls back to the flat
+    ``records/<vrid>`` path with versioning enabled.
 
     Build one per attempt: an aiohttp FormData can be sent only once.
     """
+    use_hierarchical = document_path is not None
+    effective_path = document_path if use_hierarchical else f'records/{virtual_record_id}'
+
     form_data = aiohttp.FormData()
     form_data.add_field('file', json_data, filename=f'{document_name}.json', content_type='application/json')
     form_data.add_field('documentName', document_name)
-    form_data.add_field('documentPath', f'records/{virtual_record_id}')
-    form_data.add_field('isVersionedFile', 'true')
+    form_data.add_field('documentPath', effective_path)
+    form_data.add_field('isVersionedFile', 'false' if use_hierarchical else 'true')
     form_data.add_field('extension', 'json')
     form_data.add_field('recordId', record_id)
+    idx = 0
     if compressed:
-        form_data.add_field('customMetadata[0][key]', 'compression')
-        form_data.add_field('customMetadata[0][value][algorithm]', 'zstd')
-        form_data.add_field('customMetadata[0][value][level]', '10')
-        form_data.add_field('customMetadata[0][value][format]', 'msgspec')
-        form_data.add_field('customMetadata[0][value][version]', 'v1')
-        form_data.add_field('customMetadata[0][value][compressed]', 'true')
+        form_data.add_field(f'customMetadata[{idx}][key]', 'compression')
+        form_data.add_field(f'customMetadata[{idx}][value][algorithm]', 'zstd')
+        form_data.add_field(f'customMetadata[{idx}][value][level]', '10')
+        form_data.add_field(f'customMetadata[{idx}][value][format]', 'msgspec')
+        form_data.add_field(f'customMetadata[{idx}][value][version]', 'v1')
+        form_data.add_field(f'customMetadata[{idx}][value][compressed]', 'true')
+        idx += 1
+    if connector_id:
+        form_data.add_field(f'customMetadata[{idx}][key]', 'connectorId')
+        form_data.add_field(f'customMetadata[{idx}][value]', connector_id)
+        idx += 1
+    if record_group_id:
+        form_data.add_field(f'customMetadata[{idx}][key]', 'recordGroupId')
+        form_data.add_field(f'customMetadata[{idx}][value]', record_group_id)
     return form_data
 
 
@@ -396,6 +443,7 @@ class BlobStorage(Transformer):
         self.logger = logger
         self.config_service = config_service
         self.graph_provider = graph_provider
+        self.compression_enabled = os.environ.get("BLOB_STORAGE_COMPRESSION", "true").lower() in ("true", "1", "yes")
 
     async def _signed_url_client(self) -> ISignedUrlCache:
         """`ISignedUrlCache` for this loop; a `NoopSignedUrlCache` when disabled.
@@ -571,7 +619,9 @@ class BlobStorage(Transformer):
             self.logger.debug("%s is not JSON-serializable (%s); compressing", label, str(e))
             serialized_size = None
 
-        if serialized_size is not None and serialized_size <= compression_threshold_bytes():
+        if serialized_size is not None and (
+            not self.compression_enabled or serialized_size <= compression_threshold_bytes()
+        ):
             return None, False
 
         try:
@@ -857,55 +907,238 @@ class BlobStorage(Transformer):
 
         return cleaned
 
-    def _is_non_versioned_exception(self, error: Exception) -> bool:
-        """Detect Node storage errors for legacy documents that are not version-enabled."""
-        return "cannot be versioned" in str(error).lower()
+    async def _build_hierarchical_storage_path(
+        self,
+        record: Any,
+        virtual_record_id: str,
+    ) -> str:
+        """Build filesystem-like storage path for a record.
+
+        Delegates to the shared ``build_hierarchical_storage_path`` utility
+        so the same algorithm is used by both the writer (here) and the mover
+        (``StorageCleanupHelper``).  Always returns a usable path — falls back
+        to ``records/<virtual_record_id>`` when the hierarchy can't be computed.
+        """
+        try:
+            path = await build_hierarchical_storage_path(
+                record,
+                self.graph_provider,
+                virtual_record_id=virtual_record_id,
+                logger=self.logger,
+            )
+            return path or f"records/{virtual_record_id}"
+        except Exception as e:
+            self.logger.warning(
+                "Failed to build hierarchical path for record, falling back to flat path: %s", str(e)
+            )
+            return f"records/{virtual_record_id}"
+
+    async def update_record_buffer(
+        self,
+        org_id: str,
+        document_id: str,
+        record_dict: dict,
+        virtual_record_id: str,
+    ) -> tuple[str | None, int | None]:
+        """Override the current blob content in place without creating a new version.
+
+        Uses PUT /buffer which accepts multipart/form-data with field 'file'.
+        Works on both versioned and non-versioned storage documents.
+        """
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+
+            compressed_record, use_compression = self._maybe_compress_record(record_dict)
+
+            upload_data = {
+                "isCompressed": use_compression,
+                "record": compressed_record if use_compression else record_dict,
+                "virtualRecordId": virtual_record_id,
+            }
+            json_bytes = _json_utf8_bytes(upload_data)
+            file_size_bytes = len(json_bytes)
+
+            buffer_url = f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
+            self.logger.info("📤 Overriding record buffer for document: %s", document_id)
+
+            session = get_shared_session()
+            form_data = aiohttp.FormData()
+            form_data.add_field(
+                "file",
+                json_bytes,
+                filename=f"record_{virtual_record_id}.json",
+                content_type="application/json",
+            )
+            async with session.put(buffer_url, data=form_data, headers=headers) as resp:
+                if resp.status != HttpStatusCode.SUCCESS.value:
+                    error_text = await resp.text()
+                    raise _storage_status_error(
+                        resp.status, f"Failed to update buffer: {resp.status} {error_text[:200]}"
+                    )
+
+            self.logger.info("✅ Successfully overrode buffer for document: %s", document_id)
+            return document_id, file_size_bytes
+
+        except StorageDocumentNotFoundError:
+            raise
+        except Exception as e:
+            self.logger.error("❌ Error in update_record_buffer for document %s: %s", document_id, str(e))
+            raise
+
+    @staticmethod
+    def _strip_org_prefix(org_id: str, document_path: str) -> str:
+        """Node stores documentPath as '<orgId>/PipesHub/<relative>'; Python
+        builds relative paths ('records/...'). Strip the prefix so the two
+        forms are comparable."""
+        prefix = f"{org_id}/PipesHub/"
+        if document_path.startswith(prefix):
+            return document_path[len(prefix):]
+        return document_path
+
+    async def _get_current_document_path(self, org_id: str, document_id: str) -> str | None:
+        """Fetch the ACTUAL currently-stored documentPath for a document via
+        Node's internal document-info endpoint -- not recomputed/guessed."""
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+            get_url = f"{nodejs_endpoint}{Routes.STORAGE_DOCUMENT.value.format(documentId=document_id)}"
+            session = get_shared_session()
+            async with session.get(get_url, headers=headers) as response:
+                if response.status == 404:
+                    return None
+                if response.status != HttpStatusCode.SUCCESS.value:
+                    self.logger.warning(
+                        "Unexpected status fetching current document path for %s: %s",
+                        document_id, response.status
+                    )
+                    return None
+                doc = await response.json()
+                return doc.get("documentPath")
+        except Exception as e:
+            self.logger.warning(
+                "Could not fetch current document path for %s: %s", document_id, str(e)
+            )
+            return None
+
+    async def get_actual_content_path(self, org_id: str, virtual_record_id: str) -> str | None:
+        """Return a record's content document's ACTUAL current stored path,
+        or None if no content document exists yet for this vrid (or it can't
+        be determined)."""
+        if not self.graph_provider:
+            return None
+        try:
+            existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+        except Exception as e:
+            self.logger.warning(
+                "⚠️ Failed to look up existing doc for vrid %s in get_actual_content_path: %s",
+                virtual_record_id, str(e)
+            )
+            return None
+        if not existing_lookup or not existing_lookup.get("record_doc_id"):
+            return None
+        raw_path = await self._get_current_document_path(
+            org_id, existing_lookup["record_doc_id"]
+        )
+        return self._strip_org_prefix(org_id, raw_path) if raw_path else None
 
     async def apply(self, ctx: TransformContext) -> TransformContext:
         record = ctx.record
         org_id = record.org_id
         record_id = record.id
         virtual_record_id = record.virtual_record_id
+        connector_id = getattr(record, "connector_id", None)
+        record_group_id = getattr(record, "record_group_id", None)
         # Use exclude_none=True to skip None values, then clean empty values
         record_dict = record.model_dump(mode='json', exclude_none=True)
         record_dict = self._clean_empty_values(record_dict)
 
+        storage_path = await self._build_hierarchical_storage_path(record, virtual_record_id)
+        self.logger.info(
+            "📄 Built storage path for vrid %s: %s",
+            virtual_record_id, storage_path
+        )
+
         existing_lookup = None
         if self.graph_provider:
-            existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+            try:
+                existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+            except Exception as e:
+                self.logger.warning(
+                    "⚠️ Failed to look up existing doc for vrid %s, will create new: %s",
+                    virtual_record_id, str(e)
+                )
+                existing_lookup = None
 
+        actual_storage_path = storage_path
+
+        replaced_doc_id: str | None = None
         if existing_lookup and existing_lookup.get("record_doc_id"):
             existing_doc_id = existing_lookup["record_doc_id"]
-            self.logger.debug(
-                "📄 Existing storage doc found for vrid %s (doc_id=%s), uploading next version",
+            self.logger.info(
+                "📄 Overriding buffer in place for vrid %s (doc_id=%s)",
                 virtual_record_id, existing_doc_id
             )
             try:
-                document_id, file_size_bytes = await self.upload_next_version(
-                    org_id, record_id, existing_doc_id, record_dict, virtual_record_id
+                document_id, file_size_bytes = await self.update_record_buffer(
+                    org_id, existing_doc_id, record_dict, virtual_record_id
                 )
-            except Exception as e:
-                if not self._is_non_versioned_exception(e):
-                    raise
+                raw_path = await self._get_current_document_path(org_id, existing_doc_id)
+                if raw_path:
+                    actual_storage_path = self._strip_org_prefix(org_id, raw_path)
+            except StorageDocumentNotFoundError:
+                # A concurrent move fails the write with 503, never 404; a 404
+                # means the document was deleted (e.g. with the connector that
+                # stored this shared VRID first), so a retry cannot succeed.
                 self.logger.warning(
-                    "⚠️ Existing storage doc %s is not version-enabled; creating replacement document",
-                    existing_doc_id,
+                    "Stored document %s for vrid %s no longer exists; uploading a replacement",
+                    existing_doc_id, virtual_record_id,
                 )
                 document_id, file_size_bytes = await self.save_record_to_storage(
-                    org_id, record_id, virtual_record_id, record_dict
+                    org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
+                    connector_id=connector_id, record_group_id=record_group_id,
                 )
+            except Exception as e:
+                # A concurrent move_record_tree may have renamed the
+                # directory between the document's MongoDB read and the
+                # disk write (TOCTOU in moveTreeLocal). Retry once after
+                # a brief pause so the move's MongoDB update can land.
+                self.logger.info(
+                    "⚠️ update_record_buffer failed for doc %s, retrying: %s",
+                    existing_doc_id, str(e),
+                )
+                await asyncio.sleep(0.5)
+                try:
+                    document_id, file_size_bytes = await self.update_record_buffer(
+                        org_id, existing_doc_id, record_dict, virtual_record_id
+                    )
+                    raw_path = await self._get_current_document_path(org_id, existing_doc_id)
+                    if raw_path:
+                        actual_storage_path = self._strip_org_prefix(org_id, raw_path)
+                except Exception as retry_e:
+                    self.logger.warning(
+                        "⚠️ Retry also failed for doc %s, falling back to new upload: %s",
+                        existing_doc_id, str(retry_e),
+                    )
+                    document_id, file_size_bytes = await self.save_record_to_storage(
+                        org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
+                        connector_id=connector_id, record_group_id=record_group_id,
+                    )
+                    replaced_doc_id = existing_doc_id
         else:
             self.logger.debug(
-                "📄 No existing storage doc for vrid %s, creating new document",
-                virtual_record_id
+                "📄 No existing storage doc for vrid %s, creating new document at path: %s",
+                virtual_record_id, storage_path
             )
             document_id, file_size_bytes = await self.save_record_to_storage(
-                org_id, record_id, virtual_record_id, record_dict
+                org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
+                connector_id=connector_id, record_group_id=record_group_id,
             )
 
         if document_id and self.graph_provider:
-            await self.store_virtual_record_mapping(org_id, virtual_record_id, document_id, file_size_bytes)
+            mapped = await self.store_virtual_record_mapping(org_id, virtual_record_id, document_id, file_size_bytes)
+            if mapped and replaced_doc_id and replaced_doc_id != document_id:
+                await self._delete_replaced_document(org_id, replaced_doc_id, virtual_record_id)
 
+        ctx.settings["storage_path"] = actual_storage_path
         ctx.record = record
         return ctx
 
@@ -1157,7 +1390,11 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Unexpected error creating placeholder: %s", str(e))
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
-    async def save_record_to_storage(self, org_id: str, record_id: str, virtual_record_id: str, record: dict) -> tuple[str | None, int | None]:
+    async def save_record_to_storage(
+        self, org_id: str, record_id: str, virtual_record_id: str,
+        record: dict, document_path: str | None = None,
+        *, connector_id: str | None = None, record_group_id: str | None = None,
+    ) -> tuple[str | None, int | None]:
         """
         Save document to storage using FormData upload
         Returns:
@@ -1174,7 +1411,7 @@ class BlobStorage(Transformer):
                     "record": compressed_record if use_compression else record,
                     "virtualRecordId": virtual_record_id
                 }
-                json_data = json.dumps(upload_data).encode('utf-8')
+                json_data = _json_utf8_bytes(upload_data)
                 file_size_bytes = len(json_data)
                 upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
                 create_headers = _with_idempotency_key(headers)
@@ -1183,6 +1420,9 @@ class BlobStorage(Transformer):
                     form_data = _versioned_json_form(
                         json_data, f'record_{virtual_record_id}', virtual_record_id, record_id,
                         compressed=use_compression,
+                        document_path=document_path,
+                        connector_id=connector_id,
+                        record_group_id=record_group_id,
                     )
                     async with _borrowed_session() as session, session.post(
                         upload_url, data=form_data, headers=create_headers
@@ -1212,37 +1452,33 @@ class BlobStorage(Transformer):
                 self.logger.debug("✅ Successfully uploaded record for document: %s", document_id)
                 return document_id, file_size_bytes
             else:
-                # Prepare placeholder for S3 storage
+                # Prepare placeholder for S3/Azure storage
+                effective_path = document_path or f'records/{virtual_record_id}'
+                metadata_entries: list[dict] = []
                 if use_compression:
-                    # Prepare placeholder with compression metadata for MongoDB
-                    placeholder_data = {
-                        "documentName": f"record_{virtual_record_id}",
-                        "documentPath": f"records/{virtual_record_id}",
-                        "extension": "json",
-                        "isVersionedFile": True,
-                        "recordId": record_id,
-                        "customMetadata": [
-                            {
-                                "key": "compression",
-                                "value": {
-                                    "algorithm": "zstd",
-                                    "level": 10,
-                                    "format": "msgspec",
-                                    "version": "v1",
-                                    "compressed": True
-                                }
-                            },
-                        ]
-                    }
-                else:
-                    # Fallback to uncompressed placeholder
-                    placeholder_data = {
-                        "documentName": f"record_{virtual_record_id}",
-                        "documentPath": f"records/{virtual_record_id}",
-                        "extension": "json",
-                        "isVersionedFile": True,
-                        "recordId": record_id,
-                    }
+                    metadata_entries.append({
+                        "key": "compression",
+                        "value": {
+                            "algorithm": "zstd",
+                            "level": 10,
+                            "format": "msgspec",
+                            "version": "v1",
+                            "compressed": True
+                        }
+                    })
+                if connector_id:
+                    metadata_entries.append({"key": "connectorId", "value": connector_id})
+                if record_group_id:
+                    metadata_entries.append({"key": "recordGroupId", "value": record_group_id})
+
+                placeholder_data: dict = {
+                    "documentName": f"record_{virtual_record_id}",
+                    "documentPath": effective_path,
+                    "extension": "json",
+                    "isVersionedFile": False,
+                }
+                if metadata_entries:
+                    placeholder_data["customMetadata"] = metadata_entries
 
                 try:
                     async with _borrowed_session() as session:
@@ -1426,6 +1662,161 @@ class BlobStorage(Transformer):
             result["record_metadata_doc_id"] = record_metadata_doc_id
         return result
 
+    async def _records_still_using_vrid(self, virtual_record_id: str) -> list[str]:
+        """Live records (any connector) referencing *virtual_record_id*.
+
+        Same rule as the vector cleanup: raise rather than read a failed lookup
+        as "unreferenced", and confirm an empty answer once after a short pause
+        so a lagging replica cannot turn into a deleted blob.
+        """
+        raw = await self.graph_provider.get_records_by_virtual_record_id(
+            virtual_record_id, raise_on_error=True
+        )
+        remaining = remaining_record_keys(raw)
+        if not remaining:
+            await asyncio.sleep(EMPTY_CONFIRM_DELAY_SECONDS)
+            raw = await self.graph_provider.get_records_by_virtual_record_id(
+                virtual_record_id, raise_on_error=True
+            )
+            remaining = remaining_record_keys(raw)
+        return remaining
+
+    async def _delete_replaced_document(
+        self, org_id: str, document_id: str, virtual_record_id: str,
+    ) -> None:
+        """Best-effort removal of a document superseded by a replacement upload.
+
+        Called only once the VRID mapping points at the replacement, so nothing
+        reads this document any more; a failure leaves it unreferenced.
+        """
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+            delete_url = (
+                f"{nodejs_endpoint}{Routes.STORAGE_DOCUMENT.value.format(documentId=document_id)}"
+                "?hard=true"
+            )
+            async with get_shared_session().delete(delete_url, headers=headers) as resp:
+                if resp.status not in (200, 204, 404):
+                    self.logger.warning(
+                        "Could not delete replaced storage doc %s (vrid %s): status %d",
+                        document_id, virtual_record_id, resp.status,
+                    )
+        except Exception as exc:
+            self.logger.warning(
+                "Could not delete replaced storage doc %s (vrid %s): %s",
+                document_id, virtual_record_id, exc,
+            )
+
+    async def delete_storage_docs_for_vrid(self, org_id: str, virtual_record_id: str) -> None:
+        """Delete the blob storage documents (record + metadata) and the graph
+        mapping node for an abandoned virtualRecordId.
+
+        Called when VRID reconciliation isolates a record with a new VRID and
+        the old one is no longer needed.  Safe to call when the mapping or the
+        documents have already been removed — every step is idempotent.
+
+        Content is deduplicated across connectors, so other records can still
+        hold this VRID and read these very documents; nothing is deleted while
+        any live record references it.
+
+        Raises on transient failures (HTTP errors, connection issues, a graph
+        that cannot be read) so the caller's retry loop can re-attempt the
+        entire cleanup; giving up leaves the documents in place.
+        """
+        if not self.graph_provider:
+            self.logger.warning(
+                "No graph provider — cannot clean up storage docs for abandoned VRID %s",
+                virtual_record_id,
+            )
+            return
+
+        remaining = await self._records_still_using_vrid(virtual_record_id)
+        if remaining:
+            self.logger.info(
+                "Keeping storage docs for VRID %s: still used by %d record(s)",
+                virtual_record_id, len(remaining),
+            )
+            return
+
+        collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+
+        try:
+            mapping = await self.graph_provider.get_document(
+                virtual_record_id, collection_name
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Failed to look up VRID mapping for cleanup (%s): %s",
+                virtual_record_id, exc,
+            )
+            raise
+
+        if not mapping:
+            self.logger.info(
+                "No VRID mapping found for abandoned VRID %s — nothing to clean up",
+                virtual_record_id,
+            )
+            return
+
+        doc_ids: list[str] = []
+        record_doc_id = mapping.get("record_doc_id") or mapping.get("documentId")
+        metadata_doc_id = mapping.get("record_metadata_doc_id")
+        if record_doc_id:
+            doc_ids.append(record_doc_id)
+        if metadata_doc_id:
+            doc_ids.append(metadata_doc_id)
+
+        all_deleted = True
+        if doc_ids:
+            try:
+                headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+                session = get_shared_session()
+                for doc_id in doc_ids:
+                    delete_url = (
+                        f"{nodejs_endpoint}"
+                        f"{Routes.STORAGE_DOCUMENT.value.format(documentId=doc_id)}"
+                        "?hard=true"
+                    )
+                    async with session.delete(delete_url, headers=headers) as resp:
+                        if resp.status in (200, 204, 404):
+                            self.logger.info(
+                                "Deleted storage doc %s for abandoned VRID %s",
+                                doc_id, virtual_record_id,
+                            )
+                        else:
+                            all_deleted = False
+                            text = await resp.text()
+                            self.logger.warning(
+                                "Storage doc delete returned %d for %s (vrid %s): %s",
+                                resp.status, doc_id, virtual_record_id, text[:200],
+                            )
+            except Exception as exc:
+                self.logger.error(
+                    "Failed to delete storage docs for abandoned VRID %s: %s",
+                    virtual_record_id, exc,
+                )
+                raise
+
+        if not all_deleted:
+            raise Exception(
+                f"Some storage docs for VRID {virtual_record_id} could not be deleted; "
+                "keeping mapping node so a retry can find them"
+            )
+
+        try:
+            await self.graph_provider.remove_nodes_by_field(
+                collection_name, "_key", field_value=virtual_record_id,
+            )
+            self.logger.info(
+                "Removed VRID mapping node for abandoned %s", virtual_record_id,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Failed to remove VRID mapping node for %s: %s",
+                virtual_record_id, exc,
+            )
+            raise
+
     VIRTUAL_RECORD_LOOKUP_CHUNK_SIZE = 500
 
     async def get_document_ids_by_virtual_record_ids(
@@ -1591,6 +1982,11 @@ class BlobStorage(Transformer):
             else:
                 self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
                 raise Exception("No record found for virtual_record_id")
+        except StorageDocumentNotFoundError:
+            self.logger.warning(
+                "Stored document for virtual_record_id %s no longer exists", virtual_record_id
+            )
+            raise
         except Exception as e:
             self.logger.exception(
                 "❌ Error retrieving record from storage (virtual_record_id=%s)",
@@ -1605,11 +2001,9 @@ class BlobStorage(Transformer):
         async def _attempt() -> dict:
             async with session.get(download_url, headers=headers) as resp:
                 if resp.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.error(
-                        "❌ Failed to retrieve record: status %s, virtual_record_id: %s",
-                        resp.status, virtual_record_id,
+                    raise _storage_status_error(
+                        resp.status, f"Failed to retrieve record from storage: status {resp.status}"
                     )
-                    raise _storage_status_error(resp.status, "Failed to retrieve record from storage")
                 return await resp.json(loads=_decode_json)
 
         return await self._with_storage_retry(f"record fetch {virtual_record_id}", _attempt)
@@ -1629,17 +2023,17 @@ class BlobStorage(Transformer):
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 
-            # Create a unique key for the mapping using both IDs
             mapping_key = virtual_record_id
 
             mapping_document = {
                 "id": mapping_key,
                 "orgId": org_id,
+                "virtualRecordId": virtual_record_id,
                 "documentId": document_id,
+                "record_doc_id": document_id,
                 "updatedAt": get_epoch_timestamp_in_ms()
             }
 
-            # Add file size if provided
             if file_size_bytes is not None:
                 mapping_document["fileSizeBytes"] = file_size_bytes
 
@@ -1692,7 +2086,12 @@ class BlobStorage(Transformer):
                 "record": compressed_record if use_compression else record,
                 "virtualRecordId": virtual_record_id
             }
-            json_data = json.dumps(upload_data).encode('utf-8')
+            # Cloud uploads send `json=upload_data`, which ASCII-escapes; size what is sent.
+            json_data = (
+                _json_utf8_bytes(upload_data)
+                if storage_type == "local"
+                else json.dumps(upload_data).encode("utf-8")
+            )
             file_size_bytes = len(json_data)
 
             if storage_type == "local":
@@ -1751,10 +2150,12 @@ class BlobStorage(Transformer):
             raise e
 
     async def save_reconciliation_metadata(
-        self, org_id: str, record_id: str, virtual_record_id: str, metadata_dict: dict
+        self, org_id: str, record_id: str, virtual_record_id: str, metadata_dict: dict,
+        document_path: str | None = None,
+        *, connector_id: str | None = None, record_group_id: str | None = None,
     ) -> str | None:
         """
-        On first call, creates a new document. On subsequent calls, uploads next version.
+        On first call, creates a new document. On subsequent calls, overrides in place.
 
         The metadata document ID is stored in the same virtual-record-to-doc mapping
         under the field 'record_metadata_doc_id', alongside the record's own 'record_doc_id'.
@@ -1764,13 +2165,16 @@ class BlobStorage(Transformer):
             record_id: Record ID
             virtual_record_id: Virtual record ID
             metadata_dict: Reconciliation metadata dictionary
+            document_path: Storage path (same as record content path) so metadata
+                lives alongside the record. Falls back to records/<vrid> if None.
 
         Returns:
             str | None: metadata document_id if successful
         """
         try:
 
-            # Check if metadata document already exists in the same mapping doc
+            effective_path = document_path or f"records/{virtual_record_id}"
+
             existing_metadata_doc_id = None
             if self.graph_provider:
                 try:
@@ -1784,26 +2188,47 @@ class BlobStorage(Transformer):
                     self.logger.warning("Could not check existing metadata mapping: %s", str(e))
 
             metadata_document_id = None
+            replaced_metadata_doc_id: str | None = None
             if existing_metadata_doc_id:
                 try:
-                    doc_id, _ = await self.upload_next_version(
-                        org_id, record_id, existing_metadata_doc_id,
-                        metadata_dict, virtual_record_id
+                    doc_id, _ = await self._update_metadata_buffer(
+                        org_id, existing_metadata_doc_id, metadata_dict, virtual_record_id
                     )
                     metadata_document_id = doc_id
-                except Exception as e:
-                    if not self._is_non_versioned_exception(e):
-                        raise
+                except StorageDocumentNotFoundError:
                     self.logger.warning(
-                        "⚠️ Existing metadata doc %s is not version-enabled; creating replacement metadata document",
-                        existing_metadata_doc_id,
+                        "Stored metadata document %s for vrid %s no longer exists; creating a replacement",
+                        existing_metadata_doc_id, virtual_record_id,
                     )
                     metadata_document_id = await self._create_metadata_document(
-                        org_id, record_id, virtual_record_id, metadata_dict
+                        org_id, record_id, virtual_record_id, metadata_dict, effective_path,
+                        connector_id=connector_id, record_group_id=record_group_id,
                     )
+                except Exception as e:
+                    self.logger.info(
+                        "⚠️ metadata buffer update failed for doc %s, retrying: %s",
+                        existing_metadata_doc_id, str(e),
+                    )
+                    await asyncio.sleep(0.5)
+                    try:
+                        doc_id, _ = await self._update_metadata_buffer(
+                            org_id, existing_metadata_doc_id, metadata_dict, virtual_record_id
+                        )
+                        metadata_document_id = doc_id
+                    except Exception as retry_e:
+                        self.logger.warning(
+                            "⚠️ Retry also failed for metadata doc %s; creating replacement: %s",
+                            existing_metadata_doc_id, str(retry_e),
+                        )
+                        metadata_document_id = await self._create_metadata_document(
+                            org_id, record_id, virtual_record_id, metadata_dict, effective_path,
+                            connector_id=connector_id, record_group_id=record_group_id,
+                        )
+                        replaced_metadata_doc_id = existing_metadata_doc_id
             else:
                 metadata_document_id = await self._create_metadata_document(
-                    org_id, record_id, virtual_record_id, metadata_dict
+                    org_id, record_id, virtual_record_id, metadata_dict, effective_path,
+                    connector_id=connector_id, record_group_id=record_group_id,
                 )
 
             if metadata_document_id and self.graph_provider:
@@ -1820,6 +2245,10 @@ class BlobStorage(Transformer):
                     "✅ Stored metadata mapping: %s -> record_metadata_doc_id=%s",
                     virtual_record_id, metadata_document_id
                 )
+                if replaced_metadata_doc_id and replaced_metadata_doc_id != metadata_document_id:
+                    await self._delete_replaced_document(
+                        org_id, replaced_metadata_doc_id, virtual_record_id,
+                    )
 
             return metadata_document_id
 
@@ -1827,10 +2256,53 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Error saving reconciliation metadata: %s", str(e))
             raise e
 
+    async def _update_metadata_buffer(
+        self,
+        org_id: str,
+        document_id: str,
+        metadata_dict: dict,
+        virtual_record_id: str,
+    ) -> tuple[str | None, int | None]:
+        """Override metadata content in place without compression."""
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+
+            json_bytes = _json_utf8_bytes(metadata_dict)
+            file_size_bytes = len(json_bytes)
+
+            buffer_url = f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
+            self.logger.info("📤 Overriding metadata buffer for document: %s", document_id)
+
+            session = get_shared_session()
+            form_data = aiohttp.FormData()
+            form_data.add_field(
+                "file",
+                json_bytes,
+                filename=f"metadata_{virtual_record_id}.json",
+                content_type="application/json",
+            )
+            async with session.put(buffer_url, data=form_data, headers=headers) as resp:
+                if resp.status != HttpStatusCode.SUCCESS.value:
+                    error_text = await resp.text()
+                    raise _storage_status_error(
+                        resp.status, f"Failed to update metadata buffer: {resp.status} {error_text[:200]}"
+                    )
+
+            self.logger.info("✅ Successfully overrode metadata buffer for document: %s", document_id)
+            return document_id, file_size_bytes
+
+        except StorageDocumentNotFoundError:
+            raise
+        except Exception as e:
+            self.logger.error("❌ Error in _update_metadata_buffer for document %s: %s", document_id, str(e))
+            raise
+
     async def _create_metadata_document(
-        self, org_id: str, record_id: str, virtual_record_id: str, metadata_dict: dict
+        self, org_id: str, record_id: str, virtual_record_id: str,
+        metadata_dict: dict, document_path: str | None = None,
+        *, connector_id: str | None = None, record_group_id: str | None = None,
     ) -> str | None:
-        """Create a new metadata document in blob storage."""
+        """Create a new metadata document in blob storage (uncompressed plain JSON)."""
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
@@ -1838,12 +2310,13 @@ class BlobStorage(Transformer):
                 metadata_dict, label="metadata"
             )
 
+            effective_path = document_path or f"records/{virtual_record_id}"
             upload_data = {
                 "isCompressed": use_compression,
                 "record": compressed_metadata if use_compression else metadata_dict,
                 "virtualRecordId": virtual_record_id,
             }
-            json_data = json.dumps(upload_data).encode('utf-8')
+            json_data = _json_utf8_bytes(upload_data)
 
             if storage_type == "local":
                 upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
@@ -1853,6 +2326,9 @@ class BlobStorage(Transformer):
                     form_data = _versioned_json_form(
                         json_data, f'metadata_{virtual_record_id}', virtual_record_id, record_id,
                         compressed=use_compression,
+                        document_path=effective_path if document_path else None,
+                        connector_id=connector_id,
+                        record_group_id=record_group_id,
                     )
                     async with _borrowed_session() as session, session.post(
                         upload_url, data=form_data, headers=create_headers
@@ -1881,37 +2357,20 @@ class BlobStorage(Transformer):
                 self.logger.debug("✅ Created metadata document: %s", document_id)
                 return document_id
             else:
+                metadata_entries: list[dict] = []
+                if connector_id:
+                    metadata_entries.append({"key": "connectorId", "value": connector_id})
+                if record_group_id:
+                    metadata_entries.append({"key": "recordGroupId", "value": record_group_id})
 
-                if use_compression:
-                    # Prepare placeholder with compression metadata for MongoDB
-                    placeholder_data = {
-                        "documentName": f"metadata_{virtual_record_id}",
-                        "documentPath": f"records/{virtual_record_id}",
-                        "extension": "json",
-                        "isVersionedFile": True,
-                        "recordId": record_id,
-                        "customMetadata": [
-                            {
-                                "key": "compression",
-                                "value": {
-                                    "algorithm": "zstd",
-                                    "level": 10,
-                                    "format": "msgspec",
-                                    "version": "v1",
-                                    "compressed": True
-                                }
-                            },
-                        ]
-                    }
-                else:
-
-                    placeholder_data = {
-                        "documentName": f"metadata_{virtual_record_id}",
-                        "documentPath": f"records/{virtual_record_id}",
-                        "extension": "json",
-                        "isVersionedFile": True,
-                        "recordId": record_id,
-                    }
+                placeholder_data: dict = {
+                    "documentName": f"metadata_{virtual_record_id}",
+                    "documentPath": effective_path,
+                    "extension": "json",
+                    "isVersionedFile": False,
+                }
+                if metadata_entries:
+                    placeholder_data["customMetadata"] = metadata_entries
 
                 async with _borrowed_session() as session:
                     placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
@@ -1960,14 +2419,15 @@ class BlobStorage(Transformer):
                 storage document.
 
         Returns:
-            dict with ``documentId``, ``fileName``, and either ``signedUrl``
-            (S3) or ``downloadUrl`` (local).
+            dict with ``documentId``, ``fileName`` and, when cloud storage issues
+            one, ``signedUrl``. There is no ``downloadUrl``: the storage service
+            has no user-facing route, so a caller that needs a link must register
+            the file as a record and use :meth:`get_record_stream_url`.
         """
         import os
 
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
-            public_base_url = await self._get_public_download_base_url()
 
             document_path = f"conversations/{conversation_id}"
             doc_name_no_ext = os.path.splitext(file_name)[0]
@@ -2008,14 +2468,9 @@ class BlobStorage(Transformer):
                         if not document_id:
                             raise Exception("No document ID in local upload response")
 
-                    download_url = (
-                        f"{public_base_url}"
-                        f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
-                    )
                     self.logger.info("✅ Conversation file saved (local): %s", document_id)
                     return {
                         "documentId": document_id,
-                        "downloadUrl": download_url,
                         "fileName": file_name,
                     }
             else:
@@ -2072,15 +2527,10 @@ class BlobStorage(Transformer):
                                 }
 
                     self.logger.info(
-                        "✅ Conversation file saved (fallback URL): %s", document_id,
-                    )
-                    download_url_external = (
-                        f"{public_base_url}"
-                        f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
+                        "✅ Conversation file saved (no signed URL): %s", document_id,
                     )
                     return {
                         "documentId": document_id,
-                        "downloadUrl": download_url_external,
                         "fileName": file_name,
                     }
         except Exception as e:
@@ -2108,8 +2558,8 @@ class BlobStorage(Transformer):
         invariant :class:`~app.services.artifact_registry.versioning.VersionManager`
         depends on.
 
-        Returns dict with ``documentId``, ``fileName``, and either
-        ``signedUrl`` (S3) or ``downloadUrl`` (local).
+        Returns dict with ``documentId``, ``fileName`` and, on cloud storage,
+        ``signedUrl``.
         """
         import os as _os
 
@@ -2142,12 +2592,7 @@ class BlobStorage(Transformer):
                     if not document_id:
                         raise Exception("No document ID in local upload response")
 
-                public_base_url = await self._get_public_download_base_url()
-                download_url = (
-                    f"{public_base_url}"
-                    f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
-                )
-                return {"documentId": document_id, "downloadUrl": download_url, "fileName": file_name}
+                return {"documentId": document_id, "fileName": file_name}
         else:
             placeholder_data = {
                 "documentName": doc_name_no_ext,
@@ -2183,55 +2628,50 @@ class BlobStorage(Transformer):
                                 "signedUrl": data["signedUrl"],
                                 "fileName": file_name,
                             }
-                public_base_url = await self._get_public_download_base_url()
-                return {
-                    "documentId": document_id,
-                    "downloadUrl": f"{public_base_url}{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}",
-                    "fileName": file_name,
-                }
+                return {"documentId": document_id, "fileName": file_name}
 
-    async def get_download_url(self, org_id: str, document_id: str, version: int | None = None) -> str:
-        """Resolve a user-facing download URL for `document_id` — an S3/Azure
-        signed URL when available, else the org-scoped external download
-        route (local storage / any fallback where the download route
-        didn't return a `signedUrl`). Used by
-        `app.services.artifact_registry.signed_urls.SignedUrlBroker` so
-        that module never reaches into this class's private helpers.
+    async def get_download_url(
+        self, org_id: str, document_id: str, version: int | None = None,
+    ) -> str | None:
+        """S3/Azure signed download URL for `document_id`, or ``None`` when
+        storage cannot issue one (local storage). Callers that still need a
+        link fall back to :meth:`get_record_stream_url`, which checks the
+        viewer's record permissions; the storage service itself has no
+        user-facing route.
 
         `version` is a storage-layer `versionHistory` index (not a registry
-        version number); both the internal and external `/download` routes
-        accept it identically (same `downloadDocument` handler mounted
-        twice — see `storage.routes.ts`)."""
+        version number)."""
         headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
+        # Local storage's download route streams the file bytes rather than
+        # returning `{signedUrl}` JSON; calling it would fetch the whole file.
+        if storage_type == "local":
+            return None
         version_query = f"?version={version}" if version is not None else ""
-        # Local storage's download route STREAMS the file bytes back
-        # (`serveFileFromLocalStorage` in storage.controller.ts) — there is
-        # no `{signedUrl}` JSON to fetch, so calling it here would download
-        # the whole file just to throw it away. Go straight to the
-        # org-scoped external route.
-        if storage_type != "local":
-            download_api = (
-                f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
-                f"{version_query}"
-            )
-            async with _borrowed_session() as session:
-                async with session.get(download_api, headers=headers) as resp:
-                    # Content-type guard: any storage vendor that streams the
-                    # file on this route (rather than returning JSON) falls
-                    # through to the external-route fallback below.
-                    if (
-                        resp.status == HttpStatusCode.SUCCESS.value
-                        and resp.content_type == "application/json"
-                    ):
-                        data = await resp.json()
-                        signed = data.get("signedUrl")
-                        if signed:
-                            return str(signed)
-        public_base_url = await self._get_public_download_base_url()
-        return (
-            f"{public_base_url}{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
+        download_api = (
+            f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
             f"{version_query}"
         )
+        async with _borrowed_session() as session:
+            async with session.get(download_api, headers=headers) as resp:
+                # Any vendor that streams on this route instead of returning
+                # JSON has no signed URL to give.
+                if (
+                    resp.status == HttpStatusCode.SUCCESS.value
+                    and resp.content_type == "application/json"
+                ):
+                    data = await resp.json()
+                    signed = data.get("signedUrl")
+                    if signed:
+                        return str(signed)
+        return None
+
+    async def get_record_stream_url(self, record_id: str, version: int | None = None) -> str:
+        """User-facing link to a record's bytes through the knowledge-base
+        stream route, which enforces the viewer's record permissions.
+        `version` is the record's own version number, not a storage index."""
+        public_base_url = await self._get_public_download_base_url()
+        version_query = f"?version={version}" if version is not None else ""
+        return f"{public_base_url}{Routes.KB_STREAM_RECORD.value.format(recordId=record_id)}{version_query}"
 
     async def get_direct_upload_url(self, org_id: str, document_id: str) -> str:
         """Signed PUT URL for an EXISTING document — the first phase of the
@@ -2326,6 +2766,41 @@ class BlobStorage(Transformer):
                 "priorStorageVersion": prior_storage_version,
             }
 
+    async def purge_document(self, org_id: str, document_id: str) -> int:
+        """Remove a storage document and every stored copy of its file.
+
+        Returns how many documents were removed (0 when it was already gone).
+        Raises when storage could not remove it; the document is then kept, so
+        calling again is safe.
+        """
+        return await self._purge(
+            org_id, Routes.STORAGE_PURGE_DOCUMENT.value.format(documentId=document_id)
+        )
+
+    async def purge_virtual_record_documents(self, org_id: str, virtual_record_id: str) -> int:
+        """Remove a virtual record's ``record_``/``metadata_`` storage documents, wherever filed.
+
+        Only for a virtual record no record uses any more: records with identical
+        content share it.
+        """
+        return await self._purge(
+            org_id,
+            Routes.STORAGE_PURGE_VIRTUAL_RECORD.value.format(virtualRecordId=virtual_record_id),
+        )
+
+    async def _purge(self, org_id: str, route: str) -> int:
+        headers, nodejs_endpoint, _storage_type = await self._get_auth_and_config(org_id)
+        async with _borrowed_session() as session, session.delete(
+            f"{nodejs_endpoint}{route}", headers=headers
+        ) as response:
+            if response.status != HttpStatusCode.SUCCESS.value:
+                error_text = (await response.text())[:500]
+                raise _storage_status_error(
+                    response.status,
+                    f"Storage purge {route} failed (status {response.status}): {error_text}",
+                )
+            return int((await response.json()).get("purged", 0))
+
     async def get_document_version_history(self, org_id: str, document_id: str) -> list[dict]:
         """Fetch the authoritative ``versionHistory`` array for `document_id`
         straight from the storage document (``GET /internal/{documentId}``).
@@ -2388,6 +2863,12 @@ class BlobStorage(Transformer):
                         async with session.get(URL(signed_url, encoded=True)) as signed_resp:
                             if signed_resp.status == HttpStatusCode.SUCCESS.value:
                                 data = await signed_resp.json(content_type=None)
+                            else:
+                                self.logger.warning(
+                                    "⚠️ Failed to fetch metadata from signed URL: status %s, virtual_record_id: %s",
+                                    signed_resp.status, virtual_record_id
+                                )
+                                return None
                     # Handle both compressed (from upload_next_version) and uncompressed formats
                     if data.get("isCompressed"):
                         record = self._process_downloaded_record(data)

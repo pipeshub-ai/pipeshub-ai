@@ -37,6 +37,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
+from functools import cached_property
 from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import urlparse
 
@@ -93,6 +94,10 @@ from app.connectors.sources.slack.common.apps import SlackWorkspaceApp
 from app.connectors.sources.slack.common.stream_errors import (
     sanitize_retry_after,
     slack_stream_error,
+)
+from app.connectors.sources.slack.common.token_renewal import (
+    RenewingSlackDataSource,
+    SlackTokenRenewal,
 )
 from app.models.blocks import (
     Block,
@@ -569,11 +574,19 @@ class SlackConnector(BaseConnector):
             self.logger.error(f"❌ Init failed: {exc}", exc_info=True)
             return False
 
-    async def _fresh_datasource(self) -> SlackDataSource:
-        """Return a SlackDataSource backed by the always-current OAuth token."""
+    @cached_property
+    def _token_renewal(self) -> SlackTokenRenewal:
+        return SlackTokenRenewal(
+            self.connector_id, type(self)._connector_metadata["name"], self.config_service, self.logger,
+        )
+
+    async def _fresh_datasource(self) -> RenewingSlackDataSource:
+        """Return a SlackDataSource backed by the always-current token, renewed when it expires."""
         if not self.external_client:
             raise RuntimeError("Call init() first.")
+        return await self._token_renewal.datasource(self.external_client, self._current_token)
 
+    async def _current_token(self) -> tuple[dict[str, Any], str]:
         # Cache the connector config to avoid an etcd/Redis round-trip on every
         # Slack call. The config service invalidates the cache via its watch /
         # pubsub on key changes, so token rotation still propagates.
@@ -593,13 +606,7 @@ class SlackConnector(BaseConnector):
             token = auth.get("apiToken", "")
         if not token:
             raise RuntimeError("No access token in config.")
-
-        client = self.external_client.get_client()
-        if getattr(client, "get_token", lambda: None)() != token:
-            if hasattr(client, "set_token"):
-                client.set_token(token)
-
-        return SlackDataSource(self.external_client)
+        return cfg, token
 
     # =========================================================================
     # 1.  Main orchestration
@@ -2543,12 +2550,17 @@ class SlackConnector(BaseConnector):
                 # files.slack.com downloads aren't covered by the Web API tiers;
                 # T3 keeps a sane upper bound on parallel binary transfers.
                 await ctx.rate_limiter.acquire(Tier.T3)
-                token = getattr(
-                    self.external_client.get_client(), "get_token", lambda: None
-                )()
+                token = (await self._fresh_datasource()).access_token
                 async with httpx.AsyncClient(timeout=30.0) as http:
                     headers = {"Authorization": f"Bearer {token}"} if token else {}
                     r = await http.get(url_dl, headers=headers)
+                    # Slack answers a token it no longer accepts with 200 and its sign-in
+                    # page. Right after a scheduled rotation the connector can still hold
+                    # the old token, so try once more with the stored one if it is newer.
+                    if r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
+                        newer = await self._token_renewal.newer_stored_token(token)
+                        if newer:
+                            r = await http.get(url_dl, headers={"Authorization": f"Bearer {newer}"})
                     if r.status_code == 200:
                         file_hash = hashlib.sha256(r.content).hexdigest()
             except Exception as exc:
@@ -4223,11 +4235,7 @@ class SlackConnector(BaseConnector):
                 connector=self.display_name,
             )
 
-        token = getattr(
-            self.external_client.get_client(), "get_token", lambda: None
-        )()
-        if not token:
-            self.logger.warning(f"No auth token available for file download {fid}, attempting without auth")
+        token = ds.access_token
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as http:
             headers = {"Authorization": f"Bearer {token}"} if token else {}
             async with http.stream("GET", url, headers=headers) as r:

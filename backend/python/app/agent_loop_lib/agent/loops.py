@@ -5,7 +5,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from app.agent_loop_lib.agent.phase_driver import PhaseDriver
+from app.agent_loop_lib.agent import observability as obs
+from app.agent_loop_lib.agent.phase_driver import PhaseDriver, tool_result_in_turn
 from app.agent_loop_lib.core.types import (
     AgentResult,
     AgentTurn,
@@ -83,9 +84,27 @@ class LoopStrategy(ABC):
 # than a real answer worth returning — see `_finish_after_max_turns`.
 _MIN_DEGRADED_OUTPUT_CHARS = 40
 
+_FINAL_ANSWER_MESSAGE = (
+    "[System: You have reached the maximum number of steps for this request. "
+    "Do not call any more tools. Reply now with your final answer to the "
+    "user's question, using only the information you have already gathered. "
+    "If something could not be determined, say so briefly.]"
+)
+
+
+def _last_turn_called_tools(agent: "Agent") -> bool:
+    turns = agent.scope.turns if agent.scope is not None else []
+    return bool(turns and turns[-1].tool_calls)
+
 
 async def _finish_after_max_turns(agent: "Agent", goal: Goal) -> AgentResult:
     """Shared max_turns-exhausted tail for every loop shape below.
+
+    When the last turn called tools, the model has not seen those results
+    yet, and that turn's text is only its narration before the calls. One
+    extra answer-only turn lets it answer from what it gathered; a turn
+    that produces no answer (the call fails, or the reply has no text once
+    its non-terminal tool calls are removed) falls through to the tail below.
 
     A hard `fail()` here throws away whatever the model DID produce, even
     when it was most of the way to a real answer — a slower-converging
@@ -95,6 +114,17 @@ async def _finish_after_max_turns(agent: "Agent", goal: Goal) -> AgentResult:
     of an opaque error; only a run that produced no usable text still
     fails, since there is nothing better to hand back.
     """
+    if _last_turn_called_tools(agent):
+        await obs.append_timeline(
+            agent, "max_turns_final_answer",
+            f"Reached max_turns={agent.max_turns} after a tool turn — requesting a final answer",
+            "calling_llm", {"turn_index": agent.max_turns},
+        )
+        await agent.inject_user_message(_FINAL_ANSWER_MESSAGE)
+        outcome = await agent.step(goal, agent.max_turns, final_answer_only=True)
+        if outcome.status == "stop":
+            return outcome.result
+
     last_text = agent.last_assistant_text().strip()
     if len(last_text) >= _MIN_DEGRADED_OUTPUT_CHARS:
         return await agent.succeed(
@@ -300,7 +330,7 @@ class IncrementalLoop(LoopStrategy):
             turn_index += 1
             if outcome.status == "stop":
                 return outcome.result
-            verdict = agent.last_tool_result("verify_result")
+            verdict = tool_result_in_turn(outcome.turn, "verify_result")
             if verdict is not None:
                 steps_done += 1
                 if isinstance(verdict, dict) and verdict.get("passed"):

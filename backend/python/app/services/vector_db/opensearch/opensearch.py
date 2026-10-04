@@ -1,7 +1,8 @@
 """OpenSearch vector database provider.
 
 Fully async — uses AsyncOpenSearch everywhere.
-Hybrid search: BM25 ``match`` (text_query) + k-NN dense, fused via
+Hybrid search: BM25 ``multi_match`` over exact and English-stemmed
+``page_content`` (text_query) + k-NN dense, fused via
 OpenSearch RRF ``score-ranker-processor`` pipeline (requires OpenSearch >= 2.19).
 
 Key design decisions
@@ -52,6 +53,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from opensearchpy import AsyncOpenSearch  # type: ignore
 from opensearchpy import helpers as os_helpers
+from opensearchpy.exceptions import NotFoundError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
@@ -80,7 +82,13 @@ from app.services.vector_db.models import (
     VectorPoint,
 )
 from app.services.vector_db.opensearch.config import OpenSearchConfig
-from app.services.vector_db.opensearch.utils import OpenSearchUtils
+from app.services.vector_db.opensearch.utils import (
+    PAGE_CONTENT_FIELD,
+    PAGE_CONTENT_MAPPING,
+    STEMMED_PAGE_CONTENT_FIELD,
+    STEMMED_SUBFIELD,
+    OpenSearchUtils,
+)
 from app.utils.logger import create_logger
 
 logger = create_logger("opensearch_service")
@@ -110,6 +118,25 @@ _DEFAULT_SEGMENTS_PER_TIER = 4
 _DEFAULT_MAX_CONCURRENT_SEARCHES = 8
 _DEFAULT_CONFIDENCE_INTERVAL = 0.99
 _DEFAULT_RRF_RANK_CONSTANT = 60
+# A partial update re-reads the document when another write lands between its
+# read and write; without retries it fails the item with a 409.
+_UPDATE_RETRY_ON_CONFLICT = 3
+
+# Progress of the stemmed-field backfill, kept in the index's own ``_meta`` so
+# every replica reads the same state: {"task": <id>} while it runs, {"done":
+# true} once it succeeded.
+_STEMMED_BACKFILL_META_KEY = "pipeshub_stemmed_backfill"
+# The backfill rewrites every older document; throttling keeps it from
+# competing with live indexing and search for I/O.
+_STEMMED_BACKFILL_DOCS_PER_SECOND = 500
+_MISSING_STEMMED_QUERY: Dict[str, Any] = {
+    "bool": {"must_not": {"exists": {"field": STEMMED_PAGE_CONTENT_FIELD}}}
+}
+
+
+def _has_stemmed_page_content(mappings: Dict[str, Any]) -> bool:
+    page_content = (mappings.get("properties") or {}).get(PAGE_CONTENT_FIELD) or {}
+    return STEMMED_SUBFIELD in (page_content.get("fields") or {})
 
 
 class OpenSearchService(IVectorDBService):
@@ -414,7 +441,7 @@ class OpenSearchService(IVectorDBService):
                                 "parameters": hnsw_params,
                             },
                         },
-                        "page_content": {"type": "text"},
+                        PAGE_CONTENT_FIELD: PAGE_CONTENT_MAPPING,
                         # Sortable stand-in for _id so scroll can page with
                         # search_after; _id itself requires fielddata.
                         "point_id": {"type": "keyword"},
@@ -483,6 +510,102 @@ class OpenSearchService(IVectorDBService):
             body=pipeline_body,
         )
         logger.info(f"Created RRF pipeline '{pipeline_name}' (rank_constant={rank_constant})")
+
+    async def reconcile_lexical_scoring(
+        self,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
+    ) -> Optional[str]:
+        """Add the English-stemmed ``page_content`` sub-field to an older index.
+
+        A new sub-field is a mapping change only: documents written from now on
+        carry it and nothing stored is touched. Documents indexed before it are
+        filled in by ``reconcile_storage_layout``, which rewrites them and so
+        stays behind the operator's opt-in.
+        """
+        await self._assert_connected()
+        if _has_stemmed_page_content(await self._index_mappings(collection_name)):
+            return None
+        await self.client.indices.put_mapping(  # type: ignore
+            index=collection_name,
+            body={"properties": {PAGE_CONTENT_FIELD: PAGE_CONTENT_MAPPING}},
+        )
+        logger.info(f"Added {STEMMED_PAGE_CONTENT_FIELD} to OpenSearch index '{collection_name}'")
+        return STEMMED_PAGE_CONTENT_FIELD
+
+    async def reconcile_storage_layout(
+        self,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
+    ) -> Optional[str]:
+        """Backfill the stemmed sub-field on documents indexed before it existed.
+
+        Runs as one throttled background ``_update_by_query`` per index. Each
+        call advances it one step: start the task, wait while it runs, then
+        record success, or forget a failed or lost task so the next call
+        retries it. Only documents still missing the field are rewritten.
+        """
+        await self._assert_connected()
+        mappings = await self._index_mappings(collection_name)
+        if not _has_stemmed_page_content(mappings):
+            return None
+
+        meta = dict(mappings.get("_meta") or {})
+        state = meta.get(_STEMMED_BACKFILL_META_KEY) or {}
+        if state.get("done"):
+            return None
+
+        task_id = state.get("task")
+        if task_id:
+            try:
+                task = await self.client.tasks.get(task_id=task_id)  # type: ignore
+            except NotFoundError:
+                task = {"completed": True, "error": "task not found"}
+            if not task.get("completed"):
+                return None
+            failed = task.get("error") or (task.get("response") or {}).get("failures")
+            if failed:
+                logger.warning(
+                    f"Stemmed-field backfill on '{collection_name}' did not finish "
+                    f"({failed}); it will be retried"
+                )
+            await self._set_stemmed_backfill_state(
+                collection_name, meta, {} if failed else {"done": True}
+            )
+            return None
+
+        response = await self.client.update_by_query(  # type: ignore
+            index=collection_name,
+            body={"query": _MISSING_STEMMED_QUERY},
+            params={
+                "conflicts": "proceed",
+                "wait_for_completion": "false",
+                "requests_per_second": _STEMMED_BACKFILL_DOCS_PER_SECOND,
+                "slices": "auto",
+            },
+        )
+        await self._set_stemmed_backfill_state(
+            collection_name, meta, {"task": response["task"]}
+        )
+        logger.info(
+            f"Started {STEMMED_PAGE_CONTENT_FIELD} backfill on '{collection_name}' "
+            f"(task {response['task']})"
+        )
+        return f"{STEMMED_PAGE_CONTENT_FIELD}.backfill"
+
+    async def _index_mappings(self, collection_name: str) -> Dict[str, Any]:
+        response = await self.client.indices.get_mapping(index=collection_name)  # type: ignore
+        index_body = response.get(collection_name) or next(iter(response.values()), {})
+        return index_body.get("mappings") or {}
+
+    async def _set_stemmed_backfill_state(
+        self, collection_name: str, meta: Dict[str, Any], state: Dict[str, Any]
+    ) -> None:
+        # ``_meta`` is replaced wholesale on update, so keep whatever else is in it.
+        await self.client.indices.put_mapping(  # type: ignore
+            index=collection_name,
+            body={"_meta": {**meta, _STEMMED_BACKFILL_META_KEY: state}},
+        )
 
     async def get_collections(self) -> object:
         await self._assert_connected()
@@ -650,25 +773,7 @@ class OpenSearchService(IVectorDBService):
         hits = result.get("hits", {}).get("hits", [])
         if len(hits) > limit:
             hits = hits[:limit]
-        points = [
-            VectorPoint(
-                id=hit["_id"],
-                payload={
-                    "metadata": hit.get("_source", {}).get("metadata", {}),
-                    "page_content": hit.get("_source", {}).get("page_content", ""),
-                    CONNECTOR_IDS_FIELD: list(
-                        hit.get("_source", {}).get(CONNECTOR_IDS_FIELD) or []
-                    ),
-                    RECORD_GROUP_IDS_FIELD: list(
-                        hit.get("_source", {}).get(RECORD_GROUP_IDS_FIELD) or []
-                    ),
-                    ROOT_RECORD_GROUP_IDS_FIELD: list(
-                        hit.get("_source", {}).get(ROOT_RECORD_GROUP_IDS_FIELD) or []
-                    ),
-                },
-            )
-            for hit in hits
-        ]
+        points = [self._hit_to_point(hit) for hit in hits]
         # Return a cursor for the next page when the result set is full
         next_offset = None
         if len(hits) == limit and hits:
@@ -686,6 +791,36 @@ class OpenSearchService(IVectorDBService):
             next_offset = json.dumps(last_sort)
 
         return ScrollResult(points=points, next_offset=next_offset)
+
+    @staticmethod
+    def _hit_to_point(hit: Dict[str, Any]) -> VectorPoint:
+        source = hit.get("_source", {})
+        return VectorPoint(
+            id=hit["_id"],
+            payload={
+                "metadata": source.get("metadata", {}),
+                "page_content": source.get("page_content", ""),
+                CONNECTOR_IDS_FIELD: list(source.get(CONNECTOR_IDS_FIELD) or []),
+                RECORD_GROUP_IDS_FIELD: list(source.get(RECORD_GROUP_IDS_FIELD) or []),
+                ROOT_RECORD_GROUP_IDS_FIELD: list(source.get(ROOT_RECORD_GROUP_IDS_FIELD) or []),
+            },
+        )
+
+    async def retrieve_points(
+        self,
+        collection_name: str,
+        ids: List[str],
+    ) -> List[VectorPoint]:
+        """``mget`` is realtime: it sees documents indexed since the last refresh."""
+        await self._assert_connected()
+        if not ids:
+            return []
+        result = await self.client.mget(  # type: ignore
+            index=collection_name,
+            body={"ids": list(ids)},
+            _source_excludes=["dense_embedding"],
+        )
+        return [self._hit_to_point(doc) for doc in result.get("docs", []) if doc.get("found")]
 
     async def query_nearest_points(
         self,
@@ -899,6 +1034,36 @@ class OpenSearchService(IVectorDBService):
                 "index. Populate at least one filter condition (e.g. virtualRecordId)."
             )
         await self.overwrite_payload(collection_name, payload, filter, refresh=refresh)
+
+    async def update_payload_by_ids(
+        self,
+        collection_name: str,
+        point_ids: List[str],
+        payload: dict,
+    ) -> None:
+        """A bulk partial update by ``_id`` reaches documents the index has
+        not refreshed yet, which ``update_by_query`` cannot."""
+        await self._assert_connected()
+        if not point_ids:
+            return
+        doc = OpenSearchUtils.nest_dotted_keys(payload)
+        actions = [
+            {
+                "_op_type": "update", "_index": collection_name, "_id": point_id,
+                "doc": doc, "retry_on_conflict": _UPDATE_RETRY_ON_CONFLICT,
+            }
+            for point_id in point_ids
+        ]
+        _, errors = await os_helpers.async_bulk(
+            self.client, actions, raise_on_error=False, refresh=False,
+        )
+        # A missing id is ignored by contract; any other item error is a lost write.
+        failed = [e for e in errors if (e.get("update") or {}).get("status") != 404]
+        if failed:
+            raise RuntimeError(
+                f"update_payload_by_ids on '{collection_name}' failed for "
+                f"{len(failed)} of {len(point_ids)} point(s): {failed[0]}"
+            )
 
     # ------------------------------------------------------------------
     # Performance utilities

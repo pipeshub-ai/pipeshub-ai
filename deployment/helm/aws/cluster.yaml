@@ -1,0 +1,115 @@
+# eksctl ClusterConfig for PipesHub.
+# Create: eksctl create cluster -f deployment/helm/aws/cluster.yaml
+#
+# Before you run it:
+#   - set metadata.region, availabilityZones, and each node group's availabilityZones
+#   - set secretsEncryption.keyARN to a KMS key in that region
+#     (aws kms create-key --description pipeshub-eks)
+#   - check metadata.version is in standard support:
+#     aws eks describe-cluster-versions --status standard-support
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: pipeshub
+  region: us-east-1
+  version: "1.36"
+
+availabilityZones: ["us-east-1a", "us-east-1b", "us-east-1c"]
+
+# Newer eksctl releases default to Auto Mode, which skips managed node groups and add-ons.
+autoModeConfig:
+  enabled: false
+
+iam:
+  withOIDC: true
+
+# Envelope-encrypts Kubernetes Secrets, including secretKey and database passwords.
+secretsEncryption:
+  keyARN: arn:aws:kms:us-east-1:111122223333:key/00000000-0000-0000-0000-000000000000
+
+vpc:
+  clusterEndpoints:
+    publicAccess: true
+    privateAccess: true
+
+addons:
+  - name: vpc-cni
+    version: latest
+    configurationValues: |-
+      enableNetworkPolicy: "true"
+    resolveConflicts: overwrite
+  - name: coredns
+    version: latest
+  - name: kube-proxy
+    version: latest
+  - name: eks-pod-identity-agent
+    version: latest
+  - name: aws-ebs-csi-driver
+    version: latest
+    useDefaultPodIdentityAssociations: true
+  - name: metrics-server
+    version: latest
+
+# disablePodIMDS blocks the instance metadata endpoint for every pod that is not
+# on the host network, so neither the app nor sandbox containers can read the
+# node's IAM role. Pods get AWS access only through Pod Identity or IRSA.
+managedNodeGroups:
+  # Untainted: CoreDNS, metrics-server, the EBS CSI controller and the AWS Load
+  # Balancer Controller do not tolerate the pipeshub/role taints.
+  - name: system
+    instanceType: m7i.large
+    desiredCapacity: 2
+    minSize: 2
+    maxSize: 3
+    volumeSize: 30
+    volumeType: gp3
+    volumeEncrypted: true
+    privateNetworking: true
+    disableIMDSv1: true
+    disablePodIMDS: true
+    availabilityZones: ["us-east-1a", "us-east-1b", "us-east-1c"]
+    labels:
+      pipeshub/role: system
+    updateConfig:
+      maxUnavailable: 1
+  - name: data
+    instanceType: m7i.2xlarge
+    desiredCapacity: 4
+    minSize: 4
+    maxSize: 6
+    volumeSize: 50
+    volumeType: gp3
+    volumeEncrypted: true
+    privateNetworking: true
+    disableIMDSv1: true
+    disablePodIMDS: true
+    availabilityZones: ["us-east-1a", "us-east-1b", "us-east-1c"]
+    labels:
+      pipeshub/role: data
+    taints:
+      - key: pipeshub/role
+        value: data
+        effect: NoSchedule
+    updateConfig:
+      maxUnavailable: 1
+  - name: app
+    instanceType: m7i.2xlarge
+    desiredCapacity: 2
+    minSize: 2
+    maxSize: 6
+    volumeSize: 150
+    volumeType: gp3
+    volumeEncrypted: true
+    privateNetworking: true
+    disableIMDSv1: true
+    disablePodIMDS: true
+    availabilityZones: ["us-east-1a", "us-east-1b", "us-east-1c"]
+    labels:
+      pipeshub/role: app
+    taints:
+      - key: pipeshub/role
+        value: app
+        effect: NoSchedule
+    updateConfig:
+      maxUnavailable: 1

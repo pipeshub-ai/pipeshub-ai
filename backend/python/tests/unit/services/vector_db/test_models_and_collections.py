@@ -271,7 +271,11 @@ class TestCollectionConfigDefaults:
         assert cfg.embedding_size == 1024
         assert cfg.distance_metric == DistanceMetric.COSINE
         assert cfg.enable_sparse is True
-        assert cfg.sparse_idf is False
+
+    def test_sparse_leg_scores_with_idf_by_default(self):
+        """Qdrant/bm25 emits TF-only weights; without IDF a common word ranks
+        like a rare name. Every collection must be created with it on."""
+        assert CollectionConfig().sparse_idf is True
 
 
 class TestCollectionConfigKnobs:

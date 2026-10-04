@@ -16,6 +16,8 @@ export interface ICitationMetadata {
   categories?: string;
   departments?: string[];
   connector?: string;
+  /** Connector instance the record came from; `connector` is only its kind. */
+  connectorId?: string;
   recordType?: string;
   orgId: string;
   blockType?: string;
@@ -72,6 +74,7 @@ const citationMetadataSchema = new Schema<ICitationMetadata>({
   categories: { type: String },
   departments: [{ type: String }],
   connector: { type: String },
+  connectorId: { type: String },
   recordType: { type: String },
   orgId: { type: String, required: true },
   blockType: { type: String },

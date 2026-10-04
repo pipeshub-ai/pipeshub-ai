@@ -7,19 +7,18 @@ export function isValidEmail(email: string): boolean {
 
 // ─── Password ─────────────────────────────────────────────────────────────────
 
-export const PASSWORD_RULES =
-  'At least 8 characters: lowercase, uppercase, number, symbol.';
+export type PasswordValidationError = 'minLength' | 'lowercase' | 'uppercase' | 'number' | 'symbol';
 
 /**
  * Validates a password against the standard policy.
- * Returns an error message string if invalid, or null if valid.
+ * Returns an error code if invalid, or null if valid.
  */
-export function validatePassword(pw: string): string | null {
-  if (pw.length < 8) return 'Password must be at least 8 characters.';
-  if (!/[a-z]/.test(pw)) return 'Password must contain a lowercase letter.';
-  if (!/[A-Z]/.test(pw)) return 'Password must contain an uppercase letter.';
-  if (!/[0-9]/.test(pw)) return 'Password must contain a number.';
-  if (!/[^a-zA-Z0-9]/.test(pw)) return 'Password must contain a symbol.';
+export function validatePassword(pw: string): PasswordValidationError | null {
+  if (pw.length < 8) return 'minLength';
+  if (!/[a-z]/.test(pw)) return 'lowercase';
+  if (!/[A-Z]/.test(pw)) return 'uppercase';
+  if (!/[0-9]/.test(pw)) return 'number';
+  if (!/[^a-zA-Z0-9]/.test(pw)) return 'symbol';
   return null;
 }
 

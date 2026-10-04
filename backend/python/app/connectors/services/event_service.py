@@ -7,6 +7,7 @@ from typing import Any
 
 from dependency_injector import providers
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppStatus,
     CollectionNames,
@@ -23,8 +24,12 @@ from app.connectors.core.base.connector.connector_service import (
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
+from app.connectors.core.base.data_processor.storage_cleanup import (
+    StorageCleanupHelper,
+)
+from app.connectors.services.entity_cleanup_intents import record_pending_entity_cleanup
 from app.connectors.services.vector_cleanup_events import (
-    build_connector_vector_cleanup_events,
+    build_connector_cleanup_events,
     log_cleanup_publish_failure,
 )
 from app.containers.connector import ConnectorAppContainer
@@ -128,6 +133,10 @@ class EventService:
         """Build a graph data store"""
         return GraphDataStore(self.logger, self.graph_provider)
 
+    def _config_service_for(self, org_id: str | None) -> ConfigurationService:
+        """Config service for an event's org"""
+        return self.app_container.config_service()
+
     async def _ensure_connector(self, connector_name: str, connector_id: str) -> BaseConnector | None:
         """
         Get connector from memory, or auto-initialize it if missing.
@@ -151,6 +160,10 @@ class EventService:
             )
             return await self._auto_initialize_connector(connector_name, connector_id)
 
+    async def get_or_init_connector(self, connector_name: str, connector_id: str) -> BaseConnector | None:
+        """Live connector instance for HTTP callers, built from its app doc if missing."""
+        return await self._ensure_connector(connector_name, connector_id)
+
     async def _auto_initialize_connector(
         self, connector_name: str, connector_id: str
     ) -> BaseConnector | None:
@@ -170,13 +183,13 @@ class EventService:
                     f"Connector {connector_id} is not active in database — skipping initialization"
                 )
                 return None
-            config_service = self.app_container.config_service()
 
             # Extract scope, createdBy and org from connector document
             scope = connector_doc.get("scope", "personal")
             created_by = connector_doc.get("createdBy", "")
             last_synced_by = connector_doc.get("lastSyncedBy", "") or None
             org_id = connector_doc.get("orgId") or self._resolve_org_id()
+            config_service = self._config_service_for(org_id)
             data_store_provider = self._build_data_store(org_id)
 
             connector = await ConnectorFactory.initialize_connector(
@@ -215,13 +228,14 @@ class EventService:
     async def process_event(self, event_type: str, payload: dict[str, Any]) -> bool:
         """Handle connector-specific events - implementing abstract method"""
         try:
-            if "." in event_type:
-                parts = event_type.split(".")
-                connector_name = parts[0].replace(" ", "").lower()
-                action = parts[1].lower()
-            else:
-                self.logger.error(f"Invalid event type format (missing connector prefix): {event_type}")
+            parts = event_type.split(".")
+            # Exactly "<connector>.<action>": the action picks the handler, so a
+            # connector name carrying its own dot must not be able to choose it.
+            if len(parts) != 2:
+                self.logger.error(f"Invalid event type format (expected '<connector>.<action>'): {event_type}")
                 return False
+            connector_name = parts[0].replace(" ", "").lower()
+            action = parts[1].lower()
 
             self.logger.info(f"Handling {connector_name} connector event: {action}")
 
@@ -267,7 +281,7 @@ class EventService:
                 return False
 
             self.logger.info(f"Initializing {connector_name} init sync service for org_id: {org_id} and connector_id: {connector_id}")
-            config_service = self.app_container.config_service()
+            config_service = self._config_service_for(org_id)
             # Create data_store manually using already-resolved graph_provider (arango_service) to avoid coroutine reuse
             data_store_provider = self._build_data_store(org_id)
             
@@ -313,6 +327,7 @@ class EventService:
             self.logger.info(f"✅ Successfully initialized {connector_name} connector")
 
             await self._store_connector(connector_id, connector)
+
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
@@ -758,6 +773,24 @@ class EventService:
 
         self.logger.info(f"✅ Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
 
+    async def _repair_shared_records(
+        self,
+        cleanup_helper: StorageCleanupHelper,
+        org_id: str,
+        connector_id: str,
+        shared_vrids: list[str],
+    ) -> None:
+        async def publish(topic: str, event: dict) -> bool:
+            return await self.app_container.messaging_producer.send_message(topic=topic, message=event)
+
+        try:
+            await cleanup_helper.repair_shared_records(org_id, shared_vrids, publish)
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to re-index records sharing content with deleted connector "
+                f"{connector_id}: {e}. Re-index them to restore their stored content."
+            )
+
     async def _handle_delete(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """
         Handle the async connector deletion event.
@@ -783,6 +816,24 @@ class EventService:
             await sync_task_manager.cancel_sync(connector_id)
             await reindex_task_manager.cancel_by_prefix(f"reindex:{connector_id}:")
 
+            # Deduplicated content may be stored under this connector while other
+            # connectors' records read it. Only answerable while this connector's
+            # records are still in the graph, so it is asked before deleting them.
+            cleanup_helper = StorageCleanupHelper(
+                self.logger, self.graph_provider, self.app_container.config_service()
+            )
+            shared_vrids = await cleanup_helper.find_shared_virtual_record_ids(connector_id)
+
+            # Recorded before the graph rows go: a lost deleteConnectorEntities
+            # is then still reconciled by the indexing service. Raises, which
+            # aborts the delete, when the intent cannot be recorded.
+            # The service-wide store, not the org's: the indexing service reads
+            # these back without knowing which org a key belongs to.
+            await record_pending_entity_cleanup(
+                self.app_container.config_service(),
+                org_id=org_id, connector_id=connector_id, connector_name=connector_name,
+            )
+
             # Delete from graph DB
             result = await self.graph_provider.delete_connector_instance(
                 connector_id=connector_id,
@@ -803,7 +854,7 @@ class EventService:
             # back to chunked id lists. connectorName lets the consumer resolve
             # which collection(s) the data lives in under a per-connector-type
             # strategy.
-            events = build_connector_vector_cleanup_events(
+            events = build_connector_cleanup_events(
                 org_id=org_id,
                 connector_id=connector_id,
                 vector_membership_backfilled=result.get(
@@ -813,7 +864,8 @@ class EventService:
                     "vector_membership_backfill_exhausted", False
                 ),
                 connector_name=result.get("connector_name"),
-                record_group_ids=result.get("record_group_ids", []),
+                # None (the graph did not say) reaches the entity cleanup as None.
+                record_group_ids=result.get("record_group_ids"),
                 virtual_record_ids=result.get("virtual_record_ids", []),
             )
             published = 0
@@ -837,7 +889,7 @@ class EventService:
 
             # Delete connector credentials from etcd/config store
             try:
-                config_service = self.app_container.config_service()
+                config_service = self._config_service_for(org_id)
                 config_path = f"/services/connectors/{connector_id}/config"
                 await config_service.delete_config(config_path)
                 self.logger.info(f"✅ Deleted etcd config for connector {connector_id}")
@@ -846,6 +898,29 @@ class EventService:
                     f"❌ Failed to delete etcd config for connector {connector_id}: {config_err}. "
                     f"Orphaned configuration may remain."
                 )
+
+            # Delete blob storage and MongoDB storage documents
+            if shared_vrids is None:
+                self.logger.error(
+                    f"❌ Skipped blob storage deletion for connector {connector_id}: "
+                    f"content shared with other connectors could not be determined."
+                )
+            else:
+                try:
+                    deleted = await cleanup_helper.delete_connector_storage(
+                        org_id, connector_id
+                    )
+                    self.logger.info(
+                        f"✅ Deleted {deleted} storage documents for connector {connector_id}"
+                    )
+                except Exception as storage_err:
+                    self.logger.error(
+                        f"❌ Failed to delete blob storage for connector {connector_id}: {storage_err}. "
+                        f"Orphaned blobs may remain in storage."
+                    )
+                # Runs even after a failed delete: part of it may have gone through.
+                await self._repair_shared_records(cleanup_helper, org_id, connector_id, shared_vrids)
+            await cleanup_helper.close()
 
             self.logger.info(f"✅ Async deletion complete for connector {connector_id}")
             return True

@@ -1,6 +1,7 @@
-import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
+import axios, { AxiosError, InternalAxiosRequestConfig, isAxiosError } from 'axios';
 import { useAuthStore, logoutAndRedirect } from '@/config';
-import { extractApiErrorMessage, processError, ProcessedError } from './api-error';
+import { ErrorType, extractApiErrorMessage, processError, ProcessedError } from './api-error';
+import { STREAM_ERROR_MESSAGES } from './stream-errors';
 import { showErrorToast } from './error-toast';
 import {
   refreshAccessToken,
@@ -84,7 +85,11 @@ apiClient.interceptors.request.use(
         accessToken = useAuthStore.getState().accessToken;
       } else {
         logoutAndRedirect();
-        return Promise.reject(new Error(SESSION_EXPIRED_LOGOUT_MESSAGE));
+        const sessionExpired: ProcessedError = {
+          type: ErrorType.AUTHENTICATION_ERROR,
+          message: STREAM_ERROR_MESSAGES.sessionExpired,
+        };
+        return Promise.reject(sessionExpired);
       }
     }
 
@@ -107,6 +112,12 @@ apiClient.interceptors.request.use(
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
+    // A rejection from the request interceptor lands here too, with no
+    // request config; it is already the error the caller should see.
+    if (!isAxiosError(error)) {
+      return Promise.reject(error);
+    }
+
     if (error.response?.data instanceof Blob) {
       try {
         const text = await error.response.data.text();

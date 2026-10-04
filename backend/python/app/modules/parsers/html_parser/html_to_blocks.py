@@ -180,6 +180,12 @@ class NormalizedTable:
     num_cols: int
     num_body_rows: int
     has_header: bool
+    # A leading row that is one cell spanning the whole table names the table
+    # (an infobox title) rather than its columns.
+    title: str = ""
+    # Per body row: whether its first cell is a row label (`<th>`), which is
+    # what a header-less key/value table (an infobox) is made of.
+    row_labels: list[bool] = field(default_factory=list)
 
     def to_markdown(self) -> str:
         """Render this table as a GitHub-flavoured markdown pipe table.
@@ -587,39 +593,30 @@ def _table_caption(table_node: LexborNode) -> str:
     return ""
 
 
-def _table_section_rows(
-    table_node: LexborNode,
-) -> tuple[list[LexborNode], list[LexborNode]]:
-    """Split a ``<table>`` into (header_rows, body_rows) lists of ``<tr>`` nodes.
+def _table_rows(table_node: LexborNode) -> tuple[list[LexborNode], int]:
+    """All ``<tr>`` rows of a ``<table>`` in reading order, and how many of
+    the leading ones are header rows.
 
-    Uses explicit ``<thead>``/``<tbody>`` when present. Otherwise infers headers
-    by counting leading rows with ``<th>`` cells (handles Lexbor auto-inserted
-    ``<tbody>`` transparently). Header rows feed ``TableMetadata.column_names``;
-    body rows become individual ``TABLE_ROW`` blocks.
+    ``<thead>`` rows come first and are the header. Without one, the header is
+    inferred from the leading rows (see ``_count_leading_header_rows``).
+    Header and body are returned together so one grid expansion carries a
+    rowspan across the boundary between them.
     """
     thead_rows: list[LexborNode] = []
-    body_rows: list[LexborNode] = []
-    bare_rows: list[LexborNode] = []
-
+    other_rows: list[LexborNode] = []
     for child in _direct_children(table_node):
         tag = _tag_name(child)
         if tag == "thead":
             thead_rows.extend(_row_children(child))
         elif tag in {"tbody", "tfoot"}:
-            body_rows.extend(_row_children(child))
+            other_rows.extend(_row_children(child))
         elif tag == "tr":
-            bare_rows.append(child)
+            other_rows.append(child)
 
     if thead_rows:
-        return thead_rows, body_rows + bare_rows
-
-    all_rows = body_rows + bare_rows
-    if not all_rows:
-        return [], []
-
-    # Lexbor may auto-insert <tbody>; infer headers from leading <th> rows.
-    split_at = _count_leading_header_rows(all_rows)
-    return all_rows[:split_at], all_rows[split_at:]
+        return thead_rows + other_rows, len(thead_rows)
+    # Lexbor may auto-insert <tbody>; infer headers from the leading rows.
+    return other_rows, _count_leading_header_rows(other_rows)
 
 
 def _row_children(section_node: LexborNode) -> list[LexborNode]:
@@ -631,22 +628,33 @@ def _row_children(section_node: LexborNode) -> list[LexborNode]:
     return [child for child in _direct_children(section_node) if _tag_name(child) == "tr"]
 
 
-def _count_leading_header_rows(row_nodes: list[LexborNode]) -> int:
-    """Count consecutive leading rows that contain at least one ``<th>`` cell.
+def _is_row_label(cell: LexborNode) -> bool:
+    scope = str((cell.attributes or {}).get("scope") or "").strip().lower()
+    return scope in {"row", "rowgroup"}
 
-    Heuristic for tables without explicit ``<thead>``/``<tbody>``: the first
-    all-``<td>`` row ends the header region. Used by ``_table_section_rows``
-    to split rows into header and body segments.
+
+def _count_leading_header_rows(row_nodes: list[LexborNode]) -> int:
+    """Count the leading rows that label columns, for tables without ``<thead>``.
+
+    A header row is made only of ``<th>`` cells (empty ``<td>`` padding aside)
+    and none of them labels its row (``scope="row"``). A ``<td>`` with content,
+    or a row label, marks a data row: Wikipedia-style tables put a ``<th>`` at
+    the start of every data row, and counting those as headers turned the
+    first data row into every column's label, or swallowed whole tables.
     """
     count = 0
     for row in row_nodes:
         cells = [child for child in _direct_children(row) if _tag_name(child) in {"th", "td"}]
         if not cells:
             break
-        if any(_tag_name(cell) == "th" for cell in cells):
-            count += 1
-        else:
+        is_header = all(
+            (_tag_name(cell) == "th" and not _is_row_label(cell))
+            or (_tag_name(cell) == "td" and not _node_text(cell).strip())
+            for cell in cells
+        ) and any(_tag_name(cell) == "th" for cell in cells)
+        if not is_header:
             break
+        count += 1
     return count
 
 
@@ -703,6 +711,14 @@ def _grid_width(*grids: list[list[NormalizedCell]]) -> int:
     """
     widths = [len(row) for grid in grids for row in grid]
     return max(widths) if widths else 0
+
+
+def _spanning_title(row: list[NormalizedCell], width: int) -> str:
+    """The text of a row that is one cell spanning the full table width."""
+    origins = [cell for cell in row if cell.is_origin and cell.text.strip()]
+    if len(origins) == 1 and origins[0].colspan >= width:
+        return origins[0].text.strip()
+    return ""
 
 
 def _column_groups(
@@ -776,116 +792,57 @@ def _collapse_body_rows(
     body_grid: list[list[NormalizedCell]],
     column_groups: list[tuple[int, int]],
 ) -> list[list[str]]:
-    """Collapse the expanded body grid into output rows with merged column groups.
+    """One output row per HTML row, its physical columns merged per logical
+    column group.
 
-    Applies two merges: (1) consecutive HTML rows sharing a first-column
-    rowspan are grouped into one output row, and (2) physical columns within
-    each logical column group are merged per cell. The result is a list of
-    string-valued rows ready for ``TABLE_ROW`` block emission.
+    A rowspan's value is repeated in every row it covers, so each row stands
+    on its own: merging the rows a first-column rowspan covers into one output
+    row kept only one of their values per column and severed each value from
+    the rest of its row.
     """
-    if not body_grid:
-        return []
-
-    output: list[list[str]] = []
-    row_idx = 0
-    while row_idx < len(body_grid):
-        span = _body_output_row_span(body_grid[row_idx])
-        group_rows = body_grid[row_idx:row_idx + span]
-        output.append([
-            _collapse_body_cell(group_rows, col_start, col_end)
-            for col_start, col_end in column_groups
-        ])
-        row_idx += span
-    return output
-
-
-def _body_output_row_span(row: list[NormalizedCell]) -> int:
-    """Return how many grid rows merge into one output row (first column's rowspan).
-
-    Only the first column drives grouping — middle-column spans must not fold
-    unrelated rows together, which would produce incorrect records.
-    """
-    if not row:
-        return 1
-    label = row[0]
-    if label.is_origin and label.rowspan > 1:
-        return label.rowspan
-    return 1
+    return [
+        [_collapse_body_cell(row, col_start, col_end) for col_start, col_end in column_groups]
+        for row in body_grid
+    ]
 
 
 def _collapse_body_cell(
-    group_rows: list[list[NormalizedCell]],
+    row: list[NormalizedCell],
     col_start: int,
     col_end: int,
 ) -> str:
-    """Format one logical column group across one or more grouped HTML rows.
+    """The text of one logical column group in one row.
 
-    Single-column groups delegate to ``_collapse_single_column_cell`` (handles
-    rowspan labels and stacked values). Multi-column groups join origin cells
-    within the range with ``" | "`` per row, then stack rows with newlines.
+    Cells covered by a rowspan carry the spanning cell's text; colspan
+    continuation slots are empty and drop out, so every remaining part is a
+    distinct cell, even when two neighbours hold the same value.
     """
-    group_width = col_end - col_start
-    if group_width == 1:
-        return _collapse_single_column_cell(group_rows, col_start)
-
-    lines: list[str] = []
-    for html_row in group_rows:
-        parts: list[str] = []
-        for col in range(col_start, col_end):
-            cell = html_row[col]
-            if not cell.is_origin:
-                continue
-            text = cell.text.strip()
-            if text:
-                parts.append(text)
-        if parts:
-            lines.append(_CELL_SEP.join(parts))
-    return _LEVEL_SEP.join(lines)
+    parts = [text for col in range(col_start, col_end) if (text := row[col].text.strip())]
+    return _CELL_SEP.join(parts)
 
 
-def _collapse_single_column_cell(
-    group_rows: list[list[NormalizedCell]],
-    col: int,
-) -> str:
-    """Format a single column across grouped rows, handling rowspan and label semantics.
-
-    Single row → text directly. Rowspan > 1 origin → that cell wins (covers
-    the full group). First column (label) → first non-empty value only. Other
-    columns → all values newline-joined.
-    """
-    if len(group_rows) == 1:
-        return group_rows[0][col].text.strip()
-
-    values: list[str] = []
-    for html_row in group_rows:
-        cell = html_row[col]
-        if not cell.is_origin:
-            continue
-        text = cell.text.strip()
-        if not text:
-            continue
-        if cell.rowspan > 1:
-            return text
-        if col == 0:
-            return text
-        values.append(text)
-    return _LEVEL_SEP.join(values)
-
-
-def _format_table_row(headers: list[str], cells: list[str]) -> str:
+def _format_table_row(headers: list[str], cells: list[str], *, labelled: bool = False) -> str:
     """Build a ``Header: value`` sentence for one table row (for RAG / full-text search).
 
-    Pairs each cell with its column header (e.g. ``"Name: Alice, Age: 30"``).
-    Falls back to ``Column N`` labels for ragged tables, or plain comma-join
-    when no headers exist.
+    Pairs each cell with its column header (e.g. ``"Name: Alice, Age: 30"``),
+    falling back to ``Column N`` labels for ragged tables. Empty cells are
+    left out (``"Ref.: "`` says nothing), and a cell under an empty header
+    is its bare value. Without headers, a row whose first
+    cell labels it reads ``"Born: 9 November 1915"``; otherwise cells are
+    comma-joined.
     """
     if headers:
-        parts = [
-            f"{headers[i] if i < len(headers) else f'Column {i + 1}'}: {cell}"
-            for i, cell in enumerate(cells)
-        ]
+        parts = []
+        for i, cell in enumerate(cells):
+            if not cell.strip():
+                continue
+            header = headers[i] if i < len(headers) else f"Column {i + 1}"
+            parts.append(f"{header}: {cell}" if header.strip() else cell)
         return ", ".join(parts)
-    return ", ".join(cells)
+    values = [cell for cell in cells if cell.strip()]
+    if labelled and len(values) > 1 and cells and cells[0].strip():
+        return f"{values[0]}: {', '.join(values[1:])}"
+    return ", ".join(values)
 
 
 def _escape_markdown_cell(value: str) -> str:
@@ -936,16 +893,37 @@ class HtmlTableNormalizer:
     def normalize(self, table_node: LexborNode) -> NormalizedTable:
         """Expand rowspan/colspan into a grid, then collapse into logical columns.
 
-        Produces the same collapsed shape the block walker expects: one header
-        label per logical column and one body row per merged HTML row group.
+        Produces one header label per logical column and one body row per HTML
+        row. Header and body rows are expanded as one grid so a rowspan that
+        starts in the header region carries into the body.
         """
-        header_row_nodes, body_row_nodes = _table_section_rows(table_node)
-        header_grid = self._expand_rows(header_row_nodes, is_header=True)
-        body_grid = self._expand_rows(body_row_nodes, is_header=False)
+        row_nodes, header_count = _table_rows(table_node)
+        grid, header_flags = self._expand_rows(row_nodes, header_count=header_count)
+        width = _grid_width(grid)
+        if (
+            header_count == 0 and len(grid) > 1 and width > 1
+            and any(_tag_name(child) in {"th", "td"} for child in _direct_children(row_nodes[0]))
+            and _spanning_title(grid[0], width)
+        ):
+            # A <td> title is not a header row, so counting stopped on it and
+            # the column labels below it were read as data.
+            header_count = 1 + _count_leading_header_rows(row_nodes[1:])
+            grid, header_flags = self._expand_rows(row_nodes, header_count=header_count)
+        grid = _pad_grid_to_width(grid, width)
+        header_grid = [row for row, is_header in zip(grid, header_flags, strict=True) if is_header]
+        body_grid = [row for row, is_header in zip(grid, header_flags, strict=True) if not is_header]
 
-        width = _grid_width(header_grid, body_grid)
-        header_grid = _pad_grid_to_width(header_grid, width)
-        body_grid = _pad_grid_to_width(body_grid, width)
+        title = ""
+        if (
+            header_grid and len(grid) > 1 and width > 1
+            and (row_title := _spanning_title(header_grid[0], width))
+        ):
+            title = row_title
+            header_grid = header_grid[1:]
+        if not body_grid:
+            # A table made only of header-like rows still holds data; losing
+            # it is worse than losing its column labels.
+            header_grid, body_grid = [], header_grid
 
         column_groups = _column_groups(header_grid, width)
         headers = _collapse_header_row(header_grid, column_groups) if header_grid else []
@@ -957,27 +935,37 @@ class HtmlTableNormalizer:
             num_cols=len(column_groups),
             num_body_rows=len(body_rows),
             has_header=bool(headers),
+            title=title,
+            row_labels=[bool(row) and row[0].is_header and bool(row[0].text.strip()) for row in body_grid],
         )
 
     def _expand_rows(
         self,
         row_nodes: list[LexborNode],
         *,
-        is_header: bool,
-    ) -> list[list[NormalizedCell]]:
-        """Expand HTML table rows into a 2D grid, filling rowspan/colspan placeholder slots.
-        Tracks pending rowspans per column and pads the final grid to a uniform width.
+        header_count: int,
+    ) -> tuple[list[list[NormalizedCell]], list[bool]]:
+        """Expand HTML table rows into a 2D grid, filling rowspan/colspan slots.
+
+        Returns the grid and, per grid row, whether it is a header row (the
+        first ``header_count`` rows with cells). Rowspan slots carry the
+        spanning cell's text; colspan slots are empty.
         """
         grid: list[list[NormalizedCell]] = []
+        header_flags: list[bool] = []
         rowspan_pending: dict[int, tuple[int, NormalizedCell]] = {}
 
-        for row_node in row_nodes:
+        for position, row_node in enumerate(row_nodes):
             cells = [
                 child for child in _direct_children(row_node)
                 if _tag_name(child) in {"th", "td"}
             ]
-            if not cells:
+            # A row every slot of which is covered by rowspans from above
+            # still consumes one row of each span; skipping it would shift
+            # every later row.
+            if not cells and not rowspan_pending:
                 continue
+            is_header = position < header_count
 
             row: list[NormalizedCell] = []
             col = 0
@@ -1014,18 +1002,22 @@ class HtmlTableNormalizer:
                     else:
                         slot = NormalizedCell(
                             text="",
+                            rowspan=rowspan,
                             colspan=colspan,
-                            is_header=is_header,
+                            is_header=normalized.is_header,
                             is_origin=False,
                         )
                     row.append(slot)
                     if rowspan > 1:
-                        rowspan_pending[col + offset] = (rowspan - 1, normalized)
+                        # Each covered column repeats its own slot, so a later
+                        # row carries the text once, where the origin row has it.
+                        rowspan_pending[col + offset] = (rowspan - 1, slot)
                 col += colspan
 
             grid.append(row)
+            header_flags.append(is_header)
 
-        return _pad_grid(grid)
+        return grid, header_flags
 
     def _normalize_cell(self, cell_node: LexborNode, *, is_header: bool) -> NormalizedCell:
         """Build one ``NormalizedCell`` from a ``<th>``/``<td>`` node including span attributes."""
@@ -1081,13 +1073,19 @@ def normalized_table_to_markdown(
     *,
     caption: str = "",
 ) -> str:
-    """Render a normalized table as markdown, optionally prefixing a caption on its own line."""
+    """Render a normalized table as markdown, prefixed by its caption and title row."""
     table_md = _render_table_markdown(table)
+    heading = "\n".join(_distinct_lines(caption, table.title))
     if not table_md:
-        return caption.strip()
-    if caption.strip():
-        return f"{caption.strip()}\n\n{table_md}"
+        return heading
+    if heading:
+        return f"{heading}\n\n{table_md}"
     return table_md
+
+
+def _distinct_lines(*texts: str) -> list[str]:
+    """The non-empty stripped ``texts``, each once, in order."""
+    return list(dict.fromkeys(stripped for text in texts if (stripped := text.strip())))
 
 
 def _lexbor_subtree_to_markdown(node: LexborNode) -> str:
@@ -2012,6 +2010,8 @@ class _DomWalker:
         self,
         headers: list[str],
         row_cells: list[_TableCell],
+        *,
+        labelled: bool = False,
     ) -> list[_Segment]:
         """Split one table row into alternating TEXT and IMAGE segments.
 
@@ -2021,15 +2021,21 @@ class _DomWalker:
         segment, then resumes accumulation. Mirrors
         ``markdown_to_blocks.MarkdownToBlocksConverter._split_table_row_into_segments``.
         """
-        pending_pairs: list[tuple[str, str]] = []
+        pending_pairs: list[tuple[int, str, str]] = []
         fragments: list[_Segment] = []
 
         def flush_text_fragment() -> None:
             if not pending_pairs:
                 return
-            hdrs = [pair[0] for pair in pending_pairs]
-            vals = [pair[1] for pair in pending_pairs]
-            text = _format_table_row(hdrs, vals)
+            vals = [pair[2] for pair in pending_pairs]
+            if headers:
+                text = _format_table_row([pair[1] for pair in pending_pairs], vals)
+            else:
+                # As on the text path: no invented "Column N" labels, and only
+                # the fragment that starts at the row's label reads "Label: value".
+                text = _format_table_row(
+                    [], vals, labelled=labelled and pending_pairs[0][0] == 0,
+                )
             if text.strip():
                 fragments.append(_Segment(kind="text", text=text))
             pending_pairs.clear()
@@ -2048,14 +2054,14 @@ class _DomWalker:
                 elif cell.plain:
                     value = cell.plain.strip()
                 if value:
-                    pending_pairs.append((header, value))
+                    pending_pairs.append((col_idx, header, value))
                 continue
 
             for seg in cell_segments:
                 if seg.kind == "text":
                     value = seg.text.strip()
                     if value:
-                        pending_pairs.append((header, value))
+                        pending_pairs.append((col_idx, header, value))
                 else:
                     flush_text_fragment()
                     fragments.append(seg)
@@ -2070,6 +2076,7 @@ class _DomWalker:
         row_number: int,
         headers: list[str],
         row_cells: list[_TableCell],
+        labelled: bool,
         row_block_indices: list[int],
         row_markdown: str,
     ) -> None:
@@ -2085,10 +2092,11 @@ class _DomWalker:
             row_number: 1-based row number stored on the container.
             headers: Collapsed column header labels for fragment formatting.
             row_cells: Per-column cell content (plain and markdown are identical).
+            labelled: Whether the row's first cell labels it (headerless tables).
             row_block_indices: Mutable list; receives the container block index.
             row_markdown: Joined cell markdown used for ``data:image`` URI lookup.
         """
-        segments = self._split_table_row_into_segments(headers, row_cells)
+        segments = self._split_table_row_into_segments(headers, row_cells, labelled=labelled)
         container = Block(
             id=str(uuid4()),
             index=len(self.blocks),
@@ -2202,7 +2210,8 @@ class _DomWalker:
             _strip_inline_images_from_markdown(header)
             for header in normalized.column_headers
         ]
-        caption = _table_caption(table_node)
+        # The title row was taken out of the grid, so it is kept even beside a <caption>.
+        captions = _distinct_lines(_table_caption(table_node), normalized.title)
         body_rows = normalized.body_rows
 
         row_block_indices: list[int] = []
@@ -2211,12 +2220,17 @@ class _DomWalker:
                 _TableCell(plain=cell, markdown=cell) for cell in row_cells
             ]
             row_markdown = " ".join(row_cells)
+            labelled = (
+                row_number <= len(normalized.row_labels)
+                and normalized.row_labels[row_number - 1]
+            )
             if self._row_has_images(table_cells):
                 self._emit_table_row_with_image_splits(
                     group_index=group.index,
                     row_number=row_number,
                     headers=headers,
                     row_cells=table_cells,
+                    labelled=labelled,
                     row_block_indices=row_block_indices,
                     row_markdown=row_markdown,
                 )
@@ -2229,7 +2243,9 @@ class _DomWalker:
                 format=DataFormat.JSON,
                 parent_index=group.index,
                 data={
-                    "row_natural_language_text": _format_table_row(headers, row_cells),
+                    "row_natural_language_text": _format_table_row(
+                        headers, row_cells, labelled=labelled,
+                    ),
                     "row_number": row_number,
                     "cells": row_cells,
                 },
@@ -2244,9 +2260,9 @@ class _DomWalker:
             num_of_cells=sum(len(row) for row in body_rows),
             has_header=normalized.has_header,
             column_names=headers or None,
-            captions=[caption] if caption else [],
+            captions=captions,
         )
-        group.data = {"table_summary": caption, "column_headers": headers}
+        group.data = {"table_summary": "\n".join(captions), "column_headers": headers}
         group.children = BlockGroupChildren.from_indices(
             block_indices=row_block_indices,
             block_group_indices=open_group.child_group_indices,

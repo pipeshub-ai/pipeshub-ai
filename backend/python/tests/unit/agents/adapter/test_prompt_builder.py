@@ -12,7 +12,7 @@ to touch this file (see the "Prompt consolidation" plan, Part 4).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,8 +22,18 @@ from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.registry import ToolRegistry
-from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
+from app.agents.agent_loop.prompt_builder import (
+    _ORG_SCOPE_RULE_WITH_DEMO,
+    PipesHubPromptBuilder,
+)
+from app.modules.agents.context.source_catalog import (
+    DEMO_ONLY_SOURCE_NOTE,
+    DEMO_SOURCE_NOTE,
+)
 from tests.unit.agents.adapter.conftest import make_context
+
+if TYPE_CHECKING:
+    from app.agents.agent_loop.context import AgentContext
 
 
 class FakeTool(Tool):
@@ -573,10 +583,102 @@ class TestIdentityAndOperatingRules:
         assert "Organization scope" in result
         assert "Current User Information" in result
 
+    def test_org_scope_rule_keeps_the_demo_data(self) -> None:
+        # The demo's questions say "our"; the plain rule would discard every
+        # Acme Corp record whenever the workspace has another name.
+        demo = {"displayName": "Acme Corp demo data", "type": "Demo", "connectorId": "demo-1"}
+        jira = {"displayName": "Engineering Jira", "type": "JIRA", "connectorId": "jira-1"}
+        result = _build(make_context(send_user_info=True, agent_knowledge=[demo, jira]))
+        rules = result.split("## Operating Rules", 1)[1].split("\n## ", 1)[0]
+        # Beside real data, "our" stays the user's organization; Acme Corp is the named fallback.
+        assert "mean the organization in Current User Information" in rules
+        assert "Answer from its records first" in rules
+        assert "only when none of that organization's records answer" in rules
+        assert "never \"our policy is ...\"" in rules
+
+    def test_org_scope_rule_unchanged_without_the_demo(self) -> None:
+        jira = {"displayName": "Engineering Jira", "type": "JIRA", "connectorId": "jira-1"}
+        result = _build(make_context(send_user_info=True, agent_knowledge=[jira]))
+        assert "Acme Corp" not in result
+        assert "belong to a different organization" in result
+
     def test_org_scope_rule_absent_when_user_context_disabled(self) -> None:
         context = make_context(send_user_info=False)
         result = _build(context)
         assert "Organization scope" not in result
+
+
+_DEMO = {"id": "demo-1", "name": "Acme Corp demo data", "type": "Demo"}
+_JIRA = {"id": "jira-1", "name": "Engineering Jira", "type": "JIRA"}
+
+
+def _context_for(route: str, connectors: list[dict[str, str]], *, org_real_data: bool) -> AgentContext:
+    """How each route sees the sources.
+
+    - `chat:internal_search` is /chat/stream: connector types only, and it also
+      searches Collections it does not list.
+    - `chat:agent` is the universal agent (agentIdPlaceholder): every Collection
+      the user can see, including the empty private one each user gets, plus
+      their connectors, with ids.
+    - `agent` is an agent built on exactly these sources.
+    """
+    flag = {"org_has_real_data": org_real_data}
+    if route == "chat:internal_search":
+        return make_context(send_user_info=True, tool_state={"available_connectors": connectors, **flag})
+    knowledge = [{"displayName": c["name"], "type": c["type"], "connectorId": c["id"]} for c in connectors]
+    if route == "chat:agent":
+        private = {"displayName": "Bob Okafor's Private", "type": "KB", "connectorId": "kb-bob"}
+        return make_context(send_user_info=True, agent_knowledge=[private, *knowledge], tool_state=dict(flag))
+    return make_context(send_user_info=True, agent_knowledge=knowledge)
+
+
+def _build_with_sources(context: AgentContext) -> str:
+    """`_build` with the real Knowledge Sources section, where the demo note lives."""
+    spec = AgentSpec(
+        name="pipeshub-agent",
+        system_prompt="BASE_REACT_PROMPT",
+        tool_names=[],
+        model=ModelSpec(provider="scripted", model="scripted-model"),
+    )
+    with patch.multiple(
+        "app.agents.agent_loop.prompt_builder",
+        build_llm_time_context=MagicMock(return_value=""),
+        build_capability_summary=MagicMock(return_value=""),
+    ):
+        return PipesHubPromptBuilder(context).build(
+            spec, _runtime_for([]), Goal(description="hello"), [], {},
+        )
+
+
+@pytest.mark.parametrize("route", ["chat:internal_search", "chat:agent", "agent"])
+class TestDemoDataInstruction:
+    def test_demo_only_answers_as_the_workspaces_data(self, route: str) -> None:
+        result = _build_with_sources(_context_for(route, [_DEMO], org_real_data=False))
+        assert result.count(DEMO_ONLY_SOURCE_NOTE) == 1
+        assert DEMO_SOURCE_NOTE not in result
+        assert "Its only knowledge here is the Demo source's sample data" in result
+        assert "only when none of that organization's records answer" not in result
+
+    def test_demo_beside_real_data_keeps_3500s_rule(self, route: str) -> None:
+        result = _build_with_sources(_context_for(route, [_DEMO, _JIRA], org_real_data=True))
+        assert result.count(DEMO_SOURCE_NOTE) == 1
+        assert DEMO_ONLY_SOURCE_NOTE not in result
+        assert _ORG_SCOPE_RULE_WITH_DEMO.strip() in result
+
+    def test_a_collection_with_real_records_keeps_3500s_rule(self, route: str) -> None:
+        result = _build_with_sources(_context_for(route, [_DEMO], org_real_data=True))
+        if route == "agent":
+            # An agent built on the demo alone searches nothing else.
+            assert result.count(DEMO_ONLY_SOURCE_NOTE) == 1
+        else:
+            assert result.count(DEMO_SOURCE_NOTE) == 1
+            assert DEMO_ONLY_SOURCE_NOTE not in result
+
+    def test_no_demo_no_demo_text(self, route: str) -> None:
+        result = _build_with_sources(_context_for(route, [_JIRA], org_real_data=False))
+        assert "Acme Corp" not in result
+        assert "demo" not in result.lower()
+        assert "belong to a different organization" in result
 
 
 class TestToolReferenceSection:

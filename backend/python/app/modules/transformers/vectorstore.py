@@ -804,7 +804,6 @@ class VectorStore(Transformer):
         org_id: str,
         record: Optional["Record"],
         embedding_size: int,
-        sparse_idf: bool = False,
     ) -> str:
         """Resolve + create (if needed) the collection this record's points belong in.
 
@@ -816,13 +815,13 @@ class VectorStore(Transformer):
         """
         ctx = self._record_context(org_id, record)
         collection_name = await self.collection_registry.ensure_collection(
-            ctx, embedding_size, sparse_idf
+            ctx, embedding_size
         )
-        await self._reconcile_storage_layout(collection_name, embedding_size, sparse_idf)
+        await self._reconcile_storage_layout(collection_name, embedding_size)
         return collection_name
 
     async def _reconcile_storage_layout(
-        self, collection_name: str, embedding_size: int, sparse_idf: bool
+        self, collection_name: str, embedding_size: int
     ) -> None:
         """Nudge a pre-existing collection toward the current storage layout.
 
@@ -834,8 +833,9 @@ class VectorStore(Transformer):
         grow the collection until it can no longer be loaded at all.
 
         Operators enable it once, with headroom confirmed, via
-        VECTOR_STORAGE_RECONCILE_ENABLED. Collections created after the on-disk
-        defaults need nothing; this exists only to migrate older ones.
+        VECTOR_STORAGE_RECONCILE_ENABLED. Collections created with the current
+        layout need nothing; this exists only to migrate older ones (Qdrant's
+        on-disk defaults, an OpenSearch index that predates stemmed text).
         """
         if not _storage_reconcile_enabled():
             return
@@ -843,7 +843,7 @@ class VectorStore(Transformer):
             await self.vector_db_service.reconcile_storage_layout(
                 collection_name=collection_name,
                 config=self.collection_registry.build_collection_config(
-                    embedding_size, sparse_idf
+                    embedding_size
                 ),
             )
         except Exception as e:

@@ -9,6 +9,7 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { FilePreviewRenderer } from './renderers/file-preview-renderer';
 import { FileDetailsTab } from './file-details-tab';
 import { CitationCard } from './citations-panel';
+import { VersionSwitcher } from './version-switcher';
 import { useTranslation } from 'react-i18next';
 import { useCitationSync } from './use-citation-sync';
 import { usePdfZoom } from './use-pdf-zoom';
@@ -33,6 +34,9 @@ export function FilePreviewMobile({
   initialCitationId,
   hideFileDetails,
   showDownload,
+  latestVersion,
+  onVersionChange,
+  isSwitchingVersion,
 }: FilePreviewProps) {
   const { t } = useTranslation();
   const hasCitations = citations && citations.length > 0;
@@ -173,6 +177,14 @@ export function FilePreviewMobile({
           >
             {file.name}
           </Text>
+          {file.version !== undefined && onVersionChange && (
+            <VersionSwitcher
+              version={file.version}
+              latestVersion={latestVersion ?? file.version}
+              onVersionChange={onVersionChange}
+              isSwitching={isSwitchingVersion}
+            />
+          )}
           {!hideFileDetails && (
             <IconButton
               variant="ghost"
@@ -200,7 +212,7 @@ export function FilePreviewMobile({
                   blob: file.blob,
                 })
               }
-              title="Download"
+              title={t('action.download')}
             >
               <MaterialIcon name="download" size={16} color="var(--slate-11)" />
             </IconButton>
@@ -353,7 +365,7 @@ export function FilePreviewMobile({
                   onClick={handlePdfZoomOut}
                   disabled={pdfScale <= PDF_ZOOM_MIN}
                   style={{ width: '24px', height: '24px', padding: 0 }}
-                  aria-label="Zoom out"
+                  aria-label={t('chat.zoomOut')}
                 >
                   <MaterialIcon name="remove" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
@@ -379,7 +391,7 @@ export function FilePreviewMobile({
                   onClick={handlePdfZoomIn}
                   disabled={pdfScale >= PDF_ZOOM_MAX}
                   style={{ width: '24px', height: '24px', padding: 0 }}
-                  aria-label="Zoom in"
+                  aria-label={t('chat.zoomIn')}
                 >
                   <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
@@ -472,7 +484,7 @@ export function FilePreviewMobile({
                 onClick={() => setShowCitationsSheet(true)}
               >
                 <Text size="1" style={{ color: 'var(--accent-12)', whiteSpace: 'nowrap' }}>
-                  View Citations
+                  {t('filePreview.viewCitations')}
                 </Text>
               </Flex>
             )}
