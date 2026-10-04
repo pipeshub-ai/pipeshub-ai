@@ -27,6 +27,7 @@ from app.connectors.core.sync.task_manager import reindex_task_manager, sync_tas
 from app.connectors.core.base.data_processor.storage_cleanup import (
     StorageCleanupHelper,
 )
+from app.connectors.services.entity_cleanup_intents import record_pending_entity_cleanup
 from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
     log_cleanup_publish_failure,
@@ -822,6 +823,16 @@ class EventService:
                 self.logger, self.graph_provider, self.app_container.config_service()
             )
             shared_vrids = await cleanup_helper.find_shared_virtual_record_ids(connector_id)
+
+            # Recorded before the graph rows go: a lost deleteConnectorEntities
+            # is then still reconciled by the indexing service. Raises, which
+            # aborts the delete, when the intent cannot be recorded.
+            # The service-wide store, not the org's: the indexing service reads
+            # these back without knowing which org a key belongs to.
+            await record_pending_entity_cleanup(
+                self.app_container.config_service(),
+                org_id=org_id, connector_id=connector_id, connector_name=connector_name,
+            )
 
             # Delete from graph DB
             result = await self.graph_provider.delete_connector_instance(

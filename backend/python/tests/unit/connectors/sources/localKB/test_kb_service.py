@@ -483,6 +483,40 @@ class TestDeleteKnowledgeBase:
         assert result["success"] is True
         service.logger.error.assert_called()
 
+    @pytest.mark.asyncio
+    async def test_the_entity_cleanup_intent_is_recorded_before_the_graph_delete(
+        self, service, mock_config_service,
+    ) -> None:
+        calls: list[str] = []
+
+        async def record(key, value):
+            calls.append(f"intent:{key}")
+            return True
+
+        async def delete_graph(**kwargs):
+            calls.append("graph-delete")
+            return {"success": True, "virtual_record_ids": []}
+
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.delete_connector_instance = AsyncMock(side_effect=delete_graph)
+        mock_config_service.set_config = AsyncMock(side_effect=record)
+
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+        assert result["success"] is True
+        assert calls == ["intent:/services/entityCleanup/pending/kb1", "graph-delete"]
+
+    @pytest.mark.asyncio
+    async def test_no_graph_delete_without_a_recorded_intent(self, service, mock_config_service) -> None:
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.delete_connector_instance = AsyncMock()
+        mock_config_service.set_config = AsyncMock(return_value=False)
+
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+        assert result["success"] is False and result["code"] == 500
+        service.graph_provider.delete_connector_instance.assert_not_awaited()
+
     @staticmethod
     def _entity_events(kafka) -> list[dict]:
         return [

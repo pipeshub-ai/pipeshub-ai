@@ -535,7 +535,13 @@ async def list_accessible_entity_records(
             deadline=deadline,
         )
         if not scanned:
-            by_entity = await fetch
+            # Bounded here too: the server limit alone leaves a stalled
+            # connection free to hold the call. Nothing is found yet, so a
+            # timeout is an access failure, not an empty page.
+            try:
+                by_entity = await _within(deadline + SERVER_TIMEOUT_GRACE_SECONDS, fetch)
+            except TimeoutError as exc:
+                raise EntityAccessError("Entity record lookup timed out") from exc
         else:
             # A later window cut by the deadline ends the page where it is,
             # instead of failing the call and losing what was found.

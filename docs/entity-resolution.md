@@ -239,6 +239,14 @@ line.
   - shared taxonomy points lose the connector and its record groups, and the
     rest are deleted;
   - a failure is retried, then dead-lettered;
+  - before any graph row goes, the deleting service records the cleanup in
+    the KV store (`/services/entityCleanup/pending/<connectorId>`) and does not
+    delete if it cannot; the event's handler clears it when the cleanup
+    finishes. The rebuild loop reads the intents every 5 minutes and runs any
+    older than 15 minutes (a lost publish, a dead-lettered message) once the
+    connector's app document is gone, backing off on failure; a failed read
+    of the app document never counts as gone. An intent whose app still
+    exists a day later (its delete was reverted) is dropped;
   - each page is re-read by id and written by id, so a record indexed on the
     same indexing instance during the cleanup keeps its connector (the locks
     are per process; another instance's write can still be lost until that

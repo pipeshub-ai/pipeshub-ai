@@ -18,7 +18,7 @@ from app.config.constants.neo4j import collection_to_label
 
 _APPS = CollectionNames.APPS.value
 _ORGS = CollectionNames.ORGS.value
-_STATUS_DELETING = "DELETING"
+APP_STATUS_DELETING = "DELETING"
 
 ENTITY_INDEX_STATE_FIELD = "entityIndexState"
 ENTITY_INDEX_SWEPT_AT_FIELD = "entityIndexSweptAt"
@@ -95,7 +95,7 @@ def _check_candidate_collection(collection: str) -> None:
 
 def build_entity_index_candidate_aql(collection: str, *, with_sweep: bool) -> str:
     _check_candidate_collection(collection)
-    deleting = f'FILTER doc.status != "{_STATUS_DELETING}"' if collection == _APPS else ""
+    deleting = f'FILTER doc.status != "{APP_STATUS_DELETING}"' if collection == _APPS else ""
     due = f"doc.{ENTITY_INDEX_STATE_FIELD} != @marker"
     if with_sweep:
         swept = f"doc.{ENTITY_INDEX_SWEPT_AT_FIELD}"
@@ -113,7 +113,7 @@ def build_entity_index_candidate_cypher(collection: str, *, with_sweep: bool) ->
     _check_candidate_collection(collection)
     label = collection_to_label(collection)
     deleting = (
-        f"AND coalesce(n.status, '') <> '{_STATUS_DELETING}'" if collection == _APPS else ""
+        f"AND coalesce(n.status, '') <> '{APP_STATUS_DELETING}'" if collection == _APPS else ""
     )
     due = f"coalesce(n.{ENTITY_INDEX_STATE_FIELD}, '') <> $marker"
     if with_sweep:

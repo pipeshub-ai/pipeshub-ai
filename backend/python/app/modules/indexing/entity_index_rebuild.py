@@ -29,6 +29,11 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.connectors.services.entity_cleanup_intents import (
+    clear_pending_entity_cleanup,
+    list_pending_entity_cleanups,
+    reschedule_pending_entity_cleanup,
+)
 from app.models.entities import EntityRecord, EntityType
 from app.modules.entity_resolution.models import KINDS_BY_COLLECTION
 from app.modules.indexing.entity_projection import project_taxonomy_nodes
@@ -36,6 +41,7 @@ from app.modules.indexing.vector_membership_backfill import (
     LeaderLock,
     VectorMembershipBackfillLeaderLock,
 )
+from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -43,6 +49,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from logging import Logger
 
+    from app.config.configuration_service import ConfigurationService
     from app.modules.transformers.entity_vectorstore import (
         EntityPointRef,
         EntityVectorStore,
@@ -67,6 +74,17 @@ STARTUP_GRACE_SECONDS = 60.0
 BUSY_INTERVAL_SECONDS = 2.0
 IDLE_INTERVAL_SECONDS = 60.0
 SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
+# A deleted connector's entity cleanup intent older than this, whose event
+# never cleared it, is run here; younger ones are left to the event.
+ENTITY_CLEANUP_GRACE_MS = 15 * 60 * 1000
+# Wait after a failed run of one, doubled per attempt up to the cap.
+ENTITY_CLEANUP_RETRY_MS = 5 * 60 * 1000
+ENTITY_CLEANUP_RETRY_CAP_MS = 6 * 60 * 60 * 1000
+# Intents are read this often: listing them scans the whole KV store.
+ENTITY_CLEANUP_CHECK_MS = 5 * 60 * 1000
+# An intent whose app still exists is dropped (its delete was reverted) only
+# after this long: a KB has no DELETING status while its delete runs.
+ENTITY_CLEANUP_STALE_MS = 24 * 60 * 60 * 1000
 SWEEP_POINTS_PER_TICK = 2000
 # One graph lookup per collection per this many points.
 _SWEEP_LOOKUP_BATCH = 500
@@ -213,6 +231,7 @@ class EntityIndexRebuilder:
         lock: LeaderLock,
         page_size: int = PAGE_SIZE,
         sweep_points_per_tick: int = SWEEP_POINTS_PER_TICK,
+        config_service: ConfigurationService | None = None,
         now_ms: Callable[[], int] = get_epoch_timestamp_in_ms,
     ) -> None:
         self.logger = logger
@@ -222,12 +241,17 @@ class EntityIndexRebuilder:
         self.page_size = max(1, page_size)
         self.taxonomy_page_size = min(self.page_size, TAXONOMY_PAGE_SIZE)
         self.sweep_points_per_tick = max(1, sweep_points_per_tick)
+        self.config_service = config_service
         self.now_ms = now_ms
+        self._cleanup_checked_at: int | None = None
 
     async def tick(self) -> str:
-        """``not_leader``, ``idle``, ``connector``, ``taxonomy`` or ``sweep``."""
+        """``not_leader``, ``idle``, ``entity_cleanup``, ``connector``,
+        ``taxonomy`` or ``sweep``."""
         if not await self.lock.try_acquire():
             return "not_leader"
+        if await self._reconcile_entity_cleanup():
+            return "entity_cleanup"
         marker = entity_index_marker(await self.store.embedding_fingerprint())
 
         app = await self.graph.get_entity_index_candidate(_APPS, marker)
@@ -246,6 +270,76 @@ class EntityIndexRebuilder:
             return "taxonomy"
         await self._sweep_chunk(key, org)
         return "sweep"
+
+    # ------------------------------------------------------------------
+    # Deleted connectors' entity cleanup
+    # ------------------------------------------------------------------
+
+    async def _reconcile_entity_cleanup(self) -> bool:
+        """Settle one deleted connector's entity cleanup intent that its
+        event did not clear. Returns whether one was settled; a failure is
+        logged and backed off, so the rest of the loop still runs."""
+        if self.config_service is None:
+            return False
+        now = self.now_ms()
+        if self._cleanup_checked_at is not None and now - self._cleanup_checked_at < ENTITY_CLEANUP_CHECK_MS:
+            return False
+        self._cleanup_checked_at = now
+        try:
+            intents = await list_pending_entity_cleanups(self.config_service)
+        except Exception:
+            self.logger.warning("entity_index_rebuild: cleanup intents unreadable", exc_info=True)
+            return False
+        for intent in intents:
+            if int(intent.get("requestedAt") or 0) > now - ENTITY_CLEANUP_GRACE_MS:
+                continue
+            if int(intent.get("nextAttemptAt") or 0) > now:
+                continue
+            org_id, connector_id = str(intent["orgId"]), str(intent["connectorId"])
+            try:
+                # Raised, not None: a failed read must never pass for a gone app.
+                app = await self.graph.get_document(connector_id, _APPS, raise_on_error=True)
+                if app and (
+                    app.get("status") == APP_STATUS_DELETING
+                    or int(intent.get("requestedAt") or 0) > now - ENTITY_CLEANUP_STALE_MS
+                ):
+                    continue  # its delete may still be running
+                if app is None:
+                    await self.store.delete_entities_by_connector(
+                        org_id=org_id,
+                        connector_id=connector_id,
+                        # The graph rows are gone; the store reads the
+                        # connector's groups from its own points.
+                        record_group_ids=None,
+                        membership_lookup=lambda refs, org=org_id: self.graph.get_taxonomy_entity_membership(
+                            refs, org,
+                        ),
+                    )
+                    self.logger.info(
+                        "entity_index_rebuild: entity cleanup reconciled | org=%s connector=%s",
+                        org_id, connector_id,
+                    )
+                else:
+                    # Its delete failed and was reverted: nothing to clean.
+                    self.logger.info(
+                        "entity_index_rebuild: stale cleanup intent dropped | connector=%s", connector_id,
+                    )
+            except Exception:
+                attempts = int(intent.get("attempts") or 0)
+                wait = min(ENTITY_CLEANUP_RETRY_MS * (2 ** attempts), ENTITY_CLEANUP_RETRY_CAP_MS)
+                self.logger.warning(
+                    "entity_index_rebuild: entity cleanup failed | org=%s connector=%s attempts=%d",
+                    org_id, connector_id, attempts + 1, exc_info=True,
+                )
+                try:
+                    await reschedule_pending_entity_cleanup(self.config_service, intent, next_attempt_at=now + wait)
+                except Exception:
+                    self.logger.warning("entity_index_rebuild: cleanup intent not rescheduled", exc_info=True)
+                return False
+            if not await clear_pending_entity_cleanup(self.config_service, connector_id):
+                self.logger.warning("entity_index_rebuild: cleanup intent not cleared | connector=%s", connector_id)
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Passes
@@ -578,6 +672,7 @@ async def run_entity_index_rebuild_loop(
                     if store is not None:
                         rebuilder = EntityIndexRebuilder(
                             logger=logger, graph_provider=graph_provider, store=store, lock=lock,
+                            config_service=app_container.config_service(),
                         )
                 if rebuilder is None:
                     logger.warning("entity_index_rebuild: entity store unavailable; skipping tick")

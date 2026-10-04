@@ -5939,8 +5939,9 @@ class IGraphDBProvider(ABC):
           - its ``connectorId`` is in ``app_level_connector_ids`` (app access
             grants every record), or
           - the user ``user_key`` holds a permission role on it, by the same
-            paths as :meth:`filter_nodes_with_permission_role`, or
-          - it has an active ``anyone`` share in ``org_id``.
+            paths as :meth:`filter_nodes_with_permission_role`.
+        Domain, "anyone" and link shares grant no access, as in every other
+        access check.
         The walk stops after ``limit_per_entity`` permitted rows, so the
         permission work per entity is bounded by the window and usually ends
         sooner.

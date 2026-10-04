@@ -1038,6 +1038,45 @@ class TestHandleDelete:
         assert event["payload"]["recordGroupIds"] == ["rg-1"]
 
 
+    @pytest.mark.asyncio
+    async def test_the_entity_cleanup_intent_is_recorded_before_the_graph_delete(self, service):
+        """A lost deleteConnectorEntities would otherwise leave the points for
+        good: nothing else knows the deleted connector existed."""
+        calls: list[str] = []
+        config_svc = AsyncMock()
+
+        async def record(key, value):
+            calls.append(f"intent:{key}:{value['orgId']}")
+            return True
+
+        async def delete_graph(**kwargs):
+            calls.append("graph-delete")
+            return {"success": True, "virtual_record_ids": []}
+
+        config_svc.set_config = AsyncMock(side_effect=record)
+        service.graph_provider.delete_connector_instance = AsyncMock(side_effect=delete_graph)
+        service.app_container.config_service.return_value = config_svc
+        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is True
+        assert calls == ["intent:/services/entityCleanup/pending/c1:org1", "graph-delete"]
+
+    @pytest.mark.asyncio
+    async def test_no_graph_delete_without_a_recorded_intent(self, service):
+        config_svc = AsyncMock()
+        config_svc.set_config = AsyncMock(return_value=False)
+        service.app_container.config_service.return_value = config_svc
+        service.graph_provider.delete_connector_instance = AsyncMock()
+        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete(
+                "gmail", {"orgId": "org1", "connectorId": "c1", "previousIsActive": True},
+            )
+        assert result is False
+        service.graph_provider.delete_connector_instance.assert_not_awaited()
+        assert service.graph_provider.batch_upsert_nodes.await_count >= 1  # status reverted
+
+
 # ===========================================================================
 # _config_service_for
 # ===========================================================================
@@ -1094,3 +1133,5 @@ class TestConfigServiceFor:
         config_for.assert_called_once_with("org1")
         org_config.delete_config.assert_awaited_once_with("/services/connectors/c1/config")
         service.app_container.config_service.return_value.delete_config.assert_not_awaited()
+        # The entity cleanup intent is service-wide: indexing reads it back.
+        service.app_container.config_service.return_value.set_config.assert_awaited_once()

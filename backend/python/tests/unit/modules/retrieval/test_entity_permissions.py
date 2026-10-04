@@ -688,3 +688,25 @@ class TestListingWindowPastTheDeadline:
 
         assert [r["_key"] for r in page.records] == ["d5"]
         assert page.next_cursor == str(ep.LISTING_WINDOW_MIN)
+
+
+class TestListingFirstWindowPastTheDeadline:
+    @pytest.mark.asyncio
+    async def test_a_stalled_first_window_fails_the_call_near_its_deadline(self, monkeypatch) -> None:
+        """Nothing is found yet, so it is an access failure, not an empty page;
+        and a stalled connection must not hold the call past the deadline."""
+        import asyncio
+
+        monkeypatch.setattr(ep, "LISTING_DEADLINE_SECONDS", 0.2)
+        monkeypatch.setattr(ep, "SERVER_TIMEOUT_GRACE_SECONDS", 0.1)
+
+        async def _stalled(*args: object, **kwargs: object) -> dict:
+            await asyncio.sleep(30)
+            return {}
+
+        graph = MagicMock()
+        graph.get_permitted_entity_records = AsyncMock(side_effect=_stalled)
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(EntityAccessError):
+            await list_accessible_entity_records(graph, _context(), entity_id="t1", entity_type="topic", limit=5)
+        assert asyncio.get_running_loop().time() - started < 2

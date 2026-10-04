@@ -66,6 +66,8 @@ def _make_kb_service():
         graph_provider=graph_provider,
         kafka_service=kafka_service,
         processor_for_kb=AsyncMock(return_value=processor),
+        # A delete records its entity cleanup intent here first.
+        config_service=AsyncMock(),
     )
 
 

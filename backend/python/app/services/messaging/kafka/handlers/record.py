@@ -25,6 +25,7 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
 from app.events.events import EventProcessor
 from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
@@ -329,8 +330,12 @@ class RecordEventHandler(BaseEventService):
             )
         store = self._entity_vector_store()
         if store is None:
-            self.logger.info("No entity store; nothing to clean for connector %s", connector_id)
-            return
+            # Retried, not acked: an ack would leave the points for good. The
+            # indexing service always wires a store, so this is a miswiring.
+            raise IndexingError(
+                f"No entity store to clean connector {connector_id}",
+                details={"org_id": org_id, "connector_id": connector_id},
+            )
         graph_provider = self.event_processor.graph_provider
         try:
             await store.delete_entities_by_connector(
@@ -347,6 +352,9 @@ class RecordEventHandler(BaseEventService):
                 details={"org_id": org_id, "connector_id": connector_id},
             ) from exc
         self.logger.info("✅ Entity points removed for connector %s (org %s)", connector_id, org_id)
+        if not await clear_pending_entity_cleanup(self.config_service, connector_id):
+            # The rebuild loop runs the intent again; cleanup is idempotent.
+            self.logger.warning("Entity cleanup intent for connector %s not cleared", connector_id)
 
     async def _reconcile_pending_duplicates(
         self,

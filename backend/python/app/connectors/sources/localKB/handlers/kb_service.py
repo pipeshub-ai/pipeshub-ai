@@ -12,6 +12,10 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
+from app.connectors.services.entity_cleanup_intents import (
+    EntityCleanupIntentError,
+    record_pending_entity_cleanup,
+)
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
@@ -734,6 +738,21 @@ class KnowledgeBaseService:
                 return err
 
             self.logger.info(f"🔐 User {user_key} has OWNER permission - proceeding with deletion")
+
+            # Recorded before anything is removed: a lost deleteConnectorEntities
+            # is then still reconciled by the indexing service.
+            try:
+                await record_pending_entity_cleanup(
+                    self.config_service, org_id=org_id, connector_id=kb_id,
+                    connector_name=Connectors.KNOWLEDGE_BASE.value,
+                )
+            except EntityCleanupIntentError:
+                self.logger.error("❌ Could not record entity cleanup for KB %s; not deleting it", kb_id)
+                return {
+                    "success": False,
+                    "reason": action_failed("delete this knowledge base"),
+                    "code": 500,
+                }
 
             refused = await self._schedule_upload_removal(kb_id, org_id=org_id)
             if refused:
