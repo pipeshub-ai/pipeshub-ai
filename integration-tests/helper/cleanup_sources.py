@@ -18,6 +18,7 @@ from connector_lifecycle import create_connector_and_await_sync
 from connectors.minio.minio_storage_helper import MinioStorageHelper
 from helper import delete_footprint as fp
 from helper.run_folder import folder_filter
+from helper.stored_names import stored_name
 
 if TYPE_CHECKING:
     from connectors.postgres.postgres_source_helper import PostgresSourceHelper
@@ -195,7 +196,11 @@ def folder_id_of(payload: dict[str, Any]) -> str:
 async def upload_to_kb(
     kb_client, vector_store, kb_id: str, name: str, body: bytes, *, folder_id: str | None = None
 ) -> "fp.Tracked":
-    """Upload one file and wait until it is indexed (or deduplicated onto indexed content)."""
+    """Upload one file and wait until it is indexed (or deduplicated onto indexed content).
+
+    The returned name is the one the graph holds (``stored_name``), since the graph
+    lookups downstream match on it.
+    """
     upload = kb_client.upload_file(kb_id, name, body, folder_id=folder_id, mimetype="text/markdown")
     assert upload["summary"]["failed"] == 0, f"Upload of {name} failed: {upload}"
     record_id = str(upload["records"][0]["recordId"])
@@ -205,7 +210,7 @@ async def upload_to_kb(
     upload_document_id = record.get("externalRecordId")
     assert upload_document_id, f"{name} has no externalRecordId pointing at its uploaded file: {record}"
     return fp.Tracked(
-        name=name,
+        name=stored_name(name),
         record_id=record_id,
         virtual_record_id=virtual_id,
         upload_document_id=str(upload_document_id),
