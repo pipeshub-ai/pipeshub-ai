@@ -27,6 +27,7 @@ from app.connectors.sources.zammad.connector import (
     ATTACHMENT_ID_PARTS_COUNT,
     BATCH_SIZE_KB_ANSWERS,
     KB_ANSWER_ATTACHMENT_PARTS_COUNT,
+    KB_SYNC_POINT_KEY,
     ZAMMAD_CONFIG_PATH,
     ZAMMAD_LINK_OBJECT_MAP,
     ZAMMAD_LINK_TYPE_MAP,
@@ -554,7 +555,7 @@ class TestZammadSyncCheckpoints:
         zammad_connector.kb_sync_point.update_sync_point = AsyncMock()
         await zammad_connector._update_kb_sync_checkpoint(88888)
         zammad_connector.kb_sync_point.update_sync_point.assert_awaited_once_with(
-            "kb_sync", {"last_sync_time": 88888}
+            KB_SYNC_POINT_KEY, {"last_sync_time": 88888}
         )
 
 

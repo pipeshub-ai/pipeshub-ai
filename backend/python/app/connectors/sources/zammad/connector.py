@@ -110,6 +110,9 @@ ZAMMAD_CONFIG_PATH = "/services/connectors/{connector_id}/config"
 
 # Constants for batch processing and parsing
 BATCH_SIZE_KB_ANSWERS = 50
+# Not "kb_sync": the search-based sync saved that key even when it read no answers
+# (Zammad 6.0-6.4), so a new key makes every install read its whole knowledge base once.
+KB_SYNC_POINT_KEY = "kb_listing_sync"
 KB_LISTING_ASSET_TYPES = (
     "KnowledgeBase",
     "KnowledgeBaseTranslation",
@@ -2187,7 +2190,7 @@ class ZammadConnector(BaseConnector):
         Returns:
             Last sync timestamp in epoch ms, or None if not set
         """
-        data = await self.kb_sync_point.read_sync_point("kb_sync")
+        data = await self.kb_sync_point.read_sync_point(KB_SYNC_POINT_KEY)
         return data.get("last_sync_time") if data else None
 
     async def _update_kb_sync_checkpoint(self, timestamp: Optional[int] = None) -> None:
@@ -2199,7 +2202,7 @@ class ZammadConnector(BaseConnector):
         """
         sync_time = timestamp if timestamp is not None else get_epoch_timestamp_in_ms()
         await self.kb_sync_point.update_sync_point(
-            "kb_sync",
+            KB_SYNC_POINT_KEY,
             {"last_sync_time": sync_time}
         )
         self.logger.debug(f"💾 Updated KB sync checkpoint: {sync_time}")

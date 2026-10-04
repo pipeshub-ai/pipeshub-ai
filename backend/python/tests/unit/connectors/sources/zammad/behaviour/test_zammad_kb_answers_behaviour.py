@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 import pytest
 from zammad_behaviour_fakes import T0, FakeHttpResponse, FakeRecordsDb
 
-from app.connectors.sources.zammad.connector import ZammadConnector
+from app.connectors.sources.zammad.connector import KB_SYNC_POINT_KEY, ZammadConnector
 from app.models.entities import Record, WebpageRecord
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.external.zammad.zammad import ZammadDataSource
@@ -188,7 +188,7 @@ def _connector(zammad: FakeZammad64Kb, records: KbRecords) -> Iterator[ZammadCon
 
 
 def _kb_sync_point(connector: ZammadConnector) -> int | None:
-    return connector.kb_sync_point.points.get("kb_sync", {}).get("last_sync_time")
+    return connector.kb_sync_point.points.get(KB_SYNC_POINT_KEY, {}).get("last_sync_time")
 
 
 def _newest(zammad: FakeZammad64Kb, connector: ZammadConnector) -> int:
@@ -209,6 +209,16 @@ async def test_every_answer_in_a_knowledge_base_larger_than_a_page_is_read_once(
     # Answers land in their category; the nested one hangs under its parent category.
     assert records.records["kb_answer_2"].external_record_group_id == "cat_3"
     assert records.record_groups["cat_3"].parent_external_group_id == "cat_2"
+
+
+async def test_an_install_upgraded_from_the_search_based_sync_reads_every_answer_once() -> None:
+    zammad, records = FakeZammad64Kb(ANSWERS, search_resolves_name=False), KbRecords()
+    with _connector(zammad, records) as connector:
+        # The old sync saved this after reading nothing, so it is newer than every answer.
+        connector.kb_sync_point.points["kb_sync"] = {"last_sync_time": _newest(zammad, connector) + 60_000}
+        await connector._sync_knowledge_bases()
+
+    assert sorted(records.answer_writes) == sorted(f"kb_answer_{a}" for a in range(1, ANSWERS + 1))
 
 
 async def test_the_next_sync_reads_only_the_answers_edited_since_and_ends() -> None:
@@ -239,7 +249,7 @@ async def test_a_listing_that_cannot_be_read_leaves_the_sync_point_alone(
 ) -> None:
     zammad, records = FakeZammad64Kb(ANSWERS), KbRecords()
     with _connector(zammad, records) as connector, caplog.at_level(logging.WARNING):
-        connector.kb_sync_point.points["kb_sync"] = {"last_sync_time": 5_000}
+        connector.kb_sync_point.points[KB_SYNC_POINT_KEY] = {"last_sync_time": 5_000}
         zammad.init_status, zammad.init_body = status, body
         await connector._sync_knowledge_bases()
 
