@@ -18,6 +18,7 @@ from langchain_core.tools import StructuredTool  #type: ignore
 from pydantic import BaseModel, Field
 
 from app.api.middlewares.auth import deny_service_tokens
+from app.services.vector_db.collections import CollectionType
 from app.utils.aimodels import (
     ImageGenerationProvider,
     LLMProvider,
@@ -821,17 +822,25 @@ class CollectionSurveyError(Exception):
 
 
 async def survey_managed_collections(retrieval_service, logger) -> tuple[int, int]:
-    """Aggregate (dense dimension, total points) over every managed collection.
+    """Aggregate (dense dimension, total points) over every managed records collection.
 
-    The embedding-model guard must reject a change while *any* managed
+    The embedding-model guard must reject a change while *any* records
     collection still holds data, so the enumeration is read fresh: a cached
     view could miss a collection another service created since this process
     started, and the guard would wave the change through while that collection
     still holds vectors from the outgoing model.
+
+    The entity index is left out: it is a projection of the graph that the
+    indexing service recreates and re-embeds itself for a new model
+    (``entity_index_rebuild``), not content the admin must delete first.
     """
     registry = retrieval_service.collection_registry
     try:
-        managed = await registry.list_managed_collections(fresh=True)
+        managed = [
+            entry
+            for entry in await registry.list_managed_collections(fresh=True)
+            if entry.collection_type == CollectionType.RECORDS.value
+        ]
         existing_vector_size = 0
         points_count = 0
         for entry in managed:
