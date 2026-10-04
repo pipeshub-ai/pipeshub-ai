@@ -1822,8 +1822,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 f"Removing only {user.email}'s access to file {file_id}: Google Drive has refused "
                 f"the check with no reason this connector recognises (HTTP 403) on {MAX_UNRECOGNISED_403_RUNS} "
                 "runs in a row. The file stays indexed for anyone else who has access, so "
-                f"{user.email}'s other changes can sync. If the file was deleted, it is removed "
-                "once another user's sync, or a full sync, can confirm it."
+                f"{user.email}'s other changes can sync. If the file was deleted, it stays indexed "
+                "until another user's sync reports the delete; a full sync does not check this file again."
             )
             record = await self.data_entities_processor.get_record_by_external_id(
                 connector_id=self.connector_id, external_record_id=file_id
