@@ -9,11 +9,17 @@ from __future__ import annotations
 
 import re
 
+from app.config.constants.arangodb import CollectionNames
+from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.normalizer import (
     display_form,
     is_acceptable_name,
     normalize_name,
 )
+
+# Records that must name an organisation no connector knows before it is
+# searchable: one mention is too often a stray name (KG-13, decided 2026-10-02).
+MIN_EXTRACTED_RECORDS = 2
 
 # Indexing names a tenant this until its owner registers a real name.
 PLACEHOLDER_TENANT_NAME = "Individual Account"
@@ -61,6 +67,11 @@ def organization_key(name: str) -> str:
     return " ".join(words)
 
 
+def extracted_organization_id(tenant_id: str, name: str) -> str:
+    """The key extraction gives the tenant's organisation named ``name``."""
+    return taxonomy_node_key(tenant_id, CollectionNames.ORGS.value, organization_key(name))
+
+
 def _app_names(connector_name: str) -> frozenset[str]:
     name = (connector_name or "").strip().casefold()
     changed = True
@@ -92,3 +103,13 @@ def usable_organization_names(names: list[str], *, tenant_name: str, connector_n
             continue
         kept.append(name)
     return kept
+
+
+def searchable_organizations(reach: dict[str, dict]) -> set[str]:
+    """The keys of ``reach`` (``IGraphDBProvider.get_organization_record_reach``)
+    that belong in the entity index: known to a connector, or named in
+    enough records."""
+    return {
+        key for key, r in reach.items()
+        if r.get("inferred") or int(r.get("records") or 0) >= MIN_EXTRACTED_RECORDS
+    }
