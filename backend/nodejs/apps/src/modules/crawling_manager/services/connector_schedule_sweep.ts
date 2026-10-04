@@ -153,6 +153,7 @@ export class ConnectorScheduleSweepService {
     }
 
     const desiredNames = new Set<string>();
+    const failedConnectorIds = new Set<string>();
     for (const item of desired) {
       summary.checked++;
       const ctx = {
@@ -183,6 +184,13 @@ export class ConnectorScheduleSweepService {
           for (const r of stale) {
             await this.scheduler.removeRepeatableByKey(r.key);
           }
+          if (stale.length > 0) {
+            summary.driftFixed++;
+            this.logger.warn('Sweep removed stale duplicate connector schedule', {
+              ...ctx,
+              removed: stale.map((r) => ({ key: r.key, every: r.every })),
+            });
+          }
           continue;
         }
 
@@ -207,6 +215,7 @@ export class ConnectorScheduleSweepService {
         }
       } catch (error) {
         summary.errors++;
+        failedConnectorIds.add(item.connectorId);
         this.logger.error('Sweep failed for connector', {
           ...ctx,
           error: error instanceof Error ? error.message : 'Unknown error',
@@ -241,6 +250,11 @@ export class ConnectorScheduleSweepService {
         continue;
       }
       if (desiredNames.has(r.name)) {
+        continue;
+      }
+      // A listed connector that failed before its job name was built is not in
+      // desiredNames; its live schedule would otherwise look like an orphan.
+      if ([...failedConnectorIds].some((id) => r.name.endsWith(`-${id}`))) {
         continue;
       }
       try {
