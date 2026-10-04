@@ -8,6 +8,7 @@ company ("Globex Corp.", "Globex Corporation", "globex") share it.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import CollectionNames
 from app.modules.entity_resolution.keys import taxonomy_node_key
@@ -16,6 +17,9 @@ from app.modules.entity_resolution.normalizer import (
     is_acceptable_name,
     normalize_name,
 )
+
+if TYPE_CHECKING:
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 # Records that must name an organisation no connector knows before it is
 # searchable: one mention is too often a stray name (KG-13, decided 2026-10-02).
@@ -72,6 +76,18 @@ def extracted_organization_id(tenant_id: str, name: str) -> str:
     return taxonomy_node_key(tenant_id, CollectionNames.ORGS.value, organization_key(name))
 
 
+def accounts_last(rows: list[dict]) -> list[dict]:
+    """``rows`` (organisation documents) with the ones extraction made first,
+    so a name-keyed map built from them keeps a connector's account when
+    the two share a name."""
+    def extracted(row: dict) -> bool:
+        key = row.get("_key") or row.get("id")
+        tenant = row.get("parentOrgId")
+        return bool(key and tenant and key == extracted_organization_id(tenant, row.get("name") or ""))
+
+    return sorted(rows, key=lambda row: not extracted(row))
+
+
 def _app_names(connector_name: str) -> frozenset[str]:
     name = (connector_name or "").strip().casefold()
     changed = True
@@ -105,10 +121,10 @@ def usable_organization_names(names: list[str], *, tenant_name: str, connector_n
     return kept
 
 
-def searchable_organizations(reach: dict[str, dict]) -> set[str]:
-    """The keys of ``reach`` (``IGraphDBProvider.get_organization_record_reach``)
-    that belong in the entity index: known to a connector, or named in
-    enough records."""
+async def searchable_organizations(graph: IGraphDBProvider, org_id: str, keys: list[str]) -> set[str]:
+    """The ``keys`` that belong in the entity index: organisations of the
+    tenant a connector knows, or that enough live records name."""
+    reach = await graph.get_organization_record_reach(org_id, keys, record_cap=MIN_EXTRACTED_RECORDS)
     return {
         key for key, r in reach.items()
         if r.get("inferred") or int(r.get("records") or 0) >= MIN_EXTRACTED_RECORDS

@@ -552,6 +552,11 @@ def _by_ends(edge: dict) -> tuple[str, ...]:
 _EDGE_MOVE_BATCH = 5000
 
 
+def _record_cap(cap: int | None) -> int:
+    # LIMIT needs a number; uncapped counts every record.
+    return max(1, int(cap)) if cap is not None else 2**31 - 1
+
+
 # Promotions to these statuses leave the primary with taxonomy to copy to its
 # duplicates; see update_queued_duplicates_status.
 _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
@@ -23213,6 +23218,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         keys: list[str],
         transaction: str | None = None,
+        *,
+        record_cap: int | None = None,
     ) -> dict[str, dict[str, Any]]:
         """See :meth:`IGraphDBProvider.get_organization_record_reach`."""
         wanted = sorted({k for k in keys if k})
@@ -23224,20 +23231,31 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             edge_collection_to_relationship(c.value)
             for c in (CollectionNames.DEAL_OF, CollectionNames.PROSPECT, CollectionNames.CUSTOMER)
         )
+        # MENTIONS is the only EXTRACTED edge type and edges merge on
+        # edgeType, so a record has at most one: edges count records.
         rows = await self.client.execute_query(
             f"""
             MATCH (o:{label})
             WHERE o.id IN $keys AND o.isExternal = true AND o.parentOrgId = $org_id
-            OPTIONAL MATCH (r:Record)-[e:{rel}]->(o)
-            WHERE r.orgId = $org_id AND {cypher_live_record("r")}
-            WITH o,
-                 count(DISTINCT CASE WHEN coalesce(e.origin, $inferred) = $extracted THEN r END) AS records,
-                 count(CASE WHEN e IS NOT NULL AND coalesce(e.origin, $inferred) <> $extracted THEN 1 END) AS linked
+            CALL {{
+                WITH o
+                MATCH (r:Record)-[e:{rel}]->(o)
+                WHERE coalesce(e.origin, $inferred) = $extracted AND r.orgId = $org_id AND {cypher_live_record("r")}
+                WITH e LIMIT $cap
+                RETURN count(e) AS records
+            }}
+            CALL {{
+                WITH o
+                OPTIONAL MATCH (r:Record)-[e:{rel}]->(o)
+                WHERE coalesce(e.origin, $inferred) <> $extracted AND r.orgId = $org_id AND {cypher_live_record("r")}
+                WITH e LIMIT 1
+                RETURN count(e) AS linked
+            }}
             RETURN o.id AS key, records,
                    linked > 0 OR EXISTS {{ MATCH (o)<-[:{account_rels}]-() }} AS inferred
             """,
             parameters={
-                "keys": wanted, "org_id": org_id,
+                "keys": wanted, "org_id": org_id, "cap": _record_cap(record_cap),
                 "inferred": EntityOrigin.INFERRED.value, "extracted": EntityOrigin.EXTRACTED.value,
             },
             txn_id=transaction,

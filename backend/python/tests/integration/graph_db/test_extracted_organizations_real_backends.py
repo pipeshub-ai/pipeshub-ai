@@ -140,6 +140,10 @@ async def test_reach_counts_live_records_naming_it_and_whether_a_connector_knows
     await _records(provider, org, "r4")
     await provider.batch_create_entity_relations([_edge(org, "r4", f"{org}-named", mention, EntityOrigin.EXTRACTED.value)])
     assert (await provider.get_organization_record_reach(org, [f"{org}-named"]))[f"{org}-named"]["records"] == 2
+    await _records(provider, org, "r5")
+    await provider.batch_create_entity_relations([_edge(org, "r5", f"{org}-named", mention, EntityOrigin.EXTRACTED.value)])
+    capped = await provider.get_organization_record_reach(org, [f"{org}-named"], record_cap=2)
+    assert capped[f"{org}-named"] == {"records": 2, "inferred": False}
 
 
 async def test_the_graph_write_links_a_record_to_what_it_names_and_reports_what_is_searchable(backend) -> None:  # noqa: F811
@@ -175,6 +179,7 @@ async def test_the_graph_write_links_a_record_to_what_it_names_and_reports_what_
         ])
         (searchable,) = await transformer._link_organizations(_record("r2"), _resolution("Initech"))
         assert (searchable.entity_id, searchable.name) == (key, "Initech")
+        assert searchable.connector_ids == [f"{org}-conn"]  # read from the graph's membership
 
         await transformer._link_organizations(_record("r1"), _resolution("Hooli"))
         assert await _edges_from(provider, f"{org}-r1") == sorted([
