@@ -1,4 +1,5 @@
-"""A request that never finishes gives up at its deadline, and its thread stops with it.
+"""A request that never finishes is given up on, and its thread stops with it; one that is slow
+but still arriving is not.
 
 curl_cffi and cloudscraper requests run on threads. Before the deadline, a request that wedged
 (as curl_cffi 0.14's streamed hop did) or a site that trickles bytes slower than requests' per-read
@@ -27,8 +28,14 @@ from app.connectors.sources.web.fetch_strategy import (
 from app.utils.url_fetcher import PublicTarget
 
 DEADLINE = 1.0
-# Long enough that neither library's own timeout ends a trickle before the deadline does.
+# Long enough that curl's own timeout doesn't end a trickle before the deadline does.
 LIBRARY_TIMEOUT = 20
+# requests' timeout is per socket read: a byte every 50ms never trips it.
+SCRAPER_TIMEOUT = 0.5
+# The slowest body cloudscraper keeps reading, scaled down with the timeout.
+MIN_RATE = 200_000
+STEADY_CHUNK = 50_000
+STEADY_CHUNKS = 50  # every 50ms: 1 MB a second, for 2.5 seconds
 
 
 @dataclass
@@ -41,23 +48,42 @@ class Trickle:
 
 @pytest.fixture
 def trickle() -> Iterator[Trickle]:
-    """Answers at once, then sends its body a byte at a time, never fast enough to end."""
+    """Sends a byte every 50ms, never fast enough to end: the body of a 200 at ``/page``, the
+    body of a Cloudflare 503 at ``/cloudflare``, the headers at ``/headers``. ``/steady`` sends
+    a body above MIN_RATE that takes longer than DEADLINE."""
     state = Trickle(port=0)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             state.requests += 1
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.send_header("Content-Length", "1000000")
-            self.end_headers()
             try:
-                for _ in range(600):
-                    self.wfile.write(b"x")
-                    self.wfile.flush()
-                    time.sleep(0.05)
+                if self.path == "/headers":
+                    self.wfile.write(b"HTTP/1.1 200 OK\r\nX-Slow: ")
+                    self._trickle()
+                    return
+                self.send_response(503 if self.path == "/cloudflare" else 200)
+                self.send_header("Content-Type", "text/html")
+                length = STEADY_CHUNK * STEADY_CHUNKS if self.path == "/steady" else 1_000_000
+                self.send_header("Content-Length", str(length))
+                self.end_headers()
+                if self.path == "/steady":
+                    for _ in range(STEADY_CHUNKS):
+                        self.wfile.write(b"s" * STEADY_CHUNK)
+                        time.sleep(0.05)
+                else:
+                    self._trickle()
             except OSError:
                 state.hung_up.set()
+
+        def version_string(self) -> str:
+            # The Server header cloudscraper checks before reading a body for a challenge.
+            return "cloudflare" if self.path == "/cloudflare" else super().version_string()
+
+        def _trickle(self) -> None:
+            for _ in range(600):
+                self.wfile.write(b"x")
+                self.wfile.flush()
+                time.sleep(0.05)
 
         def log_message(self, *_: object) -> None:
             pass
@@ -80,6 +106,7 @@ def one_fetch_thread(monkeypatch: pytest.MonkeyPatch) -> Iterator[ThreadPoolExec
     thread after giving up would leave nothing for the next one."""
     pool = ThreadPoolExecutor(max_workers=1)
     monkeypatch.setattr(fetch_strategy, "_hop_deadline", lambda timeout: DEADLINE, raising=False)
+    monkeypatch.setattr(fetch_strategy, "_MIN_BODY_RATE", MIN_RATE, raising=False)
     monkeypatch.setattr(fetch_strategy, "_FETCH_THREADS", pool, raising=False)
     try:
         yield pool
@@ -176,18 +203,78 @@ async def test_a_curl_transfer_that_trickles_stops_when_the_walk_gives_up(
     assert await _thread_is_free(one_fetch_thread)
 
 
-async def test_a_cloudscraper_body_that_trickles_stops_when_the_walk_gives_up(
-    trickle: Trickle, one_fetch_thread: ThreadPoolExecutor, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("path", [
+    "/page",
+    # cloudscraper reads this body itself, inside its request, to look for a challenge.
+    "/cloudflare",
+    "/headers",
+])
+async def test_a_cloudscraper_request_that_trickles_stops_when_the_walk_gives_up(
+    path: str, trickle: Trickle, one_fetch_thread: ThreadPoolExecutor, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # requests' timeout limits each socket read, so a byte every 50ms never trips it.
     _resolve_to(monkeypatch, _loopback(trickle.port))
-    url = f"http://127.0.0.1:{trickle.port}/page"
+    url = f"http://127.0.0.1:{trickle.port}{path}"
 
     result = await asyncio.wait_for(
-        _hops_cloudscraper(_walk(url), LIBRARY_TIMEOUT, logging.getLogger("test_deadline")), 10,
+        _hops_cloudscraper(_walk(url), SCRAPER_TIMEOUT, logging.getLogger("test_deadline")), 10,
     )
 
     assert result is None
     assert trickle.requests == 1
     assert await asyncio.to_thread(trickle.hung_up.wait, 3), "requests kept reading after the walk gave up"
     assert await _thread_is_free(one_fetch_thread)
+
+
+async def test_a_cloudscraper_body_that_keeps_arriving_is_read_to_the_end(
+    trickle: Trickle, one_fetch_thread: ThreadPoolExecutor, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _resolve_to(monkeypatch, _loopback(trickle.port))
+    url = f"http://127.0.0.1:{trickle.port}/steady"
+
+    started = time.monotonic()
+    result = await asyncio.wait_for(
+        _hops_cloudscraper(_walk(url), SCRAPER_TIMEOUT, logging.getLogger("test_deadline")), 10,
+    )
+
+    assert time.monotonic() - started > 2 * DEADLINE
+    assert result is not None
+    assert (result.status_code, len(result.content_bytes)) == (200, STEADY_CHUNK * STEADY_CHUNKS)
+    assert await _thread_is_free(one_fetch_thread)
+
+
+class _WedgedScraper(_WedgedSession):
+    """A cloudscraper scraper stand-in whose request never returns until the test lets it go."""
+
+    def __init__(self) -> None:
+        from requests.adapters import HTTPAdapter
+
+        super().__init__()
+        self.adapters = {"https://": HTTPAdapter()}
+
+    def mount(self, prefix: str, adapter: object) -> None:
+        self.adapters[prefix] = adapter
+
+
+async def test_a_scraper_given_up_on_is_closed_only_once_its_request_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    scraper = _WedgedScraper()
+    monkeypatch.setitem(sys.modules, "cloudscraper", SimpleNamespace(create_scraper=lambda **_: scraper))
+    monkeypatch.setattr(fetch_strategy, "_hop_deadline", lambda timeout: DEADLINE, raising=False)
+    _resolve_to(monkeypatch, PublicTarget(
+        scheme="http", host="site.test", port=80, addresses=(ipaddress.ip_address("93.184.215.14"),),
+    ))
+
+    try:
+        result = await asyncio.wait_for(
+            _hops_cloudscraper(_walk("http://site.test/"), 5, logging.getLogger("test_deadline")), 10,
+        )
+        assert result is None
+        assert not scraper.closed.is_set()
+    finally:
+        scraper.release.set()
+    assert await asyncio.to_thread(scraper.closed.wait, 5)
+    assert scraper.closed_mid_request is False

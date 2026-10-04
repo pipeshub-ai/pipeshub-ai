@@ -21,7 +21,9 @@ import contextlib
 import functools
 import logging
 import random
+import socket
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import (
@@ -65,10 +67,16 @@ MAX_RATE_LIMIT_BACKOFF = 300  # 5 minutes
 
 
 def _hop_deadline(timeout: float) -> float:
-    """How long to wait for one request run on a fetch thread. curl ends a transfer at ``timeout``
-    by itself, and a requests read can overrun it by one socket read at most, so a request still
-    running at twice the timeout has wedged."""
+    """How long to wait for a request on a fetch thread to answer. curl ends a whole transfer at
+    ``timeout`` by itself, and requests ends each socket read there, so a request that has given
+    no answer at twice the timeout has wedged or is trickling its headers."""
     return 2 * timeout
+
+
+# The slowest a cloudscraper body may arrive and still be read to the end. requests' timeout covers
+# each socket read, not the transfer, so only the rate tells a slow link from a trickle. At this
+# rate a body at the 100 MB size cap takes under 2 hours.
+_MIN_BODY_RATE = 16 * 1024  # bytes a second
 
 
 # Blocking requests run here rather than in the loop's default executor. A request that wedges
@@ -272,63 +280,122 @@ class _Abandoned(Exception):
     pass
 
 
-class _Abandon:
-    """Set once nobody waits for a request any longer, so its thread stops reading too."""
+class _HopWatch:
+    """What the coroutine waiting on a request knows of its progress, and how it tells the
+    request's thread to stop."""
 
     def __init__(self) -> None:
-        self._set = threading.Event()
-        self._response: Any = None
+        self.started = time.monotonic()
+        self.body_started: float | None = None
+        self.received = 0
+        self._stopped = threading.Event()
+        self._lock = threading.Lock()
+        self._socket: socket.socket | None = None
 
-    def is_set(self) -> bool:
-        return self._set.is_set()
+    @property
+    def stopped(self) -> bool:
+        return self._stopped.is_set()
 
-    def watch(self, response: Any) -> None:  # noqa: ANN401 -- a requests Response
-        """Hand over the response whose socket ``set`` shuts, then stop if it is no longer wanted."""
-        self._response = response
-        if self._set.is_set():
-            raise _Abandoned
+    def hold(self, sock: socket.socket) -> None:
+        """The socket a stop shuts, which ends any read blocked on it."""
+        with self._lock:
+            self._socket = sock
+            if self._stopped.is_set():
+                self._shut()
 
-    def forget(self) -> None:
-        self._response = None
+    def release(self) -> None:
+        with self._lock:
+            self._socket = None
 
-    def set(self) -> None:
-        self._set.set()
-        response = self._response
-        if response is not None:
-            # A read blocked in another thread returns once its socket is shut for reading.
-            with contextlib.suppress(Exception):
-                response.raw.shutdown()
+    def stop(self) -> None:
+        with self._lock:
+            self._stopped.set()
+            self._shut()
+
+    def _shut(self) -> None:
+        if self._socket is not None:
+            with contextlib.suppress(OSError):
+                # The plain socket call: SSLSocket.shutdown would also drop its SSL object under
+                # the reading thread.
+                socket.socket.shutdown(self._socket, socket.SHUT_RDWR)
+
+    def overdue(self, now: float, timeout: float) -> str | None:
+        """Why to give up on the request now, or None to keep waiting."""
+        if self.body_started is None:
+            deadline = _hop_deadline(timeout)
+            return f"{deadline:g} seconds without an answer" if now - self.started > deadline else None
+        reading = now - self.body_started
+        # One chunk of slack: a chunk is counted once it is complete.
+        if reading > timeout and self.received + _READ_CHUNK < _MIN_BODY_RATE * reading:
+            return f"{reading:.0f} seconds reading a body arriving at under {_MIN_BODY_RATE // 1024} KB a second"
+        return None
+
+
+# The watch of the request running on this thread, for the connections it opens.
+_thread_watch = threading.local()
+
+
+@functools.cache
+def _watched_pools() -> dict[str, type]:
+    """urllib3 pools whose connections hand their socket to the running request's watch before
+    waiting for the answer, so a stop also ends a wait for headers, and a body cloudscraper reads
+    itself to look for a challenge."""
+    from urllib3.connection import HTTPConnection, HTTPSConnection
+    from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
+
+    def watched(base: type[HTTPConnection]) -> type[HTTPConnection]:
+        class Watched(base):  # type: ignore[valid-type,misc]
+            def getresponse(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+                watch = getattr(_thread_watch, "watch", None)
+                if watch is not None and self.sock is not None:
+                    watch.hold(self.sock)
+                return super().getresponse(*args, **kwargs)
+
+        return Watched
+
+    class Pool(HTTPConnectionPool):
+        ConnectionCls = watched(HTTPConnection)
+
+    class TLSPool(HTTPSConnectionPool):
+        ConnectionCls = watched(HTTPSConnection)
+
+    return {"http": Pool, "https": TLSPool}
 
 
 async def _hop_in_thread(
     url: str, timeout: int, logger: logging.Logger, strategy: str, hop: Callable[..., _Hop],
 ) -> _Hop:
-    """Run ``hop`` on a fetch thread for at most the hop deadline. Past it the hop is told to stop,
-    and TimeoutError is raised, which the strategies handle as a request that timed out."""
-    abandon = _Abandon()
-    deadline = _hop_deadline(timeout)
-    running = asyncio.get_running_loop().run_in_executor(
-        _FETCH_THREADS, functools.partial(hop, abandon=abandon),
-    )
+    """Run ``hop`` on a fetch thread until it ends or ``_HopWatch.overdue`` gives up on it. Then the
+    hop is told to stop, and TimeoutError is raised, which the strategies handle as a request
+    that timed out."""
+    watch = _HopWatch()
+    running = asyncio.get_running_loop().run_in_executor(_FETCH_THREADS, functools.partial(hop, watch=watch))
+    check_every = min(1.0, _hop_deadline(timeout) / 8)
     try:
-        return await asyncio.wait_for(running, deadline)
-    except TimeoutError:
-        abandon.set()
-        logger.warning("⚠️ [%s] Gave up on %s after %g seconds", strategy, url, deadline)
-        raise
+        while not running.done():
+            await asyncio.wait({running}, timeout=check_every)
+            reason = None if running.done() else watch.overdue(time.monotonic(), timeout)
+            if reason is not None:
+                watch.stop()
+                running.cancel()  # drops the request if it is still queued for a thread
+                logger.warning("⚠️ [%s] Gave up on %s after %s", strategy, url, reason)
+                raise TimeoutError(reason)
     except asyncio.CancelledError:
-        abandon.set()
+        watch.stop()
         raise
+    return running.result()
 
 
 def _read_capped(
-    chunks: Iterable[bytes], max_bytes: int | None, abandon: _Abandon | None = None,
+    chunks: Iterable[bytes], max_bytes: int | None, watch: _HopWatch | None = None,
 ) -> tuple[bytes, bool]:
     """Read a streamed body, stopping as soon as it passes ``max_bytes``."""
     body = bytearray()
     for chunk in chunks:
-        if abandon is not None and abandon.is_set():
-            raise _Abandoned
+        if watch is not None:
+            if watch.stopped:
+                raise _Abandoned
+            watch.received += len(chunk)
         body.extend(chunk)
         if max_bytes is not None and len(body) > max_bytes:
             return b"", True
@@ -437,35 +504,47 @@ async def _hops_aiohttp(
 
 
 def _sync_hop(
-    client: _RequestsLike, url: str, headers: dict, timeout: int, max_bytes: int | None,
-    abandon: _Abandon | None = None,
+    client: _RequestsLike, busy: threading.Lock, url: str, headers: dict, timeout: int,
+    max_bytes: int | None, watch: _HopWatch | None = None,
 ) -> _Hop:
     """One GET on a cloudscraper scraper, redirects not followed.
 
-    requests' ``timeout`` limits each socket read, not the whole body, so a site that trickles
-    bytes would keep this reading until ``abandon`` shuts its socket.
+    requests' ``timeout`` limits each socket read, not the whole transfer, so a site that trickles
+    its headers or body would keep this reading until ``watch`` shuts the socket.
     """
+    with busy:
+        _thread_watch.watch = watch
+        try:
+            return _read_sync_hop(client, url, headers, timeout, max_bytes, watch)
+        finally:
+            _thread_watch.watch = None
+            if watch is not None:
+                watch.release()
+
+
+def _read_sync_hop(
+    client: _RequestsLike, url: str, headers: dict, timeout: int, max_bytes: int | None,
+    watch: _HopWatch | None,
+) -> _Hop:
     response = client.get(url, headers=headers, timeout=timeout, allow_redirects=False, stream=True)
     try:
-        if abandon is not None:
-            abandon.watch(response)
         hop_headers = dict(response.headers)
         answered_by = str(response.url) if getattr(response, "url", None) else None
         if response.status_code in _HEAD_REDIRECT_CODES:
             return _Hop(response.status_code, hop_headers, url=answered_by)
         if _declared_too_large(hop_headers, max_bytes):
             return _Hop(response.status_code, hop_headers, too_large=True, url=answered_by)
-        body, too_large = _read_capped(response.iter_content(_READ_CHUNK), max_bytes, abandon)
+        if watch is not None:
+            watch.body_started = time.monotonic()
+        body, too_large = _read_capped(response.iter_content(_READ_CHUNK), max_bytes, watch)
         return _Hop(response.status_code, hop_headers, body, too_large, url=answered_by)
     finally:
-        if abandon is not None:
-            abandon.forget()
         response.close()
 
 
 def _curl_hop(
     session: _RequestsLike, busy: threading.Lock, url: str, headers: dict, timeout: int,
-    max_bytes: int | None, pin: PublicTarget, abandon: _Abandon | None = None,
+    max_bytes: int | None, pin: PublicTarget, watch: _HopWatch | None = None,
 ) -> _Hop:
     """One GET on a curl_cffi Session, redirects not followed. The answer must have come from
     ``pin``'s address (curl reports it as ``primary_ip``).
@@ -474,7 +553,7 @@ def _curl_hop(
     timeout, a refused connection) resets one curl handle from two threads at once, which
     corrupts the heap and aborts the whole connector service. A declared size past the cap is
     refused by curl itself at the headers (CURLOPT_MAXFILESIZE); an undeclared one is capped as
-    it arrives. Once ``abandon`` is set, the next bytes to arrive stop the transfer.
+    it arrives. Once ``watch`` is stopped, the next bytes to arrive stop the transfer.
     """
     from curl_cffi.const import CurlECode, CurlOpt
     from curl_cffi.curl import CURL_WRITEFUNC_ERROR
@@ -490,7 +569,7 @@ def _curl_hop(
 
     def collect(chunk: bytes) -> int:
         nonlocal too_large
-        if abandon is not None and abandon.is_set():
+        if watch is not None and watch.stopped:
             return CURL_WRITEFUNC_ERROR
         body.extend(chunk)
         if max_bytes is not None and len(body) > max_bytes:
@@ -582,9 +661,13 @@ def _pin_scraper(scraper: Any, tls_adapter: Any, pin: PublicTarget) -> None:  # 
     """Send every request the scraper makes, a solved challenge's own follow-up included, to
     ``pin``'s address. https keeps cloudscraper's TLS context, which carries its cipher suite."""
     scraper.trust_env = False  # a proxy would resolve the host again, past the pin
-    scraper.mount("http://", _pinned_requests_adapter(pin))
     tls = {"ssl_context": tls_adapter.ssl_context} if hasattr(tls_adapter, "ssl_context") else {}
-    scraper.mount("https://", _pinned_requests_adapter(pin, type(tls_adapter), **tls))
+    for prefix, adapter in (
+        ("http://", _pinned_requests_adapter(pin)),
+        ("https://", _pinned_requests_adapter(pin, type(tls_adapter), **tls)),
+    ):
+        adapter.poolmanager.pool_classes_by_scheme = _watched_pools()
+        scraper.mount(prefix, adapter)
 
 
 async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logger) -> FetchResponse | None:
@@ -603,6 +686,8 @@ async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logge
     except Exception:
         return None
     tls_adapter = scraper.adapters["https://"]
+    # Held while a request runs on the scraper, so it is never closed under one.
+    busy = threading.Lock()
 
     async def get(url: str, headers: dict, pin: PublicTarget | None) -> _Hop:
         if pin is None:
@@ -610,7 +695,7 @@ async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logge
         _pin_scraper(scraper, tls_adapter, pin)
         return await _hop_in_thread(
             url, timeout, logger, "cloudscraper",
-            functools.partial(_sync_hop, scraper, url, headers, timeout, walk.max_bytes),
+            functools.partial(_sync_hop, scraper, busy, url, headers, timeout, walk.max_bytes),
         )
 
     try:
@@ -619,8 +704,9 @@ async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logge
         logger.warning(f"⚠️ [cloudscraper] Failed for {walk.url}")
         return None
     finally:
-        with contextlib.suppress(Exception):
-            scraper.close()
+        asyncio.get_running_loop().run_in_executor(
+            _FETCH_THREADS, _close_when_idle, scraper, busy, _hop_deadline(timeout),
+        )
 
 
 # ---------------------------------------------------------------------------
