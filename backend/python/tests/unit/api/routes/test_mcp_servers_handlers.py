@@ -229,6 +229,162 @@ class TestCatalogHandlers:
         assert await get_catalog_template(request, "github") == {"typeId": "github"}
 
 
+def _real_registry():
+    from app.agents.mcp.registry import MCPRegistry
+
+    registry = MCPRegistry()
+    registry.auto_discover_templates()
+    return registry
+
+
+class TestStdioPolicy:
+    """Custom STDIO is operator opt-in; catalog servers always run the registry command."""
+
+    @staticmethod
+    def _custom_stdio(**overrides) -> MCPServerInstanceConfig:
+        fields = dict(
+            name="custom", transport=MCPTransport.STDIO, auth_mode=MCPAuthMode.NONE,
+            command="npx", args=["-y", "some-mcp-server"],
+        )
+        fields.update(overrides)
+        return MCPServerInstanceConfig(**fields)
+
+    @pytest.mark.asyncio
+    async def test_create_custom_stdio_forbidden_when_flag_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("MCP_ALLOW_CUSTOM_STDIO", raising=False)
+        config_service = MagicMock()
+        config_service.set_config = AsyncMock(return_value=True)
+        request = _admin_request(config_service=config_service, registry=_real_registry())
+        with patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)):
+            with pytest.raises(HTTPException) as exc:
+                await create_instance(request, self._custom_stdio())
+        assert exc.value.status_code == 403
+        assert "MCP_ALLOW_CUSTOM_STDIO" in exc.value.detail
+        config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_create_custom_stdio_allowed_when_flag_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MCP_ALLOW_CUSTOM_STDIO", "true")
+        config_service = MagicMock()
+        config_service.set_config = AsyncMock(return_value=True)
+        request = _admin_request(config_service=config_service, registry=_real_registry())
+        with patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)):
+            record = await create_instance(request, self._custom_stdio(required_env=["MY_API_KEY"]))
+        assert record["command"] == "npx"
+        assert record["requiredEnv"] == ["MY_API_KEY"]
+        config_service.set_config.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("flag", ["true", "false"])
+    @pytest.mark.parametrize(
+        ("type_id", "overrides"),
+        [
+            ("slack", {"command": "touch", "args": ["/tmp/x"]}),
+            ("slack", {"args": ["-y", "some-other-package"]}),
+            ("github", {"command": "touch", "args": ["/tmp/x"]}),
+        ],
+    )
+    async def test_create_catalog_rejects_command_override(
+        self, type_id: str, overrides: dict, flag: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_ALLOW_CUSTOM_STDIO", flag)
+        config_service = MagicMock()
+        config_service.set_config = AsyncMock(return_value=True)
+        request = _admin_request(config_service=config_service, registry=_real_registry())
+        payload = MCPServerInstanceConfig(
+            name=type_id, type_id=type_id, transport=MCPTransport.STDIO, auth_mode=MCPAuthMode.NONE, **overrides,
+        )
+        with patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)):
+            with pytest.raises(HTTPException) as exc:
+                await create_instance(request, payload)
+        assert exc.value.status_code == 400
+        config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_create_catalog_stdio_stores_template_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("MCP_ALLOW_CUSTOM_STDIO", raising=False)
+        config_service = MagicMock()
+        config_service.set_config = AsyncMock(return_value=True)
+        request = _admin_request(config_service=config_service, registry=_real_registry())
+        payload = MCPServerInstanceConfig(
+            name="Slack", type_id="slack", transport=MCPTransport.STDIO, auth_mode=MCPAuthMode.API_TOKEN,
+            command="npx", args=["-y", "@modelcontextprotocol/server-slack"],
+        )
+        with patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)):
+            record = await create_instance(request, payload)
+        assert record["command"] == "npx"
+        assert record["args"] == ["-y", "@modelcontextprotocol/server-slack"]
+        assert record["transport"] == MCPTransport.STDIO.value
+
+    @pytest.mark.asyncio
+    async def test_update_instance_applies_same_policy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("MCP_ALLOW_CUSTOM_STDIO", raising=False)
+        config_service = MagicMock()
+        config_service.set_config = AsyncMock(return_value=True)
+        request = _admin_request(config_service=config_service, registry=_real_registry())
+        existing = _api_token_instance(typeId=None, isCustom=True, transport=MCPTransport.SSE.value, url="https://x")
+        with (
+            patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)),
+            patch("app.api.routes.mcp_servers._get_org_instance", new=AsyncMock(return_value=existing)),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await update_instance(request, "inst-1", self._custom_stdio(command="touch", args=["/tmp/x"]))
+        assert exc.value.status_code == 403
+        config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("flag", ["true", "false"])
+    @pytest.mark.parametrize("env_name", ["NODE_OPTIONS", "LD_PRELOAD", "PATH", "PYTHONPATH", "lower_case"])
+    async def test_dangerous_env_names_rejected(
+        self, env_name: str, flag: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_ALLOW_CUSTOM_STDIO", flag)
+        request = _admin_request(registry=_real_registry())
+        payload = self._custom_stdio(
+            auth_mode=MCPAuthMode.API_TOKEN, required_env=[env_name], env={env_name: "--require /tmp/x.js"},
+        )
+        with patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)):
+            with pytest.raises(HTTPException) as exc:
+                await create_instance(request, payload)
+        assert exc.value.status_code == 400
+        assert env_name in exc.value.detail
+
+    def test_catalog_template_env_names_pass_validation(self) -> None:
+        from app.agents.mcp.stdio_policy import rejected_env_names
+
+        for template in _real_registry().list_templates():
+            assert rejected_env_names(template.required_env + template.optional_env) == [], template.type_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("flag", "expected"), [("true", True), ("false", False)])
+    async def test_catalog_reports_custom_stdio_allowed(
+        self, flag: str, expected: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_ALLOW_CUSTOM_STDIO", flag)
+        result = await list_catalog(_admin_request(registry=_real_registry()), page=1, limit=10, search=None)
+        assert result["customStdioAllowed"] is expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("flag", "expected"), [("true", None), ("false", "custom_stdio_disabled")])
+    async def test_my_mcp_servers_reports_disabled_reason(
+        self, flag: str, expected: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_ALLOW_CUSTOM_STDIO", flag)
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(return_value=None)
+        instances = [
+            _api_token_instance(_id="custom", typeId=None, isCustom=True, authMode=MCPAuthMode.NONE.value, command="npx"),
+            _api_token_instance(_id="slack", typeId="slack", authMode=MCPAuthMode.NONE.value),
+        ]
+        with patch(
+            "app.api.routes.mcp_servers.resolve_mcp_instances_with_inheritance",
+            new=AsyncMock(return_value=instances),
+        ):
+            result = await get_my_mcp_servers(_admin_request(config_service=config_service), include_tools=False)
+        reasons = {entry["_id"]: entry["disabledReason"] for entry in result["instances"]}
+        assert reasons == {"custom": expected, "slack": None}
+
+
 # ---------------------------------------------------------------------------
 # Instance CRUD
 # ---------------------------------------------------------------------------
@@ -265,6 +421,7 @@ class TestInstanceCrud:
         config_service.set_config = AsyncMock(return_value=True)
         registry = MagicMock()
         registry.get_template.return_value = MagicMock(
+            transport=MCPTransport.STDIO,
             command="npx",
             args=["-y", "server"],
             required_env=["API_KEY"],
@@ -293,6 +450,7 @@ class TestInstanceCrud:
     async def test_create_instance_rejects_disallowed_stdio_env(self) -> None:
         registry = MagicMock()
         registry.get_template.return_value = MagicMock(
+            transport=MCPTransport.STDIO,
             command="npx",
             args=[],
             required_env=["API_KEY"],

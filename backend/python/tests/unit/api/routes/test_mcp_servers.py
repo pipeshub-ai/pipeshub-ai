@@ -129,7 +129,9 @@ class TestResolveValidatedBaseUrl:
 class TestValidateInstanceConfig:
     def test_known_type_id_passes(self) -> None:
         registry = MagicMock()
-        registry.get_template.return_value = MagicMock()
+        registry.get_template.return_value = MagicMock(
+            transport=MCPTransport.STDIO, command="npx", args=[], required_env=[], optional_env=[]
+        )
         payload = MCPServerInstanceConfig(name="x", type_id="brave_search", transport=MCPTransport.STDIO, auth_mode=MCPAuthMode.API_TOKEN)
         _validate_instance_config(payload, registry)  # should not raise
 
@@ -141,7 +143,8 @@ class TestValidateInstanceConfig:
             _validate_instance_config(payload, registry)
         assert exc.value.status_code == 400
 
-    def test_custom_stdio_requires_command(self) -> None:
+    def test_custom_stdio_requires_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MCP_ALLOW_CUSTOM_STDIO", "true")
         registry = MagicMock()
         payload = MCPServerInstanceConfig(name="x", transport=MCPTransport.STDIO, auth_mode=MCPAuthMode.NONE)
         with pytest.raises(HTTPException) as exc:
@@ -155,7 +158,8 @@ class TestValidateInstanceConfig:
             _validate_instance_config(payload, registry)
         assert exc.value.status_code == 400
 
-    def test_custom_stdio_with_command_passes(self) -> None:
+    def test_custom_stdio_with_command_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MCP_ALLOW_CUSTOM_STDIO", "true")
         registry = MagicMock()
         payload = MCPServerInstanceConfig(name="x", transport=MCPTransport.STDIO, auth_mode=MCPAuthMode.NONE, command="npx")
         _validate_instance_config(payload, registry)  # should not raise
@@ -184,6 +188,7 @@ class TestBuildInstanceRecord:
 
     def test_catalog_instance_fills_from_template(self) -> None:
         template = MagicMock()
+        template.transport = MCPTransport.STDIO
         template.command = "npx"
         template.args = ["-y", "server"]
         template.required_env = ["API_KEY"]

@@ -106,6 +106,8 @@ spec:
               value: {{ .Values.config.signedUrlCacheSeconds | quote }}
             - name: DISTRIBUTED_INDEXING_CONCURRENCY
               value: {{ .Values.config.distributedIndexingConcurrency | quote }}
+            - name: MCP_ALLOW_CUSTOM_STDIO
+              value: {{ .Values.config.mcpAllowCustomStdio | toString | lower | quote }}
             # Coding sandbox. The service has no default: unset, unknown, or
             # "local" without SANDBOX_ALLOW_LOCAL drops the code tools.
             - name: SANDBOX_MODE

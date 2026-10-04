@@ -32,6 +32,7 @@ from app.config.constants.ai_models import (
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.telemetry.setup import setup_telemetry
 from app.utils.logger import create_logger
+from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = create_logger("embedding_service")
@@ -529,6 +530,7 @@ def _format_embedding_vector(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    mark_process_non_dumpable()
     app.state.model_manager = model_manager
     logger.info(
         "Starting embedding server warmup for %s (max_concurrency=%d)",

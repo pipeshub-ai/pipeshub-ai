@@ -20,6 +20,7 @@ from fastmcp.client.transports import (
 from mcp.shared._httpx_utils import create_mcp_http_client
 
 from app.agents.mcp.models import MCPServerConfig, MCPTransport
+from app.agents.mcp.stdio_policy import StdioPolicyError, rejected_env_names, resolve_stdio_launch
 from app.utils.url_redaction import redact_url
 
 logger = logging.getLogger(__name__)
@@ -120,11 +121,19 @@ def build_transport(
     since nothing else will ever call `disconnect()` on it.
     """
     if config.transport == MCPTransport.STDIO:
-        if not config.command:
-            raise MCPConnectionError(f"MCP instance {config.id} is STDIO but has no command configured")
+        try:
+            command, args = resolve_stdio_launch(config)
+        except StdioPolicyError as e:
+            raise MCPConnectionError(str(e)) from e
+        # Credential records saved before env-name validation existed can still carry these.
+        rejected = rejected_env_names(env or {})
+        if rejected:
+            raise MCPConnectionError(
+                f"MCP instance {config.id} has env vars that are not allowed for STDIO servers: {rejected}"
+            )
         return StdioTransport(
-            command=config.command,
-            args=list(config.args or []),
+            command=command,
+            args=args,
             env=dict(env or {}),
             log_file=stderr_log_file,
             keep_alive=keep_alive,

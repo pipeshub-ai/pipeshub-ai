@@ -9,6 +9,7 @@ from typing import Any
 
 from app.agents.mcp.client import MCPClientManager, MCPConnectionError
 from app.agents.mcp.models import MCPAuthMode, MCPServerConfig, MCPToolInfo, MCPTransport
+from app.agents.mcp.stdio_policy import is_allowed_env_name
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,9 @@ def build_namespaced_tool_name(server_type: str, tool_name: str) -> str:
 
 
 def _allowed_stdio_env_names(config: MCPServerConfig) -> set[str]:
-    return set(config.required_env or []) | set(config.optional_env or [])
+    # Instances saved before env-name validation may declare names like NODE_OPTIONS.
+    declared = set(config.required_env or []) | set(config.optional_env or [])
+    return {name for name in declared if is_allowed_env_name(name)}
 
 
 def build_auth_env_and_headers(
@@ -57,7 +60,8 @@ def build_auth_env_and_headers(
             api_token = credentials.get("apiToken")
             if api_token:
                 env_name = (config.required_env or [DEFAULT_ENV_VAR_NAME])[0]
-                env.setdefault(env_name, api_token)
+                if is_allowed_env_name(env_name):
+                    env.setdefault(env_name, api_token)
         else:
             api_token = credentials.get("apiToken")
             if api_token:

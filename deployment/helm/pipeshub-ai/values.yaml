@@ -322,6 +322,12 @@ config:
   accessibleRecordsCacheTtl: 300
   # 0 disables the signed-URL cache. Keep well under the 3600s signing lifetime.
   signedUrlCacheSeconds: 0
+  # Custom (non-catalog) MCP servers with the STDIO transport run the command an
+  # org admin enters as a process in this pod, with the app's identity, network
+  # and service-account token. Leave false unless every org admin is trusted
+  # with a shell in this pod; with sandbox.dind.enabled=true that extends to
+  # root on the node. Catalog and remote (HTTP) MCP servers work either way.
+  mcpAllowCustomStdio: false
   # Which coding sandbox `run_code` executes in. Left unset the service falls
   # back to "local", which runs model-generated code as a subprocess of the
   # query service itself — no network namespace and no filesystem boundary
