@@ -208,6 +208,34 @@ describe('ConnectorScheduleSweepService', () => {
     expect(schedulesFor('c1')).to.have.length(1)
   })
 
+  it('removes and counts a stale extra schedule next to a matching one', async () => {
+    await seed(record('c1'))
+    const [matching] = schedulesFor('c1')
+    store.repeatables.set('stale-key', {
+      ...matching,
+      key: 'stale-key',
+      every: String(5 * 60_000),
+    })
+    fetchAll.resolves(listed([record('c1')]))
+
+    const summary = await sweeper.sweep()
+
+    expect(summary.driftFixed).to.equal(1)
+    expect(schedulesFor('c1').map((r) => r.key)).to.deep.equal([matching.key])
+  })
+
+  it('keeps the schedule of a listed connector that fails before its job name is built', async () => {
+    await seed(record('c1'), record('c2'))
+    fetchAll.resolves(listed([{ ...record('c1'), type: 123 as any }, record('c2')]))
+
+    const summary = await sweeper.sweep()
+
+    expect(summary.errors).to.equal(1)
+    expect(summary.orphansRemoved).to.equal(0)
+    expect(schedulesFor('c1')).to.have.length(1)
+    expect(schedulesFor('c2')).to.have.length(1)
+  })
+
   it('does not start when the interval is 0', async () => {
     process.env.CONNECTOR_SCHEDULE_SWEEP_INTERVAL_MINUTES = '0'
 
