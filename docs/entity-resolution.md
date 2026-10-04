@@ -135,9 +135,10 @@ python -m app.scripts.kg_taxonomy unmigrate-legacy ...
 - Dry runs only read, so they work with a read-only graph user; `--apply`
   first applies the graph schema.
 - Exit codes: 0 done; 1 some items failed or left the index unrefreshed; 2
-  invalid request; 3 a single-item command failed. Bulk commands carry on
-  past a failed item or collection, print it with `error`, and exit 1; each
-  item is idempotent, so a re-run finishes it.
+  invalid request; 3 a single-item command failed, or the graph or its schema
+  was unavailable before anything was written. Bulk commands carry on past a
+  failed item or collection, print it with `error`, and exit 1; each item is
+  idempotent, so a re-run finishes it.
 - Known limits:
   - `unmerge` restores only edges that moved. When a record linked to both
     nodes, the loser's edge (and its `extractedName`) is dropped rather than

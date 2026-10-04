@@ -213,3 +213,15 @@ async def test_an_unreachable_graph_exits_3(monkeypatch: pytest.MonkeyPatch, cap
     monkeypatch.setattr(indexing.IndexingAppContainer, "init", MagicMock(return_value=container))
     assert await kg_taxonomy._main(["duplicates", "--org", "o"]) == EXIT_FAILED
     assert "refused" in json.loads(capsys.readouterr().err)["error"]
+
+
+async def test_a_failed_schema_step_stops_an_apply_before_any_write() -> None:
+    """ArangoDB's strict edge schema rejects mergedFrom until the schema is
+    applied, so writing anyway would fail every move partway."""
+    consolidator, provider = _consolidator(), _provider()
+    provider.ensure_schema = AsyncMock(return_value=False)
+    code, err = await _execute(["consolidate", "--org", "o", "--apply"], consolidator, provider)
+    assert code == EXIT_FAILED and "schema" in json.loads(err)["error"]
+    consolidator.duplicate_groups.assert_not_awaited()
+    consolidator.merge.assert_not_awaited()
+    provider.disconnect.assert_awaited_once()

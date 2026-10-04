@@ -67,7 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 # Exit codes: 0 all done, 1 some items failed or left the index unrefreshed,
-# 2 the command itself was invalid, 3 a single-item command failed.
+# 2 the command itself was invalid, 3 a single-item command failed or the
+# graph or its schema was unavailable.
 EXIT_PARTIAL = 1
 EXIT_INVALID = 2
 EXIT_FAILED = 3
@@ -173,11 +174,12 @@ async def execute(
     """Run ``args`` against an open graph and disconnect it; returns the
     exit code."""
     try:
-        if getattr(args, "apply", False):
-            # Merges write mergedFrom on edges; ArangoDB's strict edge schema
-            # rejects it until the current schema is applied. A dry run only
-            # reads, so it works with a read-only graph user.
-            await graph_provider.ensure_schema()
+        # Merges write mergedFrom on edges; ArangoDB's strict edge schema
+        # rejects it until the current schema is applied. A dry run only
+        # reads, so it works with a read-only graph user.
+        if getattr(args, "apply", False) and await graph_provider.ensure_schema() is False:
+            err.write(json.dumps({"error": "graph schema could not be applied; nothing was written"}) + "\n")
+            return EXIT_FAILED
         try:
             entity_store = await open_store()
         except Exception:
