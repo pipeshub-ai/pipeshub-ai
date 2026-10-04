@@ -109,9 +109,7 @@ class KafkaMessagingProducer(IMessagingProducer):
     # implementing abstract methods from IMessagingProducer
     async def stop(self) -> None:
         """Stop the Kafka producer"""
-        if self.producer:
-            await self.stop()
-            self.logger.info("✅ Kafka producer stopped successfully")
+        await self.cleanup()
 
     # implementing abstract methods from IMessagingProducer
     async def send_message(

@@ -435,14 +435,15 @@ class TestStartStop:
             MockAIO.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_stop_with_producer_recurses(self, logger, plain_config):
-        """stop() when producer exists calls self.stop() recursively (a bug).
-        This test verifies the code path is reached and causes RecursionError."""
+    async def test_stop_stops_and_clears_the_producer(self, logger, plain_config):
         producer_obj = KafkaMessagingProducer(logger, plain_config)
-        producer_obj.producer = MagicMock()
+        mock_aio = AsyncMock()
+        producer_obj.producer = mock_aio
 
-        with pytest.raises(RecursionError):
-            await producer_obj.stop()
+        await producer_obj.stop()
+
+        mock_aio.stop.assert_awaited_once()
+        assert producer_obj.producer is None
 
     @pytest.mark.asyncio
     async def test_stop_noop_when_no_producer(self, logger, plain_config):
