@@ -63,6 +63,7 @@ import {
 } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
+import { REASONING_EFFORT_VALUES } from '../../enterprise_search/constants/constants';
 import {
   getPlatformSettingsFromStore,
   readStoredAiModelsConfig,
@@ -2955,6 +2956,19 @@ export const getModelsByType =
     }
   };
 
+// Read the way the query service's `model_default_reasoning_effort` reads it:
+// `configuration` first, then a top-level key. Blank or unknown values aren't returned.
+function storedDefaultReasoningEffort(config: Record<string, unknown>): string | undefined {
+  const configuration = config.configuration as Record<string, unknown> | undefined;
+  for (const raw of [configuration?.defaultReasoningEffort, config.defaultReasoningEffort]) {
+    const value = typeof raw === 'string' ? raw.trim() : '';
+    if (value) {
+      return (REASONING_EFFORT_VALUES as readonly string[]).includes(value) ? value : undefined;
+    }
+  }
+  return undefined;
+}
+
 export const getAvailableModelsByType =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -3040,6 +3054,8 @@ export const getAvailableModelsByType =
         // Only include modelFriendlyName if there's a single model (not comma-separated)
         const shouldIncludeFriendlyName =
           modelNames.length === 1 && config.modelFriendlyName;
+        // Unlike the friendly name, the default applies to every model in the entry.
+        const defaultReasoningEffort = storedDefaultReasoningEffort(config);
 
         for (const modelName of modelNames) {
           const flattenedModel = {
@@ -3051,6 +3067,7 @@ export const getAvailableModelsByType =
             isReasoning: config.isReasoning || false,
             isDefault: markDefault,
             ...(shouldIncludeFriendlyName && { modelFriendlyName: config.modelFriendlyName }),
+            ...(defaultReasoningEffort && { defaultReasoningEffort }),
           };
           markDefault = false; // Only mark first model as default
           flattenedModels.push(flattenedModel);

@@ -1117,6 +1117,8 @@
       "label": "推理强度",
       "overrideHint": "再次点击可使用默认值。",
       "defaultHintWithLevel": "未设置时默认为{{level}}。",
+      "modelDefaultHint": "未设置时使用此模型自身的默认值：{{level}}。",
+      "modelDefaultLabel": "默认（{{level}}）",
       "low": "低",
       "medium": "中",
       "high": "高",

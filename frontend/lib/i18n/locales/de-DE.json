@@ -1057,6 +1057,8 @@
       "label": "Reasoning-Aufwand",
       "overrideHint": "Klicken Sie erneut, um den Standardwert zu verwenden.",
       "defaultHintWithLevel": "Ohne Auswahl wird {{level}} verwendet.",
+      "modelDefaultHint": "Ohne Auswahl wird {{level}} verwendet, der eigene Standardwert dieses Modells.",
+      "modelDefaultLabel": "Standard ({{level}})",
       "low": "Niedrig",
       "medium": "Mittel",
       "high": "Hoch",

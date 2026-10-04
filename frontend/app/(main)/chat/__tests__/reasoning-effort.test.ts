@@ -5,6 +5,7 @@
  *  - `buildStreamChatRequestForSlot()` and `streamRegenerateForSlot()`
  *    forwarding the resolved reasoning effort, or omitting the field so the
  *    backend applies the model's default.
+ *  - The label the chat shows when no effort is picked.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
@@ -85,6 +86,10 @@ const { streamRegenerateForSlot } = await import('../streaming');
 const { ChatApi } = await import('../api');
 const { normalizeReasoningEffort } = await import('../types');
 const { applyConversationModelInfoToStore } = await import('../utils/apply-conversation-model-info');
+const { getModelDefaultReasoningEffort } = await import('../store');
+const { getAppliedReasoningEffortLabel } = await import(
+  '../components/chat-panel/expansion-panels/model-selector/model-selector-panel'
+);
 
 const initialSettings = useChatStore.getState().settings;
 
@@ -424,5 +429,56 @@ describe('streamRegenerateForSlot — reasoningEffort forwarding', () => {
     setAgentDefault('agent-99', 'medium');
     useChatStore.getState().setReasoningEffortForCtx('agent-99', 'max');
     expect((await regenerate('agent-99')).reasoningEffort).toBe('max');
+  });
+});
+
+describe('label for the effort a chat runs with', () => {
+  const t = ((_key: string, opts: string | { defaultValue: string; level: string }) =>
+    typeof opts === 'string' ? opts : opts.defaultValue.replace('{{level}}', opts.level)) as never;
+  const qwen = { modelKey: 'k-qwen', modelName: 'qwen', modelFriendlyName: 'Qwen' };
+
+  function setOrgModels(defaultReasoningEffort?: 'none' | 'low' | 'medium') {
+    useChatStore.getState().setAvailableModelsForCtx(ASSISTANT_CTX, [
+      {
+        modelType: 'llm',
+        provider: 'openAICompatible',
+        modelName: 'qwen',
+        modelKey: 'k-qwen',
+        isMultimodal: false,
+        isReasoning: true,
+        isDefault: true,
+        modelFriendlyName: 'Qwen',
+        ...(defaultReasoningEffort && { defaultReasoningEffort }),
+      },
+    ]);
+  }
+
+  it("shows the model's own default when nothing is picked", () => {
+    setOrgModels('low');
+    const modelDefault = getModelDefaultReasoningEffort(ASSISTANT_CTX, qwen);
+
+    expect(modelDefault).toBe('low');
+    expect(getAppliedReasoningEffortLabel(t, { picked: null, modelDefault })).toBe('Default (Low)');
+  });
+
+  it('keeps showing High when the model stores no default', () => {
+    setOrgModels();
+    const modelDefault = getModelDefaultReasoningEffort(ASSISTANT_CTX, qwen);
+
+    expect(modelDefault).toBeNull();
+    expect(getAppliedReasoningEffortLabel(t, { picked: null, modelDefault })).toBe('High');
+  });
+
+  it("shows a pick or the agent's default over the model's default", () => {
+    expect(getAppliedReasoningEffortLabel(t, { picked: 'max', modelDefault: 'low' })).toBe('Max');
+    expect(
+      getAppliedReasoningEffortLabel(t, { picked: null, agentDefault: 'medium', modelDefault: 'low' }),
+    ).toBe('Medium');
+  });
+
+  it("shows a legacy 'none' default as the low effort it runs with", () => {
+    setOrgModels('none');
+
+    expect(getModelDefaultReasoningEffort(ASSISTANT_CTX, qwen)).toBe('low');
   });
 });
