@@ -110,7 +110,8 @@ def search_answers(base_url: str, headers: dict[str, str]) -> bool:
     """True once search has content. It answers 404 while the org has no indexed document."""
     response = requests.post(
         f"{base_url}/api/v1/search",
-        json={"query": _SEED_QUERY},
+        # A limit, because search answers 500 without one (the default is not applied).
+        json={"query": _SEED_QUERY, "limit": 1},
         headers=headers,
         timeout=60,
     )
