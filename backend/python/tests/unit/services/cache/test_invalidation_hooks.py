@@ -7,9 +7,13 @@ each write path that makes records appear or disappear actually calls one.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -128,9 +132,16 @@ class TestSyncCompletionSite:
 
 
 class TestCascadeDeleteSite:
+    @pytest.fixture(autouse=True)
+    def _trash_off(self) -> Iterator[None]:
+        # The cascade reads the soft-delete flag; these cases cover the hard delete.
+        with patch(f"{_PROCESSOR_MODULE}.is_soft_delete_enabled", new=AsyncMock(return_value=False)):
+            yield
+
     def _processor(self, result):
         processor = DataSourceEntitiesProcessor.__new__(DataSourceEntitiesProcessor)
         processor.logger = MagicMock()
+        processor.config_service = MagicMock()
         processor._publish_delete_events = AsyncMock()
 
         tx_store = MagicMock()
