@@ -916,7 +916,7 @@ class TestSlackWorkspaceApp:
 # 15. _compute_sync_window_oldest
 # ===========================================================================
 
-class TestComputeSyncWindowOldest:
+class TestComputeSyncWindowOldestOperators:
     def test_no_filter_defaults_30_days(self):
         from app.connectors.sources.slack.team.connector import SlackConnector
         import time
@@ -1119,7 +1119,7 @@ class TestComputeSyncWindowOldestExtended:
 # 18. RateLimiter — logger + timed wait branch
 # ===========================================================================
 
-class TestRateLimiterWaitBranch:
+class TestRateLimiterWaitBranchLogging:
     @pytest.mark.asyncio
     async def test_acquire_when_full_logs_and_sleeps(self):
         """Cover the ``wait > 0`` branch: debug log + ``asyncio.sleep``."""
@@ -2085,7 +2085,7 @@ class TestSyncChannelMessagesPipeline:
         )
 
 
-class TestSyncUsersAndCaches:
+class TestSyncUsersAndCachesBasic:
     @pytest.mark.asyncio
     async def test_sync_users_single_page(self):
         from app.connectors.sources.slack.team.connector import SlackConnector
