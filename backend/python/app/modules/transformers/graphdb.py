@@ -394,7 +394,7 @@ class GraphDBTransformer(Transformer):
 
                 # --- Reconcile department edges ---
                 new_dept_tos: Dict[str, str] = {}
-                for department in metadata.departments:
+                for department in metadata.departments or ():
                     try:
                         results = await tx_store.get_nodes_by_filters(
                             CollectionNames.DEPARTMENTS.value,

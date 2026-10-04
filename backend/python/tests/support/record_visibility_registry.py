@@ -90,6 +90,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_existing_record_keys": (Rule.ALL, "upsert pre-check by key"),
     "page_records_for_vector_membership_backfill": (Rule.ALL, "backfill walks every stored record"),
     "get_virtual_record_ids_for_record_ids": (Rule.ALL, _BY_KEY),
+    "get_file_paths_for_records": (Rule.ALL, _BY_KEY + "; the code graph maps block owners to their paths"),
     "get_child_record_ids_by_relation_type": (Rule.ALL, _STRUCTURE),
     "get_parent_record_ids_by_relation_type": (Rule.ALL, _STRUCTURE),
     "get_record_relations_batch": (Rule.ALL, _STRUCTURE),
@@ -125,4 +126,6 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "remove_user_access_to_record": (Rule.WRITE, "looks the record up with ALL"),
     "delete_records_recursive": (Rule.WRITE, ""),
     "delete_single_record": (Rule.WRITE, ""),
+    "delete_blocks_for_records": (Rule.WRITE, ""),
+    "batch_upsert_record_relations": (Rule.WRITE, ""),
 }
