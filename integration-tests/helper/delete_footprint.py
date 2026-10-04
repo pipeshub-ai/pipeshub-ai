@@ -60,6 +60,12 @@ SETTLED_STATUSES = frozenset({
     "COMPLETED", "FAILED", "FILE_TYPE_NOT_SUPPORTED", "EMPTY",
     "AUTO_INDEX_OFF", "ENABLE_MULTIMODAL_MODELS", "CONNECTOR_DISABLED",
 })
+# Enrichment runs after indexingStatus is already COMPLETED and still writes the
+# record's summary vector and its taxonomy edges, so a COMPLETED record is only
+# final once its extractionStatus is one of these. A same-collection duplicate
+# copies its twin's extractionStatus once and never runs enrichment itself, so
+# a wait on enrichment is only for records that own their content.
+ENRICHMENT_FINISHED = frozenset({"COMPLETED", "FAILED"})
 
 
 async def envelope_location(
@@ -97,14 +103,30 @@ def tracked_from_graph(record: dict[str, Any]) -> Tracked:
     )
 
 
+def _still_in_flight(record: dict[str, Any] | None, *, enriched: bool) -> str | None:
+    """What the record is still waiting on, or None once it is settled."""
+    status = (record or {}).get("indexingStatus")
+    if status not in SETTLED_STATUSES:
+        return f"indexing {status}"
+    extraction = (record or {}).get("extractionStatus")
+    if enriched and status == "COMPLETED" and extraction not in ENRICHMENT_FINISHED:
+        return f"indexed, enrichment {extraction}"
+    return None
+
+
 async def wait_for_connector_records(
     graph: "GraphProviderProtocol",
     connector_id: str,
     names: Iterable[str],
     *,
     timeout: int = 480,
+    enriched: bool = False,
 ) -> dict[str, Tracked]:
-    """Block until each named record is in the graph and done indexing."""
+    """Block until each named record is in the graph and done indexing.
+
+    ``enriched`` also waits for enrichment of each indexed record, for callers
+    that compare its edges or vector count.
+    """
     wanted = set(names)
     deadline = asyncio.get_event_loop().time() + timeout
     found: dict[str, dict[str, Any]] = {}
@@ -114,16 +136,16 @@ async def wait_for_connector_records(
             if record is not None:
                 found[name] = record
         unsettled = {
-            name: (found.get(name) or {}).get("indexingStatus")
+            name: waiting
             for name in wanted
-            if (found.get(name) or {}).get("indexingStatus") not in SETTLED_STATUSES
+            if (waiting := _still_in_flight(found.get(name), enriched=enriched)) is not None
         }
         if not unsettled:
             return {name: tracked_from_graph(found[name]) for name in wanted}
         if asyncio.get_event_loop().time() >= deadline:
             raise AssertionError(
                 f"Records of {connector_id} not settled after {timeout}s "
-                f"(name -> indexing status): {unsettled}"
+                f"(name -> what it is waiting on): {unsettled}"
             )
         await asyncio.sleep(POLL)
 

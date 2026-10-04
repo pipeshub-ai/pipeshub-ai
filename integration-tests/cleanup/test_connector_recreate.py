@@ -26,7 +26,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.cleanup]
 
 
 async def _snapshot(graph_provider, vector_store, connector_id: str, files: list[str]) -> dict[str, Any]:
-    records = await fp.wait_for_connector_records(graph_provider, connector_id, files)
+    # Compared edge for edge and point for point, so enrichment must be done too.
+    records = await fp.wait_for_connector_records(graph_provider, connector_id, files, enriched=True)
     return {
         "connector_id": connector_id,
         "records": records,
