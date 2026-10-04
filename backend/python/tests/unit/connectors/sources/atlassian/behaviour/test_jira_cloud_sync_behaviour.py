@@ -7,7 +7,7 @@ Retry waits are recorded rather than slept (see conftest ``backoff_sleeps``).
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
@@ -26,6 +26,7 @@ from atlassian_cloud_fakes import (
     CloudRecordsDb,
     RecordingNotifications,
     bearer,
+    drain_notifications,
     oauth_config,
     one_site,
     route_every_http_client,
@@ -33,6 +34,7 @@ from atlassian_cloud_fakes import (
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors
+from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.models.entities import FileRecord, RecordGroup, RecordGroupType, TicketRecord
 from app.sources.client.jira.jira import JiraRESTClientViaToken
@@ -529,3 +531,70 @@ class TestAccessControlSafety:
         await connector.run_sync()
 
         assert saved_members(site_db, "grp-dev") == [], "a deleted group keeps no members"
+
+
+AUDIT = f"{JIRA}/auditing/record"
+FREE_PLAN_REFUSAL = {
+    "errorMessages": [
+        "Audit logs aren't available for this site as all of its Jira Cloud products are on Free plans."
+    ],
+    "errors": {},
+}
+LAST_SYNC_MS = 1_717_000_000_000
+
+
+@pytest.fixture
+def fresh_notification_memory() -> Iterator[Callable[[], None]]:
+    """The suppression cache is class-wide; clearing it is what a connector service restart does."""
+    BaseConnector._notification_cache.clear()
+    yield BaseConnector._notification_cache.clear
+    BaseConnector._notification_cache.clear()
+
+
+class TestDeletedIssuesOnAFreePlan:
+    async def test_a_free_plan_refusal_says_a_paid_plan_is_needed_not_a_permission(
+        self, api, db, checkpoints, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(connector)
+
+        (note,) = connector._notification_service.sent
+        assert "Free plan" in note["title"]
+        assert "permission" not in note["title"] + note["message"]
+        assert "paid plan" in note["message"]
+        assert "remove this connector and add it again" in note["message"]
+        assert checkpoints.values_for("issues_audit_deletions") is None, "the deletion window is kept for a later upgrade"
+
+    async def test_the_free_plan_notice_is_sent_once_even_across_syncs_and_restarts(
+        self, api, db, checkpoints, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(connector)
+
+        fresh_notification_memory()
+        restarted, _ = await ready_connector(db, checkpoints)
+        await restarted._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(restarted)
+
+        assert len(api.calls("GET", AUDIT)) == 3, "every sync still asks Jira"
+        assert len(connector._notification_service.sent) + len(restarted._notification_service.sent) == 1
+
+    async def test_a_real_permission_refusal_still_asks_for_the_permission(
+        self, api, db, checkpoints, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(
+            {"errorMessages": ["You do not have permission to view the audit log."], "errors": {}}, status=403,
+        ))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(connector)
+
+        (note,) = connector._notification_service.sent
+        assert note["title"].endswith("is missing the audit log permission")
