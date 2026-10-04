@@ -2584,7 +2584,8 @@
       "status": {
         "ready": "就緒",
         "notConnected": "未連線",
-        "needsAuth": "需要驗證"
+        "needsAuth": "需要驗證",
+        "disabled": "已停用"
       },
       "team": {
         "title": "MCP 伺服器",
@@ -2706,7 +2707,13 @@
         "noState": "未傳回 state 參數。",
         "backendRejected": "伺服器拒絕了此授權要求。"
       },
-      "deleteDisabledTooltip": "此伺服器無法刪除"
+      "deleteDisabledTooltip": "此伺服器無法刪除",
+      "stdioPolicy": {
+        "disabledTitle": "此部署已停用",
+        "disabledDescription": "自訂 STDIO 伺服器會在 PipesHub 伺服器上執行指令，因此在維運人員於部署環境中設定 {{flag}}=true（Docker Compose 的 .env，或 Helm 的 config.mcpAllowCustomStdio）之前會保持關閉。在此之前，代理程式無法使用此伺服器的工具。你可以刪除它，或改為遠端（HTTP）伺服器。",
+        "unavailableHint": "此部署已關閉本機指令（STDIO）伺服器。如需允許，維運人員必須設定 {{flag}}=true。",
+        "enabledWarning": "此指令以服務的權限在 PipesHub 伺服器上執行，包括其網路存取與憑證。請只新增你信任的指令。"
+      }
     },
     "bots": {
       "subtitle": "設定機器人憑證，並可選擇將每個機器人對應至代理程式",

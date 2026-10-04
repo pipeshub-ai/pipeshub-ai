@@ -63,6 +63,7 @@ function TeamMcpServersPageContent() {
         McpServersApi.getMyMcpServers(false),
       ]);
       s.setTemplates(catalogRes.templates);
+      s.setCustomStdioAllowed(catalogRes.customStdioAllowed === true);
       s.setInstances(myServersRes.instances);
     } catch {
       toast.error(t('workspace.mcpServers.toasts.loadError'));
@@ -254,6 +255,7 @@ function TeamMcpServersPageContent() {
         state={store.configPanel}
         templates={store.templates}
         instances={store.instances}
+        customStdioAllowed={store.customStdioAllowed}
         onOpenChange={(open) => {
           if (!open) store.closeConfigPanel();
         }}

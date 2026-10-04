@@ -2584,7 +2584,8 @@
       "status": {
         "ready": "준비됨",
         "notConnected": "연결 안 됨",
-        "needsAuth": "인증 필요"
+        "needsAuth": "인증 필요",
+        "disabled": "비활성화됨"
       },
       "team": {
         "title": "MCP 서버",
@@ -2706,7 +2707,13 @@
         "noState": "state 매개변수가 반환되지 않았습니다.",
         "backendRejected": "서버가 인증 요청을 거부했습니다."
       },
-      "deleteDisabledTooltip": "이 서버는 삭제할 수 없습니다"
+      "deleteDisabledTooltip": "이 서버는 삭제할 수 없습니다",
+      "stdioPolicy": {
+        "disabledTitle": "이 배포에서 비활성화됨",
+        "disabledDescription": "사용자 지정 STDIO 서버는 PipesHub 서버에서 명령을 실행하므로, 운영자가 배포 환경에 {{flag}}=true를 설정하기 전까지는 꺼져 있습니다(Docker Compose .env 또는 Helm의 config.mcpAllowCustomStdio). 그때까지 에이전트는 이 서버의 도구를 사용할 수 없습니다. 서버를 삭제하거나 원격(HTTP) 서버로 전환할 수 있습니다.",
+        "unavailableHint": "이 배포에서는 로컬 명령(STDIO) 서버가 꺼져 있습니다. 허용하려면 운영자가 {{flag}}=true를 설정해야 합니다.",
+        "enabledWarning": "이 명령은 서비스 권한(네트워크 접근 및 자격 증명 포함)으로 PipesHub 서버에서 실행됩니다. 신뢰할 수 있는 명령만 추가하세요."
+      }
     },
     "bots": {
       "subtitle": "봇 자격 증명을 구성하고 필요에 따라 각 봇을 에이전트에 연결합니다",

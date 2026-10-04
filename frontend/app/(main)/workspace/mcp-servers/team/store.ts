@@ -20,6 +20,8 @@ interface ConfigPanelState {
 
 interface McpTeamState {
   templates: McpServerTemplate[];
+  /** From `GET /catalog`; false until loaded so STDIO is never offered by mistake. */
+  customStdioAllowed: boolean;
   /**
    * Org instances merged with the *current admin's own* auth status + tools —
    * fetched via `getMyMcpServers` so the admin can authenticate/discover tools
@@ -41,6 +43,7 @@ interface McpTeamState {
 
 interface McpTeamActions {
   setTemplates: (templates: McpServerTemplate[]) => void;
+  setCustomStdioAllowed: (allowed: boolean) => void;
   setInstances: (instances: McpMyServerEntry[]) => void;
   setLoading: (loading: boolean) => void;
   setSearchQuery: (query: string) => void;
@@ -69,6 +72,7 @@ const initialConfigPanel: ConfigPanelState = {
 
 const initialState: McpTeamState = {
   templates: [],
+  customStdioAllowed: false,
   instances: [],
   isLoading: false,
   searchQuery: '',
@@ -88,6 +92,10 @@ export const useMcpTeamStore = create<McpTeamState & McpTeamActions>()(
       setTemplates: (templates) =>
         set((s) => {
           s.templates = templates;
+        }),
+      setCustomStdioAllowed: (allowed) =>
+        set((s) => {
+          s.customStdioAllowed = allowed;
         }),
       setInstances: (instances) =>
         set((s) => {

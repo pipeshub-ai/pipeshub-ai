@@ -8,6 +8,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { EntityRowActionMenu } from '../../../components';
 import type { McpMyServerEntry } from '../../types';
 import { MCP_TRANSPORT_LABELS } from '../../types';
+import { isMcpInstanceDisabled, McpDisabledBadge } from '../../components';
 
 interface McpPersonalServerCardProps {
   instance: McpMyServerEntry;
@@ -133,6 +134,9 @@ export function McpPersonalServerCard({
 
 function StatusBadge({ instance }: { instance: McpMyServerEntry }) {
   const { t } = useTranslation();
+  if (isMcpInstanceDisabled(instance)) {
+    return <McpDisabledBadge instance={instance} />;
+  }
   if (instance.authMode === 'none' || instance.useAdminAuth || instance.isAuthenticated) {
     return (
       <Badge color="green" size="1">
