@@ -13,6 +13,7 @@ own graph transaction per record, as the indexing service does.
 from __future__ import annotations
 
 import asyncio
+import enum
 import logging
 import os
 import uuid
@@ -206,31 +207,45 @@ class TestConcurrentDepartmentSeed:
     """KG-49: the indexing and connector services seed departments at start,
     often together; both must leave one global node per department."""
 
-    async def test_two_seeds_at_once_leave_one_node_per_name(self, backend) -> None:
+    async def test_two_seeds_at_once_leave_one_node_per_name(self, backend, monkeypatch) -> None:
         provider, _ = backend
         departments = CollectionNames.DEPARTMENTS.value
+        # Names of its own, so the real departments other suites link to in
+        # this shared database are neither deleted nor needed absent.
+        names = enum.Enum("DepartmentNames", {f"D{i}": f"IT seed {uuid.uuid4().hex[:8]} {i}" for i in range(3)})
+        wanted = [d.value for d in names]
         if isinstance(provider, Neo4jProvider):
-            label = collection_to_label(departments)
-            await provider.client.execute_query(f"MATCH (d:{label}) WHERE d.orgId IS NULL DETACH DELETE d")
+            monkeypatch.setattr("app.services.graph_db.neo4j.neo4j_provider.DepartmentNames", names)
             seed = provider._initialize_departments
         else:
-            await provider.http_client.execute_aql(
-                f"FOR d IN {departments} FILTER d.orgId == null REMOVE d IN {departments}", {},
-            )
+            monkeypatch.setattr("app.services.graph_db.arango.arango_http_provider.DepartmentNames", names)
             seed = provider._ensure_departments_seed
 
-        await asyncio.gather(seed(), seed(), seed())
+        try:
+            await asyncio.gather(seed(), seed(), seed())
 
-        if isinstance(provider, Neo4jProvider):
-            rows = await provider.client.execute_query(
-                f"MATCH (d:{label}) WHERE d.orgId IS NULL RETURN d.departmentName AS name, count(*) AS n",
-            )
-            counts = {r["name"]: r["n"] for r in rows}
-        else:
-            rows = await provider.http_client.execute_aql(
-                f"FOR d IN {departments} FILTER d.orgId == null "
-                "COLLECT name = d.departmentName WITH COUNT INTO n RETURN {name, n}",
-                {},
-            )
-            counts = {r["name"]: r["n"] for r in rows}
-        assert counts and set(counts.values()) == {1}, counts
+            if isinstance(provider, Neo4jProvider):
+                label = collection_to_label(departments)
+                rows = await provider.client.execute_query(
+                    f"MATCH (d:{label}) WHERE d.orgId IS NULL AND d.departmentName IN $names "
+                    "RETURN d.departmentName AS name, count(*) AS n",
+                    parameters={"names": wanted},
+                )
+            else:
+                rows = await provider.http_client.execute_aql(
+                    f"FOR d IN {departments} FILTER d.orgId == null AND d.departmentName IN @names "
+                    "COLLECT name = d.departmentName WITH COUNT INTO n RETURN {name, n}",
+                    {"names": wanted},
+                )
+            assert {r["name"]: r["n"] for r in rows} == dict.fromkeys(wanted, 1)
+        finally:
+            if isinstance(provider, Neo4jProvider):
+                await provider.client.execute_query(
+                    f"MATCH (d:{collection_to_label(departments)}) WHERE d.departmentName IN $names DETACH DELETE d",
+                    parameters={"names": wanted},
+                )
+            else:
+                await provider.http_client.execute_aql(
+                    f"FOR d IN {departments} FILTER d.departmentName IN @names REMOVE d IN {departments}",
+                    {"names": wanted},
+                )

@@ -1058,7 +1058,9 @@ class IGraphDBProvider(ABC):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a node with target node names.
@@ -1069,6 +1071,7 @@ class IGraphDBProvider(ABC):
             node_id (str): Source node ID (e.g., "groups/123")
             edge_collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed read instead of returning []
 
         Returns:
             List[Dict]: List of edge documents enriched with target name
@@ -1160,7 +1163,9 @@ class IGraphDBProvider(ABC):
         collection: str,
         filters: dict[str, Any],
         return_fields: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get nodes from a collection matching multiple field filters.
@@ -1172,6 +1177,7 @@ class IGraphDBProvider(ABC):
             filters (Dict[str, Any]): Dictionary of field_name: value pairs to filter on
             return_fields (Optional[List[str]]): Optional list of fields to return (None = all fields)
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed read instead of returning []
 
         Returns:
             List[Dict]: List of matching node documents

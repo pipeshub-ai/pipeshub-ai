@@ -2023,7 +2023,9 @@ class Neo4jProvider(IGraphDBProvider):
         collection: str,
         filters: dict[str, Any],
         return_fields: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """Get nodes by field filters"""
         try:
@@ -2085,6 +2087,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get nodes by filters failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_documents_by_status(
@@ -14504,7 +14508,9 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a node with target node names.
@@ -14568,6 +14574,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get edges from node failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
 
@@ -17465,14 +17473,19 @@ class Neo4jProvider(IGraphDBProvider):
         # MERGE locks both end nodes before creating, so concurrent callers
         # converge on one relationship; those locks are also what deadlocks
         # them against each other, and re-running the MERGE is harmless.
-        for attempt in range(_TRANSIENT_WRITE_ATTEMPTS):
+        await self._run_idempotent_write(query, parameters)
+
+    async def _run_idempotent_write(self, query: str, parameters: dict[str, Any]) -> list[dict[str, Any]]:
+        """Run an auto-commit query that is safe to repeat, re-running it when
+        it collides with a concurrent writer."""
+        for attempt in range(_TRANSIENT_WRITE_ATTEMPTS - 1):
             try:
-                await self.client.execute_query(query, parameters=parameters)
-                return
+                return await self.client.execute_query(query, parameters=parameters)
             except TransientError as exc:
-                if attempt == _TRANSIENT_WRITE_ATTEMPTS - 1 or not self.is_write_conflict(exc):
+                if not self.is_write_conflict(exc):
                     raise
                 await asyncio.sleep(random.uniform(0.02, 0.1) * (attempt + 1))
+        return await self.client.execute_query(query, parameters=parameters)
 
     async def heal_taxonomy_alias_nodes(self) -> int:
         """Give every stored alias its TaxonomyAlias node, once per database.
@@ -17494,7 +17507,10 @@ class Neo4jProvider(IGraphDBProvider):
         healed = 0
         for collection in sorted(TAXONOMY_COLLECTIONS):
             label = collection_to_label(collection)
-            result = await self.client.execute_query(
+            # It takes the alias before the node and add_taxonomy_aliases the
+            # reverse, so a live writer can deadlock it; batches that committed
+            # are skipped on the re-run.
+            result = await self._run_idempotent_write(
                 f"""
                 MATCH (n:{label})
                 WHERE n.orgId IS NOT NULL AND size(coalesce(n.normalizedAliases, [])) > 0
@@ -17517,7 +17533,7 @@ class Neo4jProvider(IGraphDBProvider):
                 }} IN TRANSACTIONS OF {_ALIAS_HEAL_BATCH} ROWS
                 RETURN count(created) AS healed
                 """,
-                parameters={"collection": collection},
+                {"collection": collection},
             )
             healed += int((result or [{}])[0].get("healed") or 0)
         await self.client.execute_query(

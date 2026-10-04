@@ -677,9 +677,9 @@ class TestGraphTransactionStore:
 
     @pytest.mark.asyncio
     async def test_get_edges_from_node_with_target_name(self, tx_store, mock_graph_provider) -> None:
-        await tx_store.get_edges_from_node_with_target_name("node1", "edge_coll")
+        await tx_store.get_edges_from_node_with_target_name("node1", "edge_coll", raise_on_error=True)
         mock_graph_provider.get_edges_from_node_with_target_name.assert_awaited_once_with(
-            "node1", "edge_coll", transaction="txn-123"
+            "node1", "edge_coll", transaction="txn-123", raise_on_error=True
         )
 
     @pytest.mark.asyncio
@@ -746,7 +746,8 @@ class TestGraphTransactionStore:
     async def test_get_nodes_by_filters(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_nodes_by_filters("records", {"status": "active"}, return_fields=["_key"])
         mock_graph_provider.get_nodes_by_filters.assert_awaited_once_with(
-            collection="records", filters={"status": "active"}, return_fields=["_key"], transaction="txn-123"
+            collection="records", filters={"status": "active"}, return_fields=["_key"], transaction="txn-123",
+            raise_on_error=False,
         )
 
 
@@ -907,6 +908,20 @@ class TestGraphDataStore:
 
         mock_graph_provider.rollback_transaction.assert_awaited_once_with("txn-123")
         mock_graph_provider.commit_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_write_conflict_rollback_is_not_logged_as_an_error(self, mock_graph_provider) -> None:
+        mock_graph_provider.is_write_conflict = MagicMock(return_value=True)
+        logger = MagicMock()
+        store = GraphDataStore(logger, mock_graph_provider)
+
+        with pytest.raises(RuntimeError):
+            async with store.transaction():
+                raise RuntimeError("DeadlockDetected")
+
+        logger.error.assert_not_called()
+        logger.warning.assert_called()
+        mock_graph_provider.rollback_transaction.assert_awaited_once_with("txn-123")
 
     @pytest.mark.asyncio
     async def test_execute_in_transaction(self, mock_graph_provider) -> None:

@@ -481,6 +481,27 @@ class TestNeo4jAliasHeal:
         queries = [c.args[0] for c in p.client.execute_query.await_args_list]
         assert not any("MERGE (m:SchemaMigration" in q for q in queries)
 
+    async def test_a_deadlock_with_a_live_writer_is_retried_and_the_heal_finishes(self, monkeypatch) -> None:
+        # The heal locks the alias before the node, add_taxonomy_aliases the
+        # node before its aliases, so the two can deadlock at startup.
+        monkeypatch.setattr("app.services.graph_db.neo4j.neo4j_provider.asyncio.sleep", AsyncMock())
+        deadlocks = [_neo4j_error("Neo.TransientError.Transaction.DeadlockDetected")]
+
+        def run(q: str, **kw: object) -> list[dict]:
+            if "RETURN count(m) > 0 AS done" in q:
+                return [{"done": False}]
+            if "IN TRANSACTIONS" in q:
+                if deadlocks:
+                    raise deadlocks.pop()
+                return [{"healed": 1}]
+            return []
+
+        p = _neo4j()
+        p.client.execute_query = AsyncMock(side_effect=run)
+        assert await p.heal_taxonomy_alias_nodes() == len(TAXONOMY_COLLECTIONS)
+        queries = [c.args[0] for c in p.client.execute_query.await_args_list]
+        assert "MERGE (m:SchemaMigration {id: $marker})" in queries[-1]
+
 
 async def test_arango_seed_ignores_an_orgs_own_department_of_the_same_name() -> None:
     p = _arango([])

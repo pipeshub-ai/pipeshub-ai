@@ -189,14 +189,14 @@ class TestWithResolution:
         await _transformer(store).save_metadata_to_db(
             "rec-1", _metadata(topics=["Unseen topic"]), "vr-1", resolution=None,
         )
-        store.get_nodes_by_filters.assert_any_await(TOPICS, {"name": "Unseen topic"})
+        store.get_nodes_by_filters.assert_any_await(TOPICS, {"name": "Unseen topic"}, raise_on_error=True)
         store.create_taxonomy_node_if_absent.assert_not_awaited()
 
     async def test_existing_edge_keeps_its_original_extracted_name(self) -> None:
         store = _tx_store()
         existing = [{"_to": f"{TOPICS}/k-bug", "name": "Bug bash testing", "extractedName": "original"}]
         store.get_edges_from_node_with_target_name = AsyncMock(
-            side_effect=lambda record_from, edge_collection: (
+            side_effect=lambda record_from, edge_collection, **_kwargs: (
                 existing if edge_collection == CollectionNames.BELONGS_TO_TOPIC.value else []
             )
         )
@@ -213,7 +213,7 @@ class TestWithoutResolution:
     async def test_legacy_path_unchanged_and_edges_have_no_extracted_name(self) -> None:
         store = _tx_store()
         await _transformer(store).save_metadata_to_db("rec-1", _metadata(topics=["Bug bash testing"]), "vr-1")
-        store.get_nodes_by_filters.assert_awaited_with(TOPICS, {"name": "Bug bash testing"})
+        store.get_nodes_by_filters.assert_awaited_with(TOPICS, {"name": "Bug bash testing"}, raise_on_error=True)
         store.create_taxonomy_node_if_absent.assert_not_awaited()
         (edge,) = _created_edges(store, CollectionNames.BELONGS_TO_TOPIC.value)
         assert "extractedName" not in edge

@@ -232,7 +232,7 @@ class TestSaveMetadataToDb:
         # Edge already exists in reconciliation lookup
         dept_to = f"{CollectionNames.DEPARTMENTS.value}/dept-key-1"
 
-        async def edges_side_effect(record_from, edge_collection):
+        async def edges_side_effect(record_from, edge_collection, **_kwargs):
             if edge_collection == CollectionNames.BELONGS_TO_DEPARTMENT.value:
                 return [{"_to": dept_to, "name": "Engineering"}]
             return []
@@ -278,7 +278,7 @@ class TestSaveMetadataToDb:
         # Second call: categories (return empty - category doesn't exist)
         call_count = 0
 
-        async def side_effect(collection, filters):
+        async def side_effect(collection, filters, **_kwargs):
             nonlocal call_count
             call_count += 1
             return []
@@ -300,7 +300,7 @@ class TestSaveMetadataToDb:
         # Languages exist
         lang_call_idx = [0]
 
-        async def nodes_side_effect(collection, filters):
+        async def nodes_side_effect(collection, filters, **_kwargs):
             if collection == CollectionNames.LANGUAGES.value:
                 return [{"_key": "lang-en", "name": "English"}]
             return []
@@ -325,7 +325,7 @@ class TestSaveMetadataToDb:
     async def test_handles_topics(self):
         tx_store = _make_tx_store()
 
-        async def nodes_side_effect(collection, filters):
+        async def nodes_side_effect(collection, filters, **_kwargs):
             if collection == CollectionNames.TOPICS.value:
                 return [{"_key": "topic-1", "name": "AI"}]
             return []
@@ -467,7 +467,7 @@ class TestDepartmentLookupIsOrgAware:
         store = _make_tx_store()
         store.get_record_by_key = AsyncMock(return_value={"_key": "rec-1", "orgId": "org-a"})
         store.get_nodes_by_filters = AsyncMock(
-            side_effect=lambda collection, filters: candidates if collection == "departments" else []
+            side_effect=lambda collection, filters, **_kwargs: candidates if collection == "departments" else []
         )
         monkeypatch.setattr(
             "app.connectors.core.base.data_store.graph_data_store.GraphTransactionStore",

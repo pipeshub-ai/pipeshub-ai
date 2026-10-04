@@ -906,9 +906,13 @@ class GraphTransactionStore(TransactionStore):
         """Get all edges originating from a specific node"""
         return await self.graph_provider.get_edges_from_node(from_node_id, edge_collection, transaction=self.txn)
 
-    async def get_edges_from_node_with_target_name(self, from_node_id: str, edge_collection: str) -> list[dict]:
+    async def get_edges_from_node_with_target_name(
+        self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False
+    ) -> list[dict]:
         """Get all edges originating from a specific node with a specific target name"""
-        return await self.graph_provider.get_edges_from_node_with_target_name(from_node_id, edge_collection, transaction=self.txn)
+        return await self.graph_provider.get_edges_from_node_with_target_name(
+            from_node_id, edge_collection, transaction=self.txn, raise_on_error=raise_on_error
+        )
     
     async def get_related_node_field(
         self, node_id: str, edge_collection: str, target_collection: str,
@@ -945,14 +949,17 @@ class GraphTransactionStore(TransactionStore):
         self,
         collection: str,
         filters: dict,
-        return_fields: Optional[list[str]] = None
+        return_fields: Optional[list[str]] = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """Get nodes from a collection matching multiple field filters."""
         return await self.graph_provider.get_nodes_by_filters(
             collection=collection,
             filters=filters,
             return_fields=return_fields,
-            transaction=self.txn
+            transaction=self.txn,
+            raise_on_error=raise_on_error,
         )
 
     async def find_taxonomy_nodes(
@@ -1039,7 +1046,9 @@ class GraphDataStore(DataStoreProvider):
             # each such cancel leaked one of the pool's 100 connections until
             # every query waited out the 60s acquisition timeout -- which
             # produced more record timeouts, more cancels, more leaks.
-            if isinstance(e, Exception):
+            if isinstance(e, Exception) and self.graph_provider.is_write_conflict(e):
+                self.logger.warning("Transaction hit a write conflict, rolling back: %s", str(e)[:200])
+            elif isinstance(e, Exception):
                 self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")
             else:
                 self.logger.warning("Transaction interrupted (%s); rolling back", type(e).__name__)

@@ -1048,7 +1048,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         return isinstance(error, Exception) and _is_write_conflict(error)
 
     def is_write_conflict(self, error: BaseException) -> bool:
-        return isinstance(error, Exception) and _is_write_conflict(error)
+        return self.is_transient_error(error)
 
     async def rollback_transaction(self, transaction: str) -> None:
         """
@@ -3161,7 +3161,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         collection: str,
         filters: dict[str, Any],
         return_fields: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get nodes by field filters - FULLY ASYNC.
@@ -3199,6 +3201,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return results or []
         except Exception as e:
             self.logger.error(f"❌ Get nodes by filters failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_nodes_by_field_in(
@@ -3372,7 +3376,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a node with target node names.
@@ -3409,6 +3415,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return results or []
         except Exception as e:
             self.logger.error(f"❌ Get edges from node with target name failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_related_nodes(

@@ -132,7 +132,7 @@ class GraphDBTransformer(Transformer):
         Returns the node key.
         """
         results = await tx_store.get_nodes_by_filters(
-            collection, {filter_field: filter_value}
+            collection, {filter_field: filter_value}, raise_on_error=True
         )
         if results:
             return self._node_key(results[0])
@@ -323,8 +323,10 @@ class GraphDBTransformer(Transformer):
                 undone per record later
         """
         # 1. Fetch existing edges for this record
+        # A failed read must not look like "no edges": every new link would be
+        # re-created and none of the stale ones removed, outside any retry.
         existing_edges = await tx_store.get_edges_from_node_with_target_name(
-            record_from, edge_collection
+            record_from, edge_collection, raise_on_error=True
         )
         self.logger.debug(f"Existing edges with adjacent node names : {existing_edges}")
         existing_by_to: Dict[str, Dict] = {e["_to"]: e for e in existing_edges}
@@ -459,29 +461,27 @@ class GraphDBTransformer(Transformer):
             # --- Reconcile department edges ---
             new_dept_tos: Dict[str, str] = {}
             for department in metadata.departments:
-                try:
-                    results = await tx_store.get_nodes_by_filters(
-                        CollectionNames.DEPARTMENTS.value,
-                        {"departmentName": department},
-                    )
-                    chosen = self._department_for_org(results, org_id_placeholder)
-                    if chosen:
-                        dept_key = self._node_key(chosen)
-                        dept_to = f"{CollectionNames.DEPARTMENTS.value}/{dept_key}"
-                        new_dept_tos[dept_to] = department
-                        touched_entities.append(EntityRecord(
-                            entity_id=dept_key,
-                            entity_type=EntityType.DEPARTMENT,
-                            name=department,
-                            org_id=org_id_placeholder,
-                            type_category=EntityTypeCategory.GENERIC_SCHEMA_FREE,
-                            connector_ids=connector_ids_placeholder,
-                            record_group_ids=record_group_ids_placeholder,
-                        ))
-                    else:
-                        self.logger.warning(f"⚠️ No department found for: {department}")
-                except Exception as e:
-                    self.logger.error(f"❌ Error resolving department {department}: {str(e)}")
+                results = await tx_store.get_nodes_by_filters(
+                    CollectionNames.DEPARTMENTS.value,
+                    {"departmentName": department},
+                    raise_on_error=True,
+                )
+                chosen = self._department_for_org(results, org_id_placeholder)
+                if chosen:
+                    dept_key = self._node_key(chosen)
+                    dept_to = f"{CollectionNames.DEPARTMENTS.value}/{dept_key}"
+                    new_dept_tos[dept_to] = department
+                    touched_entities.append(EntityRecord(
+                        entity_id=dept_key,
+                        entity_type=EntityType.DEPARTMENT,
+                        name=department,
+                        org_id=org_id_placeholder,
+                        type_category=EntityTypeCategory.GENERIC_SCHEMA_FREE,
+                        connector_ids=connector_ids_placeholder,
+                        record_group_ids=record_group_ids_placeholder,
+                    ))
+                else:
+                    self.logger.warning(f"⚠️ No department found for: {department}")
 
             await self._reconcile_edges(
                 tx_store, record_id, record_from,
@@ -660,7 +660,9 @@ class GraphDBTransformer(Transformer):
                 return touched_entities
 
         except Exception as e:
-            self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
+            # execute_idempotent_in_transaction retries and logs write conflicts.
+            if not self.graph_data_store.graph_provider.is_write_conflict(e):
+                self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
             raise
 
         return touched_entities

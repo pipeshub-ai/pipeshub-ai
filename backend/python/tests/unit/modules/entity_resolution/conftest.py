@@ -59,6 +59,10 @@ class FakeGraph:
         self.fail_find = False
         self.fail_node_lookup = False
         self.node_lookup_kwargs: list[dict[str, Any]] = []
+        # Raised by the next filter / edge reads; like both providers, a
+        # failed read is [] unless the caller passes raise_on_error.
+        self.fail_filter_reads: list[Exception] = []
+        self.fail_edge_reads: list[Exception] = []
 
     # ---- setup helpers ----
     def add_record(self, key: str, org_id: str, connector_id: str = "conn-1",
@@ -174,8 +178,14 @@ class FakeGraph:
     async def get_record_by_key(self, key, *, raise_on_error: bool = False) -> dict[str, Any] | None:
         return self.records.get(key)
 
-    async def get_nodes_by_filters(self, collection, filters, return_fields=None) -> list[dict[str, Any]]:
+    async def get_nodes_by_filters(self, collection, filters, return_fields=None, *,
+                                   raise_on_error=False) -> list[dict[str, Any]]:
         self.calls.append(("get_nodes_by_filters", (collection, dict(filters))))
+        if self.fail_filter_reads:
+            error = self.fail_filter_reads.pop(0)
+            if raise_on_error:
+                raise error
+            return []
         if collection == DEPARTMENTS:
             name = filters.get("departmentName")
             return [{"_key": self.departments[name]}] if name in self.departments else []
@@ -203,7 +213,13 @@ class FakeGraph:
             (edge_collection, f"{from_collection}/{from_key}", f"{to_collection}/{to_key}")
         )
 
-    async def get_edges_from_node_with_target_name(self, record_from, edge_collection) -> list[dict[str, Any]]:
+    async def get_edges_from_node_with_target_name(self, record_from, edge_collection, *,
+                                                   raise_on_error=False) -> list[dict[str, Any]]:
+        if self.fail_edge_reads:
+            error = self.fail_edge_reads.pop(0)
+            if raise_on_error:
+                raise error
+            return []
         out = []
         for (coll, frm, to), edge in self.edges.items():
             if coll == edge_collection and frm == record_from:
