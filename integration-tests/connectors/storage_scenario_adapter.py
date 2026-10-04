@@ -98,16 +98,6 @@ class StorageScenarioAdapter(ScenarioAdapter):
         return folder_filter(kept_folder)
 
 
-# S3 and MinIO both run S3CompatibleBaseConnector (s3/base_connector.py).
-OBJECT_DELETE_NEVER_SYNCED = (
-    "a deleted object's record is never removed. Each sync lists only the objects that "
-    "exist (S3CompatibleBaseConnector._sync_bucket_prefix, s3/base_connector.py:676) and "
-    "nothing in s3/base_connector.py calls on_record_deleted, so the record, its vectors "
-    "and its search hit outlive the object; a full sync does not prune it either "
-    "(event_service.py:403 drops sync edges and relists only what exists)"
-)
-
-
 class S3CompatibleAdapter(StorageScenarioAdapter):
     """Objects written, copied and deleted through boto3."""
 

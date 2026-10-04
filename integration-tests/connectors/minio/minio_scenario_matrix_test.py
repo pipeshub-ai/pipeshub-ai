@@ -18,7 +18,6 @@ from connectors.minio.minio_storage_helper import MinioStorageHelper
 from connectors.scenario_matrix import Action, ConnectorScenarioMatrix
 from connectors.storage_scenario_adapter import (
     APP_LEVEL_PERMISSIONS,
-    OBJECT_DELETE_NEVER_SYNCED,
     S3CompatibleAdapter,
     storage_matrix,
 )
@@ -53,6 +52,3 @@ async def scenario_adapter(
 class TestMinioScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "MinIO"
     UNSUPPORTED = {Action.CHANGE_PERMISSION.value: APP_LEVEL_PERMISSIONS}
-    KNOWN_BUGS = {
-        "incr_delete": OBJECT_DELETE_NEVER_SYNCED,
-    }

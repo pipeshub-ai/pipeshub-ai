@@ -19,7 +19,6 @@ from connectors.s3.s3_storage_helper import S3StorageHelper
 from connectors.scenario_matrix import Action, ConnectorScenarioMatrix
 from connectors.storage_scenario_adapter import (
     APP_LEVEL_PERMISSIONS,
-    OBJECT_DELETE_NEVER_SYNCED,
     S3CompatibleAdapter,
     storage_matrix,
 )
@@ -50,6 +49,3 @@ async def scenario_adapter(
 class TestS3ScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "S3"
     UNSUPPORTED = {Action.CHANGE_PERMISSION.value: APP_LEVEL_PERMISSIONS}
-    KNOWN_BUGS = {
-        "incr_delete": OBJECT_DELETE_NEVER_SYNCED,
-    }

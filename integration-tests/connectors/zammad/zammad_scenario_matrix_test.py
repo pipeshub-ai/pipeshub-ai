@@ -170,14 +170,6 @@ async def scenario_adapter(
                 logger.warning("Zammad kept %s %s at teardown: %s", cleanup.__name__, target, exc)
 
 
-_DELETE_BUG = (
-    "Zammad deletions never reach the index: every sync asks Zammad's search only for "
-    "tickets updated since the group's checkpoint (_fetch_tickets_for_group_batch, "
-    "sources/zammad/connector.py:926-1070) and nothing in the connector calls "
-    "on_record_deleted, so a deleted ticket's record, vectors and search hit stay"
-)
-
-
 @pytest.mark.integration
 @pytest.mark.zammad
 class TestZammadScenarioMatrix(ConnectorScenarioMatrix):
@@ -188,4 +180,4 @@ class TestZammadScenarioMatrix(ConnectorScenarioMatrix):
             "(articles are append-only), so old text can never leave a ticket"
         ),
     }
-    KNOWN_BUGS = {"incr_delete": _DELETE_BUG, "filter_change": FILTER_KEEPS_EXCLUDED_ITEM}
+    KNOWN_BUGS = {"filter_change": FILTER_KEEPS_EXCLUDED_ITEM}
