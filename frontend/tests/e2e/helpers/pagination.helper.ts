@@ -98,7 +98,14 @@ export async function changeLimit(page: Page, limit: 10 | 25 | 50 | 100): Promis
       { timeout: 10_000, message: `the list should show the first ${limit} items` },
     )
     .toBe('ok');
-  expect(await page.locator('[role="row"]').count()).toBeLessThanOrEqual(limit);
+  // The "Showing" line updates before the next page's rows replace the old
+  // ones, so a single count taken here can still see the previous, larger page.
+  await expect
+    .poll(() => page.locator('[role="row"]').count(), {
+      timeout: 10_000,
+      message: `the list should render at most ${limit} rows`,
+    })
+    .toBeLessThanOrEqual(limit);
 }
 
 /** Assert the "Showing X-Y of Z" text matches expected range */
