@@ -80,6 +80,8 @@ class OAuthConfig:
     token_access_type: Optional[str] = None
     scope_parameter_name: str = "scope"  # Parameter name for scopes in authorization URL (e.g., "scope", "user_scope", "resource")
     token_response_path: Optional[str] = None  # Optional: path to extract token from nested response (e.g., "authed_user" for Slack)
+    # RFC 8414 name for how the token endpoint takes client credentials; set by get_oauth_config.
+    token_endpoint_auth_method: str = "client_secret_post"
 
     def generate_state(self) -> str:
         """Generate random state for CSRF protection"""
@@ -244,19 +246,24 @@ class OAuthProvider:
 
     async def _make_token_request(self, data: dict) -> dict:
         """Helper to make a token request, handling different auth methods."""
-        use_basic_auth = self.config.additional_params.get("use_basic_auth", False)
+        use_basic_auth = (
+            self.config.token_endpoint_auth_method == "client_secret_basic"
+            or self.config.additional_params.get("use_basic_auth", False)
+        )
         use_json_body = self.config.additional_params.get("use_json_body", False)
 
-        # Notion and some other providers use Basic Auth header instead of body params
         if not use_basic_auth:
             data["client_id"] = self.config.client_id
             data["client_secret"] = self.config.client_secret
+        elif not self.config.client_secret:
+            # A public PKCE client has no secret to put in a Basic header; Airtable
+            # forbids the header then and requires client_id in the body instead.
+            data["client_id"] = self.config.client_id
 
         session = await self.session
         headers = {}
 
-        # Prepare headers for providers requiring Basic Auth (e.g., Notion)
-        if use_basic_auth:
+        if use_basic_auth and self.config.client_secret:
             credentials = f"{self.config.client_id}:{self.config.client_secret}"
             encoded_credentials = base64.b64encode(credentials.encode()).decode()
             headers["Authorization"] = f"Basic {encoded_credentials}"
