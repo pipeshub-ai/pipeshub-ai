@@ -172,7 +172,12 @@ export class OAuthProviderContainer {
         .toConstantValue(serviceTokenService)
       container
         .bind<ServiceTokenController>('ServiceTokenController')
-        .toConstantValue(new ServiceTokenController(serviceTokenService))
+        .toConstantValue(
+          new ServiceTokenController(
+            serviceTokenService,
+            scopeValidatorService,
+          ),
+        )
 
       const oauthDcrService = new OAuthDcrService(
         logger,

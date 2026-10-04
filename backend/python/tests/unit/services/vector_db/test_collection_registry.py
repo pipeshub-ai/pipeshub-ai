@@ -80,7 +80,7 @@ def _make_registry(
     return CollectionRegistry(
         vector_db_service=vector_db_service or _make_vdb(),
         strategy=strategy or SingleCollectionStrategy(),
-        collection_config_factory=lambda size, sparse_idf=False: CollectionConfig(
+        collection_config_factory=lambda size: CollectionConfig(
             embedding_size=size
         ),
         manifest_store=CollectionManifestStore(
@@ -519,7 +519,7 @@ class TestAdvisoryCeiling:
             CollectionRegistry(
                 vector_db_service=vdb,
                 strategy=PerConnectorTypeStrategy(),
-                collection_config_factory=lambda size, sparse_idf=False: CollectionConfig(
+                collection_config_factory=lambda size: CollectionConfig(
                     embedding_size=size
                 ),
                 manifest_store=CollectionManifestStore(_make_config_service(), MagicMock()),

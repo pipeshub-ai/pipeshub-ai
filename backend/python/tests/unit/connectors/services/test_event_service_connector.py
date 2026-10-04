@@ -255,6 +255,21 @@ class TestEnsureConnector:
             assert result is None
 
 
+class TestGetOrInitConnector:
+    @pytest.mark.asyncio
+    async def test_delegates_to_ensure_connector(self, service):
+        mock_conn = MagicMock()
+        with patch.object(service, "_ensure_connector", AsyncMock(return_value=mock_conn)) as ensure:
+            result = await service.get_or_init_connector("kb", "kb1")
+        assert result is mock_conn
+        ensure.assert_awaited_once_with("kb", "kb1")
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_connector_cannot_be_built(self, service):
+        service.graph_provider.get_document = AsyncMock(return_value=None)
+        with patch.object(service, "_get_connector", return_value=None):
+            assert await service.get_or_init_connector("kb", "kb1") is None
+
 # ===========================================================================
 # process_event
 # ===========================================================================
@@ -301,6 +316,15 @@ class TestProcessEvent:
     async def test_unknown_action(self, service):
         result = await service.process_event("gmail.unknown_action", {})
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_extra_segment_cannot_pick_the_action(self, service):
+        with patch.object(service, "_handle_delete", new_callable=AsyncMock) as mock_delete, \
+             patch.object(service, "_handle_start_sync", new_callable=AsyncMock) as mock_sync:
+            result = await service.process_event("web.delete.resync", {"orgId": "org1", "connectorId": "c1"})
+        assert result is False
+        mock_delete.assert_not_awaited()
+        mock_sync.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception(self, service):
@@ -989,3 +1013,44 @@ class TestHandleDelete:
                 "orgId": "org1", "connectorId": "c1"
             })
             assert result is True
+
+    @pytest.mark.asyncio
+    async def test_graph_record_groups_reach_entity_cleanup(self, service):
+        """The groups are gone from the graph after deletion; the entity store
+        needs them to strip shared taxonomy entities."""
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [], "record_group_ids": ["rg-1"],
+        })
+        store = AsyncMock()
+        service.app_container.entity_vector_store = AsyncMock(return_value=store)
+        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            service.app_container.config_service.return_value = AsyncMock()
+            await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        kwargs = store.delete_entities_by_connector.await_args.kwargs
+        assert kwargs["org_id"] == "org1" and kwargs["connector_id"] == "c1"
+        assert kwargs["record_group_ids"] == ["rg-1"]
+        service.graph_provider.get_taxonomy_entity_membership = AsyncMock(return_value={})
+        await kwargs["membership_lookup"]([{"id": "t1", "type": "topic"}])
+        service.graph_provider.get_taxonomy_entity_membership.assert_awaited_once_with(
+            [{"id": "t1", "type": "topic"}], "org1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_entity_cleanup_failure_is_logged_as_a_failure(self, service):
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": [],
+        })
+        store = AsyncMock()
+        store.delete_entities_by_connector = AsyncMock(side_effect=RuntimeError("vector db down"))
+        service.app_container.entity_vector_store = AsyncMock(return_value=store)
+        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            service.app_container.config_service.return_value = AsyncMock()
+            result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        assert result is True
+        logged = " ".join(str(c.args[0]) for c in service.logger.info.call_args_list)
+        assert "Entity vector store entries removed" not in logged
+        assert any("entity vector store" in str(c.args[0]) for c in service.logger.error.call_args_list)

@@ -9,6 +9,7 @@ import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import { smtpConfigChecker } from '../middlewares/checkSmtpConfig';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
+import { MailSenderService } from '../services/mail.sender.service';
 export const smtpConfigSchema = z.object({
   body: z.object({
     host: z.string().min(1, { message: 'SMTP host is required' }),
@@ -58,13 +59,16 @@ export function createMailServiceRouter(container: Container) {
         container
           .rebind<MailController>('MailController')
           .toDynamicValue(() => {
-            return new MailController(updatedConfig, container.get('Logger'));
+            return new MailController(
+              updatedConfig,
+              container.get('Logger'),
+              container.get<MailSenderService>(MailSenderService),
+            );
           });
         mailController = container.get<MailController>('MailController');
 
         res.status(200).json({
           message: 'SMTP configuration updated successfully',
-          smtp: updatedConfig.smtp,
         });
         return;
       } catch (error) {

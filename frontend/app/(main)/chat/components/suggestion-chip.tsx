@@ -67,9 +67,11 @@ interface SuggestionChipProps {
   onClick?: () => void;
   /** When true, the chip spans the full width of its container (mobile mode) */
   fullWidth?: boolean;
+  /** Shows a lock: the answer is behind permissions this viewer lacks. */
+  locked?: boolean;
 }
 
-export function SuggestionChip({ text, icons, onClick, fullWidth }: SuggestionChipProps) {
+export function SuggestionChip({ text, icons, onClick, fullWidth, locked }: SuggestionChipProps) {
   return (
     <Button
       variant="soft"
@@ -90,6 +92,7 @@ export function SuggestionChip({ text, icons, onClick, fullWidth }: SuggestionCh
     >
       <Flex align="center" gap="2" style={{ flex: fullWidth ? 1 : undefined, minWidth: 0 }}>
         <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+          {locked && <MaterialIcon name="lock" size={14} color="var(--slate-10)" />}
           {icons.map((icon, idx) => {
             const IconComponent = iconMap[icon];
             return <IconComponent key={idx} />;

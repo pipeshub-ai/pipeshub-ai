@@ -49,15 +49,29 @@ const handleAIServiceResponse = (
   res.status(successStatus).json(responseData);
 };
 
+// The team service wraps the team it returns: `{ data: team }` from create,
+// `{ team }` from get, update and the member list.
+const teamIn = (body: unknown): TeamResponse | undefined => {
+  if (typeof body !== 'object' || body === null) return undefined;
+  const { team, data } = body as { team?: unknown; data?: unknown };
+  const inner: unknown = team ?? data ?? body;
+  return typeof inner === 'object' && inner !== null
+    ? (inner as TeamResponse)
+    : undefined;
+};
+
+// Pictures are decoration: a failed lookup must not turn a create the team
+// service already committed into an error the client would retry.
 async function enrichTeamsProfilePictures(
   orgId: string,
   teams: TeamResponse[],
+  logger: Logger,
 ): Promise<void> {
   const userIds: string[] = [];
   for (const team of teams) {
     if (team.members) {
       for (const member of team.members) {
-        if (member.userId) userIds.push(member.userId);
+        if (member?.userId) userIds.push(member.userId);
       }
     }
     const createdByUser = team.createdByUser as TeamCreatedByUser | null | undefined;
@@ -68,11 +82,22 @@ async function enrichTeamsProfilePictures(
   if (userIds.length === 0) return;
 
   const uniqueIds = [...new Set(userIds)];
-  const dpDocs = await UserDisplayPicture.find({
-    orgId,
-    userId: { $in: uniqueIds },
-    pic: { $ne: null },
-  }).lean().exec();
+  let dpDocs;
+  try {
+    dpDocs = await UserDisplayPicture.find({
+      orgId,
+      userId: { $in: uniqueIds },
+      pic: { $ne: null },
+    })
+      .lean()
+      .exec();
+  } catch (error) {
+    logger.warn('Could not look up team profile pictures', {
+      orgId,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+    return;
+  }
 
   const dpMap = new Map<string, string>();
   for (const dp of dpDocs) {
@@ -85,7 +110,7 @@ async function enrichTeamsProfilePictures(
   for (const team of teams) {
     if (team.members) {
       for (const member of team.members) {
-        if (member.userId && dpMap.has(member.userId)) {
+        if (member?.userId && dpMap.has(member.userId)) {
           member.profilePicture = dpMap.get(member.userId);
         }
       }
@@ -148,7 +173,10 @@ export class TeamsController {
       if (!teamData) {
         throw new NotFoundError('Creating team failed: Team not found');
       }
-      await enrichTeamsProfilePictures(orgId, [teamData]);
+      const created = teamIn(teamData);
+      if (created !== undefined) {
+        await enrichTeamsProfilePictures(orgId, [created], this.logger);
+      }
       res.status(HTTP_STATUS.CREATED).json(teamData);
     } catch (error: any) {
       this.logger.error('Error creating team', {
@@ -167,7 +195,7 @@ export class TeamsController {
     next: NextFunction,
   ): Promise<void> {
     const requestId = req.context?.requestId;
-    const { teamId } = req.params;
+    const { teamId } = req.params as { teamId: string };
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
     if (!orgId) {
@@ -178,7 +206,7 @@ export class TeamsController {
     }
     try {
       const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/team/${teamId}`,
+        uri: `${this.config.connectorBackend}/api/v1/entity/team/${encodeURIComponent(teamId)}`,
         headers: {
           ...(req.headers as Record<string, string>),
           'Content-Type': 'application/json',
@@ -197,7 +225,10 @@ export class TeamsController {
       if (!teamData) {
         throw new NotFoundError('Getting team failed: Team not found');
       }
-      await enrichTeamsProfilePictures(orgId, [teamData]);
+      const found = teamIn(teamData);
+      if (found !== undefined) {
+        await enrichTeamsProfilePictures(orgId, [found], this.logger);
+      }
       res.status(HTTP_STATUS.OK).json(teamData);
     } catch (error: any) {
       this.logger.error('Error getting team', {
@@ -219,7 +250,7 @@ export class TeamsController {
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
-      const teamId = req.params.teamId;
+      const teamId = req.params.teamId as string;
       if (!orgId) {
         throw new BadRequestError('Organization ID is required');
       }
@@ -227,7 +258,7 @@ export class TeamsController {
         throw new BadRequestError('User ID is required');
       }
       const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/team/${teamId}`,
+        uri: `${this.config.connectorBackend}/api/v1/entity/team/${encodeURIComponent(teamId)}`,
         method: HttpMethod.PUT,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -247,7 +278,10 @@ export class TeamsController {
       if (!teamData) {
         throw new NotFoundError('Updating team failed: Team not found');
       }
-      await enrichTeamsProfilePictures(orgId, [teamData]);
+      const updated = teamIn(teamData);
+      if (updated !== undefined) {
+        await enrichTeamsProfilePictures(orgId, [updated], this.logger);
+      }
       res.status(HTTP_STATUS.OK).json(teamData);
     } catch (error: any) {
       this.logger.error('Error updating team', {
@@ -269,7 +303,7 @@ export class TeamsController {
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
-      const teamId = req.params.teamId;
+      const teamId = req.params.teamId as string;
       if (!orgId) {
         throw new BadRequestError('Organization ID is required');
       }
@@ -277,7 +311,7 @@ export class TeamsController {
         throw new BadRequestError('User ID is required');
       }
       const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/team/${teamId}`,
+        uri: `${this.config.connectorBackend}/api/v1/entity/team/${encodeURIComponent(teamId)}`,
         method: HttpMethod.DELETE,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -312,7 +346,7 @@ export class TeamsController {
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
-      const teamId = req.params.teamId;
+      const teamId = req.params.teamId as string;
       if (!orgId) {
         throw new BadRequestError('Organization ID is required');
       }
@@ -327,7 +361,7 @@ export class TeamsController {
       const qs = queryParams.toString();
 
       const aiCommandOptions: AICommandOptions = {
-        uri: `${this.config.connectorBackend}/api/v1/entity/team/${teamId}/users${qs ? `?${qs}` : ''}`,
+        uri: `${this.config.connectorBackend}/api/v1/entity/team/${encodeURIComponent(teamId)}/users${qs ? `?${qs}` : ''}`,
         method: HttpMethod.GET,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -343,11 +377,11 @@ export class TeamsController {
         throw handleBackendError(aiResponse, 'get team users');
       }
 
-      const data = aiResponse.data as any;
-      const teamData = data?.team ?? data;
+      const data = aiResponse.data;
+      const teamData = teamIn(data);
 
-      if (teamData) {
-        await enrichTeamsProfilePictures(orgId, [teamData as TeamResponse]);
+      if (teamData !== undefined) {
+        await enrichTeamsProfilePictures(orgId, [teamData], this.logger);
       }
 
       res.status(HTTP_STATUS.OK).json(data);
@@ -416,7 +450,7 @@ export class TeamsController {
 
       const teams = teamsData.teams ?? [];
       if (teams.length > 0) {
-        await enrichTeamsProfilePictures(orgId, teams);
+        await enrichTeamsProfilePictures(orgId, teams, this.logger);
       }
 
       res.status(HTTP_STATUS.OK).json(teamsData);

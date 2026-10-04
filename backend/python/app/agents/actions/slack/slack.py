@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timezone
+from http import HTTPStatus
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
@@ -52,6 +53,7 @@ USER_ID_PREFIXES = ('U', 'W')
 # Captures the user ID inside a Slack mention like <@U0ABC1234> or <@W0ABC1234>.
 # Used by enrichment to substitute @display_name into message text.
 SLACK_MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)>")
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +111,37 @@ def _search_all_result_summary(_args: dict, result: Any) -> Optional[str]:
     return header + "\n" + bullet_list(labels, total=len(message_matches or []))
 
 
+def _channel_list(value: object) -> list[str]:
+    """A list, the JSON-array string models often send instead, or a comma-separated string."""
+    if isinstance(value, str):
+        parsed = parse_json_maybe(value.strip()) if value.strip().startswith("[") else value.split(",")
+        value = parsed if isinstance(parsed, list) else []
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item).strip() for item in value if item is not None and str(item).strip()]
+
+
+# Slack's docs for conversations.list and users.conversations say the limit must be under 1000,
+# while its OpenAPI spec says "no larger than 1000"; 999 satisfies both with the fewest requests.
+_SLACK_PAGE_SIZE = 999
+_PARTIAL_LIST_MESSAGE = "Slack stopped answering part-way through, so this is only part of the list."
+_PARTIAL_LIST_RETRY = "Try again in a moment to get the rest."
+
+
+def _partial_list_message(failed: Any = None) -> str:  # noqa: ANN401
+    """The partial-list warning plus the failed page's own guidance (reconnect, wait N seconds, ...)."""
+    guidance = getattr(failed, "message", None) or _PARTIAL_LIST_RETRY
+    return f"{_PARTIAL_LIST_MESSAGE} {guidance}"
+
+
+def _listing(key: str, items: list[Any], *, complete: bool, failed: Any = None) -> str:  # noqa: ANN401
+    """A list reply that says when a later page failed, so a partial list is never read as the whole."""
+    message = None if complete else _partial_list_message(failed)
+    return SlackResponse(
+        success=True, data={key: items, "count": len(items), "complete": complete}, message=message,
+    ).to_json()
+
+
 def _is_user_id(value: Any) -> bool:
     """True iff value looks like a Slack user ID ('U…' or 'W…' of plausible length).
 
@@ -123,12 +156,92 @@ def _is_user_id(value: Any) -> bool:
     )
 
 
+_RECONNECT_SLACK = "Reconnect the Slack toolset in Settings > Toolsets and try again."
+_SLACK_SIGN_IN_REJECTED = f"Slack did not accept the saved sign-in. {_RECONNECT_SLACK}"
+# Only apps with token rotation get token_expired, and those are renewed on a schedule.
+_SLACK_SIGN_IN_EXPIRED = (
+    "The Slack sign-in has expired. PipesHub renews it automatically, so try again in a few "
+    "minutes. If this keeps happening, reconnect the Slack toolset in Settings > Toolsets."
+)
+_SLACK_PERMISSION_MISSING = (
+    "The connected Slack account has not given permission for this. Reconnect the Slack "
+    "toolset in Settings > Toolsets and approve the requested permissions."
+)
+# Worded for the agent's user token: the datasource's own texts talk about bots and xoxb tokens.
+_SLACK_ERROR_EXPLANATIONS: Dict[str, str] = {
+    "invalid_auth": _SLACK_SIGN_IN_REJECTED,
+    "not_authed": _SLACK_SIGN_IN_REJECTED,
+    "token_revoked": _SLACK_SIGN_IN_REJECTED,
+    "token_expired": _SLACK_SIGN_IN_EXPIRED,
+    "account_inactive": _SLACK_SIGN_IN_REJECTED,
+    "missing_scope": _SLACK_PERMISSION_MISSING,
+    "not_allowed_token_type": _SLACK_PERMISSION_MISSING,
+    "channel_not_found": (
+        "Slack could not find that channel, or you do not have access to it. Check the name "
+        "or ID, or call fetch_channels to list the channels you can see."
+    ),
+    "not_in_channel": "You are not a member of that channel. Join it in Slack first, then try again.",
+    "is_archived": "That channel is archived, so nothing can be posted or changed in it.",
+    "slack_request_failed": "The request to Slack failed unexpectedly. Try again in a moment.",
+    "user_lookup_failed": (
+        "Slack could not look that person up just now, so it is not known whether they exist. "
+        "Try again in a moment."
+    ),
+    "user_not_found": (
+        "Slack could not find that person. Use their email address or Slack user ID, "
+        "or call search_users to find them."
+    ),
+    "users_not_found": (
+        "Slack could not find that person. Use their email address or Slack user ID, "
+        "or call search_users to find them."
+    ),
+    "message_not_found": "Slack could not find that message. Check the channel and the message timestamp.",
+    "thread_not_found": "Slack could not find that thread. Check the channel and the thread timestamp.",
+    "msg_too_long": "The message is too long for Slack. Shorten it or split it into several messages.",
+    "no_text": "The message is empty. Add some text and try again.",
+    "cant_update_message": "Slack only lets you edit your own messages.",
+    "cant_delete_message": "Slack only lets you delete your own messages.",
+    "edit_window_closed": "This message is too old to edit in this workspace.",
+    "already_reacted": "You have already added that reaction to this message.",
+    "no_reaction": "That reaction is not on this message.",
+    "invalid_name": "Slack does not know that emoji name. Use a name such as 'thumbsup' or 'eyes'.",
+    "already_pinned": "That message is already pinned.",
+    "no_pin": "That message is not pinned.",
+    "time_in_past": "The scheduled time is in the past. Pick a time in the future.",
+    "time_too_far": "Slack can only schedule messages up to 120 days ahead. Pick an earlier time.",
+}
+_SLACK_TEMPORARY_ERRORS = {"fatal_error", "internal_error", "service_unavailable", "request_timeout"}
+_SLACK_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _explain_slack_error(code: str, status_code: int | None, retry_after: str | None) -> str:
+    """Plain-language failure with a next step, keyed on Slack's error code."""
+    if code in ("ratelimited", "rate_limited") or status_code == HTTPStatus.TOO_MANY_REQUESTS:
+        wait = f"Wait {retry_after} seconds" if str(retry_after or "").isdigit() else "Wait a minute"
+        return f"Slack is limiting how fast requests can be made. {wait} and try again."
+    if code in _SLACK_ERROR_EXPLANATIONS:
+        return _SLACK_ERROR_EXPLANATIONS[code]
+    if code in _SLACK_TEMPORARY_ERRORS or (status_code or 0) >= HTTPStatus.INTERNAL_SERVER_ERROR:
+        return "Slack is having a temporary problem. Try again in a moment."
+    return f"Slack refused the request (error code '{code}')."
+
+
 class AmbiguousUserError(Exception):
     """Raised when multiple users match a given identifier"""
     def __init__(self, identifier: str, matches: List[Dict[str, Any]]) -> None:
         self.identifier = identifier
         self.matches = matches
         super().__init__(f"Multiple users found matching '{identifier}'. Please use email or user ID for disambiguation.")
+
+class SlackLookupError(Exception):
+    """The directory could not be read, so "no such user" cannot be concluded."""
+    def __init__(self, response: Any) -> None:  # noqa: ANN401
+        self.response = response
+        super().__init__(getattr(response, "error", None) or "Slack user lookup failed")
+
+
+_NOT_FOUND_CODES = {"users_not_found", "user_not_found"}
+
 
 class SlackDateError(ValueError):
     """Raised when an LLM-supplied date string can't be parsed."""
@@ -701,6 +814,11 @@ class Slack:
 
             # Pass-through if already normalized
             if hasattr(response, 'success') and hasattr(response, 'data'):
+                code = getattr(response, 'error', None)
+                if response.success is False and isinstance(code, str) and _SLACK_ERROR_CODE_RE.match(code):
+                    response.message = _explain_slack_error(
+                        code, getattr(response, 'status_code', None), getattr(response, 'retry_after', None)
+                    )
                 return response  # type: ignore[return-value]
 
             # Dict-like payload from WebClient
@@ -717,6 +835,8 @@ class Slack:
 
     def _handle_slack_error(self, error: Exception) -> SlackResponse:
         """Handle Slack API errors and convert to standardized format"""
+        if isinstance(error, SlackLookupError):
+            return self._handle_slack_response(error.response)
         error_msg = str(error)
         logger.error(f"Slack API error: {error_msg}")
         return SlackResponse(success=False, error=error_msg)
@@ -859,6 +979,71 @@ class Slack:
             logger.error(f"Error getting authenticated user ID: {e}")
             return None
 
+    async def _collect_pages(
+        self,
+        fetch: Any,  # noqa: ANN401
+        key: str,
+        limit: int | None = None,
+        page_size: int = _SLACK_PAGE_SIZE,
+    ) -> tuple[list[Any], Any | None, bool]:
+        """Follow Slack's cursor until ``limit`` items (or all of them) are read.
+
+        Slack may return fewer items than asked for on any page, so a limit is met by
+        reading on, not by trusting one page. Returns (items read, the failed page's
+        response or None, whether the listing reached its end or the limit).
+        """
+        if limit is not None and limit <= 0:
+            return [], None, True
+        items: list[Any] = []
+        seen_ids: set[str] = set()
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        while True:
+            want = page_size if limit is None else min(page_size, limit - len(items))
+            try:
+                response = self._handle_slack_response(await fetch(cursor=cursor, limit=want))
+            except Exception as e:
+                # Keep the pages already read; a raise is one more failed page, not a lost listing.
+                logger.warning(f"Slack page request failed: {e}")
+                code = str(e) if str(e) in _SLACK_ERROR_EXPLANATIONS else "slack_request_failed"
+                response = self._handle_slack_response(SlackResponse(success=False, error=code))
+            if not response.success:
+                return items, response, False
+            data = response.data if isinstance(response.data, dict) else {}
+            for item in data.get(key) or []:
+                # A page Slack serves again must not add its items twice or fill the limit.
+                item_id = item.get('id') if isinstance(item, dict) else item
+                if isinstance(item_id, str) and item_id:
+                    if item_id in seen_ids:
+                        continue
+                    seen_ids.add(item_id)
+                items.append(item)
+            if limit is not None and len(items) >= limit:
+                return items[:limit], None, True
+            cursor = (data.get('response_metadata') or {}).get('next_cursor')
+            if not cursor:
+                return items, None, True
+            # A cursor Slack already handed back would re-read the same page forever.
+            if cursor in seen_cursors:
+                return items, None, False
+            seen_cursors.add(cursor)
+
+    async def _channel_members(self, channel_id: str) -> tuple[bool, str]:
+        """Every member of a channel (conversations.members pages at 100 by default), with names."""
+        member_ids, failed, complete = await self._collect_pages(
+            lambda cursor, limit: self.client.conversations_members(channel=channel_id, cursor=cursor, limit=limit),
+            'members',
+        )
+        if failed is not None and not member_ids:
+            return (failed.success, failed.to_json())
+        data: dict[str, Any] = {"members": member_ids, "count": len(member_ids), "complete": complete}
+        try:
+            data['resolved_members'] = await self._resolve_user_id_list(member_ids)
+        except Exception as enrichment_err:
+            logger.debug(f"Member enrichment failed: {enrichment_err}")
+        message = None if complete else _partial_list_message(failed)
+        return (True, SlackResponse(success=True, data=data, message=message).to_json())
+
     async def _upload_attachments_to_slack(
         self,
         attachment_record_ids: List[str],
@@ -949,13 +1134,14 @@ class Slack:
             logger.debug(f"Resolving channel name '{name}' to ID...")
             all_channels = []
             cursor = None
+            seen_cursors: set[str] = set()
 
             # Fetch all pages of conversations the user has access to
             while True:
                 kwargs = {
                     "types": "public_channel,private_channel,mpim,im",  # ALL types
                     "exclude_archived": False,  # Include archived too
-                    "limit": 1000  # Max per page
+                    "limit": _SLACK_PAGE_SIZE,
                 }
                 if cursor:
                     kwargs["cursor"] = cursor
@@ -975,6 +1161,10 @@ class Slack:
                 next_cursor = response_metadata.get('next_cursor')
                 if not next_cursor:
                     break
+                if next_cursor in seen_cursors:
+                    logger.warning("conversations.list repeated a cursor; stopping channel-name resolution")
+                    break
+                seen_cursors.add(next_cursor)
                 cursor = next_cursor
                 logger.debug(f"Fetched {len(channels)} conversations, continuing pagination...")
 
@@ -1343,39 +1533,14 @@ class Slack:
                 False if exclude_archived is None else exclude_archived
             )
 
-            # Fetch ALL conversation types with pagination
-            all_conversations = []
-            cursor = None
-
-            while True:
-                kwargs: Dict[str, Any] = {
-                    "types": effective_types,
-                    "exclude_archived": effective_exclude_archived,
-                    "limit": 1000,
-                }
-                if cursor:
-                    kwargs["cursor"] = cursor
-
-                response = await self.client.conversations_list(**kwargs)
-                slack_response = self._handle_slack_response(response)
-
-                if not slack_response.success or not slack_response.data:
-                    # If first page fails, return error
-                    if not all_conversations:
-                        return (slack_response.success, slack_response.to_json())
-                    # If subsequent page fails, return what we have
-                    break
-
-                conversations = slack_response.data.get('channels', [])
-                all_conversations.extend(conversations)
-
-                # Check for next page
-                response_metadata = slack_response.data.get('response_metadata', {})
-                next_cursor = response_metadata.get('next_cursor')
-                if not next_cursor:
-                    break
-                cursor = next_cursor
-                logger.debug(f"Fetched {len(conversations)} conversations, continuing pagination...")
+            all_conversations, failed, complete = await self._collect_pages(
+                lambda cursor, limit: self.client.conversations_list(
+                    types=effective_types, exclude_archived=effective_exclude_archived, cursor=cursor, limit=limit,
+                ),
+                'channels',
+            )
+            if failed is not None and not all_conversations:
+                return (failed.success, failed.to_json())
 
             logger.info(f"✅ Fetched total {len(all_conversations)} conversations (all types)")
 
@@ -1386,7 +1551,7 @@ class Slack:
             except Exception as enrichment_err:
                 logger.debug(f"fetch_channels enrichment failed: {enrichment_err}")
 
-            return (True, SlackResponse(success=True, data={"channels": all_conversations, "count": len(all_conversations)}).to_json())
+            return (True, _listing("channels", all_conversations, complete=complete, failed=failed))
 
         except Exception as e:
             logger.error(f"Error in fetch_channels: {e}")
@@ -1425,17 +1590,21 @@ class Slack:
                 count=limit
             )
 
+            slack_response = self._handle_slack_response(response)
+            if not slack_response.success or not isinstance(slack_response.data, dict):
+                return (slack_response.success, slack_response.to_json())
+
             # Enrich messages.matches[] (user, mentions, reactions) and
             # files.matches[].user (uploader). Slack returns these alongside
             # one another for search.all; for search.messages only messages.
+            data = slack_response.data
             try:
-                if isinstance(response, dict):
-                    response = await self._enrich_search_response(response)
+                data = await self._enrich_search_response(data)
             except Exception as enrichment_err:
                 logger.debug(f"search_all enrichment failed: {enrichment_err}")
 
             transformed_response = (
-                ResponseTransformer(response)
+                ResponseTransformer(data)
                 .remove(
                         # Remove all thumbnail URLs and dimensions (not needed, just preview images)
                         "*.thumb_64", "*.thumb_80", "*.thumb_160", "*.thumb_360", "*.thumb_360_w",
@@ -1448,8 +1617,7 @@ class Slack:
                     .clean()
                 )
 
-            slack_response = self._handle_slack_response(transformed_response)
-            return (slack_response.success, slack_response.to_json())
+            return (True, SlackResponse(success=True, data=transformed_response).to_json())
         except Exception as e:
             logger.error(f"Error in search_all: {e}")
             slack_response = self._handle_slack_error(e)
@@ -1480,24 +1648,7 @@ class Slack:
             # Resolve channel name to channel ID if needed
             chan = await self._resolve_channel(channel)
 
-            # conversations.members returns {members: ["U…", …]} — bare IDs.
-            # Resolve to {id, display_name, real_name, email} so the LLM has
-            # names without an extra round-trip.
-            response = await self.client.conversations_members(channel=chan)
-            slack_response = self._handle_slack_response(response)
-            if not slack_response.success or not isinstance(slack_response.data, dict):
-                return (slack_response.success, slack_response.to_json())
-
-            try:
-                data = slack_response.data
-                member_ids = data.get('members', [])
-                resolved_members = await self._resolve_user_id_list(member_ids)
-                enriched = dict(data)
-                enriched['resolved_members'] = resolved_members
-                return (True, SlackResponse(success=True, data=enriched).to_json())
-            except Exception as enrichment_err:
-                logger.debug(f"Member enrichment failed: {enrichment_err}")
-                return (slack_response.success, slack_response.to_json())
+            return await self._channel_members(chan)
         except Exception as e:
             if "not_in_channel" in str(e):
                 err = SlackResponse(success=False, error="not_in_channel")
@@ -1528,21 +1679,7 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the channel members
         """
         try:
-            response = await self.client.conversations_members(channel=channel_id)
-            slack_response = self._handle_slack_response(response)
-            if not slack_response.success or not isinstance(slack_response.data, dict):
-                return (slack_response.success, slack_response.to_json())
-
-            try:
-                data = slack_response.data
-                member_ids = data.get('members', [])
-                resolved_members = await self._resolve_user_id_list(member_ids)
-                enriched = dict(data)
-                enriched['resolved_members'] = resolved_members
-                return (True, SlackResponse(success=True, data=enriched).to_json())
-            except Exception as enrichment_err:
-                logger.debug(f"Member enrichment failed: {enrichment_err}")
-                return (slack_response.success, slack_response.to_json())
+            return await self._channel_members(channel_id)
         except Exception as e:
             logger.error(f"Error in get_channel_members_by_id: {e}")
             slack_response = self._handle_slack_error(e)
@@ -1617,66 +1754,55 @@ class Slack:
             query = name.strip().casefold()
             matches: List[Dict[str, Any]] = []
             seen_ids: set = set()
-            cursor = None
+            members, failed, complete = await self._collect_pages(
+                lambda cursor, limit: self.client.users_list(cursor=cursor, limit=limit), 'members',
+            )
 
-            while True:
-                response = await self.client.users_list(cursor=cursor, limit=1000)
-                slack_response = self._handle_slack_response(response)
+            for member in members:
+                if member.get('deleted'):
+                    continue
+                if not include_bots and member.get('is_bot'):
+                    continue
 
-                if not slack_response.success or not slack_response.data:
-                    break
+                user_id = member.get('id')
+                if not user_id or user_id in seen_ids:
+                    continue
 
-                members = slack_response.data.get('members', [])
-                if not members:
-                    break
+                profile = member.get('profile', {}) or {}
+                names_to_check = [
+                    profile.get('display_name_normalized'),
+                    profile.get('real_name_normalized'),
+                    profile.get('display_name'),
+                    profile.get('real_name'),
+                    member.get('name'),
+                ]
 
-                for member in members:
-                    if member.get('deleted'):
-                        continue
-                    if not include_bots and member.get('is_bot'):
-                        continue
+                matched = False
+                for candidate in names_to_check:
+                    if isinstance(candidate, str) and query in candidate.casefold():
+                        matched = True
+                        break
 
-                    user_id = member.get('id')
-                    if not user_id or user_id in seen_ids:
-                        continue
+                if matched:
+                    seen_ids.add(user_id)
+                    matches.append({
+                        'id': user_id,
+                        'name': member.get('name'),
+                        'real_name': member.get('real_name'),
+                        'display_name': profile.get('display_name') or member.get('name') or member.get('real_name'),
+                        'email': profile.get('email'),
+                        'is_bot': member.get('is_bot', False),
+                        'is_admin': member.get('is_admin', False),
+                        'team_id': member.get('team_id'),
+                    })
 
-                    profile = member.get('profile', {}) or {}
-                    names_to_check = [
-                        profile.get('display_name_normalized'),
-                        profile.get('real_name_normalized'),
-                        profile.get('display_name'),
-                        profile.get('real_name'),
-                        member.get('name'),
-                    ]
-
-                    matched = False
-                    for candidate in names_to_check:
-                        if isinstance(candidate, str) and query in candidate.casefold():
-                            matched = True
-                            break
-
-                    if matched:
-                        seen_ids.add(user_id)
-                        matches.append({
-                            'id': user_id,
-                            'name': member.get('name'),
-                            'real_name': member.get('real_name'),
-                            'display_name': profile.get('display_name') or member.get('name') or member.get('real_name'),
-                            'email': profile.get('email'),
-                            'is_bot': member.get('is_bot', False),
-                            'is_admin': member.get('is_admin', False),
-                            'team_id': member.get('team_id'),
-                        })
-
-                response_metadata = slack_response.data.get('response_metadata', {})
-                next_cursor = response_metadata.get('next_cursor')
-                if not next_cursor:
-                    break
-                cursor = next_cursor
-
+            # Part of the directory was not read, so "nobody matches" is not known.
+            if failed is not None and not matches:
+                return (failed.success, failed.to_json())
             return (True, SlackResponse(
                 success=True,
-                data={"users": matches, "count": len(matches), "query": name.strip()}
+                data={"users": matches, "count": len(matches), "query": name.strip(), "complete": complete},
+                message=None if complete else _partial_list_message(failed),
             ).to_json())
 
         except Exception as e:
@@ -1997,6 +2123,11 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the results
         """
         try:
+            channels = _channel_list(channels)
+            if not channels:
+                return (False, SlackResponse(
+                    success=False, error="No channels given. Pass at least one channel name or ID to send to.",
+                ).to_json())
             results = []
             all_success = True
 
@@ -2586,6 +2717,8 @@ class Slack:
                     except AmbiguousUserError as e:
                         logger.warning(f"Ambiguous mention '{mention}': {len(e.matches)} matches found")
                         # For mentions, we'll skip ambiguous ones rather than failing the whole message
+                    except SlackLookupError as e:
+                        logger.warning(f"Could not look up mention '{mention}': {e}")
 
             # Convert standard markdown to Slack mrkdwn format
             slack_message = self._convert_markdown_to_slack_mrkdwn(processed_message)
@@ -2632,51 +2765,16 @@ class Slack:
             if include_deleted is None:
                 include_deleted = True
 
-            # If limit is specified, do a single fetch
-            if limit:
-                kwargs = {
-                    "include_deleted": include_deleted,
-                    "limit": limit
-                }
-                response = await self.client.users_list(**kwargs)
-                slack_response = self._handle_slack_response(response)
-                return (slack_response.success, slack_response.to_json())
-
-            # Otherwise, fetch all users with pagination
-            all_users = []
-            cursor = None
-
-            while True:
-                kwargs = {
-                    "include_deleted": include_deleted,
-                    "limit": 1000
-                }
-                if cursor:
-                    kwargs["cursor"] = cursor
-
-                response = await self.client.users_list(**kwargs)
-                slack_response = self._handle_slack_response(response)
-
-                if not slack_response.success or not slack_response.data:
-                    # If first page fails, return error
-                    if not all_users:
-                        return (slack_response.success, slack_response.to_json())
-                    # If subsequent page fails, return what we have
-                    break
-
-                users = slack_response.data.get('members', [])
-                all_users.extend(users)
-
-                # Check for next page
-                response_metadata = slack_response.data.get('response_metadata', {})
-                next_cursor = response_metadata.get('next_cursor')
-                if not next_cursor:
-                    break
-                cursor = next_cursor
-                logger.debug(f"Fetched {len(users)} users, continuing pagination...")
+            all_users, failed, complete = await self._collect_pages(
+                lambda cursor, limit: self.client.users_list(include_deleted=include_deleted, cursor=cursor, limit=limit),
+                'members',
+                limit,
+            )
+            if failed is not None and not all_users:
+                return (failed.success, failed.to_json())
 
             logger.info(f"✅ Fetched total {len(all_users)} users")
-            return (True, SlackResponse(success=True, data={"members": all_users, "count": len(all_users)}).to_json())
+            return (True, _listing("members", all_users, complete=complete, failed=failed))
 
         except Exception as e:
             logger.error(f"Error in get_users_list: {e}")
@@ -2717,65 +2815,15 @@ class Slack:
             # Default to ALL conversation types if not specified
             conversation_types = types if types else "public_channel,private_channel,mpim,im"
 
-            # If limit is specified, do a single fetch
-            if limit:
-                kwargs = {
-                    "user": user_id,
-                    "types": conversation_types
-                }
-                if exclude_archived is not None:
-                    kwargs["exclude_archived"] = exclude_archived
-                kwargs["limit"] = limit
-
-                response = await self.client.users_conversations(**kwargs)
-                slack_response = self._handle_slack_response(response)
-                if not slack_response.success or not isinstance(slack_response.data, dict):
-                    return (slack_response.success, slack_response.to_json())
-                try:
-                    channels = slack_response.data.get('channels', [])
-                    enriched_channels = await self._enrich_conversations(channels)
-                    enriched_data = dict(slack_response.data)
-                    enriched_data['channels'] = enriched_channels
-                    return (True, SlackResponse(success=True, data=enriched_data).to_json())
-                except Exception as enrichment_err:
-                    logger.debug(f"users_conversations enrichment failed: {enrichment_err}")
-                    return (slack_response.success, slack_response.to_json())
-
-            # Otherwise, fetch all conversations with pagination
-            all_conversations = []
-            cursor = None
-
-            while True:
-                kwargs = {
-                    "user": user_id,
-                    "types": conversation_types,
-                    "limit": 1000
-                }
-                if exclude_archived is not None:
-                    kwargs["exclude_archived"] = exclude_archived
-                if cursor:
-                    kwargs["cursor"] = cursor
-
-                response = await self.client.users_conversations(**kwargs)
-                slack_response = self._handle_slack_response(response)
-
-                if not slack_response.success or not slack_response.data:
-                    # If first page fails, return error
-                    if not all_conversations:
-                        return (slack_response.success, slack_response.to_json())
-                    # If subsequent page fails, return what we have
-                    break
-
-                conversations = slack_response.data.get('channels', [])
-                all_conversations.extend(conversations)
-
-                # Check for next page
-                response_metadata = slack_response.data.get('response_metadata', {})
-                next_cursor = response_metadata.get('next_cursor')
-                if not next_cursor:
-                    break
-                cursor = next_cursor
-                logger.debug(f"Fetched {len(conversations)} conversations for user, continuing pagination...")
+            all_conversations, failed, complete = await self._collect_pages(
+                lambda cursor, limit: self.client.users_conversations(
+                    user=user_id, types=conversation_types, exclude_archived=exclude_archived, cursor=cursor, limit=limit,
+                ),
+                'channels',
+                limit,
+            )
+            if failed is not None and not all_conversations:
+                return (failed.success, failed.to_json())
 
             logger.info(f"✅ Fetched total {len(all_conversations)} conversations for authenticated user")
 
@@ -2785,7 +2833,7 @@ class Slack:
             except Exception as enrichment_err:
                 logger.debug(f"users_conversations enrichment failed: {enrichment_err}")
 
-            return (True, SlackResponse(success=True, data={"channels": all_conversations, "count": len(all_conversations)}).to_json())
+            return (True, _listing("channels", all_conversations, complete=complete, failed=failed))
 
         except Exception as e:
             logger.error(f"Error in get_user_conversations: {e}")
@@ -2859,38 +2907,41 @@ class Slack:
         """Get information about a specific user group"""
         """
         Args:
-            usergroup: User group ID to get info for
+            usergroup: User group ID (or handle) to get info for
             include_disabled: Include disabled user groups
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the user group info
         """
         try:
-            kwargs = {"usergroup": usergroup}
+            # Slack has no usergroups.info method; the group is picked out of usergroups.list.
+            kwargs: dict[str, Any] = {"include_users": True}
             if include_disabled is not None:
                 kwargs["include_disabled"] = include_disabled
 
-            response = await self.client.usergroups_info(**kwargs)
+            response = await self.client.usergroups_list(**kwargs)
             slack_response = self._handle_slack_response(response)
             if not slack_response.success or not isinstance(slack_response.data, dict):
                 return (slack_response.success, slack_response.to_json())
 
-            # usergroups.info returns the group at top-level `usergroup` (singular).
-            # Some Slack helpers return `usergroups: [...]` instead — handle both.
+            wanted = str(usergroup or "").strip().lstrip("@").casefold()
+            group = next(
+                (
+                    g for g in slack_response.data.get('usergroups') or []
+                    if isinstance(g, dict) and wanted in {str(g.get('id', '')).casefold(), str(g.get('handle', '')).casefold()}
+                ),
+                None,
+            )
+            if group is None:
+                return (False, SlackResponse(
+                    success=False,
+                    error="usergroup_not_found",
+                    message=f"No user group matches '{usergroup}'. Call get_user_groups to list the groups and their IDs.",
+                ).to_json())
             try:
-                data = slack_response.data
-                enriched = dict(data)
-                single = data.get('usergroup')
-                if isinstance(single, dict):
-                    resolved_list = await self._enrich_usergroups([single])
-                    if resolved_list:
-                        enriched['usergroup'] = resolved_list[0]
-                groups_list = data.get('usergroups')
-                if isinstance(groups_list, list):
-                    enriched['usergroups'] = await self._enrich_usergroups(groups_list)
-                return (True, SlackResponse(success=True, data=enriched).to_json())
+                group = (await self._enrich_usergroups([group]) or [group])[0]
             except Exception as enrichment_err:
                 logger.debug(f"Usergroup-info enrichment failed: {enrichment_err}")
-                return (slack_response.success, slack_response.to_json())
+            return (True, SlackResponse(success=True, data={"usergroup": group}).to_json())
         except Exception as e:
             logger.error(f"Error in get_user_group_info: {e}")
             slack_response = self._handle_slack_error(e)
@@ -2927,41 +2978,14 @@ class Slack:
             # Default to ALL conversation types if not specified
             conversation_types = types if types else "public_channel,private_channel,mpim,im"
 
-            # Fetch all channels with pagination
-            all_channels = []
-            cursor = None
-
-            while True:
-                kwargs = {
-                    "user": user_id,
-                    "types": conversation_types,
-                    "limit": 1000
-                }
-                if exclude_archived is not None:
-                    kwargs["exclude_archived"] = exclude_archived
-                if cursor:
-                    kwargs["cursor"] = cursor
-
-                response = await self.client.users_conversations(**kwargs)
-                slack_response = self._handle_slack_response(response)
-
-                if not slack_response.success or not slack_response.data:
-                    # If first page fails, return error
-                    if not all_channels:
-                        return (slack_response.success, slack_response.to_json())
-                    # If subsequent page fails, return what we have
-                    break
-
-                channels = slack_response.data.get('channels', [])
-                all_channels.extend(channels)
-
-                # Check for next page
-                response_metadata = slack_response.data.get('response_metadata', {})
-                next_cursor = response_metadata.get('next_cursor')
-                if not next_cursor:
-                    break
-                cursor = next_cursor
-                logger.debug(f"Fetched {len(channels)} channels for user, continuing pagination...")
+            all_channels, failed, complete = await self._collect_pages(
+                lambda cursor, limit: self.client.users_conversations(
+                    user=user_id, types=conversation_types, exclude_archived=exclude_archived, cursor=cursor, limit=limit,
+                ),
+                'channels',
+            )
+            if failed is not None and not all_channels:
+                return (failed.success, failed.to_json())
 
             logger.info(f"✅ Fetched total {len(all_channels)} channels for authenticated user")
 
@@ -2971,7 +2995,7 @@ class Slack:
             except Exception as enrichment_err:
                 logger.debug(f"get_user_channels enrichment failed: {enrichment_err}")
 
-            return (True, SlackResponse(success=True, data={"channels": all_channels, "count": len(all_channels)}).to_json())
+            return (True, _listing("channels", all_channels, complete=complete, failed=failed))
 
         except Exception as e:
             logger.error(f"Error in get_user_channels: {e}")
@@ -3481,8 +3505,7 @@ class Slack:
             if not user_identifier or not isinstance(user_identifier, str):
                 return None
 
-            # If it's already a user ID (starts with U), return as is
-            if user_identifier.startswith('U') and len(user_identifier) >= MIN_SLACK_USER_ID_LENGTH:
+            if _is_user_id(user_identifier):
                 return user_identifier
 
             # Normalize the identifier for comparison
@@ -3501,24 +3524,36 @@ class Slack:
                         if user_id:
                             logger.debug(f"Resolved user '{user_identifier}' to ID '{user_id}' via email lookup")
                             return user_id
+                    elif not slack_response.success and slack_response.error not in _NOT_FOUND_CODES:
+                        raise SlackLookupError(slack_response)
+                except SlackLookupError:
+                    raise
                 except Exception as e:
-                    logger.debug(f"Email lookup failed for '{user_identifier}': {e}")
+                    logger.warning(f"Email lookup failed for '{user_identifier}': {e}")
+                    raise SlackLookupError(SlackResponse(success=False, error="user_lookup_failed")) from e
+                # An address nobody in the workspace has must not fall through to name matching,
+                # where "sam@partner.test" would pick whoever is called "Sam".
+                if _EMAIL_RE.match(user_identifier.strip()):
+                    return None
 
             # Try to find by display name or real name
             cursor = None
+            seen_cursors: set[str] = set()
             exact_matches = []  # List of (user_id, name, user_info) tuples
             partial_matches = []
 
             while True:
-                users_response = await self.client.users_list(cursor=cursor, limit=1000)
+                users_response = await self.client.users_list(cursor=cursor, limit=_SLACK_PAGE_SIZE)
                 users_slack_response = self._handle_slack_response(users_response)
 
-                if not users_slack_response.success or not users_slack_response.data:
+                # An unread page may hold the real person or a namesake, so never pick from a partial read.
+                if not users_slack_response.success:
+                    raise SlackLookupError(users_slack_response)
+                if not users_slack_response.data:
                     break
 
-                users = users_slack_response.data.get('members', [])
-                if not users:
-                    break
+                # An empty page can still carry a cursor, so only a missing cursor ends the read.
+                users = users_slack_response.data.get('members') or []
 
                 for user in users:
                     # Skip deleted/bot users
@@ -3557,8 +3592,9 @@ class Slack:
                             if not any(m[0] == user_id for m in exact_matches):
                                 exact_matches.append((user_id, name, user_info))
 
-                        # Partial match (for "Abhishek" matching "Abhishek Gupta")
-                        elif target_identifier in name_normalized or name_normalized in target_identifier:
+                        # Partial match ("Abhishek" finds "Abhishek Gupta"); never the reverse,
+                        # or "Joanna" would find "Ann".
+                        elif target_identifier in name_normalized:
                             if len(target_identifier) >= MIN_PARTIAL_MATCH_LENGTH:
                                 if not any(m[0] == user_id for m in partial_matches):
                                     partial_matches.append((user_id, name, user_info))
@@ -3568,6 +3604,10 @@ class Slack:
                 next_cursor = response_metadata.get('next_cursor')
                 if not next_cursor:
                     break
+                # A repeated cursor means the directory will never be read to the end.
+                if next_cursor in seen_cursors:
+                    raise SlackLookupError(SlackResponse(success=False, error="user_lookup_failed"))
+                seen_cursors.add(next_cursor)
                 cursor = next_cursor
 
             # Handle exact matches
@@ -3609,8 +3649,8 @@ class Slack:
             logger.debug(f"Could not resolve user identifier '{user_identifier}'")
             return None
 
-        except AmbiguousUserError:
-            raise  # Re-raise ambiguous errors
+        except (AmbiguousUserError, SlackLookupError):
+            raise
         except Exception as e:
             logger.error(f"Error resolving user identifier '{user_identifier}': {e}")
             return None

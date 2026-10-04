@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Collection, Dict, List, Optional, TYPE_CHECKING
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from app.utils.conversation_tasks import register_task, _rows_to_csv_bytes
+from app.utils.conversation_tasks import register_task
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
@@ -77,6 +77,39 @@ def agent_knowledge_has_sql_connector(agent_knowledge: Optional[List[Dict[str, A
         isinstance(k, dict) and str(k.get("type", "")).upper() in _SQL_CONNECTOR_TYPES
         for k in agent_knowledge
     )
+
+
+def sql_connector_instance_ids(instances: list[dict] | None, org_id: str) -> frozenset[str]:
+    """IDs of the configured SQL connector instances in *instances* that belong to *org_id*."""
+    ids: set[str] = set()
+    for instance in instances or []:
+        if not isinstance(instance, dict):
+            continue
+        if str(instance.get("type", "")).upper() not in _SQL_CONNECTOR_TYPES:
+            continue
+        if not instance.get("isConfigured"):
+            continue
+        # `get_user_connector_instances` does not filter on org, so apply the tenant check here.
+        instance_org_id = instance.get("orgId")
+        if instance_org_id and instance_org_id != org_id:
+            continue
+        instance_id = instance.get("_key") or instance.get("id")
+        if instance_id:
+            ids.add(str(instance_id))
+    return frozenset(ids)
+
+
+def agent_knowledge_sql_connector_ids(agent_knowledge: list[dict[str, Any]] | None) -> frozenset[str]:
+
+    """Connector IDs of the SQL connectors attached to the agent as knowledge."""
+    ids: set[str] = set()
+    for k in agent_knowledge or []:
+        if not isinstance(k, dict) or str(k.get("type", "")).upper() not in _SQL_CONNECTOR_TYPES:
+            continue
+        connector_id = str(k.get("connectorId") or "").strip()
+        if connector_id:
+            ids.add(connector_id)
+    return frozenset(ids)
 
 
 class ExecuteQueryArgs(BaseModel):
@@ -646,6 +679,9 @@ def create_execute_query_tool(
     org_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
     blob_store: Optional["BlobStorage"] = None,
+    user_id: Optional[str] = None,
+    *,
+    allowed_connector_ids: Collection[str],
 ) -> Callable:
     """Factory function to create the execute_query tool with runtime dependencies.
     
@@ -655,10 +691,16 @@ def create_execute_query_tool(
         org_id: Optional organization ID for background CSV export
         conversation_id: Optional conversation ID for background CSV export
         blob_store: Optional blob storage for saving full result CSVs
+        user_id: Optional owner of the CSV export; without it the export has
+            no artifact record and so no download link on local storage
+        allowed_connector_ids: The only connector instance IDs the tool may
+            query. The query runs with the connector's stored credentials, so
+            any other ID (or none) is rejected before a client is built.
         
     Returns:
         A langchain tool for executing SQL queries
     """
+    allowed = frozenset(allowed_connector_ids)
     
     @tool("execute_sql_query", args_schema=ExecuteQueryArgs)
     async def execute_sql_query_tool(
@@ -709,13 +751,27 @@ def create_execute_query_tool(
             connector_id,
         )
         logger.debug(f"🔍 [execute_sql_query_tool] Query: {query}")
-        
+
+        connector_id = (connector_id or "").strip()
+        if connector_id not in allowed:
+            logger.warning(
+                "🔍 [execute_sql_query_tool] Rejected connector_id=%r: not attached to this agent",
+                connector_id,
+            )
+            return {
+                "ok": False,
+                "error": (
+                    f"connector_id {connector_id!r} is not one of the SQL connectors available "
+                    "to this agent. Use the 'Connector Id' shown on the table record you are querying."
+                ),
+            }
+
         try:
             result = await _execute_query_impl(
                 query=query,
                 source_name=source_name,
                 config_service=config_service,
-                connector_instance_id=(connector_id or "").strip() or None,
+                connector_instance_id=connector_id,
             )
             
             logger.info(f"🔍 [execute_sql_query_tool] Got result: ok={result.get('ok')}, row_count={result.get('row_count')}, column_count={result.get('column_count')}")
@@ -748,30 +804,19 @@ def create_execute_query_tool(
                 and resolved_blob_store
                 and org_id
             ):
-                async def _save_csv_to_blob() -> Optional[Dict[str, Any]]:
-                    try:
-                        csv_bytes = _rows_to_csv_bytes(raw_columns, raw_rows)
-                        file_name = f"query_result_{int(time.time())}.csv"
-                        upload_info = await resolved_blob_store.save_conversation_file_to_storage(
-                            org_id=org_id,
-                            conversation_id=conversation_id,
-                            file_name=file_name,
-                            file_bytes=csv_bytes,
-                        )
-                        logger.info(
-                            "CSV export complete for conversation %s (%d rows)",
-                            conversation_id,
-                            len(raw_rows),
-                        )
-                        return {"type": "csv_download", **upload_info}
-                    except Exception:
-                        logger.exception(
-                            "Background CSV export failed for conversation %s",
-                            conversation_id,
-                        )
-                        return None
+                from app.sandbox.artifact_upload import save_query_result_csv
 
-                task = asyncio.create_task(_save_csv_to_blob())
+                task = asyncio.create_task(save_query_result_csv(
+                    blob_store=resolved_blob_store,
+                    graph_provider=graph_provider,
+                    org_id=org_id,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    columns=raw_columns,
+                    rows=raw_rows,
+                    file_name=f"query_result_{int(time.time())}.csv",
+                    source_tool="sql.execute_sql_query",
+                ))
                 register_task(conversation_id, task)
             
             return result

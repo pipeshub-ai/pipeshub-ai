@@ -160,6 +160,16 @@ describe('what this module writes reaches the client', () => {
     expect(sendThroughMiddleware(mapped).message).to.equal(detail)
   })
 
+  it("passes search's sentence for a permission read that failed", () => {
+    // Without it the reader sees "briefly unavailable" and no reason why
+    // search came back empty.
+    const detail =
+      "We couldn't check which documents you have access to just now, so no results are shown. Please try again in a minute."
+    const mapped = handleBackendError({ statusCode: 503, data: { detail } }, 'Search')
+
+    expect(sendThroughMiddleware(mapped).message).to.equal(detail)
+  })
+
   // Messages other modules already write for readers. They are HttpErrors our
   // own code builds, and each one merged in its own PR; a future tightening of
   // the middleware must not quietly flatten them.

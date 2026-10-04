@@ -15,6 +15,11 @@ class TestAllConnectorApps:
         app = BookStackApp(connector_id="conn-1")
         assert app.get_connector_id() == "conn-1"
 
+    def test_drupal_wiki_app(self):
+        from app.connectors.sources.drupal_wiki.common.apps import DrupalWikiApp
+        app = DrupalWikiApp(connector_id="conn-1")
+        assert app.get_connector_id() == "conn-1"
+
     def test_box_app(self):
         from app.connectors.sources.box.common.apps import BoxApp
         app = BoxApp(connector_id="conn-1")

@@ -19,6 +19,13 @@
       "resetExpiredMessage": "This password reset link has expired. Please request a new one from the Forgot Password option on the sign-in page.",
       "backToSignIn": "Back to Sign In",
       "genericLinkInvalidMessage": "This link may have expired. Please ask your organization admin to send you a new invite."
+    },
+    "form": {
+      "title": "Change Password",
+      "newPasswordLabel": "New Password*",
+      "newPasswordPlaceholder": "Enter your new password",
+      "confirmPasswordLabel": "Confirm Password*",
+      "confirmPasswordPlaceholder": "Confirm your password"
     }
   },
   "agents": {
@@ -57,6 +64,7 @@
     "thinkingFallback": "Thinking…",
     "refiningResponse": "Refining response…",
     "errorFallback": "An error occurred. Please try again.",
+    "askQuestionResumeFailed": "Couldn't send your answers. Submit again to retry.",
     "copyCode": "Copy",
     "copiedCode": "Copied"
   },
@@ -217,11 +225,16 @@
       "visitDocs": "Visit",
       "docsLabel": "documentation",
       "toLearnMore": "to learn more."
+    },
+    "tour": {
+      "dismiss": "Dismiss tour",
+      "completedDescription": "You're all set now. If you want to know more check out <docs>documentation</docs>."
     }
   },
   "nav": {
     "collections": "Collections",
     "allRecords": "All Records",
+    "allArtifacts": "All Artifacts",
     "workspace": "Workspace",
     "shared": "Shared with me",
     "private": "My collections",
@@ -235,6 +248,31 @@
     "searchChats": "Search Chats",
     "inbox": "Inbox",
     "notifications": "Notifications"
+  },
+  "artifacts": {
+    "title": "All Artifacts",
+    "empty": "No artifacts yet",
+    "emptyHint": "Files your agents create in chat will show up here.",
+    "loadFailed": "Couldn't load artifacts",
+    "previewFailed": "Couldn't preview this file",
+    "downloadFailed": "Couldn't download this file",
+    "openInChat": "Open in chat",
+    "searchPlaceholder": "Search artifacts",
+    "conversation": "Conversation",
+    "untitledChat": "—",
+    "name": "Name",
+    "size": "Size",
+    "showing": "Showing {{start}}-{{end}} of {{total}}",
+    "types": {
+      "IMAGE": "Image",
+      "CHART": "Chart",
+      "DOCUMENT": "Document",
+      "SPREADSHEET": "Spreadsheet",
+      "PRESENTATION": "Presentation",
+      "DATA_FILE": "Data file",
+      "CODE": "Code",
+      "CODE_OUTPUT": "Code output"
+    }
   },
   "notifications": {
     "title": "Notifications",
@@ -277,7 +315,10 @@
     "uploading": "Uploading...",
     "saving": "Saving...",
     "processing": "Processing...",
-    "reindexing": "Reindexing..."
+    "reindexing": "Reindexing...",
+    "tryAgain": "Try again",
+    "edit": "Edit",
+    "remove": "Remove"
   },
   "filter": {
     "type": "Type",
@@ -433,7 +474,15 @@
     "beta": {
       "label": "Beta",
       "tooltip": "This feature is in beta and may change."
-    }
+    },
+    "you": "You",
+    "refreshing": "Refreshing...",
+    "clear": "Clear",
+    "current": "Current",
+    "openProfile": "Open profile",
+    "loading": "Loading...",
+    "moreOptions": "More options",
+    "docs": "Docs"
   },
   "units": {
     "bytes": "Bytes",
@@ -472,7 +521,11 @@
     "more": "More",
     "loadMore": "Load more",
     "moreCollections": "More Collections",
-    "searchCollections": "Search"
+    "searchCollections": "Search",
+    "open": "Open sidebar",
+    "expand": "Expand sidebar",
+    "close": "Close sidebar",
+    "collapse": "Collapse sidebar"
   },
   "menu": {
     "reindex": "Re-index",
@@ -508,7 +561,16 @@
     "folderEmpty": "This folder is empty",
     "itemStats": "You have {{collections}} Collections, {{files}} Files inside this collection folder",
     "searchPlaceholder": "eg: Sales Docs",
-    "searchMinChars": "Minimum 2 characters required for search"
+    "searchMinChars": "Minimum 2 characters required for search",
+    "createFolder": "Create Folder",
+    "goToCollections": "Go to Collections",
+    "namedEmpty": "{{name}} is empty",
+    "noRecords": "No records found",
+    "collectionsLoadFailed": "We couldn't load your collections. Check your connection, then select {{action}}.",
+    "searchEmptyHint": "Couldn't find what you are searching for. Try searching for something else.",
+    "adjustFiltersHint": "Select a different source or adjust your filters",
+    "addFromCollectionsHint": "You can add your company files or folders from the Collections",
+    "addFilesHint": "Add your files or folders"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -568,7 +630,15 @@
       "browseWorkspaceActionsAria": "Open workspace actions to add or manage integrations",
       "actionsCount": "{{count}} Actions",
       "resetDefaults": "Reset to defaults",
-      "knowledgeScopeClearedWarning": "No knowledge sources are included for this run, so the agent will not search your connectors or collections for answers."
+      "knowledgeScopeClearedWarning": "No knowledge sources are included for this run, so the agent will not search your connectors or collections for answers.",
+      "searchMcp": "Search MCP servers",
+      "mcpTab": "MCP",
+      "noMcpServers": "No MCP servers configured for this agent.",
+      "configureMoreMcp": "Configure more MCP servers",
+      "browseWorkspaceMcp": "Browse MCP servers",
+      "browseWorkspaceMcpAria": "Open MCP servers to add or manage connections",
+      "noActionMatches": "No actions match your search.",
+      "noMcpMatches": "No MCP servers match your search."
     },
     "projectResources": {
       "noConnectors": "No connectors enabled for this project.",
@@ -698,7 +768,8 @@
       "editComingSoonTitle": "Coming Soon",
       "editComingSoonDescription": "We're building out support for edit",
       "deprecatedTools": "This agent has tools that are no longer available. Open the Agent Builder to remove them.",
-      "openAgentBuilder": "Open Agent Builder"
+      "openAgentBuilder": "Open Agent Builder",
+      "loadConversationFailed": "We couldn't open this conversation. Refresh the page to try again."
     },
     "queryModes": {
       "chat": {
@@ -822,7 +893,8 @@
         "icons": [
           "sheets",
           "slack"
-        ]
+        ],
+        "restricted": true
       }
     },
     "askMoreQuestionSets": [
@@ -898,6 +970,7 @@
       },
       "workspace": {
         "failedToLoad": "Failed to load this project",
+        "failedToLoadFiles": "Failed to load files",
         "instructionsTitle": "Instructions",
         "instructionsPlaceholder": "Add instructions the assistant should follow for every chat in this project…",
         "noInstructions": "No instructions added yet",
@@ -973,7 +1046,8 @@
         "title": "Move to project",
         "noProjects": "You don't have any projects yet",
         "removeOption": "No project",
-        "moving": "Moving…"
+        "moving": "Moving…",
+        "moveFailed": "Failed to move conversation"
       },
       "deleteDialog": {
         "title": "Delete this project?",
@@ -987,7 +1061,86 @@
         "editor": "Editor",
         "viewer": "Viewer"
       }
-    }
+    },
+    "scrollAttachmentsLeft": "Scroll attachments left",
+    "scrollAttachmentsRight": "Scroll attachments right",
+    "toolValidation": {
+      "tooManyTools": "Too many tools selected. Maximum 1024 tools are allowed per request due to performance limits.",
+      "multipleInstances": "Multiple instances of the same action type ({{types}}) cannot be used together. Open the Actions panel and select only one instance per type."
+    },
+    "attachments": {
+      "uploadFailed": "Upload failed",
+      "uploadFailedNamed": "Couldn't attach {{name}}. {{error}}",
+      "uploadFailedNamedRetry": "Couldn't attach {{name}}. Please try again.",
+      "unsupportedType": "Unsupported file type: {{names}}. Supported types: {{types}}.",
+      "fileTooLarge": "File too large: {{names}}. Maximum size is {{maxMb}} MB per file.",
+      "tooManyFiles": "Maximum {{max}} attachments per message.",
+      "pasteTruncated": "\n\n[Content truncated — pasted text exceeded the maximum attachment size.]",
+      "uploading": "Uploading…",
+      "retry": "Retry upload",
+      "pastedText": "Pasted text",
+      "uploadingNamed": "Uploading pasted text",
+      "removePastedText": "Remove pasted text",
+      "showInTextField": "Show in text field",
+      "previewLoadFailed": "Failed to load content",
+      "copyText": "Copy",
+      "closePreview": "Close",
+      "loadingPreview": "Loading…",
+      "pasteMeta_one": "{{chars}} chars · {{count}} line",
+      "pasteMeta_other": "{{chars}} chars · {{count}} lines"
+    },
+    "voiceSttNotConfigured": "Configure a Speech-to-Text (STT) model in AI Models settings to enable voice input.",
+    "voiceSttLoading": "Checking speech capabilities…",
+    "expandComposer": "Expand composer",
+    "stopGenerating": "Stop generating",
+    "backToChat": "Back to chat",
+    "searchToggle": {
+      "ariaLabel": "Switch to search view"
+    },
+    "plusMenu": {
+      "ariaLabelFiltersApplied": "Attach files and capabilities. Search filters applied",
+      "ariaLabel": "Attach files and capabilities",
+      "title": "Add files & capabilities"
+    },
+    "stopListening": "Stop listening",
+    "voiceInput": "Voice input",
+    "regenerateResponse": "Regenerate response",
+    "editQuery": "Edit Query",
+    "queryOptions": "Query options",
+    "models": "Models",
+    "manage": "Manage",
+    "configuredModels": "Configured Models",
+    "reasoningEffort": {
+      "label": "Reasoning Effort",
+      "overrideHint": "Click again to use the default.",
+      "defaultHintWithLevel": "Defaults to {{level}} when not set.",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "max": "Max"
+    },
+    "universalAgent": {
+      "toolsLoadError": "Failed to load available actions.",
+      "mcpLoadError": "Failed to load MCP servers.",
+      "noReasoningModel": "No reasoning-capable model is configured. Configure one in Settings → AI Models before using Agent mode.",
+      "loadingTools": "Loading actions…",
+      "noActions": "No authenticated actions found. Connect integrations in Workspace → Actions.",
+      "loadingMcp": "Loading MCP servers…",
+      "noMcpServers": "No authenticated MCP servers found. Connect one in Workspace → MCP Servers.",
+      "toolCount_one": "{{count}} tool",
+      "toolCount_other": "{{count}} tools"
+    },
+    "agentCapabilities": {
+      "notConfiguredOnAgent": "Not configured on this agent",
+      "internalSearch": "Internal Search",
+      "webSearch": "Web Search"
+    },
+    "resizePanels": "Resize chat and preview panels",
+    "mobileProfileComingSoon": "Profile page on mobile is coming soon.",
+    "sendMessage": "Send message",
+    "demoHide": "Hide demo data",
+    "demoRestrictedHint": "Pricing committee only, so you'll get no answer here. That's permissions at work.",
+    "demoRestrictedHintSignIn": "Pricing committee only, so you'll get no answer here. Sign in as {{email}} to see the answer."
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -1029,7 +1182,7 @@
         "changeRoleError": "Failed to change role",
         "maxAdminsReachedTitle": "Cannot add another admin",
         "maxAdminsReached": "An organization can have at most 5 admins.",
-        "removeFromWorkspace": "Remove from Workplace",
+        "removeFromWorkspace": "Remove from Workspace",
         "demoteAdminBeforeRemoveTitle": "Cannot remove admin",
         "demoteAdminBeforeRemove": "Demote the admin to member, then remove them.",
         "removeUserTitle": "Remove user?",
@@ -1060,7 +1213,10 @@
         "unblockSuccess": "User unblocked successfully",
         "unblockError": "Failed to unblock user",
         "unblocking": "Unblocking…",
-        "edit": "Edit"
+        "edit": "Edit",
+        "resendInviteSuccess": "Invite resent",
+        "resendInviteSuccessDescription": "Invite has been resent to {{email}}",
+        "resendInviteError": "Failed to resend invite"
       },
       "profile": {
         "title": "Profile",
@@ -1104,6 +1260,8 @@
         "send": "Send Invite",
         "successTitle": "Invite sent!",
         "successDescription": "{{email}} has been invited",
+        "queuedTitle": "Invites queued",
+        "queuedDescription": "Emails to {{email}} are being sent in the background. You'll get a notification if any can't be delivered.",
         "invalidEmail": "Invalid email address",
         "errorGeneric": "Failed to send invite",
         "importNoEmails": "No email addresses found in the file",
@@ -1115,8 +1273,35 @@
         "importSkippedDescription": "Invalid entries are marked in the list — remove them before sending.",
         "importFailed": "Import failed",
         "importFailedDescription": "Could not read the file. Upload a valid CSV or Excel file.",
-        "adminGroupWarning": "Everyone invited here becomes a full org admin — including every address imported from a file. Admins can manage users, groups and org settings."
-      }
+        "adminGroupWarning": "Everyone invited here becomes a full org admin — including every address imported from a file. Admins can manage users, groups and org settings.",
+        "editSuccessTitle": "Invite updated",
+        "editSuccessDescription": "Invite for {{email}} has been updated",
+        "editError": "Failed to update invite",
+        "editTitle": "Edit Invite",
+        "update": "Update Invite",
+        "smtpNotConfiguredTooltip": "SMTP is not configured. Set up email settings before sending invites."
+      },
+      "bulk": {
+        "resendInvite": "Resend Invite",
+        "adminInviteCantBeCancelled": "Admin invites cannot be cancelled",
+        "cancelInvite": "Cancel Invite",
+        "adminCantBeRemoved": "Admin users cannot be removed",
+        "removeFromWorkspace": "Remove from Workspace",
+        "removeSuccess_one": "{{count}} user removed from workspace",
+        "removeSuccess_other": "{{count}} users removed from workspace",
+        "removePartialError_one": "Failed to remove {{count}} user",
+        "removePartialError_other": "Failed to remove {{count}} users",
+        "resendSuccess_one": "Invite resent to {{count}} user",
+        "resendSuccess_other": "Invite resent to {{count}} users",
+        "resendPartialError_one": "Failed to resend invite to {{count}} user",
+        "resendPartialError_other": "Failed to resend invite to {{count}} users",
+        "cancelSuccess_one": "{{count}} invite cancelled",
+        "cancelSuccess_other": "{{count}} invites cancelled",
+        "cancelPartialError_one": "Failed to cancel {{count}} invite",
+        "cancelPartialError_other": "Failed to cancel {{count}} invites"
+      },
+      "inviteDisabledSmtp": "SMTP is not configured. Set up email settings before inviting users.",
+      "bulkLabel": "Users"
     },
     "groups": {
       "title": "Groups",
@@ -1142,7 +1327,8 @@
         "delete": "Delete",
         "deleteSuccess": "Group deleted",
         "deleteError": "Failed to delete group",
-        "managePermissions": "Manage Permissions"
+        "managePermissions": "Manage Permissions",
+        "deleteSystemTooltip": "Only custom groups can be deleted"
       },
       "create": {
         "title": "Create Group",
@@ -1168,7 +1354,8 @@
         "users": "Users",
         "noUsers": "No users in this group",
         "accessPermissions": "Access Permissions",
-        "accessComingSoon": "Access Permissions Coming Soon"
+        "accessComingSoon": "Access Permissions Coming Soon",
+        "searchUsers": "Search users..."
       },
       "edit": {
         "edit": "Edit Group",
@@ -1188,7 +1375,8 @@
         "deleting": "Deleting...",
         "deleteSuccess": "Group deleted",
         "deleteSuccessDescription": "\"{{name}}\" has been deleted",
-        "deleteError": "Failed to delete group"
+        "deleteError": "Failed to delete group",
+        "nameRequired": "Group name is required"
       },
       "permissions": {
         "title": "Access Permissions",
@@ -1240,7 +1428,9 @@
         "cancel": "Cancel",
         "successTitle": "Team created!",
         "successDescription": "\"{{name}}\" has been created successfully",
-        "errorGeneric": "Failed to create team"
+        "errorGeneric": "Failed to create team",
+        "applyToAll": "Apply to all",
+        "memberRoles": "Member Roles"
       },
       "detail": {
         "nameLabel": "Team Name",
@@ -1251,7 +1441,8 @@
         "noMembers": "No members in this team",
         "roleLabel": "Role",
         "accessPermissions": "Access Permissions",
-        "accessComingSoon": "Access Permissions Coming Soon"
+        "accessComingSoon": "Access Permissions Coming Soon",
+        "searchMembers": "Search members..."
       },
       "edit": {
         "edit": "Edit Team",
@@ -1270,7 +1461,10 @@
         "deleting": "Deleting...",
         "deleteSuccess": "Team deleted",
         "deleteSuccessDescription": "\"{{name}}\" has been deleted",
-        "deleteError": "Failed to delete team"
+        "deleteError": "Failed to delete team",
+        "saveErrorDescription": "Could not update team. Please try again.",
+        "applyToAll": "Apply to all",
+        "newMemberRoles": "New Member Roles"
       }
     },
     "oauth2": {
@@ -1431,7 +1625,6 @@
       "columnCreated": "Created",
       "columnExpires": "Expires",
       "columnLastUsed": "Last used",
-      "scopeCount": "{{count}} scopes",
       "neverUsed": "Never",
       "neverExpires": "Never",
       "revokeAria": "Revoke {{name}}",
@@ -1476,7 +1669,9 @@
         "copyPasteBlockAria": "Copy paste block",
         "copySuccessTitle": "Copied",
         "copyErrorTitle": "Could not copy"
-      }
+      },
+      "scopeCount_one": "{{count}} scope",
+      "scopeCount_other": "{{count}} scopes"
     },
     "aiModels": {
       "title": "AI Models",
@@ -1687,7 +1882,8 @@
         "authenticate": "Authenticate",
         "manage": "Manage",
         "unavailable": "Not available",
-        "notConfigured": "Not configured"
+        "notConfigured": "Not configured",
+        "adminSetupRequired": "Admin setup required"
       },
       "trailingYourActions": "Your actions",
       "loading": "Loading actions…",
@@ -1789,7 +1985,11 @@
         "saveSuccess": "Changes saved.",
         "saveDeauthNotice": "Saved. {{count}} user(s) were signed out and must authenticate again.",
         "missingInstance": "This action is missing an instance id. Try refreshing the page.",
-        "copyFailed": "Could not copy to the clipboard."
+        "copyFailed": "Could not copy to the clipboard.",
+        "loadingOauthApps": "Loading OAuth apps…",
+        "noOauthApps": "No OAuth apps configured",
+        "personalActionsHint": "User credentials are managed in My Actions.",
+        "openPersonalActionsCta": "Open My Actions"
       },
       "errors": {
         "instanceNameRequired": "Enter an instance name."
@@ -1797,8 +1997,15 @@
       "validation": {
         "fieldRequired": "{{field}} is required",
         "fieldMustBeTrue": "{{field}} must be true",
-        "fixErrorsAbove": "Fix the highlighted fields above to continue."
-      }
+        "fixErrorsAbove": "Fix the highlighted fields above to continue.",
+        "minLength": "{{field}} must be at least {{minLength}} characters",
+        "maxLength": "{{field}} must be no more than {{maxLength}} characters",
+        "email": "{{field}} must be a valid email address",
+        "url": "{{field}} must be a valid URL",
+        "urlProtocol": "{{field}} must use http or https"
+      },
+      "adminRequiredToast": "Only admins can add new actions. Ask your admin to configure this action first.",
+      "personalNonAdminHint": "Actions marked \"Not configured\" need to be set up by an admin before you can use them."
     },
     "rightPanel": {
       "primaryDisabledHint": "Scroll up and complete the required fields (marked with *) to continue.",
@@ -1916,6 +2123,14 @@
         "message": "If you discard, your edits won't be saved",
         "confirm": "Discard",
         "cancel": "Continue Editing"
+      },
+      "featureFlags": {
+        "title": "Feature flags",
+        "subtitle": "Toggle experimental capabilities for every agent in this workspace."
+      },
+      "vectorStore": {
+        "title": "Vector Store",
+        "subtitle": "Delete all embeddings or re-embed every record from stored content."
       }
     },
     "authentication": {
@@ -2010,7 +2225,8 @@
       },
       "tabs": {
         "authenticate": "Authenticate Instance",
-        "configureRecords": "Configure Records"
+        "configureRecords": "Configure Records",
+        "authorize": "Authorize"
       },
       "tooltips": {
         "authFirst": "Complete authentication first to save configuration"
@@ -2073,7 +2289,8 @@
         "alreadyRemovingTitle": "Already being removed",
         "alreadyRemovingDescription": "This connector is already being removed.",
         "successTitle": "Connector removed",
-        "errorTitle": "Failed to remove connector"
+        "errorTitle": "Failed to remove connector",
+        "errorDescription": "Please try again; if it keeps happening, contact your workspace admin."
       },
       "selectRecords": {
         "title": "Select Records",
@@ -2182,13 +2399,21 @@
         "syncSettings": "Sync Settings",
         "syncStrategySettingsHint": "You can change the sync strategy by going to <bold>{{manageConfig}}</bold>.",
         "syncInterval": "Sync Interval",
-        "syncIntervalHelper": "Set how often {{name}} data is refreshed"
+        "syncIntervalHelper": "Set how often {{name}} data is refreshed",
+        "removeInstance": "Remove connector instance",
+        "removeInstanceDescription": "Permanently remove this connector instance and stop syncing its data. This cannot be undone."
       },
       "instanceCard": {
         "recordsSelected": "Records Selected",
         "syncStrategy": "Sync Strategy",
         "authBannerTitle": "Authenticate Personal Account",
-        "authBannerDescription": "Connect your account to enable access and workspace configuration"
+        "authBannerDescription": "Connect your account to enable access and workspace configuration",
+        "lastSynced": "Last synced",
+        "syncEnabled": "Sync enabled",
+        "removing": "This connector is being removed.",
+        "configureFirst": "Finish configuration before you can enable sync.",
+        "authenticateFirst": "Authenticate this connector before you can enable sync.",
+        "selected": "{{field}} selected"
       },
       "instanceStatus": {
         "setup": {
@@ -2238,6 +2463,111 @@
         "syncing": "Syncing Records...",
         "synced": "Records Synced",
         "failed": "Sync Failed"
+      },
+      "errors": {
+        "missingCreatedId": "Create succeeded but no connector id was returned",
+        "createdConfigUnavailable": "Connector was created but configuration could not be loaded. Try reopening the panel.",
+        "authenticateFirst": "No connector ID found. Please complete authentication first."
+      },
+      "syncIntervals": {
+        "5": "Every 5 Minutes",
+        "15": "Every 15 Minutes",
+        "30": "Every 30 Minutes",
+        "60": "Every 1 Hour",
+        "240": "Every 4 Hours",
+        "480": "Every 8 Hours",
+        "720": "Every 12 Hours",
+        "1440": "Every 1 Day",
+        "10080": "Every 1 Week",
+        "other": "Every {{minutes}} min"
+      },
+      "filters": {
+        "selectField": "Select {{field}}",
+        "selectFieldPlaceholder": "Select {{field, lowercase}}",
+        "searchOptions": "Search…",
+        "addFieldValue": "Add {{field}}…",
+        "authenticateForOptions": "Complete authentication and save the connector to load options for this filter.",
+        "manualIndexingInfo": "About manual indexing",
+        "manualIndexingTooltip": "OFF (default): Records are automatically indexed based on the indexing filters below.\n\nON: No records are automatically indexed. You manually choose which records to index from the knowledge base.",
+        "title": "Indexing & sync filters",
+        "description": "Indexing filters always apply—toggle booleans or adjust values as needed. For sync filters, add only what you need; list and date filters use an operator and value, and you can clear a sync filter when you do not want that constraint.",
+        "syncTitle": "Sync filters",
+        "indexingTitle": "Indexing filters",
+        "add": "Add filter",
+        "incomplete": "Finish operator and value for each filter below to see a summary here.",
+        "empty": "No filters yet. Use \"Add filter\" to choose one of the supported filters.",
+        "operator": "Operator",
+        "chooseOperator": "Choose operator…",
+        "value": "Value",
+        "rollingWindow": "This operator uses a rolling window — no fixed dates to set.",
+        "dateRange": "date range",
+        "operators": {
+          "is": "Is",
+          "is_not": "Is Not",
+          "is_empty": "Is Empty",
+          "is_not_empty": "Is Not Empty",
+          "contains": "Contains",
+          "does_not_contain": "Does Not Contain",
+          "is_after": "Is After",
+          "is_before": "Is Before",
+          "is_between": "Is Between",
+          "in": "In",
+          "not_in": "Not In",
+          "greater_than_or_equal": "Greater Than Or Equal",
+          "greater_than": "Greater Than",
+          "equal": "Equal",
+          "less_than": "Less Than",
+          "less_than_or_equal": "Less Than Or Equal",
+          "last_7_days": "Last 7 Days",
+          "last_14_days": "Last 14 Days",
+          "last_30_days": "Last 30 Days",
+          "last_90_days": "Last 90 Days",
+          "last_180_days": "Last 180 Days",
+          "last_365_days": "Last 365 Days"
+        },
+        "fieldValues": "{{field}} values",
+        "loadingOptions": "Loading options…",
+        "noResults": "No results found",
+        "loadingMore": "Loading more…",
+        "optionsLoadFailed": "We couldn't load the options for this filter. Close this list and open it again to retry."
+      },
+      "syncStrategies": {
+        "SCHEDULED": "Scheduled",
+        "MANUAL": "Manual",
+        "WEBHOOK": "Webhook",
+        "REALTIME": "Real-time"
+      },
+      "syncIntervalOptions": {
+        "5": "5 Minutes",
+        "15": "15 Minutes",
+        "30": "30 Minutes",
+        "60": "1 Hour",
+        "240": "4 Hours",
+        "480": "8 Hours",
+        "720": "12 Hours",
+        "1440": "1 Day",
+        "10080": "1 Week"
+      },
+      "vectorStore": {
+        "cleanup": {
+          "label": "Clean up embeddings",
+          "rowDescription": "Drop all embeddings and recreate the vector collection empty. Records are not deleted.",
+          "buttonLabel": "Clean up",
+          "title": "Delete all embeddings?",
+          "body": "This drops the shared vector collection and recreates it empty.",
+          "warning": "Search will stop returning results for everyone and stays broken until a reindex has finished. Reindexing large deployments can take hours. Your records are not deleted — only their embeddings.",
+          "confirm": "Delete embeddings"
+        },
+        "reindex": {
+          "label": "Reindex embeddings",
+          "rowDescription": "Re-embed every record from stored content. Sources are not re-downloaded or parsed again.",
+          "buttonLabel": "Reindex",
+          "title": "Reindex all records?",
+          "body": "This re-embeds every record from its stored content. Sources are not downloaded or parsed again.",
+          "warning": "This can take a long time on large deployments and runs in the background.",
+          "confirm": "Start reindex"
+        },
+        "typePrompt": "Type {{token}} to confirm."
       }
     },
     "mcpServers": {
@@ -2295,7 +2625,8 @@
         "authBannerTitle": "Authentication required",
         "authBannerDescription": "Authenticate this MCP server so your team's agents can use it.",
         "authBannerAuthenticatedTitle": "Connected",
-        "authBannerAuthenticatedDescription": "You can reauthenticate or disconnect this MCP server."
+        "authBannerAuthenticatedDescription": "You can reauthenticate or disconnect this MCP server.",
+        "createdBy": "Created by"
       },
       "deleteDialog": {
         "title": "Delete MCP server?",
@@ -2383,7 +2714,8 @@
         "noCode": "No authorization code was returned.",
         "noState": "No state parameter was returned.",
         "backendRejected": "The server rejected the authorization request."
-      }
+      },
+      "deleteDisabledTooltip": "This server cannot be deleted"
     },
     "bots": {
       "subtitle": "Configure bot credentials and optionally map each bot to an agent",
@@ -2464,7 +2796,12 @@
         "typeNameToConfirm": "Type \"{{name}}\" to confirm",
         "deleteBotBodyLine1": "Are you sure you want to delete {{name}}? This action cannot be undone.",
         "deleteBotBodyLine2": "All configurations and credentials associated with this bot will be permanently removed."
-      }
+      },
+      "errors": {
+        "loadConfigs": "Failed to load bot configurations",
+        "loadData": "Failed to load data"
+      },
+      "refreshed": "Refreshed"
     },
     "skills": {
       "title": "Skills",
@@ -2598,11 +2935,13 @@
         "previewError": "Failed to preview this skill",
         "confirmImport": "Import Skill",
         "source": "Source: {{source}}",
-        "resourceCount": "{{count}} resource(s)",
-        "skippedBinary": "{{count}} binary file(s) were skipped (not supported yet)",
         "nameHint": "Lowercase kebab-case. Change this if the original name is already a built-in skill (for example pptx).",
         "nameInvalid": "Name must be lowercase letters, numbers, and single hyphens.",
-        "originalName": "Original name: {{name}}"
+        "originalName": "Original name: {{name}}",
+        "resourceCount_one": "{{count}} resource",
+        "resourceCount_other": "{{count}} resources",
+        "skippedBinary_one": "{{count}} binary file was skipped (not supported yet)",
+        "skippedBinary_other": "{{count}} binary files were skipped (not supported yet)"
       },
       "candidates": {
         "title": "Pending Skill Candidates",
@@ -2702,7 +3041,15 @@
       "systemPrompt": "System Prompt",
       "systemPromptDescription": "Define the behaviour and personality of the AI assistant",
       "configCalloutTitle": "Prompt Configuration",
-      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs."
+      "configCalloutDescription": "The custom system prompt helps define the AI's behaviour, tone, and approach to answering questions. Make sure your prompt is clear and aligns with your organisation's needs.",
+      "resetToDefault": "Reset to Default",
+      "customInstructionsTitle": "Custom Instructions",
+      "customInstructionsDescription": "Add custom instructions for the Chat Assistant — e.g. respond in a specific language, follow a formatting style, or apply any behaviour you want. Each mode below has its own instructions since they answer questions differently.",
+      "scopeHint": "These instructions apply only to the <bold>Chat Assistant</bold> (Agent mode below). Custom agents created in <bold>Agent Builder</bold> are unaffected — each agent uses its own system prompt and instructions configured on the agent itself.",
+      "agentTitle": "Agent",
+      "agentDescription": "Applied when a user chats in Agent mode — the assistant decides per-question whether to use internal knowledge, web search, or both.",
+      "agentPlaceholder": "e.g. Prefer internal knowledge for company-specific questions. Always summarize before providing details.",
+      "agentHelperText": "This prompt guides the AI when it can freely choose between internal knowledge and web search. Changes take effect immediately for new conversations."
     },
     "webSearch": {
       "loading": "Loading web search settings…",
@@ -2856,7 +3203,18 @@
       "seeMore": "See more",
       "showMore": "Show More",
       "moreAgents": "More Agents",
-      "moreChats": "More Chats"
+      "moreChats": "More Chats",
+      "demoData": {
+        "description": "Acme Corp is a fictional company loaded so you can try PipesHub. This only changes what you see; nothing is deleted.",
+        "everyoneDescription": "Turning it off hides the demo from everyone's answers, search and records, and stops the sample accounts signing in. Nothing is deleted.",
+        "everyoneLabel": "Offer the demo to everyone",
+        "followingDefault": "Following the default: shown until your organization has data of its own, then hidden.",
+        "label": "Show Acme Corp demo data in my answers, search and records",
+        "offForEveryone": "Turned off for everyone by an admin.",
+        "title": "Demo data",
+        "useDefault": "Use the default",
+        "yourChoice": "Your own choice."
+      }
     },
     "services": {
       "pageTitle": "Services",
@@ -3114,14 +3472,14 @@
     },
     "serviceAccounts": {
       "title": "Service accounts",
-      "subtitle": "Machine identities, so automation reads with its own permissions instead of borrowing someone's.",
+      "subtitle": "Service accounts let an automated system connect to PipesHub with its own identity and its own permissions, instead of using a person's account.",
       "newAccount": "New service account",
-      "errorGeneric": "Could not load service accounts.",
+      "errorGeneric": "The service accounts could not be loaded.",
       "retry": "Try again",
       "emptyTitle": "No service accounts yet",
-      "emptyDescription": "A service account is how a script reads from PipesHub without signing in as a colleague. It sees only what you grant it, and it keeps working when people leave.",
+      "emptyDescription": "Scripts, integrations, and scheduled jobs can use a service account to read from PipesHub without signing in as a colleague. Each account has only the access you grant it, and it keeps working when people change roles or leave the organization.",
       "columnName": "Name",
-      "columnDescription": "What it is for",
+      "columnDescription": "Purpose",
       "columnStatus": "Status",
       "statusActive": "Active",
       "statusDisabled": "Disabled",
@@ -3131,63 +3489,66 @@
       "delete": "Delete",
       "enabledTitle": "Service account enabled",
       "disabledTitle": "Service account disabled",
-      "disabledBody": "Its tokens stopped working immediately, not just at the next sign-in.",
-      "updateErrorTitle": "Could not update the service account",
+      "disabledBody": "Every token this account holds stopped working immediately, rather than at the next sign-in.",
+      "updateErrorTitle": "The service account could not be updated",
       "deleteTitle": "Delete this service account?",
-      "deleteDescription": "{{name}} will stop working straight away, and every token it holds is revoked. Anything still using one of those tokens will start failing.",
+      "deleteDescription": "{{name}} will stop working immediately, and every token it holds will be revoked. Any integration still using one of those tokens will begin to fail.",
       "deleteSuccessTitle": "Service account deleted",
-      "deleteErrorTitle": "Could not delete the service account",
+      "deleteErrorTitle": "The service account could not be deleted",
       "create": {
         "title": "New service account",
-        "intro": "Automation authenticates as this account instead of as a person, so what it can read is decided here rather than inherited from whoever set it up.",
+        "intro": "An automated system authenticates as this account rather than as one of your colleagues. You choose what it is allowed to read, so its access does not depend on whoever set it up.",
         "slugLabel": "Short name",
-        "slugHelp": "Lowercase letters, digits and single hyphens. This becomes part of the account's address and cannot be changed later.",
+        "slugHelp": "Use lowercase letters, numbers, and single hyphens. This becomes part of the account's email address and cannot be changed later.",
         "slugLengthError": "Use between 3 and 48 characters.",
-        "slugFormatError": "Use lowercase letters, digits and single hyphens, not starting or ending with a hyphen.",
+        "slugFormatError": "Use lowercase letters, numbers, and single hyphens. The name cannot start or end with a hyphen.",
         "nameLabel": "Display name",
         "namePlaceholder": "Nightly sync",
-        "descriptionLabel": "What it is for",
+        "descriptionLabel": "Purpose",
         "descriptionPlaceholder": "Reads the handbook for the release digest",
-        "note": "Nobody can sign in as a service account, and it is always a member, never an administrator. Give it access the same way you would a colleague: through groups and teams.",
+        "note": "Nobody can sign in as a service account, and it is always a member rather than an administrator. Grant it access the same way you would for a colleague, through groups and teams.",
         "submit": "Create",
         "successTitle": "Service account created",
-        "errorTitle": "Could not create the service account"
+        "errorTitle": "The service account could not be created"
       },
       "tokens": {
         "title": "Tokens",
         "newToken": "New token",
         "mint": "Create token",
-        "nameLabel": "What is this token for",
+        "nameLabel": "What this token is for",
         "namePlaceholder": "Release digest job",
-        "scopesLabel": "Scopes",
-        "scopesHelp": "Choose what this token may do. There is no default: a credential that runs unattended should hold the access someone chose for it.",
+        "scopesLabel": "Permissions",
+        "scopesHelp": "Choose what this token is allowed to do. Nothing is selected by default, because a credential that runs unattended should hold only the permissions someone chose for it.",
         "expiryLabel": "Expires after",
-        "expiryDays": "{{count}} days",
         "existing": "Tokens",
-        "none": "This account holds no tokens yet.",
+        "none": "This account does not have any tokens yet.",
         "lastUsed": "Last used {{date}}",
         "neverUsed": "Never used",
         "expiresOn": "expires {{date}}",
-        "expiresInDays": "{{count}} days left",
         "expired": "Expired",
-        "expiringSoon": "{{count}} token(s) expire soon. Create the replacement, move the integration across, then revoke the old one.",
         "revoke": "Revoke",
         "revokeSuccessTitle": "Token revoked",
-        "revokeErrorTitle": "Could not revoke the token",
-        "mintErrorTitle": "Could not create the token",
-        "loadErrorTitle": "Could not load tokens",
+        "revokeErrorTitle": "The token could not be revoked",
+        "mintErrorTitle": "The token could not be created",
+        "loadErrorTitle": "The tokens could not be loaded",
         "copyNowTitle": "Copy this token now",
-        "copyNowBody": "This is the only time it is shown. Only its hash is stored, so it cannot be retrieved again.",
-        "disabledNote": "This account is disabled, so no new tokens can be created. Existing ones are listed below and can still be revoked.",
-        "rotationHelp": "To rotate: create the new token, move the integration across while both still work, then revoke the old one. Revoking first would break whatever is using it.",
+        "copyNowBody": "This is the only time the token is shown. PipesHub stores only a hash of it, so it cannot be retrieved later.",
+        "disabledNote": "This account is disabled, so you cannot create new tokens for it. The tokens it already holds are listed below and can still be revoked.",
+        "rotationHelp": "To replace a token, create the new one first and move the integration across while both still work, then revoke the old token. Revoking it first would break whatever is using it.",
         "loading": "Loading tokens…",
         "copy": "Copy token",
         "revokeTitle": "Revoke this token?",
-        "revokeDescription": "\"{{name}}\" stops working immediately and cannot be brought back. Anything still using it will start failing. If you are rotating, create the replacement and move the integration across first."
+        "revokeDescription": "\"{{name}}\" will stop working immediately and cannot be restored. Any integration still using it will begin to fail. If you are replacing it, create the new token and move the integration across first.",
+        "selectAllScopes": "Select All",
+        "clearAllScopes": "Clear all",
+        "expiryDays": "{{count}} days",
+        "expiresInDays": "Days left: {{count}}",
+        "expiringSoon": "Tokens expiring soon: {{count}}. Create a replacement for each one, move the integrations across, and then revoke the old tokens."
       },
       "disableTitle": "Disable this service account?",
-      "disableDescription": "{{name}} stops working immediately — including every token it already holds, not just at the next sign-in. Anything using one of those tokens will start failing until you enable it again.",
-      "disableConfirm": "Disable"
+      "disableDescription": "{{name}} will stop working immediately, including every token it already holds. Any integration using one of those tokens will fail until you enable the account again.",
+      "disableConfirm": "Disable",
+      "memberBadge": "Service account"
     }
   },
   "filePreview": {
@@ -3198,7 +3559,18 @@
     "showMore": "Show more",
     "showLess": "Show less",
     "lockZoom": "Lock zoom level",
-    "unlockZoom": "Unlock zoom level"
+    "unlockZoom": "Unlock zoom level",
+    "closePreview": "Close preview",
+    "openWebUrl": "Open web URL",
+    "openInSource": "Open in source",
+    "noDetails": "No file details available",
+    "metadata": "Metadata",
+    "webUrl": "Web URL",
+    "fitToScreen": "Fit to screen",
+    "resizeCitations": "Resize citations panel",
+    "resizePreview": "Resize file preview panel",
+    "viewCitations": "View Citations",
+    "openNamedInSource": "Open {{name}} in source"
   },
   "agentBuilder": {
     "goBack": "Go back",
@@ -3503,10 +3875,23 @@
     "toolInlineSuffix": "{{name}} tool",
     "paletteToolGroupLabel": "{{app}} tools",
     "nodeTemplateChatResponseDesc": "Sends the reply to the user",
-    "deprecatedToolsBanner": "{{count}} tool(s) on this agent are deprecated remove them : {{tools}}",
     "removeDeprecatedTools": "Remove Deprecated Tools",
     "showMore": "Show more",
-    "showLess": "Show less"
+    "showLess": "Show less",
+    "mcpServerAlreadyAttachedNotify": "{{name}} is already attached to this agent",
+    "webSearchOnlyOne": "Only one web search provider can be attached",
+    "mcpServerNodeSubtitle": "Tools from an MCP server",
+    "noMcpServersAvailable": "No MCP servers available",
+    "webSearchLocked": "Web search cannot be changed for this agent",
+    "webSearchLoading": "Loading web search providers…",
+    "webSearchConfigureFirst": "Configure {{name}} first",
+    "webSearch": "Web Search",
+    "toolsetOAuthServerError": "Authentication failed. Please try again or contact your administrator.",
+    "attached": "Attached",
+    "mcpServerWithToolCount_one": "MCP server with {{count}} tool",
+    "mcpServerWithToolCount_other": "MCP server with {{count}} tools",
+    "deprecatedToolsBanner_one": "{{count}} tool on this agent is deprecated. Remove it: {{tools}}",
+    "deprecatedToolsBanner_other": "{{count}} tools on this agent are deprecated. Remove them: {{tools}}"
   },
   "recordView": {
     "sections": {
@@ -3616,7 +4001,9 @@
       "mailSubject": "Subject",
       "ticketSummary": "Summary",
       "ticketDescription": "Description"
-    }
+    },
+    "previewConversionFailed": "Preview conversion failed. You can still download the file.",
+    "missingRecordId": "Missing record id"
   },
   "oauthConsent": {
     "loading": "Loading authorization request…",
@@ -3742,7 +4129,10 @@
       "orgEmailVerifiedTitle": "Organization verified",
       "orgEmailVerifiedDescription": "Your organization is now active. Sign in to continue.",
       "orgEmailVerifyFailedTitle": "Verification failed",
-      "orgEmailVerifyFailedDescription": "The link may be invalid or expired. Please sign up again."
+      "orgEmailVerifyFailedDescription": "The link may be invalid or expired. Please sign up again.",
+      "loadFailedTitle": "Couldn't load sign-in",
+      "loadFailedDescription": "PipesHub couldn't reach the server to load sign-in options. Check your connection or server address and try again.",
+      "retry": "Try again"
     },
     "common": {
       "signIn": "Sign In",
@@ -3773,7 +4163,14 @@
       "microsoftUnavailable": "Microsoft sign-in is currently unavailable. Contact your administrator.",
       "oauthUnavailable": "OAuth sign-in is currently unavailable. Contact your administrator.",
       "showPassword": "Show password",
-      "hidePassword": "Hide password"
+      "hidePassword": "Hide password",
+      "accountDisabled": "Your account has been disabled.",
+      "tooManyIncorrectCredentials": "You have entered incorrect credentials too many times"
+    },
+    "desktopHandoff": {
+      "title": "Sign-in sent to PipesHub",
+      "description": "You can close this tab and return to the PipesHub app.",
+      "openApp": "Open PipesHub"
     }
   },
   "healthGate": {
@@ -3801,5 +4198,108 @@
     "skip": "Skip",
     "next": "Next",
     "submit": "Submit"
+  },
+  "validation": {
+    "password": {
+      "rules": "At least 8 characters: lowercase, uppercase, number, symbol.",
+      "minLength": "Password must be at least 8 characters.",
+      "lowercase": "Password must contain a lowercase letter.",
+      "uppercase": "Password must contain an uppercase letter.",
+      "number": "Password must contain a number.",
+      "symbol": "Password must contain a symbol.",
+      "mismatch": "Passwords do not match."
+    }
+  },
+  "filterDropdown": {
+    "selectedCount": "{{count}} selected",
+    "is": "is",
+    "isAnyOf": "is any of",
+    "loadingOptions": "Loading options…",
+    "refreshingOptions": "Refreshing options…",
+    "loadingMore": "Loading more…"
+  },
+  "moveFolder": {
+    "moving": "Moving...",
+    "noFolders": "No folders found"
+  },
+  "shareSidebar": {
+    "suggestedTeams": "Suggested teams",
+    "suggestedMembers": "Suggested members",
+    "loadingMoreUsers": "Loading more users...",
+    "noResults": "No users or teams found",
+    "createNewTeam": "Create a New Team",
+    "sharing": "Sharing...",
+    "accessShared": "Access shared",
+    "sharedWith": "Shared with {{names}}",
+    "shareFailed": "Failed to share",
+    "shareError": "Could not share access. Please try again.",
+    "roleUpdated": "Role updated",
+    "roleUpdatedDescription": "{{name}} is now a {{role}}",
+    "member": "Member",
+    "roleError": "Could not update role. Please try again.",
+    "roleFailed": "Failed to update role",
+    "accessRevoked": "Access revoked",
+    "accessRevokedDescription": "{{name}} no longer has access",
+    "revokeError": "Could not remove access. Please try again.",
+    "revokeFailed": "Failed to revoke access",
+    "memberCount_one": "{{count}} member",
+    "memberCount_other": "{{count}} members",
+    "roles": {
+      "owner": {
+        "label": "Full Access",
+        "description": "Shared ownership of the collection"
+      },
+      "writer": {
+        "label": "Can edit",
+        "description": "Only edit & organise files & folders"
+      },
+      "reader": {
+        "label": "Can view",
+        "description": "Only viewing access"
+      }
+    },
+    "team": "Team",
+    "teamsNoRoles": "Teams do not have roles",
+    "invite": "Invite to Pipeshub"
+  },
+  "demoData": {
+    "badge": {
+      "label": "Demo",
+      "tooltip": "Sample data from the Acme Corp demo, not one of your company's records"
+    },
+    "removalNotice": {
+      "title": "The Acme Corp demo data is still in your workspace",
+      "description": "Your company's own data is now in PipesHub. The demo is hidden from answers by default, but anyone can turn it back on, and its sample accounts can still sign in. Turn it off for everyone, or remove it permanently.",
+      "remove": "Remove permanently",
+      "keep": "Keep for now",
+      "turnOff": "Turn off for everyone"
+    },
+    "removeDialog": {
+      "title": "Remove the Acme Corp demo data permanently?",
+      "description": "This deletes the Demo connector with all of its records, groups and permissions. To hide it without deleting anything, turn it off for everyone instead. You can add it again later from the Connectors page.",
+      "deleteAccounts": "Also delete the sample accounts: {{names}}",
+      "deleteAccountsHint": "They were created with a starting password, so anyone who knows it can sign in as them.",
+      "cancel": "Cancel",
+      "confirm": "Remove permanently",
+      "successTitle": "Demo data removed",
+      "successAccounts": "The sample accounts were deleted too.",
+      "partialTitle": "Demo data removed, but some sample accounts remain",
+      "partialDescription": "Delete {{emails}} under Workspace → Users.",
+      "errorTitle": "Couldn't remove the demo data",
+      "errorDescription": "Please try again. If it keeps happening, remove the Demo connector from the Connectors page."
+    },
+    "switch": {
+      "errorTitle": "Couldn't change the demo data setting",
+      "errorDescription": "Nothing changed. Try again in a moment.",
+      "hiddenTitle": "Acme Corp demo data hidden",
+      "hiddenDescription": "It's out of your answers, search and records. Turn it back on anytime in Profile → Demo data.",
+      "undo": "Undo"
+    },
+    "everyone": {
+      "offTitle": "Demo data turned off for everyone",
+      "offDescription": "It's out of everyone's answers, search and records, and the sample accounts can't sign in. Turn it back on in Profile → Demo data.",
+      "onTitle": "Demo data turned back on for everyone",
+      "errorTitle": "Couldn't change the demo data for everyone"
+    }
   }
 }

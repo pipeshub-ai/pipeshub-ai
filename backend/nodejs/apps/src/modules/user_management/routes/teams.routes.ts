@@ -14,9 +14,11 @@ import {
   getUserTeamsQuerySchema,
   updateTeamSchema,
 } from '../validators/teams.request.validators';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
 export function createTeamsRouter(container: Container) {
   const router = Router();
+  guardPathParams(router, 'teamId');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
 
   router.post(

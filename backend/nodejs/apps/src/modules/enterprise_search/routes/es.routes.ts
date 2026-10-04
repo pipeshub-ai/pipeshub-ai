@@ -4,10 +4,8 @@ import multer from 'multer';
 import { createMulter } from '../../../libs/utils/multer.utils';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import {
-  addMessage,
   archiveConversation,
   archiveSearch,
-  createConversation,
   deleteConversationById,
   deleteSearchById,
   deleteSearchHistory,
@@ -31,10 +29,8 @@ import {
   uploadChatAttachmentsInternal,
   deleteChatAttachment,
   addMessageStream,
-  createAgentConversation,
   streamAgentConversation,
   streamAgentConversationInternal,
-  addMessageToAgentConversation,
   addMessageStreamToAgentConversation,
   addMessageStreamToAgentConversationInternal,
   getAllAgentConversations,
@@ -62,6 +58,12 @@ import {
   setConversationProject,
   setConversationProjectVisibility,
 } from '../controller/es_controller';
+import {
+  addMessage,
+  addMessageToAgentConversation,
+  createAgentConversation,
+  createConversation,
+} from '../controller/non-streaming-chat.controller';
 import {
   getSpeechCapabilities,
   synthesizeSpeech,
@@ -95,6 +97,8 @@ import {
   updateAgentFeedbackParamsSchema,
   agentStreamCreateSchema,
   agentAddMessageParamsSchema,
+  agentCreateConversationSchema,
+  agentAddMessageSchema,
   getAllConversationsQuerySchema,
   getAllAgentConversationsQuerySchema,
   listAllArchivesConversationQuerySchema,
@@ -120,12 +124,14 @@ import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
 /** Max bytes per file for chat attachment uploads (PDF/JPEG/PNG). Aligned with frontend, Slack, and Python. */
 const CHAT_ATTACHMENT_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
 
 export function createConversationalRouter(container: Container): Router {
   const router = Router();
+  guardPathParams(router, 'recordId');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   let appConfig = container.get<AppConfig>('AppConfig');
   const chatPdfUpload = createMulter({
@@ -309,7 +315,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     ValidationMiddleware.validate(conversationIdParamsSchema),
-    getConversationById,
+    getConversationById(appConfig),
   );
 
   /**
@@ -594,7 +600,6 @@ export function createSemanticSearchRouter(container: Container): Router {
 
         res.status(200).json({
           message: 'User configuration updated successfully',
-          config: appConfig,
         });
         return;
       } catch (error) {
@@ -608,6 +613,7 @@ export function createSemanticSearchRouter(container: Container): Router {
 
 export function createAgentConversationalRouter(container: Container): Router {
   const router = Router();
+  guardPathParams(router, 'agentKey', 'recordId', 'provider', 'model_key');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   let appConfig = container.get<AppConfig>('AppConfig');
   const keyValueStoreService = container.isBound('KeyValueStoreService')
@@ -636,6 +642,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    ValidationMiddleware.validate(agentCreateConversationSchema),
     createAgentConversation(appConfig),
   );
 
@@ -651,6 +658,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/:conversationId/messages',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    ValidationMiddleware.validate(agentAddMessageSchema),
     addMessageToAgentConversation(appConfig),
   );
 

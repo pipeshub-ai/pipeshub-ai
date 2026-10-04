@@ -41,14 +41,11 @@ def _runnable_connector() -> object:
 
 
 class TestTeamAppEdge:
-    """Without a Teams->App edge the record-access query's
-    ``connectorId IN user_apps_ids`` pre-filter excludes every GitHub record,
-    making a public repo's ORG grant unreachable for users whose GitHub
-    account never resolved to an AppUser."""
-
-    async def test_run_sync_ensures_the_team_app_edge(
+    async def test_run_sync_leaves_the_team_app_edge_to_the_repo_sync(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The edge is conditional on a public repo, which only the per-repo
+        sync knows about (see test_projects.py::TestTeamAppEdge)."""
         c = _runnable_connector()
         monkeypatch.setattr(
             connector_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
@@ -56,25 +53,8 @@ class TestTeamAppEdge:
 
         await GitHubTeamsConnector.run_sync(c)
 
-        c.tx_store.ensure_team_app_edge.assert_awaited_once_with(
-            c.connector_id, c.data_entities_processor.org_id,
-        )
-
-    async def test_edge_is_established_before_user_sync(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A user sync that raises (e.g. org discovery failure) must not leave
-        the connector unreachable for the whole org."""
-        c = _runnable_connector()
-        c.users.sync_users = AsyncMock(side_effect=RuntimeError("org discovery failed"))
-        monkeypatch.setattr(
-            connector_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
-        )
-
-        with pytest.raises(RuntimeError):
-            await GitHubTeamsConnector.run_sync(c)
-
-        c.tx_store.ensure_team_app_edge.assert_awaited_once()
+        c.data_entities_processor.ensure_team_app_edge.assert_not_awaited()
+        c.projects.sync_all_repos.assert_awaited_once()
 
 
 class TestInit:

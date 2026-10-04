@@ -201,6 +201,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.worker_executor: ThreadPoolExecutor | None = None
         self.worker_loop: asyncio.AbstractEventLoop | None = None
         self.worker_loop_ready = threading.Event()  # Signal when worker loop is ready
+        # Guards publishing worker_loop against a concurrent stop request, so
+        # a stop that arrives before the loop exists is not lost.
+        self._worker_loop_lock = threading.Lock()
+        self._worker_stop_requested = False
         self.main_loop: asyncio.AbstractEventLoop | None = None
         # Nested active-pipeline and parsing gates (created in worker thread).
         # Legacy fallback only: unused (stay None) once a governor is set.
@@ -300,7 +304,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """Start the worker thread with its own event loop"""
         def run_worker_loop() -> None:
             """Run the event loop in the worker thread"""
-            self.worker_loop = asyncio.new_event_loop()
+            loop = asyncio.new_event_loop()
+            with self._worker_loop_lock:
+                self.worker_loop = loop
+                if self._worker_stop_requested:
+                    # run_forever() will return after one pass; the cleanup
+                    # in its finally still runs.
+                    loop.stop()
             asyncio.set_event_loop(self.worker_loop)
 
             if self.governor is not None:
@@ -328,7 +338,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 self.indexing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_indexing)
                 self.logger.info("Worker thread event loop started with semaphores initialized")
 
-            # Signal that the worker loop is ready
             if self.concurrency_manager is not None:
                 self.lease_renewer = LeaseRenewer(
                     self.logger,
@@ -337,7 +346,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     interval_seconds=messaging_env.concurrency_renew_interval_seconds,
                 )
                 self.worker_loop.call_soon(self.lease_renewer.start)
-            self.worker_loop_ready.set()
+            # Set from inside the loop, not before run_forever(): initialize()
+            # checks is_running() as soon as this fires.
+            self.worker_loop.call_soon(self.worker_loop_ready.set)
 
             # Run the event loop until stopped
             try:
@@ -364,6 +375,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         # Reset the ready event
         self.worker_loop_ready.clear()
+        self._worker_stop_requested = False
 
         # Create executor with single worker thread
         self.worker_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="indexing-worker")
@@ -423,10 +435,19 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # First, wait for all active futures to complete with a timeout
         self._wait_for_active_futures()
 
-        if self.worker_loop and self.worker_loop.is_running():
-            # Stop the event loop (the finally block in run_worker_loop will handle cleanup)
-            self.worker_loop.call_soon_threadsafe(self.worker_loop.stop)
-            self.logger.info("Worker thread event loop stop requested")
+        with self._worker_loop_lock:
+            self._worker_stop_requested = True
+            loop = self.worker_loop
+        # Requested even when the loop is not running yet: a stop queued before
+        # run_forever() makes it return straight away, whereas skipping it
+        # would leave the shutdown below waiting on a loop that never ends.
+        if loop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+                self.logger.info("Worker thread event loop stop requested")
+            except RuntimeError:
+                # Closed by the worker between the check and the call.
+                self.logger.debug("Worker thread event loop already closed")
 
         # Shutdown the executor and wait for thread to finish
         if self.worker_executor:

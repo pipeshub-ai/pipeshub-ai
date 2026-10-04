@@ -209,6 +209,20 @@ export class OAuthProviderController {
 
       const user = req.user!
 
+      // The GET step already rejects this, but the POST is what issues the
+      // code, so a caller that skips the GET must be stopped here too.
+      if (!app.isConfidential && !code_challenge) {
+        const redirectUrl = new URL(redirect_uri)
+        redirectUrl.searchParams.set('error', 'invalid_request')
+        redirectUrl.searchParams.set(
+          'error_description',
+          'PKCE code_challenge is required for public clients',
+        )
+        redirectUrl.searchParams.set('state', state)
+        res.json({ redirectUrl: redirectUrl.toString() })
+        return
+      }
+
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(scope)
       this.scopeValidatorService.validateScopesForApp(
@@ -558,6 +572,7 @@ export class OAuthProviderController {
       clientId,
       request.redirect_uri,
       request.code_verifier,
+      app.isConfidential,
     )
 
     // Look up user details to embed in token

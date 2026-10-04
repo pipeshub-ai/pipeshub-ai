@@ -1,5 +1,7 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
+
 import React, { useState, useMemo } from 'react';
 import { Flex, Box, Text, Button, IconButton, TextField, Dialog, VisuallyHidden } from '@radix-ui/themes';
 import { LoadingButton } from '@/app/components/ui/loading-button';
@@ -47,6 +49,7 @@ function FolderTreeItem({
   onExpand,
   loadingNodeIds,
 }: FolderTreeItemProps) {
+  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
   const isExpanded = !!expandedFolders[node.id];
   const hasChildren = node.children.length > 0 || !!node.hasChildren;
@@ -167,7 +170,7 @@ function FolderTreeItem({
                 fontWeight: 400,
               }}
             >
-              Current
+              {t('common.current')}
             </Text>
           )}
         </Flex>
@@ -222,6 +225,7 @@ export function MoveFolderSidebar({
   onExpand,
   loadingNodeIds,
 }: MoveFolderSidebarProps) {
+  const { t } = useTranslation();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   // Auto-expand root collection node by default so children are visible on open
@@ -364,7 +368,7 @@ export function MoveFolderSidebar({
         }}
       >
         <VisuallyHidden>
-          <Dialog.Title>Move Folder Location</Dialog.Title>
+          <Dialog.Title>{t('dialog.moveFolderLocation')}</Dialog.Title>
         </VisuallyHidden>
         {/* Header */}
         <Flex
@@ -384,7 +388,7 @@ export function MoveFolderSidebar({
               color="var(--slate-11)"
             />
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              Move Folder Location
+              {t('dialog.moveFolderLocation')}
             </Text>
           </Flex>
           <IconButton
@@ -401,7 +405,7 @@ export function MoveFolderSidebar({
         <Box style={{ padding: '16px 16px 0', background: 'var(--effects-translucent)', backdropFilter: 'blur(8px)' }}>
           <TextField.Root
             size="2"
-            placeholder="Search"
+            placeholder={t('form.search')}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           >
@@ -495,7 +499,7 @@ export function MoveFolderSidebar({
                         fontWeight: 400,
                       }}
                     >
-                      Current
+                      {t('common.current')}
                     </Text>
                   )}
                 </Flex>
@@ -521,7 +525,7 @@ export function MoveFolderSidebar({
           ) : (
               <Flex align="center" justify="center" style={{ padding: 'var(--space-8)' }}>
               <Text size="2" style={{ color: 'var(--slate-9)' }}>
-                {searchQuery ? 'No folders found' : 'No collection selected'}
+                {searchQuery ? t('moveFolder.noFolders') : t('sidebar.noCollectionSelected')}
               </Text>
             </Flex>
           )}
@@ -544,7 +548,7 @@ export function MoveFolderSidebar({
             size="2"
             disabled={!selectedFolderId}
             loading={isMoving}
-            loadingLabel="Moving..."
+            loadingLabel={t('moveFolder.moving')}
             onClick={handleMove}
             style={{
               background: 'var(--emerald-9)',
@@ -556,7 +560,7 @@ export function MoveFolderSidebar({
               size={16}
               color="white"
             />
-            Move
+            {t('action.move')}
           </LoadingButton>
         </Flex>
       </Dialog.Content>

@@ -13,6 +13,7 @@ Install:
 """
 
 import ipaddress
+import os
 import random
 import re
 import socket
@@ -144,6 +145,49 @@ def _ip_is_blocked(ip: IPAddress, *, block_non_global: bool = True) -> bool:
         or ip.is_unspecified
         or (block_non_global and not ip.is_global)
     )
+
+
+# AWS's IPv6 metadata endpoint is a unique-local address, so no range rule singles it out.
+_AWS_IPV6_METADATA_ADDRESS = ipaddress.ip_address("fd00:ec2::254")
+
+PRIVATE_ADDRESS_SWITCH_ENV = "PIPESHUB_BLOCK_PRIVATE_ADDRESSES"
+SWITCH_ON_VALUES = frozenset({"true", "1", "yes", "on"})
+SWITCH_OFF_VALUES = frozenset({"false", "0", "no", "off"})
+
+
+def private_addresses_blocked() -> bool:
+    """Whether endpoints an admin configures (AI model servers) must be public addresses.
+
+    Off by default: a self-hosted install normally runs its models on localhost or a
+    private network. A deployment shared by organisations that don't trust each other
+    turns it on.
+    """
+    return os.getenv(PRIVATE_ADDRESS_SWITCH_ENV, "").strip().lower() in SWITCH_ON_VALUES
+
+
+def literal_ip(host: str) -> IPAddress | None:
+    """``host`` as an address when it is one, without a DNS lookup. Includes the legacy IPv4
+    spellings the socket layer accepts (``2852039166``, ``0xA9FEA9FE``, ``169.254.43518``).
+    """
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    try:
+        return ipaddress.ip_address(socket.inet_aton(host))
+    except (OSError, UnicodeError):
+        return None
+
+
+def is_never_allowed_address(ip: IPAddress) -> bool:
+    """Link-local and cloud metadata addresses: nothing a user or admin configures may
+    reach them, whatever else a deployment allows."""
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        elif ip in _NAT64_WELL_KNOWN_PREFIX:
+            ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return ip.is_link_local or ip in _CLOUD_METADATA_ADDRESSES or ip == _AWS_IPV6_METADATA_ADDRESS
 
 
 def _hostname_is_blocked(hostname: str) -> bool:
@@ -295,12 +339,15 @@ def _require_pinned_peer(peer_ip: str, pin: PublicTarget) -> None:
         raise FetchError(f"Connected to {peer_ip!r}, not the validated address for {pin.host!r}")
 
 
-def _pinned_requests_adapter(pin: PublicTarget) -> "HTTPAdapter":
+def _pinned_requests_adapter(
+    pin: PublicTarget, base: "type[HTTPAdapter] | None" = None, **adapter_kwargs: object
+) -> "HTTPAdapter":
     """A requests adapter that connects to ``pin``'s address, keeping the URL's host for the
-    Host header, SNI and certificate verification."""
+    Host header, SNI and certificate verification. ``base`` is the adapter class to extend
+    (e.g. cloudscraper's TLS adapter), built with ``adapter_kwargs``."""
     from requests.adapters import HTTPAdapter
 
-    class PinnedAddressAdapter(HTTPAdapter):
+    class PinnedAddressAdapter(base or HTTPAdapter):  # type: ignore[misc,valid-type]
         @override
         def build_connection_pool_key_attributes(
             self,
@@ -318,7 +365,7 @@ def _pinned_requests_adapter(pin: PublicTarget) -> "HTTPAdapter":
         def add_headers(self, request: "PreparedRequest", **kwargs: object) -> None:
             request.headers["Host"] = urlsplit(request.url or "").netloc.rpartition("@")[2]
 
-    return PinnedAddressAdapter()
+    return PinnedAddressAdapter(**adapter_kwargs)
 
 
 # ---------------------------------------------------------------------------

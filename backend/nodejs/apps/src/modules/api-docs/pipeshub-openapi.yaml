@@ -86,6 +86,9 @@ tags:
       **Who can see which apps**
       - **Everyone (including org admins)** sees and manages only OAuth apps **they created** (`createdBy`). Other members' apps are hidden (not listed; individual operations return not found).
 
+      **Session only**
+      - Every `/oauth-clients/*` route requires the user's interactive session JWT. OAuth access tokens and personal access tokens (`phpat_...`) are rejected with `403`, so a token issued to a client can never register, reconfigure, or revoke clients on its own.
+
       **Who authorizes vs. client credentials**
       - **Authorization code:** Any authenticated user in the workspace may complete consent for a valid `client_id`; issued tokens represent **that user**.
       - **Client credentials:** Access tokens represent the **OAuth app creator** (who registered the client), not the caller.
@@ -112,6 +115,13 @@ tags:
       **Who can create one**
       - **Any authenticated org member** — unlike OAuth apps, this is
         deliberately not admin-gated.
+
+      **Session only**
+      - Every `/personal-access-tokens/*` route requires the user's interactive
+        session JWT. OAuth access tokens and personal access tokens (`phpat_...`)
+        are rejected with `403`. `scopes` is capped at the instance's `MCP_SCOPES`,
+        not at the caller's own token, so a narrowly scoped token could otherwise
+        mint itself a full-scope, non-expiring PAT.
 
       **How it's issued**
       - Minted through the same OAuth access-token machinery as `/oauth2/token`,
@@ -196,15 +206,15 @@ tags:
     description: In-app notifications for the signed-in user (connector errors, warnings, and related alerts)
 
   # Storage
-  - name: Document Management
-    description: Document CRUD and retrieval operations
   - name: Internal Storage
     description: |
-      Service-to-service storage endpoints. Each mirrors a public `/document`
-      route but is authenticated with the storage scoped token rather than a
-      signed-in user's session, so these are **not** callable by API clients or
-      the browser. They are listed here so the surface is discoverable and the
-      pairing with the public routes is visible.
+      Service-to-service storage endpoints, authenticated with the storage
+      scoped token rather than a signed-in user's session, so these are **not**
+      callable by API clients or the browser. Storage checks only the org, not
+      record permissions; read and write files through the Knowledge Base
+      routes (for example `GET /knowledgeBase/stream/record/{recordId}`).
+  - name: Artifacts
+    description: User-facing gallery of generated artifacts (preview, download, versions)
   - name: Knowledge Base
     description: Knowledge base management operations
   - name: Knowledge Hub
@@ -373,6 +383,16 @@ components:
       description: The document's id.
       schema:
         type: string
+  headers:
+    X-Conversation-Id:
+      description: |
+        Id of the conversation this turn wrote to. Sent on success and on
+        failure, so a caller whose first turn failed can still fetch or
+        continue that conversation.
+      schema:
+        type: string
+        format: objectId
+
   securitySchemes:
     bearerAuth:
       type: http
@@ -493,6 +513,133 @@ components:
   schemas:
     # ==================== COMMON SCHEMAS ====================
 
+    ArtifactGalleryItem:
+      type: object
+      additionalProperties: false
+      properties:
+        artifactId:
+          type: string
+        name:
+          type: string
+        logicalName:
+          type: string
+          nullable: true
+        artifactType:
+          type: string
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          nullable: true
+        version:
+          type: integer
+        contentHash:
+          type: string
+          nullable: true
+        conversationId:
+          type: string
+          nullable: true
+        conversationTitle:
+          type: string
+          description: Display-only chat title when the caller can see that conversation
+        createdAt:
+          type: integer
+          nullable: true
+        updatedAt:
+          type: integer
+          nullable: true
+      required:
+        - artifactId
+        - name
+        - artifactType
+        - version
+
+    ArtifactGalleryVersion:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+        sizeBytes:
+          type: integer
+        contentHash:
+          type: string
+        createdAt:
+          type: integer
+      required:
+        - version
+
+    ArtifactGalleryDetail:
+      type: object
+      additionalProperties: false
+      properties:
+        artifactId:
+          type: string
+        name:
+          type: string
+        logicalName:
+          type: string
+          nullable: true
+        artifactType:
+          type: string
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          nullable: true
+        version:
+          type: integer
+        contentHash:
+          type: string
+          nullable: true
+        conversationId:
+          type: string
+          nullable: true
+        conversationTitle:
+          type: string
+          description: Display-only chat title when the caller can see that conversation
+        createdAt:
+          type: integer
+          nullable: true
+        updatedAt:
+          type: integer
+          nullable: true
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactGalleryVersion'
+        description:
+          type: string
+        sourceTool:
+          type: string
+          nullable: true
+      required:
+        - artifactId
+        - name
+        - artifactType
+        - version
+
+    ArtifactGalleryListResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactGalleryItem'
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalCount:
+              type: integer
+            totalPages:
+              type: integer
 
     # ==================== AUTH SCHEMAS ====================
     AuthMethod:
@@ -741,7 +888,7 @@ components:
         - `microsoft`: `{ accessToken: "...", idToken: "..." }`
         - `azureAd`: `{ accessToken: "...", idToken: "..." }`
         - `oauth`: `{ accessToken: "...", idToken: "..." }`
-        - `samlSso`: handled via redirect flow
+        - `samlSso`: not accepted by `/userAccount/authenticate`, which answers `400`. SAML sign-in runs as a browser redirect: send the browser to `/saml/signIn` instead
       properties:
         method:
           type: string
@@ -861,7 +1008,7 @@ components:
     OtpGenerateRequest:
       type: object
       additionalProperties: false
-      description: Request to generate and send OTP
+      description: Request for a sign-in code (OTP); a code is sent only if that email can sign in with one
       properties:
         email:
           type: string
@@ -876,7 +1023,9 @@ components:
     LoginOtpGenerateResponse:
       type: string
       description: |
-        Plain-text response body. The server sends the literal string ``OTP sent``.
+        Plain-text response body, identical whether or not the email has an account, and
+        worded so it doesn't claim a code was delivered:
+        ``If that email can sign in with a code, one is being sent. It works for 10 minutes. If nothing arrives, check your spam folder or try again later.``
 
     PasswordResetRequest:
       type: object
@@ -1263,11 +1412,15 @@ components:
           description: User's consent decision
         code_challenge:
           type: string
-          description: PKCE code challenge (if used in authorization request)
+          description: |
+            PKCE code challenge (base64url, 43-128 chars). Required for public
+            (non-confidential) clients; without it the consent is answered
+            with a redirect carrying `error=invalid_request` and no code is
+            issued. Optional for confidential clients.
         code_challenge_method:
           type: string
-          enum: [S256, plain]
-          description: PKCE challenge method
+          enum: [S256]
+          description: PKCE challenge method. Only `S256` is accepted; `plain` is rejected with `400`. Defaults to `S256` when omitted.
       required:
         - client_id
         - redirect_uri
@@ -1589,8 +1742,8 @@ components:
           type: array
           items:
             type: string
-          description: Supported PKCE code challenge methods
-          example: ["S256", "plain"]
+          description: Supported PKCE code challenge methods (only `S256`)
+          example: ["S256"]
 
     OAuthProtectedResourceMetadata:
       type: object
@@ -4056,6 +4209,7 @@ components:
         - "DROPBOX PERSONAL"
         - "WEB"
         - "BOOKSTACK"
+        - "DRUPAL WIKI"
         - "GITHUB"
         - "GITHUB TEAMS"
         - "SERVICENOW"
@@ -5095,6 +5249,30 @@ components:
         eventPublished:
           type: boolean
 
+    DemoDataStatus:
+      type: object
+      required: [hasDemo, include, chosen, realData, offForEveryone, demoConnectorIds]
+      properties:
+        hasDemo:
+          type: boolean
+          description: Whether the organization has the Acme Corp demo connector.
+        include:
+          type: boolean
+          description: Whether the demo reaches the caller's answers, search and listings.
+        chosen:
+          type: boolean
+          nullable: true
+          description: The caller's own choice; null while they use the default.
+        realData:
+          type: boolean
+          description: Whether any source other than the demo has indexed records.
+        offForEveryone:
+          type: boolean
+          description: An admin turned the demo off for the whole organization; overrides every choice.
+        demoConnectorIds:
+          type: array
+          items:
+            type: string
     UploadLimitsResponseSchema:
       type: object
       additionalProperties: false
@@ -5213,7 +5391,7 @@ components:
         These endpoints respond with `Content-Type: text/event-stream`: the upload
         and its per-file progress are a single request. The body streams one
         terminal event per file, then a final `done` summary, then closes. `data`
-        is a JSON-encoded string whose decoded shape depends on `event`:
+        is the decoded JSON object for the frame; its shape depends on `event`:
 
         - `file:succeeded` — see `UploadSucceededFileDetail`. The file was
           uploaded and its record created; content indexing then continues
@@ -5242,8 +5420,9 @@ components:
             - done
             - error
         data:
-          type: string
-          description: JSON-encoded event payload. Shape depends on `event`.
+          type: object
+          additionalProperties: true
+          description: Decoded JSON payload. Shape depends on `event`.
 
     IndexingStatusFilter:
       type: string
@@ -5420,6 +5599,7 @@ components:
         - parentId
         - origin
         - connector
+        - connectorId
         - recordType
         - recordGroupType
         - indexingStatus
@@ -5459,6 +5639,10 @@ components:
           type: string
           nullable: true
           description: Connector display name / key when applicable; otherwise `null`.
+        connectorId:
+          type: string
+          nullable: true
+          description: Connector instance id for records and groups that come from a connector; otherwise `null` (Collections, and app nodes).
         recordType:
           type: string
           nullable: true
@@ -5549,7 +5733,11 @@ components:
         - breadcrumbs
         - counts
         - permissions
+        - maxFolderDepth
       properties:
+        maxFolderDepth:
+          type: integer
+          description: Deepest a collection folder may be nested; a folder directly in the collection is depth 1.
         success:
           type: boolean
           enum: [true]
@@ -6328,6 +6516,33 @@ components:
           required:
             - chatMode
 
+    CreateAgentConversationResponse:
+      type: object
+      description: |
+        Envelope returned by `POST /agents/{agentKey}/conversations`: the
+        persisted agent conversation (initial user message plus the agent's
+        answer) and request metadata.
+      required:
+        - conversation
+        - meta
+      properties:
+        conversation:
+          $ref: '#/components/schemas/AgentConversation'
+        meta:
+          type: object
+          required:
+            - timestamp
+            - duration
+          properties:
+            requestId:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+            duration:
+              type: integer
+              minimum: 0
+
     CreateConversationResponse:
       type: object
       additionalProperties: false
@@ -6363,15 +6578,26 @@ components:
               description: Total handler duration in milliseconds.
 
     AgentStreamCreateConversationRequest:
+      allOf:
+        - $ref: '#/components/schemas/AgentCreateConversationRequest'
+        - type: object
+          description: |
+            Request body for `POST /agents/{agentKey}/conversations/stream`.
+            `query` and `chatMode: quick` are required; all other fields are
+            optional overrides. Unknown fields are stripped during validation.
+          required:
+            - chatMode
+
+    AgentCreateConversationRequest:
       type: object
       additionalProperties: false
       description: |
-        Request body for `POST /agents/{agentKey}/conversations/stream`.
-        `query` and `chatMode: quick` are required; all other fields are
-        optional overrides. Unknown fields are stripped during validation.
+        First turn of an agent conversation. Used as-is by the non-streaming
+        `POST /agents/{agentKey}/conversations`, where `chatMode` may be
+        omitted; `AgentStreamCreateConversationRequest` additionally requires
+        it. Unknown fields are stripped during validation.
       required:
         - query
-        - chatMode
       properties:
         query:
           type: string
@@ -6427,8 +6653,9 @@ components:
           enum:
             - quick
           description: |
-            Required execution mode. Scoped agent conversations currently
-            support only `quick`.
+            Execution mode. Scoped agent conversations support only `quick`.
+            Required on the `/stream` route; optional on the non-streaming
+            route.
         modelKey:
           type: string
           minLength: 1
@@ -6768,15 +6995,26 @@ components:
                 `meta` for client convenience.
 
     AgentAddMessageStreamRequest:
+      allOf:
+        - $ref: '#/components/schemas/AgentAddMessageRequest'
+        - type: object
+          description: |
+            Request body for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
+            `query` and `chatMode: quick` are required; all other fields are
+            optional overrides. Unknown fields are stripped during validation.
+          required:
+            - chatMode
+
+    AgentAddMessageRequest:
       type: object
       additionalProperties: false
       description: |
-        Request body for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
-        `query` and `chatMode: quick` are required; all other fields are
-        optional overrides. Unknown fields are stripped during validation.
+        Follow-up turn on an agent conversation. Used as-is by the
+        non-streaming `POST /agents/{agentKey}/conversations/{conversationId}/messages`,
+        where `chatMode` may be omitted; `AgentAddMessageStreamRequest`
+        additionally requires it. Unknown fields are stripped during validation.
       required:
         - query
-        - chatMode
       properties:
         query:
           type: string
@@ -6810,8 +7048,9 @@ components:
           enum:
             - quick
           description: |
-            Required execution mode. Scoped agent conversations currently
-            support only `quick`.
+            Execution mode. Scoped agent conversations support only `quick`.
+            Required on the `/stream` route; optional on the non-streaming
+            route.
         modelKey:
           type: string
           minLength: 1
@@ -7011,8 +7250,13 @@ components:
         citations:
           type: array
           items:
-            $ref: '#/components/schemas/CitationReference'
-          description: References to source documents used in the response
+            anyOf:
+              - $ref: '#/components/schemas/CitationReference'
+              - $ref: '#/components/schemas/PopulatedCitationReference'
+          description: |
+            References to source documents used in the response. Routes that
+            return the saved conversation after a turn (create, add message)
+            populate each item to `{ citationId, citationData }`.
         confidence:
           type: string
           nullable: true
@@ -7133,6 +7377,32 @@ components:
         context:
           type: string
           description: Additional context around the citation
+
+    PopulatedCitationReference:
+      type: object
+      additionalProperties: false
+      description: |
+        A message's citation reference after the handler populates it: the
+        stored reference fields, with `citationId` as the id and the cited
+        document under `citationData`.
+      properties:
+        citationId:
+          type: string
+          format: objectId
+          description: ID of the citation record
+        relevanceScore:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: How relevant this citation is to the query (0-1)
+        excerpt:
+          type: string
+          description: Relevant excerpt from the source document
+        context:
+          type: string
+          description: Additional context around the citation
+        citationData:
+          $ref: '#/components/schemas/Citation'
 
     Citation:
       type: object
@@ -7548,13 +7818,15 @@ components:
           description: All messages in this conversation
         status:
           type: string
-          enum: [None, Inprogress, Complete, Failed]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
           description: |
             Current status of the conversation:
             - `None` — no activity yet
             - `Inprogress` — AI is processing
             - `Complete` — response ready
             - `Failed` — error occurred
+            - `Stopped` — cancelled, or the client disconnected mid-answer;
+              the last message keeps the partial answer
         failReason:
           type: string
           description: Error description, populated only when `status` is `Failed`.
@@ -7722,7 +7994,7 @@ components:
           format: objectId
         status:
           type: string
-          enum: [None, Inprogress, Complete, Failed]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
         failReason:
           type: string
         modelInfo:
@@ -8716,6 +8988,13 @@ components:
         connector:
           type: string
           nullable: true
+        connectorId:
+          type: string
+          nullable: true
+          description: |
+            The connector instance the record came from. `connector` names only
+            the kind of source (for example `SLACK`), which several instances can
+            share. Absent on citations saved before this field was stored.
         recordType:
           type: string
           nullable: true
@@ -10934,7 +11213,8 @@ components:
             $ref: '#/components/schemas/Message'
         status:
           type: string
-          enum: [INPROGRESS, COMPLETED, FAILED]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
+          description: Same values as `Conversation.status`.
         isShared:
           type: boolean
         sharedWith:
@@ -10996,7 +11276,7 @@ components:
           format: objectId
         status:
           type: string
-          enum: [None, Inprogress, Complete, Failed]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
         failReason:
           type: string
         modelInfo:
@@ -11270,7 +11550,7 @@ components:
             $ref: '#/components/schemas/Message'
         status:
           type: string
-          enum: [None, Inprogress, Complete, Failed]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
         failReason:
           type: string
         modelInfo:
@@ -11604,7 +11884,7 @@ components:
                 enum: [read, write]
         status:
           type: string
-          enum: [None, Inprogress, Complete, Failed]
+          enum: [None, Inprogress, Complete, Failed, Stopped]
         failReason:
           type: string
         messages:
@@ -11801,9 +12081,10 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
 
@@ -11813,8 +12094,8 @@ components:
         Server-Sent Event envelope for streaming chat responses. AG-UI is
         the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON-encoded
-        object that includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is the decoded JSON
+        object, which includes a `"type"` field matching `event`, plus
         type-specific fields. Stable gateway-generated top-level outcomes:
 
         - `RUN_FINISHED` — `{ type, result }`; `result` carries the full
@@ -11852,9 +12133,10 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
 
@@ -11865,8 +12147,8 @@ components:
         `agent`, `internal_search`, or `web_search`. AG-UI is the sole wire
         protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON-encoded
-        object that includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is the decoded JSON
+        object, which includes a `"type"` field matching `event`, plus
         type-specific fields. Universal `agent` mode may emit `STEP_STARTED`,
         `STEP_FINISHED`, and nested child-run events carrying `parentRunId`.
         Stable gateway-generated top-level outcomes:
@@ -11913,9 +12195,10 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`. Forwarded lifecycle events may carry `runId`,
             `threadId`, and `parentRunId`.
@@ -11927,8 +12210,8 @@ components:
         `internal_search`, or `web_search` on an existing conversation. AG-UI
         is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON-encoded
-        object that includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is the decoded JSON
+        object, which includes a `"type"` field matching `event`, plus
         type-specific fields. Universal `agent` mode may emit step and nested
         child-run events. Stable gateway-generated top-level outcomes:
 
@@ -11974,9 +12257,10 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`. Forwarded lifecycle events may carry `runId`,
             `threadId`, and `parentRunId`.
@@ -11987,8 +12271,8 @@ components:
         SSE event envelope for `POST /agents/{agentKey}/conversations/stream`.
         AG-UI is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON-encoded
-        object that includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is the decoded JSON
+        object, which includes a `"type"` field matching `event`, plus
         type-specific fields. The public route requires `chatMode: quick`.
         Forwarded lifecycle events may carry `runId`, `threadId`, and
         `parentRunId`; gateway-generated root terminal events do not.
@@ -12023,9 +12307,10 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
 
@@ -12035,8 +12320,8 @@ components:
         Server-Sent Event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
         AG-UI is the sole wire protocol.
 
-        `event` carries the AG-UI type name and `data` is a JSON-encoded
-        object that includes a `"type"` field matching `event`, plus
+        `event` carries the AG-UI type name and `data` is the decoded JSON
+        object, which includes a `"type"` field matching `event`, plus
         type-specific fields. The public route requires `chatMode: quick`.
         Forwarded lifecycle events may carry `runId`, `threadId`, and
         `parentRunId`. Stable gateway-generated top-level outcomes:
@@ -12081,9 +12366,10 @@ components:
             - CUSTOM
             - HEARTBEAT
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            Decoded JSON payload. It includes a `"type"`
             field matching `event`, plus type-specific fields. Shape depends
             on `event`.
 
@@ -14317,8 +14603,8 @@ components:
       description: |
         SSE event envelope for
         `GET /configurationManager/ai-models/download-progress`. Every frame
-        uses the `progress` event name; `data` is a JSON-encoded
-        `EmbeddingDownloadProgressPayload` with one extra `timestamp` field
+        uses the `progress` event name; `data` is the decoded
+        `EmbeddingDownloadProgressPayload` object with one extra `timestamp` field
         (epoch milliseconds) added by the Node.js proxy on each poll.
       properties:
         event:
@@ -14326,9 +14612,10 @@ components:
           enum:
             - progress
         data:
-          type: string
+          type: object
+          additionalProperties: true
           description: |
-            JSON-encoded `EmbeddingDownloadProgressPayload` plus a
+            Decoded `EmbeddingDownloadProgressPayload` object plus a
             `timestamp` (epoch ms) field.
 
     AIModelProviderHealthCheckBackendDetails:
@@ -15738,9 +16025,9 @@ paths:
         5. User is redirected back to client with authorization code
 
         **PKCE Support (RFC 7636):**
-        - Required for public clients (SPA, mobile apps)
+        - Required for public clients (SPA, mobile apps), enforced on both this GET and the consent POST
         - Recommended for confidential clients
-        - Use S256 method (SHA256 hash of code_verifier)
+        - Only the S256 method (SHA256 hash of code_verifier) is accepted; `plain` is rejected
 
         **Security:**
         - Always use HTTPS in production
@@ -15793,8 +16080,8 @@ paths:
           required: false
           schema:
             type: string
-            enum: [S256, plain]
-          description: PKCE method (S256 recommended)
+            enum: [S256]
+          description: PKCE method. Only S256 is accepted; defaults to S256 when omitted.
         - name: nonce
           in: query
           required: false
@@ -15830,6 +16117,11 @@ paths:
         Called after user reviews the consent page and makes a decision.
         This endpoint generates an authorization code if consent is granted.
 
+        **Session only.** The bearer token must be the user's interactive
+        session JWT. OAuth access tokens and personal access tokens
+        (`phpat_...`) are rejected with `403`, so a client can never consent
+        on the user's behalf with a token it already holds.
+
         **Responses:**
         - Consent granted: Redirects to client with authorization code
         - Consent denied: Redirects to client with `access_denied` error
@@ -15864,7 +16156,10 @@ paths:
         '401':
           description: User not authenticated
         '403':
-          description: Client not authorized or invalid redirect URI
+          description: |
+            Bearer token is an OAuth access token or personal access token
+            rather than a user session, or the client is not authorized /
+            the redirect URI is invalid.
 
   /oauth2/token:
     post:
@@ -15879,7 +16174,7 @@ paths:
         **Grant Types:**
         - `authorization_code`: Exchange auth code for tokens (user-based)
         - `client_credentials`: Get tokens for machine-to-machine auth
-        - `refresh_token`: Get new access token using refresh token
+        - `refresh_token`: Get new access token using refresh token. The refresh token must have been issued to the presenting `client_id`; one issued to another client is rejected with `400 invalid_grant` and is left untouched (not rotated, not revoked).
 
         For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) — see **OAuth Provider** tag.
 
@@ -16135,7 +16430,7 @@ paths:
                 response_types_supported: ["code"]
                 grant_types_supported: ["authorization_code", "client_credentials", "refresh_token"]
                 token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"]
-                code_challenge_methods_supported: ["S256", "plain"]
+                code_challenge_methods_supported: ["S256"]
 
   /.well-known/oauth-authorization-server:
     get:
@@ -16174,7 +16469,7 @@ paths:
                 response_types_supported: ["code"]
                 grant_types_supported: ["authorization_code", "client_credentials", "refresh_token"]
                 token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"]
-                code_challenge_methods_supported: ["S256", "plain"]
+                code_challenge_methods_supported: ["S256"]
 
   /.well-known/jwks.json:
     get:
@@ -16311,7 +16606,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — insufficient workspace permission to list OAuth apps
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
           content:
             application/json:
               schema:
@@ -16366,7 +16661,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — insufficient workspace permission to create OAuth apps
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
           content:
             application/json:
               schema:
@@ -16424,6 +16719,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '429':
           description: Rate limit exceeded for OAuth client management routes
           content:
@@ -16471,7 +16772,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16540,7 +16841,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16596,7 +16897,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16651,7 +16952,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16712,7 +17013,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16773,7 +17074,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16828,7 +17129,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16890,7 +17191,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Forbidden — caller cannot access this OAuth app (creator-only; see OAuth Apps tag).
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
@@ -16964,6 +17265,11 @@ paths:
         env var, not the full role-aware OAuth-app scope catalog — a
         non-admin can request any scope in that set.
 
+        **Session only.** The bearer token must be the user's interactive
+        session JWT. OAuth access tokens and personal access tokens
+        (`phpat_...`) are rejected with `403`, so a token that is already
+        issued cannot mint another with wider scopes or a longer life.
+
         The response's `accessToken` is shown **once**; only its SHA-256
         hash is stored. It's prefixed `phpat_` (see the `bearerAuth`
         security scheme).
@@ -16993,6 +17299,12 @@ paths:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: Bearer token is an OAuth access token or personal access token rather than a user session
           content:
             application/json:
               schema:
@@ -17284,6 +17596,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -17308,7 +17626,8 @@ paths:
         - `microsoft`: `{ "credentials": { "accessToken": "...", "idToken": "..." } }`
         - `azureAd`: `{ "credentials": { "accessToken": "...", "idToken": "..." } }`
         - `oauth`: `{ "credentials": { "accessToken": "...", "idToken": "..." } }`
-        - `samlSso`: Handled via redirect flow (use `/saml/signIn` instead)
+        - `samlSso`: not accepted here; this endpoint answers `400`. SAML sign-in runs as a browser
+          redirect: send the browser to `/saml/signIn` instead
 
         **Multi-Step Response:**
 
@@ -17322,8 +17641,12 @@ paths:
 
         **Security:**
 
-        - Account locks after 5 consecutive failed attempts
+        - Account locks for 24 hours after 5 consecutive failed attempts, and the owner is
+          sent an email saying so. While it is locked, sign-in is refused with the same answer
+          as a wrong password or code, even when the password or code is right
         - CAPTCHA may be required if enabled (pass `cf-turnstile-response`)
+        - An email with no account gets the same status and message as a real account given
+          a wrong password (`400`) or a wrong, missing or expired sign-in code (`401`)
       operationId: authenticate
       x-pipeshub-sdk: true
       security: []
@@ -17349,29 +17672,29 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthenticateResponse'
         '400':
-          description: Invalid request, method not allowed, invalid credential format or Account blocked due to too many failed attempts (5 attempts max)
+          description: Invalid request, method not allowed, invalid credential format, `samlSso` sent here instead of `/saml/signIn`, or wrong or missing password. A wrong password, an email with no account and a locked account all get the same message
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Invalid credentials (wrong password, expired OTP, etc.)
+          description: Wrong, missing or expired sign-in code (the same message for an email with no account and for a locked account), CAPTCHA refused, or the identity provider rejected the sign-in
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Session expired or user not found
+          description: Sign-in session expired or missing; start again with `/initAuth`
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '410':
-          description: OTP has expired (valid for 10 minutes)
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -17383,16 +17706,17 @@ paths:
     post:
       tags:
         - User Account
-      summary: Generate and send OTP for login
+      summary: Request a sign-in code (OTP) for login
       description: |
-        Generate and send a 6-digit one-time password (OTP) to the user's email.
-        Use this endpoint before authenticating with the `otp` method.
+        Ask for a 6-digit one-time password (OTP) to be emailed, for use with the `otp`
+        method on `/authenticate`. If that email can sign in with a code, one is sent;
+        the answer is the same either way (see **Account privacy** below).
 
         **OTP Details:**
 
         - 6 digits numeric code
         - Valid for **10 minutes** after generation
-        - Sent to user's registered email address
+        - Sent only to the email of an existing account that isn't locked
 
         **Rate Limiting:**
 
@@ -17403,9 +17727,18 @@ paths:
 
         If Cloudflare Turnstile is enabled, include `cf-turnstile-response` in the request body.
 
+        **Account privacy:**
+
+        The answer is the same `200` and message whether or not the email has an account,
+        and also when the account is locked or the email could not be sent. A code is only
+        sent when the account exists and isn't locked. Failures to send are logged on the
+        server.
+
         **Success response body**
 
-        - `200` returns a **plain string** (`OTP sent`).
+        - `200` returns a **plain string**: `If that email can sign in with a code, one is being sent. ...`
+        - The answer doesn't wait for the email to go out, and a failed send is only
+          logged on the server
       operationId: generateLoginOtp
       security: []
       requestBody:
@@ -17417,7 +17750,7 @@ paths:
         required: true
       responses:
         '200':
-          description: OTP generated and sent successfully
+          description: Request accepted. If that email can sign in with a code (an existing account that isn't locked), one is being sent. The answer is the same either way, and doesn't say whether the email was delivered.
           content:
             text/html:
               schema:
@@ -17428,20 +17761,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '403':
-          description: Account is blocked due to too many failed attempts
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: User not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
-          description: Internal server error
+          description: The account lookup failed on the server (the same for every email)
           content:
             application/json:
               schema:
@@ -17489,6 +17816,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -17842,6 +18175,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — per-IP auth endpoint limiter (MAX_AUTH_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -17936,6 +18275,7 @@ paths:
         - No duplicate methods within the same step
         - No method can appear in multiple steps
         - Each step must have at least one allowed method
+        - `samlSso` is only allowed in a single-step policy; it can't be combined with other steps
 
         **Available Methods:**
         - `password`: Email/password authentication
@@ -18003,6 +18343,7 @@ paths:
             - User is not an organization admin
             - `authMethod` field missing from request body
             - Validation failure (duplicate steps, duplicate methods, out-of-range order, empty methods array)
+            - `samlSso` used in a policy with more than one step
           content:
             application/json:
               schema:
@@ -18135,6 +18476,29 @@ paths:
             for maintaining authentication state across the SAML flow.
           schema:
             type: string
+        - name: client
+          in: query
+          required: false
+          description: |
+            `desktop` for a sign-in started by the PipesHub desktop app. Needs `state`
+            and `code_challenge`; without both it is ignored. The callback then sends
+            no cookies and redirects to `/auth/sign-in/samlSso/success` with `state`
+            and a single-use `code` (or `saml_error`), redeemed at `/saml/desktop/exchange`.
+          schema:
+            type: string
+            enum: [desktop]
+        - name: state
+          in: query
+          required: false
+          description: Desktop flow identifier, echoed back on the success page. Starts with `phd.`.
+          schema:
+            type: string
+        - name: code_challenge
+          in: query
+          required: false
+          description: PKCE S256 challenge (43 base64url characters) for the desktop handoff code.
+          schema:
+            type: string
       responses:
         '302':
           description: Redirect to SAML Identity Provider login page
@@ -18259,6 +18623,53 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthError'
+
+  /saml/desktop/exchange:
+    post:
+      tags:
+        - SAML
+      summary: Redeem a desktop SAML handoff code
+      description: |
+        Exchanges the single-use code from a desktop SAML sign-in (see `client=desktop`
+        on `/saml/signIn`) for PipesHub tokens. The code expires after 2 minutes and is
+        consumed by the first attempt, whether or not the verifier matches.
+      operationId: exchangeSamlDesktopCode
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                code:
+                  type: string
+                  description: Handoff code from the success page redirect
+                codeVerifier:
+                  type: string
+                  description: PKCE verifier matching the `code_challenge` sent to `/saml/signIn`
+              required:
+                - code
+                - codeVerifier
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                  refreshToken:
+                    type: string
+        '401':
+          description: Unknown, expired, already used, or verifier mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /saml/updateAppConfig:
     post:
@@ -18391,6 +18802,26 @@ paths:
           description: Comma-separated group IDs to filter users by group membership.
           schema:
             type: string
+        - name: includeServiceAccounts
+          in: query
+          required: false
+          description: |
+            `true` also returns service accounts, which are otherwise left out
+            of this list. They are machine identities, and this is the list of
+            people: one can never sign in, so it would sit in the pending-invite
+            set for good and be swept into bulk invites meant for colleagues.
+
+            Honoured only for an organisation administrator. The route is
+            authenticated but not admin-only, and scope checks do nothing for a
+            session token, so for anyone else the flag is ignored rather than
+            refused — listing service accounts is an administrator's action on
+            `GET /service-accounts`, and this must not be a way around that.
+
+            Returned records carry `kind`, which is what lets a caller tell a
+            machine identity from a colleague.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
           description: Users retrieved successfully
@@ -18433,6 +18864,15 @@ paths:
                         email:
                           type: string
                           format: email
+                        kind:
+                          type: string
+                          enum: [human, service]
+                          description: |
+                            What sort of principal this is. Absent on records
+                            written before the field existed, which are people.
+                            Service accounts appear only when
+                            `includeServiceAccounts=true` and the caller
+                            administers the organisation.
                         isActive:
                           type: boolean
                           description: "`true` only when not blocked AND `hasLoggedIn: true`"
@@ -18679,16 +19119,22 @@ paths:
         Restricted system fields (`_id`, `orgId`, `slug`, `__v`) cannot be updated and
         cause a `400` if included.
 
-        **Email change:** When `email` is changed, a verification email is sent to the
-        new address. The response includes a `meta.emailChangeMailStatus` field:
-        `notNeeded` | `sent` | `failed`.
+        **Email change:** Only the account owner can change its email address. Anyone
+        else, including an admin, gets `403` when `email` differs from the stored address
+        (compared lowercased and trimmed). Sending the stored address back is not a change
+        and succeeds with `meta.emailChangeMailStatus: notNeeded`. The stored
+        address does not change here: a verification link is sent to the new address,
+        and the change is applied when that link is opened (`PUT /userAccount/validateEmailChange`),
+        which also publishes `UpdateUserEvent` with the new address. The response
+        includes `meta.emailChangeMailStatus`: `notNeeded` | `sent` | `failed`.
 
         **Role:** Only org admins can set `role`. Promoting a member to `admin` is rejected
         with `400` when the change would exceed 5 non-deleted admins (including pending
         admin invites). Demoting the last remaining admin is also rejected.
 
-        **Authorization:** Admin can update any user; non-admin can only update themselves
-        (`userAdminOrSelfCheck` middleware, throws `400` not `403`).
+        **Authorization:** Admin can update any user's other fields; non-admin can only update
+        themselves (`userAdminOrSelfCheck` middleware, throws `400` not `403`). The email rule
+        above applies to admins too.
       operationId: updateUser
       security:
         - bearerAuth: []
@@ -18775,6 +19221,16 @@ paths:
             - Promoting to admin would exceed the organization limit of 5 admins
             - Demoting the last remaining admin
           content:  
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Only the account owner can change its email address: the request's `email`
+            differs from the stored address and the caller isn't that user. Checked after
+            the user is loaded, so a missing id is `404`; a caller who is neither an admin
+            nor that user is refused earlier with `400` by the admin-or-self check.
+          content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
@@ -18955,16 +19411,18 @@ paths:
     patch:
       tags:
         - Users
-      summary: Update user email
+      summary: Request an email address change
       description: |
-        Update the email address of a specific user. The new email is saved directly without a
-        uniqueness check. A `UpdateUserEvent` is published to the event bus.
+        Start changing the caller's own email address. The stored address does not change
+        here: the new address is checked for uniqueness within the organization, and a
+        verification link is sent to it. The change is applied when that link is opened
+        (`PUT /userAccount/validateEmailChange`), which also publishes `UpdateUserEvent`
+        with the new address. If the link cannot be sent, the response is `500`.
 
-        Use `PUT /users/{id}` instead if you need the full update flow including email uniqueness
-        validation and verification email sending.
-
-        **Authorization:** Admin or the user themselves (`userAdminOrSelfCheck` — throws `400`
-        not `403` if not authorized).
+        **Authorization:** An admin or the account owner may call it, but only the owner
+        can change the address. An unchanged address (compared lowercased and trimmed)
+        returns `200` with `emailChangeMailStatus: notNeeded` for either; a different
+        address from anyone but the owner is `403`, checked after the user is loaded.
       operationId: updateEmail
       security:
         - bearerAuth: []
@@ -18993,17 +19451,40 @@ paths:
                   format: email
       responses:
         '200':
-          description: Email updated successfully
+          description: |
+            Verification requested, or nothing to do. `email` is the address still stored;
+            `emailChangeMailStatus` is `sent` when a link went to the new address, or
+            `notNeeded` when it matches the current one.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/User'
+                type: object
+                additionalProperties: false
+                required: [email, emailChangeMailStatus]
+                properties:
+                  email:
+                    type: string
+                    format: email
+                    example: "john.smith@company.com"
+                  emailChangeMailStatus:
+                    type: string
+                    enum: [sent, notNeeded]
         '400':
           description: |
             Invalid request. Possible reasons:
 
             - Invalid user ID format or invalid email format (Zod)
-            - Requester is not admin and is not the target user (`userAdminOrSelfCheck`)
+            - Email already in use by another user in the organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Only the account owner can change its email address: the request's `email`
+            differs from the stored address and the caller isn't that user. Checked after
+            the user is loaded, so a missing id is `404`; a caller who is neither an admin
+            nor that user is refused earlier with `400` by the admin-or-self check.
           content:
             application/json:
               schema:
@@ -19231,8 +19712,12 @@ paths:
         If all provided emails already have active accounts, returns `200` with
         `{ "errorMessage": "All provided emails already have active accounts" }`.
 
-        If mail sending fails for any email, the loop continues and the final response reflects
-        the mail service's HTTP status code.
+        Invitation emails are always queued on the message broker and delivered in the
+        background, so a `200` means "accepted for delivery", not "sent". Emails that
+        ultimately cannot be delivered raise an admin notification. Set-password links are
+        minted when the email is sent, so no reset token is stored in the broker. If queueing
+        fails for any email, the loop continues and the final response reflects that status
+        code.
 
         Optional `role` (`admin` | `member`, default `member`) is applied to new invites and
         to restored/pending users when promoting to admin. Inviting as `admin` is rejected
@@ -19283,7 +19768,11 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: "Invite sent successfully"
+                    example: "Invites queued. Emails are being sent in the background and may take a few minutes."
+                  queued:
+                    type: boolean
+                    description: True when invitation emails were accepted for background delivery
+                    example: true
                   errorMessage:
                     type: string
                     description: Present when all emails were already active
@@ -20292,7 +20781,7 @@ paths:
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
         '404':
           description: No such application, or no such service account in this organisation
 
@@ -20567,22 +21056,30 @@ paths:
         `semantic:write` remains, despite its name. It is what running a search
         requires, so removing scopes by the word in their name would take
         reading away and leave writing alone.
+
+        Each scope is returned with the description and category held in the
+        shared scope catalogue, the same shape
+        `GET /personal-access-tokens/scopes` returns. The picker can then say
+        what a permission allows instead of showing a bare identifier, and the
+        wording for a scope stays the same on every screen that offers it.
       operationId: listServiceTokenScopes
       security:
         - bearerAuth: []
         - oauth2: [user:read]
       responses:
         '200':
-          description: Available scopes
+          description: Available scopes, each with its description and category
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - scopes
                 properties:
                   scopes:
                     type: array
                     items:
-                      type: string
+                      $ref: '#/components/schemas/OAuthScopeInfo'
         '400':
           description: Admin access required
         '401':
@@ -21940,7 +22437,7 @@ paths:
             - Missing or empty `name` or `type`
             - `type` is not one of: standard, everyone, custom
             - Group name or type `admin` is not allowed
-            - A group with the same name already exists
+            - A group with the same name already exists in the same organization
             - Requester does not have admin privileges
           content:
             application/json:
@@ -22203,6 +22700,8 @@ paths:
 
             - Missing or empty `name`
             - Invalid `groupId` format (must be a 24-character hex ObjectId)
+            - New name `admin`, `everyone` or `standard` is not allowed
+            - Another group with the same name already exists in the same organization
             - Requester does not have admin privileges
           content:
             application/json:
@@ -22741,476 +23240,10 @@ paths:
                     type: string
                     format: date-time
 
-  /document/{documentId}/download:
-    get:
-      tags:
-        - Document Management
-      summary: Download document
-      description: |
-        Get a time-limited signed URL to download the document, or receive the file directly for local storage.<br><br>
-        <b>Overview:</b><br>
-        This endpoint generates secure download access to documents. For cloud storage (S3/Azure), it returns a presigned URL. For local storage, it streams the file directly.<br><br>
-        <b>Download Behavior by Storage:</b><br>
-        <ul>
-        <li><b>S3/Azure:</b> Returns presigned URL valid for specified duration</li>
-        <li><b>Local:</b> Streams file directly with appropriate headers</li>
-        </ul>
-        <b>Version Download:</b><br>
-        Specify the <code>version</code> parameter to download a specific historical version. Only available for versioned documents.<br><br>
-        <b>URL Expiration:</b><br>
-        <ul>
-        <li>Default: 3600 seconds (1 hour)</li>
-        <li>Configurable via <code>expirationTimeInSeconds</code></li>
-        <li>Maximum depends on storage provider limits</li>
-        </ul>
-        <b>Security:</b><br>
-        Signed URLs are single-use and time-limited. They can be safely shared for temporary access.
-      operationId: downloadDocument
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:read]
-      parameters:
-        - name: documentId
-          in: path
-          required: true
-          description: Document ID (24-character MongoDB ObjectId)
-          schema:
-            type: string
-            pattern: '^[a-fA-F0-9]{24}$'
-            example: "507f1f77bcf86cd799439011"
-        - name: version
-          in: query
-          required: false
-          description: Version number to download (0-indexed). Must be less than total versions.
-          schema:
-            type: integer
-            minimum: 0
-            example: 2
-        - name: expirationTimeInSeconds
-          in: query
-          required: false
-          description: Signed URL validity duration in seconds
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 86400
-            default: 3600
-            example: 7200
-      responses:
-        '200':
-          description: Download URL generated or file stream
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  signedUrl:
-                    type: string
-                    format: uri
-                    description: Presigned URL for download (S3/Azure only)
-                    example: "https://bucket.s3.amazonaws.com/docs/file.pdf?X-Amz-Signature=..."
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
-                description: Direct file stream (local storage only)
-        '400':
-          description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Invalid version number</li>
-            <li>Version requested for non-versioned document</li>
-            <li>Version exceeds available versions</li>
-            </ul>
-        '401':
-          description: Unauthorized - Valid bearer token required
-        '404':
-          description: Document not found
-  # TODO: most of the document operations is done using /knowledgeBase/{recordId} route, none of this methods are being called by frontend do we really need them?
-  # /document/upload:
-  #   post:
-  #     tags:
-  #       - Document Management
-  #     summary: Upload document
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Upload a new document to the storage system.
-  #     operationId: uploadDocument
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:write]
-  #     requestBody:
-  #       required: true
-  #       content:
-  #         multipart/form-data:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               file:
-  #                 type: string
-  #                 format: binary
-  #     responses:
-  #       '200':
-  #         description: Document uploaded successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '400':
-  #         description: Invalid file or missing required fields
-  #       '401':
-  #         description: Unauthorized
-  #
-  # /document/placeholder:
-  #   post:
-  #     tags:
-  #       - Document Management
-  #     summary: Create placeholder document
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Create a placeholder document entry without uploading content.
-  #     operationId: createPlaceholderDocument
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:write]
-  #     requestBody:
-  #       required: true
-  #       description: "Request payload"
-  #       content:
-  #         application/json:
-  #           schema:
-  #             type: object
-  #     responses:
-  #       '200':
-  #         description: Placeholder document created successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #
-  # /document/{documentId}:
-  #   get:
-  #     tags:
-  #       - Document Management
-  #     summary: Get document by ID
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Retrieve document metadata and details by its ID.
-  #     operationId: getDocumentById
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:read]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     responses:
-  #       '200':
-  #         description: Document details retrieved
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  #   delete:
-  #     tags:
-  #       - Document Management
-  #     summary: Delete document by ID
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Delete a document by its ID.
-  #     operationId: deleteDocumentById
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:delete]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     responses:
-  #       '200':
-  #         description: Document deleted successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  # /document/{documentId}/uploadNextVersion:
-  #   post:
-  #     tags:
-  #       - Document Management
-  #     summary: Upload next version of document
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Upload a new version of an existing document.
-  #     operationId: uploadNextVersionDocument
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:write]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     requestBody:
-  #       required: true
-  #       content:
-  #         multipart/form-data:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               file:
-  #                 type: string
-  #                 format: binary
-  #     responses:
-  #       '200':
-  #         description: New version uploaded successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  # /document/{documentId}/rollBack:
-  #   post:
-  #     tags:
-  #       - Document Management
-  #     summary: Roll back to previous version
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Roll back a document to its previous version.
-  #     operationId: rollBackToPreviousVersion
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:write]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     requestBody:
-  #       content:
-  #         application/json:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               version:
-  #                 type: integer
-  #                 description: Version number to roll back to
-  #     responses:
-  #       '200':
-  #         description: Document rolled back successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  # /document/{documentId}/buffer:
-  #   get:
-  #     tags:
-  #       - Document Management
-  #     summary: Get document buffer
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Retrieve the binary buffer of a document.
-  #     operationId: getDocumentBuffer
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:read]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     responses:
-  #       '200':
-  #         description: Document buffer retrieved
-  #         content:
-  #           application/octet-stream:
-  #             schema:
-  #               type: string
-  #               format: binary
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  #   put:
-  #     tags:
-  #       - Document Management
-  #     summary: Create/update document buffer
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Create or update the binary buffer of a document.
-  #     operationId: createDocumentBuffer
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:write]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     requestBody:
-  #       required: true
-  #       content:
-  #         multipart/form-data:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               file:
-  #                 type: string
-  #                 format: binary
-  #         application/octet-stream:
-  #           schema:
-  #             type: string
-  #             format: binary
-  #     responses:
-  #       '200':
-  #         description: Document buffer updated successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  # /document/{documentId}/directUpload:
-  #   post:
-  #     tags:
-  #       - Document Management
-  #     summary: Direct upload document
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Upload a document directly without intermediate processing.
-  #     operationId: uploadDirectDocument
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:write]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     requestBody:
-  #       content:
-  #         multipart/form-data:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               file:
-  #                 type: string
-  #                 format: binary
-  #     responses:
-  #       '200':
-  #         description: Document uploaded directly
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  # /document/{documentId}/isModified:
-  #   get:
-  #     tags:
-  #       - Document Management
-  #     summary: Check if document is modified
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Check if a document has been modified since its last saved version.
-  #     operationId: documentDiffChecker
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [kb:read]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     responses:
-  #       '200':
-  #         description: Modification status retrieved
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 isModified:
-  #                   type: boolean
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
   # --- Internal storage routes -------------------------------------------
-  # Service-to-service only: each mirrors a public /document route but is
-  # authenticated with the storage scoped token instead of a user's session.
+  # Service-to-service only, authenticated with the storage scoped token.
+  # Storage scopes by org, not record permissions, so users have no route
+  # here; they read and write files through /knowledgeBase.
   /document/internal/upload:
     post:
       tags:
@@ -23543,6 +23576,172 @@ paths:
           description: The storage scoped token was missing or invalid.
         '404':
           description: No such document.
+  /artifacts:
+    get:
+      tags:
+        - Artifacts
+      summary: List accessible artifacts
+      description: |
+        Paginated gallery of VISIBLE, non-temporary artifacts the caller can
+        access via record ACL. TOOL_RESULT artifacts are never returned.
+        Conversation titles are a display join and are omitted when the chat
+        is gone or the caller cannot see it.
+      operationId: listArtifacts
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: search
+          in: query
+          schema:
+            type: string
+            maxLength: 200
+        - name: artifactTypes
+          in: query
+          description: Comma-separated gallery artifact types (not TOOL_RESULT)
+          schema:
+            type: string
+        - name: conversationId
+          in: query
+          schema:
+            type: string
+        - name: dateFrom
+          in: query
+          schema:
+            type: integer
+        - name: dateTo
+          in: query
+          schema:
+            type: integer
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum: [name, createdAtTimestamp, updatedAtTimestamp, artifactType]
+            default: createdAtTimestamp
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Paginated artifact gallery
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactGalleryListResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Insufficient OAuth scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /artifacts/{artifactId}:
+    get:
+      tags:
+        - Artifacts
+      summary: Get artifact metadata
+      description: Metadata and versions for one artifact. Returns 404 if the artifact is missing, inaccessible, or not user-visible.
+      operationId: getArtifact
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+            pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'
+      responses:
+        '200':
+          description: Artifact detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactGalleryDetail'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /artifacts/{artifactId}/versions:
+    get:
+      tags:
+        - Artifacts
+      summary: List artifact versions
+      description: Immutable registry versions for one artifact.
+      operationId: listArtifactVersions
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+            pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'
+      responses:
+        '200':
+          description: Version list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ArtifactGalleryVersion'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /knowledgeBase:
     post:
       tags:
@@ -24354,6 +24553,14 @@ paths:
           description: Target format for conversion
           schema:
             type: string
+        - name: version
+          in: query
+          description: |
+            Registry version to pin ARTIFACT record content to. Omit to stream
+            the latest version. Ignored for non-artifact records.
+          schema:
+            type: integer
+            minimum: 0
       responses:
         '200':
           description: File content stream
@@ -24852,6 +25059,129 @@ paths:
                 $ref: '#/components/schemas/UploadLimitsResponseSchema'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/demo-data/status:
+    get:
+      tags:
+        - Knowledge Base
+      summary: Get your Acme Corp demo data setting
+      description: |
+        Whether the bundled Acme Corp demo data reaches the caller's answers,
+        search and record listings. Each person chooses for themselves; until
+        they do, the demo is on while the organization has no indexed data of
+        its own and off once it has.
+      operationId: getDemoDataStatus
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      responses:
+        '200':
+          description: The caller's demo data setting
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DemoDataStatus'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/demo-data/preference:
+    put:
+      tags:
+        - Knowledge Base
+      summary: Show or hide the Acme Corp demo data for yourself
+      description: |
+        Sets the caller's own choice. `include: null` goes back to the default.
+        Affects only the caller; nothing is deleted.
+      operationId: setDemoDataPreference
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [include]
+              properties:
+                include:
+                  type: boolean
+                  nullable: true
+      responses:
+        '200':
+          description: The caller's setting after the change
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DemoDataStatus'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/demo-data/workspace:
+    put:
+      tags:
+        - Knowledge Base
+      summary: Turn the Acme Corp demo data off, or back on, for everyone
+      description: |
+        Admins only. Off hides the demo from everyone's answers, search and
+        records, overriding each person's own choice, and stops the sample
+        accounts on the demo domain from signing in. On restores both.
+        Nothing is deleted.
+      operationId: setDemoDataForEveryone
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: The caller's demo data setting after the change
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DemoDataStatus'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Only admins can change this for everyone
           content:
             application/json:
               schema:
@@ -26607,6 +26937,117 @@ paths:
   # ==================== ENTERPRISE SEARCH ENDPOINTS ====================
 
   # -------------------- Conversations --------------------
+  /conversations/create:
+    post:
+      tags:
+        - Conversations
+      summary: Create conversation (non-streaming)
+      description: |
+        Start a new assistant conversation and wait for the complete answer.
+        The JSON counterpart of `POST /conversations/stream`, for API, SDK
+        and automation callers that do not consume SSE.
+
+        **How a turn runs**
+
+        1. The user's message is saved (in its own short transaction on a
+           replica set).
+        2. The AI backend runs the same agent-loop pipeline as the `/stream`
+           route and returns only its final result. No transaction is held
+           during this call, and the call is never retried.
+        3. The answer, citations and status are saved exactly as the
+           streaming route saves them, and the updated conversation is
+           returned.
+
+        Every failure after step 1 is persisted: the conversation ends with
+        status `Failed`, a `failReason`, and an `error` message, and the
+        response carries `X-Conversation-Id` so the caller can fetch it.
+        A 4xx from the AI backend (for example no model configured) keeps
+        its status and user-facing message; other failures return 500 with
+        a generic message.
+
+        The response arrives only when the whole answer is ready, which can
+        take minutes for agent runs. Allow a generous client and proxy
+        timeout, or use the `/stream` variant for interactive clients.
+
+        **Modes**
+
+        `chatMode: agent` (or `agent:<mode>`) runs the universal agent and
+        honours `tools` / `agentCapabilities`; `internal_search` and
+        `web_search` run the search assistant and ignore `tools`. Omitted,
+        it defaults to internal search.
+      operationId: createConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      requestBody:
+        required: true
+        description: The first question, with optional scope, model and mode.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConversationRequest'
+      responses:
+        '201':
+          description: Conversation created with its first answer.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateConversationResponse'
+        '400':
+          description: |
+            Invalid request — `query` is missing or empty, contains markup or
+            printf-style format specifiers, or another field fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: Forbidden — the token lacks the `conversation:write` OAuth scope.
+        '413':
+          description: The request is larger than the selected model accepts.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '422':
+          description: The model provider's content filter blocked the request.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '424':
+          description: |
+            No usable LLM — none is configured for the organization, or the
+            selected one could not start. The message says what to fix.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The model provider is rate limiting or out of quota.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '500':
+          description: |
+            The answer failed (AI service unreachable, timed out, returned
+            no answer, or could not be saved). The conversation is kept with
+            status `Failed` and an `error` message.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /conversations/stream:
     post:
       tags:
@@ -27971,7 +28412,7 @@ paths:
                               enum: [read, write]
                       status:
                         type: string
-                        enum: [None, Inprogress, Complete, Failed]
+                        enum: [None, Inprogress, Complete, Failed, Stopped]
                       failReason:
                         type: string
                         description: Populated only when `status` is `Failed`
@@ -28490,6 +28931,128 @@ paths:
         '500':
           description: Internal server error while deleting the conversation
 
+  /conversations/{conversationId}/messages:
+    post:
+      tags:
+        - Conversations
+      summary: Add message (non-streaming)
+      description: |
+        Ask a follow-up in an existing assistant conversation and wait for
+        the complete answer. The JSON counterpart of
+        `POST /conversations/{conversationId}/messages/stream`. Earlier turns
+        are sent to the model as history; project context comes from the
+        conversation, never from the request.
+
+        **How a turn runs**
+
+        1. The user's message is saved (in its own short transaction on a
+           replica set).
+        2. The AI backend runs the same agent-loop pipeline as the `/stream`
+           route and returns only its final result. No transaction is held
+           during this call, and the call is never retried.
+        3. The answer, citations and status are saved exactly as the
+           streaming route saves them, and the updated conversation is
+           returned.
+
+        Every failure after step 1 is persisted: the conversation ends with
+        status `Failed`, a `failReason`, and an `error` message, and the
+        response carries `X-Conversation-Id` so the caller can fetch it.
+        A 4xx from the AI backend (for example no model configured) keeps
+        its status and user-facing message; other failures return 500 with
+        a generic message.
+
+        The response arrives only when the whole answer is ready, which can
+        take minutes for agent runs. Allow a generous client and proxy
+        timeout, or use the `/stream` variant for interactive clients.
+      operationId: addMessage
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: The follow-up question, with optional scope and model overrides.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMessageRequest'
+      responses:
+        '200':
+          description: The conversation with the new question and answer.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddMessageResponse'
+        '400':
+          description: |
+            Invalid request — `query` is missing or empty, contains markup or
+            printf-style format specifiers, or another field fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: Forbidden — the token lacks the `conversation:chat` OAuth scope.
+        '404':
+          description: |
+            Conversation not found — it does not exist, belongs to another
+            user, is of the other type (assistant vs agent), or, for agent
+            routes, belongs to a different agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: The request is larger than the selected model accepts.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '422':
+          description: The model provider's content filter blocked the request.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '424':
+          description: |
+            No usable LLM — none is configured for the organization, or the
+            selected one could not start. The message says what to fix.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The model provider is rate limiting or out of quota.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '500':
+          description: |
+            The answer failed (AI service unreachable, timed out, returned
+            no answer, or could not be saved). The conversation is kept with
+            status `Failed` and an `error` message.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /conversations/{conversationId}/messages/stream:
     post:
       tags:
@@ -28787,13 +29350,14 @@ paths:
                         description: User who started the conversation
                       status:
                         type: string
-                        enum: [None, Inprogress, Complete, Failed]
+                        enum: [None, Inprogress, Complete, Failed, Stopped]
                         description: |
                           Current status of the conversation:
                           - `None` — no activity yet
                           - `Inprogress` — AI is processing
                           - `Complete` — response ready
                           - `Failed` — error occurred
+                          - `Stopped` — cancelled, or the client disconnected mid-answer
                       failReason:
                         type: string
                         description: |
@@ -32401,9 +32965,35 @@ paths:
     post:
       tags:
         - Agents
-      summary: Add message to agent conversation
-      description: Append a user message and wait for the full non-streaming AI response.
+      summary: Add message to agent conversation (non-streaming)
+      description: |
+        Ask a follow-up in an existing agent conversation and wait for the
+        complete answer. The JSON counterpart of
+        `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
+
+        **How a turn runs**
+
+        1. The user's message is saved (in its own short transaction on a
+           replica set).
+        2. The AI backend runs the same agent-loop pipeline as the `/stream`
+           route and returns only its final result. No transaction is held
+           during this call, and the call is never retried.
+        3. The answer, citations and status are saved exactly as the
+           streaming route saves them, and the updated conversation is
+           returned.
+
+        Every failure after step 1 is persisted: the conversation ends with
+        status `Failed`, a `failReason`, and an `error` message, and the
+        response carries `X-Conversation-Id` so the caller can fetch it.
+        A 4xx from the AI backend (for example no model configured) keeps
+        its status and user-facing message; other failures return 500 with
+        a generic message.
+
+        The response arrives only when the whole answer is ready, which can
+        take minutes for agent runs. Allow a generous client and proxy
+        timeout, or use the `/stream` variant for interactive clients.
       operationId: addAgentConversationMessage
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -32421,24 +33011,80 @@ paths:
             format: objectId
       requestBody:
         required: true
-        description: Follow-up message body (query required).
+        description: The follow-up question, with optional scope, model and tool overrides.
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AddMessageRequest'
+              $ref: '#/components/schemas/AgentAddMessageRequest'
       responses:
         '200':
-          description: Updated conversation with new assistant message
+          description: The conversation with the new question and answer.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AddMessageResponse'
         '400':
-          description: Invalid request
+          description: |
+            Invalid request — `query` is missing or empty, contains markup or
+            printf-style format specifiers, or another field fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: Forbidden — the token lacks the `agent:execute` OAuth scope, or the caller cannot use this agent.
         '404':
-          description: Conversation not found
+          description: |
+            Conversation not found — it does not exist, belongs to another
+            user, is of the other type (assistant vs agent), or, for agent
+            routes, belongs to a different agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: The request is larger than the selected model accepts.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '422':
+          description: The model provider's content filter blocked the request.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '424':
+          description: |
+            No usable LLM — none is configured for the organization, or the
+            selected one could not start. The message says what to fix.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The model provider is rate limiting or out of quota.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '500':
+          description: |
+            The answer failed (AI service unreachable, timed out, returned
+            no answer, or could not be saved). The conversation is kept with
+            status `Failed` and an `error` message.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}/archive:
     post:
@@ -33043,11 +33689,34 @@ paths:
     post:
       tags:
         - Agents
-      summary: Create agent conversation
+      summary: Create agent conversation (non-streaming)
       description: |
-        Create a new conversation with the agent using an initial user query;
-        returns the persisted conversation after the first AI response (non-streaming).
+        Start a conversation with an agent and wait for the complete answer.
+        The JSON counterpart of `POST /agents/{agentKey}/conversations/stream`.
+
+        **How a turn runs**
+
+        1. The user's message is saved (in its own short transaction on a
+           replica set).
+        2. The AI backend runs the same agent-loop pipeline as the `/stream`
+           route and returns only its final result. No transaction is held
+           during this call, and the call is never retried.
+        3. The answer, citations and status are saved exactly as the
+           streaming route saves them, and the updated conversation is
+           returned.
+
+        Every failure after step 1 is persisted: the conversation ends with
+        status `Failed`, a `failReason`, and an `error` message, and the
+        response carries `X-Conversation-Id` so the caller can fetch it.
+        A 4xx from the AI backend (for example no model configured) keeps
+        its status and user-facing message; other failures return 500 with
+        a generic message.
+
+        The response arrives only when the whole answer is ready, which can
+        take minutes for agent runs. Allow a generous client and proxy
+        timeout, or use the `/stream` variant for interactive clients.
       operationId: createAgentConversation
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -33059,31 +33728,71 @@ paths:
             type: string
       requestBody:
         required: true
-        description: Initial user query and optional model or filter context.
+        description: The first question, with optional scope, model, project and tool overrides.
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateConversationRequest'
+              $ref: '#/components/schemas/AgentCreateConversationRequest'
       responses:
         '201':
-          description: Conversation created
+          description: Conversation created with the agent's first answer.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - conversation
-                  - meta
-                properties:
-                  conversation:
-                    $ref: '#/components/schemas/AgentConversation'
-                  meta:
-                    type: object
-                    additionalProperties: true
+                $ref: '#/components/schemas/CreateAgentConversationResponse'
         '400':
-          description: Invalid request
+          description: |
+            Invalid request — `query` is missing or empty, contains markup or
+            printf-style format specifiers, or another field fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: Forbidden — the token lacks the `agent:execute` OAuth scope, or the caller cannot use this agent.
+        '413':
+          description: The request is larger than the selected model accepts.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '422':
+          description: The model provider's content filter blocked the request.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '424':
+          description: |
+            No usable LLM — none is configured for the organization, or the
+            selected one could not start. The message says what to fix.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The model provider is rate limiting or out of quota.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+        '500':
+          description: |
+            The answer failed (AI service unreachable, timed out, returned
+            no answer, or could not be saved). The conversation is kept with
+            status `Failed` and an `error` message.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==================== CONNECTOR MANAGER ENDPOINTS ====================
 
@@ -39034,8 +39743,8 @@ paths:
         '200':
           description: |
             SSE stream (`text/event-stream`). Every frame uses the
-            `progress` event name; `data` is a JSON-encoded
-            `EmbeddingDownloadProgressPayload` plus a `timestamp` field.
+            `progress` event name; `data` is the decoded
+            `EmbeddingDownloadProgressPayload` object plus a `timestamp` field.
           content:
             text/event-stream:
               schema:
@@ -39084,6 +39793,11 @@ paths:
 
         **Authentication:** Session JWT or OAuth 2.0 access token via `Authorization: Bearer`.
         OAuth tokens must include the `config:read` scope. Admin role is not required.
+
+        **API keys:** for anyone who isn't an org admin, each provider's `configuration.apiKey`
+        comes back as the placeholder `****************`. Admins get the stored key, unless the
+        server hides secrets from everyone (`HIDE_SECRET_CONFIG=true`). When updating a provider,
+        sending the placeholder back keeps the stored key.
       operationId: getWebSearchProviders
       x-pipeshub-sdk: true
       security:
@@ -39350,6 +40064,55 @@ paths:
                 $ref: '#/components/schemas/URLConfig'
         '401':
           description: Unauthorized
+
+  /configurationManager/public/desktopFrontendUrl:
+    get:
+      tags:
+        - Public URLs
+      summary: Get the configured frontend URL (desktop app only)
+      description: |
+        Returns the server's configured public frontend URL. Unauthenticated.
+
+        The PipesHub desktop app builds its OAuth redirect URI from this value. It cannot
+        derive it: the app knows only the API base URL the operator typed into it, and the
+        two are different origins whenever the UI is served separately from the API. The
+        app calls this as the sign-in screen loads, before any provider button renders.
+
+        Requires the `client-name: desktop` request header. That is a filter, not an
+        access control: the header is client-supplied and the desktop app is a public
+        client, so nothing it ships could prove its identity. It exists so browsers, which
+        have `window.location` and never need this, do not receive the value.
+      operationId: getDesktopFrontendUrl
+      security: []
+      parameters:
+        - in: header
+          name: client-name
+          required: true
+          description: Must be `desktop`. Any other value is rejected with 403.
+          schema:
+            type: string
+            enum: [desktop]
+      responses:
+        '200':
+          description: The configured frontend URL
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  frontendUrl:
+                    type: string
+                    format: uri
+                    example: "https://pipeshub.example.com"
+                required:
+                  - frontendUrl
+        '403':
+          description: Called without the desktop client header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/connectorPublicUrl:
     post:
@@ -40943,7 +41706,9 @@ paths:
         - Crawling Jobs
       summary: Remove all crawling jobs
       description: |
-        Remove all scheduled crawling jobs for the organization.
+        Remove all scheduled crawling jobs for the organization, including
+        org-wide connectors and other members' personal connectors.
+        Only an organization admin may call this; a member is refused with 400.
       operationId: removeAllCrawlingJob
       security:
         - bearerAuth: []
@@ -40958,8 +41723,22 @@ paths:
                 properties:
                   message:
                     type: string
+        '400':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+        '403':
+          description: Token lacks the required scope
+        '500':
+          description: A schedule or queued run could not be removed, so it may still run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /crawlingManager/{connector}/{connectorId}/pause:
     post:

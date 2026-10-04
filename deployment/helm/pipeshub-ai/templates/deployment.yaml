@@ -15,8 +15,8 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+      maxSurge: {{ .Values.rollingUpdate.maxSurge }}
+      maxUnavailable: {{ .Values.rollingUpdate.maxUnavailable }}
   selector:
     matchLabels:
       {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
@@ -102,9 +102,22 @@ spec:
               value: {{ include "pipeshub-ai.sandboxMode" . | quote }}
             - name: SANDBOX_DOCKER_IMAGE
               value: {{ .Values.config.sandboxDockerImage | quote }}
+            - name: SANDBOX_ALLOW_NETWORK
+              value: {{ .Values.config.sandboxAllowNetwork | quote }}
+            - name: SANDBOX_EGRESS_NETWORK
+              value: {{ .Values.config.sandboxEgressNetwork | quote }}
+            - name: SANDBOX_EGRESS_ALLOW_CIDRS
+              value: {{ .Values.config.sandboxEgressAllowCidrs | default "" | quote }}
             {{- with (include "pipeshub-ai.dockerHost" .) }}
             - name: DOCKER_HOST
               value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.s3SignatureV4Preload }}
+            - name: NODE_OPTIONS
+              value: "--require /etc/pipeshub/s3-sigv4/force-sigv4.js"
             {{- end }}
             # Resource-governor tuning. Every one defaults to "" so the
             # governor derives it from the pod's CPU/memory limits; set one
@@ -346,6 +359,19 @@ spec:
 
             - name: HOME
               value: /home/user
+            # Chromium is installed into /root during the image build. HOME is
+            # /home/user, and that path is an emptyDir, so Playwright would
+            # look for a browser that is not there.
+            - name: PLAYWRIGHT_BROWSERS_PATH
+              value: /root/.cache/ms-playwright
+
+            {{- $trustProxy := .Values.trustProxy | default (ternary "1" "" .Values.ingress.enabled) }}
+            {{- if $trustProxy }}
+            - name: TRUST_PROXY
+              value: {{ $trustProxy | quote }}
+            {{- end }}
+            - name: MAX_AUTH_REQUESTS_PER_MINUTE
+              value: {{ .Values.maxAuthRequestsPerMinute | default 10 | quote }}
             
             {{- if .Values.telemetry.enabled }}
             # OpenTelemetry configuration
@@ -356,6 +382,10 @@ spec:
               value: "true"
             {{- end }}
             {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
 
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
@@ -382,6 +412,11 @@ spec:
             {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.s3SignatureV4Preload }}
+            - name: s3-sigv4
+              mountPath: /etc/pipeshub/s3-sigv4
+              readOnly: true
             {{- end }}
           {{- if .Values.healthCheck.startupProbe.enabled }}
           startupProbe:
@@ -432,9 +467,14 @@ spec:
             # cluster network that can route to this pod.
             - name: DOCKER_TLS_CERTDIR
               value: ""
+          # First arg must be `dockerd`. If it starts with `-`, dockerd-entrypoint.sh
+          # prepends `--host=tcp://0.0.0.0:2375`, which then collides with the
+          # loopback listener below (address already in use) and the sidecar exits.
           args:
+            - dockerd
             - "--host=tcp://127.0.0.1:{{ .Values.sandbox.dind.port }}"
             - "--host=unix:///var/run/docker.sock"
+            - "--tls=false"
           resources:
             {{- toYaml .Values.sandbox.dind.resources | nindent 12 }}
           volumeMounts:
@@ -498,4 +538,9 @@ spec:
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.s3SignatureV4Preload }}
+        - name: s3-sigv4
+          configMap:
+            name: {{ include "pipeshub-ai.fullname" . }}-s3-sigv4
         {{- end }}

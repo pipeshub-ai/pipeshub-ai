@@ -131,6 +131,11 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_record_path_segments(self, record_id: str) -> list[str]:
+        """Return individual record names from root ancestor to this record."""
+        pass
+
+    @abstractmethod
     async def get_records_by_status(
         self,
         org_id: str,
@@ -226,6 +231,30 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def batch_upsert_people(self, people: list[Person]) -> None:
+        pass
+
+    @abstractmethod
+    async def get_person_by_email(self, email: str, org_id: str) -> Optional[Person]:
+        pass
+
+    @abstractmethod
+    async def upsert_person_by_email(self, person: Person) -> Optional[str]:
+        pass
+
+    @abstractmethod
+    async def ensure_app_membership(
+        self,
+        principal_id: str,
+        principal_collection: str,
+        connector_id: str,
+        *,
+        is_external: bool,
+        source_user_id: str | None = None,
+    ) -> None:
+        pass
+
+    @abstractmethod
+    async def reap_stale_external_app_relations(self, connector_id: str) -> int:
         pass
 
     @abstractmethod
@@ -404,6 +433,17 @@ class BaseDataStore(ABC):
         Ensure the org's "All" team has an edge to the app in userAppRelation.
         Idempotent. Used by TEAM-scope connectors.
         """
+        pass
+
+    @abstractmethod
+    async def upsert_authenticated_as(
+        self, creator_key: str, source_user_key: str, connector_id: str, org_id: str
+    ) -> None:
+        """Link the connector creator to the source-account user it authenticated as (one per connector)."""
+        pass
+
+    @abstractmethod
+    async def remove_authenticated_as(self, connector_id: str) -> bool:
         pass
 
     @abstractmethod

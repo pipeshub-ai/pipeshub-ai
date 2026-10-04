@@ -306,6 +306,8 @@ async def select_loop_and_goal(
             graph_provider=context.graph_provider,
             is_multimodal_llm=context.is_multimodal_llm,
             org_id=context.org_id,
+            user_id=context.user_id,
+            is_service_account=context.is_service_account,
             transport_registry=transport_registry,
             opik_active=opik_active,
             opik_project_name=opik_project_name,

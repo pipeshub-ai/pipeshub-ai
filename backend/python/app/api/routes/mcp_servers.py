@@ -830,6 +830,7 @@ async def _build_oauth_authorization_url(
     *,
     initiated_by: str,
     owner_type: str,
+    registry: Optional[MCPRegistry] = None,
 ) -> dict[str, Any]:
     """Core DCR-or-static-client OAuth authorize flow, shared by the per-user and
     agent-key (`/agents/{agent_key}/...`) routes. `owner_id` is a plain user for the
@@ -897,6 +898,11 @@ async def _build_oauth_authorization_url(
     # refresh-service pass hasn't already caught.
     asyncio.create_task(_sweep_expired_oauth_states(config_service))
 
+    # Resolved from the template rather than the stored instance so instances created
+    # before a template gained these params still get them.
+    type_id = instance.get("typeId")
+    template = registry.get_template(type_id) if registry and type_id else None
+
     authorization_redirect_url = dcr_module.build_authorization_url(
         authorization_url=authorization_url,
         client_id=client_id,
@@ -904,6 +910,7 @@ async def _build_oauth_authorization_url(
         state=state,
         scopes=scopes,
         code_challenge=code_challenge,
+        extra_params=template.authorization_params if template else None,
     )
     return {"authorizationUrl": authorization_redirect_url}
 
@@ -927,7 +934,7 @@ async def get_oauth_authorization_url(
 
     return await _build_oauth_authorization_url(
         config_service, instance, instance_id, user_id, org_id, base_url,
-        initiated_by=user_id, owner_type="user",
+        initiated_by=user_id, owner_type="user", registry=_get_mcp_registry(request),
     )
 
 
@@ -1495,5 +1502,5 @@ async def get_agent_oauth_authorization_url(
 
     return await _build_oauth_authorization_url(
         config_service, instance, instance_id, agent_key, org_id, base_url,
-        initiated_by=user_id, owner_type="agent",
+        initiated_by=user_id, owner_type="agent", registry=_get_mcp_registry(request),
     )

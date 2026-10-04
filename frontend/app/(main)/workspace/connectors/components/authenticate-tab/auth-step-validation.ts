@@ -1,5 +1,5 @@
 import type { AuthSchemaField, ConnectorAuthConfig } from '../../types';
-import { getUrlValidationError } from '../../utils/url-field';
+import { getUrlValidationError, type UrlValidationError } from '../../utils/url-field';
 import {
   shouldRenderOAuthAuthSchemaField,
   type OAuthAuthFieldVisibilityContext,
@@ -58,16 +58,15 @@ export function collectAuthFieldErrors(
   fields: AuthSchemaField[],
   formDataAuth: Record<string, unknown>,
   messageFor: (field: AuthSchemaField) => string,
-  mustBeTrueMessage?: (field: AuthSchemaField) => string
+  mustBeTrueMessage: (field: AuthSchemaField) => string,
+  urlMessage: (field: AuthSchemaField, error: UrlValidationError) => string
 ): Record<string, string> {
   const out: Record<string, string> = {};
-  const mustBeTrue =
-    mustBeTrueMessage ?? ((f: AuthSchemaField) => `${f.displayName} must be true`);
 
   for (const field of fields) {
     if (field.fieldType === 'CHECKBOX') {
       if (field.required && formDataAuth[field.name] !== true) {
-        out[field.name] = mustBeTrue(field);
+        out[field.name] = mustBeTrueMessage(field);
       }
       continue;
     }
@@ -82,8 +81,8 @@ export function collectAuthFieldErrors(
     if (field.fieldType === 'URL') {
       const asString = typeof v === 'string' ? v : v != null ? String(v) : '';
       if (asString.trim() !== '') {
-        const urlErr = getUrlValidationError(field.displayName, asString);
-        if (urlErr) out[field.name] = urlErr;
+        const urlErr = getUrlValidationError(asString);
+        if (urlErr) out[field.name] = urlMessage(field, urlErr);
       }
     }
   }

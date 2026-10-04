@@ -948,7 +948,7 @@ class TestFetchSpacePermissions:
         assert len(perms) == 2
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_api_failure_returns_none(self):
         connector = _make_connector()
         ds = MagicMock()
         ds.get_space_permissions_v1 = AsyncMock(return_value=_resp(500, {}))
@@ -956,15 +956,15 @@ class TestFetchSpacePermissions:
         connector._get_server_version = AsyncMock(return_value=(9, 1, 0))
 
         perms = await connector._fetch_space_permissions("s1", "Dev")
-        assert perms == []
+        assert perms is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_none(self):
         connector = _make_connector()
         connector._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("boom"))
 
         perms = await connector._fetch_space_permissions("s1", "Dev")
-        assert perms == []
+        assert perms is None
 
 
 # ===========================================================================
@@ -1005,7 +1005,7 @@ class TestFetchPagePermissions:
         assert len(perms) == 1
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_api_failure_returns_none(self):
         connector = _make_connector()
         ds = MagicMock()
         ds.get_page_relevant_view_restrictions_v1 = AsyncMock(
@@ -1014,7 +1014,7 @@ class TestFetchPagePermissions:
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         perms = await connector._fetch_page_permissions("pg1")
-        assert perms == []
+        assert perms is None
 
 
 # ===========================================================================

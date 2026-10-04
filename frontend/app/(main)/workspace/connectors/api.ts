@@ -89,10 +89,12 @@ export const ConnectorsApi = {
   async getActiveConnectors(
     scope: ConnectorScope,
     page = 1,
-    limit = 100
+    limit = 100,
+    options?: { suppressErrorToast?: boolean }
   ): Promise<ConnectorListResponse> {
     const { data } = await apiClient.get<ConnectorListResponse>(BASE_URL, {
       params: { scope, page, limit },
+      ...options,
     });
     return data;
   },

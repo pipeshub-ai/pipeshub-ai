@@ -11,10 +11,12 @@ T = TypeVar("T")
 
 _HTTP_STATUS_RE = re.compile(r"HTTP\s+(\d{3})")
 
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode, ProxyConfig
 from crawl4ai.async_dispatcher import SemaphoreDispatcher
 from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
 from crawl4ai.browser_adapter import UndetectedAdapter
+
+from app.connectors.sources.web.address_guard import start_guard_proxy
 
 
 class _SharedSemaphoreDispatcher(SemaphoreDispatcher):
@@ -57,6 +59,13 @@ class FetchResult:
     status_code: Optional[int] = None
     error: Optional[str] = None
     js_execution_result: Optional[dict[str, Any]] = None
+    content_type: str | None = None  # of the response the browser loaded, when it reports one
+
+
+def _content_type(response_headers: object) -> str | None:
+    if not isinstance(response_headers, dict):
+        return None
+    return next((str(v) for k, v in response_headers.items() if str(k).lower() == "content-type"), None)
 
 
 def resolve_fetch_status_code(
@@ -294,6 +303,7 @@ for (const p of __panels) {
         self._concurrency = concurrency
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._crawler: Optional[AsyncWebCrawler] = None
+        self._proxy: Optional[asyncio.Server] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -321,6 +331,10 @@ for (const p of __panels) {
         return asyncio.Semaphore(self._concurrency)
 
     async def _create_and_start_crawler(self) -> AsyncWebCrawler:
+        self._proxy = await start_guard_proxy()
+        proxy_port = self._proxy.sockets[0].getsockname()[1]
+        # Playwright also sends loopback through the proxy (<-loopback>), so the proxy refuses it.
+        self._browser_config.proxy_config = ProxyConfig(server=f"http://127.0.0.1:{proxy_port}")
         strategy = AsyncPlaywrightCrawlerStrategy(
             browser_config=self._browser_config,
             browser_adapter=UndetectedAdapter(),
@@ -328,6 +342,16 @@ for (const p of __panels) {
         crawler = AsyncWebCrawler(crawler_strategy=strategy)
         await crawler.start()
         return crawler
+
+    async def _close_proxy(self) -> None:
+        """Stop the proxy and the browser connections it still relays, before the loop stops."""
+        assert self._proxy is not None
+        self._proxy.close()
+        self._proxy = None
+        relays = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        for relay in relays:
+            relay.cancel()
+        await asyncio.gather(*relays, return_exceptions=True)
 
     async def _run_in_browser_thread(self, coro: Coroutine[Any, Any, T]) -> T:
         """Schedule a coroutine on the browser thread's loop and await the result."""
@@ -338,6 +362,8 @@ for (const p of __panels) {
         if self._crawler and self._loop:
             await self._run_in_browser_thread(self._crawler.close())
             self._crawler = None
+        if self._proxy and self._loop:
+            await self._run_in_browser_thread(self._close_proxy())
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)
             self._loop = None
@@ -398,7 +424,7 @@ for (const p of __panels) {
                 if results_list and isinstance(results_list[0], dict):
                     js_result = results_list[0]
             return FetchResult(
-                url=url,
+                url=result.redirected_url or url,
                 html=result.html,
                 success=result.success,
                 status_code=resolve_fetch_status_code(
@@ -408,6 +434,7 @@ for (const p of __panels) {
                 ),
                 error=result.error_message,
                 js_execution_result=js_result,
+                content_type=_content_type(getattr(result, "response_headers", None)),
             )
         except asyncio.TimeoutError:
             return FetchResult(url=url, error=f"Timed out after {timeout:.0f}s", success=False)
@@ -457,7 +484,8 @@ for (const p of __panels) {
                     out.append(FetchResult(url=u, error=str(r), success=False))
                 else:
                     out.append(FetchResult(
-                        url=r.url,
+                        # crawl4ai's ``url`` is the one asked for; the connector needs where it landed.
+                        url=r.redirected_url or r.url,
                         html=r.html,
                         success=r.success,
                         status_code=resolve_fetch_status_code(
@@ -466,6 +494,7 @@ for (const p of __panels) {
                             r.crawl_stats,
                         ),
                         error=r.error_message,
+                        content_type=_content_type(getattr(r, "response_headers", None)),
                     ))
             return out
         except asyncio.TimeoutError:

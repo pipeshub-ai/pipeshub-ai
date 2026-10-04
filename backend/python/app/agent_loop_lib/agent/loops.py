@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from app.agent_loop_lib.agent.phase_driver import PhaseDriver
+from app.agent_loop_lib.agent.phase_driver import PhaseDriver, tool_result_in_turn
 from app.agent_loop_lib.core.types import (
     AgentResult,
     AgentTurn,
@@ -300,7 +300,7 @@ class IncrementalLoop(LoopStrategy):
             turn_index += 1
             if outcome.status == "stop":
                 return outcome.result
-            verdict = agent.last_tool_result("verify_result")
+            verdict = tool_result_in_turn(outcome.turn, "verify_result")
             if verdict is not None:
                 steps_done += 1
                 if isinstance(verdict, dict) and verdict.get("passed"):

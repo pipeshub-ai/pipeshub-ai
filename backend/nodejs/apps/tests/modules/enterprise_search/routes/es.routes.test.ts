@@ -519,7 +519,8 @@ describe('Enterprise Search Routes', () => {
       expect(mockRes.status.calledWith(200)).to.be.true
       expect(mockRes.json.calledOnce).to.be.true
       const response = mockRes.json.firstCall.args[0]
-      expect(response.message).to.include('updated successfully')
+      // The reloaded config holds every service secret; it must not be echoed back.
+      expect(response).to.deep.equal({ message: 'User configuration updated successfully' })
 
       loadStub.restore()
     })
@@ -620,6 +621,21 @@ describe('Enterprise Search Routes', () => {
       const modelUsageRoute = routes.find((r: any) => r.path === '/model-usage/:model_key' && r.methods.get)
       expect(modelUsageRoute).to.exist
       expect(modelUsageRoute?.stack.length ?? 0).to.be.greaterThanOrEqual(4)
+    })
+
+    it('agent router validates the non-streaming chat routes like their streaming twins', () => {
+      const router = createAgentConversationalRouter(container)
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods, stack: layer.route.stack }))
+
+      // authenticate, requireScopes, validate, handler
+      for (const path of ['/:agentKey/conversations', '/:agentKey/conversations/:conversationId/messages']) {
+        const nonStreaming = routes.find((r: any) => r.path === path && r.methods.post)
+        const streaming = routes.find((r: any) => r.path === `${path}/stream` && r.methods.post)
+        expect(nonStreaming?.stack.length, path).to.equal(4)
+        expect(nonStreaming?.stack.length).to.equal(streaming?.stack.length)
+      }
     })
 
     it('agent router should register web search usage route with validation middleware', () => {

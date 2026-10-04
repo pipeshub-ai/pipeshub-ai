@@ -382,6 +382,31 @@ else
   fi
 fi
 
+echo "== a persona password the server would refuse is refused before any request =="
+long_pw="Aa1!$(printf 'x%.0s' $(seq 1 70))"   # meets every rule except the 72-byte cap
+# Strong-looking, but the server's JavaScript "." stops at a line separator (U+2028).
+sep_pw="Persona1!$(printf '\342\200\250')tail"
+for case in "weak:weakpass" "long:$long_pw" "separator:$sep_pw"; do
+  label="${case%%:*}"; pw="${case#*:}"
+  bindir="$TMP_ROOT/bin-persona-pw-$label"
+  CURL_LOG="$TMP_ROOT/persona-pw-$label.log"; export CURL_LOG
+  : >"$CURL_LOG"
+  make_fake_curl "$bindir"
+  envf="$TMP_ROOT/persona-pw-$label.env"; make_env "$envf"
+  printf '\nPIPESHUB_ACCOUNT_TYPE=business\nPIPESHUB_REGISTERED_NAME=Acme\nPIPESHUB_DEMO_DATA=1\nPIPESHUB_DEMO_PERSONAS=1\nPIPESHUB_DEMO_PASSWORD=%s\n' "$pw" >>"$envf"
+  out="$TMP_ROOT/persona-pw-$label.out"
+  if PATH="$bindir:$PATH" \
+    "$BOOTSTRAP" --env-file "$envf" --token-file "$TMP_ROOT/token-persona-pw-$label" >"$out" 2>&1; then
+    fail "$label persona password should be refused"
+  elif grep -q "PIPESHUB_DEMO_PASSWORD needs" "$out" && ! grep -q "METHOD=" "$CURL_LOG" 2>/dev/null \
+       && ! grep -qF -- "$pw" "$out"; then
+    pass "$label persona password refused before any request, without echoing it"
+  else
+    fail "$label persona password refused before any request, without echoing it"
+    cat "$out"
+  fi
+done
+
 echo "== PIPESHUB_DEMO_PERSONAS=1 creates Alice and Bob before the connector =="
 bindir="$TMP_ROOT/bin-persona"
 CURL_LOG="$TMP_ROOT/persona.log"; export CURL_LOG

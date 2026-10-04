@@ -3,6 +3,8 @@
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from pathlib import Path
+
 import pytest
 from langchain_core.documents import Document
 from qdrant_client import models
@@ -11,6 +13,7 @@ from app.exceptions.fastapi_responses import Status
 from app.modules.retrieval.retrieval_service import (
     ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE,
     DEFAULT_SEARCH_LIMIT,
+    PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
 )
 
 # ---------------------------------------------------------------------------
@@ -94,6 +97,10 @@ class TestFormatResults:
 # ============================================================================
 
 class TestCreateEmptyResponse:
+    def test_does_not_expose_accessible_record_map(self, retrieval_service):
+        resp = retrieval_service._create_empty_response("no access", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+        assert "accessible_virtual_id_to_record_id" not in resp
+
     def test_success_status(self, retrieval_service):
         resp = retrieval_service._create_empty_response("ok", Status.SUCCESS)
         assert resp["status"] == "success"
@@ -941,6 +948,46 @@ class TestSearchWithFilters:
         assert result["message"] == ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE
 
     @pytest.mark.asyncio
+    async def test_a_failed_permission_read_shows_nothing_and_says_why(
+        self, retrieval_service, mock_graph_provider
+    ):
+        """A graph outage used to arrive here as {} and be reported as "no
+        documents are available, upload some", which is wrong and unactionable."""
+        mock_graph_provider.get_accessible_virtual_record_ids.side_effect = RuntimeError("graph down")
+        retrieval_service._execute_parallel_searches = AsyncMock()
+
+        result = await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1"
+        )
+
+        assert result["status"] == Status.PERMISSION_CHECK_UNAVAILABLE.value
+        assert result["status_code"] == 503
+        assert result["message"] == PERMISSION_CHECK_UNAVAILABLE_MESSAGE
+        assert result["searchResults"] == []
+        retrieval_service._execute_parallel_searches.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_search_asks_for_the_strict_permission_read(
+        self, retrieval_service, mock_graph_provider
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {}
+        await retrieval_service.search_with_filters(queries=["test"], user_id="u1", org_id="o1")
+
+        kwargs = mock_graph_provider.get_accessible_virtual_record_ids.await_args.kwargs
+        assert kwargs.get("raise_on_error") is True
+
+    def test_the_gateway_lets_the_permission_message_through(self):
+        """Node repeats a 503's message only when it is on its allowlist, and
+        shows "briefly unavailable" otherwise. The two copies must match."""
+        gateway = (
+            Path(__file__).resolve().parents[6]
+            / "backend/nodejs/apps/src/libs/errors/reader-friendly.ts"
+        )
+        if not gateway.exists():
+            pytest.skip("the Node sources are not in this checkout")
+        assert PERMISSION_CHECK_UNAVAILABLE_MESSAGE in gateway.read_text(encoding="utf-8")
+
+    @pytest.mark.asyncio
     async def test_explicit_none_limit_falls_back_to_the_default(
         self, retrieval_service, mock_graph_provider
     ):
@@ -985,6 +1032,29 @@ class TestSearchWithFilters:
             queries=["test"], user_id="u1", org_id="o1"
         )
         assert result["status"] == Status.EMPTY_RESPONSE.value
+
+    @pytest.mark.asyncio
+    async def test_success_response_does_not_expose_accessible_record_map(
+        self, retrieval_service, mock_graph_provider
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "user@test.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {"_key": "rec1", "virtualRecordId": "vr1", "origin": "drive", "recordName": "Doc"}
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.9,
+                "content": "c",
+                "citationType": "vectordb|document",
+                "metadata": {"virtualRecordId": "vr1", "orgId": "o1"},
+            }
+        ])
+
+        result = await retrieval_service.search_with_filters(queries=["t"], user_id="u1", org_id="o1")
+
+        assert result["status"] == Status.SUCCESS.value
+        assert "accessible_virtual_id_to_record_id" not in result
 
     @pytest.mark.asyncio
     async def test_successful_search_returns_enriched_results(
@@ -1037,6 +1107,7 @@ class TestSearchWithFilters:
                 "_key": "rec1",
                 "virtualRecordId": "vr1",
                 "origin": "gmail",
+                "connectorName": "GMAIL",
                 "recordName": "Email Subject",
                 "webUrl": "https://mail.google.com/mail?authuser={user.email}",
                 "mimeType": "text/html",
@@ -1114,9 +1185,10 @@ class TestSearchWithFilters:
         assert result["status"] == Status.ERROR.value
 
     @pytest.mark.asyncio
-    async def test_generic_exception_with_tool_ids_returns_empty_dict(
+    async def test_generic_exception_with_tool_ids_returns_error(
         self, retrieval_service, mock_graph_provider
     ):
+        """An empty dict read as a successful empty search to the KG tool."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
         retrieval_service._execute_parallel_searches = AsyncMock(
             side_effect=RuntimeError("unexpected")
@@ -1125,7 +1197,41 @@ class TestSearchWithFilters:
             queries=["test"], user_id="u1", org_id="o1",
             virtual_record_ids_from_tool=["vr1"]
         )
-        assert result == {}
+        assert result["status"] == Status.ERROR.value
+        assert result["status_code"] == 500
+        assert result["searchResults"] == []
+
+    @pytest.mark.asyncio
+    async def test_tool_ids_are_intersected_with_accessible_before_the_vector_query(
+        self, retrieval_service, mock_graph_provider, mock_vector_db_service
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {
+            "vr1": "rec1", "vr3": "rec3",
+        }
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[])
+
+        await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1",
+            virtual_record_ids_from_tool=["vr1", "vr2", "vr3", "vr1"],
+        )
+
+        must = mock_vector_db_service.filter_collection.call_args.kwargs["must"]
+        assert must["virtualRecordId"] == ["vr1", "vr3"]
+
+    @pytest.mark.asyncio
+    async def test_tool_ids_outside_the_accessible_set_skip_the_vector_query(
+        self, retrieval_service, mock_graph_provider
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[])
+
+        result = await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1",
+            virtual_record_ids_from_tool=["vr9"],
+        )
+
+        assert result["status"] == Status.ACCESSIBLE_RECORDS_NOT_FOUND.value
+        retrieval_service._execute_parallel_searches.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_filters_incomplete_results(
@@ -1234,6 +1340,7 @@ class TestSearchWithFilters:
                 "_key": "rec1",
                 "virtualRecordId": "vr1",
                 "origin": "gmail",
+                "connectorName": "GMAIL",
                 "recordName": "Email Subject",
                 "webUrl": "https://example.com/mail",
                 "recordType": "MAIL",
@@ -1306,6 +1413,75 @@ class TestSearchWithFilters:
         assert sr["metadata"]["webUrl"] == "https://sharepoint.com/doc"
 
     @pytest.mark.asyncio
+    async def test_virtual_to_record_map_carries_substituted_weburl(
+        self, retrieval_service, mock_graph_provider
+    ):
+        """The chat citation path reads webUrl off this map, not off the metadata."""
+        template = "https://mail.google.com/mail?authuser={user.email}#all/m1"
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "alice@corp.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1", "virtualRecordId": "vr1", "origin": "gmail",
+                "connectorName": "GMAIL WORKSPACE",
+                "recordName": "resume.pdf", "recordType": "FILE",
+                "mimeType": "application/pdf", "webUrl": template,
+            }
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.9, "content": "resume content",
+                "citationType": "vectordb|document",
+                "metadata": {"virtualRecordId": "vr1", "orgId": "o1"},
+            }
+        ])
+        result = await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1"
+        )
+        expected = "https://mail.google.com/mail?authuser=alice@corp.com#all/m1"
+        assert result["virtual_to_record_map"]["vr1"]["webUrl"] == expected
+        assert result["searchResults"][0]["metadata"]["webUrl"] == expected
+
+    @pytest.mark.asyncio
+    async def test_gmail_attachment_file_record_gets_user_email(
+        self, retrieval_service, mock_graph_provider
+    ):
+        """A Gmail attachment is a FILE record carrying the mail placeholder."""
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "alice@corp.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1",
+                "virtualRecordId": "vr1",
+                "origin": "gmail",
+                "connectorName": "GMAIL",
+                "recordName": "resume.pdf",
+                "recordType": "FILE",
+                # webUrl and mimeType intentionally absent -- forces the files fetch
+            }
+        ]
+        mock_graph_provider.get_nodes_by_field_in.return_value = [{
+            "id": "rec1",
+            "webUrl": "https://mail.google.com/mail?authuser={user.email}#all/m1",
+            "mimeType": "application/pdf",
+        }]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.85,
+                "content": "resume content",
+                "citationType": "vectordb|document",
+                "metadata": {"virtualRecordId": "vr1", "orgId": "o1"},
+            }
+        ])
+        result = await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1"
+        )
+        sr = result["searchResults"][0]
+        assert sr["metadata"]["webUrl"] == (
+            "https://mail.google.com/mail?authuser=alice@corp.com#all/m1"
+        )
+
+    @pytest.mark.asyncio
     async def test_missing_weburl_mail_record_fetches_mail(
         self, retrieval_service, mock_graph_provider
     ):
@@ -1365,6 +1541,7 @@ class TestSearchWithFilters:
                 "_key": "rec2",
                 "virtualRecordId": "vr2",
                 "origin": "gmail",
+                "connectorName": "GMAIL",
                 "recordName": "Mail Subject",
                 "webUrl": "https://mail.google.com/x",
                 "recordType": "MAIL",
@@ -1845,6 +2022,7 @@ class TestSearchWithFiltersBranches:
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "gmail",
+                "connectorName": "GMAIL",
                 "recordName": "Email", "mimeType": "text/html",
                 "webUrl": "https://mail.google.com/mail?authuser={user.email}#inbox/1",
             }
@@ -1955,6 +2133,7 @@ class TestSearchWithFiltersBranches:
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "gmail",
+                "connectorName": "GMAIL WORKSPACE",
                 "recordName": "Mail Subject", "recordType": "MAIL",
                 "webUrl": "https://example.com",
                 # no mimeType to trigger fetch

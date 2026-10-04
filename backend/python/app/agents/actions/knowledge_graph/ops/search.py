@@ -15,14 +15,31 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from app.agents.actions.knowledge_graph.ops.entity_filters import (
+    ENTITY_ID_FILTER_KEY_CACHE_KEY,
+    RECORD_SCOPED_ENTITY_CACHE_KEY,
+    merge_filter_groups,
+)
+from app.agents.actions.knowledge_graph.ops.entity_records import (
+    resolve_entity_virtual_ids,
+)
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
+from app.modules.retrieval.entity_permissions import EntityAccessError
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
     enrich_records_with_graph_context,
     get_flattened_results,
     get_record_id_shortener_if_enabled,
+)
+from app.utils.pattern_match import (
+    await_pattern_match,
+    cancel_task_if_running,
+    merge_pattern_match_results,
+    render_pattern_match_hint,
+    run_pattern_match_with_llm_grep,
 )
 
 if TYPE_CHECKING:
@@ -33,6 +50,29 @@ logger = logging.getLogger(__name__)
 _MAX_RETRIEVAL_SOURCES_DIVISOR = 5
 _RETRIEVAL_ERROR_STATUS_CODES = frozenset({202, 500, 503})
 
+# Returned when a search limited with source_ids finds nothing.
+NARROWED_SEARCH_EMPTY_MESSAGE = (
+    "No results in the source(s) you named. Before concluding this does not "
+    "exist, search again with source_ids omitted: a source's name rarely says "
+    "everything it holds. Skip that only if the user asked to search just "
+    "these sources."
+)
+
+UNKNOWN_ENTITY_IDS_MESSAGE = (
+    "None of the entity_ids {ids} came from knowledgegraph__search_entities in this "
+    "turn, so nothing was searched. Entity ids only work in the turn that returned "
+    "them, and record ids cannot scope a search. Call knowledgegraph__search_entities "
+    "again, or search without entity_ids."
+)
+
+# A record-group/subcategory scope that stopped at a cap or scan budget.
+ENTITY_SCOPE_INCOMPLETE_MESSAGE = (
+    "No accessible records turned up among the records checked for the requested "
+    "entities, but the check stopped before covering all of them, so this is not "
+    "conclusive. Search without entity_ids, or page through the entity with "
+    "knowledgegraph__find_records_by_entity."
+)
+
 _RECORD_NAME_RE = re.compile(r"^Name\s*:\s*(.+)$", re.MULTILINE)
 _RETRIEVED_COUNT_RE = re.compile(
     r"^Top (\d+) blocks? from (\d+) records?", re.IGNORECASE | re.MULTILINE
@@ -40,6 +80,87 @@ _RETRIEVED_COUNT_RE = re.compile(
 _RETRIEVED_COUNT_RE_LEGACY = re.compile(
     r"^Retrieved (\d+) knowledge blocks? from (\d+) documents?", re.IGNORECASE | re.MULTILINE
 )
+
+
+def resolve_entity_filter_groups(
+    state: "ChatState",
+    entity_ids: list[str] | None,
+) -> dict[str, list[str]]:
+    """Turn department/category/topic/language ``entity_ids`` returned by
+    ``search_entities`` in this request into a ``filter_groups``-shaped dict. Graph filters match entity
+    names, never ids, so each id is resolved through the cache
+    ``search_entities`` populated; ids with no cache entry are dropped.
+    """
+    filters: dict[str, list[str]] = {}
+    if not entity_ids:
+        return filters
+    id_to_key: dict[str, tuple[str, str]] = state.get(ENTITY_ID_FILTER_KEY_CACHE_KEY) or {}
+    for entity_id in entity_ids:
+        cached = id_to_key.get(entity_id)
+        if not cached:
+            continue
+        filter_key, entity_name = cached
+        bucket = filters.setdefault(filter_key, [])
+        if entity_name not in bucket:
+            bucket.append(entity_name)
+    return filters
+
+
+def resolve_record_scoped_entities(
+    state: "ChatState", entity_ids: list[str] | None,
+) -> list[tuple[str, str]]:
+    """``(entity_id, entity_type)`` for the ``entity_ids`` that are record
+    groups or subcategories returned by ``search_entities`` in this request.
+    They have no name-based graph filter, so they become a permission-checked
+    ``virtualRecordId`` allow-list (``resolve_entity_virtual_ids``) passed to
+    the retrieval service as ``virtual_record_ids_from_tool``.
+    """
+    if not entity_ids:
+        return []
+    known: dict[str, str] = state.get(RECORD_SCOPED_ENTITY_CACHE_KEY) or {}
+    return [(entity_id, known[entity_id]) for entity_id in entity_ids if entity_id in known]
+
+
+def unresolved_entity_ids(state: "ChatState", entity_ids: list[str] | None) -> list[str]:
+    """``entity_ids`` that can scope nothing: never returned by
+    ``search_entities`` in this request, or record ids, which have no scope."""
+    name_filtered: dict[str, Any] = state.get(ENTITY_ID_FILTER_KEY_CACHE_KEY) or {}
+    record_scoped: dict[str, str] = state.get(RECORD_SCOPED_ENTITY_CACHE_KEY) or {}
+    return [
+        entity_id
+        for entity_id in dict.fromkeys(entity_ids or [])
+        if entity_id and entity_id not in name_filtered and entity_id not in record_scoped
+    ]
+
+
+def _entity_notes(
+    *,
+    unknown_entity_ids: list[str],
+    filter_dropped: bool,
+    record_scope_applied: bool,
+    scope_truncated: bool,
+) -> str:
+    notes: list[str] = []
+    if unknown_entity_ids:
+        notes.append(
+            f"Note: entity_ids {unknown_entity_ids} were not returned by "
+            "search_entities in this turn and were ignored; the other entity_ids "
+            "still scope these results."
+        )
+    if filter_dropped:
+        scope_left = (
+            " The record group/subcategory scope still applies." if record_scope_applied else ""
+        )
+        notes.append(
+            "Note: nothing matched inside the requested department/category/topic/"
+            f"language, so these results are NOT limited to it.{scope_left}"
+        )
+    if scope_truncated:
+        notes.append(
+            "Note: the requested record group/subcategory has more records than one "
+            "search covers; only its newest accessible records were searched."
+        )
+    return "".join(f"{note}\n\n" for note in notes)
 
 
 def normalize_source_ids(value: Any) -> list[str] | None:
@@ -64,6 +185,7 @@ async def execute_search(
     created_before: str | None = None,
     modified_after: str | None = None,
     modified_before: str | None = None,
+    entity_ids: list[str] | None = None,
 ) -> str:
     """Run semantic search over the agent's knowledge scope.
 
@@ -75,6 +197,15 @@ async def execute_search(
     that narrow results to records whose source creation/last-modified
     timestamp falls in the given window. Applied as a hard pre-filter at the
     graph permission-scoping step, before vector search ever runs.
+
+    ``entity_ids`` narrows results to records connected to specific
+    departments/categories/topics/languages, or to the accessible records of a
+    record group or subcategory. IDs must come from a ``search_entities`` call
+    in this request: if none is recognised the call fails without searching,
+    and unrecognised ones next to recognised ones are named in a note. A record
+    group or subcategory that resolves to zero accessible records reports "no
+    results", and a failed permission lookup reports an error — neither
+    silently widens to an unscoped search.
 
     Returns a plain-text string suitable for LLM consumption (same format as
     the legacy retrieval tool).
@@ -102,6 +233,8 @@ async def execute_search(
     if time_error is not None:
         return time_error
 
+    # Declared outside the try so the finally can always cancel it.
+    pattern_match_task: asyncio.Task[list[dict[str, Any]]] | None = None
     try:
         logger_instance = state.get("logger", logger)
         logger_instance.info("knowledgegraph__search: query=%r", query[:100])
@@ -149,108 +282,261 @@ async def execute_search(
         resolved_apps = list(narrowed_scope.app_ids) if narrowed_scope else []
         resolved_kbs = list(narrowed_scope.kb_ids) if narrowed_scope else []
 
+        requested_entity_ids = [e for e in dict.fromkeys(entity_ids or []) if e]
+        unknown_entity_ids = unresolved_entity_ids(state, requested_entity_ids)
+        if requested_entity_ids and len(unknown_entity_ids) == len(requested_entity_ids):
+            # Searching anyway would return unscoped results the model would
+            # present as the entity's.
+            return json.dumps({
+                "status": "error",
+                "message": UNKNOWN_ENTITY_IDS_MESSAGE.format(ids=unknown_entity_ids),
+            })
+
+        entity_filter_groups = resolve_entity_filter_groups(state, entity_ids)
+
+        record_scoped_entities = resolve_record_scoped_entities(state, entity_ids)
+        virtual_record_ids_from_tool: list[str] | None = None
+        entity_scope_truncated = False
+        if record_scoped_entities:
+            try:
+                entity_scope = await resolve_entity_virtual_ids(
+                    state, record_scoped_entities,
+                )
+            except EntityAccessError:
+                logger_instance.warning(
+                    "knowledgegraph__search: entity scoping failed", exc_info=True,
+                )
+                return json.dumps({
+                    "status": "error",
+                    "message": "Could not scope the search to the requested entities — try again.",
+                })
+            virtual_record_ids_from_tool = entity_scope.virtual_ids
+            entity_scope_truncated = entity_scope.truncated
+            if not virtual_record_ids_from_tool:
+                # Every requested entity resolved to zero accessible
+                # records — report that plainly rather than silently
+                # falling through to an unscoped, org-wide search.
+                return json.dumps({
+                    "status": "success",
+                    "message": (
+                        ENTITY_SCOPE_INCOMPLETE_MESSAGE if entity_scope_truncated
+                        else "No accessible records found for the requested entities."
+                    ),
+                    "results": [],
+                    "result_count": 0,
+                })
+
+        def _empty_result() -> str:
+            if failed_sources:
+                # Nothing found where the search ran, but some sources were never searched.
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"{failed_sources} of the sources you named could not be searched "
+                        "and the rest returned nothing, so this does not show the information is missing. "
+                        "Try again, or search with source_ids omitted."
+                    ),
+                    "results": [],
+                    "result_count": 0,
+                })
+            message = "No results found"
+            # The model picks sources by name, and a name rarely says what a
+            # source holds, so an empty narrowed search says little about
+            # whether the answer exists. source_ids stays a hard filter; the
+            # model is told to look everywhere before concluding, as with dates.
+            if narrowed_scope is not None and filter_groups != base_scope.to_filter_groups():
+                message = NARROWED_SEARCH_EMPTY_MESSAGE
+            notes = _entity_notes(
+                unknown_entity_ids=unknown_entity_ids,
+                filter_dropped=False,
+                record_scope_applied=bool(virtual_record_ids_from_tool),
+                scope_truncated=entity_scope_truncated,
+            )
+            if notes:
+                message = f"{message}\n\n{notes.strip()}"
+            return json.dumps({
+                "status": "success",
+                "message": message,
+                "results": [],
+                "result_count": 0,
+            })
+
+        # Grep knows nothing of entity scope, so an entity-scoped search would
+        # be widened by its hits; it runs only for unscoped-by-entity searches.
+        entity_scoped = bool(entity_filter_groups or record_scoped_entities)
+        if config_service is not None and not entity_scoped:
+            pattern_match_task = asyncio.create_task(
+                run_pattern_match_with_llm_grep(
+                    query=query,
+                    config_service=config_service,
+                    org_id=org_id,
+                    user_id=user_id,
+                    graph_provider=graph_provider,
+                    filters=filter_groups,
+                    logger_instance=logger_instance,
+                    llm=state.get("llm"),
+                    user_query=state.get("query"),
+                )
+            )
+
         is_service_account = bool(state.get("is_service_account", False))
         fan_out_sources = explicit_ids and (len(resolved_apps) > 1 or len(resolved_kbs) > 1)
-        per_source_fan_out = False
+        per_source_fan_out = fan_out_sources
+        failed_sources = 0
 
-        async def _search_one(fg: dict[str, list[str]]) -> dict[str, Any] | None:
+        # Retrieval treats this key as a control flag, not a filter: with it, an
+        # empty scope searches nothing instead of everything the user can reach.
+        strict_scope = bool(agent_filters.get(STRICT_SCOPE_FILTER_KEY))
+
+        async def _search_one(
+            fg: dict[str, list[str]],
+            entity_fg: dict[str, list[str]],
+            vrids: list[str] | None,
+        ) -> dict[str, Any] | None:
+            filter_groups_for_call: dict[str, Any] = merge_filter_groups(fg, entity_fg)
+            if strict_scope:
+                filter_groups_for_call[STRICT_SCOPE_FILTER_KEY] = True
             return await retrieval_service.search_with_filters(
                 queries=[query],
                 org_id=org_id,
                 user_id=user_id,
                 limit=adjusted_limit,
-                filter_groups=fg,
+                filter_groups=filter_groups_for_call,
                 time_range=time_range,
+                virtual_record_ids_from_tool=vrids,
             )
 
-        if fan_out_sources:
-            per_source_fan_out = True
-            tasks: list[Any] = []
-            for app_id in resolved_apps:
-                tasks.append(_search_one(
-                    resolved_scope.to_filter_groups_for_source(
-                        app_id=app_id, placeholder_agent=is_placeholder_agent,
-                    )
-                ))
-            for kb_id in resolved_kbs:
-                tasks.append(_search_one(
-                    resolved_scope.to_filter_groups_for_source(
-                        kb_id=kb_id, placeholder_agent=is_placeholder_agent,
-                    )
-                ))
+        async def _attempt(
+            entity_fg: dict[str, list[str]],
+            vrids: list[str] | None = None,
+        ) -> tuple[list[dict[str, Any]], dict[str, Any], str | None]:
+            """Run one full search attempt (fan-out or single) with *entity_fg*
+            as the entity filter and *vrids* (record_group scoping, if any) to
+            apply. Returns ``(search_results, virtual_to_record_map,
+            error_json)`` — *error_json* is set only for a genuine service
+            error; an empty-but-successful result returns ``([], {}, None)``
+            so the caller can decide whether to retry. *failed_sources* is
+            reset per attempt, so it always describes the attempt whose
+            results the caller keeps.
+            """
+            nonlocal failed_sources
+            if fan_out_sources:
+                failed_sources = 0
+                tasks: list[Any] = []
+                for app_id in resolved_apps:
+                    tasks.append(_search_one(
+                        resolved_scope.to_filter_groups_for_source(
+                            app_id=app_id, placeholder_agent=is_placeholder_agent,
+                        ),
+                        entity_fg,
+                        vrids,
+                    ))
+                for kb_id in resolved_kbs:
+                    tasks.append(_search_one(
+                        resolved_scope.to_filter_groups_for_source(
+                            kb_id=kb_id, placeholder_agent=is_placeholder_agent,
+                        ),
+                        entity_fg,
+                        vrids,
+                    ))
 
-            raw_results = await asyncio.gather(*tasks, return_exceptions=True)
-            search_results: list[dict[str, Any]] = []
-            virtual_to_record_map: dict[str, Any] = {}
-            any_success = False
-            error_status: int | None = None
-            error_message = "Retrieval service unavailable"
+                raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+                attempt_results: list[dict[str, Any]] = []
+                attempt_map: dict[str, Any] = {}
+                any_success = False
+                error_status: int | None = None
+                error_message = "Retrieval service unavailable"
 
-            for raw in raw_results:
-                if isinstance(raw, Exception):
-                    logger_instance.warning("Per-source search failed: %s", raw, exc_info=raw)
-                    continue
-                if raw is None:
-                    continue
-                status_code = raw.get("status_code", 200)
-                if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
-                    error_status = error_status or status_code
-                    error_message = raw.get("message", error_message)
-                    continue
-                any_success = True
-                search_results.extend(raw.get("searchResults", []))
-                virtual_to_record_map.update(raw.get("virtual_to_record_map", {}))
+                for raw in raw_results:
+                    if isinstance(raw, Exception):
+                        logger_instance.warning("Per-source search failed: %s", raw, exc_info=raw)
+                        failed_sources += 1
+                        continue
+                    if raw is None:
+                        failed_sources += 1
+                        continue
+                    status_code = raw.get("status_code", 200)
+                    if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
+                        failed_sources += 1
+                        error_status = error_status or status_code
+                        error_message = raw.get("message", error_message)
+                        continue
+                    any_success = True
+                    attempt_results.extend(raw.get("searchResults", []))
+                    attempt_map.update(raw.get("virtual_to_record_map", {}))
 
-            if not any_success:
-                if error_status is not None:
-                    return json.dumps({
-                        "status": "error",
-                        "status_code": error_status,
-                        "message": error_message,
-                    })
-                return json.dumps({
-                    "status": "success",
-                    "message": "No results found",
-                    "results": [],
-                    "result_count": 0,
-                })
-        else:
-            results = await _search_one(filter_groups)
+                if not any_success:
+                    if error_status is not None:
+                        return [], {}, json.dumps({
+                            "status": "error",
+                            "status_code": error_status,
+                            "message": error_message,
+                        })
+                    # Every source raised or returned nothing: nothing was searched.
+                    return [], {}, json.dumps({"status": "error", "message": error_message})
+                return attempt_results, attempt_map, None
+
+            results = await _search_one(filter_groups, entity_fg, vrids)
             if results is None:
-                return json.dumps({"status": "error", "message": "Retrieval service returned no results"})
+                return [], {}, json.dumps({"status": "error", "message": "Retrieval service returned no results"})
             status_code = results.get("status_code", 200)
             if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
-                return json.dumps({
+                return [], {}, json.dumps({
                     "status": "error",
                     "status_code": status_code,
                     "message": results.get("message", "Retrieval service unavailable"),
                 })
-            search_results = results.get("searchResults", [])
-            virtual_to_record_map = results.get("virtual_to_record_map", {})
+            return results.get("searchResults", []), results.get("virtual_to_record_map", {}), None
 
-        if not search_results:
-            return json.dumps({
-                "status": "success",
-                "message": "No results found",
-                "results": [],
-                "result_count": 0,
-            })
+        entity_filter_dropped = False
+        search_results, virtual_to_record_map, error_json = await _attempt(
+            entity_filter_groups, virtual_record_ids_from_tool,
+        )
+        if error_json is not None:
+            await cancel_task_if_running(pattern_match_task)
+            return error_json
+
+        # Entity filters are a hard AND constraint at the graph layer — if no
+        # accessible record has a belongsTo* edge to the entity (e.g. an
+        # extraction/linking gap), the candidate set is empty even though
+        # content-matching documents exist. Retry once without them, and say
+        # so in the result so the model does not treat it as entity-scoped.
+        if not search_results and entity_filter_groups:
+            logger_instance.info(
+                "knowledgegraph__search: entity-filtered search returned zero "
+                "results for query=%r filters=%r — retrying without entity filters",
+                query[:100], entity_filter_groups,
+            )
+            # Only the name-based filter is dropped — record-scoped entities
+            # are already permission-checked record membership, so an empty
+            # one must still report "no results" instead of broadening.
+            fallback_results, fallback_map, fallback_error = await _attempt(
+                {}, virtual_record_ids_from_tool,
+            )
+            if fallback_error is not None:
+                await cancel_task_if_running(pattern_match_task)
+                return fallback_error
+            if fallback_results:
+                search_results, virtual_to_record_map = fallback_results, fallback_map
+                entity_filter_dropped = True
+
+        raw_pattern_records: list[dict[str, Any]] = []
+        if pattern_match_task is not None:
+            raw_pattern_records = await await_pattern_match(pattern_match_task, logger_instance)
+            if raw_pattern_records:
+                logger_instance.info(
+                    "Pattern match: %d raw record(s)", len(raw_pattern_records),
+                )
+
+        if not search_results and not raw_pattern_records:
+            return _empty_result()
 
         blob_store = BlobStorage(
             logger=logger_instance,
             config_service=config_service,
             graph_provider=graph_provider,
         )
-        is_multimodal_llm = False
-        try:
-            llm_config = state.get("llm")
-            if hasattr(llm_config, "model_name"):
-                model_name = str(llm_config.model_name).lower()
-                is_multimodal_llm = any(m in model_name for m in [
-                    "gpt-4-vision", "gpt-4o", "claude-3", "gemini-pro-vision",
-                ])
-        except Exception:
-            pass
+        is_multimodal_llm = bool(state.get("is_multimodal_llm", False))
 
         virtual_record_id_to_result: dict[str, Any] = {}
         flattened_results = await get_flattened_results(
@@ -272,11 +558,42 @@ async def execute_search(
                 blob_store=blob_store,
                 org_id=org_id,
                 config_service=config_service,
+                user_id=user_id,
             )
 
         final_results = search_results if not flattened_results else flattened_results
         if not per_source_fan_out:
             final_results = final_results[:adjusted_limit]
+
+        pm_record_entries: list[dict[str, Any]] = []
+        if raw_pattern_records:
+            try:
+                pm_record_entries = await merge_pattern_match_results(
+                    raw_records=raw_pattern_records,
+                    virtual_record_id_to_result=virtual_record_id_to_result,
+                    user_id=user_id,
+                    org_id=org_id,
+                    blob_store=blob_store,
+                    graph_provider=graph_provider,
+                    is_multimodal_llm=is_multimodal_llm,
+                    logger_instance=logger_instance,
+                    time_range=time_range,
+                    filters=filter_groups,
+                    config_service=config_service,
+                )
+                if pm_record_entries:
+                    logger_instance.info(
+                        "Pattern match: %d record(s) found via grep", len(pm_record_entries),
+                    )
+            except Exception as exc:
+                logger_instance.warning(
+                    "Pattern match merge failed, continuing with semantic results only: %s", exc,
+                )
+
+        # Grep hits can all be dropped by the merge (permissions, time range);
+        # that is still an empty search and must answer like one.
+        if not final_results and not pm_record_entries:
+            return _empty_result()
 
         # Accumulate into state for citation pipeline
         from app.agents.actions.retrieval.retrieval import _dedupe_append_final_results
@@ -370,18 +687,48 @@ async def execute_search(
                     content_string += item["text"]
             formatted_records.append(content_string)
 
-        summary = (
-            f"Top {len(final_results)} block{'s' if len(final_results) != 1 else ''} "
-            f"from {len(virtual_record_id_to_result)} record{'s' if len(virtual_record_id_to_result) != 1 else ''} "
-            "(ranked sample — other records may match).\n\n"
-            f"{coverage_note}"
+        entity_notes = _entity_notes(
+            unknown_entity_ids=unknown_entity_ids,
+            filter_dropped=entity_filter_dropped,
+            record_scope_applied=bool(virtual_record_ids_from_tool),
+            scope_truncated=entity_scope_truncated,
         )
+        has_semantic_blocks = len(final_results) > 0
+        if has_semantic_blocks:
+            summary = (
+                f"Top {len(final_results)} block{'s' if len(final_results) != 1 else ''} "
+                f"from {len(virtual_record_id_to_result)} record{'s' if len(virtual_record_id_to_result) != 1 else ''} "
+                "(ranked sample — other records may match).\n\n"
+                f"{entity_notes}"
+                f"{coverage_note}"
+            )
+        else:
+            n_pm = len(pm_record_entries)
+            summary = (
+                f"No content blocks from semantic search, but {n_pm} "
+                f"record{'s' if n_pm != 1 else ''} found via keyword matching. "
+                "Review the record names below and fetch the most relevant "
+                "one(s) directly.\n\n"
+                f"{entity_notes}"
+            )
         from app.agents.actions.retrieval.retrieval import compose_result_tail
+        try:
+            pm_hint = render_pattern_match_hint(
+                pm_record_entries, virtual_record_id_to_result,
+                has_semantic_blocks=has_semantic_blocks,
+            )
+        except Exception as exc:
+            # The semantic answer above is complete without the hint.
+            logger_instance.warning("Pattern match hint failed, omitting it: %s", exc)
+            pm_hint = ""
         return summary + "\n".join(formatted_records) + compose_result_tail(
             virtual_record_id_to_result, candidate_suffix,
-        )
+        ) + pm_hint
 
     except Exception as exc:
         logger_instance = state.get("logger", logger) if state else logger
         logger_instance.error("knowledgegraph__search error: %s", exc, exc_info=True)
         return json.dumps({"status": "error", "message": f"Search error: {exc}"})
+    finally:
+        # No-op once awaited; stops the grep + LLM call when semantic search fails.
+        await cancel_task_if_running(pattern_match_task)

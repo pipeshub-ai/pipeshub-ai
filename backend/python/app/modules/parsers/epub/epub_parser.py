@@ -1,42 +1,42 @@
-from pathlib import Path
+import asyncio
 from typing import Any
 
+from app.modules.parsers.epub.epub_reader import read_epub
 from app.services.parsing.interface import (
     IParser,
     ParseError,
     ParseErrorCode,
     ParseResult,
 )
-from app.utils.libreoffice_convert import convert_with_libreoffice
 
 
 class EPUBParser:
     """Parser for EPUB e-books.
 
-    Converts EPUB to PDF via LibreOffice, then delegates all block extraction
-    to the existing PDF parser (typically a ``SmartPDFParser``, which itself
-    chooses Docling or pdfplumber/OCR). This class never parses PDF content
-    directly and must not depend on PyMuPDF/fitz.
+    Reads the book's chapters in reading order into one HTML document (see
+    :mod:`app.modules.parsers.epub.epub_reader`) and hands it to the configured
+    HTML parser, so an EPUB produces the same blocks as the equivalent HTML
+    file. LibreOffice is not involved: it can write EPUB but cannot open it.
     """
 
-    def __init__(self, pdf_parser: IParser | None = None) -> None:
-        self.pdf_parser = pdf_parser
+    def __init__(self, html_parser: IParser | None = None) -> None:
+        self.html_parser = html_parser
 
     async def parse(
         self, content: bytes, record_name: str, config: dict[str, Any] | None = None,
     ) -> ParseResult:
-        if self.pdf_parser is None:
+        if self.html_parser is None:
             raise ParseError(
                 ParseErrorCode.PROVIDER_UNAVAILABLE,
-                "EPUB parsing requires a pdf_parser; none was configured",
+                "EPUB parsing requires an html_parser; none was configured",
             )
-        pdf_bytes = await self.convert_epub_to_pdf_async(content)
-        pdf_record_name = f"{Path(record_name).stem}.pdf" if record_name else "converted.pdf"
-        return await self.pdf_parser.parse(pdf_bytes, pdf_record_name, config)
-
-    async def convert_epub_to_pdf_async(self, binary: bytes) -> bytes:
-        """Async EPUB -> PDF conversion for use on an event loop (e.g. the
-        parsing service). See :func:`DocParser.convert_doc_to_docx_async` for
-        rationale.
-        """
-        return await convert_with_libreoffice(binary, "epub", "pdf")
+        book = await asyncio.to_thread(read_epub, content)
+        result = await self.html_parser.parse(book.to_html().encode("utf-8"), record_name, config)
+        result.metadata.update({
+            "title": book.metadata.title,
+            "authors": book.metadata.authors,
+            "language": book.metadata.language,
+            "epub_version": book.version,
+            "chapter_count": len(book.chapter_bodies),
+        })
+        return result

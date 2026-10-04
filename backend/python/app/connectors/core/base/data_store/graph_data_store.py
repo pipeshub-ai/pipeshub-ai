@@ -136,7 +136,7 @@ class GraphTransactionStore(TransactionStore):
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         return await self.graph_provider.batch_update_nodes(nodes, collection, transaction=self.txn)
 
-    async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> Optional[Record]:
+    async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> dict | None:
         return await self.graph_provider.get_record_by_path(connector_id, path, external_record_group_id, transaction=self.txn)
 
     async def get_record_by_key(self, key: str) -> Optional[Record]:
@@ -320,6 +320,35 @@ class GraphTransactionStore(TransactionStore):
     async def batch_upsert_people(self, people: list[Person]) -> None:
         return await self.graph_provider.batch_upsert_people(people, transaction=self.txn)
 
+    async def get_person_by_email(self, email: str, org_id: str) -> Optional[Person]:
+        return await self.graph_provider.get_person_by_email(email, org_id, transaction=self.txn)
+
+    async def upsert_person_by_email(self, person: Person) -> Optional[str]:
+        return await self.graph_provider.upsert_person_by_email(person, transaction=self.txn)
+
+    async def ensure_app_membership(
+        self,
+        principal_id: str,
+        principal_collection: str,
+        connector_id: str,
+        *,
+        is_external: bool,
+        source_user_id: str | None = None,
+    ) -> None:
+        return await self.graph_provider.ensure_app_membership(
+            principal_id,
+            principal_collection,
+            connector_id,
+            is_external=is_external,
+            source_user_id=source_user_id,
+            transaction=self.txn,
+        )
+
+    async def reap_stale_external_app_relations(self, connector_id: str) -> int:
+        return await self.graph_provider.reap_stale_external_app_relations(
+            connector_id, transaction=self.txn
+        )
+
     async def create_user_group_hierarchy(
         self,
         child_external_id: str,
@@ -468,6 +497,10 @@ class GraphTransactionStore(TransactionStore):
         """Get full hierarchical path for a record by traversing parent-child edges."""
         return await self.graph_provider.get_record_path(record_id, transaction=self.txn)
 
+    async def get_record_path_segments(self, record_id: str) -> list[str]:
+        """Get individual record names from root to this record."""
+        return await self.graph_provider.get_record_path_segments(record_id, transaction=self.txn)
+
     async def get_app_creator_user(self, connector_id:str) ->Optional[User]:
         """Get the creator user for a connector/app by connectorId."""
         return await self.graph_provider.get_app_creator_user(connector_id,transaction=self.txn)
@@ -524,6 +557,16 @@ class GraphTransactionStore(TransactionStore):
         Idempotent. Used by TEAM-scope connectors.
         """
         return await self.graph_provider.ensure_team_app_edge(connector_id, org_id, transaction=self.txn)
+
+    async def upsert_authenticated_as(
+        self, creator_key: str, source_user_key: str, connector_id: str, org_id: str
+    ) -> None:
+        return await self.graph_provider.upsert_authenticated_as(
+            creator_key, source_user_key, connector_id, org_id, transaction=self.txn
+        )
+
+    async def remove_authenticated_as(self, connector_id: str) -> bool:
+        return await self.graph_provider.remove_authenticated_as(connector_id, transaction=self.txn)
 
     async def batch_upsert_orgs(self, orgs: list[Org]) -> None:
         return await self.graph_provider.batch_upsert_orgs(orgs, transaction=self.txn)
@@ -618,7 +661,7 @@ class GraphTransactionStore(TransactionStore):
         await self.graph_provider.batch_create_edges(
             [record_edge], collection=CollectionNames.INHERIT_PERMISSIONS.value, transaction=self.txn
         )
-    async def get_sync_point(self, sync_point_key: str, raise_on_error: bool = False) -> Optional[dict]:
+    async def get_sync_point(self, sync_point_key: str, *, raise_on_error: bool = False) -> Optional[dict]:
         return await self.graph_provider.get_sync_point(
             sync_point_key,
             CollectionNames.SYNC_POINTS.value,
@@ -667,7 +710,7 @@ class GraphTransactionStore(TransactionStore):
     async def delete_sync_point(self, sync_point_key: str) -> None:
         return await self.graph_provider.remove_sync_point([sync_point_key],
                     collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
-    async def read_sync_point(self, sync_point_key: str, raise_on_error: bool = False) -> Optional[dict]:
+    async def read_sync_point(self, sync_point_key: str, *, raise_on_error: bool = False) -> Optional[dict]:
         return await self.graph_provider.get_sync_point(
             sync_point_key,
             collection=CollectionNames.SYNC_POINTS.value,
@@ -817,6 +860,32 @@ class GraphTransactionStore(TransactionStore):
             filters=filters,
             return_fields=return_fields,
             transaction=self.txn
+        )
+
+    async def find_taxonomy_nodes(
+        self, collection: str, org_id: str, normalized_names: list[str]
+    ) -> list[dict]:
+        return await self.graph_provider.find_taxonomy_nodes(
+            collection, org_id, normalized_names, transaction=self.txn
+        )
+
+    async def create_taxonomy_node_if_absent(self, collection: str, node: dict) -> None:
+        await self.graph_provider.create_taxonomy_node_if_absent(
+            collection, node, transaction=self.txn
+        )
+
+    async def add_taxonomy_aliases(
+        self,
+        collection: str,
+        key: str,
+        aliases: list[str],
+        normalized_aliases: list[str],
+        *,
+        max_aliases: int = 20,
+    ) -> None:
+        await self.graph_provider.add_taxonomy_aliases(
+            collection, key, aliases, normalized_aliases,
+            max_aliases=max_aliases, transaction=self.txn,
         )
 
 

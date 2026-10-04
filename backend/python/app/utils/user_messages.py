@@ -22,6 +22,12 @@ PEOPLE_GONE = (
 )
 
 
+EPUB_PREVIEW_UNAVAILABLE = (
+    "Preview isn't available for EPUB files. Download the book to read it in an "
+    "e-book app; its text is still searchable in PipesHub."
+)
+
+
 def action_failed(action: str) -> str:
     """Why an action failed, in the user's words.
 

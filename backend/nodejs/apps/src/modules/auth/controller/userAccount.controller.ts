@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import { randomBytes } from 'crypto';
 import jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
 
@@ -30,7 +31,7 @@ import { IUserCredentials, UserCredentials } from '../schema/userCredentials.sch
 
 import { AuthSessionRequest } from '../middlewares/types';
 
-import { SessionService } from '../services/session.service';
+import { SessionData, SessionService } from '../services/session.service';
 import mongoose from 'mongoose';
 import { OAuth2Client } from 'google-auth-library';
 import {
@@ -44,7 +45,6 @@ import { MailService } from '../services/mail.service';
 import {
   BadRequestError,
   ForbiddenError,
-  GoneError,
   HttpError,
   InternalServerError,
   NotFoundError,
@@ -66,8 +66,18 @@ import {
 import { AppConfig } from '../../tokens_manager/config/config';
 import { Org } from '../../user_management/schema/org.schema';
 import { Users } from '../../user_management/schema/users.schema';
+import {
+  EntitiesEventProducer,
+  Event,
+  EventType,
+  UserUpdatedEvent,
+} from '../../user_management/services/entity_events.service';
 import { verifyTurnstileToken } from '../../../libs/utils/turnstile-verification';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
+import {
+  assertMethodAllowedAtStep,
+  IOrgAuthConfigLike,
+} from '../utils/authMethodGuard';
 
 const {
   LOGIN,
@@ -81,6 +91,7 @@ const {
 } = userActivitiesType;
 export const SALT_ROUNDS = 10;
 const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
+const MAX_WRONG_CREDENTIAL_ATTEMPTS = 5;
 const SESSION_INVALIDATE_TOKEN_DELAY_MS = 1000;
 
 export const SIGN_IN_SESSION_EXPIRED =
@@ -89,14 +100,37 @@ export const SESSION_NO_LONGER_VALID =
   'Your session is no longer valid. Please sign in again.';
 export const OTP_SEND_FAILED =
   "We couldn't send your sign-in code. Wait a minute and try again, or use another sign-in method.";
+export const OTP_ALREADY_USED =
+  'That sign-in code has already been used. Request a new code and try again.';
 export const EMAIL_MISMATCH =
   "You signed in with a different account than the email you entered. Sign in with the matching account, or go back and enter that account's email.";
 export const PROVIDER_SHARED_NO_EMAIL =
   "Your sign-in provider didn't share an email address, so we couldn't sign you in. Ask your admin to allow the email permission for PipesHub.";
 export const ADMIN_ONLY_SIGN_IN_SETTINGS =
   'Only workspace admins can view or change sign-in settings.';
+export const SIGN_IN_ACCOUNT_CHANGED =
+  'This step was completed with a different account than the step before it. Start again from the sign-in page and use the same account for every step.';
 export const OAUTH_SIGN_IN_FAILED =
   "Sign-in with your identity provider didn't complete. Try again; if it keeps happening, ask your admin to check the sign-in settings.";
+export const SAML_HAS_ITS_OWN_SIGN_IN =
+  "Single sign-on (SAML) can't be completed with this request. On the sign-in page, choose your organisation's single sign-on option. Apps calling the API directly should send the browser to /api/v1/saml/signIn instead.";
+export const WRONG_EMAIL_OR_PASSWORD =
+  'The email or password is incorrect. Check both and try again, or use Forgot password to set a new password.';
+export const WRONG_SIGN_IN_CODE =
+  "That sign-in code isn't right. Check the most recent code in your email, or request a new one.";
+export const SIGN_IN_CODE_REQUESTED =
+  'If that email can sign in with a code, one is being sent. It works for 10 minutes. If nothing arrives, check your spam folder or try again later.';
+
+let decoyHash: Promise<string> | undefined;
+
+// Refusals that have no stored hash to check still pay for one bcrypt
+// comparison, so an unknown email doesn't answer noticeably faster than a
+// real account.
+async function compareWithDecoyHash(candidate: unknown): Promise<void> {
+  decoyHash ??= bcrypt.hash(randomBytes(16).toString('hex'), SALT_ROUNDS);
+  const hash = await decoyHash;
+  await bcrypt.compare(typeof candidate === 'string' ? candidate : '', hash);
+}
 
 @injectable()
 export class UserAccountController {
@@ -109,6 +143,7 @@ export class UserAccountController {
     protected configurationManagerService: ConfigurationManagerService,
     @inject('Logger') protected logger: Logger,
     @inject('JitProvisioningService') protected jitProvisioningService: JitProvisioningService,
+    @inject('EntitiesEventProducer') protected eventService: EntitiesEventProducer,
   ) { }
 
   /**
@@ -173,6 +208,23 @@ export class UserAccountController {
     target.email = tokenEmail.toLowerCase();
   }
 
+  // A later sign-in step must prove the account an earlier step already proved.
+  protected assertSameAccountAsEarlierSteps(
+    sessionInfo: SessionData,
+    user: Record<string, unknown> | null | undefined,
+  ): void {
+    const id = user?._id;
+    const userId =
+      id instanceof mongoose.Types.ObjectId
+        ? id.toHexString()
+        : typeof id === 'string'
+          ? id
+          : '';
+    if (Number(sessionInfo.currentStep) > 0 && userId !== sessionInfo.userId) {
+      throw new UnauthorizedError(SIGN_IN_ACCOUNT_CHANGED);
+    }
+  }
+
   async generateHashedOTP() {
     const otp = generateOtp();
     const hashedOTP = await bcrypt.hash(otp, SALT_ROUNDS);
@@ -215,6 +267,44 @@ export class UserAccountController {
     return true;
   }
 
+  // Not awaited: waiting for the mail service would make the attempt that
+  // locks an account slower than any other refusal, and a failed send must
+  // not turn that refusal into a server error.
+  protected notifyAccountLocked(
+    email: string,
+    userId: string,
+    orgId: string,
+  ): void {
+    void (async () => {
+      try {
+        const org = await Org.findOne({ _id: orgId, isDeleted: false });
+        const user = await Users.findOne({
+          _id: userId,
+          orgId,
+          isDeleted: false,
+        });
+        await this.mailService.sendMail({
+          emailTemplateType: 'suspiciousLoginAttempt',
+          initiator: {
+            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+            orgId,
+          },
+          usersMails: [email],
+          subject: 'Alert : Suspicious Login Attempt Detected',
+          templateData: {
+            orgName: org?.shortName || org?.registeredName,
+            name: user?.fullName,
+          },
+        });
+      } catch (error) {
+        this.logger.error("The account-locked email couldn't be sent", {
+          userId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  }
+
    async verifyOTP(
     userId: string,
     orgId: string,
@@ -222,52 +312,59 @@ export class UserAccountController {
     email: string,
     ipAddress: string,
   ) {
-    let userCredentials = await UserCredentials.findOne({
+    const userCredentials = await UserCredentials.findOne({
       userId,
       orgId,
       isDeleted: false,
     });
     if (!userCredentials) {
-      throw new BadRequestError('Please request OTP before login');
+      await compareWithDecoyHash(inputOTP);
+      throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
     }
-    if (await this.ensureBlockStatus(userCredentials)) {
-      const blockedUntil = this.getBlockedUntilIso(userCredentials);
-      throw new BadRequestError(
-        blockedUntil
-          ? `Your account has been disabled as you have entered incorrect OTP/Password too many times. [blockedUntil:${blockedUntil}]`
-          : 'Your account has been disabled as you have entered incorrect OTP/Password too many times.',
-      );
+    // A locked account, a missing code and an expired code are all answered
+    // like a wrong code, since an unknown email can only ever get that answer.
+    // The owner learns about a lock from the email sent when it was applied.
+    const locked = await this.ensureBlockStatus(userCredentials);
+    if (
+      locked ||
+      !userCredentials.otpValidity ||
+      !userCredentials.hashedOTP ||
+      Date.now() > userCredentials.otpValidity
+    ) {
+      if (locked) {
+        this.logger.warn('Sign-in code refused: the account is locked', {
+          userId,
+        });
+      }
+      await compareWithDecoyHash(inputOTP);
+      throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
     }
-    if (!userCredentials.otpValidity || !userCredentials.hashedOTP) {
-      throw new UnauthorizedError('Invalid OTP. Please try again.');
-    }
-    if (Date.now() > userCredentials.otpValidity) {
-      throw new GoneError('OTP has expired. Please request a new one.');
+
+    // The attempt is counted before the code is compared. Counting it
+    // afterwards lets every request already in flight be compared before the
+    // first of them has raised the counter, so a burst gets past the limit.
+    const attempt = await this.reserveCredentialAttempt(userId, orgId);
+    if (!attempt?.hashedOTP) {
+      await compareWithDecoyHash(inputOTP);
+      throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
     }
 
     // Ensure OTP is a string for bcrypt.compare (bcrypt requires both arguments to be strings)
     const otpString = String(inputOTP);
-    const isMatching = await bcrypt.compare(
-      otpString,
-      userCredentials.hashedOTP,
-    );
+    const isMatching = await bcrypt.compare(otpString, attempt.hashedOTP);
     this.logger.debug('isMatching', isMatching);
     if (!isMatching) {
-      userCredentials = await this.incrementWrongCredentialCount(userId, orgId);
-      if (!userCredentials) {
-        throw new BadRequestError('Please request OTP before login');
-      }
       await UserActivities.create({
         email: email,
         activityType: WRONG_OTP,
         ipAddress: ipAddress,
         loginMode: 'OTP',
       });
-      if (userCredentials.wrongCredentialCount >= 5) {
+      if (attempt.wrongCredentialCount >= MAX_WRONG_CREDENTIAL_ATTEMPTS) {
         this.logger.warn('blocked', email);
-        userCredentials.isBlocked = true;
-        userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
-        await userCredentials.save();
+        attempt.isBlocked = true;
+        attempt.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
+        await attempt.save();
         await UserActivities.create({
           userId: userId,
           orgId: orgId,
@@ -277,37 +374,71 @@ export class UserAccountController {
           loginMode: 'OTP',
         });
 
-        const org = await Org.findOne({ _id: orgId, isDeleted: false });
-        const user = await Users.findOne({ _id: userId, orgId, isDeleted: false });
-
-        await this.mailService.sendMail({
-          emailTemplateType: 'suspiciousLoginAttempt',
-          initiator: {
-            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
-            orgId: orgId?.toString(),
-          },
-          usersMails: [email],
-          subject: 'Alert : Suspicious Login Attempt Detected',
-          templateData: {
-            orgName: org?.shortName || org?.registeredName,
-            name: user?.fullName,
-          },
-        });
-        throw new UnauthorizedError(
-          'Too many login attempts. Account Blocked.',
-        );
+        this.notifyAccountLocked(email, userId, orgId);
       }
-      throw new UnauthorizedError('Invalid OTP. Please try again.');
-    } else {
-      userCredentials.wrongCredentialCount = 0;
-      await userCredentials.save();
+      throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
     }
+
+    // Clearing the code in the same write that matches it makes it single-use,
+    // even when two requests race with the same code.
+    const claimed = await UserCredentials.findOneAndUpdate(
+      { userId, orgId, isDeleted: false, hashedOTP: attempt.hashedOTP },
+      { $unset: { hashedOTP: '', otpValidity: '' } },
+      { new: true },
+    );
+    if (!claimed) {
+      throw new UnauthorizedError(OTP_ALREADY_USED);
+    }
+    // After the claim, and separate from it: tying the claim to the counter
+    // would let another request's reservation stop a correct code being used.
+    await this.releaseCredentialAttempt(
+      userId,
+      orgId,
+      attempt.wrongCredentialCount,
+    );
 
     return { statusCode: 200 };
   }
 
   async verifyPassword(password: string, hashedPassword: string) {
     return bcrypt.compare(password, hashedPassword);
+  }
+
+  // Shared by the code and the password sign-in. Null once the account is
+  // locked or has no attempts left.
+  async reserveCredentialAttempt(userId: string, orgId: string) {
+    return UserCredentials.findOneAndUpdate(
+      {
+        userId,
+        orgId,
+        isDeleted: false,
+        isBlocked: { $ne: true },
+        wrongCredentialCount: { $lt: MAX_WRONG_CREDENTIAL_ATTEMPTS },
+      },
+      { $inc: { wrongCredentialCount: 1 } },
+      { new: true },
+    );
+  }
+
+  // Resets the counter after a successful sign-in, but only while it still
+  // reads what this request's reservation left it at and the account is not
+  // locked. Otherwise a success would wipe out attempts that other requests
+  // reserved in the meantime.
+  async releaseCredentialAttempt(
+    userId: string,
+    orgId: string,
+    reservedCount: number,
+  ) {
+    await UserCredentials.updateOne(
+      {
+        userId,
+        orgId,
+        isDeleted: false,
+        isBlocked: { $ne: true },
+        wrongCredentialCount: reservedCount,
+      },
+      { $set: { wrongCredentialCount: 0 } },
+    );
   }
 
   async incrementWrongCredentialCount(userId: string, orgId: string) {
@@ -441,7 +572,6 @@ export class UserAccountController {
         message: 'Authentication initialized',
         authProviders,
         jitEnabled: jitEnabledMethods.length > 0,
-
       });
 
     } catch (error) {
@@ -912,6 +1042,8 @@ export class UserAccountController {
     const org = await Org.findOne({ _id: orgId, isDeleted: false });
 
     if (userCredentialData && (await this.ensureBlockStatus(userCredentialData))) {
+      // Same hashing work as an unknown email, whose request always hashes once.
+      await this.generateHashedOTP();
       const blockedUntil = this.getBlockedUntilIso(userCredentialData);
       throw new ForbiddenError(
         blockedUntil
@@ -936,14 +1068,22 @@ export class UserAccountController {
       userCredentialData.otpValidity = otpValidity;
       await userCredentialData.save();
     }
-    try {
-      const result = await this.mailService.sendMail({
+    // Not awaited: waiting for the mail service would make a real account's
+    // answer slower than an unknown email's. The code is already stored, so it
+    // works whenever the email arrives.
+    const logSendFailure = (details: Record<string, unknown>): void => {
+      this.logger.error("The sign-in code email couldn't be sent", {
+        userId,
+        ...details,
+      });
+    };
+    this.mailService
+      .sendMail({
         emailTemplateType: 'loginWithOTP',
         initiator: {
           jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
           orgId: orgId?.toString(),
         },
-
         usersMails: [email],
         subject: 'OTP for Login',
         templateData: {
@@ -951,15 +1091,18 @@ export class UserAccountController {
           orgName: org?.shortName || org?.registeredName,
           otp: otp,
         },
+      })
+      .then((result) => {
+        if (result.statusCode !== 200) {
+          logSendFailure({ data: result.data });
+        }
+      })
+      .catch((error: unknown) => {
+        logSendFailure({
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
-      if (result.statusCode !== 200) {
-        this.logger.error('Sending the sign-in code failed', { data: result.data });
-        throw new InternalServerError(OTP_SEND_FAILED);
-      }
-      return { statusCode: 200, data: 'OTP sent' };
-    } catch (err) {
-      throw err;
-    }
+    return { statusCode: 200, data: 'OTP sent' };
   }
 
   getLoginOtp = async (
@@ -979,11 +1122,12 @@ export class UserAccountController {
         ipAddress: req.ip,
       });
       const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
-      let result = await this.iamService.getUserByEmail(email, authToken);
+      const result = await this.iamService.getUserByEmail(email, authToken);
       if (result.statusCode === 404) {
-        throw new NotFoundError(
-          "We couldn't send a sign-in code to that email. Check the address and try again, or ask your admin to invite you.",
-        );
+        // Same answer, and the same code hashing, as for a real account.
+        await this.generateHashedOTP();
+        res.status(200).send(SIGN_IN_CODE_REQUESTED);
+        return;
       }
       if (result.statusCode !== 200) {
         this.logger.error('Looking up the account for a sign-in code failed', {
@@ -992,20 +1136,30 @@ export class UserAccountController {
         });
         throw new InternalServerError(OTP_SEND_FAILED);
       }
-      const user = result.data;
+      const user = result.data as {
+        _id: string;
+        orgId: string;
+        fullName: string;
+      };
 
-      result = await this.generateAndSendLoginOtp(
-        user._id,
-        user.orgId,
-        user.fullName,
-        email,
-        req.ip || ' ',
-      );
-
-      if (result.statusCode !== 200) {
-        throw new BadRequestError(OTP_SEND_FAILED);
+      // A locked account or a failed send gets the same answer as an unknown
+      // email, so the answer never shows that the account exists.
+      try {
+        await this.generateAndSendLoginOtp(
+          user._id,
+          user.orgId,
+          user.fullName,
+          email,
+          req.ip || ' ',
+        );
+      } catch (sendError) {
+        this.logger.warn('No sign-in code was sent', {
+          userId: user._id,
+          error:
+            sendError instanceof Error ? sendError.message : String(sendError),
+        });
       }
-      res.status(200).send(result.data);
+      res.status(200).send(SIGN_IN_CODE_REQUESTED);
     } catch (error) {
       throw error;
     }
@@ -1137,57 +1291,62 @@ export class UserAccountController {
 
   async authenticateWithPassword(
     user: Record<string, any>,
-    password: string,
+    password: unknown,
     ip: string,
   ) {
     const userId = user._id;
     const orgId = user.orgId;
     const email = user.email;
-    const org = await Org.findOne({ _id: user.orgId, isDeleted: false });
 
-    let userCredentials = await UserCredentials.findOne({
+    const userCredentials = await UserCredentials.findOne({
       orgId,
       userId,
       isDeleted: false,
     });
 
-    if (!userCredentials?.hashedPassword) {
-      // Do not reveal that no password has been set for this account —
-      // that would let an attacker enumerate valid email addresses by
-      // comparing the response to a wrong-password attempt. Return the
-      // same BadRequestError as an incorrect password so the client sees
-      // an identical response in both cases.
-      throw new BadRequestError('Incorrect password, please try again.');
+    // No password set, no password sent and a locked account are all answered
+    // like a wrong password, since an unknown email can only ever get that
+    // answer. The owner learns about a lock from the email sent when it was
+    // applied.
+    const locked =
+      !!userCredentials && (await this.ensureBlockStatus(userCredentials));
+    if (
+      !userCredentials?.hashedPassword ||
+      typeof password !== 'string' ||
+      locked
+    ) {
+      if (locked) {
+        this.logger.warn('Password sign-in refused: the account is locked', {
+          userId: String(userId),
+        });
+      }
+      await compareWithDecoyHash(password);
+      throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
     }
-    if (await this.ensureBlockStatus(userCredentials)) {
-      const blockedUntil = this.getBlockedUntilIso(userCredentials);
-      throw new BadRequestError(
-        blockedUntil
-          ? `Your account has been disabled as you have entered incorrect OTP/Password too many times. [blockedUntil:${blockedUntil}]`
-          : 'Your account has been disabled as you have entered incorrect OTP/Password too many times.',
-      );
+
+    // Counted before the compare, for the same reason as a sign-in code.
+    const attempt = await this.reserveCredentialAttempt(userId, orgId);
+    if (!attempt?.hashedPassword) {
+      await compareWithDecoyHash(password);
+      throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
     }
 
     const isPasswordCorrect = await this.verifyPassword(
       password,
-      userCredentials.hashedPassword,
+      attempt.hashedPassword,
     );
 
     if (!isPasswordCorrect) {
-      userCredentials = await this.incrementWrongCredentialCount(userId, orgId);
-      if (!userCredentials) {
-        throw new BadRequestError('Please request OTP before login');
-      }
       await UserActivities.create({
         email: email,
         activityType: WRONG_PASSWORD,
         ipAddress: ip,
         loginMode: 'PASSWORD',
       });
-      if (userCredentials.wrongCredentialCount >= 5) {
-        userCredentials.isBlocked = true;
-        userCredentials.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
-        await userCredentials.save();
+      if (attempt.wrongCredentialCount >= MAX_WRONG_CREDENTIAL_ATTEMPTS) {
+        attempt.isBlocked = true;
+        attempt.blockExpiresAt = new Date(Date.now() + BLOCK_COOLDOWN_DURATION_MS);
+        await attempt.save();
         await UserActivities.create({
           userId: userId,
           orgId: orgId,
@@ -1196,28 +1355,15 @@ export class UserAccountController {
           ipAddress: ip,
           loginMode: 'PASSWORD',
         });
-
-        await this.mailService.sendMail({
-          emailTemplateType: 'suspiciousLoginAttempt',
-          initiator: {
-            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
-            orgId: orgId?.toString(),
-          },
-          usersMails: [email],
-          subject: 'Alert : Suspicious Login Attempt Detected',
-          templateData: {
-            orgName: org?.shortName || org?.registeredName,
-            name: user.fullName,
-          },
-        });
+        this.notifyAccountLocked(String(email), String(userId), String(orgId));
       }
-      throw new BadRequestError(
-        "Incorrect password, please try again."
-      )
-    } else {
-      userCredentials.wrongCredentialCount = 0;
-      await userCredentials.save();
+      throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
     }
+    await this.releaseCredentialAttempt(
+      userId,
+      orgId,
+      attempt.wrongCredentialCount,
+    );
 
     await UserActivities.create({
       orgId: orgId,
@@ -1489,6 +1635,12 @@ export class UserAccountController {
         sessionInfo.email = req.body.email || "";
       }
 
+      assertMethodAllowedAtStep(
+        sessionInfo.authConfig as IOrgAuthConfigLike['authSteps'] | undefined,
+        Number(sessionInfo.currentStep),
+        String(method),
+      );
+
       // 1. Password Guard (Turnstile)
       if (method === AuthMethodType.PASSWORD) {
         const turnstileSecretKey = process.env.TURNSTILE_SECRET_KEY;
@@ -1498,9 +1650,9 @@ export class UserAccountController {
         }
       }
 
-      // SAML_SSO follows a different flow - handling it early as per original code
+      // SAML completes in the identity provider's redirect to /saml/signIn/callback.
       if (method === AuthMethodType.SAML_SSO) {
-        return;
+        throw new BadRequestError(SAML_HAS_ITS_OWN_SIGN_IN);
       }
 
       const orgId = sessionInfo.orgId;
@@ -1586,6 +1738,7 @@ export class UserAccountController {
           const authToken = iamJwtGenerator(providerEmail, this.config.scopedJwtSecret);
           userFindResult = await this.iamService.getUserByEmail(providerEmail, authToken);
           user = userFindResult?.statusCode === 200 ? userFindResult?.data : null;
+          this.assertSameAccountAsEarlierSteps(sessionInfo, user);
 
           const methodKey = method === AuthMethodType.AZURE_AD ? 'azureAd' :
             method === AuthMethodType.MICROSOFT ? 'microsoft' :
@@ -1613,9 +1766,24 @@ export class UserAccountController {
       if (!user) {
         const authToken = iamJwtGenerator(sessionInfo.email || "", this.config.scopedJwtSecret);
         userFindResult = await this.iamService.getUserByEmail(sessionInfo.email || "", authToken);
-        user = userFindResult?.data;
-        if (!user) throw new NotFoundError('User not found');
+        user =
+          userFindResult?.statusCode === 200 ? userFindResult.data : undefined;
+        if (!user) {
+          // An unknown email gets the same refusal, after the same hash
+          // comparison, as a real account given a wrong password or code.
+          const submitted = (credentials ?? {}) as {
+            password?: unknown;
+            otp?: unknown;
+          };
+          if (method === AuthMethodType.OTP) {
+            await compareWithDecoyHash(submitted.otp);
+            throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
+          }
+          await compareWithDecoyHash(submitted.password);
+          throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
+        }
       }
+      this.assertSameAccountAsEarlierSteps(sessionInfo, user);
 
       switch (method) {
         case AuthMethodType.PASSWORD:
@@ -1636,14 +1804,13 @@ export class UserAccountController {
         case AuthMethodType.OAUTH:
           await this.authenticateWithOAuth(user, credentials, req.ip!);
           break;
-        case AuthMethodType.SAML_SSO:
-          break;
         default:
           throw new BadRequestError('Unsupported authentication method');
       }
 
       // 4. MULTI-STEP HANDLING
       if (sessionInfo.currentStep < sessionInfo.authConfig.length - 1) {
+        sessionInfo.userId = String(user._id);
         sessionInfo.currentStep++;
         await this.sessionService.updateSession(sessionInfo);
 
@@ -1889,13 +2056,21 @@ export class UserAccountController {
       const newEmail = req?.tokenPayload?.newEmail;
       const orgId = req?.tokenPayload?.orgId;
 
-      const exists = await Users.findOne({ email: newEmail });
+      const email = String(newEmail).toLowerCase().trim();
+      // This account excluded: opening the link again repeats the write and
+      // the event, which is how a failed event write is retried.
+      const exists = await Users.findOne({ email, _id: { $ne: userId } });
       if (exists) {
         throw new BadRequestError(`Email already in use: ${newEmail}`);
       }
-      await Users.findByIdAndUpdate(userId, {
-        email: newEmail.toLowerCase().trim(),
-      });
+      const user = await Users.findByIdAndUpdate(
+        userId,
+        { email },
+        { new: true },
+      );
+      if (user) {
+        await this.publishEmailChanged(user);
+      }
 
       await UserActivities.create({
         orgId: orgId,
@@ -1912,5 +2087,31 @@ export class UserAccountController {
       next(err);
     }
   }
+
+  /**
+   * The graph copies a user's email from this event; without it the old
+   * address stays there. A failed write throws, so the request fails and the
+   * link can be opened again.
+   */
+  private async publishEmailChanged(user: InstanceType<typeof Users>): Promise<void> {
+    const event: Event = {
+      eventType: EventType.UpdateUserEvent,
+      timestamp: Date.now(),
+      payload: {
+        orgId: user.orgId.toString(),
+        userId: user._id.toString(),
+        fullName: user.fullName,
+        ...(user.firstName && { firstName: user.firstName }),
+        ...(user.lastName && { lastName: user.lastName }),
+        ...(user.designation && { designation: user.designation }),
+        email: user.email,
+      } as UserUpdatedEvent,
+    };
+    await this.eventService.start();
+    await this.eventService.publishEvent(event);
+    await this.eventService.stop();
+  }
+
+
 
 }

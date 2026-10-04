@@ -625,6 +625,8 @@ export interface CitationApiResponse {
       recordName: string;
       recordId: string;
       connector: string;
+      /** Connector instance the record came from; absent on older saved answers */
+      connectorId?: string;
       recordType: string;
       webUrl?: string;
       mimeType: string;
@@ -1054,7 +1056,9 @@ export interface ChatSlot {
 
   /**
    * Pending interactive questionnaire from SSE `ask_user_question`.
-   * Cleared when the user submits answers or starts another stream that replaces messages.
+   * Stays on the same assistant row through submit (`status: 'submitted'`)
+   * so the follow-up answer streams in-place. Replaced by
+   * `persistedAskUserQuestion` after `onComplete` / reload.
    */
   pendingAskUserQuestion: PendingAskUserQuestion | null;
 
@@ -1126,6 +1130,8 @@ export interface SearchResultMetadata {
   recordVersion?: number;
   origin: string;
   connector: string;
+  /** Connector instance the record came from; marks demo records. */
+  connectorId?: string;
   blockText?: string;
   blockType?: string;
   bounding_box?: Array<{ x: number; y: number }>;

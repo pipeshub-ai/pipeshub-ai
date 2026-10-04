@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { Response, NextFunction } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
@@ -10,6 +10,7 @@ import { configPaths } from '../paths/paths';
 import {
   BadRequestError,
   ConflictError,
+  ForbiddenError,
   InternalServerError,
   NotFoundError,
   ServiceUnavailableError,
@@ -34,7 +35,10 @@ import { TelemetryService } from '../../../libs/services/telemetry/telemetry.ser
 import { loadConfigurationManagerConfig } from '../config/config';
 import { findActiveOrgById } from '../../user_management/utils/org.utils';
 
-import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
+import {
+  DefaultStorageConfig,
+  resolveFrontendPublicUrl,
+} from '../../tokens_manager/services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { generateFetchConfigAuthToken } from '../../auth/utils/generateAuthToken';
 import { SamlController } from '../../auth/controller/saml.controller';
@@ -74,6 +78,7 @@ import {
   maskWebSearchProvider,
   mergeWebSearchProviderPlaceholders,
 } from '../utils/maskConfigSecrets';
+import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
 import {
   buildS3HealthCheckErrorMessage,
   validateS3Capabilities,
@@ -104,6 +109,17 @@ type SlackBotStore = {
 /** Returns true when the HIDE_SECRET_CONFIG env var is set to "true". */
 function shouldHideSecrets(): boolean {
   return process.env.HIDE_SECRET_CONFIG === 'true';
+}
+
+async function requesterIsOrgAdmin(
+  req: AuthenticatedUserRequest,
+): Promise<boolean> {
+  const userId: unknown = req.user?.userId;
+  const orgId: unknown = req.user?.orgId;
+  if (typeof userId !== 'string' || typeof orgId !== 'string') {
+    return false;
+  }
+  return isUserOrgAdmin(userId, orgId);
 }
 
 const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
@@ -549,6 +565,8 @@ export const getSmtpConfigStatus =
     }
   };
 const SLACK_BOT_CAS_MAX_RETRIES = 5;
+export const SLACK_BOT_SETTINGS_UNREADABLE =
+  "The saved Slack bot settings couldn't be read, so nothing was shown or changed. This usually means the server's encryption key (the SECRET_KEY setting) changed after the bots were saved. Ask whoever runs your PipesHub server to restore the original key, then try again.";
 
 const parseSlackBotStore = (
   encrypted: string | null | undefined,
@@ -569,8 +587,9 @@ const parseSlackBotStore = (
       configs: Array.isArray(parsed.configs) ? parsed.configs : [],
     };
   } catch (error) {
-    logger.warn('Failed to parse slack bot settings, using empty config', { error });
-    return { configs: [] };
+    // Answering "no bots" here would let the next save overwrite every stored bot.
+    logger.error('Failed to read stored slack bot settings', { error });
+    throw new InternalServerError(SLACK_BOT_SETTINGS_UNREADABLE);
   }
 };
 
@@ -2276,6 +2295,46 @@ export const getFrontendUrl =
     }
   };
 
+/**
+ * The configured public frontend URL, for the desktop app only.
+ *
+ * The desktop app's OAuth redirect URI has to point at the frontend origin,
+ * but the app knows only the API base URL the user typed, and those are
+ * different origins whenever the UI is served separately from the API. It
+ * calls this once as the sign-in screen loads, before any session exists.
+ *
+ * The `client-name: desktop` check is not a security boundary: the header is
+ * client-supplied, and the desktop app is a public client, so nothing it
+ * ships could prove its identity. It only keeps the value off responses to
+ * browsers, which have `window.location` and never need it.
+ *
+ * Resolved the same way as `AppConfig.frontendUrl`, which GitHub's
+ * authorization code is redeemed against, so the two cannot drift apart. Read
+ * per request because this module's `AppConfig` is not reloaded when an admin
+ * changes the URL.
+ */
+export const getDesktopFrontendUrl =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (req.headers['client-name'] !== 'desktop') {
+        throw new ForbiddenError(
+          'This endpoint is only available to the PipesHub desktop app.',
+        );
+      }
+      const urls =
+        (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
+      const parsedUrls = JSON.parse(urls);
+      res.status(200).json({
+        frontendUrl: resolveFrontendPublicUrl(
+          parsedUrls?.frontend?.publicEndpoint,
+        ),
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
 export const setFrontendUrl =
   (
     keyValueStoreService: KeyValueStoreService,
@@ -3162,7 +3221,7 @@ export const addAIModelProvider =
       };
 
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/health-check/${modelType}`,
+        uri: `${appConfig.aiBackend}/api/v1/health-check/${encodeURIComponent(String(modelType))}`,
         method: HttpMethod.POST,
         headers: req.headers as Record<string, string>,
         body: healthCheckPayload,
@@ -3856,7 +3915,7 @@ export const updateDefaultAIModel =
         const aiCommandOptions: AICommandOptions = {
           uri: isEmbedding
             ? `${appConfig.aiBackend}/api/v1/embedding-health-check`
-            : `${appConfig.aiBackend}/api/v1/health-check/${targetModelType}`,
+            : `${appConfig.aiBackend}/api/v1/health-check/${encodeURIComponent(targetModelType)}`,
           method: HttpMethod.POST,
           headers: req.headers as Record<string, string>,
           body: isEmbedding ? [healthCheckPayload] : healthCheckPayload,
@@ -4205,7 +4264,7 @@ export const getAIModelProviderSchema =
 // Web Search Provider Management Functions
 export const getWebSearchProviders =
   (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
       const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
@@ -4232,7 +4291,10 @@ export const getWebSearchProviders =
       const storedProviders = Array.isArray(webSearchConfig.providers)
         ? webSearchConfig.providers
         : [];
-      const hideSecrets = shouldHideSecrets();
+      // Members may list providers (the agent builder does), but only admins
+      // may read their API keys.
+      const hideSecrets =
+        shouldHideSecrets() || !(await requesterIsOrgAdmin(req));
       const providers = [
         {
           ...DUCKDUCKGO_WEB_SEARCH_PROVIDER,

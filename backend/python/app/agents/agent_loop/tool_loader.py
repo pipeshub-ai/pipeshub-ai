@@ -33,7 +33,7 @@ from app.agent_loop_lib.tools.errors import (
 )
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.tools.toolset import ToolsetBuilder as AgentLoopToolsetBuilder
-from app.agents.agent_loop.instance_creator import ToolInstanceCreator
+from app.agents.agent_loop.instance_creator import ToolInstanceCreator, configured_name_matches
 from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter, split_original_tool_name
 from app.agents.agent_loop.web_tool_adapter import WebToolAdapter
 from app.agents.tools.factories.base import ToolsetAuthError
@@ -54,6 +54,12 @@ logger = logging.getLogger(__name__)
 # exempts them from the external-toolset "configured on this agent" check
 # below, so they need their own gate on `context.has_knowledge` instead.
 _KNOWLEDGE_TOOLSETS = frozenset({"knowledgegraph", "retrieval", "knowledgehub"})
+
+# Group names of the legacy internal toolsets that execute model-generated
+# code through `app.sandbox.manager.get_executor()`. `.as_internal()` exempts
+# them from the "configured on this agent" check, so without this gate they
+# load into every chat even when no sandbox backend is configured.
+_SANDBOX_TOOLSETS = frozenset({"coding_sandbox", "database_sandbox"})
 
 # Same substring heuristic `ToolInstanceCreator._create_with_factory` uses to
 # decide whether to re-raise a `ValueError` as an auth-flavored message
@@ -115,6 +121,25 @@ def _infer_path_prefix(cls: type, *, fallback_name: str) -> str:
     return f"/tools/{fallback_name}"
 
 
+def _sandbox_executor_available(state_logger: logging.Logger | None) -> bool:
+    """Whether `SANDBOX_MODE` names a backend the legacy executor can build.
+
+    Only resolves the mode; nothing is instantiated. A missing or unknown
+    mode is logged once per load and the sandbox toolsets are skipped, so a
+    misconfigured deployment loses code execution rather than running it
+    in-process or failing the chat.
+    """
+    from app.sandbox.manager import SandboxUnavailableError, get_sandbox_mode
+
+    try:
+        get_sandbox_mode()
+    except SandboxUnavailableError as exc:
+        log = state_logger or logger
+        log.warning("Skipping sandbox toolsets: %s", exc)
+        return False
+    return True
+
+
 def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
     """Build per-request dynamic tools and wrap them as ``Tool`` instances.
 
@@ -127,7 +152,13 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
 
     config_service = state.get("config_service")
 
-    if config_service and state.get("has_sql_connector") and state.get("has_sql_knowledge"):
+    allowed_sql_connector_ids = state.get("allowed_sql_connector_ids") or frozenset()
+    if (
+        config_service
+        and state.get("has_sql_connector")
+        and state.get("has_sql_knowledge")
+        and allowed_sql_connector_ids
+    ):
         try:
             from app.utils.execute_query import create_execute_query_tool
             execute_query_tool = create_execute_query_tool(
@@ -136,6 +167,8 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 org_id=state.get("org_id"),
                 conversation_id=state.get("conversation_id"),
                 blob_store=state.get("blob_store"),
+                user_id=state.get("user_id"),
+                allowed_connector_ids=allowed_sql_connector_ids,
             )
             setattr(execute_query_tool, "_original_name", "sql.execute_sql_query")
             app_name, tool_name = split_original_tool_name(execute_query_tool)
@@ -158,12 +191,18 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 blob_store=state.get("blob_store"),
                 config_service=config_service,
                 tool_state=state,
+                user_id=state.get("user_id"),
             )
             setattr(slack_thread_tool, "_original_name", "slack.fetch_slack_thread")
             a, t = split_original_tool_name(slack_thread_tool)
             tools.append(PipesHubStructuredToolAdapter(slack_thread_tool, a, t))
 
-            slack_nearby_tool = create_fetch_slack_nearby_messages_tool(config_service=config_service)
+            slack_nearby_tool = create_fetch_slack_nearby_messages_tool(
+                config_service=config_service,
+                graph_provider=state.get("graph_provider"),
+                org_id=state.get("org_id"),
+                user_id=state.get("user_id"),
+            )
             setattr(slack_nearby_tool, "_original_name", "slack.fetch_slack_nearby_messages")
             a, t = split_original_tool_name(slack_nearby_tool)
             tools.append(PipesHubStructuredToolAdapter(slack_nearby_tool, a, t))
@@ -261,6 +300,9 @@ class PipesHubToolLoader:
             if has_factory and not is_internal and not self._is_configured(ts_name, configured_apps):
                 if state_logger:
                     state_logger.debug("Skipping unconfigured external toolset: %s", ts_name)
+                continue
+
+            if group_name in _SANDBOX_TOOLSETS and not _sandbox_executor_available(state_logger):
                 continue
 
             if ts_name in _KNOWLEDGE_TOOLSETS and not context.has_knowledge:
@@ -365,9 +407,7 @@ class PipesHubToolLoader:
         ``"calendar"``) and the agent's configured toolset names from the graph
         DB (e.g. ``"googledrive"``, ``"googlecalendar"``).
         """
-        if ts_name in configured_apps:
-            return True
-        return any(cfg_name.endswith(ts_name) for cfg_name in configured_apps)
+        return any(configured_name_matches(ts_name, cfg_name) for cfg_name in configured_apps)
 
 
 __all__ = ["PipesHubToolLoader"]

@@ -42,14 +42,20 @@ from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.hooks import CitationCollector
 from app.agents.agent_loop.respond import AnswerFinalizer
+from app.modules.demo_data.chat import (
+    demo_exclusions_for_run,
+    exclude_from_query,
+    exclude_from_state,
+    note_org_real_data,
+)
 
 if TYPE_CHECKING:
-    from app.utils.stage_timer import StageTimer
     from collections.abc import AsyncGenerator
 
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry
+    from app.utils.stage_timer import StageTimer
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +267,7 @@ async def run_agent_loop_stream(
     stage_timer: "StageTimer | None" = None,
     cancellation_registry: "RunCancellationRegistry | None" = None,
     cancellation_owner: "RunOwner | None" = None,
+    entity_vector_store: Any = None,
 ) -> "AsyncGenerator[str, None]":
     """agent-loop counterpart to `app.api.routes.agent.stream_response()` —
     same signature/SSE wire format, so `chat_stream`'s feature-flag branch
@@ -273,7 +280,11 @@ async def run_agent_loop_stream(
     """
     from app.modules.agents.qna.chat_state import build_initial_state
     from app.utils.connector_instances import fetch_user_connector_instances
-    from app.utils.execute_query import connector_instances_have_sql
+    from app.utils.execute_query import (
+        agent_knowledge_sql_connector_ids,
+        connector_instances_have_sql,
+        sql_connector_instance_ids,
+    )
     from app.utils.fetch_slack_thread import connector_instances_have_slack
 
     # Stop Generation (Phase 3a): registered BEFORE `build_initial_state()`
@@ -308,11 +319,20 @@ async def run_agent_loop_stream(
         has_slack_connector = connector_instances_have_slack(connector_instances)
         if stage_timer:
             stage_timer.mark("connector_flags")
+        demo_excluded = await demo_exclusions_for_run(graph_provider, config_service, user_info, log)
+        query_info = exclude_from_query(query_info, demo_excluded)
         chat_state = build_initial_state(
             query_info, user_info, llm, log, retrieval_service, graph_provider,
             reranker_service, config_service, model_name, model_key, org_info,
             "react", has_sql_connector=has_sql_connector, is_multimodal_llm=is_multimodal_llm,
             has_slack_connector=has_slack_connector, client_name=client_name,
+            entity_vector_store=entity_vector_store,
+        )
+        exclude_from_state(chat_state, demo_excluded)
+        await note_org_real_data(chat_state, graph_provider, user_info.get("orgId", ""), log)
+        chat_state["allowed_sql_connector_ids"] = (
+            sql_connector_instance_ids(connector_instances, user_info["orgId"])
+            & agent_knowledge_sql_connector_ids(chat_state.get("agent_knowledge"))
         )
     except Exception as exc:
         log.error("agent-loop stream: failed to build initial state: %s", exc, exc_info=True)
@@ -367,7 +387,10 @@ async def run_agent_loop_stream(
             else:
                 collector = CitationCollector(context)
                 streamer = TerminalAnswerStreamer(context, collector, context.event_sink)
-                async for event in agent.stream(goal):
+                async for event in agent.stream(
+                    goal,
+                    _skip_start=bool(context.tool_state.get("ask_user_question_resume")),
+                ):
                     await streamer.on_event(event)
                 result = agent.last_stream_result
 
@@ -396,6 +419,7 @@ async def run_agent_loop_stream(
                     # a genuinely successful — or independently failed —
                     # result, which would otherwise mislabel it "stopped".
                     agent_cancelled=result.cancelled,
+                    agent_needs_input=result.needs_input,
                 )
         except Exception as exc:
             log.error("agent-loop stream: run failed: %s", exc, exc_info=True)

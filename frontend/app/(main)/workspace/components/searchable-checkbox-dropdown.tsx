@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Flex, Box, Text, Avatar } from '@radix-ui/themes';
+import { Avatar, Badge, Box, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
 
@@ -16,6 +16,11 @@ export interface CheckboxOption {
   subtitle?: string;
   /** Data URI for profile picture */
   profilePicture?: string;
+  /**
+   * Short word shown beside the label, for an option that is not the sort of
+   * thing the list is mostly made of — a service account among colleagues.
+   */
+  badge?: string;
 }
 
 interface SearchableCheckboxDropdownProps {
@@ -285,6 +290,14 @@ export function SearchableCheckboxDropdown({
               >
                 {opt.label}
               </Text>
+              {opt.badge && (
+                // Kept on the chip as well as in the list. Once the list is
+                // closed the chips are all that is left, and a machine
+                // identity should not read as a colleague there either.
+                <Badge color="gray" size="1" style={{ flexShrink: 0 }}>
+                  {opt.badge}
+                </Badge>
+              )}
               <Box
                 onClick={(e) => {
                   e.stopPropagation();
@@ -466,18 +479,25 @@ export function SearchableCheckboxDropdown({
                         }}
                       />
                       <Flex direction="column" style={{ minWidth: 0 }}>
-                        <Text
-                          size="2"
-                          weight="medium"
-                          style={{
-                            color: 'var(--slate-12)',
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                          }}
-                        >
-                          {option.label}
-                        </Text>
+                        <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+                          <Text
+                            size="2"
+                            weight="medium"
+                            style={{
+                              color: 'var(--slate-12)',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}
+                          >
+                            {option.label}
+                          </Text>
+                          {option.badge && (
+                            <Badge color="gray" size="1" style={{ flexShrink: 0 }}>
+                              {option.badge}
+                            </Badge>
+                          )}
+                        </Flex>
                         {option.subtitle && (
                           <Text
                             size="1"

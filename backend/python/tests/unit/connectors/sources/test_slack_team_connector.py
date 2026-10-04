@@ -1271,7 +1271,7 @@ class TestSlackConnectorInitAndFreshDatasource:
                 "credentials": {"access_token": "newtok"},
             }
         )
-        with patch("app.connectors.sources.slack.team.connector.SlackDataSource") as Sds:
+        with patch("app.connectors.sources.slack.common.token_renewal.SlackDataSource") as Sds:
             await c._fresh_datasource()
         inner.set_token.assert_called_once_with("newtok")
         Sds.assert_called()
@@ -3561,16 +3561,16 @@ class TestPopulateChannelFilterCache:
         ds = MagicMock()
         ds.conversations_list = AsyncMock(side_effect=slow_list)
 
-        async def runner():
-            with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-                await c._populate_channel_filter_cache()
-
-        t1 = asyncio.create_task(runner())
-        await asyncio.sleep(0.05)
-        t2 = asyncio.create_task(runner())
-        await asyncio.sleep(0.05)
-        ev.set()
-        await asyncio.gather(t1, t2)
+        # One patch around both tasks: two overlapping patches of the same class
+        # attribute that exit out of order leave the mock on the class for later tests.
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            t1 = asyncio.create_task(c._populate_channel_filter_cache())
+            await asyncio.sleep(0.05)
+            t2 = asyncio.create_task(c._populate_channel_filter_cache())
+            await asyncio.sleep(0.05)
+            ev.set()
+            await asyncio.gather(t1, t2)
+        ds.conversations_list.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_populate_cache_list_failure_raises(self):
@@ -7786,14 +7786,14 @@ class TestStreamFileBytesEdgeCases:
             await anext(c._stream_file_bytes(fr))
 
     @pytest.mark.asyncio
-    async def test_no_token_logs_warning(self):
+    async def test_download_uses_the_token_the_file_lookup_used(self):
         from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
         from app.connectors.sources.slack.team.connector import SlackConnector
         from app.models.entities import FileRecord, RecordType
 
         c = _connector_pipeline_ready()
         inner = MagicMock()
-        inner.get_token = MagicMock(return_value=None)
+        inner.get_token = MagicMock(return_value="xoxb-changed-by-another-call")
         c.external_client.get_client = MagicMock(return_value=inner)
         fr = FileRecord(
             org_id="org-test",
@@ -7810,6 +7810,7 @@ class TestStreamFileBytesEdgeCases:
             is_file=True,
         )
         ds = MagicMock()
+        ds.access_token = "xoxb-used-for-files-info"
         ds.files_info = AsyncMock(return_value=MagicMock(
             success=True,
             data={"file": {"url_private_download": "https://files.slack.com/f"}},
@@ -7829,6 +7830,8 @@ class TestStreamFileBytesEdgeCases:
             async def __aexit__(self, *a):
                 return None
 
+        sent_headers: list = []
+
         class _Http:
             async def __aenter__(self):
                 return self
@@ -7836,7 +7839,8 @@ class TestStreamFileBytesEdgeCases:
             async def __aexit__(self, *a):
                 return None
 
-            def stream(self, *_a, **_k):
+            def stream(self, *_a, **k):
+                sent_headers.append(k.get("headers"))
                 return _StreamCM()
 
         with (
@@ -7847,7 +7851,7 @@ class TestStreamFileBytesEdgeCases:
             async for chunk in c._stream_file_bytes(fr):
                 out += chunk
         assert out == b"data"
-        c.logger.warning.assert_called()
+        assert sent_headers == [{"Authorization": "Bearer xoxb-used-for-files-info"}]
 
     @pytest.mark.asyncio
     async def test_download_status_error(self):

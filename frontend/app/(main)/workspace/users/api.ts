@@ -58,10 +58,12 @@ export const UsersApi = {
     hasLoggedIn?: string;
     isBlocked?: string;
     groupIds?: string;
-  }): Promise<{ users: User[]; totalCount: number }> {
+    /** `'true'` also returns service accounts, which are left out by default. */
+    includeServiceAccounts?: string;
+  }, options?: { suppressErrorToast?: boolean }): Promise<{ users: User[]; totalCount: number }> {
     const { data } = await apiClient.get<UsersListResponse>(
       BASE_URL,
-      { params }
+      { params, ...options }
     );
     return {
       users: data.users ?? [],
@@ -108,6 +110,8 @@ export const UsersApi = {
     hasLoggedIn?: string;
     isBlocked?: string;
     groupIds?: string;
+    /** `'true'` also returns service accounts, which are left out by default. */
+    includeServiceAccounts?: string;
   }): Promise<{ users: User[]; totalCount: number }> {
     return UsersApi.listUsers(params);
   },
@@ -140,7 +144,11 @@ export const UsersApi = {
    * Invite users by email, optionally adding them to groups.
    * POST /api/v1/users/bulk/invite
    */
-  async inviteUsers(emails: string[], groupIds?: string[], role?: string): Promise<void> {
+  async inviteUsers(
+    emails: string[],
+    groupIds?: string[],
+    role?: string,
+  ): Promise<{ queued: boolean }> {
     const payload: { emails: string[]; groupIds?: string[]; role?: string } = { emails };
     if (groupIds && groupIds.length > 0) {
       payload.groupIds = groupIds;
@@ -149,9 +157,12 @@ export const UsersApi = {
       payload.role =
         role === USER_ROLES.ADMIN || role === 'admin' ? 'admin' : 'member';
     }
-    await apiClient.post(`${BASE_URL}/bulk/invite`, payload, {
-      suppressErrorToast: true,
-    });
+    const { data } = await apiClient.post<{ queued?: boolean }>(
+      `${BASE_URL}/bulk/invite`,
+      payload,
+      { suppressErrorToast: true },
+    );
+    return { queued: data?.queued === true };
   },
 
   /**

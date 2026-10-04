@@ -50,7 +50,8 @@ def _method_source(path: str, name: str) -> str:
 
     # Explicit encoding: the providers carry emoji in log strings, and the
     # platform default is cp1252 on Windows.
-    text = pathlib.Path(path).read_text(encoding="utf-8")
+    root = pathlib.Path(__file__).resolve().parents[4]
+    text = (root / path).read_text(encoding="utf-8")
     try:
         start = text.index(f"async def {name}(")
     except ValueError:
@@ -208,11 +209,24 @@ class TestAppReachabilityGate:
         expected_count = 2 if backend == "neo4j" else 1
         assert query.count(gate) == expected_count
 
-    def test_the_reachable_set_covers_team_granted_apps(self, source):
+    @pytest.mark.parametrize("backend", ["neo4j", "arango"])
+    @pytest.mark.asyncio
+    async def test_the_reachable_set_covers_team_granted_apps(self, backend):
         """An app reached only through a team is still reached. Building the set
-        from direct USER_APP_RELATION alone silently drops shared connectors."""
-        assert "USER_APP_RELATION" in source
-        assert "Teams" in source or "TEAMS" in source or "teams" in source
+        from direct USER_APP_RELATION alone silently drops shared connectors.
+
+        Asserted on the rendered query: the set is built by a shared helper, so
+        the method's own source no longer spells it out."""
+        from app.config.constants.arangodb import CollectionNames
+
+        render = _render_neo4j_query if backend == "neo4j" else _render_arango_query
+        query, _ = await render()
+        if backend == "neo4j":
+            assert "USER_APP_RELATION" in query
+            assert ":Teams" in query
+        else:
+            assert CollectionNames.USER_APP_RELATION.value in query
+            assert CollectionNames.TEAMS.value in query
 
 
 class TestExcludesRecordsTheOldPathExcluded:

@@ -126,6 +126,7 @@ from app.connectors.sources.local_fs.models import (  # noqa: E402
     LocalFsFileEventBatchStats,
     LocalFsPullBatch,
 )
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import (  # noqa: E402
     AppMetadata,
     FileRecord,
@@ -146,6 +147,28 @@ class TestLocalFsApp:
 
 OWNER_DEVICE_ID = "dev-owner"
 OWNER_DEVICE_NAME = "owner-laptop"
+
+
+def _as_base_record(record: FileRecord) -> Record:
+    """What both graph stores answer from get_record_by_external_id: no path or is_file."""
+    return Record.model_validate(record.model_dump(include=set(Record.model_fields)))
+
+
+def _file_record(external_id: str = "ext-1", path: str | None = None) -> FileRecord:
+    return FileRecord(
+        id="rec-1",
+        record_name="f.txt",
+        record_type=RecordType.FILE,
+        external_record_id=external_id,
+        version=0,
+        origin=OriginTypes.CONNECTOR,
+        connector_name=Connectors.LOCAL_FS,
+        connector_id="connector-instance-1",
+        is_file=True,
+        path=path,
+        mime_type="text/plain",
+        record_group_type=RecordGroupType.DRIVE,
+    )
 
 
 def _app_metadata(
@@ -173,6 +196,7 @@ def folder_connector() -> LocalFsConnector:
     # "MagicMock can't be used in 'await' expression".
     proc.get_user_by_user_id = AsyncMock(return_value=None)
     proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_file_record_by_id = AsyncMock(return_value=None)
     proc.get_records_by_status = AsyncMock(return_value=[])
     proc.on_record_deleted = AsyncMock()
     proc.on_new_app_users = AsyncMock()
@@ -974,6 +998,9 @@ class TestLocalFsConnectorAsync:
             return_value=user
         )
         folder_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_as_base_record(existing)
+        )
+        folder_connector.data_entities_processor.get_file_record_by_id = AsyncMock(
             return_value=existing
         )
         folder_connector.data_entities_processor.on_record_deleted = AsyncMock()
@@ -1715,8 +1742,11 @@ class TestDeleteExternalIds:
     async def test_a_store_that_refuses_the_delete_keeps_the_id(
         self, folder_connector
     ):
-        record = MagicMock(id="rec-1", path=None)
+        record = _file_record()
         folder_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_as_base_record(record)
+        )
+        folder_connector.data_entities_processor.get_file_record_by_id = AsyncMock(
             return_value=record
         )
         folder_connector.data_entities_processor.on_record_deleted = AsyncMock(
@@ -1730,7 +1760,7 @@ class TestDeleteExternalIds:
     async def test_records_already_in_hand_are_not_looked_up_again(
         self, folder_connector
     ):
-        record = MagicMock(id="rec-1", path=None)
+        record = _file_record()
         folder_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
             side_effect=AssertionError("the caller already had this record")
         )
@@ -1743,6 +1773,69 @@ class TestDeleteExternalIds:
         folder_connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(
             record_id="rec-1"
         )
+
+    @pytest.mark.parametrize("ids_known_to_exist", [False, True], ids=["event", "retry"])
+    async def test_a_push_flow_record_found_by_id_takes_its_stored_copy_with_it(
+        self, folder_connector, ids_known_to_exist: bool
+    ) -> None:
+        record = _file_record(path=f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-7")
+        folder_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_as_base_record(record)
+        )
+        folder_connector.data_entities_processor.get_file_record_by_id = AsyncMock(
+            return_value=record
+        )
+        folder_connector._delete_storage_document = AsyncMock()
+
+        failed = await folder_connector._delete_external_ids(
+            ["ext-1"], "user-1", ids_known_to_exist=ids_known_to_exist
+        )
+
+        assert failed == []
+        folder_connector._delete_storage_document.assert_awaited_once_with("doc-7")
+
+    async def test_a_record_whose_file_record_cannot_be_read_is_kept_owed(
+        self, folder_connector
+    ) -> None:
+        """Deleting the record anyway would drop the only pointer to its stored copy."""
+        record = _file_record(path=f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-7")
+        folder_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_as_base_record(record)
+        )
+        folder_connector.data_entities_processor.get_file_record_by_id = AsyncMock(
+            side_effect=GraphQueryError("Could not read file record rec-1: unavailable")
+        )
+        folder_connector._delete_storage_document = AsyncMock()
+
+        failed = await folder_connector._delete_external_ids(["ext-1"], "user-1")
+
+        assert failed == ["ext-1"]
+        folder_connector.data_entities_processor.on_record_deleted.assert_not_awaited()
+        folder_connector._delete_storage_document.assert_not_awaited()
+
+    @pytest.mark.parametrize("ids_known_to_exist", [False, True], ids=["event", "retry"])
+    async def test_a_record_with_no_files_row_is_retired_with_nothing_to_clean_up(
+        self, folder_connector, ids_known_to_exist: bool
+    ) -> None:
+        """The blob pointer lives on the files row, so without one there is no stored copy to chase."""
+        record = _file_record(path=f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-7")
+        folder_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_as_base_record(record)
+        )
+        folder_connector.data_entities_processor.get_file_record_by_id = AsyncMock(
+            return_value=None
+        )
+        folder_connector._delete_storage_document = AsyncMock()
+
+        failed = await folder_connector._delete_external_ids(
+            ["ext-1"], "user-1", ids_known_to_exist=ids_known_to_exist
+        )
+
+        assert failed == []
+        folder_connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(
+            record_id="rec-1"
+        )
+        folder_connector._delete_storage_document.assert_not_awaited()
 
 
 # --------------------------------------------------------------------------- #

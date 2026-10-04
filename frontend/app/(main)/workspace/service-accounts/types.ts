@@ -51,8 +51,21 @@ export interface ServiceTokenListApiResponse {
   tokens: ServiceToken[];
 }
 
+/**
+ * One permission a service token can be given, as the scope catalogue
+ * describes it. The same shape the personal access token and OAuth
+ * application pickers receive, so a permission reads the same wherever it is
+ * offered.
+ */
+export interface ServiceTokenScopeItem {
+  name: string;
+  description: string;
+  category: string;
+  requiresUserConsent: boolean;
+}
+
 export interface ServiceTokenScopesApiResponse {
-  scopes: string[];
+  scopes: ServiceTokenScopeItem[];
 }
 
 /** POST /api/v1/service-tokens */

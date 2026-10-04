@@ -32,41 +32,41 @@ export const LOCAL_FS_DESKTOP_OFFLINE_TOAST_DURATION_MS = 5000;
 // Connector sync strategy display labels
 // ========================================
 
-export const STRATEGY_LABELS: Record<string, string> = {
-  SCHEDULED: 'Scheduled',
-  MANUAL: 'Manual',
-  WEBHOOK: 'Webhook',
-  REALTIME: 'Real-time',
+export const STRATEGY_LABEL_KEYS: Record<string, string> = {
+  SCHEDULED: 'workspace.connectors.syncStrategies.SCHEDULED',
+  MANUAL: 'workspace.connectors.syncStrategies.MANUAL',
+  WEBHOOK: 'workspace.connectors.syncStrategies.WEBHOOK',
+  REALTIME: 'workspace.connectors.syncStrategies.REALTIME',
 };
 
 // ========================================
 // Scheduled sync interval display labels (in minutes)
 // ========================================
 
-export const INTERVAL_LABELS: Record<number, string> = {
-  5: 'Every 5 Minutes',
-  15: 'Every 15 Minutes',
-  30: 'Every 30 Minutes',
-  60: 'Every 1 Hour',
-  240: 'Every 4 Hours',
-  480: 'Every 8 Hours',
-  720: 'Every 12 Hours',
-  1440: 'Every 1 Day',
-  10080: 'Every 1 Week',
+export const INTERVAL_LABEL_KEYS: Record<number, string> = {
+  5: 'workspace.connectors.syncIntervals.5',
+  15: 'workspace.connectors.syncIntervals.15',
+  30: 'workspace.connectors.syncIntervals.30',
+  60: 'workspace.connectors.syncIntervals.60',
+  240: 'workspace.connectors.syncIntervals.240',
+  480: 'workspace.connectors.syncIntervals.480',
+  720: 'workspace.connectors.syncIntervals.720',
+  1440: 'workspace.connectors.syncIntervals.1440',
+  10080: 'workspace.connectors.syncIntervals.10080',
 };
 
 // ========================================
 // Scheduled sync interval options for select dropdowns
 // ========================================
 
-export const INTERVAL_OPTIONS: { label: string; value: number }[] = [
-  { label: '5 Minutes', value: 5 },
-  { label: '15 Minutes', value: 15 },
-  { label: '30 Minutes', value: 30 },
-  { label: '1 Hour', value: 60 },
-  { label: '4 Hours', value: 240 },
-  { label: '8 Hours', value: 480 },
-  { label: '12 Hours', value: 720 },
-  { label: '1 Day', value: 1440 },
-  { label: '1 Week', value: 10080 },
+export const INTERVAL_OPTIONS: { labelKey: string; value: number }[] = [
+  { labelKey: 'workspace.connectors.syncIntervalOptions.5', value: 5 },
+  { labelKey: 'workspace.connectors.syncIntervalOptions.15', value: 15 },
+  { labelKey: 'workspace.connectors.syncIntervalOptions.30', value: 30 },
+  { labelKey: 'workspace.connectors.syncIntervalOptions.60', value: 60 },
+  { labelKey: 'workspace.connectors.syncIntervalOptions.240', value: 240 },
+  { labelKey: 'workspace.connectors.syncIntervalOptions.480', value: 480 },
+  { labelKey: 'workspace.connectors.syncIntervalOptions.720', value: 720 },
+  { labelKey: 'workspace.connectors.syncIntervalOptions.1440', value: 1440 },
+  { labelKey: 'workspace.connectors.syncIntervalOptions.10080', value: 10080 },
 ];

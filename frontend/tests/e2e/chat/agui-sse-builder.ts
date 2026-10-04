@@ -135,7 +135,12 @@ export function buildAguiErrorSseBody(conversationId: string, message: string): 
   ].join('');
 }
 
-/** `conversation_created` + one in-flight text delta, deliberately missing RUN_FINISHED — for stop/cancel tests. */
+/**
+ * `conversation_created` + one in-flight text delta, with no RUN_FINISHED — for
+ * stop/cancel tests. Serve it with `serveOpenSseStream`: a response that ends
+ * after these frames is a dropped connection, which the chat reports as
+ * interrupted instead of leaving the run open for Stop.
+ */
 export function buildAguiPartialSseBody(conversationId: string, partialText: string): string {
   return [
     frame('CUSTOM', { name: 'conversation_created', value: { conversationId } }),
@@ -151,8 +156,7 @@ export function buildAguiPartialSseBody(conversationId: string, partialText: str
  * `saveCompleteConversation`/`savePartialConversation` persist once Python's
  * `/chat/cancel` (or a passive disconnect) ends the run early (see
  * `es_controller.ts`, `utils.ts`). Distinct from `buildAguiPartialSseBody`,
- * which deliberately omits `RUN_FINISHED` to simulate the connection still
- * being open when the test clicks Stop.
+ * which omits `RUN_FINISHED` for a run still open when the test clicks Stop.
  */
 export function buildAguiStoppedSseBody(opts: AguiConversationOptions): string {
   const { conversationId, question, answer, requestId } = opts;
@@ -178,11 +182,11 @@ export function buildAguiStoppedSseBody(opts: AguiConversationOptions): string {
 }
 
 /**
- * `conversation_created` + `TOOL_CALL_START` — deliberately no
- * `TOOL_CALL_RESULT`/`RUN_FINISHED`, matching a tool that is still running
- * when the user clicks Stop (see `handleToolCallStart` in
- * `agui-event-handler.ts`, which leaves the part `status: 'running'` until
- * a `TOOL_CALL_RESULT` arrives).
+ * `conversation_created` + `TOOL_CALL_START` — no `TOOL_CALL_RESULT` or
+ * `RUN_FINISHED`, matching a tool that is still running when the user clicks
+ * Stop (see `handleToolCallStart` in `agui-event-handler.ts`, which leaves the
+ * part `status: 'running'` until a `TOOL_CALL_RESULT` arrives). Serve it with
+ * `serveOpenSseStream`, for the reason given on `buildAguiPartialSseBody`.
  */
 export function buildAguiToolCallStartSseBody(
   conversationId: string,
@@ -196,20 +200,42 @@ export function buildAguiToolCallStartSseBody(
 }
 
 /**
- * `conversation_created` + `CUSTOM(ask_user_question)` — deliberately no
- * `RUN_FINISHED`, matching the real backend keeping the stream open while
- * the `internaltools.ask_user_question` clarification card is interactive.
- * `toolData` shape matches `AskUserQuestionPayload` (see chat/types.ts).
+ * A turn that ends by asking the user a question: `conversation_created` ->
+ * `CUSTOM(ask_user_question)` -> `RUN_FINISHED`. `ask_user_question` is a
+ * terminal tool, so the backend always finishes the run after it
+ * (`AnswerFinalizer.answer_final` in respond.py, then Node's re-emitted
+ * `RUN_FINISHED`), and the card stays interactive while the user's answer
+ * waits to be sent as the next turn. The stored conversation carries the
+ * question as a `tool_call` message before the reply, as `es_controller.ts`
+ * saves it. `toolData` shape matches `AskUserQuestionPayload` (chat/types.ts).
  */
-export function buildAguiAskUserQuestionSseBody(
-  conversationId: string,
+export function buildAguiAskUserQuestionSseBody(opts: {
+  conversationId: string;
+  userMessageId: string;
+  botMessageId: string;
+  question: string;
+  modelInfo: Record<string, unknown>;
   toolData: {
     name: 'ask_user_question';
     userIntent?: string;
     questions: unknown[];
-  },
-  title?: string,
-): string {
+  };
+  title?: string;
+}): string {
+  const { conversationId, toolData, title } = opts;
+  const conversation = buildAguiConversation({ ...opts, answer: '' });
+  const [userQuery, botResponse] = conversation.messages;
+  conversation.messages = [
+    userQuery,
+    {
+      messageType: 'tool_call',
+      content: '',
+      tools: [{ toolName: 'ask_user_question', toolResult: toolData }],
+      createdAt: userQuery.createdAt,
+      updatedAt: userQuery.updatedAt,
+    },
+    botResponse,
+  ];
   return [
     frame('CUSTOM', {
       name: 'conversation_created',
@@ -218,6 +244,12 @@ export function buildAguiAskUserQuestionSseBody(
     frame('CUSTOM', {
       name: 'ask_user_question',
       value: { status: 'tool_call', toolData },
+    }),
+    frame('RUN_FINISHED', {
+      result: {
+        conversation,
+        meta: { requestId: 'req-e2e-agui-ask', timestamp: new Date().toISOString(), duration: 480 },
+      },
     }),
   ].join('');
 }

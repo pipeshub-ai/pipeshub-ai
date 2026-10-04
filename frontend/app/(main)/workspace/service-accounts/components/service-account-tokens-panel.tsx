@@ -17,7 +17,11 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConfirmationDialog, FormField, WorkspaceRightPanel } from '../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceTokensApi } from '../api';
-import type { ServiceAccount, ServiceToken } from '../types';
+import type {
+  ServiceAccount,
+  ServiceToken,
+  ServiceTokenScopeItem,
+} from '../types';
 
 /**
  * A token within this many days of expiry is flagged, so the rotation happens
@@ -73,7 +77,7 @@ export function ServiceAccountTokensPanel({
   const addToast = useToastStore((s) => s.addToast);
 
   const [tokens, setTokens] = useState<ServiceToken[]>([]);
-  const [availableScopes, setAvailableScopes] = useState<string[]>([]);
+  const [availableScopes, setAvailableScopes] = useState<ServiceTokenScopeItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
   const [isMinting, setIsMinting] = useState(false);
@@ -194,6 +198,57 @@ export function ServiceAccountTokensPanel({
       // Clipboard can be unavailable; the token is on screen to copy by hand.
     }
   }, [issuedToken]);
+
+  /**
+   * The permissions grouped under the category the scope catalogue gives them,
+   * so the picker reads as a few short lists rather than one long one. Order
+   * follows the order the server sent, which keeps related permissions
+   * together without this screen having an opinion about it.
+   */
+  const scopeGroups = useMemo(() => {
+    const groups = new Map<string, ServiceTokenScopeItem[]>();
+    availableScopes.forEach((scope) => {
+      const existing = groups.get(scope.category);
+      if (existing) {
+        existing.push(scope);
+      } else {
+        groups.set(scope.category, [scope]);
+      }
+    });
+    return Array.from(groups, ([category, scopes]) => ({ category, scopes }));
+  }, [availableScopes]);
+
+  const availableScopeNames = useMemo(
+    () => availableScopes.map((scope) => scope.name),
+    [availableScopes],
+  );
+
+  /**
+   * Whether every permission on offer is ticked.
+   *
+   * Asked by membership rather than by comparing lengths, because the two can
+   * agree while the contents do not: reloading the panel can replace one
+   * permission in the catalogue with another, leaving the same count with a
+   * selection that no longer covers it. Counting would then label the control
+   * "Clear all" and clear a selection the reader had not finished making.
+   */
+  const allSelected =
+    availableScopeNames.length > 0 &&
+    availableScopeNames.every((name) => selectedScopes.includes(name));
+
+  /**
+   * One control that selects everything or clears it, matching the personal
+   * access token and OAuth application pickers. Granting every permission is
+   * still a deliberate act, so this is a shortcut for someone who has decided
+   * to do it rather than a default.
+   */
+  const toggleAllScopes = useCallback(() => {
+    setSelectedScopes((current) =>
+      availableScopeNames.every((name) => current.includes(name))
+        ? []
+        : availableScopeNames,
+    );
+  }, [availableScopeNames]);
 
   const canMint = tokenName.trim().length > 0 && selectedScopes.length > 0;
 
@@ -321,22 +376,65 @@ export function ServiceAccountTokensPanel({
             </FormField>
 
             <FormField label={t('workspace.serviceAccounts.tokens.scopesLabel')} required>
-              <Text size="1" style={{ color: 'var(--slate-10)' }}>
-                {t('workspace.serviceAccounts.tokens.scopesHelp')}
-              </Text>
-              <Flex direction="column" gap="1" style={{ marginTop: 'var(--space-2)' }}>
-                {availableScopes.map((scope) => (
-                  <Flex key={scope} align="center" gap="2" asChild>
-                    <label style={{ cursor: 'pointer' }}>
-                      <Checkbox
-                        checked={selectedScopes.includes(scope)}
-                        onCheckedChange={(checked) => toggleScope(scope, checked)}
-                      />
-                      <Text size="1" style={CREDENTIAL_MONO}>
-                        {scope}
-                      </Text>
-                    </label>
-                  </Flex>
+              <Flex align="start" justify="between" gap="3">
+                <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                  {t('workspace.serviceAccounts.tokens.scopesHelp')}
+                </Text>
+                {availableScopes.length > 0 && (
+                  <Button
+                    size="1"
+                    variant="ghost"
+                    type="button"
+                    onClick={toggleAllScopes}
+                    style={{ flexShrink: 0 }}
+                  >
+                    {allSelected
+                      ? t('workspace.serviceAccounts.tokens.clearAllScopes')
+                      : t('workspace.serviceAccounts.tokens.selectAllScopes')}
+                  </Button>
+                )}
+              </Flex>
+              <Flex direction="column" gap="3" style={{ marginTop: 'var(--space-2)' }}>
+                {scopeGroups.map((group) => (
+                  <Box key={group.category}>
+                    <Text
+                      size="1"
+                      weight="medium"
+                      style={{ color: 'var(--slate-11)' }}
+                    >
+                      {group.category}
+                    </Text>
+                    <Flex
+                      direction="column"
+                      gap="2"
+                      style={{ marginTop: 'var(--space-1)' }}
+                    >
+                      {group.scopes.map((scope) => (
+                        <Flex key={scope.name} align="start" gap="2" asChild>
+                          <label style={{ cursor: 'pointer' }}>
+                            <Checkbox
+                              checked={selectedScopes.includes(scope.name)}
+                              onCheckedChange={(checked) =>
+                                toggleScope(scope.name, checked)
+                              }
+                            />
+                            <Box>
+                              <Text size="1" style={CREDENTIAL_MONO}>
+                                {scope.name}
+                              </Text>
+                              <Text
+                                as="p"
+                                size="1"
+                                style={{ color: 'var(--slate-10)', margin: 0 }}
+                              >
+                                {scope.description}
+                              </Text>
+                            </Box>
+                          </label>
+                        </Flex>
+                      ))}
+                    </Flex>
+                  </Box>
                 ))}
               </Flex>
             </FormField>

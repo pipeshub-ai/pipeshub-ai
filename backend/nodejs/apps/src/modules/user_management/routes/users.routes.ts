@@ -34,6 +34,7 @@ import { MailService } from '../services/mail.service';
 import { AuthService } from '../services/auth.service';
 import { EntitiesEventProducer } from '../services/entity_events.service';
 import { NotificationProducer } from '../../notification/service/notification.producer';
+import { MailProducer } from '../../mail/services/mail.producer';
 import { OrgController } from '../controller/org.controller';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
@@ -208,6 +209,10 @@ const getAllUsersQueryParams = z.object({
   search: z.string().optional(),
   hasLoggedIn: z.enum(['true', 'false']).optional(),
   isBlocked: z.enum(['true', 'false']).optional(),
+  // Opt-in, for the screens that pick who belongs to a group or a team.
+  // Service accounts are left out of this list by default on purpose — see the
+  // filter in `getAllUsers` — so a caller that wants them has to say so.
+  includeServiceAccounts: z.enum(['true', 'false']).optional(),
   groupIds: z
     .string()
     .optional()
@@ -883,7 +888,11 @@ export function createUserRouter(container: Container) {
 
         // Rebind services depending on AppConfig
         container.rebind<MailService>('MailService').toDynamicValue(() => {
-          return new MailService(updatedConfig, logger);
+          return new MailService(
+            updatedConfig,
+            logger,
+            container.get<MailProducer>(MailProducer),
+          );
         });
 
         container.rebind<AuthService>('AuthService').toDynamicValue(() => {
@@ -914,7 +923,6 @@ export function createUserRouter(container: Container) {
           });
         res.status(200).json({
           message: 'User configuration updated successfully',
-          config: updatedConfig,
         });
         return;
       } catch (error) {

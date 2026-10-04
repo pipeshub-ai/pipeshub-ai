@@ -162,6 +162,20 @@ _OPTIONAL_PACKAGES = [
 _MOCK_PACKAGE_NAMES.add("docling_parse")
 _mock_finder.load_module("docling_parse")
 
+# talon imports cchardet, which has no Python 3.12 build and is excluded from installs
+# ([tool.uv] in pyproject.toml). Production aliases it to chardet before importing talon
+# (gmail/talon_utils.py); without the same alias here the talon probe below fails and
+# every Gmail test silently runs against a MagicMock talon.
+try:
+    import cchardet  # noqa: F401
+except ImportError:
+    try:
+        import chardet as _chardet
+    except ImportError:
+        _chardet = None
+    if _chardet is not None:
+        sys.modules["cchardet"] = _chardet
+
 for _pkg in _OPTIONAL_PACKAGES:
     _ensure_module(_pkg)
 
@@ -237,12 +251,25 @@ def _reset_default_backpressure_coordinator():
     set_default_backpressure_coordinator(None)
 
 
+@pytest.fixture(autouse=True)
+def _no_dns_for_model_endpoints(monkeypatch):
+    """A model health check looks its endpoint's name up before calling it; unit tests must
+    not reach a resolver. Tests of the lookup set their own answers."""
+    aimodels = sys.modules.get("app.utils.aimodels")
+    if aimodels is not None:
+        monkeypatch.setattr(aimodels, "_resolved_addresses", lambda host: [])
+
+
 @pytest.fixture
 def logger():
     """Provide a silent logger for tests."""
     log = logging.getLogger("test")
+    previous_level = log.level
     log.setLevel(logging.CRITICAL)
-    return log
+    yield log
+    # "test" is the parent of every test.* logger, so a level left behind here
+    # silences them in every later test, and caplog then sees nothing.
+    log.setLevel(previous_level)
 
 
 @pytest.fixture

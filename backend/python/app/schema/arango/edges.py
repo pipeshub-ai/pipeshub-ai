@@ -340,6 +340,9 @@ user_app_relation_schema = {
             },
             "lastSyncUpdate": {"type": "number"},
             "sourceUserId": {"type": "string"},
+            # Set on principals who reached this app only through a share, not through
+            # app membership. Gates the browse-hoisting branches.
+            "isExternalUser": {"type": "boolean"},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
         },
@@ -348,6 +351,25 @@ user_app_relation_schema = {
     },
     "level": "strict",
     "message": "Document does not match the user app relation schema.",
+}
+
+# User (connector creator) -> User (source account the connector authenticated as)
+authenticated_as_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "connectorId": {"type": "string", "minLength": 1},
+            "orgId": {"type": "string"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["connectorId", "createdAtTimestamp"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the authenticatedAs schema.",
 }
 
 # Agent -> Tool, Model, Workflow
@@ -365,6 +387,24 @@ basic_edge_schema = {
     },
     "level": "strict",
     "message": "Document does not match the basic edge schema.",
+}
+
+# Record -> category / subcategory / language / topic. Carries the raw name the
+# model extracted for that record, so a wrong merge can be undone per record.
+taxonomy_edge_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "createdAtTimestamp": {"type": "number"},
+            "extractedName": {"type": ["string", "null"]},
+        },
+        "required": ["createdAtTimestamp"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the taxonomy edge schema.",
 }
 
 # User -> Agent

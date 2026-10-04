@@ -104,6 +104,20 @@ class IVectorDBService(ABC):
         """
         return None
 
+    async def reconcile_lexical_scoring(
+        self,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
+    ) -> Optional[str]:
+        """Bring an existing collection's keyword scoring in line with ``config``.
+
+        Unlike ``reconcile_storage_layout`` this must be cheap enough to run on
+        every startup: it may change how stored data is scored, never rewrite
+        it. Returns the setting that was changed, or None when nothing was.
+        Concrete for the same reason as ``reconcile_storage_layout``.
+        """
+        return None
+
     @abstractmethod
     async def get_collections(self) -> object:
         raise NotImplementedError
@@ -178,6 +192,36 @@ class IVectorDBService(ABC):
         fields should pass it: the default pulls the whole payload including
         ``page_content``, which on a large scan is megabytes of chunk text
         transferred and discarded.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def retrieve_points(
+        self,
+        collection_name: str,
+        ids: List[str],
+    ) -> List[VectorPoint]:
+        """Points by id, without vectors; ids with no point are omitted.
+
+        Unlike ``scroll``, this reads writes that are not yet searchable (an
+        OpenSearch index only refreshes every 30s), so a read-modify-write can
+        use it without losing an update made moments earlier.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_payload_by_ids(
+        self,
+        collection_name: str,
+        point_ids: List[str],
+        payload: dict,
+    ) -> None:
+        """Merge ``payload`` into the points with these ids, by id.
+
+        Unlike ``set_payload``, which finds its points with a search (an
+        OpenSearch ``update_by_query`` cannot see a document until the index
+        refreshes), this reaches a point the moment it was written. Ids with
+        no point are ignored.
         """
         raise NotImplementedError
 

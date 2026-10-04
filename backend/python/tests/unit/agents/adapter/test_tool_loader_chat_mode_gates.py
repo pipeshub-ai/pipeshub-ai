@@ -175,6 +175,7 @@ class TestBuildDynamicToolsConnectorKnowledgeGate:
                 "config_service": MagicMock(),
                 "has_sql_connector": True,
                 "has_sql_knowledge": True,
+                "allowed_sql_connector_ids": frozenset({"pg-1"}),
             }
         )
         fake_tool = MagicMock(name="sql_tool")
@@ -182,7 +183,7 @@ class TestBuildDynamicToolsConnectorKnowledgeGate:
             patch(
                 "app.utils.execute_query.create_execute_query_tool",
                 return_value=fake_tool,
-            ),
+            ) as mock_factory,
             patch(
                 "app.agents.agent_loop.tool_loader.split_original_tool_name",
                 return_value=("sql", "execute_sql_query"),
@@ -191,6 +192,24 @@ class TestBuildDynamicToolsConnectorKnowledgeGate:
             tools = _build_dynamic_tools(context)
 
         assert len(tools) == 1
+        assert mock_factory.call_args.kwargs["allowed_connector_ids"] == {"pg-1"}
+
+    def test_sql_flags_without_connector_allowlist_yield_no_sql_tool(self) -> None:
+        """Fails closed: the flags alone don't say WHICH connector the tool may
+        query, so without an allowlist it is not registered at all."""
+        context = _make_context()
+        context.tool_state.update(
+            {
+                "config_service": MagicMock(),
+                "has_sql_connector": True,
+                "has_sql_knowledge": True,
+            }
+        )
+        with patch("app.utils.execute_query.create_execute_query_tool") as mock_factory:
+            tools = _build_dynamic_tools(context)
+
+        assert tools == []
+        mock_factory.assert_not_called()
 
     def test_slack_connector_without_knowledge_flag_yields_no_slack_tools(self) -> None:
         context = _make_context()

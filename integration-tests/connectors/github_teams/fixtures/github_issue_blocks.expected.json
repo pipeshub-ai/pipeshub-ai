@@ -4,22 +4,18 @@
       "children": {
         "block_group_ranges": [
           {
-            "end": 3,
+            "end": 4,
             "start": 1
           },
           {
-            "end": 5,
-            "start": 4
+            "end": 6,
+            "start": 5
           }
         ],
         "block_ranges": [
           {
             "end": 2,
             "start": 0
-          },
-          {
-            "end": 7,
-            "start": 7
           },
           {
             "end": 10,
@@ -116,6 +112,36 @@
         "block_group_ranges": [],
         "block_ranges": [
           {
+            "end": 7,
+            "start": 7
+          }
+        ]
+      },
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": null,
+      "file_metadata": null,
+      "format": null,
+      "index": 3,
+      "link_metadata": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_index": 0,
+      "requires_processing": false,
+      "semantic_metadata": null,
+      "sub_type": "quote",
+      "table_cell_metadata": null,
+      "table_metadata": null,
+      "table_row_metadata": null,
+      "type": "text_section"
+    },
+    {
+      "children": {
+        "block_group_ranges": [],
+        "block_ranges": [
+          {
             "end": 9,
             "start": 8
           }
@@ -134,7 +160,7 @@
       },
       "file_metadata": null,
       "format": "json",
-      "index": 3,
+      "index": 4,
       "link_metadata": null,
       "list_metadata": null,
       "media_metadata": null,
@@ -172,7 +198,7 @@
       "data": null,
       "file_metadata": null,
       "format": "markdown",
-      "index": 4,
+      "index": 5,
       "link_metadata": null,
       "list_metadata": null,
       "media_metadata": null,
@@ -202,7 +228,7 @@
       "data": null,
       "file_metadata": null,
       "format": "markdown",
-      "index": 5,
+      "index": 6,
       "link_metadata": null,
       "list_metadata": null,
       "media_metadata": null,
@@ -384,7 +410,7 @@
         "start_line": null
       },
       "comments": [],
-      "data": "def render(issue: dict) -&gt; BlocksContainer:\n    return build_blocks(issue[\"body\"], issue[\"comments\"])",
+      "data": "def render(issue: dict) -> BlocksContainer:\n    return build_blocks(issue[\"body\"], issue[\"comments\"])",
       "file_metadata": null,
       "format": "code",
       "image_metadata": null,
@@ -419,12 +445,12 @@
       "list_metadata": null,
       "media_metadata": null,
       "parent_block_index": null,
-      "parent_index": 0,
+      "parent_index": 3,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,
       "source_type": null,
-      "sub_type": "paragraph",
+      "sub_type": "quote",
       "table_cell_metadata": null,
       "table_row_metadata": null,
       "type": "text"
@@ -451,7 +477,7 @@
       "list_metadata": null,
       "media_metadata": null,
       "parent_block_index": null,
-      "parent_index": 3,
+      "parent_index": 4,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,
@@ -483,7 +509,7 @@
       "list_metadata": null,
       "media_metadata": null,
       "parent_block_index": null,
-      "parent_index": 3,
+      "parent_index": 4,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,
@@ -546,7 +572,7 @@
       "list_metadata": null,
       "media_metadata": null,
       "parent_block_index": null,
-      "parent_index": 4,
+      "parent_index": 5,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,
@@ -571,7 +597,7 @@
       "list_metadata": null,
       "media_metadata": null,
       "parent_block_index": null,
-      "parent_index": 4,
+      "parent_index": 5,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,
@@ -596,7 +622,7 @@
       "list_metadata": null,
       "media_metadata": null,
       "parent_block_index": null,
-      "parent_index": 5,
+      "parent_index": 6,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,
@@ -621,7 +647,7 @@
       "list_metadata": null,
       "media_metadata": null,
       "parent_block_index": null,
-      "parent_index": 5,
+      "parent_index": 6,
       "public_data_link": null,
       "public_data_link_expiration_epoch_time_in_ms": null,
       "semantic_metadata": null,

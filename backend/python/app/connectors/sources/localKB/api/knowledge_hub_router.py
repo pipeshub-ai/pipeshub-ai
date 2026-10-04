@@ -54,7 +54,9 @@ async def get_knowledge_hub_service(request: Request) -> KnowledgeHubService:
     container: ConnectorAppContainer = request.app.container
     logger = container.logger()
     graph_provider = request.app.state.graph_provider
-    return KnowledgeHubService(logger=logger, graph_provider=graph_provider)
+    return KnowledgeHubService(
+        logger=logger, graph_provider=graph_provider, config_service=container.config_service()
+    )
 
 def _get_enum_values(enum_class) -> Set[str]:
     """Get all valid values from an enum class."""

@@ -14,6 +14,8 @@ import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
 import type { UserGroupFilter, UserFilter } from '../types/user_management.types';
 
+const RESERVED_GROUP_NAMES = ['admin', 'everyone', 'standard'];
+
 @injectable()
 export class UserGroupController {
   constructor() {}
@@ -41,8 +43,7 @@ export class UserGroupController {
     if (!type) {
       throw new BadRequestError('type(Type of the Group) is required');
     }
-    const reserved = ['admin', 'everyone', 'standard']
-    if (reserved.includes(name) || reserved.includes(type)) {
+    if (RESERVED_GROUP_NAMES.includes(name) || RESERVED_GROUP_NAMES.includes(type)) {
       throw new BadRequestError('Group name or type "admin", "everyone", or "standard" cannot be created');
     }
 
@@ -52,6 +53,7 @@ export class UserGroupController {
 
     const groupWithSameName = await UserGroups.findOne({
       name,
+      orgId: req.user?.orgId,
       isDeleted: false,
     });
 
@@ -159,7 +161,7 @@ export class UserGroupController {
     res: Response,
   ): Promise<void> {
     const { groupId } = req.params;
-    const { name } = req.body;
+    const { name } = req.body as { name?: string };
     const orgId = req.user?.orgId;
 
     if (!name) {
@@ -184,6 +186,23 @@ export class UserGroupController {
 
     if (group.type == 'admin' || group.type == 'everyone') {
       throw new ForbiddenError('Not Allowed');
+    }
+
+    if (normalizedName !== group.name) {
+      if (RESERVED_GROUP_NAMES.includes(normalizedName)) {
+        throw new BadRequestError(
+          'Group name "admin", "everyone", or "standard" cannot be used',
+        );
+      }
+      const groupWithSameName = await UserGroups.findOne({
+        _id: { $ne: groupId },
+        name: normalizedName,
+        orgId,
+        isDeleted: false,
+      });
+      if (groupWithSameName) {
+        throw new BadRequestError('Group already exists');
+      }
     }
 
     group.name = normalizedName;
@@ -241,7 +260,6 @@ export class UserGroupController {
     const updatedGroups = await UserGroups.updateMany(
       { _id: { $in: groupIds }, orgId, isDeleted: false },
       { $addToSet: { users: { $each: userIds } } },
-      { new: true },
     );
 
     if (updatedGroups.modifiedCount === 0) {
@@ -269,7 +287,6 @@ export class UserGroupController {
     const updatedGroups = await UserGroups.updateMany(
       { _id: { $in: groupIds }, orgId, isDeleted: false },
       { $pullAll: { users: userIds } },
-      { new: true },
     );
 
     if (updatedGroups.modifiedCount === 0) {

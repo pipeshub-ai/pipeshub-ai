@@ -121,7 +121,7 @@ from app.connectors.sources.local_fs.connector import (
     _client_path_for_display,
 )
 from app.connectors.sources.local_fs.models import LocalFsFileEvent, LocalFsPullBatch
-from app.models.entities import AppMetadata, User
+from app.models.entities import AppMetadata, FileRecord, Record, User
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.unit.connectors.sources.test_connector_workflow_integration import (
     MockArangoProvider,
@@ -250,7 +250,21 @@ class LocalFsTransactionStore(MockTransactionStore):
             docs = docs[offset:]
         if limit is not None:
             docs = docs[:limit]
-        return [self._doc_to_record(d) for d in docs]
+        return [await self.get_file_record_by_id(d["_key"]) or self._doc_to_record(d) for d in docs]
+
+    async def batch_upsert_records(self, records: list[Record]) -> None:
+        """The base document plus a files document, as both graph providers write a FileRecord."""
+        await super().batch_upsert_records(records)
+        for record in records:
+            if isinstance(record, FileRecord):
+                self._s.upsert_node(CollectionNames.FILES.value, record.to_arango_record())
+
+    async def get_file_record_by_id(self, record_id: str) -> FileRecord | None:
+        file_doc = self._s.get_node(CollectionNames.FILES.value, record_id)
+        record_doc = self._s.get_node(CollectionNames.RECORDS.value, record_id)
+        if file_doc is None or record_doc is None:
+            return None
+        return FileRecord.from_arango_record(file_doc, record_doc)
 
     async def delete_record_by_external_id(self, connector_id, external_id, user_id=None) -> None:
         records = self._s.collections.get(CollectionNames.RECORDS.value, {})
@@ -601,6 +615,24 @@ class TestRunSync:
 
         assert _record_for(connector, graph_store, "gone.txt") is None
         assert _record_for(connector, graph_store, "kept.txt") is not None
+
+    async def test_deleting_a_push_flow_record_deletes_its_stored_copy(
+        self, connector: LocalFsConnector, graph_store
+    ) -> None:
+        await _seed_files(connector, "legacy.txt")
+        record_id = _record_for(connector, graph_store, "legacy.txt")["_key"]
+        # Records the retired push flow made point at a copy in blob storage.
+        graph_store.collections[CollectionNames.FILES.value][record_id]["path"] = "storage://doc-legacy"
+        connector._delete_storage_document = AsyncMock()
+
+        await self._run(
+            connector,
+            [([_event("legacy.txt", event_type="DELETED")], False)],
+            sync_point=self._resume_point(),
+        )
+
+        assert _record_for(connector, graph_store, "legacy.txt") is None
+        connector._delete_storage_document.assert_awaited_once_with("doc-legacy")
 
     async def test_rename_reuses_the_existing_record_vertex(
         self, connector: LocalFsConnector, graph_store

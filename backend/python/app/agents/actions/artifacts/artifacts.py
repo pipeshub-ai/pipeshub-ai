@@ -496,10 +496,22 @@ class ArtifactManager:
             return _result(False, {"success": False, "error": "Failed to look up record"})
         if record is None:
             return _result(False, {"success": False, "error": f"No record found with id {record_id!r}"})
-        if record.org_id != org_id:
-            return _result(False, {"success": False, "error": "You do not have permission to access this record"})
 
         from app.config.constants.arangodb import OriginTypes
+        from app.services.record_content import (
+            RecordAccessDeniedError,
+            TieredRecordAuthorizer,
+        )
+
+        # A signed URL needs no bearer token, so this is the only permission
+        # check between the caller and the bytes.
+        try:
+            await TieredRecordAuthorizer(graph_provider).authorize(self._actor(), record)
+        except RecordAccessDeniedError:
+            return _result(False, {"success": False, "error": "You do not have permission to access this record"})
+        except Exception:
+            logger.exception("[get_record_download_url] access check failed for %s", record_id)
+            return _result(False, {"success": False, "error": "Failed to check access to this record"})
 
         if record.origin == OriginTypes.UPLOAD:
             if not record.external_record_id:
@@ -509,14 +521,27 @@ class ArtifactManager:
             except Exception:
                 logger.exception("[get_record_download_url] signed URL failed for %s", record_id)
                 return _result(False, {"success": False, "error": "Failed to generate a download URL"})
+            if url:
+                return _result(True, {
+                    "success": True,
+                    "record_id": record_id,
+                    "download_url": url,
+                    "file_name": record.record_name,
+                    "mime_type": record.mime_type,
+                    "url_type": "direct_download",
+                    "note": "Short-lived signed URL for an uploaded file. Can be embedded directly in artifacts.",
+                })
             return _result(True, {
                 "success": True,
                 "record_id": record_id,
-                "download_url": url,
+                "download_url": await blob_store.get_record_stream_url(record_id),
                 "file_name": record.record_name,
                 "mime_type": record.mime_type,
-                "url_type": "direct_download",
-                "note": "Short-lived signed URL for an uploaded file. Can be embedded directly in artifacts.",
+                "url_type": "authenticated_link",
+                "note": (
+                    "Link opens only for signed-in users with access to this record. "
+                    "Do not use it as an image or iframe src inside an artifact; it will not render."
+                ),
             })
 
         return _result(False, {

@@ -14,12 +14,11 @@ import importlib
 import sys
 import types
 from abc import ABC
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -246,7 +245,18 @@ class TestAbstractMethodInventory:
         # Record group operations
         "get_record_group_by_external_id",
         "get_record_group_by_id",
+        "get_record_group_path",
+        "get_record_path",
+        "get_record_path_segments",
+        "get_descendant_virtual_record_ids",
         "get_file_record_by_id",
+        # Knowledge-graph taxonomy entities
+        "get_taxonomy_entities_for_record",
+        "get_entity_candidate_records",
+        "get_taxonomy_entity_membership",
+        "find_taxonomy_nodes",
+        "create_taxonomy_node_if_absent",
+        "add_taxonomy_aliases",
         # User operations
         "get_user_by_email",
         "get_user_by_source_id",
@@ -274,12 +284,16 @@ class TestAbstractMethodInventory:
         "is_record_folder",
         "get_record_parent_info",
         "is_record_descendant_of",
+        "get_folder_depth",
+        "get_folder_subtree_height",
         "delete_parent_child_edge_to_record",
         "get_kb_permissions",
         "update_kb_permission",
         "list_kb_permissions",
         "list_all_records",
         "list_kb_records",
+        "list_accessible_artifacts",
+        "get_artifact_detail",
         # KB migration and legacy operations
         "find_file_by_name_in_parent",
         "get_legacy_kb_record_groups",
@@ -291,6 +305,11 @@ class TestAbstractMethodInventory:
         "get_user_group_by_external_id",
         "get_user_groups",
         "batch_upsert_people",
+        "get_person_by_email",
+        "upsert_person_by_email",
+        "ensure_app_membership",
+        "migrate_person_to_user",
+        "reap_stale_external_app_relations",
         "get_app_role_by_external_id",
         "get_app_creator_user",
         # Organization operations
@@ -312,6 +331,7 @@ class TestAbstractMethodInventory:
         "get_accessible_virtual_record_ids",
         "get_accessible_connector_types",
         "get_records_by_virtual_record_id",
+        "get_entity_access_context",
         "get_records_by_record_ids",
         "batch_upsert_record_permissions",
         "get_file_permissions",
@@ -402,6 +422,9 @@ class TestAbstractMethodInventory:
         "add_user_to_all_team",
         "ensure_all_team_with_users",
         "ensure_team_app_edge",
+        # Authenticated-as (creator -> source account)
+        "upsert_authenticated_as",
+        "remove_authenticated_as",
         # User operations
         "get_organization_users",
         # Agent permission operations
@@ -414,6 +437,7 @@ class TestAbstractMethodInventory:
         # Record location / permission-aware trails
         "filter_nodes_with_permission_role",
         "filter_accessible_virtual_record_ids",
+        "filter_accessible_record_ids",
         "get_record_parent_adjacency",
     ]
 
@@ -492,7 +516,6 @@ class TestConcreteMethodCalls:
 
     @pytest.mark.asyncio
     async def test_batch_upsert_people(self):
-        from app.models.entities import Person
         ConcreteProvider = _make_concrete_class()
         instance = ConcreteProvider()
         instance.batch_upsert_people.return_value = None
@@ -533,3 +556,28 @@ class TestConcreteMethodCalls:
         docs, total = result
         assert docs == []
         assert total == 0
+
+    @pytest.mark.asyncio
+    async def test_get_record_path_returns_path(self):
+        ConcreteProvider = _make_concrete_class()
+        instance = ConcreteProvider()
+        instance.get_record_path.return_value = "Folder1/Subfolder/File.txt"
+        result = await instance.get_record_path("record123")
+        assert result == "Folder1/Subfolder/File.txt"
+
+    @pytest.mark.asyncio
+    async def test_get_record_path_returns_none(self):
+        ConcreteProvider = _make_concrete_class()
+        instance = ConcreteProvider()
+        instance.get_record_path.return_value = None
+        result = await instance.get_record_path("nonexistent")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_record_path_with_transaction(self):
+        ConcreteProvider = _make_concrete_class()
+        instance = ConcreteProvider()
+        instance.get_record_path.return_value = "Root/Child/File.pdf"
+        result = await instance.get_record_path("rec1", transaction="tx123")
+        assert result == "Root/Child/File.pdf"
+        instance.get_record_path.assert_called_once_with("rec1", transaction="tx123")

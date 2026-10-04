@@ -165,6 +165,7 @@ app_schema = {
             "rootMembershipRequested": {"type": ["boolean", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
+            "authenticatedBy": {"type": ["string", "null"]},
             "lastSyncedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
@@ -290,6 +291,8 @@ record_schema = {
             "isLatestVersion": {"type": "boolean", "default": True},
             "isDirty": {"type": "boolean", "default": False},  # needs re indexing
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
+            # Promoted duplicates of this record still need its taxonomy copied.
+            "duplicateReconcilePending": {"type": "boolean"},
             "lastIndexTimestamp": {"type": ["number", "null"]},
             "lastExtractionTimestamp": {"type": ["number", "null"]},
             "summaryDocumentId": {"type": ["string", "null"]},
@@ -1205,10 +1208,14 @@ people_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "_key": {"type": "string"},  # deterministic UUID based on email
+            "_key": {"type": "string"},  # uuid4; (orgId, email) is the business key (composite unique index)
             "email": {"type": "string"},
+            # Not in "required": pre-existing documents written before org-scoping
+            # was added have no orgId and must stay schema-valid.
+            "orgId": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "fullName": {"type": ["string", "null"]},
             "firstName": {"type": ["string", "null"]},
             "lastName": {"type": ["string", "null"]},
             "phone": {"type": ["string", "null"]},

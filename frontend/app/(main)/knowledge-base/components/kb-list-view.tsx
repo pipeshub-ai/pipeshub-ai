@@ -26,6 +26,8 @@ import {
   shouldShowDownloadForTableItem,
 } from '../utils/kb-table-item-actions';
 import { useTranslation } from 'react-i18next';
+import { DemoSourceBadge } from '@/app/(main)/workspace/connectors/demo-data/components';
+import { useDemoDataActive } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import {
   getReindexMenuState,
   getReindexNodeForTableItem,
@@ -164,7 +166,9 @@ function TableRow({
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
+  const [isNameTruncated, setIsNameTruncated] = useState(false);
   const editInputRef = useRef<HTMLInputElement>(null);
+  const nameRef = useRef<HTMLSpanElement>(null);
   const [inputWidth, setInputWidth] = useState<number | undefined>(undefined);
   const measureRef = useRef<HTMLSpanElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -214,6 +218,18 @@ function TableRow({
       }
     }
   }, [isEditing]);
+
+  // Tooltip only when the name is actually cut off.
+  useEffect(() => {
+    if (isEditing) return;
+    const el = nameRef.current;
+    if (!el) return;
+    const check = () => setIsNameTruncated(el.scrollWidth > el.clientWidth + 1);
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [item.name, isEditing]);
 
   const startEditing = () => {
     const { baseName } = getNameParts(item.name);
@@ -480,22 +496,34 @@ function TableRow({
             />
           </>
         ) : (
-          <Text
-            size="2"
-            onClick={onRename && canEditItem ? (e: React.MouseEvent) => {
-              e.stopPropagation();
-              startEditing();
-            } : undefined}
-            style={{
-              color: 'var(--slate-12)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              cursor: onRename && canEditItem ? 'text' : 'default',
-            }}
+          <Tooltip
+            content={item.name}
+            delayDuration={200}
+            open={isNameTruncated ? undefined : false}
           >
-            {item.name}
-          </Text>
+            <Text
+              ref={nameRef}
+              size="2"
+              onClick={onRename && canEditItem ? (e: React.MouseEvent) => {
+                e.stopPropagation();
+                startEditing();
+              } : undefined}
+              style={{
+                flex: '1 1 auto',
+                minWidth: 0,
+                color: 'var(--slate-12)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                cursor: onRename && canEditItem ? 'text' : 'default',
+              }}
+            >
+              {item.name}
+            </Text>
+          </Tooltip>
+        )}
+        {!isEditing && isKnowledgeHubNode(item) && (
+          <DemoSourceBadge connectorId={item.connectorId} />
         )}
         {isFolder && !item.hasChildren && (
           <Text
@@ -667,6 +695,8 @@ export function KbListView({
   onDelete,
   onDownload,
 }: KbListViewProps) {
+  // Once per page, so each row's Demo badge is a cheap lookup.
+  useDemoDataActive();
   const isMobile = useIsMobile();
   console.log('pagination data', pagination);
 

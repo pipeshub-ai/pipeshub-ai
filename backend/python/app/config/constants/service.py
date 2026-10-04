@@ -52,6 +52,9 @@ class TokenScopes(Enum):
     # (the name predates the route; it is not tied to signed URLs).
     CONNECTOR_SIGNED_URL = "connector:signedUrl"
     CONVERSATION_CREATE = "conversation:create"
+    # Node -> query: grant/revoke permission edges on a conversation's attachments
+    # and artifacts, after Node has checked ownership/sharing in Mongo.
+    CONVERSATION_PERMISSIONS = "conversation:permissions"
 
 
 class OAuthScopes(str, Enum):
@@ -97,7 +100,6 @@ class OAuthScopes(str, Enum):
     TEAM_READ = "team:read"
     TEAM_WRITE = "team:write"
 
-
 class DefaultEndpoints(Enum):
     """Constants for default endpoints"""
 
@@ -127,9 +129,13 @@ class Routes(Enum):
     STORAGE_UPLOAD = "/api/v1/document/internal/upload"
     STORAGE_UPLOAD_NEXT_VERSION = "/api/v1/document/internal/{documentId}/uploadNextVersion"
     STORAGE_DOWNLOAD = "/api/v1/document/internal/{documentId}/download"
-    STORAGE_DOWNLOAD_EXTERNAL = "/api/v1/document/{documentId}/download"
     STORAGE_BUFFER = "/api/v1/document/internal/{documentId}/buffer"
     STORAGE_DOCUMENT = "/api/v1/document/internal/{documentId}"
+    STORAGE_MOVE_TREE = "/api/v1/document/internal/move-tree"
+    STORAGE_DELETE_CONNECTOR = "/api/v1/document/internal/connector/{connector_id}"
+
+    # User-facing, permission-checked record bytes
+    KB_STREAM_RECORD = "/api/v1/knowledgeBase/stream/record/{recordId}"
 
 
 class WebhookConfig(Enum):
