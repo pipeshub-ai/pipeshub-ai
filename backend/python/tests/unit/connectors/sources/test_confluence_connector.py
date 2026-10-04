@@ -348,9 +348,6 @@ class TestSyncFolders:
         record, perms = saved_records[0]
         assert len(perms) == 1
         assert perms[0] == test_permission
-        # Folder2 has only WRITE permission, inherit_permissions should remain default (True)
-        # (it's set to True by default in the model)
-
 
     async def test_sync_folders_skips_invalid_folder(self):
         """Test that folders with missing id or title are skipped."""
