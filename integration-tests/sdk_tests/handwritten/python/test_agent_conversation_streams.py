@@ -7,7 +7,7 @@ from .streams import created_conversation_id, last_answer_id, read_finished_run
 CHAT_MODE = "quick"
 
 
-def test_agent_conversation_streams(pipeshub: Pipeshub):
+def test_handwritten_agent_conversation_streams(pipeshub: Pipeshub):
     agent_key = pipeshub.agents.create_agent(name="sdk-test-agent-streams").agent.key
     try:
         events = read_finished_run(

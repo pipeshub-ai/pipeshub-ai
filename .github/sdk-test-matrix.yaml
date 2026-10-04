@@ -1,0 +1,6 @@
+# The last released tag of each SDK. The SDK test pipeline runs these against the
+# app to catch a change that breaks customers who have not upgraded.
+# Update a line when that SDK is released. Keep the file flat: one "language: tag" per line.
+typescript: v1.6.0
+python: v1.6.0
+go: v1.6.0
