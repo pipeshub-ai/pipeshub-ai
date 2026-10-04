@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,7 +16,9 @@ from app.services.cache.accessible_records_cache import (
     _ttl_from_env,
 )
 from app.services.cache.interface import NoopAccessibleRecordsCache
+from app.services.redis.config import RedisConnectionConfig
 from app.services.redis.standalone_provider import StandaloneRedisProvider
+from tests.support.loop_topology import on_loop, redis_tcp_server, worker_loop
 
 ORG = "org-1"
 KB = "kb-1"
@@ -596,3 +599,101 @@ class TestClose:
         cache = _cache(FakeRedis())
         await cache.close()
         await cache.close()
+
+
+class _FlakyPipelineRedis(FakeRedis):
+    """Deletes fail ``failures`` times, then work: a Redis that comes back."""
+
+    def __init__(self, failures: int) -> None:
+        super().__init__()
+        self.failures = failures
+
+    def pipeline(self, transaction: bool = False) -> _FakePipeline:
+        if self.failures > 0:
+            self.failures -= 1
+            raise ConnectionError("redis down")
+        return super().pipeline(transaction)
+
+
+async def _wait_for(condition, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "condition never became true"
+        await asyncio.sleep(0.01)
+
+
+class TestFailedInvalidationIsNotDropped:
+    """A failed delete used to be logged once and forgotten, and the breaker it
+    tripped then skipped every other invalidation for 30s without a word. The
+    cached list kept serving until its TTL ran out."""
+
+    async def test_a_failed_delete_is_retried_until_it_lands(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            AccessibleRecordsCache, "INVALIDATION_RETRY_DELAYS_SECONDS", (0.01,), raising=False
+        )
+        redis = _FlakyPipelineRedis(failures=2)
+        cache = _cache(redis)
+        await cache.get_or_compute_kb(ORG, KB, _loader({"v": "r"}))
+
+        await cache.invalidate_kb(ORG, KB)
+
+        await _wait_for(lambda: cache._kb_key(ORG, KB) not in redis.strings)
+        assert cache._pending_deletes == {}
+        await cache.close()
+
+    async def test_an_open_breaker_does_not_skip_invalidation(self) -> None:
+        redis = FakeRedis()
+        cache = _cache(redis)
+        await cache.get_or_compute_kb(ORG, KB, _loader({"v": "r"}))
+        cache._down_until = time.monotonic() + AccessibleRecordsCache.DOWN_BACKOFF_SECONDS
+
+        await cache.invalidate_kb(ORG, KB)
+
+        assert cache._kb_key(ORG, KB) not in redis.strings
+
+    async def test_retrying_stops_once_the_entries_have_expired(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            AccessibleRecordsCache, "INVALIDATION_RETRY_DELAYS_SECONDS", (0.01,), raising=False
+        )
+        logger = MagicMock()
+        cache = AccessibleRecordsCache(logger, BrokenRedis(), 0, True)
+
+        await cache.invalidate_kb(ORG, KB)
+
+        [task] = list(cache._retry_tasks.values())
+        await asyncio.wait_for(task, 2.0)
+        assert cache._pending_deletes == {}
+        assert "Gave up" in logger.error.call_args.args[0]
+
+
+class TestInvalidationFromTheIndexingWorkerLoop:
+    """The indexing service builds the cache on its main loop and invalidates
+    from the consumer's worker loop (sink_orchestrator -> notify_record_indexed).
+    One shared client made that delete fail with "Future attached to a different
+    loop" in the scheduled integration runs."""
+
+    async def test_the_delete_lands(self, monkeypatch) -> None:
+        monkeypatch.delenv(AccessibleRecordsCache.ENV_ENABLED, raising=False)
+        with redis_tcp_server() as (host, port), worker_loop() as worker:
+            config = MagicMock()
+            config.get_redis_config = AsyncMock(
+                return_value=SimpleNamespace(host=host, port=port, password=None, db=0, tls=False)
+            )
+            logger = MagicMock()
+            cache = await AccessibleRecordsCache.create(logger, config)
+            # Seeded from outside: the fake server answers a GET miss in RESP3,
+            # which redis-py's RESP2 parser rejects.
+            inspect = StandaloneRedisProvider(RedisConnectionConfig.from_host_port(host, port))
+            key = cache._kb_key(ORG, KB)
+            try:
+                assert cache.enabled
+                await inspect.get_client().set(key, json.dumps({"v": "r"}))
+
+                await on_loop(worker, cache.invalidate_kb(ORG, KB))
+
+                warnings = [str(call) for call in logger.warning.call_args_list]
+                assert not any("different loop" in w for w in warnings), warnings
+                assert await inspect.get_client().exists(key) == 0
+            finally:
+                await cache.close()
+                await inspect.close()

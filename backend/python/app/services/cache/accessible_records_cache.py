@@ -17,9 +17,10 @@ blob, so a single connector's sync only drops that connector's entry:
   per user. They live in one hash per connector (field = user id) so a single
   DEL invalidates every user at once, with no SCAN and no set-index.
 
-Every entry carries a TTL. Event-driven invalidation is best-effort by design —
-it must never fail a sync or a delete — so the TTL is the backstop that bounds
-staleness when an invalidation is lost.
+Every entry carries a TTL. Invalidation never fails a sync, a delete or the
+indexing pipeline: a delete that fails is retried in the background until it
+lands or the entries expire on their own, so the TTL is the most an entry can
+outlive the change that should have dropped it.
 
 Redis is never allowed to break or stall a search: any error falls through to
 the live query and trips a short circuit-breaker so the next requests skip
@@ -31,7 +32,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
+import weakref
 import zlib
 from typing import TYPE_CHECKING
 
@@ -42,6 +45,7 @@ from app.services.cache.interface import (
 )
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
+from app.services.redis.loop_clients import LoopBoundClients
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -86,20 +90,38 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
     # unrelated keys sharing a stripe just serialise their (already expensive)
     # miss, which is the point of the lock anyway.
     LOCK_STRIPES = 1024
+    # Waits between background attempts at a delete that failed; the last
+    # repeats until the delete lands or the entries' TTL has passed.
+    INVALIDATION_RETRY_DELAYS_SECONDS = (0.5, 1.0, 2.0, 5.0, 10.0)
 
     def __init__(
         self,
         logger: "Logger",
-        redis_client: "RedisClient | None",
+        redis_client: "RedisClient | LoopBoundClients[RedisClient] | None",
         ttl_seconds: int,
         enabled: bool,  # noqa: FBT001 - positional keeps the test fakes terse
         key_namespace: str = "",
     ) -> None:
+        """``redis_client`` is either one client, used from a single loop, or
+        the per-loop holder `create()` builds: the indexing service invalidates
+        from its consumer's worker loop as well as the main one."""
         self.logger = logger
-        self._redis = redis_client
+        if isinstance(redis_client, LoopBoundClients):
+            self._loop_clients: LoopBoundClients[RedisClient] | None = redis_client
+            self._redis: RedisClient | None = None
+        else:
+            self._loop_clients = None
+            self._redis = redis_client
         self._ttl = ttl_seconds
         self._enabled = enabled and redis_client is not None
         self._down_until = 0.0
+        # Keys whose delete failed, with the monotonic time they expire anyway.
+        # Shared by both loops of the indexing service, hence the thread lock.
+        self._pending_deletes: dict[str, float] = {}
+        self._pending_lock = threading.Lock()
+        self._retry_tasks: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop, asyncio.Task[None]
+        ] = weakref.WeakKeyDictionary()
         # REDIS_KEY_NAMESPACE (R9): set by `create()` from the provider;
         # stays empty when a raw `redis_client` is injected directly without
         # a namespace (mostly tests), same as an unset namespace.
@@ -125,7 +147,7 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             logger.info("Accessible-records cache disabled via %s", cls.ENV_ENABLED)
             return NoopAccessibleRecordsCache()
 
-        client = None
+        clients: LoopBoundClients[RedisClient] | None = None
         try:
             redis_config = await config_service.get_redis_config()
             provider = get_redis_provider(
@@ -137,33 +159,26 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
                     tls=redis_config.tls,
                 )
             )
-            client = provider.create_client(
-                ClientOptions(
-                    decode_responses=True,
-                    socket_timeout_seconds=cls.OP_TIMEOUT_SECONDS,
-                    socket_connect_timeout_seconds=cls.OP_TIMEOUT_SECONDS,
-                )
+            options = ClientOptions(
+                decode_responses=True,
+                socket_timeout_seconds=cls.OP_TIMEOUT_SECONDS,
+                socket_connect_timeout_seconds=cls.OP_TIMEOUT_SECONDS,
             )
-            await client.ping()
+            clients = LoopBoundClients(lambda: provider.create_client(options))
+            await clients.get().ping()
         except Exception as e:
             logger.warning(
                 "Accessible-records cache unavailable (%s); falling back to live queries", str(e)
             )
-            # `create_client()` hands out a caller-owned client (not the
-            # provider's shared one) -- release it ourselves on failure, or
+            # `create_client()` hands out caller-owned clients (not the
+            # provider's shared one) -- release them ourselves on failure, or
             # the ping-that-never-succeeded connection leaks for good.
-            if client is not None:
-                try:
-                    await client.aclose()
-                except Exception as close_error:
-                    logger.debug(
-                        "Error closing accessible-records cache client after setup failure: %s",
-                        str(close_error),
-                    )
+            if clients is not None:
+                await clients.aclose()
             return NoopAccessibleRecordsCache()
 
         logger.info("Accessible-records cache ready (ttl=%ss)", ttl)
-        return cls(logger, client, ttl, enabled=True, key_namespace=provider.key_namespace)
+        return cls(logger, clients, ttl, enabled=True, key_namespace=provider.key_namespace)
 
     @property
     def enabled(self) -> bool:
@@ -178,12 +193,26 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
 
     async def close(self) -> None:
         client, self._redis = self._redis, None
+        loop_clients, self._loop_clients = self._loop_clients, None
         self._enabled = False
+        with self._pending_lock:
+            retries = list(self._retry_tasks.items())
+            self._retry_tasks.clear()
+        for loop, task in retries:
+            if not loop.is_closed():
+                loop.call_soon_threadsafe(task.cancel)
+        if loop_clients is not None:
+            await loop_clients.aclose()
         if client is not None:
             try:
                 await client.aclose()
             except Exception as e:
                 self.logger.debug("Error closing accessible-records cache: %s", str(e))
+
+    def _client(self) -> "RedisClient":
+        if self._loop_clients is not None:
+            return self._loop_clients.get()
+        return self._redis  # type: ignore[return-value]
 
     # ---- keys ---------------------------------------------------------
 
@@ -258,9 +287,8 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
 
     async def _read(self, key: str, field: str | None) -> dict[str, str] | None:
         try:
-            raw = await (
-                self._redis.get(key) if field is None else self._redis.hget(key, field)
-            )
+            client = self._client()
+            raw = await (client.get(key) if field is None else client.hget(key, field))
         except Exception as e:
             self._mark_down("read", e)
             return None
@@ -291,12 +319,13 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
 
     async def _write(self, key: str, field: str | None, value: dict[str, str]) -> None:
         try:
+            client = self._client()
             if field is None:
-                await self._redis.set(key, json.dumps(value, separators=(",", ":")), ex=self._ttl)
+                await client.set(key, json.dumps(value, separators=(",", ":")), ex=self._ttl)
             else:
                 envelope = json.dumps({"t": int(time.time()), "m": value}, separators=(",", ":"))
-                await self._redis.hset(key, field, envelope)
-                await self._redis.expire(key, self._ttl)
+                await client.hset(key, field, envelope)
+                await client.expire(key, self._ttl)
         except Exception as e:
             self._mark_down("write", e)
 
@@ -318,16 +347,77 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         whenever the keys land in different hash slots, which
         ``invalidate_connector``'s two keys (``capp:`` and ``cusr:``) do.
         redis-py's ``ClusterPipeline`` routes each command to the right
-        node; on standalone this is one round trip either way."""
-        if not self.enabled:
+        node; on standalone this is one round trip either way.
+
+        Deliberately not gated on the read breaker: it exists to keep a dead
+        Redis from slowing searches, and skipping a delete while it is open
+        is what left an entry serving the old list until its TTL ran out."""
+        if not self._enabled:
             return
         try:
-            async with self._redis.pipeline(transaction=False) as pipe:
-                for key in keys:
-                    pipe.delete(key)
-                await pipe.execute()
+            await self._delete_now(keys)
         except Exception as e:
             self._mark_down("delete", e)
+            self._retry_later(keys, e)
+
+    async def _delete_now(self, keys: "list[str] | tuple[str, ...]") -> None:
+        async with self._client().pipeline(transaction=False) as pipe:
+            for key in keys:
+                pipe.delete(key)
+            await pipe.execute()
+
+    def _retry_later(self, keys: tuple[str, ...], error: Exception) -> None:
+        """Keep retrying a failed delete on this loop without holding up the caller."""
+        expires_at = time.monotonic() + self._ttl
+        loop = asyncio.get_running_loop()
+        with self._pending_lock:
+            for key in keys:
+                self._pending_deletes[key] = expires_at
+            task = self._retry_tasks.get(loop)
+            if task is None or task.done():
+                self._retry_tasks[loop] = loop.create_task(self._retry_pending_deletes())
+        self.logger.warning(
+            "Could not drop accessible-records cache entries %s (%s); retrying in the "
+            "background until it works or they expire in %ss",
+            list(keys), str(error), self._ttl,
+        )
+
+    async def _retry_pending_deletes(self) -> None:
+        delays = self.INVALIDATION_RETRY_DELAYS_SECONDS
+        attempt = 0
+        while True:
+            await asyncio.sleep(delays[min(attempt, len(delays) - 1)])
+            attempt += 1
+            if not self._enabled:
+                return
+            now = time.monotonic()
+            with self._pending_lock:
+                expired = [k for k, at in self._pending_deletes.items() if at <= now]
+                for key in expired:
+                    del self._pending_deletes[key]
+                pending = dict(self._pending_deletes)
+            if expired:
+                self.logger.error(
+                    "Gave up dropping accessible-records cache entries %s: Redis stayed "
+                    "unreachable until they expired, so searches may have used the old "
+                    "list for up to %ss",
+                    expired, self._ttl,
+                )
+            if not pending:
+                return
+            try:
+                await self._delete_now(list(pending))
+            except Exception as e:
+                self.logger.debug("Accessible-records cache delete retry failed: %s", str(e))
+                continue
+            with self._pending_lock:
+                for key, expires_at in pending.items():
+                    # A newer failure for the same key re-arms it; leave that one queued.
+                    if self._pending_deletes.get(key) == expires_at:
+                        del self._pending_deletes[key]
+            self.logger.info(
+                "Dropped accessible-records cache entries %s on retry", list(pending)
+            )
 
     # ---- failure handling ---------------------------------------------
 
@@ -348,7 +438,7 @@ class AccessibleRecordsInvalidator:
 
     Resolves the owning org when the caller does not have it, and swallows every
     error: dropping a cache entry must never fail a sync, a delete, or the
-    indexing pipeline. The cache TTL covers whatever this misses.
+    indexing pipeline. A failed Redis delete is retried by the cache itself.
     """
 
     def __init__(
