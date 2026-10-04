@@ -555,8 +555,8 @@ describe('User routes: who may do what', () => {
 
       const res = await call('GET', `/internal/${ids.memberA}/adminCheck`, token);
 
-      expect(res.status).to.equal(400);
-      expect(errorMessage(res)).to.equal('Admin access required');
+      expect(res.status).to.equal(403);
+      expect(errorMessage(res)).to.equal('You can only check your own admin access.');
     });
 
     it('refuses the admin check for a member and passes it for an admin', async () => {
@@ -571,7 +571,10 @@ describe('User routes: who may do what', () => {
         iamUserLookupJwtGenerator(ids.adminA, orgA, SCOPED_SECRET),
       );
 
-      expect(member.status).to.equal(400);
+      expect(member.status).to.equal(403);
+      expect(errorMessage(member)).to.equal(
+        'You need admin access to do this. Ask an admin in your organisation.',
+      );
       expect(admin.status).to.equal(200);
     });
 

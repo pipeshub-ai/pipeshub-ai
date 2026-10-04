@@ -21,11 +21,13 @@ import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { Users } from '../schema/users.schema';
 import {
-  BadRequestError,
+  ForbiddenError,
   NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import {
+  ADMIN_ACCESS_REQUIRED_MESSAGE,
+  OWN_ADMIN_CHECK_ONLY_MESSAGE,
   findOrgAdminUserIds,
   getActiveUserOrgRole,
   isUserOrgAdmin,
@@ -459,7 +461,7 @@ export function createUserRouter(container: Container) {
           throw new NotFoundError('Account not found');
         }
         if (String(tokenUserId) !== String(pathUserId)) {
-          throw new BadRequestError('Admin access required');
+          throw new ForbiddenError(OWN_ADMIN_CHECK_ONLY_MESSAGE);
         }
 
         const isAdmin = await isUserOrgAdmin(
@@ -467,7 +469,7 @@ export function createUserRouter(container: Container) {
           String(orgId),
         );
         if (!isAdmin) {
-          throw new BadRequestError('Admin access required');
+          throw new ForbiddenError(ADMIN_ACCESS_REQUIRED_MESSAGE);
         }
 
         res.status(200).json({ message: 'User has admin access' });

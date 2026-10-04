@@ -116,12 +116,16 @@ from app.services.graph_db.common.utils import (
     uploaded_document_id,
 )
 from app.services.graph_db.entity_index_queries import (
+    ENTITY_INDEX_SOURCES,
     build_entity_index_candidate_cypher,
     build_entity_index_source_page_cypher,
     entity_index_source,
 )
 from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
+    DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
+    DUPLICATE_RECONCILE_DUE_AT_FIELD,
+    DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
@@ -189,6 +193,12 @@ _METADATA_FILTERS: tuple[tuple[str, str, str, str, str], ...] = (
     ("languages", "BELONGS_TO_LANGUAGE", Neo4jLabel.LANGUAGES.value, "name", "languageNames"),
     ("topics", "BELONGS_TO_TOPIC", Neo4jLabel.TOPICS.value, "name", "topicNames"),
 )
+
+
+
+# Promotions to these statuses leave the primary with taxonomy to copy to its
+# duplicates; see update_queued_duplicates_status.
+_RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
 
 
 class Neo4jProvider(IGraphDBProvider):
@@ -517,6 +527,19 @@ class Neo4jProvider(IGraphDBProvider):
                 f"FOR (n:{taxonomy_label}) ON (n.orgId)"
             )
 
+        # ==================== ENTITY INDEX SOURCES ====================
+        # The entity index rebuild pages each source by scope, then keyset on
+        # id; without id in the index the ORDER BY re-sorts the whole scope on
+        # every page. Records' (connectorId, id) is created below.
+        for spec in ENTITY_INDEX_SOURCES.values():
+            if spec.collection == CollectionNames.RECORDS.value:
+                continue
+            label = collection_to_label(spec.collection)
+            indexes.append(
+                f"CREATE INDEX {label.lower()}_{spec.scope_field.lower()}_key IF NOT EXISTS "
+                f"FOR (n:{label}) ON (n.{spec.scope_field}, n.id)"
+            )
+
         # ==================== RECORD INDEXES (Highest Priority) ====================
         # Records are the most queried entity, especially in permission checks
 
@@ -566,6 +589,13 @@ class Neo4jProvider(IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_connector_id_key IF NOT EXISTS "
             "FOR (n:Record) ON (n.connectorId, n.id)"
+        )
+
+        # SINGLE: duplicateReconcilePending. The reconcile retry sweep looks for
+        # the few records with it set; unindexed that is a label scan per tick.
+        indexes.append(
+            "CREATE INDEX record_duplicate_reconcile_pending IF NOT EXISTS "
+            "FOR (n:Record) ON (n.duplicateReconcilePending, n.duplicateReconcileDueAt)"
         )
 
         # SINGLE: indexingStatus (pipeline queries)
@@ -2705,6 +2735,65 @@ class Neo4jProvider(IGraphDBProvider):
         )
         return [dict(row) for row in results or []]
 
+    async def update_node_fields_if_match(
+        self,
+        key: str,
+        collection: str,
+        updates: dict[str, Any],
+        expected: dict[str, Any],
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.update_node_fields_if_match`."""
+        if not expected:
+            raise ValueError("update_node_fields_if_match needs an expectation")
+        label = collection_to_label(collection)
+        # As update_node: _key becomes id, and the schema checks the fields.
+        neo4j_updates = self._arango_to_neo4j_node(updates, collection)
+        self.validator.validate_node_update(collection, neo4j_updates)
+        parameters: dict[str, Any] = {"key": key, "updates": neo4j_updates}
+        conditions = []
+        for i, (field, value) in enumerate(expected.items()):
+            parameters[f"f{i}"] = field
+            if value is None:
+                conditions.append(f"n[$f{i}] IS NULL")
+            else:
+                parameters[f"v{i}"] = value
+                conditions.append(f"n[$f{i}] = $v{i}")
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{label} {{id: $key}})
+            WHERE {" AND ".join(conditions)}
+            SET n += $updates
+            RETURN 1 AS n
+            """,
+            parameters=parameters,
+            txn_id=transaction,
+        )
+        return bool(rows)
+
+    async def get_records_pending_duplicate_reconcile(
+        self,
+        due_before_ms: int,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """See :meth:`IGraphDBProvider.get_records_pending_duplicate_reconcile`."""
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (r:Record)
+            WHERE r.duplicateReconcilePending = true
+              AND coalesce(r.duplicateReconcileDueAt, 0) < $due_before_ms
+              AND {cypher_live_record("r")}
+            RETURN r.id AS _key,
+                   r.duplicateReconcileAttempts AS duplicateReconcileAttempts,
+                   r.duplicateReconcileDueAt AS duplicateReconcileDueAt
+            LIMIT $limit
+            """,
+            parameters={"due_before_ms": due_before_ms, "limit": max(1, int(limit))},
+            txn_id=transaction,
+        )
+        return [dict(row) for row in rows or []]
+
     async def get_app_needing_vector_membership_backfill(
         self,
         transaction: str | None = None,
@@ -4790,8 +4879,15 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Same batch as the promotion: a crash after it would otherwise
             # leave the duplicates COMPLETED with no taxonomy and nothing to
-            # trigger the copy, since a redelivery finds nothing QUEUED.
-            updated_records.append({"id": record_id, DUPLICATE_RECONCILE_PENDING_FIELD: True})
+            # trigger the copy, since a redelivery finds nothing QUEUED. Only
+            # an indexed primary has anything to copy.
+            if new_indexing_status in _RECONCILED_STATUSES:
+                updated_records.append({
+                    "id": record_id,
+                    DUPLICATE_RECONCILE_PENDING_FIELD: True,
+                    DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,
+                    DUPLICATE_RECONCILE_DUE_AT_FIELD: current_timestamp + DUPLICATE_RECONCILE_GRACE_MS,
+                })
 
             success = await self.batch_update_nodes(
                 updated_records, CollectionNames.RECORDS.value, transaction
@@ -16773,7 +16869,8 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE any(l IN labels(v) WHERE l IN $node_labels)
             RETURN DISTINCT v.id AS entityId,
                    coalesce(v.name, v.departmentName, v.id) AS name,
-                   coalesce(v.aliases, []) AS aliases, labels(v) AS nodeLabels
+                   coalesce(v.aliases, []) AS aliases, v.orgId AS orgId,
+                   labels(v) AS nodeLabels
         """
         # Any failure propagates: a partial result would read as the record
         # having fewer entities.
@@ -16799,6 +16896,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "entityType": label_to_type[matched_label],
                     "level": subcategory_level(label_to_collection.get(matched_label)),
                     "aliases": [str(a) for a in (row.get("aliases") or []) if a],
+                    "orgId": row.get("orgId"),
                 }
             )
         return results
@@ -17095,12 +17193,15 @@ class Neo4jProvider(IGraphDBProvider):
         aliases: list[str],
         normalized_aliases: list[str],
         *,
+        org_id: str,
         max_aliases: int = 20,
         transaction: str | None = None,
     ) -> None:
         """See :meth:`IGraphDBProvider.add_taxonomy_aliases`."""
         if not is_taxonomy_collection(collection):
             raise ValueError(f"{collection!r} is not a taxonomy collection")
+        if not org_id:
+            raise ValueError("add_taxonomy_aliases needs an org")
         pairs = _alias_pairs(aliases, normalized_aliases)
         if not key or not pairs:
             return
@@ -17115,6 +17216,7 @@ class Neo4jProvider(IGraphDBProvider):
         # which is what find_taxonomy_nodes seeks.
         query = f"""
             MATCH (n:{label} {{id: $key}})
+            WHERE n.orgId = $org_id
             SET n._aliasLock = true
             WITH n, coalesce(n.aliases, []) AS displays, coalesce(n.normalizedAliases, []) AS normals
             WITH n, displays, normals,
@@ -17126,7 +17228,6 @@ class Neo4jProvider(IGraphDBProvider):
                 n.normalizedAliases = (normals + [i IN fresh | $normalized[i]])[0..$max_aliases]
             REMOVE n._aliasLock
             WITH n
-            WHERE n.orgId IS NOT NULL
             UNWIND n.normalizedAliases AS normalized
             MERGE (a:{TAXONOMY_ALIAS_LABEL} {{orgId: n.orgId, collection: $collection, normalized: normalized}})
             MERGE (a)-[:{TAXONOMY_ALIAS_REL}]->(n)
@@ -17136,6 +17237,7 @@ class Neo4jProvider(IGraphDBProvider):
             query,
             parameters={
                 "key": key,
+                "org_id": org_id,
                 "collection": collection,
                 "aliases": [display for display, _ in pairs],
                 "normalized": [normalized for _, normalized in pairs],

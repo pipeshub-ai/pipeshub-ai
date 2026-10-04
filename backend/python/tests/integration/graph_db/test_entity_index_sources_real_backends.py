@@ -134,7 +134,9 @@ class _Arango:
             await self.provider.create_taxonomy_node_if_absent(TOPICS, {
                 "id": key, "name": name, "normalizedName": name.lower(), "orgId": org,
             })
-        await self.provider.add_taxonomy_aliases(TOPICS, s["t1"], ["price model"], ["price model"])
+        await self.provider.add_taxonomy_aliases(
+            TOPICS, s["t1"], ["price model"], ["price model"], org_id=s["org"],
+        )
         await self.aql(f"INSERT @t INTO {TOPICS}", t={"_key": s["t_legacy"], "name": "Legacy"})
         await self.aql(
             f"FOR d IN @depts INSERT d INTO {DEPARTMENTS}",
