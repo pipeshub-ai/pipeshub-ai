@@ -4728,11 +4728,23 @@ async def stop_connector_sync(
         if coordinator is not None and getattr(coordinator, "reports_liveness", False):
             try:
                 if connector_id in await coordinator.peek_many([connector_id]):
+                    # The stop above was not recorded, so nothing will halt this
+                    # sync unless a retry records it.
+                    if dispatcher is not None and await dispatcher.request_stop(connector_id):
+                        return {
+                            "success": True,
+                            "stopped": True,
+                            "status": app_doc.get("status"),
+                            "message": "Stop requested. The sync will halt shortly.",
+                        }
                     return {
                         "success": True,
-                        "stopped": True,
+                        "stopped": False,
                         "status": app_doc.get("status"),
-                        "message": "Stop requested. The sync will halt shortly.",
+                        "message": (
+                            "A sync is running on another process, but the stop "
+                            "could not be recorded. Try again shortly."
+                        ),
                     }
             except Exception as e:
                 logger.error(

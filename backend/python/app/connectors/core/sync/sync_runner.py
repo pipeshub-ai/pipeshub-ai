@@ -24,7 +24,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from app.connectors.core.base.connector.connector_service import BaseConnector
-    from app.connectors.core.sync.sync_dispatcher import SyncEventDispatcher
+    from app.connectors.core.sync.sync_dispatcher import SyncEventDispatcher, SyncSpec
 
 # Strong refs to detached cleanup tasks; the loop holds only weak ones.
 _cleanup_tasks: set[asyncio.Task] = set()
@@ -245,8 +245,7 @@ async def drain_queued_syncs(
     # same rows: one submission is accepted and the losers re-flag what the
     # winner just cleared. One worker per pass is enough — the next completion
     # takes the next turn.
-    manager = get_coordinator()
-    if manager is not None and not await manager.try_claim_once("drain", 5_000):
+    if not await coordinator.try_claim_once("drain", 5_000):
         return []
 
     # try_claim_once only separates processes. Finalizers in one process run
@@ -385,7 +384,7 @@ async def resolve_resync_specs(
     graph_provider: IGraphDBProvider,
     connector_ids: list[str],
     logger: logging.Logger,
-) -> list[object]:
+) -> list["SyncSpec"]:
     """App documents do not carry their org, so walk orgs down to their apps.
 
     The same traversal `resume_sync_services` uses, and it only runs on a pass

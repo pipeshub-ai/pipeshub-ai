@@ -38,11 +38,14 @@ def _graph(app_doc=None) -> AsyncMock:
     return gp
 
 
-async def _call(graph_provider, *, instance=None, running=False, remote_stop=False):
+async def _call(graph_provider, *, instance=None, running=False, remote_stop=False, live_elsewhere=None):
+    """`remote_stop` is each dispatcher.request_stop answer in turn; `live_elsewhere`
+    set makes the coordinator one that can see other processes."""
     from app.connectors.api.router import stop_connector_sync
 
     dispatcher = MagicMock()
-    dispatcher.request_stop = AsyncMock(return_value=remote_stop)
+    answers = remote_stop if isinstance(remote_stop, list) else [remote_stop] * 2
+    dispatcher.request_stop = AsyncMock(side_effect=answers)
 
     # is_running_here is the local question and stays synchronous; request_stop
     # covers both halves and is awaited.
@@ -52,9 +55,11 @@ async def _call(graph_provider, *, instance=None, running=False, remote_stop=Fal
     # Single-process default: it cannot see peers, and the repair branch is only
     # allowed to act because max_connector_workers() is 1 here. peek_many must
     # be a real empty set -- a bare Mock is truthy and reads as "still running".
-    stm.reports_liveness = False
-    stm.peek_many = AsyncMock(return_value=set())
+    stm.reports_liveness = live_elsewhere is not None
+    stm.peek_many = AsyncMock(return_value={"c1"} if live_elsewhere else set())
 
+    # Pinned rather than read from the environment: the repair branch depends on
+    # both, and a CI runner with CONNECTOR_UVICORN_WORKERS set flips it.
     with patch(
         "app.connectors.api.router.get_validated_connector_instance",
         new_callable=AsyncMock,
@@ -62,6 +67,8 @@ async def _call(graph_provider, *, instance=None, running=False, remote_stop=Fal
     ), patch("app.connectors.api.router.get_coordinator", return_value=stm), patch(
         "app.connectors.api.router.get_dispatcher",
         return_value=dispatcher,
+    ), patch("app.connectors.api.router.max_connector_workers", return_value=1), patch(
+        "app.connectors.api.router.sync_executor_enabled", return_value=False,
     ):
         body = await stop_connector_sync("c1", _request(), graph_provider)
     return body, stm, dispatcher
@@ -119,6 +126,24 @@ class TestSomethingIsRunning:
         assert body["stopped"] is True
         stm.request_stop.assert_not_awaited()
         dispatcher.request_stop.assert_awaited_once_with("c1")
+
+    @pytest.mark.asyncio
+    async def test_a_stop_recorded_on_retry_is_reported_as_stopped(self) -> None:
+        gp = _graph({"id": "c1", "status": AppStatus.SYNCING.value})
+        body, _, dispatcher = await _call(gp, remote_stop=[False, True], live_elsewhere=True)
+        assert body["stopped"] is True
+        assert dispatcher.request_stop.await_count == 2
+        gp.batch_upsert_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unrecorded_stop_is_not_reported_as_stopped(self) -> None:
+        """Seen running elsewhere, but no stop was recorded: nothing will halt it,
+        so claiming it will halt shortly leaves the caller waiting."""
+        gp = _graph({"id": "c1", "status": AppStatus.SYNCING.value})
+        body, _, _ = await _call(gp, remote_stop=False, live_elsewhere=True)
+        assert body["stopped"] is False
+        assert body["status"] == AppStatus.SYNCING.value
+        gp.batch_upsert_nodes.assert_not_awaited()
 
 
 class TestNothingIsRunning:

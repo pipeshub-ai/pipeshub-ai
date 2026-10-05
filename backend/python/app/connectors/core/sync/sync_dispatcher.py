@@ -19,6 +19,7 @@ from typing import Protocol
 
 from app.connectors.core.sync.sync_coordinator import get_coordinator
 from app.services.messaging.config import Topic
+from app.services.messaging.interface.producer import IMessagingProducer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 @dataclass(frozen=True)
@@ -49,7 +50,7 @@ class SyncDispatcher(Protocol):
 
 
 class SyncEventDispatcher:
-    def __init__(self, logger: logging.Logger, producer: object) -> None:
+    def __init__(self, logger: logging.Logger, producer: IMessagingProducer) -> None:
         self.logger = logger
         self._producer = producer
 
