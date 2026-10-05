@@ -334,9 +334,10 @@ function isDelimitedTextAttachment(file: SlackFile): boolean {
 }
 
 /**
- * The chat CSV/TSV parser falls back through utf-8, utf-8-sig, latin1, cp1252
- * and iso-8859-1, and latin1 decodes any byte, so a Windows Excel (cp1252) CSV
- * works there. Only NUL bytes, which mean a binary file renamed to .csv, are refused.
+ * The chat CSV/TSV parser reads a byte-order mark, then UTF-8, then falls back to
+ * Windows-1252 (cp1252) with undefined bytes replaced, so it decodes any byte and a
+ * Windows Excel CSV works there. Only NUL bytes, which mean a binary file renamed
+ * to .csv, are refused.
  */
 export function isReadableDelimitedText(binary: Buffer): boolean {
   return !binary.includes(0);

@@ -223,18 +223,28 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
         try:
             parsed_url = urlparse(token_url)
             hostname = parsed_url.hostname or ''
-            hostname_lower = hostname.lower()
-            # Check if hostname is exactly notion.com or ends with .notion.com (for subdomains)
-            # This prevents matching malicious domains like evilnotion.com or notion.com.evil.com
-            if hostname_lower == 'notion.com' or hostname_lower.endswith('.notion.com'):
+            if _is_host_or_subdomain(hostname, 'notion.com'):
                 oauth_config.additional_params["use_basic_auth"] = True
                 oauth_config.additional_params["use_json_body"] = True
                 oauth_config.additional_params["notion_version"] = "2025-09-03"
+            if any(_is_host_or_subdomain(hostname, host) for host in _BASIC_AUTH_ONLY_TOKEN_HOSTS):
+                oauth_config.token_endpoint_auth_method = "client_secret_basic"
         except Exception:
-            # If URL parsing fails, skip the Notion-specific configuration
+            # If URL parsing fails, skip the provider-specific configuration
             pass
 
     return oauth_config
+
+
+# Token endpoints whose providers accept client credentials only in a Basic
+# header: their OAuth metadata lists client_secret_basic and no client_secret_post.
+_BASIC_AUTH_ONLY_TOKEN_HOSTS = ("airtable.com", "zoom.us")
+
+
+def _is_host_or_subdomain(hostname: str, domain: str) -> bool:
+    # Exact or dot-anchored, so evilnotion.com and notion.com.evil.com don't match.
+    hostname = hostname.lower()
+    return hostname == domain or hostname.endswith(f".{domain}")
 
 
 async def resolve_instance_url(
