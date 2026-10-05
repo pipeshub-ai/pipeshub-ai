@@ -7404,7 +7404,6 @@ async def _evict_cached_connector(
 
 
 async def _revert_toggle(
-    connector_registry: ConnectorRegistry,
     graph_provider: IGraphDBProvider,
     connector_id: str,
     instance: dict[str, Any],
@@ -7413,9 +7412,6 @@ async def _revert_toggle(
     *,
     previous: bool,
     written_at: int | None,
-    user_id: str,
-    org_id: str,
-    is_admin: bool,
     logger: logging.Logger,
 ) -> bool:
     """Restore the pre-toggle state unless a newer write has landed since.
@@ -7429,24 +7425,18 @@ async def _revert_toggle(
         **{key: instance.get(key) for key in owner_updates},
     }
     try:
-        # Toggles flip, so a stale revert can undo a newer successful one; only
-        # revert while the document is still the version this request wrote.
-        current = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
-        if not current or written_at is None or current.get("updatedAtTimestamp") != written_at:
+        # Toggles flip, so a stale revert can undo a newer successful one; the
+        # version check is part of the write so nothing can land in between.
+        if written_at is None or not await graph_provider.update_node_fields_if_match(
+            connector_id,
+            CollectionNames.APPS.value,
+            reverted,
+            {"updatedAtTimestamp": written_at},
+        ):
             logger.warning(
                 f"Not reverting {status_field} for connector {connector_id}: "
                 "it changed after this toggle was written"
             )
-            return False
-        ok = await connector_registry.update_connector_instance(
-            connector_id=connector_id,
-            updates=reverted,
-            user_id=user_id,
-            org_id=org_id,
-            is_admin=is_admin,
-        )
-        if not ok:
-            logger.error(f"Could not revert {status_field} for connector {connector_id}")
             return False
         return True
     except Exception:
@@ -7921,7 +7911,6 @@ async def toggle_connector_instance(
                 # The flip is already committed; without this the connector reads as
                 # enabled with no appEnabled event and no schedule behind it.
                 reverted = await _revert_toggle(
-                    connector_registry,
                     graph_provider,
                     connector_id,
                     instance,
@@ -7929,9 +7918,6 @@ async def toggle_connector_instance(
                     owner_updates,
                     previous=not target_status,
                     written_at=success.get("updatedAtTimestamp") if isinstance(success, dict) else None,
-                    user_id=user_id,
-                    org_id=org_id,
-                    is_admin=is_admin,
                     logger=logger,
                 )
                 if reverted and target_status:
@@ -8066,10 +8052,11 @@ async def delete_connector_instance(
         # service's own consumer runs the deletion and can finish before this
         # request does, so a later write would hit a node that no longer exists;
         # and a failed write here leaves the connector and its sync untouched.
+        deleting_at = get_epoch_timestamp_in_ms()
         await graph_provider.update_node(
             connector_id,
             CollectionNames.APPS.value,
-            {"status": "DELETING", "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+            {"status": "DELETING", "updatedAtTimestamp": deleting_at},
         )
 
         # 6. Stop any running sync for this connector
@@ -8113,11 +8100,13 @@ async def delete_connector_instance(
         try:
             await producer.send_message(topic="sync-events", message=delete_message, key=connector_id)
         except Exception:
-            # Nothing will delete it, so it must not stay in DELETING.
-            await graph_provider.update_node(
+            # Nothing will delete it, so it must not stay in DELETING; but only
+            # clear the mark this request set, not a newer delete's.
+            await graph_provider.update_node_fields_if_match(
                 connector_id,
                 CollectionNames.APPS.value,
                 {"status": None, "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+                {"status": "DELETING", "updatedAtTimestamp": deleting_at},
             )
             raise
         logger.info(f"✅ Published {event_type} deletion event for connector {connector_id}")

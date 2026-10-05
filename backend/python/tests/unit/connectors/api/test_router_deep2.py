@@ -1387,6 +1387,7 @@ class TestDeleteConnectorInstanceDeep:
         graph_provider.batch_upsert_nodes.assert_not_called()
 
     async def test_a_failed_delete_publish_leaves_the_connector_out_of_deleting(self) -> None:
+        from app.config.constants.arangodb import CollectionNames
         from app.connectors.api.router import delete_connector_instance
 
         req = _make_request(is_admin=True)
@@ -1411,7 +1412,14 @@ class TestDeleteConnectorInstanceDeep:
 
         assert exc_info.value.status_code == 500
         statuses = [c.args[2]["status"] for c in graph_provider.update_node.await_args_list]
-        assert statuses == ["DELETING", None]
+        assert statuses == ["DELETING"]
+        # Only the DELETING mark this request wrote is cleared, not a newer one.
+        graph_provider.update_node_fields_if_match.assert_awaited_once_with(
+            "c1",
+            CollectionNames.APPS.value,
+            {"status": None, "updatedAtTimestamp": 1000},
+            {"status": "DELETING", "updatedAtTimestamp": 1000},
+        )
 
 
 # ===========================================================================
