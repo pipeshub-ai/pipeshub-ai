@@ -7945,6 +7945,22 @@ class Neo4jProvider(IGraphDBProvider):
                 payloads.append(payload)
         return attachment_ids, payloads
 
+    async def _delete_records_with_their_types(self, record_ids: list[str], transaction: str | None) -> None:
+        # One statement, so a failure deletes nothing: with NEO4J_EXPLICIT_TRANSACTIONS
+        # off (the default) a caller's transaction cannot roll back separate statements.
+        await self.client.execute_query(
+            """
+            UNWIND $record_ids AS rid
+            MATCH (v:Record {id: rid})
+            OPTIONAL MATCH (v)-[:IS_OF_TYPE]->(t)
+            WITH v, collect(t) AS types
+            FOREACH (t IN types | DETACH DELETE t)
+            DETACH DELETE v
+            """,
+            parameters={"record_ids": record_ids},
+            txn_id=transaction,
+        )
+
     async def delete_record(
         self,
         record_id: str,
@@ -8010,10 +8026,6 @@ class Neo4jProvider(IGraphDBProvider):
             attachment_ids, attachment_payloads = await self._attachments_to_delete(
                 record_id, org_id, transaction
             )
-            for attachment_id in attachment_ids:
-                await self.delete_records_and_relations(attachment_id, hard_delete=True, transaction=transaction)
-
-            await self.delete_records_and_relations(record_id, hard_delete=True, transaction=transaction)
 
             # Create event payload for router to publish
             event_data = None
@@ -8038,6 +8050,8 @@ class Neo4jProvider(IGraphDBProvider):
             except Exception as e:
                 self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
                 event_data = None
+
+            await self._delete_records_with_their_types([*attachment_ids, record_id], transaction)
 
             return {
                 "success": True,
@@ -8076,7 +8090,11 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.warning(f"⚠️ Record {external_id} not found for connector {connector_id}")
                 return None
 
-            return await self.delete_record(record.id, user_id, record.org_id, transaction)
+            result = await self.delete_record(record.id, user_id, record.org_id, transaction)
+            # Raised, as on ArangoDB, so the caller's transaction rolls back.
+            if not result.get("success"):
+                raise Exception(f"Deletion failed: {result.get('reason', 'Unknown error')}")
+            return result
 
         except Exception as e:
             self.logger.error(f"❌ Delete record by external ID failed: {str(e)}")

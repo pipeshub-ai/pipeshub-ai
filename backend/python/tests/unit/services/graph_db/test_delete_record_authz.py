@@ -43,7 +43,7 @@ def _neo4j(record: dict | None, kb_role: str | None = "OWNER") -> Neo4jProvider:
     provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb-1"})
     provider.get_user_by_user_id = AsyncMock(return_value={"id": "ukey-a"})
     provider.get_user_kb_permission = AsyncMock(return_value=kb_role)
-    provider.delete_records_and_relations = AsyncMock()
+    provider._delete_records_with_their_types = AsyncMock()
     provider._create_deleted_record_event_payload = AsyncMock(return_value={"recordId": "rec-1"})
     return provider
 
@@ -58,7 +58,7 @@ class TestNeo4jDeleteRecordAuthz:
 
         assert result["success"] is False
         assert result["code"] == 404
-        provider.delete_records_and_relations.assert_not_awaited()
+        provider._delete_records_with_their_types.assert_not_awaited()
         assert "eventData" not in result
 
     @pytest.mark.asyncio
@@ -70,7 +70,7 @@ class TestNeo4jDeleteRecordAuthz:
 
         assert result["success"] is False
         assert result["code"] == 403
-        provider.delete_records_and_relations.assert_not_awaited()
+        provider._delete_records_with_their_types.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("kb_role", ["OWNER", "WRITER", "FILEORGANIZER"])
@@ -81,7 +81,7 @@ class TestNeo4jDeleteRecordAuthz:
 
         assert result["success"] is True
         assert result["isKb"] is True
-        provider.delete_records_and_relations.assert_awaited_once()
+        provider._delete_records_with_their_types.assert_awaited_once()
         assert result["eventData"]["eventType"] == "deleteRecord"
         provider.get_user_kb_permission.assert_awaited_once_with("kb-1", "ukey-a", None)
 
@@ -93,7 +93,7 @@ class TestNeo4jDeleteRecordAuthz:
 
         assert result["success"] is True
         assert result["isKb"] is False
-        provider.delete_records_and_relations.assert_awaited_once()
+        provider._delete_records_with_their_types.assert_awaited_once()
         assert result["eventData"]["eventType"] == "deleteRecord"
         provider.get_user_kb_permission.assert_not_awaited()
 
@@ -110,7 +110,7 @@ class TestNeo4jDeleteRecordAuthz:
             await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
 
         delete.assert_awaited_once_with("rec-1", "user-a", ORG_A, None)
-        provider.delete_records_and_relations.assert_awaited_once()
+        provider._delete_records_with_their_types.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_empty_org_never_matches_a_record_without_org(self) -> None:
@@ -119,7 +119,7 @@ class TestNeo4jDeleteRecordAuthz:
         result = await provider.delete_record("rec-1", "user-a", "")
 
         assert result["code"] == 404
-        provider.delete_records_and_relations.assert_not_awaited()
+        provider._delete_records_with_their_types.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_delete_by_external_id_skips_record_without_org(self) -> None:
@@ -129,9 +129,10 @@ class TestNeo4jDeleteRecordAuthz:
         record.org_id = ""
         provider.get_record_by_external_id = AsyncMock(return_value=record)
 
-        await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
+        with pytest.raises(Exception, match="Record not found"):
+            await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
 
-        provider.delete_records_and_relations.assert_not_awaited()
+        provider._delete_records_with_their_types.assert_not_awaited()
 
 
 @pytest.fixture

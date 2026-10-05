@@ -16,6 +16,10 @@ from fastapi import HTTPException
 import app.connectors.api.router as router_mod
 import app.edition_config  # noqa: F401  (binds the edition seams before the router loads)
 from app.connectors.api.router import delete_record
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
@@ -66,11 +70,31 @@ class _Neo4jDriver:
         self.record, self.access, self.kb_context, self.kb_role = record, access, kb_context, kb_role
         self.attachments: dict[str, dict] = {}
         self.fail_reading: str | None = None
+        self.fail_deleting: str | None = None
+        # Each statement commits on its own, as with NEO4J_EXPLICIT_TRANSACTIONS off.
+        self.deleted: set[str] = set()
+        self.transactions: list[tuple[str, str]] = []
         self.statements: list[tuple[str, dict]] = []
+
+    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+        self.transactions.append(("begin", "txn-1"))
+        return "txn-1"
+
+    async def commit_transaction(self, txn_id: str) -> None:
+        self.transactions.append(("commit", txn_id))
+
+    async def abort_transaction(self, txn_id: str) -> None:
+        self.transactions.append(("abort", txn_id))
 
     async def execute_query(self, query: str, parameters: dict | None = None, txn_id: str | None = None) -> list:
         self.statements.append((query, parameters or {}))
         parameters = parameters or {}
+        if "DETACH DELETE" in query:
+            keys = set(parameters.get("record_ids") or []) | {parameters.get("record_key")} - {None}
+            if self.fail_deleting in keys:
+                raise RuntimeError("lock wait timeout")
+            self.deleted |= keys
+            return []
         if "relationshipType = 'ATTACHMENT'" in query:
             return [
                 {"id": key} for key, a in self.attachments.items() if a.get("orgId") == parameters.get("org_id")
@@ -358,7 +382,7 @@ def _attachment(**fields: str | None) -> dict:
 
 
 def _deleted_keys(driver: _Neo4jDriver) -> set[str]:
-    return {p["record_key"] for q, p in driver.statements if "DETACH DELETE" in q and "record_key" in p}
+    return driver.deleted
 
 
 @pytest.mark.asyncio
@@ -404,10 +428,58 @@ async def test_neo4j_mail_delete_deletes_nothing_when_an_attachment_cannot_be_re
     driver.fail_reading = "att-1"
     provider.get_record_by_external_id = AsyncMock(return_value=_typed(OUTLOOK_MAIL))
 
-    result = await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
+    with pytest.raises(Exception, match="Deletion failed"):
+        await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
+
+    assert driver.destructive == []
+
+
+def _two_attachments_the_second_failing(driver: _Neo4jDriver) -> None:
+    driver.attachments = {
+        "att-1": _attachment(virtualRecordId="vr-att-1"),
+        "att-2": _attachment(virtualRecordId="vr-att-2"),
+    }
+    driver.fail_deleting = "att-2"
+
+
+@pytest.mark.asyncio
+async def test_neo4j_mail_delete_that_fails_part_way_deletes_nothing_and_raises() -> None:
+    provider, driver = _neo4j(OUTLOOK_MAIL, None, None, None)
+    _two_attachments_the_second_failing(driver)
+    provider.get_record_by_external_id = AsyncMock(return_value=_typed(OUTLOOK_MAIL))
+
+    with pytest.raises(Exception, match="Deletion failed"):
+        await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a", transaction="txn-1")
+
+    assert driver.deleted == set()
+
+
+@pytest.mark.asyncio
+async def test_neo4j_mail_delete_without_a_transaction_that_fails_part_way_deletes_nothing() -> None:
+    provider, driver = _neo4j(OUTLOOK_MAIL, None, None, None)
+    _two_attachments_the_second_failing(driver)
+
+    result = await provider.delete_record(RECORD_ID, "user-a", ORG_A)
 
     assert result["success"] is False
-    assert driver.destructive == []
+    assert driver.deleted == set()
+
+
+@pytest.mark.asyncio
+async def test_connector_mail_delete_that_fails_part_way_rolls_back_and_publishes_nothing() -> None:
+    provider, driver = _neo4j(OUTLOOK_MAIL, None, None, None)
+    _two_attachments_the_second_failing(driver)
+    provider.get_record_by_external_id = AsyncMock(return_value=_typed(OUTLOOK_MAIL))
+    processor = DataSourceEntitiesProcessor(MagicMock(), GraphDataStore(MagicMock(), provider), MagicMock())
+    processor.messaging_producer = AsyncMock()
+
+    with pytest.raises(Exception, match="Deletion failed"):
+        await processor.delete_record_by_external_id("conn-1", "ext-1", "user-a")
+
+    assert driver.transactions == [("begin", "txn-1"), ("abort", "txn-1")]
+    assert driver.deleted == set()
+    processor.messaging_producer.send_message.assert_not_awaited()
+    processor.messaging_producer.send_messages.assert_not_awaited()
 
 
 @pytest.mark.asyncio
