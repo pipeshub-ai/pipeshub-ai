@@ -681,7 +681,8 @@ class ToolsetTokenRefreshService:
         # instanceUrl is required for self-managed connectors (e.g. GitLab EE)
         # so get_oauth_config() can redirect SaaS-default OAuth URLs to the
         # user's instance during token refresh.
-        for field_name in ["tenantId", "domain", "workspace", "companyUrl", "baseUrl", "instanceUrl"]:
+        # loginUrl keeps a Salesforce sandbox refresh on the host that issued the token.
+        for field_name in ["tenantId", "domain", "workspace", "companyUrl", "baseUrl", "instanceUrl", "loginUrl"]:
             if field_name in auth_config:
                 oauth_flow_config[field_name] = auth_config[field_name]
 

@@ -142,9 +142,9 @@ from app.utils.filename_utils import upload_extension
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import (
+    check_salesforce_login_url_setting,
     extract_oauth_error_message,
     get_oauth_config,
-    normalize_salesforce_login_url,
 )
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
@@ -3857,10 +3857,8 @@ def _mirror_shared_instance_url(auth: dict[str, Any], shared_oauth_config: dict[
 def _check_salesforce_login_url(connector_type: str, settings: dict[str, Any] | None) -> None:
     """Refuse a Salesforce login URL off salesforce.com before it is saved: the token request
     sends the client secret there from the server."""
-    if (connector_type or "").replace(" ", "").upper() != Connectors.SALESFORCE.value:
-        return
     try:
-        normalize_salesforce_login_url((settings or {}).get(AuthFieldKeys.LOGIN_URL))
+        check_salesforce_login_url_setting(connector_type, settings)
     except ValueError as e:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e
 

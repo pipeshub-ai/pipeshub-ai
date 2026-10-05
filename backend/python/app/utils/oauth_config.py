@@ -235,7 +235,19 @@ def _apply_salesforce_login_host(url: str, login_url: str) -> str:
     """Move a Salesforce production OAuth endpoint onto the chosen login host, keeping its path."""
     if not _is_salesforce_production_login(url):
         return url
-    return urlparse(url)._replace(netloc=urlparse(login_url).netloc).geturl()
+    # The token request carries the client secret, so a saved http:// endpoint must not survive the move.
+    return urlparse(url)._replace(scheme="https", netloc=urlparse(login_url).netloc).geturl()
+
+
+def check_salesforce_login_url_setting(connector_type: str, settings: dict[str, Any] | None) -> None:
+    """Raise ValueError when a Salesforce OAuth app's Login URL is not a Salesforce host.
+
+    Other connector and toolset types are left alone. Called on save, so an admin
+    hears about a bad value at once instead of at sign-in.
+    """
+    if (connector_type or "").replace(" ", "").lower() != "salesforce":
+        return
+    normalize_salesforce_login_url((settings or {}).get(AuthFieldKeys.LOGIN_URL))
 
 
 def get_oauth_config(auth_config: dict) -> OAuthConfig:
