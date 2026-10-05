@@ -9,6 +9,7 @@ indexed, so Acme Corp facts do not mix into real answers by default.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -20,6 +21,8 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 DEMO_CONNECTOR_TYPE = "Demo"
+
+_logger = logging.getLogger(__name__)
 
 _DEMO_IDS_TTL_S = 60.0
 # "No real data yet" is asked again soon; "real data" rarely changes back.
@@ -81,12 +84,18 @@ async def demo_connector_ids(graph_provider: IGraphDBProvider, org_id: str) -> t
     cached = _demo_ids_cache.get(org_id)
     if cached and time.monotonic() - cached[0] < _DEMO_IDS_TTL_S:
         return cached[1]
-    apps = await graph_provider.get_org_apps(org_id, active_only=False)
+    try:
+        # Only the Demo apps, filtered in the database: an org can have thousands
+        # of collection Apps, and reading them all takes seconds on the event loop.
+        apps = await graph_provider.get_org_apps(
+            org_id, active_only=False, app_type=DEMO_CONNECTOR_TYPE, raise_on_error=True,
+        )
+    except Exception as exc:
+        # A failed listing says nothing about the demo: not remembered, asked again.
+        _logger.warning("demo connectors of org %s could not be listed: %s", org_id, exc)
+        return ()
     ids = tuple(sorted(i for i in (_app_id(a) for a in apps if a.get("type") == DEMO_CONNECTOR_TYPE) if i))
-    # The providers answer [] when the listing fails; an org with the demo always
-    # lists at least that app, so an empty answer is not remembered.
-    if apps:
-        _demo_ids_cache[org_id] = (time.monotonic(), ids)
+    _demo_ids_cache[org_id] = (time.monotonic(), ids)
     return ids
 
 

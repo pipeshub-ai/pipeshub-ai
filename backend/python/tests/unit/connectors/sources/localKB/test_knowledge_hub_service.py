@@ -5,17 +5,17 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.utils.user_messages import action_failed, not_found
-from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
-    FOLDER_MIME_TYPES,
-    BrowseRequestError,
-    KnowledgeHubService,
-)
+from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     AvailableFilters,
     NodeType,
     OriginType,
 )
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    BrowseRequestError,
+    KnowledgeHubService,
+)
+from app.utils.user_messages import action_failed, not_found
 
 
 @pytest.fixture

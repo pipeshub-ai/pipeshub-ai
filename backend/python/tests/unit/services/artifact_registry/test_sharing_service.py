@@ -281,7 +281,7 @@ class TestDirectShareAndChatShareTogether:
 
         if kind == "chat":
             grant = _grant_reader_permissions if action == "share" else _revoke_reader_permissions
-            await grant(graph, "owner", ["bob"], [ARTIFACT_ID])
+            await grant(graph, "org-1", "owner", ["bob"], [ARTIFACT_ID])
             return
         service = _service(graph, AsyncMock())
         if action == "share":

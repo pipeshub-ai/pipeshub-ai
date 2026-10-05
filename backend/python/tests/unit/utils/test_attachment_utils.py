@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.utils.attachment_utils import (
     _extract_image_blocks,
     build_multimodal_content,
@@ -813,3 +815,78 @@ class TestEnsureAttachmentBlocks:
             await ensure_attachment_blocks(state, logger)
         mock_cls.assert_not_called()
         assert state["citation_ref_mapper"] is existing_mapper
+
+
+# ---------------------------------------------------------------------------
+# keep_accessible_attachments
+# ---------------------------------------------------------------------------
+
+
+class TestKeepAccessibleAttachments:
+    """Attachments arrive from the client by virtualRecordId and the resolvers
+    read them from blob storage checking the org only, so the user's access to
+    the record decides, for this turn and the history in one batch."""
+
+    @staticmethod
+    def _graph(accessible: set[str]) -> AsyncMock:
+        graph = AsyncMock()
+        graph.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
+        graph.check_access = AsyncMock(
+            side_effect=lambda key, _org, virtual_record_ids=(), **_: AccessCheck(
+                records_by_vrid={v: f"rec-{v}" for v in virtual_record_ids if v in accessible},
+            ),
+        )
+        return graph
+
+    @staticmethod
+    async def _keep(
+        graph, attachments, history, *, service_account=False, user_id="u1",
+    ) -> tuple[list[dict], list[dict]]:
+        from app.utils.attachment_utils import keep_accessible_attachments
+
+        return await keep_accessible_attachments(
+            graph, org_id="org-1", user_id=user_id, is_service_account=service_account,
+            attachments=attachments, previous_conversations=history, logger=logging.getLogger("t"),
+        )
+
+    @pytest.mark.asyncio
+    async def test_inaccessible_attachments_are_dropped_from_the_turn_and_the_history(self) -> None:
+        graph = self._graph({"mine", "old-mine"})
+        turn = [{"virtualRecordId": "mine"}, {"virtualRecordId": "someone-elses"}]
+        history = [
+            {"role": "user", "attachments": [{"virtualRecordId": "old-mine"}, {"virtualRecordId": "old-theirs"}]},
+            {"role": "bot_response", "content": "hi"},
+        ]
+
+        kept_turn, kept_history = await self._keep(graph, turn, history)
+
+        assert kept_turn == [{"virtualRecordId": "mine"}]
+        assert kept_history[0]["attachments"] == [{"virtualRecordId": "old-mine"}]
+        assert kept_history[1] == history[1]
+        graph.check_access.assert_awaited_once()
+        assert set(graph.check_access.await_args.kwargs["virtual_record_ids"]) == {
+            "mine", "someone-elses", "old-mine", "old-theirs",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_failed_check_raises_instead_of_dropping_them(self) -> None:
+        """Answering as if nothing were attached would hide the outage."""
+        graph = self._graph(set())
+        graph.check_access = AsyncMock(side_effect=PermissionVerificationUnavailableError("graph down"))
+
+        with pytest.raises(PermissionVerificationUnavailableError):
+            await self._keep(graph, [{"virtualRecordId": "mine"}], [])
+
+    @pytest.mark.asyncio
+    async def test_no_user_keeps_nothing(self) -> None:
+        graph = self._graph({"mine"})
+        kept_turn, _ = await self._keep(graph, [{"virtualRecordId": "mine"}], [], user_id=None)
+        assert kept_turn == []
+
+    @pytest.mark.asyncio
+    async def test_a_service_account_keeps_its_org_scoping(self) -> None:
+        graph = self._graph(set())
+        turn = [{"virtualRecordId": "svc-upload"}]
+        kept_turn, _ = await self._keep(graph, turn, [], service_account=True)
+        assert kept_turn == turn
+        graph.check_access.assert_not_called()

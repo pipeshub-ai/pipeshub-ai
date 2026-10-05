@@ -591,11 +591,18 @@ class TestSearchLeavesImageRoomForAFetch:
         from types import SimpleNamespace
 
         from app.agents.actions.knowledge_graph.ops.fetch import execute_fetch_record
+        from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
         live = state.setdefault("virtual_record_id_to_result", {})
         live[record["virtual_record_id"]] = record
+        # The fetch checks the record is readable: this user may read every record asked for.
+        graph = AsyncMock()
+        graph.get_user_by_user_id = AsyncMock(return_value={"_key": "u1", "id": "u1"})
+        graph.check_access = AsyncMock(
+            side_effect=lambda *_args, node_ids=(), **_kwargs: AccessCheck(node_ids=frozenset(node_ids)),
+        )
         context = SimpleNamespace(
-            model_name="gpt-4", org_id="o1", user_id="u1", graph_provider=AsyncMock(),
+            model_name="gpt-4", org_id="o1", user_id="u1", graph_provider=graph,
             full_records_fetched=set(), tool_state=state, is_multimodal_llm=True,
             context_length=128_000, query="", retrieval_service=None,
             needs_whole_document=False, include_retrieval_context=False,
