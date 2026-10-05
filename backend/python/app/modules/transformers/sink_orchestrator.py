@@ -448,10 +448,18 @@ class SinkOrchestrator(Transformer):
             status["extractionStatus"] = ProgressStatus.IN_PROGRESS.value
         else:
             status["processingStartedAt"] = None
-        await self.graph_provider.batch_upsert_nodes(
+        # Update, never upsert: a record deleted mid-indexing would come back as
+        # a bare node that keeps its vectors from the orphan sweep.
+        updated = await self.graph_provider.batch_update_nodes(
             [status],
             CollectionNames.RECORDS.value,
         )
+        if not updated:
+            self.logger.warning(
+                "⚠️ Record %s no longer exists; indexingStatus=COMPLETED not recorded",
+                record.id,
+            )
+            return
         record.record_status = ProgressStatus.COMPLETED
         record.indexing_status = ProgressStatus.COMPLETED.value
         self.logger.debug(

@@ -199,7 +199,7 @@ class TestIndexingCompletionSite:
         orchestrator = SinkOrchestrator.__new__(SinkOrchestrator)
         orchestrator.logger = MagicMock()
         orchestrator.graph_provider = MagicMock()
-        orchestrator.graph_provider.batch_upsert_nodes = AsyncMock()
+        orchestrator.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
 
         record = MagicMock()
         record.id = "rec-1"
@@ -217,7 +217,7 @@ class TestIndexingCompletionSite:
         ):
             await orchestrator._update_indexing_status(ctx)
 
-        orchestrator.graph_provider.batch_upsert_nodes.assert_awaited_once()
+        orchestrator.graph_provider.batch_update_nodes.assert_awaited_once()
         notify.assert_awaited_once_with(
             connector_name=Connectors.KNOWLEDGE_BASE,
             connector_id="kb-1",

@@ -75,11 +75,12 @@ class RecordsStore:
             if k != record_key and r.get("md5Checksum") == md5_checksum and r.get("orgId") == org_id
         ]
 
-    async def batch_upsert_nodes(self, rows: list[dict[str, Any]], collection: str) -> bool:
+    async def batch_update_nodes(self, rows: list[dict[str, Any]], collection: str) -> bool:
         assert collection == CollectionNames.RECORDS.value
-        for row in rows:
+        existing = [row for row in rows if row["id"] in self.records]
+        for row in existing:
             self.records[row["id"]].update({k: v for k, v in row.items() if k != "id"})
-        return True
+        return len(existing) == len(rows)
 
     async def copy_document_relationships(self, source: str, target: str) -> bool:
         self.copied_relationships.append((source, target))
