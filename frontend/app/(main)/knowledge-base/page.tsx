@@ -111,6 +111,7 @@ import {
 import { useDebouncedSearch } from './hooks/use-debounced-search';
 import { ErrorType, getUserFacingErrorMessage, isProcessedError } from '@/lib/api/api-error';
 import { useUserPermission } from '@/config';
+import { useFeatureFlagsStore, selectSoftDeleteEnabled } from '@/lib/store/feature-flags-store';
 
 function KnowledgeBasePageContent() {
   const { t } = useTranslation();
@@ -1851,6 +1852,14 @@ function KnowledgeBasePageContent() {
     };
   }, [selectedKbId, tableData?.breadcrumbs, tableData?.currentNode?.name]);
 
+  const softDeleteEnabled = useFeatureFlagsStore(selectSoftDeleteEnabled);
+  const showRecentlyDeleted =
+    softDeleteEnabled && !isAllRecordsMode && !!nodeId && !!selectedKbId && tableData?.permissions?.canDelete !== false;
+  const handleRecentlyDeletedClick = useCallback(() => {
+    if (!selectedKbId) return;
+    router.push(`/knowledge-base/recently-deleted?kbId=${encodeURIComponent(selectedKbId)}`);
+  }, [router, selectedKbId]);
+
   const handleCollectionIndexingStatusClick = useCallback(() => {
     if (!collectionStatsTarget) return;
     openCollectionStatsPanel(collectionStatsTarget.id, collectionStatsTarget.name);
@@ -2806,6 +2815,7 @@ function KnowledgeBasePageContent() {
               onRefresh={handleRefresh}
               showIndexingStatus={showCollectionIndexingStatus}
               onIndexingStatusClick={handleCollectionIndexingStatusClick}
+              onRecentlyDeletedClick={showRecentlyDeleted ? handleRecentlyDeletedClick : undefined}
               isSearchActive={isSearchOpen && !!(isAllRecordsMode ? allRecordsSearchQuery : searchQuery)?.trim()}
               // Collections mode only props
               onCreateFolder={isAllRecordsMode || !canAddFolderHere ? undefined : handleCreateFolder}

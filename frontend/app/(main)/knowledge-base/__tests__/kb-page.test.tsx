@@ -5,6 +5,7 @@ import '@/lib/__tests__/test-i18n';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUploadStore } from '@/lib/store/upload-store';
 import { useAuthStore } from '@/lib/store/auth-store';
+import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { useKnowledgeBaseStore } from '../store';
 import { resetKnowledgeBaseSession } from '../utils/sidebar-session';
 import KnowledgeBasePage from '../page';
@@ -188,6 +189,7 @@ beforeEach(() => {
   useKnowledgeBaseStore.setState(useKnowledgeBaseStore.getInitialState(), true);
   useToastStore.setState({ toasts: [] });
   useUploadStore.setState(useUploadStore.getInitialState(), true);
+  useFeatureFlagsStore.setState({ flags: {} });
   api.kb.getUploadLimits.mockResolvedValue({ maxFileSizeBytes: 5 * 1024 * 1024 });
   api.hub.getNodeChildren.mockResolvedValue(hubResponse([]));
   share.getSharedMembers.mockResolvedValue([]);
@@ -463,6 +465,16 @@ describe('Knowledge base page — inside a collection', () => {
       ),
     );
     expect(await screen.findByText('Results')).toBeTruthy();
+  });
+
+  it('offers its Recently deleted page only while the trash is on', async () => {
+    await openEngineering();
+    expect(screen.queryByRole('button', { name: /Recently deleted/ })).toBeNull();
+
+    act(() => useFeatureFlagsStore.setState({ flags: { ENABLE_SOFT_DELETE: true } }));
+    fireEvent.click(await screen.findByRole('button', { name: /Recently deleted/ }));
+
+    expect(router.push).toHaveBeenCalledWith('/knowledge-base/recently-deleted?kbId=kb-eng');
   });
 
   it('reloads the collection when Refresh is clicked', async () => {

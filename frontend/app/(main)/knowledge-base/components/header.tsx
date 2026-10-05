@@ -26,6 +26,8 @@ interface KBHeaderProps {
   /** Shown when browsing inside a KB collection */
   showIndexingStatus?: boolean;
   onIndexingStatusClick?: () => void;
+  /** Opens the collection's Recently deleted page; only passed while the trash is on */
+  onRecentlyDeletedClick?: () => void;
 
   // Collections mode only actions (hidden in all-records mode)
   onCreateFolder?: () => void;
@@ -181,6 +183,7 @@ export function Header({
   onRefresh,
   showIndexingStatus,
   onIndexingStatusClick,
+  onRecentlyDeletedClick,
   onCreateFolder,
   onUpload,
   onShare,
@@ -393,6 +396,31 @@ export function Header({
               >
                 <MaterialIcon name="analytics" size={16} color="var(--slate-11)" />
                 {t('collections.stats.menuLabel', { defaultValue: 'Analytics' })}
+              </Button>
+            )
+          )}
+          {onRecentlyDeletedClick && (
+            isMobile ? (
+              <IconButton
+                variant="ghost"
+                size="2"
+                color="gray"
+                onClick={onRecentlyDeletedClick}
+                style={{ cursor: 'pointer' }}
+                aria-label={t('collections.trash.menuLabel')}
+              >
+                <MaterialIcon name="delete_outline" size={18} color="var(--slate-11)" />
+              </IconButton>
+            ) : (
+              <Button
+                variant="ghost"
+                size="1"
+                color="gray"
+                onClick={onRecentlyDeletedClick}
+                style={{ cursor: 'pointer', fontSize: '14px' }}
+              >
+                <MaterialIcon name="delete_outline" size={16} color="var(--slate-11)" />
+                {t('collections.trash.menuLabel')}
               </Button>
             )
           )}
