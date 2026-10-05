@@ -85,7 +85,7 @@ class TestDriveWorkspaceSharedDriveFolderFilter:
             RecordAssertion(
                 external_record_id=seed_id,
                 record_name=drive_workspace_shared_drive_connector["seed_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
             ),
         )
         await connector_assertions.assert_record_exists(
@@ -94,7 +94,7 @@ class TestDriveWorkspaceSharedDriveFolderFilter:
             RecordAssertion(
                 external_record_id=nested_id,
                 record_name=drive_workspace_shared_drive_connector["nested_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
                 parent_external_record_id=seed_id,
             ),
         )
@@ -170,7 +170,7 @@ class TestDriveWorkspaceSharedDriveFolderFilter:
             RecordAssertion(
                 external_record_id=deeper_id,
                 record_name="deeper",
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
                 parent_external_record_id=seed_id,
             ),
         )
@@ -244,7 +244,7 @@ class TestDriveWorkspaceSharedDriveFolderFilter:
                 record_name=drive_workspace_shared_drive_root_connector[
                     "root_folder_name"
                 ],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
                 external_record_group_id=drive_a_id,
             ),
         )

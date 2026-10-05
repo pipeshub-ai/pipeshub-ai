@@ -57,7 +57,7 @@ BELONGS_TO = "belongsTo"
 BELONGS_TO_RECORD_GROUP = "belongsToRecordGroup"
 INHERIT_PERMISSIONS = "inheritPermissions"
 IS_OF_TYPE = "isOfType"
-RECORD_RELATIONS = "recordRelations"
+NODE_RELATIONS = "nodeRelations"
 USER_APP_RELATION = "userAppRelation"
 ORG_APP_RELATION = "orgAppRelation"
 PARENT_CHILD = "parentChild"
@@ -346,24 +346,6 @@ class FakeGraphProvider:
                 if e.get("to_id") == key and e.get("to_collection") == col
             ]
         return [e for e in edge_list if e.get("to_id") == node_id]
-
-    async def get_related_nodes(
-        self,
-        node_id: str,
-        edge_collection: str,
-        target_collection: str,
-        direction: str = "inbound",
-        transaction: str | None = None,
-    ) -> list[dict[str, object]]:
-        """Simple one-hop traversal."""
-        target_col = self._ensure_collection(target_collection)
-        if direction == "outbound":
-            edges = await self.get_edges_from_node(node_id, edge_collection)
-            keys = [str(e["to_id"]) for e in edges if e.get("to_collection") == target_collection]
-        else:
-            edges = await self.get_edges_to_node(node_id, edge_collection)
-            keys = [str(e["from_id"]) for e in edges if e.get("from_collection") == target_collection]
-        return [target_col[k] for k in keys if k in target_col]
 
     # ==================== Query Operations ====================
 
@@ -853,7 +835,7 @@ class FakeGraphProvider:
     ) -> tuple[int, bool]:
         """Delete sync-created edges for a connector."""
         sync_edge_collections = [
-            BELONGS_TO, BELONGS_TO_RECORD_GROUP, RECORD_RELATIONS,
+            BELONGS_TO, BELONGS_TO_RECORD_GROUP, NODE_RELATIONS,
             PERMISSION, INHERIT_PERMISSIONS, USER_APP_RELATION,
         ]
         total = 0
@@ -900,8 +882,8 @@ class FakeGraphProvider:
         records = self._ensure_collection(RECORDS)
         children: list[dict[str, object]] = []
         child_ids_seen: set[str] = set()
-        # Via recordRelations (PARENT_CHILD type)
-        rel_edges = self._ensure_edge_collection(RECORD_RELATIONS)
+        # Via nodeRelations (PARENT_CHILD type)
+        rel_edges = self._ensure_edge_collection(NODE_RELATIONS)
         for e in rel_edges:
             if (
                 e.get("from_id") == parent_record_id
@@ -1237,7 +1219,7 @@ class TestGoogleDriveConnectorSetup:
         ])
 
         # Record relations (parent-child)
-        p._ensure_edge_collection(RECORD_RELATIONS).extend([
+        p._ensure_edge_collection(NODE_RELATIONS).extend([
             relation_edge(d1_folder, d1_file1),
             relation_edge(d1_folder, d1_file2),
             relation_edge(d1_folder, d1_subfolder),
@@ -1750,7 +1732,7 @@ class TestPermissionInheritance:
             perm_edge(user2_key, USERS, file3_id, RECORDS, "READER"),
         ])
 
-        p._ensure_edge_collection(RECORD_RELATIONS).extend([
+        p._ensure_edge_collection(NODE_RELATIONS).extend([
             relation_edge(folder1_id, subfolder1_id),
             relation_edge(folder1_id, file2_id),
             relation_edge(subfolder1_id, file1_id),
@@ -2355,7 +2337,7 @@ class TestKnowledgeBaseManagement:
             belongs_edge(kb_folder_file, RECORDS, kb_id, KNOWLEDGE_BASES),
         ])
 
-        p._ensure_edge_collection(RECORD_RELATIONS).append(relation_edge(kb_folder, kb_folder_file))
+        p._ensure_edge_collection(NODE_RELATIONS).append(relation_edge(kb_folder, kb_folder_file))
 
         p._ensure_edge_collection(PERMISSION).extend([
             perm_edge(owner_key, USERS, kb_id, KNOWLEDGE_BASES, "OWNER"),
@@ -2693,26 +2675,6 @@ class TestEdgeCases:
             {"from_id": "a2", "from_collection": "x", "to_id": "b", "to_collection": "y"},
         ], "test_edges")
         assert len(await p.get_edges_to_node("y/b", "test_edges")) == 2
-
-    @pytest.mark.asyncio
-    async def test_get_related_nodes_outbound(self) -> None:
-        p = FakeGraphProvider()
-        await p.batch_upsert_nodes([{"id": "b1", "name": "B1"}, {"id": "b2", "name": "B2"}], "y")
-        await p.batch_create_edges([
-            {"from_id": "a", "from_collection": "x", "to_id": "b1", "to_collection": "y"},
-            {"from_id": "a", "from_collection": "x", "to_id": "b2", "to_collection": "y"},
-        ], "test_edges")
-        assert len(await p.get_related_nodes("x/a", "test_edges", "y", direction="outbound")) == 2
-
-    @pytest.mark.asyncio
-    async def test_get_related_nodes_inbound(self) -> None:
-        p = FakeGraphProvider()
-        await p.batch_upsert_nodes([{"id": "a1", "name": "A1"}, {"id": "a2", "name": "A2"}], "x")
-        await p.batch_create_edges([
-            {"from_id": "a1", "from_collection": "x", "to_id": "b", "to_collection": "y"},
-            {"from_id": "a2", "from_collection": "x", "to_id": "b", "to_collection": "y"},
-        ], "test_edges")
-        assert len(await p.get_related_nodes("y/b", "test_edges", "x", direction="inbound")) == 2
 
     @pytest.mark.asyncio
     async def test_get_nodes_by_filters(self) -> None:

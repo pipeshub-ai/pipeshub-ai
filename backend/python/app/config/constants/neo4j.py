@@ -37,8 +37,6 @@ class Neo4jLabel(Enum):
     ROLES = "Role"
     ORGS = "Organization"
     ANYONE = "Anyone"
-    ANYONE_WITH_LINK = "AnyoneWithLink"
-    ANYONE_SAME_ORG = "AnyoneSameOrg"
 
     # Apps and relations
     APPS = "App"
@@ -88,7 +86,10 @@ class Neo4jLabel(Enum):
 
 class Neo4jRelationshipType(Enum):
     """Neo4j relationship types mapped from ArangoDB edge collections"""
-    RECORD_RELATIONS = "RECORD_RELATION"
+    NODE_RELATIONS = "NODE_RELATION"
+    # Links between records (BLOCKS, FOREIGN_KEY, SIBLING, ...): the logical
+    # nodeRelations collection keeps only hierarchy on NODE_RELATION.
+    RECORD_LINK = "RECORD_LINK"
     BELONGS_TO = "BELONGS_TO"
     IS_OF_TYPE = "IS_OF_TYPE"
     PERMISSION = "PERMISSION"
@@ -182,7 +183,7 @@ COLLECTION_TO_LABEL: dict[str, str] = {
 
 # Mapping from ArangoDB edge collections to Neo4j relationship types
 EDGE_COLLECTION_TO_RELATIONSHIP: dict[str, str] = {
-    CollectionNames.RECORD_RELATIONS.value: Neo4jRelationshipType.RECORD_RELATIONS.value,
+    CollectionNames.NODE_RELATIONS.value: Neo4jRelationshipType.NODE_RELATIONS.value,
     CollectionNames.BELONGS_TO.value: Neo4jRelationshipType.BELONGS_TO.value,
     CollectionNames.IS_OF_TYPE.value: Neo4jRelationshipType.IS_OF_TYPE.value,
     CollectionNames.PERMISSION.value: Neo4jRelationshipType.PERMISSION.value,

@@ -10,6 +10,7 @@ Tests cover:
 - All abstract method signatures are present on the class
 """
 
+import asyncio
 import importlib
 import sys
 import types
@@ -81,24 +82,29 @@ class TestModuleImports:
         fake_fastapi = types.ModuleType("fastapi")
         fake_fastapi.Request = type("Request", (), {})
 
-        with patch.object(
-            sys.modules["typing"], "TYPE_CHECKING", True
-        ), patch.dict(sys.modules, {"fastapi": fake_fastapi}):
-            importlib.reload(mod)
+        original = dict(vars(mod))
+        try:
+            with patch.object(
+                sys.modules["typing"], "TYPE_CHECKING", True
+            ), patch.dict(sys.modules, {"fastapi": fake_fastapi}):
+                importlib.reload(mod)
 
-        # After reload with TYPE_CHECKING=True, the guarded imports
-        # should have executed, bringing Request and entity types into scope.
-        assert hasattr(mod, "Request")
-        assert hasattr(mod, "AppRole")
-        assert hasattr(mod, "AppUser")
-        assert hasattr(mod, "AppUserGroup")
-        assert hasattr(mod, "FileRecord")
-        assert hasattr(mod, "Record")
-        assert hasattr(mod, "RecordGroup")
-        assert hasattr(mod, "User")
-
-        # Reload again without patch to restore normal state for other tests
-        importlib.reload(mod)
+            # After reload with TYPE_CHECKING=True, the guarded imports
+            # should have executed, bringing Request and entity types into scope.
+            assert hasattr(mod, "Request")
+            assert hasattr(mod, "AppRole")
+            assert hasattr(mod, "AppUser")
+            assert hasattr(mod, "AppUserGroup")
+            assert hasattr(mod, "FileRecord")
+            assert hasattr(mod, "Record")
+            assert hasattr(mod, "RecordGroup")
+            assert hasattr(mod, "User")
+        finally:
+            # A reload re-creates every class in the module (AccessCheck,
+            # IGraphDBProvider, ...); put the originals back, or code defined in
+            # the module builds instances other tests' imports never equal.
+            vars(mod).clear()
+            vars(mod).update(original)
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +216,6 @@ class TestAbstractMethodInventory:
         "get_edges_to_node",
         "get_edges_from_node",
         "get_edges_from_node_with_target_name",
-        "get_related_nodes",
         "get_related_node_field",
         # Query operations
         "execute_query",
@@ -233,7 +238,6 @@ class TestAbstractMethodInventory:
         "get_entity_index_candidate",
         "page_entity_index_source",
         "page_records_for_vector_membership_backfill",
-        "get_records",
         "reindex_single_record",
         "reindex_record_group_records",
         "update_indexing_status_for_record_ids",
@@ -283,7 +287,6 @@ class TestAbstractMethodInventory:
         "kb_exists",
         "_validate_folder_creation",
         "find_folder_by_name_in_parent",
-        "get_folder_contents",
         "validate_folder_in_kb",
         "create_kb_permissions",
         "count_kb_owners",
@@ -298,7 +301,6 @@ class TestAbstractMethodInventory:
         "get_kb_permissions",
         "update_kb_permission",
         "list_kb_permissions",
-        "list_all_records",
         "list_kb_records",
         "list_accessible_artifacts",
         "get_artifact_detail",
@@ -342,14 +344,12 @@ class TestAbstractMethodInventory:
         "get_entity_access_context",
         "get_records_by_record_ids",
         "batch_upsert_record_permissions",
-        "get_file_permissions",
         "get_first_user_with_permission_to_node",
         "get_users_with_permission_to_node",
         "get_groups_with_permission_to_node",
         "check_record_access_with_details",
         "get_record_owner_source_user_email",
         # File/parent operations
-        "get_file_parents",
         # Sync point operations
         "get_sync_point",
         "upsert_sync_point",
@@ -361,16 +361,11 @@ class TestAbstractMethodInventory:
         "batch_upsert_user_groups",
         "batch_upsert_app_roles",
         "batch_upsert_orgs",
-        "batch_upsert_domains",
-        "batch_upsert_anyone",
-        "batch_upsert_anyone_with_link",
-        "batch_upsert_anyone_same_org",
         "batch_create_user_app_edges",
         # Entity ID operations
         "get_entity_id_by_email",
         "bulk_get_entity_ids_by_email",
         # Connector operations
-        "process_file_permissions",
         "delete_records_and_relations",
         "delete_record",
         "delete_record_by_external_id",
@@ -393,30 +388,28 @@ class TestAbstractMethodInventory:
         "batch_update_connector_status",
         "get_user_connector_instances",
         "get_filtered_connector_instances",
-        "get_user_accessible_team_app_ids",
         "store_page_token",
         "get_page_token_db",
         # Utility operations
         "check_collection_has_document",
         "check_edge_exists",
-        "get_failed_records_with_active_users",
         "get_failed_records_by_org",
         "check_toolset_instance_in_use",
         "check_connector_in_use",
-        # Knowledge hub operations
-        "get_knowledge_hub_root_nodes",
-        "get_knowledge_hub_children",
-        "get_knowledge_hub_search",
+        # Knowledge hub operations. The three inventory tests below fail if one
+        # of these is removed or renamed, and one of them fails on additions too.
+        # Knowledge hub v2: the permission-model read queries. Browse, flatten
+        # and one partition of a global search are all the children method.
+        "get_knowledge_hub_root_nodes_v2",
+        "get_knowledge_hub_access_context_v2",
         "get_knowledge_hub_breadcrumbs",
         "get_knowledge_hub_context_permissions",
         "get_knowledge_hub_filter_options",
-        "get_knowledge_hub_node_info",
         "get_knowledge_hub_node_access",
         "get_linked_records",
         "get_knowledge_hub_parent_node",
         "validate_folder_exists_in_kb",
         "get_key_by_external_message_id",
-        "get_related_records_by_relation_type",
         "get_message_id_header_by_key",
         "get_related_mails_by_message_id_header",
         "check_connector_name_uniqueness",
@@ -448,10 +441,9 @@ class TestAbstractMethodInventory:
         # Upload validation
         "validate_folder_for_upload",
         # Record location / permission-aware trails
-        "filter_nodes_with_permission_role",
-        "filter_accessible_virtual_record_ids",
-        "filter_accessible_record_ids",
         "get_record_parent_adjacency",
+        # Migrations
+        "migrate_legacy_relation_edge",
     ]
 
     def test_all_expected_methods_are_abstract(self):
@@ -594,3 +586,85 @@ class TestConcreteMethodCalls:
         result = await instance.get_record_path("rec1", transaction="tx123")
         assert result == "Root/Child/File.pdf"
         instance.get_record_path.assert_called_once_with("rec1", transaction="tx123")
+
+
+class TestKhV3Shared:
+    """``_kh_v3_shared`` shares a computation among the callers waiting for it and keeps nothing."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_callers_share_one_compute(self):
+        instance = _make_concrete_class()()
+        release = asyncio.Event()
+        calls = 0
+
+        async def compute():
+            nonlocal calls
+            calls += 1
+            await release.wait()
+            return ["grant"]
+
+        first = asyncio.ensure_future(instance._kh_v3_shared(("grants", "u1"), compute))
+        second = asyncio.ensure_future(instance._kh_v3_shared(("grants", "u1"), compute))
+        await asyncio.sleep(0)
+        release.set()
+
+        assert await asyncio.gather(first, second) == [["grant"], ["grant"]]
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_other_key_computes_on_its_own(self):
+        instance = _make_concrete_class()()
+        release = asyncio.Event()
+
+        async def compute(value):
+            await release.wait()
+            return value
+
+        first = asyncio.ensure_future(instance._kh_v3_shared(("grants", "u1"), lambda: compute("one")))
+        second = asyncio.ensure_future(instance._kh_v3_shared(("grants", "u2"), lambda: compute("two")))
+        await asyncio.sleep(0)
+        release.set()
+
+        assert await asyncio.gather(first, second) == ["one", "two"]
+
+    @pytest.mark.asyncio
+    async def test_failed_compute_is_not_retained(self):
+        instance = _make_concrete_class()()
+        answers = iter([RuntimeError("graph down"), ["grant"]])
+
+        async def compute():
+            answer = next(answers)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        with pytest.raises(RuntimeError, match="graph down"):
+            await instance._kh_v3_shared(("grants", "u1"), compute)
+
+        assert await instance._kh_v3_shared(("grants", "u1"), compute) == ["grant"]
+
+    @pytest.mark.asyncio
+    async def test_call_after_the_first_finished_computes_again(self, monkeypatch):
+        monkeypatch.setenv("KH_BROWSE_GRANTS_TTL_SECONDS", "60")
+        instance = _make_concrete_class()()
+        answers = iter([["before revoke"], []])
+
+        async def compute():
+            return next(answers)
+
+        assert await instance._kh_v3_shared(("grants", "u1"), compute) == ["before revoke"]
+        assert await instance._kh_v3_shared(("grants", "u1"), compute) == []
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_held_once_the_compute_finished(self, monkeypatch):
+        monkeypatch.setenv("KH_BROWSE_GRANTS_TTL_SECONDS", "60")
+        instance = _make_concrete_class()()
+
+        async def compute():
+            return ["grant"]
+
+        await instance._kh_v3_shared(("grants", "u1"), compute)
+        await asyncio.sleep(0)
+
+        held = [value for name, value in vars(instance).items() if name.startswith("_kh_v3_")]
+        assert all(not value for value in held)

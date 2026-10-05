@@ -29,10 +29,11 @@ ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 ARANGO_DB = "connector_search_access_it"
 
+# The collections the search map reads; the connector gate reads apps, teams and userAppRelation.
 _DOC_COLLECTIONS = (
-    "users", "records", "recordGroups", "groups", "roles", "organizations", "anyone",
+    "users", "records", "recordGroups", "groups", "roles", "organizations", "anyone", "apps", "teams",
 )
-_EDGE_COLLECTIONS = ("permission", "belongsTo", "inheritPermissions", "authenticatedAs")
+_EDGE_COLLECTIONS = ("permission", "belongsTo", "inheritPermissions", "authenticatedAs", "userAppRelation")
 _NEO4J_LABELS = {"users": "User", "records": "Record", "groups": "Group", "roles": "Role"}
 
 

@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import Connectors, PermissionModel
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
@@ -330,18 +331,21 @@ class TestFilterNodesWithPermissionRole:
 
     @pytest.mark.asyncio
     async def test_failure_is_raised_when_requested(self) -> None:
+        """The batch access check behind it raises one error for every failure,
+        carrying the cause, so a caller can tell it from "no access"."""
         p = _provider(RuntimeError("neo4j down"))
-        with pytest.raises(RuntimeError, match="neo4j down"):
+        with pytest.raises(PermissionVerificationUnavailableError, match="neo4j down") as raised:
             await p.filter_nodes_with_permission_role(
                 self._NODES, "uk1", "org1", raise_on_error=True
             )
+        assert isinstance(raised.value.__cause__, RuntimeError)
 
     @pytest.mark.asyncio
     async def test_missing_client_raises_only_when_requested(self) -> None:
         p = _provider([])
         p.client = None
         assert await p.filter_nodes_with_permission_role(self._NODES, "uk1", "org1") == set()
-        with pytest.raises(RuntimeError):
+        with pytest.raises(PermissionVerificationUnavailableError):
             await p.filter_nodes_with_permission_role(
                 self._NODES, "uk1", "org1", raise_on_error=True
             )

@@ -1,15 +1,17 @@
-import asyncio
 import logging
-import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.services.graph_db.arango.arango_http_provider import (
-    ARANGO_ID_PARTS_COUNT,
-    MAX_REINDEX_DEPTH,
     ArangoHTTPProvider,
 )
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+
+def _grant_asked(user_key, org_id, *, node_ids=(), **_kwargs):  # noqa: ANN001, ANN202
+    """A ``check_access`` stub admitting every asked node."""
+    return AccessCheck(node_ids=frozenset(node_ids))
 
 
 @pytest.fixture
@@ -101,46 +103,6 @@ class TestGetRecordById:
         connected_provider.execute_query = AsyncMock(side_effect=Exception("db error"))
         result = await connected_provider.get_record_by_id("r1")
         assert result is None
-
-
-class TestCheckRecordGroupPermissions:
-    @pytest.mark.asyncio
-    async def test_allowed(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[{"allowed": True, "role": "OWNER"}])
-        result = await connected_provider._check_record_group_permissions("rg1", "u1", "org1")
-        assert result["allowed"] is True
-        assert result["role"] == "OWNER"
-
-    @pytest.mark.asyncio
-    async def test_denied(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[{"allowed": False}])
-        result = await connected_provider._check_record_group_permissions("rg1", "u1", "org1")
-        assert result["allowed"] is False
-
-    @pytest.mark.asyncio
-    async def test_empty_results(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[])
-        result = await connected_provider._check_record_group_permissions("rg1", "u1", "org1")
-        assert result["allowed"] is False
-
-    @pytest.mark.asyncio
-    async def test_a_check_that_could_not_run_says_so(self, connected_provider):
-        """"We could not tell" is not "you are not allowed".
-
-        Without that distinction the caller answers 403 and puts the exception's
-        own words in it, which the dashboard shows as a toast.
-        """
-        connected_provider.execute_query = AsyncMock(side_effect=Exception("err"))
-        result = await connected_provider._check_record_group_permissions("rg1", "u1", "org1")
-        assert result["allowed"] is False
-        assert result["checkFailed"] is True
-
-    @pytest.mark.asyncio
-    async def test_a_refusal_is_not_marked_as_a_failed_check(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[{"allowed": False}])
-        result = await connected_provider._check_record_group_permissions("rg1", "u1", "org1")
-        assert result["allowed"] is False
-        assert not result.get("checkFailed")
 
 
 class TestCheckConnectorNameExists:
@@ -265,7 +227,7 @@ class TestReindexRecordGroupRecords:
             {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
         ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
-        connected_provider._check_record_group_permissions = AsyncMock(return_value={"allowed": True, "role": "OWNER"})
+        connected_provider.check_access = AsyncMock(side_effect=_grant_asked)
         result = await connected_provider.reindex_record_group_records("rg1", -1, "u1", "org1")
         assert result["success"] is True
 
@@ -276,10 +238,7 @@ class TestReindexRecordGroupRecords:
             {"_key": "c1", "isActive": True, "name": "Drive"},
         ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
-        connected_provider._check_record_group_permissions = AsyncMock(return_value={
-            "allowed": False, "role": None, "checkFailed": True,
-            "reason": "Transaction 7c1b-41 not found",
-        })
+        connected_provider.check_access = AsyncMock(side_effect=RuntimeError("graph down"))
 
         result = await connected_provider.reindex_record_group_records("rg1", 0, "u1", "org1")
         assert result["code"] == 500
@@ -316,7 +275,7 @@ class TestReindexRecordGroupRecords:
             {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
         ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
-        connected_provider._check_record_group_permissions = AsyncMock(return_value={"allowed": False, "reason": "no access"})
+        connected_provider.check_access = AsyncMock(return_value=AccessCheck())
         result = await connected_provider.reindex_record_group_records("rg1", 0, "u1", "org1")
         assert result["success"] is False
         assert result["code"] == 403
@@ -328,31 +287,9 @@ class TestReindexRecordGroupRecords:
             {"_key": "c1", "isActive": True, "name": "Drive"},  # connector doc (active)
         ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
-        connected_provider._check_record_group_permissions = AsyncMock(return_value={"allowed": True, "role": "OWNER"})
+        connected_provider.check_access = AsyncMock(side_effect=_grant_asked)
         result = await connected_provider.reindex_record_group_records("rg1", -5, "u1", "org1")
         assert result["success"] is True
-
-
-class TestCheckRecordPermissions:
-    @pytest.mark.asyncio
-    async def test_has_permission(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[{"permission": "OWNER", "source": "DIRECT"}])
-        result = await connected_provider._check_record_permissions("r1", "u1")
-        assert result["permission"] == "OWNER"
-        assert result["source"] == "DIRECT"
-
-    @pytest.mark.asyncio
-    async def test_no_permission(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[{"permission": None, "source": "NONE"}])
-        result = await connected_provider._check_record_permissions("r1", "u1")
-        assert result["permission"] is None
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(side_effect=Exception("err"))
-        result = await connected_provider._check_record_permissions("r1", "u1")
-        assert result["permission"] is None
-        assert result["source"] == "ERROR"
 
 
 class TestBatchCreateEntityRelations:
@@ -511,26 +448,6 @@ class TestGetEdgesFromNode:
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("err"))
         result = await connected_provider.get_edges_from_node("users/u1", "permissions")
-        assert result == []
-
-
-class TestGetRelatedNodes:
-    @pytest.mark.asyncio
-    async def test_outbound(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[{"_key": "n1"}])
-        result = await connected_provider.get_related_nodes("users/u1", "permissions", "records", "outbound")
-        assert len(result) == 1
-
-    @pytest.mark.asyncio
-    async def test_inbound(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[{"_key": "n1"}])
-        result = await connected_provider.get_related_nodes("records/r1", "permissions", "users", "inbound")
-        assert len(result) == 1
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("err"))
-        result = await connected_provider.get_related_nodes("users/u1", "perm", "records")
         assert result == []
 
 
@@ -785,7 +702,7 @@ class TestReindexSingleRecord:
             {"isActive": True},
         ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
-        connected_provider._check_record_permissions = AsyncMock(return_value={"permission": "OWNER"})
+        connected_provider.check_access = AsyncMock(side_effect=_grant_asked)
         connected_provider.update_indexing_status_for_record_ids = AsyncMock()
         result = await connected_provider.reindex_single_record("r1", "u1", "org1", depth=-1)
         assert result["success"] is True
@@ -797,7 +714,7 @@ class TestReindexSingleRecord:
             {"isActive": False, "name": "Drive"},
         ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
-        connected_provider._check_record_permissions = AsyncMock(return_value={"permission": "OWNER"})
+        connected_provider.check_access = AsyncMock(side_effect=_grant_asked)
         result = await connected_provider.reindex_single_record("r1", "u1", "org1")
         assert result["success"] is False
         assert result["code"] == 409

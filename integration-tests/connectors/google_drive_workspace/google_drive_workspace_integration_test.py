@@ -189,7 +189,7 @@ class TestDriveWorkspaceFolderFilter:
             RecordAssertion(
                 external_record_id=seed_id,
                 record_name=drive_workspace_connector["seed_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
             ),
         )
         await connector_assertions.assert_record_exists(
@@ -198,7 +198,7 @@ class TestDriveWorkspaceFolderFilter:
             RecordAssertion(
                 external_record_id=nested_id,
                 record_name=drive_workspace_connector["nested_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
                 parent_external_record_id=seed_id,
             ),
         )
@@ -303,7 +303,7 @@ class TestDriveWorkspaceFolderFilter:
             RecordAssertion(
                 external_record_id=deeper_id,
                 record_name="deeper",
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
                 parent_external_record_id=seed_id,
             ),
         )
@@ -499,7 +499,7 @@ class TestDriveWorkspaceFolderFilter:
             RecordAssertion(
                 external_record_id=movable_id,
                 record_name="movable",
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
                 parent_external_record_id=seed_id,
             ),
         )
@@ -615,7 +615,7 @@ class TestDriveWorkspaceFolderFilter:
             RecordAssertion(
                 external_record_id=root_id,
                 record_name=drive_workspace_connector["root_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
             ),
         )
         await connector_assertions.assert_record_exists(
@@ -624,7 +624,7 @@ class TestDriveWorkspaceFolderFilter:
             RecordAssertion(
                 external_record_id=seed_id,
                 record_name=drive_workspace_connector["seed_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
                 parent_external_record_id=root_id,
             ),
         )
@@ -727,7 +727,7 @@ class TestDriveWorkspaceFolderFilter:
             RecordAssertion(
                 external_record_id=oos_folder_id,
                 record_name=drive_workspace_connector["oos_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
             ),
         )
         await connector_assertions.assert_record_exists(
@@ -745,7 +745,7 @@ class TestDriveWorkspaceFolderFilter:
             RecordAssertion(
                 external_record_id=nested_id,
                 record_name=drive_workspace_connector["nested_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
                 parent_external_record_id=seed_id,
             ),
         )
@@ -802,7 +802,7 @@ class TestDriveWorkspaceFolderFilter:
             RecordAssertion(
                 external_record_id=nested_id,
                 record_name=drive_workspace_connector["nested_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
             ),
         )
         await connector_assertions.assert_record_exists(
@@ -830,7 +830,7 @@ class TestDriveWorkspaceFolderFilter:
             RecordAssertion(
                 external_record_id=seed_id,
                 record_name=drive_workspace_connector["seed_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
             ),
         )
 
@@ -924,7 +924,7 @@ class TestDriveWorkspaceFolderFilter:
             RecordAssertion(
                 external_record_id=oos_folder_id,
                 record_name=drive_workspace_connector["oos_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
             ),
         )
         await connector_assertions.assert_record_exists(

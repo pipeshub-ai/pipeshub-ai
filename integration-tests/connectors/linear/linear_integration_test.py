@@ -68,6 +68,7 @@ from validation.graph_entity_validator import (  # noqa: E402
 from validation.graph_edge_validator import (  # noqa: E402
     assert_graph_edges,
     build_record_edge_expectations,
+    resolve_parent_record,
 )
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from connectors.linear.constants import (  # noqa: E402
@@ -577,7 +578,10 @@ class TestLinearValidation:
         )
         assert record.source_created_at is not None
 
-        record_edges = build_record_edge_expectations(record, connector_id)
+        record_edges = build_record_edge_expectations(
+            record, connector_id,
+            parent=await resolve_parent_record(graph_provider, record, connector_id),
+        )
         await assert_graph_edges(graph_provider, record_edges)
 
         logger.info("TC-LINEAR-004 passed: issue %s validated", ref_id)

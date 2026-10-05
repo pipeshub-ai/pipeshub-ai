@@ -10,16 +10,26 @@ class PermissionType(str, Enum):
     READ = "READER"
     WRITE = "WRITER"
     OWNER = "OWNER"
-    COMMENT = "COMMENTER"
-    OTHER = "OTHERS"
+
+#: Roles the model does not have. Stored grants that carry one are not
+#: migrated; they read as READER.
+RETIRED_ROLES = frozenset({"ORGANIZER", "COMMENTER", "FILEORGANIZER", "OTHERS"})
+
+
+def read_role(role: str | None) -> str | None:
+    """A stored role as the model reads it: a retired role is READER."""
+    return PermissionType.READ.value if role in RETIRED_ROLES else role
+
 
 class EntityType(str, Enum):
     USER = "USER"
     GROUP = "GROUP"
     ROLE = "ROLE"
-    DOMAIN = "DOMAIN"
     ORG = "ORG"
     TEAM = "TEAM"
+    # What a source reports for a domain, public or link share. A connector may
+    # name them; they write no grant.
+    DOMAIN = "DOMAIN"
     ANYONE = "ANYONE"
     ANYONE_WITH_LINK = "ANYONE_WITH_LINK"
 
