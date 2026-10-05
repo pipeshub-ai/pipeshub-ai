@@ -1479,6 +1479,36 @@ class TestReleasingQueuedCopies:
         assert rows["copy"]["indexingStatus"] == ProgressStatus.COMPLETED.value
         assert rows["copy"]["extractionStatus"] == ProgressStatus.FAILED.value
 
+    @pytest.mark.asyncio
+    async def test_a_blip_on_the_last_attempts_check_never_fails_a_searchable_record(self) -> None:
+        """The check's read fails once; the status write's own read then succeeds."""
+        handler = _make_handler()
+        rows, state = self._graph(handler, ProgressStatus.IN_PROGRESS.value)
+        state["connector_read_fails"] = True
+        real_get_document = handler.event_processor.graph_provider.get_document.side_effect
+        reads_after_the_attempt = {"n": 0}
+
+        async def get_document(doc_id, collection, *, raise_on_error=False, **kw) -> dict | None:
+            if collection == CollectionNames.RECORDS.value and raise_on_error and state["connector_read_fails"] is None:
+                reads_after_the_attempt["n"] += 1
+                if reads_after_the_attempt["n"] == 1:
+                    raise ConnectionError("graph unavailable")
+            if collection == CollectionNames.APPS.value and state["connector_read_fails"]:
+                state["connector_read_fails"] = None  # the attempt is over; what follows is the finally
+                raise ConnectionError("graph unavailable")
+            return await real_get_document(doc_id, collection, raise_on_error=raise_on_error, **kw)
+
+        handler.event_processor.graph_provider.get_document = AsyncMock(side_effect=get_document)
+
+        with pytest.raises(ConnectionError):
+            await _collect_events(
+                handler, EventTypes.NEW_RECORD.value, {**self._PAYLOAD, "is_final_failure": True}
+            )
+
+        assert reads_after_the_attempt["n"] >= 1, "the check's read was the one that failed"
+        assert rows["r1"]["indexingStatus"] == ProgressStatus.COMPLETED.value, "never FAILED/FAILED"
+        assert rows["r1"]["extractionStatus"] in (ProgressStatus.FAILED.value, ProgressStatus.IN_PROGRESS.value)
+
 
 # ===================================================================
 # Connector active/inactive checks

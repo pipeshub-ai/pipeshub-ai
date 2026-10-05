@@ -461,13 +461,22 @@ class RecordEventHandler(BaseEventService):
             )
 
     async def _enrichment_still_cut_short(self, record_id: str) -> bool:
+        """False only on proof that this attempt re-indexed the record.
+
+        An unreadable record proves nothing, and the FAILED/FAILED write it
+        would otherwise get makes a searchable record unsearchable; the
+        resumed-enrichment exit writes only extraction, so it is the safe one.
+        """
         try:
             current = await self.event_processor.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value, raise_on_error=True
             )
         except Exception as e:
-            self.logger.warning("Could not re-read record %s after its last attempt: %s", record_id, e)
-            return False
+            self.logger.warning(
+                "Could not re-read record %s after its last attempt; keeping it searchable: %s",
+                record_id, e,
+            )
+            return True
         return bool(current) and (
             current.get("indexingStatus") == ProgressStatus.COMPLETED.value
             and current.get("extractionStatus") == ProgressStatus.IN_PROGRESS.value
