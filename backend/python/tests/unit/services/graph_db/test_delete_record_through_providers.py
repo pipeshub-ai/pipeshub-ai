@@ -71,6 +71,8 @@ class _Neo4jDriver:
     def __init__(self, record: dict | None, access: list | None, kb_context: dict | None, kb_role: str | None) -> None:
         self.record, self.access, self.kb_context, self.kb_role = record, access, kb_context, kb_role
         self.attachments: dict[str, dict] = {}
+        # attachment id -> the record its ATTACHMENT edge comes from (RECORD_ID unless set)
+        self.attachment_parents: dict[str, str] = {}
         self.fail_reading: str | None = None
         self.fail_deleting: str | None = None
         # Each statement commits on its own, as with NEO4J_EXPLICIT_TRANSACTIONS off.
@@ -98,8 +100,13 @@ class _Neo4jDriver:
             self.deleted |= keys
             return []
         if "relationshipType = 'ATTACHMENT'" in query:
+            # Filters only on what the query names, as the database would.
+            by_parent = "(:Record {id: $record_id})-[e:RECORD_RELATION]->(a:Record)" in query
+            by_org = "a.orgId = $org_id" in query
             return [
-                {"id": key} for key, a in self.attachments.items() if a.get("orgId") == parameters.get("org_id")
+                {"id": key} for key, a in self.attachments.items()
+                if (not by_parent or self.attachment_parents.get(key, RECORD_ID) == parameters.get("record_id"))
+                and (not by_org or a.get("orgId") == parameters.get("org_id"))
             ]
         if parameters.get("key") in self.attachments and "DELETE" not in query:
             if parameters["key"] == self.fail_reading:
@@ -421,8 +428,8 @@ async def test_neo4j_sync_delete_by_external_id_still_removes_a_synced_record() 
     assert any("DETACH DELETE" in q for q in driver.destructive)
 
 
-def _attachment(**fields: str | None) -> dict:
-    return _record(origin="CONNECTOR", connectorName="OUTLOOK", connectorId="conn-1", **fields)
+def _attachment(connector_name: str = "OUTLOOK", **fields: str | None) -> dict:
+    return _record(origin="CONNECTOR", connectorName=connector_name, connectorId="conn-1", **fields)
 
 
 def _deleted_keys(driver: _Neo4jDriver) -> set[str]:
@@ -435,9 +442,12 @@ def _deleted_keys(driver: _Neo4jDriver) -> set[str]:
 )
 async def test_neo4j_mail_delete_removes_its_attachments_with_their_cleanup(mail: dict) -> None:
     provider, driver = _neo4j(mail, None, None, None)
+    connector = mail["connectorName"]
     driver.attachments = {
-        "att-1": _attachment(recordName="tickets.pdf", virtualRecordId="vr-att-1", summaryDocumentId="sum-att-1"),
-        "att-2": _attachment(recordName="logo.png", virtualRecordId=None),
+        "att-1": _attachment(
+            connector, recordName="tickets.pdf", virtualRecordId="vr-att-1", summaryDocumentId="sum-att-1"
+        ),
+        "att-2": _attachment(connector, recordName="logo.png", virtualRecordId=None),
     }
     provider.get_record_by_external_id = AsyncMock(return_value=_typed(mail))
 
@@ -450,7 +460,23 @@ async def test_neo4j_mail_delete_removes_its_attachments_with_their_cleanup(mail
     assert [p["virtualRecordId"] for p in payloads] == ["vr-1", "vr-att-1"]
     assert payloads[1]["recordId"] == "att-1"
     assert payloads[1]["summaryDocumentId"] == "sum-att-1"
-    assert payloads[1]["connectorName"] == "OUTLOOK"
+    assert payloads[1]["connectorName"] == connector
+
+
+@pytest.mark.asyncio
+async def test_neo4j_mail_delete_leaves_another_mails_attachment() -> None:
+    provider, driver = _neo4j(OUTLOOK_MAIL, None, None, None)
+    driver.attachments = {
+        "att-1": _attachment(virtualRecordId="vr-att-1"),
+        "att-sibling": _attachment(virtualRecordId="vr-att-sibling"),
+    }
+    driver.attachment_parents = {"att-sibling": "other-mail"}
+    provider.get_record_by_external_id = AsyncMock(return_value=_typed(OUTLOOK_MAIL))
+
+    result = await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
+
+    assert _deleted_keys(driver) == {RECORD_ID, "att-1"}
+    assert [p["virtualRecordId"] for p in result["eventData"]["payloads"]] == ["vr-1", "vr-att-1"]
 
 
 @pytest.mark.asyncio
