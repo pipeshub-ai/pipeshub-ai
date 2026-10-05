@@ -18,6 +18,8 @@ from helper.clients.users_client import UsersClient  # noqa: E402
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
 
 from user_account_audit_support import (  # noqa: E402
+    MISSING_USER_ID,
+    OTHER_SCOPE,
     VALIDATE_EMAIL_SCOPE,
     DisposableMember,
     MintEmailChangeToken,
@@ -35,12 +37,15 @@ def user_account_audit_client(pipeshub_client: PipeshubClient) -> UserAccountAud
 
 
 @pytest.fixture(scope="session")
-def email_change_token(pipeshub_client: PipeshubClient) -> MintEmailChangeToken:
+def email_change_token(
+    pipeshub_client: PipeshubClient, user_account_audit_client: UserAccountAuditClient
+) -> MintEmailChangeToken:
     """Factory: ``email_change_token(user_id, new_email)`` -> a token validateEmailChange accepts.
 
     Signed like the link in the verification mail. ``scopes=[...]``, ``ttl_seconds=``
     and extra claims override the defaults; ``orgId`` defaults to the shared org.
-    Skips when SCOPED_JWT_SECRET is unset, since the token cannot be forged then.
+    Skips when SCOPED_JWT_SECRET is unset or is not the secret this deployment
+    verifies with, since the token cannot be forged then.
     """
     secret = scoped_jwt_secret()
     if not secret:
@@ -48,6 +53,25 @@ def email_change_token(pipeshub_client: PipeshubClient) -> MintEmailChangeToken:
             "SCOPED_JWT_SECRET is not set: validateEmailChange accepts only an email:validate token"
         )
     key = user_action_key(secret)
+
+    # A wrong-scope token is refused either way, but a good signature gets
+    # "Invalid scope" and a bad one "Invalid token" (AuthTokenService.verifyScopedToken).
+    probe = user_account_audit_client.validate_email_change(
+        token=mint_scoped_token(
+            key,
+            [OTHER_SCOPE],
+            userId=MISSING_USER_ID,
+            newEmail=unused_email(),
+            orgId=pipeshub_client.org_id,
+        )
+    )
+    assert probe.status_code == 401, probe.text[:500]
+    if probe.json()["error"]["message"] != "Invalid scope":
+        pytest.skip(
+            "SCOPED_JWT_SECRET is not the scoped JWT secret this deployment verifies "
+            "with (it answers 'Invalid token' to a token signed with it), so an "
+            "email:validate token cannot be minted"
+        )
 
     def _mint(
         user_id: str,
