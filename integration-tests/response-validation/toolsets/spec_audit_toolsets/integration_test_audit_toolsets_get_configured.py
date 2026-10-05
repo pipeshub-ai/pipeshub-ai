@@ -16,25 +16,31 @@ ROUTE = "/api/v1/toolsets/configured"
 # objects. The type filter then matches no instance, the truthy includeRegistry skips the
 # empty-list early return, and `(page - 1) * limit` raises TypeError: a 500 for every
 # authenticated caller, whatever the store holds. Node forwards no query string either.
+CONFIGURED_ALWAYS_500 = (
+    "API bug: GET /toolsets/configured answers 500 to every authenticated caller "
+    "(Python calls get_my_toolsets() directly, leaving its Query() defaults unresolved)"
+)
 
 
+@pytest.mark.xfail(strict=True, reason=CONFIGURED_ALWAYS_500)
 @pytest.mark.parametrize(
     "params",
     [{}, {"page": 1, "limit": 5}],
     ids=["no_query", "paging_query_not_forwarded"],
 )
-def test_configured_fails_for_admin(
+def test_configured_lists_toolsets_for_admin(
     toolsets_client: ToolsetsClient, params: dict[str, int]
 ) -> None:
     resp = toolsets_client.get("/configured", params=params)
-    assert resp.status_code == 500, resp.text[:500]
+    assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
 
 
-def test_configured_fails_for_member(second_user: SecondUser) -> None:
-    # No admin gate in Node or Python: the member reaches the same broken handler.
+@pytest.mark.xfail(strict=True, reason=CONFIGURED_ALWAYS_500)
+def test_configured_lists_toolsets_for_member(second_user: SecondUser) -> None:
+    # No admin gate in Node or Python: the member reaches the same handler.
     resp = request_as(second_user, "GET", "/configured")
-    assert resp.status_code == 500, resp.text[:500]
+    assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
 
 

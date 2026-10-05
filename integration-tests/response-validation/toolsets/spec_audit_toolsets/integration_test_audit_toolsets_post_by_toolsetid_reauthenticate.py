@@ -42,13 +42,19 @@ def test_reauthenticate_existing_instance_id_is_still_not_found(
     assert still_there.status_code == 200, still_there.text[:500]
 
 
-def test_reauthenticate_reserved_segment_surfaces_python_405_as_500(
+@pytest.mark.xfail(
+    strict=True,
+    reason="API bug: POST /toolsets/instances/reauthenticate answers 500 "
+    "(the id is pasted into a Python path without a POST handler; its 405 is mapped to a 500)",
+)
+def test_reauthenticate_reserved_segment_is_not_found(
     toolsets_client: ToolsetsClient,
 ) -> None:
     # "instances" makes the proxied path /instances/reauthenticate, which Python matches
-    # for GET/PUT/DELETE only; its 405 is not a status Node's error mapper keeps.
+    # for GET/PUT/DELETE only; its 405 is not a status Node's error mapper keeps. Nothing
+    # can be reauthenticated under any id, so the answer every other id gets is a 404.
     resp = toolsets_client.post("/instances/reauthenticate")
-    assert resp.status_code == 500, resp.text[:500]
+    assert resp.status_code == 404, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
 
 

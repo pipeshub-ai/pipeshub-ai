@@ -27,11 +27,13 @@ def _authorize_path(instance_id: str) -> str:
 def test_oauth_instance_returns_authorization_url(
     toolsets_client: ToolsetsClient, seed_toolset_instance: SeedToolsetInstance
 ) -> None:
-    seeded = seed_toolset_instance(oauth=True)
+    # The redirect URI is fixed when the OAuth config is stored; the authorize call's own
+    # base_url is only a fallback for a config without one.
+    seeded = seed_toolset_instance(oauth=True, baseUrl=CALLBACK_BASE_URL)
 
     # Only builds the URL and stores a pending session that instance teardown removes.
     resp = toolsets_client.get(
-        _authorize_path(seeded["_id"]), params={"base_url": CALLBACK_BASE_URL}
+        _authorize_path(seeded["_id"]), params={"base_url": "https://ignored.invalid"}
     )
     assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)

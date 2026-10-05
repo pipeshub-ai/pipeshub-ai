@@ -68,16 +68,17 @@ def test_remove_credentials_of_regular_agent_is_rejected(
     assert_strict_openapi_response(resp, ROUTE)
 
 
-def test_member_without_access_to_agent_gets_not_found(
+def test_member_with_read_only_access_to_agent_is_forbidden(
     seed_agent: SeedAgent,
     second_user: SecondUser,
 ) -> None:
-    # An unshared agent is invisible to the member, so Python answers 404 rather than 403.
+    # A service-account agent is always shared with the org as READER, so the member
+    # can see it but fails the can_edit check.
     agent_key = seed_agent()
     resp = request_as(
         second_user, "DELETE", agent_path(agent_key, MISSING_INSTANCE_ID, "/credentials")
     )
-    assert resp.status_code == 404, resp.text[:500]
+    assert resp.status_code == 403, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
 
 

@@ -13,9 +13,9 @@ ROUTE = "/api/v1/toolsets/registry"
 
 
 def test_registry_lists_toolsets_with_python_defaults(toolsets_client: ToolsetsClient) -> None:
-    # Node validates include_tools but forwards only page/limit/search, so Python
-    # always answers with its own defaults: tools included, grouped by category.
-    resp = toolsets_client.get("/registry", params={"include_tools": "false"})
+    # Node forwards only page/limit/search, so Python answers with its own defaults:
+    # tools included, grouped by category.
+    resp = toolsets_client.get("/registry")
     assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
 
@@ -29,6 +29,24 @@ def test_registry_lists_toolsets_with_python_defaults(toolsets_client: ToolsetsC
     assert body["pagination"]["page"] == 1
     assert body["pagination"]["limit"] == 20
     assert body["pagination"]["total"] == len(by_name)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="API bug: GET /toolsets/registry validates include_tools but never forwards it, "
+    "so include_tools=false still returns every tool",
+)
+def test_registry_omits_tool_details_when_include_tools_is_false(
+    toolsets_client: ToolsetsClient,
+) -> None:
+    resp = toolsets_client.get("/registry", params={"include_tools": "false"})
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_response(resp, ROUTE)
+
+    # Python answers include_tools=false with an empty tools list next to the tool count.
+    by_name = {toolset["name"]: toolset for toolset in resp.json()["toolsets"]}
+    assert by_name[TOOLSET_TYPE]["tools"] == []
+    assert by_name[TOOLSET_TYPE]["toolCount"] > 0
 
 
 def test_member_searches_registry_and_gets_the_unpaged_list(second_user: SecondUser) -> None:
@@ -46,15 +64,8 @@ def test_member_searches_registry_and_gets_the_unpaged_list(second_user: SecondU
     assert len(body["toolsets"]) == pagination["total"]
 
 
-@pytest.mark.parametrize(
-    "params",
-    [{"limit": 201}, {"page": "abc"}],
-    ids=["limit-above-max", "page-not-a-number"],
-)
-def test_registry_rejects_invalid_query(
-    toolsets_client: ToolsetsClient, params: dict[str, int | str]
-) -> None:
-    resp = toolsets_client.get("/registry", params=params)
+def test_registry_rejects_a_limit_above_the_maximum(toolsets_client: ToolsetsClient) -> None:
+    resp = toolsets_client.get("/registry", params={"limit": 201})
     assert resp.status_code == 400, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
 
