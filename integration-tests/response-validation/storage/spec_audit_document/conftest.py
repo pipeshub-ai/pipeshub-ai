@@ -30,12 +30,21 @@ def document_client(pipeshub_client: PipeshubClient) -> DocumentClient:
 
 
 @pytest.fixture(scope="session")
-def scoped_secret() -> str:
+def scoped_secret(pipeshub_client: PipeshubClient, document_client: DocumentClient) -> str:
     """Skips when the run cannot sign service tokens the deployment accepts."""
     secret = scoped_jwt_secret()
     if not secret:
         pytest.skip(
             "SCOPED_JWT_SECRET is not set; /api/v1/document accepts only scoped service tokens"
+        )
+    # Node keeps its own secret in the config store once booted, so the env value can be
+    # stale. A scope-less token tells them apart: the signature is checked before the scope.
+    probe = document_client.update_app_config(token=mint_scoped_token(pipeshub_client.org_id, []))
+    message = probe.json().get("error", {}).get("message") if probe.status_code == 401 else None
+    if message != "Invalid scope":
+        pytest.skip(
+            "SCOPED_JWT_SECRET is not the deployment's scoped secret: a token signed with it "
+            f"got {probe.status_code} {message!r} instead of 401 'Invalid scope'"
         )
     return secret
 
