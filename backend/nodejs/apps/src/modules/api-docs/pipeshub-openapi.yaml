@@ -8731,6 +8731,10 @@ components:
             required:
               - message
             properties:
+              _id:
+                type: string
+                format: objectId
+                description: Sub-document identifier auto-assigned by MongoDB.
               message:
                 type: string
               errorType:
@@ -8888,6 +8892,10 @@ components:
           items:
             type: object
             properties:
+              _id:
+                type: string
+                format: objectId
+                description: Sub-document identifier auto-assigned by MongoDB.
               message:
                 type: string
               errorType:
@@ -12475,6 +12483,10 @@ components:
             type: object
             additionalProperties: false
             properties:
+              _id:
+                type: string
+                format: objectId
+                description: Sub-document identifier auto-assigned by MongoDB.
               message:
                 type: string
               errorType:
@@ -20350,6 +20362,88 @@ components:
               type: integer
               minimum: 0
               description: Same value as the top-level `recordsUsed`.
+
+    StoredAIModelsConfig:
+      type: object
+      additionalProperties: false
+      description: |
+        The organisation's AI models configuration exactly as it is stored,
+        returned by `GET /configurationManager/aiModelsConfig` with no envelope.
+
+        Unlike `AIModelsConfig` (the `models` object of
+        `GET /configurationManager/ai-models`), nothing is defaulted on read:
+        a key is present only if it was written. The body is `{}` when no AI
+        model has ever been configured; a configuration written through
+        `POST /configurationManager/aiModelsConfig` holds only the buckets
+        that request sent; once a provider has been added through
+        `POST /configurationManager/ai-models/providers` all nine buckets and
+        `modelRoles` are present (empty when unused).
+
+        Each entry's `configuration` is cut down to the public allowlist
+        (`model`, `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`),
+        so provider credentials such as API keys are never returned here.
+      properties:
+        ocr:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        embedding:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        slm:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        llm:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        reasoning:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        multiModal:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        imageGeneration:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        tts:
+          type: array
+          description: Text-to-Speech providers used to generate chat audio.
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        stt:
+          type: array
+          description: Speech-to-Text providers used to transcribe chat audio.
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        modelRoles:
+          type: object
+          description: >-
+            Map of named role → model assignment. Each key is a role name
+            (e.g. `indexing`) and the value identifies which configured model
+            handles that role. Empty object when no role is assigned.
+          additionalProperties:
+            $ref: '#/components/schemas/ModelRoleAssignment'
+        customSystemPrompt:
+          type: string
+          deprecated: true
+          description: |
+            Legacy chat system prompt. Present only on configurations saved
+            before prompts moved to their own store; read prompts from
+            `GET /configurationManager/prompts/system` instead.
+        customSystemPromptWebSearch:
+          type: string
+          deprecated: true
+          description: Legacy web-search system prompt. See `customSystemPrompt`.
+        customSystemPromptAgent:
+          type: string
+          deprecated: true
+          description: Legacy agent system prompt. See `customSystemPrompt`.
 
 security:
   - bearerAuth: []
@@ -51111,19 +51205,22 @@ paths:
         - Configuration Manager
       summary: Get AI models configuration
       description: |
-        Retrieve the AI models configuration for the organization. Each entry's
-        `configuration` includes only `model`, `modelFriendlyName`, `dimensions`,
-        and `defaultReasoningEffort` when stored.
+        Retrieve the AI models configuration for the organization (admin-only),
+        as stored and without an envelope: `{}` when nothing has been
+        configured, otherwise the model-type buckets plus `modelRoles`. Each
+        entry's `configuration` includes only `model`, `modelFriendlyName`,
+        `dimensions`, and `defaultReasoningEffort` when stored, so provider
+        credentials (API keys and the like) are never part of this response.
       operationId: getAIModelsConfig
       security:
         - bearerAuth: []
       responses:
         '200':
-          description: AI models config retrieved
+          description: AI models config retrieved (`{}` when none is stored)
           content:
             application/json:
               schema:
-                type: object
+                $ref: '#/components/schemas/StoredAIModelsConfig'
         '401':
           description: Unauthorized
           content:
