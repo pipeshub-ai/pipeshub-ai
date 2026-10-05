@@ -23,13 +23,15 @@ STALE_IF_MATCH = "1"
 def test_patch_replaces_marker_with_current_if_match(
     skills_client: SkillsClient, seed_skill: SeedSkill
 ) -> None:
-    skill = seed_skill()
-    name = skill["name"]
+    name = seed_skill()["name"]
+    # The create response carries null timestamps, so the If-Match token comes from a read.
+    current = skills_client.fetch(name)
+    assert current.status_code == 200, f"reading the seeded skill failed: {current.text[:500]}"
 
     resp = skills_client.patch(
         f"/{name}/body",
         json={"old_string": SKILL_BODY_MARKER, "new_string": REPLACEMENT},
-        headers={"If-Match": str(skill["updatedAt"])},
+        headers={"If-Match": current.json()["updatedAt"]},
     )
     assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
