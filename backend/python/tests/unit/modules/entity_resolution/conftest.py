@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.blocks import SemanticMetadata
 from app.modules.entity_resolution.models import MergeDecision, MergeDecisions
 from app.modules.entity_resolution.normalizer import normalize_name
@@ -57,6 +59,10 @@ class FakeGraph:
         self.fail_find = False
         self.fail_node_lookup = False
         self.node_lookup_kwargs: list[dict[str, Any]] = []
+        # Raised by the next filter / edge reads; like both providers, a
+        # failed read is [] unless the caller passes raise_on_error.
+        self.fail_filter_reads: list[Exception] = []
+        self.fail_edge_reads: list[Exception] = []
 
     # ---- setup helpers ----
     def add_record(self, key: str, org_id: str, connector_id: str = "conn-1",
@@ -140,6 +146,17 @@ class FakeGraph:
         stored.setdefault("aliases", [])
         self.nodes[key] = stored
 
+    async def ensure_taxonomy_hierarchy_edge(self, child_collection, child_key, parent_key) -> None:
+        from app.services.graph_db.taxonomy import CATEGORY_HIERARCHY_PARENTS
+
+        parent_collection = CATEGORY_HIERARCHY_PARENTS[child_collection]
+        edge = (
+            CollectionNames.INTER_CATEGORY_RELATIONS.value,
+            f"{child_collection}/{child_key}",
+            f"{parent_collection}/{parent_key}",
+        )
+        self.edges.setdefault(edge, {"from_id": child_key, "to_id": parent_key})
+
     async def add_taxonomy_aliases(
         self, collection, key, aliases, normalized_aliases, *, org_id, max_aliases=20, transaction=None
     ) -> None:
@@ -161,8 +178,14 @@ class FakeGraph:
     async def get_record_by_key(self, key, *, raise_on_error: bool = False) -> dict[str, Any] | None:
         return self.records.get(key)
 
-    async def get_nodes_by_filters(self, collection, filters, return_fields=None) -> list[dict[str, Any]]:
+    async def get_nodes_by_filters(self, collection, filters, return_fields=None, *,
+                                   raise_on_error=False) -> list[dict[str, Any]]:
         self.calls.append(("get_nodes_by_filters", (collection, dict(filters))))
+        if self.fail_filter_reads:
+            error = self.fail_filter_reads.pop(0)
+            if raise_on_error:
+                raise error
+            return []
         if collection == DEPARTMENTS:
             name = filters.get("departmentName")
             return [{"_key": self.departments[name]}] if name in self.departments else []
@@ -182,12 +205,21 @@ class FakeGraph:
     async def batch_update_nodes(self, nodes, collection) -> bool:
         return True
 
+    def is_write_conflict(self, error: BaseException) -> bool:
+        return "write conflict" in str(error)
+
     async def get_edge(self, from_key, from_collection, to_key, to_collection, edge_collection) -> dict[str, Any] | None:
         return self.edges.get(
             (edge_collection, f"{from_collection}/{from_key}", f"{to_collection}/{to_key}")
         )
 
-    async def get_edges_from_node_with_target_name(self, record_from, edge_collection) -> list[dict[str, Any]]:
+    async def get_edges_from_node_with_target_name(self, record_from, edge_collection, *,
+                                                   raise_on_error=False) -> list[dict[str, Any]]:
+        if self.fail_edge_reads:
+            error = self.fail_edge_reads.pop(0)
+            if raise_on_error:
+                raise error
+            return []
         out = []
         for (coll, frm, to), edge in self.edges.items():
             if coll == edge_collection and frm == record_from:
@@ -504,6 +536,9 @@ def make_transformer(fake_graph) -> Callable[[], GraphDBTransformer]:
         transformer.graph_data_store = MagicMock()
         transformer.graph_data_store.graph_provider = fake_graph
         transformer.graph_data_store.transaction = MagicMock(side_effect=lambda: _Txn())
+        transformer.graph_data_store.execute_idempotent_in_transaction = partial(
+            GraphDataStore.execute_idempotent_in_transaction, transformer.graph_data_store,
+        )
         return transformer
 
     return _make

@@ -604,12 +604,13 @@ async def health_check() -> JSONResponse:
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("Health check failed")
         return JSONResponse(
             status_code=500,
             content={
                 "status": "unhealthy",
-                "error": str(e),
+                "error": "Health check failed",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
