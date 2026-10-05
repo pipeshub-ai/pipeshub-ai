@@ -171,7 +171,17 @@ class FakeGraph:
         return True
 
     async def batch_update_nodes(self, nodes, collection) -> bool:
-        return True
+        # Both providers merge each patch into an existing node only, and
+        # report False when any target is missing.
+        all_found = True
+        for node in nodes:
+            key = node.get("id", node.get("_key"))
+            target = self.records.get(key) if collection == RECORDS else self.nodes.get((collection, key))
+            if target is None:
+                all_found = False
+                continue
+            target.update({k: v for k, v in node.items() if k not in ("id", "_key")})
+        return all_found
 
     def is_write_conflict(self, error: BaseException) -> bool:
         return "write conflict" in str(error)
