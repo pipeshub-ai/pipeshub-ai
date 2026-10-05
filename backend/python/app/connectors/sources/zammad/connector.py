@@ -1,4 +1,5 @@
 """Zammad Connector Implementation"""
+import asyncio
 import base64
 import re
 from dataclasses import dataclass, field
@@ -1074,7 +1075,8 @@ class ZammadConnector(BaseConnector):
 
     def _window_bounds(self, low: int | None, high: int | None) -> tuple[int, int]:
         lo = low if low is not None else (self._date_filter_bounds(SyncFilterKey.MODIFIED)[0] or 0)
-        hi = high if high is not None else get_epoch_timestamp_in_ms()
+        # An open window ends at the next whole second, an edge the query can state exactly.
+        hi = high if high is not None else -(-get_epoch_timestamp_in_ms() // 1000) * 1000
         return lo, hi
 
     def _split_window(self, low: int | None, high: int | None) -> list[tuple[int | None, int | None]] | None:
@@ -1184,8 +1186,12 @@ class ZammadConnector(BaseConnector):
                 if halves is not None:
                     windows[0:0] = halves
                     continue
+                bounds = self._window_bounds(low, high)
+                if high is None:
+                    # Wait out the second, so no ticket is stamped below the edge after its ids are read.
+                    await asyncio.sleep(max(0, bounds[1] - get_epoch_timestamp_in_ms()) / 1000)
                 async for batch_records in self._read_dense_window(
-                    datasource, query, group_name, self._window_bounds(low, high), read_until,
+                    datasource, query, group_name, bounds, read_until,
                     resume_from.get((low, high), 0), written, failures, limit, batch_size,
                 ):
                     yield batch_records

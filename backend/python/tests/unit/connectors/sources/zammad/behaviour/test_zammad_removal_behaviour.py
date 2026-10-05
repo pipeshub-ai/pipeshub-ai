@@ -431,6 +431,32 @@ async def test_a_burst_on_a_modified_before_filter_that_a_window_edge_lands_on_i
     assert _group_point(world, "Support").get("burst_next_id") == 0
 
 
+async def test_a_burst_in_the_current_second_of_a_narrow_window_is_resumed_not_read_again(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A window too narrow to halve ends at the clock, which the query can't state to the millisecond."""
+    _search_window(world, monkeypatch, 60)
+    burst_at = epoch_ms(5)
+    _clock(monkeypatch, burst_at + 500)
+    for ticket_id in range(1000, 1150):
+        world.zammad.add_ticket(ticket_id, 1, day=5)
+    world.zammad.fail_search = lambda query: "id:[1100 TO 1109]" in query
+
+    await world.save_filters({"modified": {
+        "operator": "is_after", "value": {"start": burst_at - 30_000, "end": None}, "type": "datetime",
+    }})
+    assert _group_point(world, "Support").get("burst_next_id") == 1100
+
+    world.zammad.fail_search = lambda _query: False
+    world.zammad.search_queries.clear()
+    await world.sync()
+
+    assert all(str(t) in world.db.external_ids() for t in range(1100, 1150))
+    burst_reads = [q for q in world.zammad.search_queries if "updated_at" in q and " AND id:[" in q]
+    assert burst_reads and not any("id:[1000 TO" in q for q in burst_reads), "ranges already read are not read again"
+    assert _group_point(world, "Support").get("burst_next_id") == 0
+
+
 async def test_a_window_edge_later_in_the_second_of_the_modified_before_filter_is_still_exclusive(
     world: World,
 ) -> None:
