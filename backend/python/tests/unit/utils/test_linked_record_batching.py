@@ -227,7 +227,7 @@ class TestEdgeBatching:
     @staticmethod
     def _provider_with_edges(batch_result: dict) -> MagicMock:
         provider = _graph_provider()
-        provider.get_record_relations_batch = AsyncMock(return_value=batch_result)
+        provider.get_node_relations_batch = AsyncMock(return_value=batch_result)
         provider.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
         provider.get_child_record_ids_by_relation_type = AsyncMock(return_value=[])
         return provider
@@ -244,7 +244,7 @@ class TestEdgeBatching:
 
         out = await ch._fetch_edges_for_records(provider, ["r1", "r2"])
 
-        assert provider.get_record_relations_batch.await_count == 1
+        assert provider.get_node_relations_batch.await_count == 1
         assert provider.get_parent_record_ids_by_relation_type.await_count == 0
         assert provider.get_child_record_ids_by_relation_type.await_count == 0
         assert out["r2"] == []
@@ -281,7 +281,7 @@ class TestEdgeBatching:
     async def test_no_records_issues_no_query(self) -> None:
         provider = self._provider_with_edges({})
         assert await ch._fetch_edges_for_records(provider, []) == {}
-        assert provider.get_record_relations_batch.await_count == 0
+        assert provider.get_node_relations_batch.await_count == 0
 
     @pytest.mark.asyncio
     async def test_batch_failure_falls_back_per_record_rather_than_dropping_all(
@@ -293,7 +293,7 @@ class TestEdgeBatching:
         per-record form this replaced lost only the failing pair.
         """
         provider = self._provider_with_edges({})
-        provider.get_record_relations_batch = AsyncMock(side_effect=RuntimeError("boom"))
+        provider.get_node_relations_batch = AsyncMock(side_effect=RuntimeError("boom"))
         provider.get_parent_record_ids_by_relation_type = AsyncMock(
             return_value=[{"record_id": "p1", "recordName": "Parent One"}]
         )
@@ -306,7 +306,7 @@ class TestEdgeBatching:
     @pytest.mark.asyncio
     async def test_batch_failure_never_raises(self) -> None:
         provider = self._provider_with_edges({})
-        provider.get_record_relations_batch = AsyncMock(side_effect=RuntimeError("boom"))
+        provider.get_node_relations_batch = AsyncMock(side_effect=RuntimeError("boom"))
         provider.get_parent_record_ids_by_relation_type = AsyncMock(
             side_effect=RuntimeError("also down")
         )

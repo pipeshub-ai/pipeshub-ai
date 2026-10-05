@@ -211,8 +211,8 @@ async def execute_list_files(
             node_types=node_types,
             record_types=record_types,
             connector_ids=use_connector_ids,
-            # An explicit False makes the service list and drop the query;
-            # an omitted flag plus connector_ids makes it search.
+            # An explicit False makes the service list; an omitted flag
+            # plus connector_ids makes it search.
             flattened=None if query else False,
             record_group_ids=use_record_group_ids,
         )
