@@ -32,12 +32,14 @@ def test_service_account_agent_gets_authorization_url(
     seed_toolset_instance: SeedToolsetInstance,
     seed_agent: SeedAgent,
 ) -> None:
-    seeded = seed_toolset_instance(oauth=True)
+    # The redirect URI is fixed when the OAuth config is stored; the authorize call's own
+    # base_url is only a fallback for a config without one.
+    seeded = seed_toolset_instance(oauth=True, baseUrl=CALLBACK_BASE_URL)
     agent_key = seed_agent()
 
     # Only builds the URL and stores a pending session that instance teardown removes.
     resp = toolsets_client.get(
-        _authorize_path(agent_key, seeded["_id"]), params={"base_url": CALLBACK_BASE_URL}
+        _authorize_path(agent_key, seeded["_id"]), params={"base_url": "https://ignored.invalid"}
     )
     assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)

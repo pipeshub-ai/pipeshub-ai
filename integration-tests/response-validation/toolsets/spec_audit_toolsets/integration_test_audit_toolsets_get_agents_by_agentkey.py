@@ -63,7 +63,9 @@ def test_a_member_without_access_to_the_agent_gets_not_found(
     second_user: SecondUser,
     seed_agent: SeedAgent,
 ) -> None:
-    agent_key = seed_agent()
+    # A regular agent is not shared with the org, so the member has no permission edge;
+    # a service-account agent would be readable (it is always org-shared as READER).
+    agent_key = seed_agent(is_service_account=False)
 
     resp = request_as(second_user, "GET", agent_path(agent_key))
     assert resp.status_code == 404, resp.text[:500]
