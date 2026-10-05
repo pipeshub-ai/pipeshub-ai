@@ -4,6 +4,10 @@ authenticate -> KB_WRITE scope -> zod (depth int -1..100, statusFilters string[]
 connector service POST /api/v1/record-groups/:id/reindex. The connector looks the
 group up (404), then checks the caller's permission on it (403), then publishes
 the reindex event and answers 200.
+
+A knowledge base is stored as an app, not as a record group: record groups are
+only written by a connector sync (a drive, a space, a channel). The two cases
+that need an existing group look one up and skip when the org has none.
 """
 
 from __future__ import annotations
@@ -23,16 +27,28 @@ def _path(record_group_id: str) -> str:
     return f"/reindex/record-group/{record_group_id}"
 
 
-def test_reindex_empty_knowledge_base_publishes_event(
-    kb_client: KBClient, audit_kb_id: str
-) -> None:
-    # The knowledge base holds no records, so the published event queues no embedding work.
-    resp = kb_client.post(_path(audit_kb_id), json={"depth": 0})
+@pytest.fixture(scope="module")
+def record_group_id(kb_client: KBClient) -> str:
+    """Id of a record group the admin can see, or skip when no connector has synced one."""
+    resp = kb_client.get("/knowledge-hub/nodes", params={"nodeTypes": "recordGroup", "limit": 1})
+    assert resp.status_code == 200, resp.text[:500]
+    items = resp.json()["items"]
+    if not items:
+        pytest.skip(
+            "The org has no record group: only a synced connector writes one (a knowledge base "
+            "is an app), and no connector to an external system is configured on this stack."
+        )
+    return str(items[0]["id"])
+
+
+def test_reindex_record_group_publishes_event(kb_client: KBClient, record_group_id: str) -> None:
+    # Depth 0 limits the event to the group's direct records.
+    resp = kb_client.post(_path(record_group_id), json={"depth": 0})
     assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
     body = resp.json()
     assert body["success"] is True
-    assert body["recordGroupId"] == audit_kb_id
+    assert body["recordGroupId"] == record_group_id
     assert body["depth"] == 0
     assert body["eventPublished"] is True
 
@@ -58,8 +74,8 @@ def test_reindex_unknown_record_group_is_not_found(kb_client: KBClient) -> None:
 
 
 def test_reindex_as_member_without_access_is_forbidden(
-    second_user: SecondUser, audit_kb_id: str
+    second_user: SecondUser, record_group_id: str
 ) -> None:
-    resp = request_as(second_user, "POST", _path(audit_kb_id), json={"depth": 0})
+    resp = request_as(second_user, "POST", _path(record_group_id), json={"depth": 0})
     assert resp.status_code == 403, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)

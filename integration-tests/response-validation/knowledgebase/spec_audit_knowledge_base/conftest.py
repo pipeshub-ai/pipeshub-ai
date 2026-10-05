@@ -26,10 +26,7 @@ from knowledge_base_audit_support import (  # noqa: E402
 
 @pytest.fixture(scope="module")
 def audit_kb_id(kb_client: KBClient) -> Iterator[str]:
-    """A knowledge base owned by the admin, removed with everything in it after the module.
-
-    Its id is also a record group id (a knowledge base is a record group).
-    """
+    """A knowledge base owned by the admin, removed with everything in it after the module."""
     kb_id = kb_client.create_kb(unique_name("spec-audit-kb"))["id"]
     try:
         yield kb_id
