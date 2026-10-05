@@ -534,7 +534,7 @@ async def _seed_connector(w: _World, case: _ConnectorDelete) -> tuple[str, str]:
 async def _delete_as_the_connector_does(
     w: _World, case: _ConnectorDelete, connector_id: str, bucket: str,
 ) -> set[str]:
-    """Run the connector's own delete call; return the names its hard delete would have removed."""
+    """Run the connector's own delete call; return the names it puts in the trash."""
     p = w.processor
     if case.entry == "record":
         assert await p.on_record_deleted(w.ids["item"]) is True
@@ -549,8 +549,9 @@ async def _delete_as_the_connector_does(
         assert result["success"] is True, result
         return {"item", "attachment"}
     if case.entry == "by external id":
+        # A message goes with its direct attachments on both backends, as ArangoDB's hard delete takes them.
         await p.delete_record_by_external_id(connector_id, f"ext-{w.ids['item']}", w.owner.user_id)
-        return {"item"} if isinstance(w.graph, Neo4jProvider) else {"item", "attachment"}
+        return {"item", "attachment"}
     if case.entry == "own batch":
         await p.on_records_soft_deleted(
             [w.ids["item"], w.ids["attachment"]], connector_id, delete_source=DeleteSource.CONNECTOR, follow=(),
