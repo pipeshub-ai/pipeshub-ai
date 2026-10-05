@@ -12240,11 +12240,18 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def is_trash_walk_index_ready(self) -> bool:
         """See ``IGraphDBProvider.is_trash_walk_index_ready``."""
+        # By definition, not name: CREATE INDEX ... IF NOT EXISTS does nothing when the
+        # same index already exists under another name. The walk's hint names the
+        # label and properties, so it uses whichever that is.
         rows = await self.client.execute_query(
-            "SHOW INDEXES YIELD name, state WHERE name = $name RETURN state",
-            parameters={"name": _PURGE_WALK_INDEX},
+            """
+            SHOW INDEXES YIELD type, entityType, labelsOrTypes, properties, state
+            WHERE type = 'RANGE' AND entityType = 'NODE' AND labelsOrTypes = ['Record']
+              AND properties = ['orgId', 'deletedAtTimestamp', 'id']
+            RETURN state
+            """,
         )
-        return bool(rows) and rows[0].get("state") == "ONLINE"
+        return any(row.get("state") == "ONLINE" for row in rows or [])
 
     async def purge_trashed_records(
         self,
