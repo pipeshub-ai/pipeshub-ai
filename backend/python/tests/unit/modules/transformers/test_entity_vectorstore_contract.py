@@ -59,6 +59,19 @@ class TestFakeKeepsTheProviderGuards:
     """Guards every real provider enforces; a fake without them would pass a
     unit test for a write that fails in production."""
 
+    async def test_a_point_of_the_wrong_dimension_is_refused(self) -> None:
+        # Qdrant and OpenSearch reject the write; Redis stores it but leaves
+        # it out of the vector index, so search never finds it.
+        from app.services.vector_db.models import CollectionConfig, VectorPoint
+
+        service = InMemoryVectorDBService()
+        await service.create_collection("c", CollectionConfig(embedding_size=3))
+        good = VectorPoint(id="good", dense_vector=[1.0, 0.0, 0.0], payload={})
+        bad = VectorPoint(id="bad", dense_vector=[1.0, 0.0], payload={})
+        with pytest.raises(ValueError, match="dimension"):
+            await service.upsert_points("c", [good, bad])
+        assert (await service.scroll("c", await service.filter_collection(), limit=10)).points == []
+
     async def test_a_delete_bounding_only_a_length_is_refused(self) -> None:
         service = InMemoryVectorDBService()
         await service.create_collection("c")

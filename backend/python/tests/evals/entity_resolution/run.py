@@ -119,8 +119,8 @@ class GoldOracle:
     async def __call__(self, llm: object, messages: list, schema: object, **_: object) -> MergeDecisions:
         found = _PROMPT_ITEMS.search(messages[0].content)
         if found is None:
-            # Raised loudly: swallowed as a failed call, oracle mode would
-            # quietly score the same as no model.
+            # The resolver counts this as a failed model call; evaluate()
+            # then refuses to report the run.
             raise AssertionError("merge prompt layout changed; update GoldOracle._PROMPT_ITEMS")
         items = json.loads(found.group(1))
         first_of_entity: dict[str, int] = {}
@@ -231,6 +231,10 @@ async def evaluate(
                 entity_resolution=None, settings={},
             )
             resolution = await resolver.resolve(ctx)
+            if oracle is not None and resolution.stats.model_failures:
+                # The resolver falls back to "new" on a failed call, which
+                # would report no-model scores as the oracle's.
+                raise RuntimeError(f"the gold oracle failed on record {record_id}; not scoring the run")
             model_calls += resolution.stats.model_calls
             merges += resolution.stats.merges
             touched = await transformer.save_metadata_to_db(

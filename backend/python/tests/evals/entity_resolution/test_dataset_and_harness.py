@@ -4,6 +4,9 @@ or an embedding download (hash embeddings, no merge model)."""
 from __future__ import annotations
 
 import json
+import re
+
+import pytest
 
 from tests.evals.entity_resolution.run import DATASET, HashEmbeddings, evaluate
 
@@ -48,3 +51,11 @@ async def test_the_oracle_only_merges_right_and_beats_no_model() -> None:
     report = await evaluate(_dataset(), embeddings=HashEmbeddings(), llm=None, oracle=GoldOracle())
     assert report["bcubed"]["precision"] == 1.0
     assert report["bcubed"]["recall"] > baseline["bcubed"]["recall"]
+
+
+async def test_a_failing_oracle_fails_the_run_instead_of_scoring_as_no_model(monkeypatch) -> None:
+    from tests.evals.entity_resolution import run
+
+    monkeypatch.setattr(run, "_PROMPT_ITEMS", re.compile(r"(?!)"))
+    with pytest.raises(RuntimeError, match="oracle"):
+        await evaluate(_dataset(), embeddings=HashEmbeddings(), llm=None, oracle=run.GoldOracle())

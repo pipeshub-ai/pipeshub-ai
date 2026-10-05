@@ -290,6 +290,16 @@ class InMemoryVectorDBService(IVectorDBService):
         ]
 
     async def upsert_points(self, collection_name: str, points: list[VectorPoint]) -> None:
+        config = self.configs.get(collection_name)
+        if config is not None:
+            for point in points:
+                if point.dense_vector is not None and len(point.dense_vector) != config.embedding_size:
+                    # Qdrant and OpenSearch refuse the batch; Redis stores the
+                    # hash but never indexes it, so search would not find it.
+                    raise ValueError(
+                        f"point {point.id} has dimension {len(point.dense_vector)}, "
+                        f"the collection's is {config.embedding_size}"
+                    )
         stored = self._points(collection_name)
         for point in points:
             stored[point.id] = copy.deepcopy(point)
