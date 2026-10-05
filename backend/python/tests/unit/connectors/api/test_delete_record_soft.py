@@ -58,7 +58,7 @@ async def test_a_cleanup_the_broker_refuses_is_reported_as_pending() -> None:
     kafka = AsyncMock()
     kafka.publish_event = AsyncMock(return_value=False)
 
-    async def once(fn, **_kwargs):
+    async def once(fn, **_kwargs) -> object:
         return await fn()
 
     with patch(f"{ROUTER}.is_soft_delete_enabled", AsyncMock(return_value=True)), \

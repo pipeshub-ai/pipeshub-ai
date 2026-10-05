@@ -221,7 +221,7 @@ class TestFlagOn:
         store.soft_delete_records = AsyncMock(return_value=_soft_result([("r1", "v1")]))
         proc.messaging_producer.send_message = AsyncMock(return_value=False)
 
-        async def once(fn, **_kwargs):
+        async def once(fn, **_kwargs) -> object:
             return await fn()
 
         with flag(True), patch(f"{MODULE}.retry_async", once):
