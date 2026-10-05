@@ -271,6 +271,70 @@ def build_connector_stats_response(
     }
 
 
+# ArangoDB marks a subtree in pages of this many keys, one UPDATE each, inside
+# one stream transaction.
+SOFT_DELETE_CHUNK = 1000
+
+# Unique per record and never a source id, so no sync or move can land on it.
+TRASHED_EXTERNAL_ID_PREFIX = "trashed:"
+
+
+def empty_soft_delete_result(batch_id: str) -> dict[str, Any]:
+    return soft_delete_result([], [], [], batch_id)
+
+
+def soft_delete_result(
+    requested: list[str],
+    root_keys: list[str],
+    marked: list[dict[str, Any]],
+    batch_id: str,
+) -> dict[str, Any]:
+    """The ``soft_delete_records`` result, the same on both providers."""
+    roots = set(root_keys)
+    failed = [
+        {"record_id": rid, "reason": "Not found, already deleted, or outside this connector"}
+        for rid in requested
+        if rid not in roots
+    ]
+    vrids = list(dict.fromkeys(m["vrid"] for m in marked if m.get("vrid")))
+    org_ids = {m.get("orgId") for m in marked if m.get("orgId")}
+    return {
+        "success": True,
+        "soft_deleted_records": [
+            {"record_id": m["id"], "name": m.get("name") or "Unknown", "virtual_record_id": m.get("vrid")}
+            for m in marked
+        ],
+        "failed_records": failed,
+        "total_requested": len(requested),
+        "successfully_deleted": len(roots),
+        "failed_count": len(failed),
+        "virtual_record_ids": vrids,
+        "org_id": next(iter(org_ids)) if len(org_ids) == 1 else None,
+        "batch_id": batch_id,
+    }
+
+
+def soft_delete_request_result(record_id: str, record: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    """Shape a ``soft_delete_records`` result like the hard ``delete_record`` result."""
+    if not result.get("successfully_deleted"):
+        return {"success": False, "code": 404, "reason": f"Record not found: {record_id}"}
+    connector_name = record.get("connectorName")
+    is_kb = record.get("origin") == "UPLOAD" or connector_name == Connectors.KNOWLEDGE_BASE.value
+    return {
+        "success": True,
+        "record_id": record_id,
+        "connector": connector_name,
+        "isKb": is_kb,
+        "connectorId": record.get("connectorId"),
+        "orgId": record.get("orgId"),
+        "softDeleted": True,
+        "batchId": result.get("batch_id"),
+        "softDeletedRecords": result.get("soft_deleted_records", []),
+        "virtualRecordIds": result.get("virtual_record_ids", []),
+        "eventData": None,
+    }
+
+
 _STORAGE_DOCUMENT_ID = re.compile(r"^[0-9a-f]{24}$", re.IGNORECASE)
 
 

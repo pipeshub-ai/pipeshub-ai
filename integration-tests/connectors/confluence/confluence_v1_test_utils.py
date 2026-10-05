@@ -287,13 +287,20 @@ async def assert_confluence_pages_match_graph_records(
     *,
     phase: str,
 ) -> None:
-    """Assert v1 page count for the space equals graph Record count for the connector."""
+    """Assert v1 page count for the space equals the connector's page record count.
+
+    The v1 search returns pages only (``type=page``), while the connector also
+    stores the space's blog posts and folders as records, so the graph side
+    counts page records only.
+    """
     api_count = await count_confluence_space_pages_v1_search(datasource, space_key)
-    graph_count = await graph_provider.count_records(connector_id)
+    graph_count = await graph_provider.count_records_by_type(
+        connector_id, RecordType.CONFLUENCE_PAGE.value
+    )
     if api_count != graph_count:
         raise AssertionError(
             f"{phase}: Confluence v1 content/search page count ({api_count}) != "
-            f"graph Record count ({graph_count}) for connector {connector_id} "
+            f"graph page record count ({graph_count}) for connector {connector_id} "
             f"space_key={space_key!r}"
         )
 

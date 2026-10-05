@@ -166,19 +166,23 @@ class GraphTransactionStore(TransactionStore):
     async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> dict | None:
         return await self.graph_provider.get_record_by_path(connector_id, path, external_record_group_id, transaction=self.txn)
 
-    async def get_record_by_key(self, key: str) -> Optional[dict]:
-        return await self.graph_provider.get_document(key, CollectionNames.RECORDS.value, transaction=self.txn)
+    async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Optional[dict]:
+        return await self.graph_provider.get_document(
+            key, CollectionNames.RECORDS.value, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_app_by_id(self, connector_id: str) -> Optional[AppMetadata]:
         """Get app metadata by connector ID."""
         doc = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value, transaction=self.txn)
         return AppMetadata.from_db_document(doc) if doc else None
 
-    async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+    ) -> Optional[Record]:
         # Sync decides create-or-update on this answer; hiding a trashed record
         # would mint a second record for the same source item.
         return await self.graph_provider.get_record_by_external_id(
-            connector_id, external_id, transaction=self.txn, visibility=RecordVisibility.ALL
+            connector_id, external_id, transaction=self.txn, visibility=visibility
         )
 
     async def get_record_by_external_revision_id(self, connector_id: str, external_revision_id: str) -> Optional[Record]:
@@ -267,8 +271,12 @@ class GraphTransactionStore(TransactionStore):
         # Delete the record node from the records collection
         return await self.graph_provider.delete_nodes([key], CollectionNames.RECORDS.value, transaction=self.txn)
 
-    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> dict | None:
-        return await self.graph_provider.delete_record_by_external_id(connector_id, external_id, user_id, transaction=self.txn)
+    async def delete_record_by_external_id(
+        self, connector_id: str, external_id: str, user_id: str | None = None, *, soft_delete: bool = False,
+    ) -> dict | None:
+        return await self.graph_provider.delete_record_by_external_id(
+            connector_id, external_id, user_id, transaction=self.txn, soft_delete=soft_delete
+        )
 
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
         return await self.graph_provider.remove_user_access_to_record(connector_id, external_id, user_id, transaction=self.txn)
@@ -326,6 +334,31 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.delete_records_recursive(
             record_ids, connector_id, transaction=self.txn, cascade_children=cascade_children,
             within_folder_id=within_folder_id, include_trashed_roots=include_trashed_roots,
+        )
+
+    async def soft_delete_records(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+        *,
+        delete_source: str,
+        batch_id: str,
+        deleted_by_user_id: str | None = None,
+        follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
+        within_folder_id: str | None = None,
+        include_trashed_roots: bool = False,
+    ) -> dict:
+        """Move records to the trash within the active transaction."""
+        return await self.graph_provider.soft_delete_records(
+            record_ids,
+            connector_id,
+            delete_source=delete_source,
+            batch_id=batch_id,
+            deleted_by_user_id=deleted_by_user_id,
+            follow=follow,
+            transaction=self.txn,
+            within_folder_id=within_folder_id,
+            include_trashed_roots=include_trashed_roots,
         )
 
     async def delete_single_record(self, record_id: str) -> dict:
@@ -557,13 +590,17 @@ class GraphTransactionStore(TransactionStore):
         """Get the creator user for a connector/app by connectorId."""
         return await self.graph_provider.get_app_creator_user(connector_id,transaction=self.txn)
 
-    async def batch_upsert_records(self, records: list[Record]) -> None:
+    async def batch_upsert_records(
+        self, records: list[Record], *, release_trashed_external_ids: bool = False
+    ) -> None:
         """
         Batch upsert records (base + specific type + IS_OF_TYPE edge).
 
         Delegates to graph_provider for the full record upsert logic.
         """
-        return await self.graph_provider.batch_upsert_records(records, transaction=self.txn)
+        return await self.graph_provider.batch_upsert_records(
+            records, transaction=self.txn, release_trashed_external_ids=release_trashed_external_ids
+        )
 
     async def batch_upsert_record_groups(self, record_groups: list[RecordGroup]) -> None:
         """
