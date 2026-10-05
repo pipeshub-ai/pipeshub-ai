@@ -17,10 +17,16 @@ pytestmark = pytest.mark.spec_audit
 
 ROUTE = "/api/v1/skills/:name/resource"
 
-# Deliberately not valid JSON: axios would parse a JSON-looking text/plain upstream body.
+# Plain prose. A resource whose text happens to parse as JSON fares worse still: the
+# gateway's axios parses it, so `{"a": 1}` comes back as an object and `123` as a number.
 RESOURCE_TEXT = "# Spec audit reference\n\nplain text, not json\n"
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="API bug: the Node proxy re-sends the text/plain resource through res.json, "
+    "so the file arrives JSON-encoded as application/json instead of as its raw text",
+)
 def test_get_resource_returns_file_content(
     skills_client: SkillsClient, seed_skill: SeedSkill
 ) -> None:
@@ -33,8 +39,7 @@ def test_get_resource_returns_file_content(
     resp = skills_client.get(f"/{name}/resource", params={"path": RESOURCE_PATH})
     assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
-    # Python answers text/plain; the Node proxy re-sends it through res.json as a JSON string.
-    assert resp.json() == RESOURCE_TEXT
+    assert resp.text == RESOURCE_TEXT
 
 
 def test_get_resource_without_token_is_unauthorized(skills_client: SkillsClient) -> None:
