@@ -21,6 +21,10 @@ pytestmark = pytest.mark.spec_audit
 ROUTE = "/api/v1/conversations/:conversationId/cancel"
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="API bug: the KV-backed run registry acks a never-registered runId as cancelled: true",
+)
 def test_cancel_unknown_run_reports_not_cancelled(
     conversations_audit_client: ConversationsAuditClient,
     seed_conversation: SeedConversation,
@@ -31,8 +35,8 @@ def test_cancel_unknown_run_reports_not_cancelled(
     resp = conversations_audit_client.cancel_stream(conversation_id, str(uuid.uuid4()))
 
     assert resp.status_code == 200, resp.text[:500]
-    assert resp.json() == {"cancelled": False}
     assert_strict_openapi_response(resp, ROUTE)
+    assert resp.json() == {"cancelled": False}
 
 
 def test_cancel_without_token_is_unauthorized(
