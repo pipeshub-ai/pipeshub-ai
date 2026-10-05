@@ -150,11 +150,3 @@ class TestRSSScenarioMatrix(ConnectorScenarioMatrix):
             "cannot be switched to manual"
         ),
     }
-    KNOWN_BUGS = {
-        "incr_update_metadata": (
-            "a retitled feed entry keeps its old name: the record's revision is the md5 of the "
-            "article text only (sources/rss/connector.py:574-584), and an existing record is "
-            "rewritten only when its revision changes "
-            "(data_source_entities_processor.py:1199-1203), so a new title alone is dropped"
-        ),
-    }

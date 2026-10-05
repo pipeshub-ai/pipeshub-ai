@@ -76,7 +76,11 @@ from app.services.vector_db.sparse_embeddings import (
     get_default_sparse_embedder,
 )
 from app.telemetry.modules import entity_index_metrics
-from app.utils.aimodels import get_default_embedding_model, get_embedding_model
+from app.utils.aimodels import (
+    embedding_config_hash,
+    get_default_embedding_model,
+    get_embedding_model,
+)
 
 if TYPE_CHECKING:
     import logging
@@ -84,6 +88,7 @@ if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
     from app.models.entities import EntityRecord
     from app.services.vector_db.interface.vector_db import IVectorDBService
+    from app.services.vector_db.models import VectorCollectionInfo
 
 # (entity refs) -> {(type, id): {"connectorIds": [...], "recordGroupIds": [...]}},
 # from the graph; see IGraphDBProvider.get_taxonomy_entity_membership.
@@ -150,6 +155,10 @@ _CONFIDENCE_THRESHOLD = 0.0
 # A failed initialisation (embedding endpoint down, dimension mismatch) is not
 # retried for this long, so every caller does not re-send a probe embedding.
 _INIT_RETRY_SECONDS = 30.0
+# The embedding config is read from ConfigurationService's in-memory cache,
+# which a change notification clears. Past this age it is read from the store
+# anyway, so a missed notification delays a model change by at most this long.
+_CONFIG_RECHECK_SECONDS = 60.0
 # Times connector cleanup writes one point before giving up on it: a write
 # that does not take leaves the point needing the same write again.
 _CLEANUP_WRITE_ATTEMPTS = 2
@@ -169,6 +178,11 @@ def _as_text(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
+
+
+def _embedding_configs(ai_models: object) -> list[dict[str, Any]] | None:
+    configs = ai_models.get("embedding") if isinstance(ai_models, dict) else None
+    return configs or None
 
 
 def _entity_metadata(payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -194,7 +208,8 @@ class EntityVectorStore:
     dedicated ``entities`` vector collection.
 
     Designed to be a singleton per process (DI Singleton provider) so the
-    embedding model and sparse embedder are initialised once and reused.
+    embedding model and sparse embedder are reused across calls. The model is
+    rebuilt when the embedding config changes (``_ensure_initialized``).
     """
 
     def __init__(
@@ -212,6 +227,8 @@ class EntityVectorStore:
         self.collection_name = collection_name
         # Only the indexing service sets this: it runs the rebuild that
         # repopulates the collection (app.modules.indexing.entity_index_rebuild).
+        # Even there, a collection that does not match the model is dropped
+        # only on the rebuild leader's request; see ``_ensure_initialized``.
         self.recreate_on_dimension_mismatch = recreate_on_dimension_mismatch
         self._model_id = ""
         self._embedding_size = 0
@@ -222,10 +239,16 @@ class EntityVectorStore:
         self._sparse_lock: asyncio.Lock | None = None
         self._initialized = False
         self._init_failed_at: float | None = None
+        self._init_failed_hash: str | None = None
         self._init_lock = asyncio.Lock()
+        # ``embedding_config_hash`` of the config the model was built from.
+        self._config_hash: str | None = None
+        self._config_read_at: float | None = None
         self._query_vector_cache: OrderedDict[str, tuple[list[float], Any]] = OrderedDict()
-        # Bumped by each reset; a query embedded under an older generation is
-        # returned but not cached (see ``_query_vectors``).
+        # Bumped when the model or collection is reset or re-initialised; a
+        # query embedded under an older generation is not cached (see
+        # ``_query_vectors``) and a write embedded under one is not stored
+        # (see ``_upsert_batch``).
         self._generation = 0
 
         # Per-entity locks guarding the membership read-merge-write below; see
@@ -236,32 +259,94 @@ class EntityVectorStore:
         )
 
     # ------------------------------------------------------------------
-    # Initialisation (lazy, once per process)
+    # Initialisation (lazy, and again when the embedding config changes)
     # ------------------------------------------------------------------
 
-    async def _ensure_initialized(self) -> None:
-        """Lazily initialise embeddings and the collection (idempotent)."""
-        if self._initialized:
+    async def _ensure_initialized(self, *, recreate: bool = False) -> None:
+        """Initialise embeddings and the collection for the configured model.
+
+        Called on every write, search and fingerprint read. It re-reads the
+        embedding config (``_read_embedding_config``, normally a cache hit)
+        and re-initialises when the config changed, so an admin switching
+        model does not leave this process embedding with the old one. A
+        config that cannot be read keeps the current model.
+
+        ``recreate`` lets a store built with ``recreate_on_dimension_mismatch``
+        drop a collection another model wrote. Only the rebuild leader passes
+        it (``EntityIndexRebuilder.tick``): two replicas dropping in turn would
+        lose the points the first refilled. It also skips the retry window,
+        since the leader is the one that clears the mismatch."""
+        read = await self._read_embedding_config()
+        if self._is_current(read):
             return
         async with self._init_lock:
-            if self._initialized:
+            # Read again: a re-initialisation that held the lock meanwhile may
+            # already have a newer config than the one read above.
+            read = await self._read_embedding_config()
+            if self._is_current(read):
                 return
+            if read is None:
+                raise VectorStoreError(
+                    "Entity vector store cannot read the embedding model config",
+                    details={"collection": self.collection_name},
+                )
+            config_hash, embedding_configs = read
             if (
-                self._init_failed_at is not None
+                not recreate
+                and self._init_failed_at is not None
+                and self._init_failed_hash == config_hash
                 and time.monotonic() - self._init_failed_at < _INIT_RETRY_SECONDS
             ):
                 raise VectorStoreError(
                     "Entity vector store initialisation failed recently; retrying later",
                     details={"collection": self.collection_name},
                 )
+            if self._initialized:
+                self.logger.info(
+                    "Embedding model config changed; re-initialising entity store '%s' (was %s)",
+                    self.collection_name, self._fingerprint(),
+                )
+            self._invalidate()
             try:
-                await self._init_embeddings()
-                await self._init_collection()
+                await self._init_embeddings(embedding_configs)
+                await self._init_collection(recreate=recreate and self.recreate_on_dimension_mismatch)
             except Exception:
                 self._init_failed_at = time.monotonic()
+                self._init_failed_hash = config_hash
                 raise
+            finally:
+                # A write that started while the attributes were being
+                # replaced must not land (see ``_upsert_batch``).
+                self._generation += 1
             self._init_failed_at = None
+            self._init_failed_hash = None
+            self._config_hash = config_hash
             self._initialized = True
+
+    def _is_current(self, read: tuple[str, list[dict[str, Any]] | None] | None) -> bool:
+        return self._initialized and (read is None or read[0] == self._config_hash)
+
+    def _invalidate(self) -> None:
+        self._initialized = False
+        self._generation += 1
+        self._query_vector_cache.clear()
+
+    async def _read_embedding_config(self) -> tuple[str, list[dict[str, Any]] | None] | None:
+        """The configured embedding models and their ``embedding_config_hash``,
+        or None when the config cannot be read."""
+        now = time.monotonic()
+        fresh = self._config_read_at is None or now - self._config_read_at >= _CONFIG_RECHECK_SECONDS
+        if fresh:
+            self._config_read_at = now
+        try:
+            ai_models = await self.config_service.get_config(
+                config_node_constants.AI_MODELS.value, use_cache=not fresh, raise_on_error=True,
+            )
+        except Exception as exc:
+            self.logger.warning("Could not read the embedding model config: %s", exc)
+            return None
+        embedding_configs = _embedding_configs(ai_models)
+        return embedding_config_hash(embedding_configs), embedding_configs
 
     async def _reset_if_collection_changed(self) -> None:
         """After a failed search: when the collection no longer has the
@@ -288,21 +373,15 @@ class EntityVectorStore:
             # may already have the new model, which a reset would undo.
             if info.dense_dimension == self._embedding_size:
                 return
-            self._initialized = False
+            self._invalidate()
             self._init_failed_at = None
-            self._generation += 1
-            self._query_vector_cache.clear()
 
     async def collection_exists(self) -> bool:
         """Needs no embeddings. Delete paths skip when it is False (nothing to
         delete), and the chat routes hide the entity tools."""
         return await self.vector_db_service.collection_exists(self.collection_name)
 
-    async def _init_embeddings(self) -> None:
-        ai_models = await self.config_service.get_config(
-            config_node_constants.AI_MODELS.value, use_cache=False
-        )
-        embedding_configs = (ai_models or {}).get("embedding", [])
+    async def _init_embeddings(self, embedding_configs: list[dict[str, Any]] | None = None) -> None:
         if not embedding_configs:
             self._dense_embeddings = get_default_embedding_model()
             self._model_id = f"default:{DEFAULT_EMBEDDING_MODEL}"
@@ -331,21 +410,19 @@ class EntityVectorStore:
                     await embedder._ensure_initialized()
                     self._sparse_embedder = embedder
 
-    async def _init_collection(self) -> None:
+    async def _init_collection(self, *, recreate: bool = False) -> None:
         info = await self.vector_db_service.get_collection_info(self.collection_name)
-        if info.exists and info.dense_dimension and info.dense_dimension != self._embedding_size:
-            if not self.recreate_on_dimension_mismatch:
+        mismatch = await self._collection_mismatch(info)
+        if mismatch:
+            if not recreate:
                 raise VectorStoreError(
-                    f"Entity collection dimension mismatch: existing={info.dense_dimension}, "
-                    f"model={self._embedding_size}. The indexing service recreates it.",
+                    f"Entity collection does not match the embedding model: {mismatch}. "
+                    "The indexing service recreates it.",
                     details={"collection": self.collection_name},
                 )
             # The collection is a projection of the graph; the rebuild's
-            # marker includes the dimension, so every pass re-runs and fills it.
-            self.logger.warning(
-                "Recreating entity collection '%s': dimension %s, model now produces %s",
-                self.collection_name, info.dense_dimension, self._embedding_size,
-            )
+            # marker includes the model, so every pass re-runs and refills it.
+            self.logger.warning("Recreating entity collection '%s': %s", self.collection_name, mismatch)
             await self.vector_db_service.delete_collection(self.collection_name)
             info = None
         if info is None or not info.exists:
@@ -376,12 +453,61 @@ class EntityVectorStore:
                 field_schema=schema,
             )
 
-    async def embedding_fingerprint(self) -> str:
+    async def _collection_mismatch(self, info: VectorCollectionInfo) -> str | None:
+        """Why the existing collection cannot serve this model, or None.
+
+        At the same dimension another model's vectors would answer this
+        model's queries with no error, so the model one point records counts
+        as well as the dimension."""
+        if not info.exists:
+            return None
+        if info.dense_dimension and info.dense_dimension != self._embedding_size:
+            return f"dimension {info.dense_dimension}, model now produces {self._embedding_size}"
+        stored = await self._model_of_a_stored_point()
+        if stored is not None and stored != self._fingerprint():
+            return f"its points were embedded by {stored}, the model is now {self._fingerprint()}"
+        return None
+
+    async def _model_of_a_stored_point(self) -> str | None:
+        """The model recorded on one point of the collection; None when it has
+        no point or the point predates the field. Raises when the read fails:
+        the caller cannot tell whether the collection still holds another
+        model's vectors.
+
+        One point is enough: the rebuild leader recreates the collection
+        whenever the model changes, and writes embedded with a model the
+        stored config no longer names are refused (``_raise_if_config_moved``),
+        so apart from points that predate the field a collection holds one
+        model's points."""
+        from app.models.entities import EntityType
+
+        page = await self.vector_db_service.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=await self.vector_db_service.filter_collection(
+                must={"metadata.entityType": [t.value for t in EntityType]},
+            ),
+            limit=1,
+            with_payload=[f"metadata.{EMBEDDING_MODEL_FIELD}"],
+        )
+        for point in page.points:
+            stored = _entity_metadata(point.payload).get(EMBEDDING_MODEL_FIELD)
+            if stored:
+                return stored
+        return None
+
+    async def embedding_config_version(self) -> str | None:
+        """``embedding_config_hash`` of the configured models, None when the
+        config cannot be read. A cache read; initialises nothing."""
+        read = await self._read_embedding_config()
+        return read[0] if read else None
+
+    async def embedding_fingerprint(self, *, recreate: bool = False) -> str:
         """``provider:model:dimension`` of the model writing this collection.
 
-        Initialises the store. A different fingerprint means stored vectors
-        were embedded by another model and must be rewritten."""
-        await self._ensure_initialized()
+        Initialises the store (``recreate``: see ``_ensure_initialized``). A
+        different fingerprint means stored vectors were embedded by another
+        model and must be rewritten."""
+        await self._ensure_initialized(recreate=recreate)
         return self._fingerprint()
 
     def _fingerprint(self) -> str:
@@ -501,6 +627,10 @@ class EntityVectorStore:
         """Write one batch, counting each entity in ``outcome`` and adding its
         point id to ``settled`` only once its write has landed (or none was
         needed). Raises on failure; the caller counts the rest as failed."""
+        await self._ensure_initialized()
+        generation = self._generation
+        config_hash = self._config_hash
+        fingerprint = self._fingerprint()
         # Read and embed without the locks. A failed read in merge mode skips
         # the batch: merging against an assumed-empty state would drop every
         # other writer's membership.
@@ -511,7 +641,7 @@ class EntityVectorStore:
                 raise
             self.logger.warning("Entity state read failed; rewriting %d points in full: %s", len(named), exc)
             early = {}
-        vectors = await self._embed_changed(named, early)
+        vectors = await self._embed_changed(named, early, fingerprint)
 
         async with contextlib.AsyncExitStack() as locks:
             # Sorted, deduped acquisition order rules out circular waits
@@ -536,11 +666,12 @@ class EntityVectorStore:
                 else:
                     connector_ids = self._union_ids([], entity.connector_ids)
                     record_group_ids = self._union_ids([], entity.record_group_ids)
-                if existing is not None and self._same_content(existing, entity, self._fingerprint()):
+                if existing is not None and self._same_content(existing, entity, fingerprint):
                     if (
                         list(existing["connectorIds"]) != connector_ids
                         or list(existing["recordGroupIds"]) != record_group_ids
                     ):
+                        self._raise_if_model_changed(generation)
                         # The stored vector is still right; only the arrays
                         # move. Written by id: a search-based update cannot
                         # see a point the index has not refreshed yet.
@@ -562,6 +693,7 @@ class EntityVectorStore:
                     if self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id) not in vectors]
             if late:
                 vectors |= await self._embed_entities(late)
+            self._raise_if_model_changed(generation)
 
             points = []
             for entity, connector_ids, record_group_ids in pending:
@@ -573,24 +705,25 @@ class EntityVectorStore:
                     sparse_vector=sparse,
                     payload={
                         "page_content": entity.embedding_text,
-                        "metadata": {**entity.to_vector_payload(), EMBEDDING_MODEL_FIELD: self._fingerprint()},
+                        "metadata": {**entity.to_vector_payload(), EMBEDDING_MODEL_FIELD: fingerprint},
                         CONNECTOR_IDS_FIELD: connector_ids,
                         RECORD_GROUP_IDS_FIELD: record_group_ids,
                     },
                 ))
+            await self._raise_if_config_moved(config_hash)
             await self.vector_db_service.upsert_points(collection_name=self.collection_name, points=points)
             outcome.written += len(points)
             settled.update(point.id for point in points)
 
     async def _embed_changed(
-        self, entities: list[EntityRecord], states: dict[str, dict[str, Any]],
+        self, entities: list[EntityRecord], states: dict[str, dict[str, Any]], fingerprint: str,
     ) -> dict[str, tuple[list[float], Any]]:
         """Vectors, by point id, for the entities whose stored content does
         not already match (per ``states``)."""
         changed = [
             e for e in entities
             if not self._same_content(
-                states.get(self._point_id(e.org_id, e.entity_type.value, e.entity_id)) or {}, e, self._fingerprint(),
+                states.get(self._point_id(e.org_id, e.entity_type.value, e.entity_id)) or {}, e, fingerprint,
             )
         ]
         return await self._embed_entities(changed) if changed else {}
@@ -603,6 +736,42 @@ class EntityVectorStore:
             self._point_id(e.org_id, e.entity_type.value, e.entity_id): (d, sp)
             for e, d, sp in zip(entities, dense, sparse)
         }
+
+    def _raise_if_model_changed(self, generation: int) -> None:
+        """Refuse a write whose vectors, or whose judgement that the stored
+        vector is current, came from a model since replaced. The rebuild
+        re-runs under the new model's marker and writes the entity again."""
+        if self._generation != generation:
+            raise VectorStoreError(
+                "Embedding model changed during the entity write",
+                details={"collection": self.collection_name},
+            )
+
+    async def _raise_if_config_moved(self, config_hash: str | None) -> None:
+        """Refuse a write embedded with a model the stored config no longer
+        names. The generation check only sees this process's own switch;
+        another replica may already have recreated the collection for the new
+        model while this one still holds the old config in its cache (a missed
+        or late notification). Read from the store, not the cache, once per
+        written batch, as the records path does per record.
+
+        Unlike initialisation, an unreadable config refuses the write: this
+        process cannot tell whether the collection now belongs to another
+        model. The batch is counted failed and the rebuild writes it again."""
+        try:
+            ai_models = await self.config_service.get_config(
+                config_node_constants.AI_MODELS.value, use_cache=False, raise_on_error=True,
+            )
+        except Exception as exc:
+            raise VectorStoreError(
+                "Cannot confirm the embedding model before an entity write",
+                details={"collection": self.collection_name, "error": str(exc)},
+            ) from exc
+        if embedding_config_hash(_embedding_configs(ai_models)) != config_hash:
+            raise VectorStoreError(
+                "Embedding model config changed since this entity write was embedded",
+                details={"collection": self.collection_name},
+            )
 
     def _report(self, outcome: EntityWriteOutcome, failed_keys: list[str]) -> None:
         for name in ("written", "membership_only", "unchanged", "skipped", "failed"):

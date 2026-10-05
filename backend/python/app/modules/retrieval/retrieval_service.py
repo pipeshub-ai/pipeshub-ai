@@ -672,14 +672,18 @@ class RetrievalService:
                             if ext:
                                 result["metadata"]["extension"] = ext
 
+                        # Only files and mails can find a link elsewhere; any other record
+                        # without one (a SQL table when FRONTEND_PUBLIC_URL is unset) is
+                        # still a hit, and dropping it here hid it from search and chat.
                         if not weburl:
                             if record.get("recordType", "") == RecordTypes.FILE.value:
                                 file_record_ids_to_fetch.append(record_id)
                                 result_to_record_map[idx] = (record_id, "file")
-                            elif record.get("recordType", "") == RecordTypes.MAIL.value:
+                                continue
+                            if record.get("recordType", "") == RecordTypes.MAIL.value:
                                 mail_record_ids_to_fetch.append(record_id)
                                 result_to_record_map[idx] = (record_id, "mail")
-                            continue
+                                continue
 
                         if knowledge_search:
                             meta = result.get("metadata")

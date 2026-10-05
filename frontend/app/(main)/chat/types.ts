@@ -959,6 +959,8 @@ export interface AvailableLlmModel {
   isReasoning: boolean;
   isDefault: boolean;
   modelFriendlyName: string;
+  /** The model's own effort, used when the request sets no reasoningEffort and the agent has no default. Absent when nothing valid is stored; a legacy `none` is shown as Low. */
+  defaultReasoningEffort?: ReasoningEffort;
 }
 
 /**

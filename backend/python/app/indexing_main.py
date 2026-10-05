@@ -29,6 +29,8 @@ from app.modules.indexing.vector_membership_backfill import (
 )
 from app.containers.indexing import initialize_container
 from app.edition_containers import IndexingAppContainer
+from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
+from app.services.graph_db.common.utils import RESTORED_AT_FIELD
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     ConsumerType,
@@ -90,6 +92,15 @@ async def get_initialized_container() -> IndexingAppContainer:
                 container.wire(modules=["app.modules.retrieval.retrieval_service"])
                 setattr(get_initialized_container, "initialized", True)
     return container
+
+def _enrichment_cut_short(record: dict[str, Any]) -> bool:
+    """Indexed, with an enrichment that has not ended (and nothing else in flight)."""
+    return (
+        record.get("indexingStatus") == ProgressStatus.COMPLETED.value
+        and record.get("extractionStatus") == ProgressStatus.IN_PROGRESS.value
+        and record.get("parsingStatus") != ProgressStatus.IN_PROGRESS.value
+    )
+
 
 async def recover_in_progress_records(
     app_container: IndexingAppContainer,
@@ -199,8 +210,16 @@ async def recover_in_progress_records(
                     f"Failed to persist recovery status for record {record_id}"
                 )
 
-        async def process_single_record(record: dict[str, Any]) -> bool | None:
-            """Reset one stuck record and re-queue it, with semaphore control."""
+        async def process_single_record(
+            record: dict[str, Any], *, resume_enrichment: bool = False
+        ) -> bool | None:
+            """Reset one stuck record and re-queue it, with semaphore control.
+
+            ``resume_enrichment``: the record is indexed and only its enrichment
+            was cut short. It stays searchable; the republished event re-runs it
+            (the handler does not skip an indexed record whose enrichment is
+            IN_PROGRESS), and its completion promotes its queued duplicates.
+            """
             async with semaphore:
                 record_id = record.get("_key")
                 record_name = record.get("recordName", "Unknown")
@@ -233,12 +252,18 @@ async def recover_in_progress_records(
                         record_id,
                         CollectionNames.RECORDS.value,
                     )
-                    if latest_record is None or not (
-                        latest_record.get("indexingStatus")
-                        == ProgressStatus.IN_PROGRESS.value
-                        or latest_record.get("parsingStatus")
-                        == ProgressStatus.IN_PROGRESS.value
-                    ):
+                    if latest_record is None:
+                        still_stuck = False
+                    elif resume_enrichment:
+                        # Stale again, not merely cut short: a redelivery that
+                        # is enriching it now has refreshed processingStartedAt.
+                        still_stuck = _enrichment_cut_short(latest_record) and is_stale(latest_record)
+                    else:
+                        still_stuck = (
+                            latest_record.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value
+                            or latest_record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value
+                        )
+                    if not still_stuck:
                         results["skipped"] += 1
                         return True
                     record = latest_record
@@ -248,12 +273,18 @@ async def recover_in_progress_records(
                         f"🔄 Recovering stale record: {record_name} (ID: {record_id})"
                     )
 
-                    # Check if connector is disabled or deleted
+                    # Check if connector is disabled or deleted. Not for a
+                    # resumed enrichment: the record is searchable, and these
+                    # branches would turn it AUTO_INDEX_OFF and strand its
+                    # QUEUED copies. The republished event reaches the
+                    # handler, which ends the enrichment and releases them.
                     connector_id = record.get("connectorId")
                     origin = record.get("origin")
-                    if connector_id and origin == OriginTypes.CONNECTOR.value:
+                    if connector_id and origin == OriginTypes.CONNECTOR.value and not resume_enrichment:
+                        # A failed read must not look like a deleted connector;
+                        # raising leaves the row for the next pass.
                         connector_instance = await graph_provider.get_document(
-                            connector_id, CollectionNames.APPS.value
+                            connector_id, CollectionNames.APPS.value, raise_on_error=True
                         )
                         if not connector_instance:
                             logger.info(
@@ -318,14 +349,22 @@ async def recover_in_progress_records(
                         event_type = EventTypes.NEW_RECORD.value
                         logger.debug(f"Treating as NEW_RECORD (version={version}, virtualRecordId={virtual_record_id})")
 
-                    reset_fields = {
-                        "parsingStatus": ProgressStatus.NOT_STARTED.value,
-                        "indexingStatus": ProgressStatus.QUEUED.value,
-                        "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
-                        "extractionStatus": ProgressStatus.NOT_STARTED.value,
-                        "processingStartedAt": None,
-                        "reason": RECOVERY_REQUEUED,
-                    }
+                    if resume_enrichment:
+                        # A fresh start time keeps the next scans off it while
+                        # the event waits; if the event is lost it ages out again.
+                        reset_fields = {
+                            "processingStartedAt": get_epoch_timestamp_in_ms(),
+                            "reason": RECOVERY_REQUEUED,
+                        }
+                    else:
+                        reset_fields = {
+                            "parsingStatus": ProgressStatus.NOT_STARTED.value,
+                            "indexingStatus": ProgressStatus.QUEUED.value,
+                            "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
+                            "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                            "processingStartedAt": None,
+                            "reason": RECOVERY_REQUEUED,
+                        }
 
                     async def publish_recovery_event() -> None:
                         nonlocal published
@@ -443,7 +482,7 @@ async def recover_in_progress_records(
             except (TypeError, ValueError):
                 return True
 
-        for status_field in ("indexingStatus", "parsingStatus"):
+        for status_field in ("indexingStatus", "parsingStatus", "extractionStatus"):
             offset = 0
             while True:
                 if (
@@ -465,6 +504,7 @@ async def recover_in_progress_records(
                 if not page:
                     break
 
+                resume_enrichment = status_field == "extractionStatus"
                 candidates = [
                     record
                     for record in page
@@ -474,10 +514,14 @@ async def recover_in_progress_records(
                         and record.get("indexingStatus")
                         == ProgressStatus.IN_PROGRESS.value
                     )
+                    and (not resume_enrichment or _enrichment_cut_short(record))
                 ]
 
                 outcomes = await asyncio.gather(
-                    *(process_single_record(record) for record in candidates)
+                    *(
+                        process_single_record(record, resume_enrichment=resume_enrichment)
+                        for record in candidates
+                    )
                 )
                 total_records += sum(outcome is not None for outcome in outcomes)
                 removed_from_result = sum(outcome is True for outcome in outcomes)
@@ -663,6 +707,18 @@ async def _sweep_orphaned_virtual_record_mappings(
                 )
                 continue
             if records:
+                continue
+            try:
+                # Content still held by a record in the trash is the purge's to
+                # remove; releasing it here would delete a restorable record's
+                # stored content ahead of time.
+                trashed = await graph_provider.get_records_by_virtual_record_id(
+                    vrid, raise_on_error=True, visibility=RecordVisibility.DELETED
+                )
+            except Exception as exc:
+                logger.warning("Could not check virtual record %s for trashed records: %s", vrid, exc)
+                continue
+            if trashed:
                 continue
             try:
                 outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
@@ -916,10 +972,18 @@ async def _republish_stranded_records(
             for record in page:
                 record_key = record.get("_key") or record.get("id")
                 connector_id = record.get("connectorId")
+                # Uploads are otherwise left alone: a new one waits on its file
+                # reaching storage. A restored file's content is already there,
+                # and its restore was the only thing that would have queued it.
+                restored_upload = (
+                    status_value == ProgressStatus.NOT_STARTED.value
+                    and bool(record.get(RESTORED_AT_FIELD))
+                    and is_live_record(record)
+                )
                 if (
                     not record_key
                     or not connector_id
-                    or record.get("origin") != OriginTypes.CONNECTOR.value
+                    or (record.get("origin") != OriginTypes.CONNECTOR.value and not restored_upload)
                 ):
                     continue
 
@@ -959,7 +1023,9 @@ async def _republish_stranded_records(
                 # A duplicate parked behind an in-flight twin is legitimately
                 # QUEUED with its message already acked — it is released by the
                 # twin's completion, not by us.
-                if record.get("md5Checksum") and record.get("virtualRecordId"):
+                # Parking writes QUEUED, so a restored file still NOT_STARTED is
+                # not parked, though it keeps the checksum and content id it had.
+                if record.get("md5Checksum") and record.get("virtualRecordId") and not restored_upload:
                     continue
 
                 record_owner = f"stranded:{uuid4().hex}"
@@ -991,9 +1057,10 @@ async def _republish_stranded_records(
                         "virtualRecordId": record.get("virtualRecordId"),
                     }
                     version = int(payload.get("version", 0) or 0)
+                    # An upload keeps version 0; a restored one was indexed before.
                     event_type = (
                         EventTypes.REINDEX_RECORD.value
-                        if version > 0 and payload.get("virtualRecordId")
+                        if (version > 0 or restored_upload) and payload.get("virtualRecordId")
                         else EventTypes.NEW_RECORD.value
                     )
 

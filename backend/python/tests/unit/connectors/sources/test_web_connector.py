@@ -33,30 +33,10 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
 )
 from app.connectors.sources.web.connector import (
-    DOCUMENT_MIME_TYPES,
-    IMAGE_MIME_TYPES,
-    RecordUpdate,
-    RetryUrl,
-    Status,
-    WebApp,
-    WebConnector,
     _bytes_async_gen,
 )
-from app.connectors.sources.web.fetch_strategy import FetchResponse
 import base64
 from bs4 import BeautifulSoup
-from app.connectors.sources.web.connector import (
-    DOCUMENT_MIME_TYPES,
-    IMAGE_MIME_TYPES,
-    MAX_RETRIES,
-    RETRYABLE_STATUS_CODES,
-    RecordUpdate,
-    RetryUrl,
-    Status,
-    WebApp,
-    WebConnector,
-    _bytes_async_gen,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -847,7 +827,6 @@ class TestWebConnectorRunSync:
     @pytest.mark.asyncio
     @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_single(self, mock_filters):
-        from app.connectors.core.registry.filters import FilterCollection
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector = _make_connector()
         connector.url = "https://example.com"
@@ -864,7 +843,6 @@ class TestWebConnectorRunSync:
     @pytest.mark.asyncio
     @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_recursive(self, mock_filters):
-        from app.connectors.core.registry.filters import FilterCollection
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector = _make_connector()
         connector.url = "https://example.com"
@@ -1302,7 +1280,6 @@ class TestWebConnectorRunSyncDeep:
     @pytest.mark.asyncio
     @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_clears_state(self, mock_filters):
-        from app.connectors.core.registry.filters import FilterCollection
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector = _make_connector()
         connector.url = "https://example.com"
@@ -1322,7 +1299,6 @@ class TestWebConnectorRunSyncDeep:
     @pytest.mark.asyncio
     @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_exception_propagated(self, mock_filters):
-        from app.connectors.core.registry.filters import FilterCollection
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector = _make_connector()
         connector.url = "https://example.com"
@@ -1338,7 +1314,6 @@ class TestWebConnectorRunSyncDeep:
     @pytest.mark.asyncio
     @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_creates_app_users(self, mock_filters):
-        from app.connectors.core.registry.filters import FilterCollection
         from app.models.entities import User
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector = _make_connector()
@@ -1353,7 +1328,6 @@ class TestWebConnectorRunSyncDeep:
         connector.scope = "PERSONAL"
         connector.created_by = "user-1"
         connector.creator_email = "user@test.com"
-        from app.models.entities import User
         mock_user = User(
             email="user@example.com",
             full_name="User",
@@ -2940,7 +2914,6 @@ class TestRunSyncSitemap:
     @pytest.mark.asyncio
     @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_unknown_crawl_type_falls_through(self, mock_filters):
-        from app.connectors.core.registry.filters import FilterCollection
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector = _make_connector_fullcov()
         connector.url = "https://example.com"

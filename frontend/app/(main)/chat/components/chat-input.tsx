@@ -17,7 +17,7 @@ import { UniversalAgentResourcesPanel } from '@/chat/components/chat-panel/expan
 import { MessageActionIndicator } from '@/chat/components/chat-panel/expansion-panels/message-actions';
 import {
   ModelSelectorPanel,
-  getReasoningEffortLabel,
+  getAppliedReasoningEffortLabel,
 } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { SelectedCollections } from '@/chat/components/selected-collections';
 import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
@@ -31,7 +31,12 @@ import {
 } from '@/chat/components/chat-panel';
 import { MobileQueryOptionsSheet } from '@/chat/components/chat-panel/expansion-panels/mobile-query-options-sheet';
 import { getQueryModeConfig } from '@/chat/constants';
-import { useChatStore, ctxKeyFromAgent, isModelReasoningCapable } from '@/chat/store';
+import {
+  useChatStore,
+  ctxKeyFromAgent,
+  isModelReasoningCapable,
+  getModelDefaultReasoningEffort,
+} from '@/chat/store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
@@ -55,7 +60,7 @@ import type {
   AppliedFilters,
   AttachmentRef,
 } from '@/chat/types';
-import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES, DEFAULT_REASONING_EFFORT } from '@/chat/types';
+import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES } from '@/chat/types';
 import {
   SUPPORTED_FILE_TYPES,
   ACCEPTED_MIME_TYPES,
@@ -385,7 +390,11 @@ export function ChatInput({
   const reasoningEffortOverride = settings.reasoningEffort[modelCtxKey] ?? null;
   const agentDefault = useChatStore((s) => s.settings.agentDefaultReasoningEffort[modelCtxKey] ?? null);
   const reasoningEffortLabel = activeModelSupportsReasoning
-    ? getReasoningEffortLabel(t, reasoningEffortOverride ?? agentDefault ?? DEFAULT_REASONING_EFFORT)
+    ? getAppliedReasoningEffortLabel(t, {
+        picked: reasoningEffortOverride,
+        agentDefault,
+        modelDefault: getModelDefaultReasoningEffort(modelCtxKey, displayModel),
+      })
     : null;
 
   // Expansion panel view mode (inline vs overlay) from store

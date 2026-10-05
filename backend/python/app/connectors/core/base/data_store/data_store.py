@@ -87,12 +87,17 @@ class BaseDataStore(ABC):
     """Base class for all data stores"""
 
     @abstractmethod
-    async def get_record_by_key(self, key: str) -> Optional[dict]:
-        """The stored record document, or None. Not a ``Record``."""
+    async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Optional[dict]:
+        """The stored record document, not a ``Record``, or None when no record has this key.
+
+        A failed read raises only with ``raise_on_error``.
+        """
         pass
 
     @abstractmethod
-    async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+    ) -> Optional[Record]:
         pass
 
     @abstractmethod
@@ -284,7 +289,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> dict | None:
+    async def delete_record_by_external_id(
+        self, connector_id: str, external_id: str, user_id: str | None = None, *, soft_delete: bool = False,
+    ) -> dict | None:
         pass
 
     @abstractmethod
@@ -310,7 +317,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_records(self, records: list[Record]) -> None:
+    async def batch_upsert_records(
+        self, records: list[Record], *, release_trashed_external_ids: bool = False
+    ) -> None:
         pass
 
     @abstractmethod

@@ -3,6 +3,8 @@ import { Container } from 'inversify';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import {
   deleteRecord,
+  restoreRecord,
+  restoreRecords,
   getRecordById,
   updateRecord,
   getRecordBuffer,
@@ -32,6 +34,8 @@ import {
   getRecordByIdSchema,
   updateRecordSchema,
   deleteRecordSchema,
+  restoreRecordSchema,
+  restoreRecordsSchema,
   reindexRecordGroupSchema,
   createKBSchema,
   getKBSchema,
@@ -268,6 +272,24 @@ export function createKnowledgeBaseRouter(
     requireScopes(OAuthScopeNames.KB_DELETE),
     ValidationMiddleware.validate(deleteRecordSchema),
     deleteRecord(appConfig),
+  );
+
+  // Bring a deleted record back from the trash, with what was deleted along with it
+  router.post(
+    '/record/:recordId/restore',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_DELETE),
+    ValidationMiddleware.validate(restoreRecordSchema),
+    restoreRecord(appConfig),
+  );
+
+  // Restore several deleted records
+  router.post(
+    '/records/restore',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_DELETE),
+    ValidationMiddleware.validate(restoreRecordsSchema),
+    restoreRecords(appConfig),
   );
 
   // Old api for streaming records

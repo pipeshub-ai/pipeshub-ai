@@ -271,6 +271,103 @@ def build_connector_stats_response(
     }
 
 
+# Trash writes go in pages of this many keys, one statement each: the ArangoDB
+# mark (inside one stream transaction) and restores.
+SOFT_DELETE_CHUNK = 1000
+
+# Cleared when a record leaves the trash; ``isDeleted`` is set to false instead.
+TRASH_STATE_FIELDS = (
+    "deletedAtTimestamp",
+    "deleteSource",
+    "deleteBatchId",
+    "deletedByUserId",
+    "purgeAttempts",
+    "purgeLastError",
+    "trashedExternalRecordId",
+)
+
+# Unique per record and never a source id, so no sync or move can land on it.
+TRASHED_EXTERNAL_ID_PREFIX = "trashed:"
+
+# Stamped on a file in the same write that restores it from the trash. With the
+# file still NOT_STARTED it means the re-index its lost vectors need was never
+# taken up, which a retried restore and the stranded sweep both act on.
+RESTORED_AT_FIELD = "restoredAtTimestamp"
+
+
+def restore_items(
+    restores: list[dict[str, Any]], connector_id: str | None
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """``restore_records`` items as ``{id, set}``, and the ``{id, ext}`` external ids they take back."""
+    items: list[dict[str, Any]] = []
+    reclaims: list[dict[str, str]] = []
+    for item in restores:
+        fields = dict(item.get("set") or {})
+        if external_id := item.get("reclaimExternalRecordId"):
+            fields["externalRecordId"] = external_id
+            reclaims.append({"id": item["id"], "ext": external_id})
+        items.append({"id": item["id"], "set": fields})
+    if reclaims and not connector_id:
+        raise ValueError("restore_records needs connector_id to take an external id back")
+    return items, reclaims
+
+
+def empty_soft_delete_result(batch_id: str) -> dict[str, Any]:
+    return soft_delete_result([], [], [], batch_id)
+
+
+def soft_delete_result(
+    requested: list[str],
+    root_keys: list[str],
+    marked: list[dict[str, Any]],
+    batch_id: str,
+) -> dict[str, Any]:
+    """The ``soft_delete_records`` result, the same on both providers."""
+    roots = set(root_keys)
+    failed = [
+        {"record_id": rid, "reason": "Not found, already deleted, or outside this connector"}
+        for rid in requested
+        if rid not in roots
+    ]
+    vrids = list(dict.fromkeys(m["vrid"] for m in marked if m.get("vrid")))
+    org_ids = {m.get("orgId") for m in marked if m.get("orgId")}
+    return {
+        "success": True,
+        "soft_deleted_records": [
+            {"record_id": m["id"], "name": m.get("name") or "Unknown", "virtual_record_id": m.get("vrid")}
+            for m in marked
+        ],
+        "failed_records": failed,
+        "total_requested": len(requested),
+        "successfully_deleted": len(roots),
+        "failed_count": len(failed),
+        "virtual_record_ids": vrids,
+        "org_id": next(iter(org_ids)) if len(org_ids) == 1 else None,
+        "batch_id": batch_id,
+    }
+
+
+def soft_delete_request_result(record_id: str, record: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    """Shape a ``soft_delete_records`` result like the hard ``delete_record`` result."""
+    if not result.get("successfully_deleted"):
+        return {"success": False, "code": 404, "reason": f"Record not found: {record_id}"}
+    connector_name = record.get("connectorName")
+    is_kb = record.get("origin") == "UPLOAD" or connector_name == Connectors.KNOWLEDGE_BASE.value
+    return {
+        "success": True,
+        "record_id": record_id,
+        "connector": connector_name,
+        "isKb": is_kb,
+        "connectorId": record.get("connectorId"),
+        "orgId": record.get("orgId"),
+        "softDeleted": True,
+        "batchId": result.get("batch_id"),
+        "softDeletedRecords": result.get("soft_deleted_records", []),
+        "virtualRecordIds": result.get("virtual_record_ids", []),
+        "eventData": None,
+    }
+
+
 _STORAGE_DOCUMENT_ID = re.compile(r"^[0-9a-f]{24}$", re.IGNORECASE)
 
 

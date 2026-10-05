@@ -43,6 +43,7 @@ from app.modules.qna.prompt_templates import (
 )
 from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.strategy import QueryContext
@@ -1860,6 +1861,30 @@ def build_record_relations_info(record: dict[str, Any]) -> str:
 
 # FK table enrichment (runs before doc_index in chatbot; extends virtual_record_id_to_result)
 
+async def _live_record_ids(
+    graph_provider: IGraphDBProvider, record_ids: Iterable[str], org_id: str
+) -> set[str]:
+    """The ids among ``record_ids`` that are live records of ``org_id``.
+
+    The FK edge reads return tables in the trash too, so without this a dropped
+    table's DDL and rows reach the answer through a table that references it.
+    A failed lookup counts as nothing live.
+    """
+    ids = list(dict.fromkeys(rid for rid in record_ids if rid))
+    if not ids:
+        return set()
+    try:
+        docs = await graph_provider.get_records_by_record_ids(
+            ids, org_id, visibility=RecordVisibility.LIVE
+        )
+    except Exception as e:
+        logger.warning("FK enrichment: live-record check failed, leaving related tables out: %s", e)
+        return set()
+    return {
+        key for doc in docs or [] if isinstance(doc, dict) and (key := doc.get("_key") or doc.get("id"))
+    }
+
+
 async def enrich_virtual_record_id_to_result_with_fk_children(
     virtual_record_id_to_result: Dict[str, Dict[str, Any]],
     blob_store: BlobStorage,
@@ -1950,6 +1975,21 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             "children": list(child_relations) if not isinstance(child_relations, list) else child_relations,
             "parents": list(parent_relations) if not isinstance(parent_relations, list) else parent_relations,
         }
+
+    checked_ids = set(related_record_ids)
+    live_ids = await _live_record_ids(graph_provider, checked_ids, org_id)
+    related_record_ids &= live_ids
+
+    async def live_relations_only(relations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        unchecked = {rel.get("record_id") for rel in relations if rel.get("record_id")} - checked_ids
+        if unchecked:
+            live_ids.update(await _live_record_ids(graph_provider, unchecked, org_id))
+            checked_ids.update(unchecked)
+        return [rel for rel in relations if rel.get("record_id") in live_ids]
+
+    for fk_relations in record_id_to_fk_relations.values():
+        fk_relations["children"] = await live_relations_only(fk_relations["children"])
+        fk_relations["parents"] = await live_relations_only(fk_relations["parents"])
     
     logger.debug("FK enrichment: total %d related records to fetch", len(related_record_ids))
     
@@ -2083,6 +2123,8 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         fk_parent_relations = list(fk_parent_relations) if not isinstance(fk_parent_relations, list) else fk_parent_relations
                     except Exception as e:
                         logger.debug("Could not fetch parent record IDs for %s: %s", record_id, str(e))
+                    fk_child_relations = await live_relations_only(fk_child_relations)
+                    fk_parent_relations = await live_relations_only(fk_parent_relations)
                     record_id_to_fk_relations[record_id] = {
                         "children": fk_child_relations,
                         "parents": fk_parent_relations,

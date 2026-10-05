@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
+from app.config.constants.arangodb import DeleteSource, ProgressStatus
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
@@ -121,6 +122,30 @@ DUPLICATE_RECONCILE_ATTEMPTS_FIELD = "duplicateReconcileAttempts"
 # The record handler reconciles within seconds of a promotion; only after this
 # is the primary the retry sweep's to take.
 DUPLICATE_RECONCILE_GRACE_MS = 10 * 60 * 1000
+
+
+def promoted_duplicate_extraction_status(
+    new_indexing_status: str, primary: Mapping[str, Any]
+) -> str | None:
+    """``extractionStatus`` for a QUEUED duplicate promoted when ``primary`` finished,
+    or None while the primary's enrichment is still IN_PROGRESS, so the duplicates
+    stay QUEUED until the handler or stale recovery resumes and finishes it.
+
+    The duplicate shares the primary's enrichment, so an indexed primary lends
+    its own outcome: COMPLETED, FAILED, or NOT_STARTED when enrichment was
+    deliberately deferred (an inline enrichment is IN_PROGRESS from the same
+    write that marks the primary indexed). A primary with no status comes from
+    before that write existed; nothing would ever resume it, so it is promoted
+    as the old mapping did, COMPLETED.
+    """
+    if new_indexing_status == ProgressStatus.COMPLETED.value:
+        primary_status = primary.get("extractionStatus")
+        if primary_status == ProgressStatus.IN_PROGRESS.value:
+            return None
+        return primary_status or ProgressStatus.COMPLETED.value
+    if new_indexing_status == ProgressStatus.EMPTY.value:
+        return ProgressStatus.EMPTY.value
+    return ProgressStatus.FAILED.value
 
 
 def requested_scope_ids(filters: "Mapping[str, Any] | None") -> tuple[str, ...] | None:
@@ -1382,7 +1407,9 @@ class IGraphDBProvider(ABC):
         self,
         connector_id: str,
         external_revision_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> Optional['Record']:
         """
         Get a record by its external revision ID (e.g., etag for S3).
@@ -1391,6 +1418,9 @@ class IGraphDBProvider(ABC):
             connector_id (str): Connector ID
             external_revision_id (str): External revision ID (e.g., etag)
             transaction (Optional[Any]): Optional transaction context
+            visibility: LIVE by default. Rename detection must not match a
+                record in the trash: after a hard delete there would be no
+                record to match, so the renamed item is a new record.
 
         Returns:
             Optional[Record]: Record data if found, None otherwise
@@ -2430,6 +2460,8 @@ class IGraphDBProvider(ABC):
         parent_folder_id: str | None = None,
         exclude_folder_id: str | None = None,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """Find a folder by name within a specific parent (KB root or folder).
         
@@ -2439,6 +2471,8 @@ class IGraphDBProvider(ABC):
             parent_folder_id: Parent folder ID, or None for KB root
             exclude_folder_id: Optional folder ID to exclude from results (for rename operations)
             transaction: Optional transaction ID
+            raise_on_error: Raise a failed lookup instead of returning None, which
+                reads as "no such folder"
         """
         pass
 
@@ -3244,7 +3278,9 @@ class IGraphDBProvider(ABC):
     async def batch_upsert_records(
         self,
         records: list,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        release_trashed_external_ids: bool = False,
     ) -> None:
         """
         Batch upsert records (base record + specific type + IS_OF_TYPE edge).
@@ -3257,6 +3293,13 @@ class IGraphDBProvider(ABC):
         Args:
             records (List[Record]): List of Record objects
             transaction (Optional[Any]): Optional transaction context
+            release_trashed_external_ids: Records in the trash in the same
+                connector that hold a record's external id give it up, keeping
+                it in ``trashedExternalRecordId`` behind a
+                ``TRASHED_EXTERNAL_ID_PREFIX`` id. This happens in the same
+                statement as the base record's write, so a write the graph
+                refuses leaves them holding it, even where each statement
+                commits on its own (Neo4j by default).
         """
         pass
 
@@ -3373,6 +3416,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[str]:
         """Keys of every live record sharing this virtualRecordId.
 
@@ -3393,6 +3437,9 @@ class IGraphDBProvider(ABC):
 
         ``accessible_record_ids`` narrows to a permission-filtered set for read
         paths; the delete path passes nothing and sees everything.
+
+        ``visibility=DELETED`` asks the other question the orphan sweeper needs:
+        does a record in the trash still hold this content for the purge?
 
         Args:
             virtual_record_id: The content identity to look up
@@ -4189,7 +4236,10 @@ class IGraphDBProvider(ABC):
         record_id: str,
         user_id: str,
         org_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
+        delete_source: DeleteSource = DeleteSource.USER,
     ) -> dict:
         """
         Main entry point for record deletion - routes to connector-specific methods.
@@ -4199,6 +4249,13 @@ class IGraphDBProvider(ABC):
             user_id (str): User ID performing the deletion
             org_id (str): Caller's organization; records outside it are reported as not found
             transaction (Optional[str]): Optional transaction context
+            soft_delete (bool): After the same permission checks, move to the trash
+                (``soft_delete_records``) exactly what the hard delete would remove,
+                instead of removing it. The caller publishes the vectors-only
+                cleanup from the result's ``virtualRecordIds``.
+            delete_source (DeleteSource): Who the soft delete is recorded as.
+                USER names ``user_id`` as the deleter; CONNECTOR (a sync delete)
+                names no one.
 
         Returns:
             Dict: Result with success status and reason
@@ -4211,7 +4268,9 @@ class IGraphDBProvider(ABC):
         connector_id: str,
         external_id: str,
         user_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
     ) -> dict | None:
         """
         Delete a record by external ID.
@@ -4221,6 +4280,9 @@ class IGraphDBProvider(ABC):
             external_id (str): External record ID
             user_id (str): User ID performing the deletion
             transaction (Optional[str]): Optional transaction context
+            soft_delete (bool): Move to the trash, as a CONNECTOR delete, exactly
+                what the hard delete would remove. A record already in the trash
+                is left alone.
 
         Returns:
             The ``delete_record`` result, whose ``eventData`` the caller publishes
@@ -4296,6 +4358,98 @@ class IGraphDBProvider(ABC):
         All edges touching the deleted nodes are swept regardless of
         *cascade_children*, type docs removed, and a deleteRecord event emitted per
         record that carries a virtualRecordId (Qdrant cleanup).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def soft_delete_records(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+        *,
+        delete_source: str,
+        batch_id: str,
+        deleted_by_user_id: str | None = None,
+        follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
+        transaction: str | None = None,
+        within_folder_id: str | None = None,
+        include_trashed_roots: bool = False,
+    ) -> dict:
+        """Move live records, and their live descendants, to the trash.
+
+        Sets ``isDeleted``, ``deletedAtTimestamp``, ``deleteSource``,
+        ``deleteBatchId`` and ``deletedByUserId`` in one transaction, in chunks.
+        Nodes, edges, permissions and type docs are kept, so the batch can be
+        restored as it was.
+
+        Roots are scoped by ``connector_id`` (the KB id for a KB) and must be
+        live, unless *include_trashed_roots*: a caller removing what the source
+        no longer has also walks from a root already in the trash, which keeps
+        its own batch while its live descendants are marked. Descendants are reached through ``RECORD_RELATION`` edges whose
+        ``relationshipType`` is in ``follow``: both kinds for a folder subtree,
+        ``("ATTACHMENT",)`` to leave PARENT_CHILD children alone, ``()`` for the
+        roots only. A descendant already in the trash keeps its own batch.
+        With *within_folder_id*, a root is taken only if that folder reaches it
+        through PARENT_CHILD / ATTACHMENT edges, as ``delete_records_recursive``
+        checks it.
+
+        Returns ``success``, ``soft_deleted_records`` ({record_id, name, virtual_record_id}),
+        ``failed_records`` (roots that were missing, trashed or out of scope),
+        ``total_requested``, ``successfully_deleted`` (roots),
+        ``failed_count``, ``virtual_record_ids`` (distinct, for vector cleanup),
+        ``org_id`` and ``batch_id``. A failure raises; nothing is marked.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_records_in_delete_batch(
+        self,
+        batch_id: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Every record in the trash under one ``deleteBatchId``, in this org.
+
+        Each item is ``record`` (the stored document, ``_key`` set on both
+        backends), ``parentId``, ``parentRelation`` (``PARENT_CHILD`` or
+        ``ATTACHMENT``), ``parentIsDeleted``, ``parentBatchId`` and
+        ``parentName`` for the record it hangs under (all None at a KB or group
+        root), and ``isFile`` and ``fileMimeType`` from its type doc (None when
+        it has none). A failed read raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def restore_records(
+        self,
+        restores: list[dict[str, Any]],
+        batch_id: str | None,
+        transaction: str | None = None,
+        *,
+        connector_id: str | None = None,
+        require_live_parent: bool = False,
+    ) -> list[str]:
+        """Bring records back from the trash; return the ids restored.
+
+        Each item is ``{"id": key, "set": {field: value}}``; ``set`` (optional)
+        is written as well, for an indexing status. An item may also carry
+        ``reclaimExternalRecordId``, the external id it gave up, to take back
+        within ``connector_id`` (required then): records in the trash outside
+        this batch that hold it give it up, keeping it in
+        ``trashedExternalRecordId`` behind a ``TRASHED_EXTERNAL_ID_PREFIX`` id.
+        All or nothing: every item must still be in the trash under
+        ``batch_id``, and no live record and no other item may hold an id being
+        taken back, or nothing is written and the result is empty, so a restore
+        racing a purge or another restore never brings back part of a batch.
+        With ``require_live_parent``, every record an item hangs under (its
+        ``PARENT_CHILD`` or ``ATTACHMENT`` parent) must also be live or among
+        the items, checked in the same write, so a folder trashed after the
+        caller looked keeps its file from coming back under it. A
+        write the graph refuses partway also leaves every record as it was,
+        even where each statement commits on its own (Neo4j by default). The
+        delete fields (``isDeleted``, ``deletedAtTimestamp``, ``deleteSource``,
+        ``deleteBatchId``, ``deletedByUserId``, the purge counters and
+        ``trashedExternalRecordId``) are cleared. A failure raises.
         """
         raise NotImplementedError
 

@@ -54,6 +54,8 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility, matches_visibility
+from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
 
 # ---------------------------------------------------------------------------
 # Constants used across tests
@@ -256,20 +258,38 @@ class MockTransactionStore:
 
     # -- records ---
 
-    async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+    ) -> Optional[Record]:
         for doc in self._s.collections.get(CollectionNames.RECORDS.value, {}).values():
-            if doc.get("connectorId") == connector_id and doc.get("externalRecordId") == external_id:
+            if (
+                doc.get("connectorId") == connector_id
+                and doc.get("externalRecordId") == external_id
+                and matches_visibility(doc, visibility)
+            ):
                 return self._doc_to_record(doc)
         return None
 
-    async def get_record_by_key(self, key: str) -> Optional[Dict]:
+    async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Optional[Dict]:
         """The stored document, as GraphTransactionStore.get_record_by_key returns it."""
         doc = self._s.get_node(CollectionNames.RECORDS.value, key)
         return dict(doc) if doc else None
 
-    async def batch_upsert_records(self, records: List[Record]) -> None:
+    async def batch_upsert_records(
+        self, records: List[Record], *, release_trashed_external_ids: bool = False
+    ) -> None:
         for record in records:
             doc = record.to_arango_base_record()
+            if release_trashed_external_ids:
+                for held in self._s.collections.get(CollectionNames.RECORDS.value, {}).values():
+                    if (
+                        held["_key"] != doc["_key"]
+                        and held.get("isDeleted") is True
+                        and held.get("connectorId") == doc.get("connectorId")
+                        and held.get("externalRecordId") == doc.get("externalRecordId")
+                    ):
+                        held["trashedExternalRecordId"] = held["externalRecordId"]
+                        held["externalRecordId"] = f"{TRASHED_EXTERNAL_ID_PREFIX}{held['_key']}"
             self._s.upsert_node(CollectionNames.RECORDS.value, doc)
 
     async def batch_upsert_nodes(self, nodes: List[Dict], collection: str) -> bool:
@@ -554,6 +574,7 @@ class MockTransactionStore:
             connector_id=doc.get("connectorId", ""),
             mime_type=doc.get("mimeType", MimeTypes.UNKNOWN.value),
             indexing_status=doc.get("indexingStatus", ProgressStatus.QUEUED.value),
+            **Record.delete_state_from_arango(doc),
         )
 
 
@@ -1766,6 +1787,23 @@ class TestErrorRecoveryWorkflow:
 
 class TestDeletionCascadeWorkflow:
     """Tests record and entity deletion."""
+
+    @pytest.mark.asyncio
+    async def test_a_trashed_record_read_back_carries_its_trash_state(self, graph_store) -> None:
+        """Like the real stores' conversion, so a fake read cannot make the trash look live."""
+        file_rec = make_file_record(external_id="trash-state-001", record_group_ext_id="drive-del")
+        doc = file_rec.to_arango_base_record()
+        doc.update({"isDeleted": True, "deletedAtTimestamp": 1700000000000, "deleteSource": "CONNECTOR",
+                    "deleteBatchId": "batch-1"})
+        graph_store.upsert_node(CollectionNames.RECORDS.value, doc)
+
+        found = await MockTransactionStore(graph_store).get_record_by_external_id(
+            file_rec.connector_id, "trash-state-001", visibility=RecordVisibility.DELETED
+        )
+
+        assert found is not None and found.is_deleted is True
+        assert (found.deleted_at, found.delete_batch_id) == (1700000000000, "batch-1")
+        assert found.delete_source is not None and found.delete_source.value == "CONNECTOR"
 
     @pytest.mark.asyncio
     async def test_delete_record_by_key(self, processor, graph_store):
