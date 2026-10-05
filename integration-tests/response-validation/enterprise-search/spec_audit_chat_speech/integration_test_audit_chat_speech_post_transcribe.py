@@ -44,14 +44,16 @@ def test_transcribe_without_file_part_is_rejected_by_node(
     }
 
 
-def test_transcribe_wrong_file_field_is_an_unhandled_multer_error(
+@pytest.mark.xfail(
+    strict=True,
+    reason="API bug: a file under any field but 'file' raises multer LIMIT_UNEXPECTED_FILE, answered as 500 INTERNAL_ERROR instead of 400",
+)
+def test_transcribe_wrong_file_field_is_a_bad_request(
     chat_speech_client: ChatSpeechClient,
 ) -> None:
-    # multer's LIMIT_UNEXPECTED_FILE is not a BaseError, so the error middleware answers 500.
     resp = chat_speech_client.transcribe(silent_wav(), field="audio")
-    assert resp.status_code == 500, resp.text[:500]
+    assert resp.status_code == 400, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
-    assert resp.json()["error"]["code"] == "INTERNAL_ERROR"
 
 
 def test_transcribe_empty_audio_never_reaches_the_provider(

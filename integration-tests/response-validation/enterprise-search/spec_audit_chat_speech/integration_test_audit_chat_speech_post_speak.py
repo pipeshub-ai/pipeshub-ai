@@ -45,9 +45,10 @@ def test_speak_rejects_invalid_text(
     resp = chat_speech_client.speak(body)
     assert resp.status_code == expected_status, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
-    detail = resp.json()["detail"]
-    # Node forwards FastAPI's body: a Pydantic 422 keeps its list, the others are one sentence.
-    assert isinstance(detail, list if expected_status == 422 else str), detail
+    body = resp.json()
+    # Node reduces every upstream 4xx to one sentence: a Pydantic 422's list is replaced by its summary.
+    assert set(body) == {"detail"}, body
+    assert isinstance(body["detail"], str) and body["detail"], body
 
 
 def test_member_speak_without_tts_provider_is_conflict(
