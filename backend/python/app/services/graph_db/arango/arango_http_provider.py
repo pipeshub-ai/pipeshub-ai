@@ -344,6 +344,8 @@ _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus
 
 # A record with any of these children waits for them to be purged first.
 _CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
+# records[orgId, deletedAtTimestamp, _key]: one org's trash, in purge order.
+PURGE_WALK_INDEX = "records_org_deleted_at"
 # Waiting this long for the purge's exclusive locks means syncs are busy; the next tick tries again.
 _PURGE_LOCK_TIMEOUT_SECONDS = 30
 
@@ -876,6 +878,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
             CollectionNames.RECORDS.value,
             ["deletedAtTimestamp", "_key"],
             sparse=True,
+        )
+
+        # COMPOSITE: the purge's walk of one org's trash, in (deletedAtTimestamp,
+        # _key) order, one page of index entries per page. Not sparse: 3.12
+        # cannot serve a range from a sparse index that ends in _key. Live
+        # records hold null here, which sorts before every timestamp. Hinted by
+        # name; without it the planner took the orgId index and sorted every
+        # record of the org on each page.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["orgId", "deletedAtTimestamp", "_key"],
+            name=PURGE_WALK_INDEX,
         )
 
         # SPARSE: restore reads a whole delete batch; the field is cleared on
@@ -14060,19 +14074,29 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> dict[str, Any]:
         """See ``IGraphDBProvider.get_purgeable_trashed_records``."""
         after_ts, after_key = after if after else (None, None)
-        # The lower bound excludes null, which lets the sparse
-        # records[deletedAtTimestamp, _key] index serve the walk. The connector
-        # check runs after the LIMIT, so a deleting connector's rows still move the cursor.
+        # Two reads of the PURGE_WALK_INDEX range, each in index order and cut at
+        # the page: the rest of the cursor's timestamp, then later ones. One OR
+        # over both made the planner read and sort every record of the org per
+        # page; one folder delete gives thousands of records the same timestamp.
+        # No cursor yet means a timestamp no record has. The connector check runs
+        # after the LIMIT, so a deleting connector's rows still move the cursor.
+        def walk(range_filter: str) -> str:
+            return (
+                f'FOR r IN @@records OPTIONS {{ indexHint: "{PURGE_WALK_INDEX}" }}\n'
+                f"    FILTER r.orgId == @org_id AND {range_filter}\n"
+                # null sorts below every number, so this keeps a missing count with
+                # no OR, which would split the read in two and lose the index order.
+                "    FILTER r.isDeleted == true AND r.purgeAttempts < @max_attempts\n"
+                "    SORT r.orgId, r.deletedAtTimestamp, r._key\n"
+                "    LIMIT @limit\n"
+                "    RETURN r"
+            )
+
         rows = await self.execute_query(
-            """
-            FOR r IN @@records
-                FILTER r.deletedAtTimestamp >= @lower AND r.deletedAtTimestamp <= @cutoff
-                FILTER @after_ts == null OR r.deletedAtTimestamp > @after_ts
-                    OR (r.deletedAtTimestamp == @after_ts AND r._key > @after_key)
-                FILTER r.isDeleted == true AND r.orgId == @org_id
-                FILTER r.purgeAttempts == null OR r.purgeAttempts < @max_attempts
-                SORT r.deletedAtTimestamp, r._key
-                LIMIT @limit
+            "LET tied = (" + walk("r.deletedAtTimestamp == @after_ts AND r._key > @after_key") + ")\n"
+            "LET later = (" + walk("r.deletedAtTimestamp > @lower AND r.deletedAtTimestamp <= @cutoff") + ")\n"
+            + """
+            FOR r IN SLICE(APPEND(tied, later), 0, @limit)
                 LET app = DOCUMENT(CONCAT(@apps, "/", r.connectorId))
                 LET held = LENGTH(
                     FOR child, e IN 1..1 OUTBOUND r._id @@record_relations
@@ -14093,8 +14117,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "org_id": org_id,
                 "lower": after_ts if after_ts is not None else 0,
                 "cutoff": deleted_before,
-                "after_ts": after_ts,
-                "after_key": after_key,
+                "after_ts": after_ts if after_ts is not None else -1,
+                "after_key": after_key or "",
                 "max_attempts": max_attempts,
                 "limit": limit,
                 "deleting": APP_STATUS_DELETING,

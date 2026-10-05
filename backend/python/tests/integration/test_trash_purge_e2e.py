@@ -992,3 +992,139 @@ async def test_both_stores_list_the_trash_in_the_same_shape(world: _World) -> No
 
     assert (await world.graph.get_purgeable_trashed_records(world.org_id, world.now - DAY_MS))["records"] == []
     assert (await world.graph.get_purgeable_trashed_records(f"other-{world.org_id}", cutoff))["records"] == []
+
+
+# A trash big enough that reading it whole on every page shows; one folder delete
+# gives most of it the same timestamp. TRASH_PURGE_WALK_RECORDS changes the size.
+WALK_RECORDS = int(os.environ.get("TRASH_PURGE_WALK_RECORDS", "1500"))
+WALK_PAGE = 50
+# Per record on the page: its own reads (type doc, app, children) plus the index entries.
+MAX_NEO4J_HITS_PER_ROW = 60
+MAX_ARANGO_INDEX_ENTRIES_PER_ROW = 4
+
+
+def _neo4j_plan_hits(plan: dict) -> int:
+    return int(plan.get("dbHits", 0) or 0) + sum(_neo4j_plan_hits(child) for child in plan.get("children", []))
+
+
+async def _seed_walk(world: _World) -> list[tuple[int, str]]:
+    """WALK_RECORDS trashed records in the test's org, most sharing one timestamp, and as many in another org."""
+    base = world.now - 30 * DAY_MS
+    mine = [(base + (0 if i < WALK_RECORDS * 2 // 3 else i), f"walk-{uuid.uuid4().hex[:6]}-{i:05d}")
+            for i in range(WALK_RECORDS)]
+    theirs = [(base + i, f"walk-other-{uuid.uuid4().hex[:6]}-{i:05d}") for i in range(WALK_RECORDS)]
+    rows = [(world.org_id, ts, key) for ts, key in mine] + [(f"other-{world.org_id}", ts, key) for ts, key in theirs]
+    if isinstance(world.graph, Neo4jProvider):
+        # One statement: the walk reads only the record's own properties.
+        await world.graph.client.execute_query(
+            "UNWIND $rows AS row CREATE (r:Record {id: row.key, orgId: row.org, connectorId: $connector, "
+            "connectorName: 'DRIVE', origin: 'CONNECTOR', recordName: row.key, version: 1, "
+            "isDeleted: true, deletedAtTimestamp: row.ts, deleteSource: 'CONNECTOR'})",
+            parameters={"rows": [{"org": org, "ts": ts, "key": key} for org, ts, key in rows],
+                        "connector": world.drive_id},
+        )
+        return sorted(mine)
+    records = [
+        FileRecord(id=key, org_id=org, record_name=f"{key}.pdf", record_type=RecordType.FILE,
+                   external_record_id=f"ext-{key}", version=1, origin=OriginTypes.CONNECTOR,
+                   connector_name=Connectors.GOOGLE_DRIVE, connector_id=world.drive_id,
+                   mime_type="application/pdf", is_file=True, extension="pdf")
+        for org, _, key in rows
+    ]
+    for i in range(0, len(records), 500):
+        await world.graph.batch_upsert_records(records[i:i + 500])
+    await world.graph.http_client.execute_aql(
+        f"FOR m IN @marks UPDATE m.key WITH {{ isDeleted: true, deletedAtTimestamp: m.ts, "
+        f"deleteSource: 'CONNECTOR' }} IN {RECORDS}",
+        {"marks": [{"key": key, "ts": ts} for _, ts, key in rows]},
+    )
+    return sorted(mine)
+
+
+async def _page_cost(world: _World, monkeypatch: pytest.MonkeyPatch, call) -> tuple[dict, int]:
+    """Run *call* (one page of the walk) and measure the work its statements do."""
+    sent: list[tuple[str, dict]] = []
+    if isinstance(world.graph, Neo4jProvider):
+        original = world.graph.client.execute_query
+
+        async def recording(query, parameters=None, txn_id=None, timeout=None):  # noqa: ANN202
+            sent.append((query, parameters or {}))
+            return await original(query, parameters=parameters, txn_id=txn_id, timeout=timeout)
+
+        monkeypatch.setattr(world.graph.client, "execute_query", recording)
+        page = await call()
+        monkeypatch.setattr(world.graph.client, "execute_query", original)
+        hits = 0
+        async with world.graph.client.driver.session(database=world.graph.client.database) as session:
+            for query, parameters in sent:
+                summary = await (await session.run(f"PROFILE {query}", parameters)).consume()
+                hits += _neo4j_plan_hits(summary.profile)
+        return page, hits
+    original = world.graph.execute_query
+
+    async def recording(query, bind_vars=None, transaction=None, timeout_seconds=None):  # noqa: ANN202
+        sent.append((query, bind_vars or {}))
+        return await original(query, bind_vars, transaction=transaction)
+
+    monkeypatch.setattr(world.graph, "execute_query", recording)
+    page = await call()
+    monkeypatch.setattr(world.graph, "execute_query", original)
+    http = world.graph.http_client
+    session = await http._get_session()
+    scanned = 0
+    for query, bind in sent:
+        async with session.post(
+            f"{http.base_url}/_db/{http.database}/_api/cursor",
+            json={"query": query, "bindVars": bind, "options": {"profile": 1}},
+        ) as resp:
+            stats = (await resp.json())["extra"]["stats"]
+        scanned += int(stats.get("scannedIndex") or 0) + int(stats.get("scannedFull") or 0)
+    return page, scanned
+
+
+async def test_each_page_of_the_walk_reads_about_one_page(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One org's trash, walked in pages through the cursor, costs a page's worth of reads per page.
+
+    The walk once read and sorted the whole trash of every org (Neo4j) or every
+    record of the org (ArangoDB) on each page. It also keeps its order: every
+    record once, by (deletedAtTimestamp, key), through a batch sharing one timestamp.
+    """
+    if isinstance(world.graph, Neo4jProvider):
+        # The production indexes, as ensure_schema creates them on a real install.
+        for statement in world.graph._generate_performance_indexes():
+            await world.graph.client.execute_query(statement)
+        await world.graph.client.execute_query("CALL db.awaitIndexes(300)")
+    expected = await _seed_walk(world)
+    cutoff = world.now
+
+    walked: list[tuple[int, str]] = []
+    after = None
+    costs = []
+    while True:
+        page, cost = await _page_cost(
+            world, monkeypatch,
+            lambda after=after: world.graph.get_purgeable_trashed_records(
+                world.org_id, cutoff, after=after, limit=WALK_PAGE
+            ),
+        )
+        costs.append(cost)
+        walked += [(row["deletedAtTimestamp"], row["id"]) for row in page["records"]]
+        after = page["next"]
+        if after is None or len(costs) > 8:
+            break
+    assert walked == expected[:len(walked)], "every record once, in (deletedAtTimestamp, key) order"
+    assert len(walked) == WALK_PAGE * len(costs)
+
+    per_row = MAX_NEO4J_HITS_PER_ROW if isinstance(world.graph, Neo4jProvider) else MAX_ARANGO_INDEX_ENTRIES_PER_ROW
+    # Inside the shared timestamp, with most of the trash still ahead of the cursor.
+    assert max(costs[1:]) <= per_row * WALK_PAGE, (costs, f"{2 * WALK_RECORDS} records in the trash")
+
+    rest = []
+    while after is not None:
+        page = await world.graph.get_purgeable_trashed_records(world.org_id, cutoff, after=after, limit=WALK_PAGE)
+        rest += [(row["deletedAtTimestamp"], row["id"]) for row in page["records"]]
+        after = page["next"]
+    assert walked + rest == expected
+

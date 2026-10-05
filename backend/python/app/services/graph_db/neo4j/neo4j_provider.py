@@ -642,6 +642,13 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Record) ON (n.deletedAtTimestamp)"
         )
 
+        # The purge's walk of one org's trash, in (deletedAtTimestamp, id) order.
+        # A composite index holds only nodes with every property, so only the trash.
+        indexes.append(
+            "CREATE INDEX record_org_deleted_at IF NOT EXISTS "
+            "FOR (n:Record) ON (n.orgId, n.deletedAtTimestamp, n.id)"
+        )
+
         # Restore reads a whole delete batch; the property is cleared on
         # restore, so this too covers only the trash.
         indexes.append(
@@ -12076,17 +12083,27 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> dict[str, Any]:
         """See ``IGraphDBProvider.get_purgeable_trashed_records``."""
         after_ts, after_key = after if after else (None, None)
-        # The range on deletedAtTimestamp is the record_deleted_at index, which
-        # only the trash is in. The connector check runs after the LIMIT, so a
-        # deleting connector's rows still move the cursor.
+        # Two seeks on record_org_deleted_at (orgId, deletedAtTimestamp, id), each
+        # in index order and cut at the page: the rest of the cursor's timestamp,
+        # then later ones. One OR over both read the whole trash of every org per
+        # page; one folder delete gives thousands of records the same timestamp.
+        # The connector check runs after the LIMIT, so a deleting connector's
+        # rows still move the cursor.
         rows = await self.client.execute_query(
             """
-            MATCH (r:Record)
-            WHERE r.deletedAtTimestamp >= $lower AND r.deletedAtTimestamp <= $cutoff
-              AND ($after_ts IS NULL OR r.deletedAtTimestamp > $after_ts
-                   OR (r.deletedAtTimestamp = $after_ts AND r.id > $after_key))
-              AND r.isDeleted = true AND r.orgId = $org_id
-              AND coalesce(r.purgeAttempts, 0) < $max_attempts
+            CALL {
+                MATCH (r:Record)
+                WHERE $after_ts IS NOT NULL
+                  AND r.orgId = $org_id AND r.deletedAtTimestamp = $after_ts AND r.id > $after_key
+                  AND r.isDeleted = true AND coalesce(r.purgeAttempts, 0) < $max_attempts
+                RETURN r ORDER BY r.orgId, r.deletedAtTimestamp, r.id LIMIT $limit
+                UNION ALL
+                MATCH (r:Record)
+                WHERE r.orgId = $org_id AND r.deletedAtTimestamp > $lower AND r.deletedAtTimestamp <= $cutoff
+                  AND r.id IS NOT NULL
+                  AND r.isDeleted = true AND coalesce(r.purgeAttempts, 0) < $max_attempts
+                RETURN r ORDER BY r.orgId, r.deletedAtTimestamp, r.id LIMIT $limit
+            }
             WITH r ORDER BY r.deletedAtTimestamp, r.id LIMIT $limit
             OPTIONAL MATCH (app:App {id: r.connectorId})
             OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
