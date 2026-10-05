@@ -1000,6 +1000,10 @@ def _trim_connector_config(config: dict[str, Any]) -> dict[str, Any]:
 
 _OWNER_TOKEN_KEYS = frozenset({OAuthConfigKeys.CREDENTIALS, "oauth"})
 
+# Older Google Workspace connectors keep their service-account key as flat ``auth`` keys,
+# which no schema describes (GoogleClient's legacy path), so its one secret is named here.
+_LEGACY_SERVICE_ACCOUNT_SECRET_KEYS = frozenset({"private_key"})
+
 
 def _schema_marks_secret(field: object) -> bool:
     # BookStack's ``token_secret`` is a PASSWORD input without ``isSecret``, so either marker counts.
@@ -1011,7 +1015,7 @@ async def _secret_auth_field_names(connector_registry: ConnectorRegistry, connec
 
     The OAuth ones matter because ``PUT /config`` stores a ``clientSecret`` sent in ``auth``.
     """
-    names = set(_get_secret_oauth_field_names_from_registry(connector_type))
+    names = set(_get_secret_oauth_field_names_from_registry(connector_type)) | _LEGACY_SERVICE_ACCOUNT_SECRET_KEYS
     metadata = await connector_registry.get_connector_metadata(connector_type)
     if not isinstance(metadata, dict):
         metadata = {}
@@ -5324,6 +5328,7 @@ async def update_connector_instance_filters_sync_config(
         first_time_sync_filters = not old_sync_filters and bool(new_sync_filters)
         sync_filters_changed = old_sync_filters != new_sync_filters
         needs_full_resync = sync_filters_changed or first_time_sync_filters
+        secret_auth_fields = await _secret_auth_field_names(connector_registry, instance.get("type", ""))
         # Save configuration
         await config_service.set_config(config_path, new_config)
         logger.info(f"Updated filters-sync config for instance {connector_id}")
@@ -5360,9 +5365,7 @@ async def update_connector_instance_filters_sync_config(
 
         return {
             "success": True,
-            "config": _config_for_response(
-                new_config, await _secret_auth_field_names(connector_registry, instance.get("type", ""))
-            ),
+            "config": _config_for_response(new_config, secret_auth_fields),
             "message": "Filters and sync configuration saved successfully.",
             "syncFiltersChanged": needs_full_resync,
         }
@@ -5459,9 +5462,10 @@ async def update_connector_instance_config(
         # to edit a sync setting would otherwise de-authenticate a working
         # connector on every save.
         _incoming_auth = body.get("auth")
-        auth_credentials_changed = isinstance(_incoming_auth, dict) and any(
-            (existing_config or {}).get("auth", {}).get(k) != v
-            for k, v in _incoming_auth.items()
+        _stored_auth = (existing_config or {}).get("auth") or {}
+        auth_credentials_changed = isinstance(_incoming_auth, dict) and (
+            any(_stored_auth.get(k) != v for k, v in _incoming_auth.items())
+            or bool(oauth_config_id and oauth_config_id != _stored_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID))
         )
 
         for section in ["auth", "sync", "filters"]:
@@ -5491,13 +5495,13 @@ async def update_connector_instance_config(
                 connector_registry, instance.get("type", ""), new_config, "saving"
             )
 
-        # Clear credentials and OAuth state only if auth config is being updated
-        # Filters and sync updates don't require re-authentication
-        if auth_updated:
+        # Tokens go only with the credentials that issued them: sending ``auth`` back
+        # unchanged (secrets as the mask) keeps the connector signed in.
+        if auth_credentials_changed:
             new_config[OAuthConfigKeys.CREDENTIALS] = None
             new_config["oauth"] = None
-            if connector_type and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict):
-                new_config[OAuthConfigKeys.AUTH]["connectorType"] = connector_type
+        if auth_updated and connector_type and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict):
+            new_config[OAuthConfigKeys.AUTH]["connectorType"] = connector_type
 
 
         # Prevent auth type changes after connector creation

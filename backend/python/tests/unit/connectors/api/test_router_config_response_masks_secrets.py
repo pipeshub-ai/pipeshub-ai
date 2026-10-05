@@ -30,6 +30,8 @@ _OAUTH_APPS_PATH = "/services/oauth/jira"
 _STORED_API_TOKEN = "stored-api-token"
 _STORED_TOKEN_SECRET = "stored-token-secret"
 _STORED_CLIENT_SECRET = "stored-client-secret"
+_STORED_TOKENS = {"access_token": "stored-access-token", "refresh_token": "stored-refresh-token"}
+_STORED_OAUTH_STATE = {"state": "stored-oauth-state"}
 
 _METADATA = {
     "config": {
@@ -64,7 +66,8 @@ def _stored_config(auth_type: str = "API_TOKEN") -> dict[str, Any]:
         "auth": auth,
         "sync": {"selectedStrategy": "MANUAL"},
         "filters": {"sync": {"values": {}}, "indexing": {"values": {}}},
-        "credentials": {"access_token": "stored-access-token"},
+        "credentials": copy.deepcopy(_STORED_TOKENS),
+        "oauth": copy.deepcopy(_STORED_OAUTH_STATE),
     }
 
 
@@ -221,7 +224,10 @@ async def test_config_save_that_sends_the_mask_keeps_the_secret_and_the_connecto
 
     result = await update_connector_instance_config("conn1", request)
 
-    assert _saved(config_service)["auth"]["apiToken"] == _STORED_API_TOKEN
+    saved = _saved(config_service)
+    assert saved["auth"]["apiToken"] == _STORED_API_TOKEN
+    assert saved["credentials"] == _STORED_TOKENS
+    assert saved["oauth"] == _STORED_OAUTH_STATE
     assert result["config"]["auth"]["apiToken"] == REDACTED_PLACEHOLDER
     updates = request.app.state.connector_registry.update_connector_instance.await_args.kwargs["updates"]
     assert "isActive" not in updates
@@ -234,7 +240,10 @@ async def test_config_save_with_a_new_secret_replaces_the_stored_one() -> None:
 
     result = await update_connector_instance_config("conn1", request)
 
-    assert _saved(config_service)["auth"]["apiToken"] == "new-api-token"
+    saved = _saved(config_service)
+    assert saved["auth"]["apiToken"] == "new-api-token"
+    assert saved["credentials"] is None
+    assert saved["oauth"] is None
     assert result["config"]["auth"]["apiToken"] == REDACTED_PLACEHOLDER
     updates = request.app.state.connector_registry.update_connector_instance.await_args.kwargs["updates"]
     assert updates["isActive"] is False
@@ -256,3 +265,42 @@ async def test_oauth_auth_save_that_sends_the_mask_keeps_the_oauth_apps_secret()
 
     (app,) = _saved(config_service, _OAUTH_APPS_PATH)
     assert app["config"]["clientSecret"] == _STORED_CLIENT_SECRET
+
+
+async def test_legacy_flat_service_account_private_key_is_masked_and_kept() -> None:
+    config_service = _config_service()
+    stored_auth = (await config_service.get_config(_CONFIG_PATH))["auth"]
+    stored_auth.update(type="service_account", client_email="sa@example.iam.gserviceaccount.com", private_key="stored-private-key")
+
+    with patch(f"{_ROUTER}.is_request_admin", return_value=False):
+        read = await get_connector_instance_config("conn1", _request(config_service, {}))
+    read_auth = read["config"]["config"]["auth"]
+    assert read_auth["private_key"] == REDACTED_PLACEHOLDER
+    assert read_auth["client_email"] == "sa@example.iam.gserviceaccount.com"
+
+    body = {"auth": {"private_key": REDACTED_PLACEHOLDER, "serviceAccountJson": REDACTED_PLACEHOLDER}}
+    await update_connector_instance_auth_config("conn1", _request(config_service, body), AsyncMock())
+
+    saved_auth = _saved(config_service)["auth"]
+    assert saved_auth["private_key"] == "stored-private-key"
+    assert saved_auth["serviceAccountJson"] == ""
+
+
+async def test_config_save_that_switches_oauth_app_signs_the_connector_out() -> None:
+    config_service = _config_service("OAUTH")
+    request = _request(config_service, {"auth": {"clientSecret": REDACTED_PLACEHOLDER}, "oauthConfigId": "app-2"})
+
+    with (
+        patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock, return_value=_instance("OAUTH")),
+        patch(f"{_ROUTER}.resolve_oauth_config", new_callable=AsyncMock, return_value={"_id": "app-2", "orgId": "org-1"}),
+        patch(f"{_ROUTER}._get_oauth_config_path", return_value=_OAUTH_APPS_PATH),
+    ):
+        await update_connector_instance_config("conn1", request)
+
+    saved = _saved(config_service)
+    assert saved["auth"]["oauthConfigId"] == "app-2"
+    assert saved["auth"]["clientSecret"] == _STORED_CLIENT_SECRET
+    assert saved["credentials"] is None
+    assert saved["oauth"] is None
+    updates = request.app.state.connector_registry.update_connector_instance.await_args.kwargs["updates"]
+    assert updates["isAuthenticated"] is False

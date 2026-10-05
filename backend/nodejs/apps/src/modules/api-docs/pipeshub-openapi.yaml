@@ -13042,7 +13042,7 @@ components:
           properties:
             auth:
               type: object
-              description: "Authentication configuration. Each stored secret (a field the connector's auth schema marks secret, such as an API token, password or client secret) is returned as `••••••••`."
+              description: "Authentication configuration. Each stored secret is returned as `••••••••`: a field the connector type's auth schema marks secret (such as an API token or password), a secret field of its OAuth app registration (such as `clientSecret`), or the `private_key` of an older Google Workspace service account."
             sync:
               type: object
               description: Sync configuration (schedule, options)
@@ -35887,8 +35887,10 @@ paths:
         Get the current configuration for a connector instance.<br><br>
         <b>Security:</b><br>
         OAuth tokens are never returned. Each stored secret in <code>config.auth</code>
-        (a field the connector's auth schema marks secret, such as an API token,
-        password or client secret) is returned as <code>••••••••</code>.
+        is returned as <code>••••••••</code>: a field the connector type's auth schema
+        marks secret (such as an API token or password), a secret field of its OAuth
+        app registration (such as <code>clientSecret</code>), or the <code>private_key</code>
+        of an older Google Workspace service account.
       operationId: getConnectorConfig
       security:
         - bearerAuth: []
@@ -35933,7 +35935,17 @@ paths:
         <b>Secrets:</b><br>
         A secret field in <code>auth</code> sent as <code>••••••••</code> keeps the
         stored value, so the configuration can be sent back as it was read. The
-        response masks stored secrets the same way.
+        response masks stored secrets the same way.<br><br>
+        <b>Signing out:</b><br>
+        Only a change to <code>auth</code>, or a different top-level
+        <code>oauthConfigId</code>, signs the connector out and clears its OAuth
+        tokens. Sending <code>auth</code> back unchanged, with secrets as the mask,
+        keeps it signed in.<br><br>
+        <b>OAuth apps:</b><br>
+        A new secret in <code>auth</code> replaces only this connector's own stored
+        value. It does not change the <code>clientSecret</code> of a linked OAuth app,
+        which is what sign-in uses. To rotate that, update the OAuth app
+        (<code>PUT /oauth/{connectorType}/{configId}</code>).
       operationId: updateConnectorConfig
       security:
         - bearerAuth: []
