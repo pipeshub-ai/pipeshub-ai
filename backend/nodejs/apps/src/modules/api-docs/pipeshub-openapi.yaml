@@ -10248,6 +10248,16 @@ components:
                     example: llm
                   modelFriendlyName:
                     type: string
+                  defaultReasoningEffort:
+                    type: string
+                    enum: [none, low, medium, high, max]
+                    description: >-
+                      The model's own reasoning effort, read from its stored
+                      configuration. It applies only when the chat request sets
+                      no `reasoningEffort` and the agent has no
+                      `defaultReasoningEffort`. Omitted when nothing valid is
+                      stored; `none` is a legacy value that runs as `low`.
+                    example: low
         usesOrgDefault:
           type: boolean
           description: |
@@ -13305,9 +13315,9 @@ components:
               example: "12345678-1234-1234-1234-123456789abc"
         baseUrl:
           type: string
-          description: "Base URL for self-hosted instances (e.g., GitLab Self-Managed)"
+          description: "PipesHub's public origin, prefixed to the connector's redirect path to build the stored redirectUri. When omitted, the frontend public endpoint is used. Not the provider's URL; a self-hosted provider's address goes in config."
           format: uri
-          example: "https://gitlab.mycompany.com"
+          example: "https://pipeshub.mycompany.com"
 
     ConnectorPagination:
       type: object
@@ -38857,6 +38867,9 @@ paths:
                       type: string
                     tenantId:
                       type: string
+                baseUrl:
+                  type: string
+                  description: "PipesHub's public origin. Used only when the stored configuration has no redirectUri yet, to build one; an existing redirectUri is kept whether or not this is sent."
       responses:
         '200':
           description: OAuth configuration updated
@@ -39573,6 +39586,10 @@ paths:
           `isDefault: true`; all subsequent models from the same entry get `false`.
         - `modelFriendlyName` is included **only** when the provider entry contains
           exactly one model name (not a comma-separated list).
+        - `defaultReasoningEffort` is included on every model of an entry whose
+          `configuration.defaultReasoningEffort` (or, when that is unset, a
+          top-level `defaultReasoningEffort`) holds a valid effort. It is left out
+          when no default is stored.
         - When no providers of the requested type are configured the endpoint still
           returns HTTP **200** with an empty `models` array — this is **not** an error.
 
@@ -39700,6 +39717,20 @@ paths:
                             **and** a friendly name was added during
                             configuration.
                           example: "Reasoning model"
+                        defaultReasoningEffort:
+                          type: string
+                          enum: [none, low, medium, high, max]
+                          description: >-
+                            The model's own reasoning effort. It applies only
+                            when the chat request sets no `reasoningEffort` and
+                            the agent has no `defaultReasoningEffort`; a level
+                            the user picks always wins. Read from
+                            `configuration.defaultReasoningEffort`, falling back
+                            to a top-level `defaultReasoningEffort`. Present on
+                            every model expanded from the entry, and left out
+                            when no default is stored. `none` is a legacy value
+                            that runs as `low`.
+                          example: low
               examples:
                 two_llm_models:
                   summary: Two LLM models from an Azure OpenAI provider
@@ -39722,6 +39753,7 @@ paths:
                         isReasoning: true
                         isDefault: false
                         modelFriendlyName: "Reasoning model"
+                        defaultReasoningEffort: low
                 no_models_configured:
                   summary: modelType key present in config but zero models after expansion
                   value:

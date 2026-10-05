@@ -108,6 +108,7 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import (
+    NotificationOutcome,
     NotificationSeverity,
     NotificationType,
 )
@@ -136,6 +137,12 @@ AUDIT_PAGE_SIZE: int = 500
 # objectItem.typeName marking an issue deletion in the Cloud audit log (Data Center uses
 # action names instead — see DC_AUDIT_ISSUE_DELETED_ACTIONS in the jira_data_center connector).
 AUDIT_ISSUE_DELETE_TYPE: str = "ISSUE_DELETE"
+# Jira answers 403 both when the account lacks the audit log permission and when every Jira
+# product on the site is on a Free plan; only the body tells them apart ("... all of its Jira
+# Cloud products are on Free plans").
+AUDIT_FREE_PLAN_MARKER: str = "free plan"
+# Persisted so the Free-plan notice reaches the admin once per connector, not once per sync.
+AUDIT_FREE_PLAN_NOTICE_SYNC_KEY: str = "issues_audit_free_plan_notice"
 
 # --- Permission-scheme vocabulary (GET /rest/api/3/permissionscheme/{id}/permission) ---
 # The only grant that decides who can see a project's issues at all; every other grant type
@@ -1143,12 +1150,17 @@ class JiraConnector(BaseConnector):
                 )
 
                 if response.status != HttpStatusCode.OK.value:
-                    self.logger.warning(f"⚠️ Failed to fetch audit records: {response.text()}")
-                    # Only a 403 means the account lacks the Administrator permission for the audit
-                    # log. A 401 is an auth/token failure (reported by the connection/sync-failed
-                    # notification) and 5xx/429 are transient — don't misreport either as a missing
-                    # permission.
-                    if response.status == HttpStatusCode.FORBIDDEN.value:
+                    body = response.text()
+                    self.logger.warning(f"⚠️ Failed to fetch audit records: {body}")
+                    # Only a 403 is a refusal worth telling the admin about. A 401 is an auth/token
+                    # failure (reported by the connection/sync-failed notification) and 5xx/429
+                    # are transient.
+                    if (
+                        response.status == HttpStatusCode.FORBIDDEN.value
+                        and AUDIT_FREE_PLAN_MARKER in str(body or "").lower()
+                    ):
+                        await self._notify_audit_log_needs_paid_plan()
+                    elif response.status == HttpStatusCode.FORBIDDEN.value:
                         await self.notify(
                             type=NotificationType.CONNECTOR_WARNING,
                             severity=NotificationSeverity.WARNING,
@@ -1196,6 +1208,45 @@ class JiraConnector(BaseConnector):
                 break
 
         return deleted_issue_keys, ok
+
+    async def _notify_audit_log_needs_paid_plan(self) -> None:
+        """Tell the admin, once per connector, that Jira's Free plan hides deletions from us."""
+        try:
+            notice = await self.issues_sync_point.read_sync_point(AUDIT_FREE_PLAN_NOTICE_SYNC_KEY)
+        except Exception as e:
+            self.logger.debug("Could not read the Free-plan notice marker: %s", e)
+            notice = {}
+        if notice and notice.get("sent"):
+            self.logger.info(
+                "ℹ️ Deleted issues can't be detected: every Jira product on this site is on a Free plan"
+            )
+            return
+
+        outcome = await self.notify_and_wait(
+            type=NotificationType.CONNECTOR_WARNING,
+            severity=NotificationSeverity.WARNING,
+            title=self._notification_title("can't detect deleted issues on Jira's Free plan"),
+            message=(
+                "PipesHub finds deleted Jira issues through Jira's audit log, and Jira only "
+                "provides that log when at least one Jira product on the site is on a paid "
+                "plan. Every Jira product on this site is on a Free plan, so issues deleted in "
+                "Jira will stay in PipesHub. To have deletions picked up, move one Jira "
+                "product on the site to a paid plan. To clear issues that were already "
+                "deleted, remove this connector and add it again."
+            ),
+            payload={
+                "redirect_link": None,
+            }
+        )
+        if outcome is not NotificationOutcome.SENT:
+            self.logger.info("Free-plan notice not delivered (%s); a later sync tries again", outcome.value)
+            return
+        try:
+            await self.issues_sync_point.update_sync_point(
+                AUDIT_FREE_PLAN_NOTICE_SYNC_KEY, {"sent": True}
+            )
+        except Exception as e:
+            self.logger.warning("Could not record that the Free-plan notice was sent: %s", e)
 
     async def _handle_deleted_issue(self, issue_key: str) -> tuple[int, int]:
         """

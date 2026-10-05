@@ -363,455 +363,6 @@ class TestSyncFolders:
             200,
             {
                 "results": [
-                    {"id": "folder1", "title": None},  # Missing title
-                    {"id": None, "title": "Folder 2"},  # Missing id
-                    _folder_data("folder3", "Folder 3"),  # Valid
-                ],
-                "_links": {},
-            },
-        )
-        mock_datasource.get_folders_v1 = AsyncMock(return_value=folders_response)
-
-        with patch.object(c, "_get_fresh_datasource", return_value=mock_datasource):
-            with patch.object(c, "_fetch_page_permissions", new_callable=AsyncMock, return_value=[]):
-                await c._sync_folders("TEST")
-
-        # Only one valid folder should be saved
-        saved_records = c.data_entities_processor.on_new_records.call_args[0][0]
-        assert len(saved_records) == 1
-
-    async def test_sync_folders_handles_transform_error(self):
-        """Test that transformation errors are handled gracefully."""
-        c = _make_connector()
-        c.sync_filters = MagicMock()
-        c.sync_filters.get = MagicMock(return_value=None)
-        c.pages_sync_point = MagicMock()
-        c.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c.pages_sync_point.update_sync_point = AsyncMock()
-
-        mock_datasource = MagicMock()
-        folders_response = _make_mock_response(
-            200,
-            {
-                "results": [
-                    _folder_data("folder1", "Folder 1"),
-                    _folder_data("folder2", "Folder 2"),
-                ],
-                "_links": {},
-            },
-        )
-        mock_datasource.get_folders_v1 = AsyncMock(return_value=folders_response)
-
-        with patch.object(c, "_get_fresh_datasource", return_value=mock_datasource):
-            with patch.object(c, "_fetch_page_permissions", new_callable=AsyncMock, return_value=[]):
-                with patch.object(c, "_transform_to_folder_file_record", side_effect=[None, MagicMock()]):
-                    await c._sync_folders("TEST")
-
-        # Only the second folder should be saved (first returned None)
-        saved_records = c.data_entities_processor.on_new_records.call_args[0][0]
-        assert len(saved_records) == 1
-
-    async def test_sync_folders_handles_item_processing_exception(self):
-        """Test that exceptions during item processing are caught and logged."""
-        c = _make_connector()
-        c.sync_filters = MagicMock()
-        c.sync_filters.get = MagicMock(return_value=None)
-        c.pages_sync_point = MagicMock()
-        c.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c.pages_sync_point.update_sync_point = AsyncMock()
-
-        mock_datasource = MagicMock()
-        folders_response = _make_mock_response(
-            200,
-            {
-                "results": [
-                    _folder_data("folder1", "Folder 1"),
-                    _folder_data("folder2", "Folder 2"),
-                ],
-                "_links": {},
-            },
-        )
-        mock_datasource.get_folders_v1 = AsyncMock(return_value=folders_response)
-
-        with patch.object(c, "_get_fresh_datasource", return_value=mock_datasource):
-            with patch.object(c, "_fetch_page_permissions", new_callable=AsyncMock, side_effect=[Exception("API error"), []]):
-                await c._sync_folders("TEST")
-
-        # Second folder should still be processed
-        saved_records = c.data_entities_processor.on_new_records.call_args[0][0]
-        assert len(saved_records) == 1
-
-    async def test_sync_folders_with_pagination(self):
-        """Test folder sync with multiple pages (cursor pagination)."""
-        c = _make_connector()
-        c.sync_filters = MagicMock()
-        c.sync_filters.get = MagicMock(return_value=None)
-        c.pages_sync_point = MagicMock()
-        c.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c.pages_sync_point.update_sync_point = AsyncMock()
-
-        mock_datasource = MagicMock()
-        
-        # First page with next link
-        first_response = _make_mock_response(
-            200,
-            {
-                "results": [_folder_data("folder1", "Folder 1")],
-                "_links": {"next": "/api/content/search?cursor=abc123"},
-            },
-        )
-        # Second page without next link
-        second_response = _make_mock_response(
-            200,
-            {
-                "results": [_folder_data("folder2", "Folder 2")],
-                "_links": {},
-            },
-        )
-        mock_datasource.get_folders_v1 = AsyncMock(side_effect=[first_response, second_response])
-
-        with patch.object(c, "_get_fresh_datasource", return_value=mock_datasource):
-            with patch.object(c, "_fetch_page_permissions", new_callable=AsyncMock, return_value=[]):
-                await c._sync_folders("TEST")
-
-        # Should call get_folders_v1 twice (pagination)
-        assert mock_datasource.get_folders_v1.call_count == 2
-        # Should save 2 folders total
-        assert c.data_entities_processor.on_new_records.call_count == 2
-
-    async def test_sync_folders_updates_checkpoint(self):
-        """Test that sync checkpoint is updated after successful sync."""
-        c = _make_connector()
-        c.sync_filters = MagicMock()
-        c.sync_filters.get = MagicMock(return_value=None)
-        c.pages_sync_point = MagicMock()
-        c.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c.pages_sync_point.update_sync_point = AsyncMock()
-
-        mock_datasource = MagicMock()
-        folders_response = _make_mock_response(
-            200,
-            {
-                "results": [_folder_data("folder1", "Folder 1")],
-                "_links": {},
-            },
-        )
-        mock_datasource.get_folders_v1 = AsyncMock(return_value=folders_response)
-
-        with patch.object(c, "_get_fresh_datasource", return_value=mock_datasource):
-            with patch.object(c, "_fetch_page_permissions", new_callable=AsyncMock, return_value=[]):
-                await c._sync_folders("TEST")
-
-        # Checkpoint should be updated
-        c.pages_sync_point.update_sync_point.assert_called_once()
-        args = c.pages_sync_point.update_sync_point.call_args[0]
-        assert "confluence_folders" in args[0]
-        assert "last_sync_time" in args[1]
-
-    async def test_sync_folders_inherit_permissions_logic(self):
-        """Test that inherit_permissions is set correctly based on READ permissions."""
-        c = _make_connector()
-        c.sync_filters = MagicMock()
-        c.sync_filters.get = MagicMock(return_value=None)
-        c.pages_sync_point = MagicMock()
-        c.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c.pages_sync_point.update_sync_point = AsyncMock()
-
-        mock_datasource = MagicMock()
-        folders_response = _make_mock_response(
-            200,
-            {
-                "results": [
-                    _folder_data("folder1", "Folder 1"),
-                    _folder_data("folder2", "Folder 2"),
-                ],
-                "_links": {},
-            },
-        )
-        mock_datasource.get_folders_v1 = AsyncMock(return_value=folders_response)
-
-        read_perm = Permission(
-            type=PermissionType.READ,
-            entity_type=EntityType.USER,
-            external_id="user1",
-        )
-        write_perm = Permission(
-            type=PermissionType.WRITE,
-            entity_type=EntityType.USER,
-            external_id="user2",
-        )
-
-        with patch.object(c, "_get_fresh_datasource", return_value=mock_datasource):
-            with patch.object(
-                c, "_fetch_page_permissions", new_callable=AsyncMock, side_effect=[[read_perm], [write_perm]]
-            ):
-                await c._sync_folders("TEST")
-
-        saved_records = c.data_entities_processor.on_new_records.call_args[0][0]
-        folder1, perms1 = saved_records[0]
-        folder2, perms2 = saved_records[1]
-        
-        # Folder1 has READ permission, so inherit_permissions should be False
-        assert folder1.inherit_permissions is False
-        # Folder2 has only WRITE permission, inherit_permissions should remain default (True)
-        # (it's set to True by default in the model)
-
-    async def test_sync_folders_handles_api_failure(self):
-        """Test that API failures are handled and raised."""
-        c = _make_connector()
-        c.sync_filters = MagicMock()
-        c.sync_filters.get = MagicMock(return_value=None)
-        c.pages_sync_point = MagicMock()
-        c.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
-
-        mock_datasource = MagicMock()
-        # API returns non-success status
-        failed_response = _make_mock_response(500, {})
-        mock_datasource.get_folders_v1 = AsyncMock(return_value=failed_response)
-
-        with patch.object(c, "_get_fresh_datasource", return_value=mock_datasource):
-            await c._sync_folders("TEST")
-
-        # Should not call on_new_records if API fails
-        c.data_entities_processor.on_new_records.assert_not_called()
-
-    async def test_sync_folders_handles_empty_results(self):
-        """Test that empty results are handled correctly."""
-        c = _make_connector()
-        c.sync_filters = MagicMock()
-        c.sync_filters.get = MagicMock(return_value=None)
-        c.pages_sync_point = MagicMock()
-        c.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c.pages_sync_point.update_sync_point = AsyncMock()
-
-        mock_datasource = MagicMock()
-        empty_response = _make_mock_response(200, {"results": [], "_links": {}})
-        mock_datasource.get_folders_v1 = AsyncMock(return_value=empty_response)
-
-        with patch.object(c, "_get_fresh_datasource", return_value=mock_datasource):
-            with patch.object(c, "_fetch_page_permissions", new_callable=AsyncMock, return_value=[]):
-                await c._sync_folders("TEST")
-
-        # Should not update checkpoint if nothing was synced
-        c.pages_sync_point.update_sync_point.assert_not_called()
-
-    async def test_sync_folders_with_incremental_sync(self):
-        """Test incremental sync uses last sync time."""
-        c = _make_connector()
-        c.sync_filters = MagicMock()
-        c.sync_filters.get = MagicMock(return_value=None)
-        c.pages_sync_point = MagicMock()
-        # Return last sync time
-        c.pages_sync_point.read_sync_point = AsyncMock(
-            return_value={"last_sync_time": "2024-01-01T00:00:00.000Z"}
-        )
-        c.pages_sync_point.update_sync_point = AsyncMock()
-
-        mock_datasource = MagicMock()
-        folders_response = _make_mock_response(
-            200,
-            {"results": [_folder_data("folder1", "Folder 1")], "_links": {}},
-        )
-        mock_datasource.get_folders_v1 = AsyncMock(return_value=folders_response)
-
-        with patch.object(c, "_get_fresh_datasource", return_value=mock_datasource):
-            with patch.object(c, "_fetch_page_permissions", new_callable=AsyncMock, return_value=[]):
-                await c._sync_folders("TEST")
-
-        # Check that modified_after was passed to the API
-        call_kwargs = mock_datasource.get_folders_v1.call_args[1]
-        assert call_kwargs["modified_after"] == "2024-01-01T00:00:00.000Z"
-
-    async def test_sync_folders_with_modified_filter(self):
-        """Test sync with modified date filter from sync_filters."""
-        c = _make_connector()
-        
-        # Create mock filter with modified dates
-        mock_modified_filter = MagicMock()
-        mock_modified_filter.get_datetime_iso = MagicMock(
-            return_value=("2024-02-01T00:00:00.000Z", "2024-03-01T00:00:00.000Z")
-        )
-        
-        c.sync_filters = MagicMock()
-        c.sync_filters.get = MagicMock(side_effect=lambda key: mock_modified_filter if key == SyncFilterKey.MODIFIED else None)
-        c.pages_sync_point = MagicMock()
-        c.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c.pages_sync_point.update_sync_point = AsyncMock()
-
-        mock_datasource = MagicMock()
-        folders_response = _make_mock_response(
-            200,
-            {"results": [_folder_data("folder1", "Folder 1")], "_links": {}},
-        )
-        mock_datasource.get_folders_v1 = AsyncMock(return_value=folders_response)
-
-        with patch.object(c, "_get_fresh_datasource", return_value=mock_datasource):
-            with patch.object(c, "_fetch_page_permissions", new_callable=AsyncMock, return_value=[]):
-                await c._sync_folders("TEST")
-
-        # Check that modified dates were passed
-        call_kwargs = mock_datasource.get_folders_v1.call_args[1]
-        assert call_kwargs["modified_after"] == "2024-02-01T00:00:00.000Z"
-        assert call_kwargs["modified_before"] == "2024-03-01T00:00:00.000Z"
-
-    async def test_sync_folders_with_created_filter(self):
-        """Test sync with created date filter from sync_filters."""
-        c = _make_connector()
-        
-        # Create mock filter with created dates
-        mock_created_filter = MagicMock()
-        mock_created_filter.get_datetime_iso = MagicMock(
-            return_value=("2024-01-01T00:00:00.000Z", "2024-01-31T23:59:59.000Z")
-        )
-        
-        c.sync_filters = MagicMock()
-        c.sync_filters.get = MagicMock(side_effect=lambda key: mock_created_filter if key == SyncFilterKey.CREATED else None)
-        c.pages_sync_point = MagicMock()
-        c.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c.pages_sync_point.update_sync_point = AsyncMock()
-
-        mock_datasource = MagicMock()
-        folders_response = _make_mock_response(
-            200,
-            {"results": [_folder_data("folder1", "Folder 1")], "_links": {}},
-        )
-        mock_datasource.get_folders_v1 = AsyncMock(return_value=folders_response)
-
-        with patch.object(c, "_get_fresh_datasource", return_value=mock_datasource):
-            with patch.object(c, "_fetch_page_permissions", new_callable=AsyncMock, return_value=[]):
-                await c._sync_folders("TEST")
-
-        # Check that created dates were passed
-        call_kwargs = mock_datasource.get_folders_v1.call_args[1]
-        assert call_kwargs["created_after"] == "2024-01-01T00:00:00.000Z"
-        assert call_kwargs["created_before"] == "2024-01-31T23:59:59.000Z"
-
-    async def test_sync_folders_with_filter_and_checkpoint(self):
-        """Test sync when both filter and checkpoint exist (uses max)."""
-        c = _make_connector()
-        
-        # Create mock filter with modified date that's older than checkpoint
-        mock_modified_filter = MagicMock()
-        mock_modified_filter.get_datetime_iso = MagicMock(
-            return_value=("2024-01-01T00:00:00.000Z", None)
-        )
-        
-        c.sync_filters = MagicMock()
-        c.sync_filters.get = MagicMock(side_effect=lambda key: mock_modified_filter if key == SyncFilterKey.MODIFIED else None)
-        c.pages_sync_point = MagicMock()
-        # Checkpoint is newer than filter
-        c.pages_sync_point.read_sync_point = AsyncMock(
-            return_value={"last_sync_time": "2024-02-01T00:00:00.000Z"}
-        )
-        c.pages_sync_point.update_sync_point = AsyncMock()
-
-        mock_datasource = MagicMock()
-        folders_response = _make_mock_response(
-            200,
-            {"results": [_folder_data("folder1", "Folder 1")], "_links": {}},
-        )
-        mock_datasource.get_folders_v1 = AsyncMock(return_value=folders_response)
-
-        with patch.object(c, "_get_fresh_datasource", return_value=mock_datasource):
-            with patch.object(c, "_fetch_page_permissions", new_callable=AsyncMock, return_value=[]):
-                await c._sync_folders("TEST")
-
-        # Should use the newer checkpoint time
-        call_kwargs = mock_datasource.get_folders_v1.call_args[1]
-        assert call_kwargs["modified_after"] == "2024-02-01T00:00:00.000Z"
-
-    async def test_sync_folders_with_filter_only(self):
-        """Test sync with filter but no checkpoint."""
-        c = _make_connector()
-        
-        # Create mock filter
-        mock_modified_filter = MagicMock()
-        mock_modified_filter.get_datetime_iso = MagicMock(
-            return_value=("2024-03-01T00:00:00.000Z", None)
-        )
-        
-        c.sync_filters = MagicMock()
-        c.sync_filters.get = MagicMock(side_effect=lambda key: mock_modified_filter if key == SyncFilterKey.MODIFIED else None)
-        c.pages_sync_point = MagicMock()
-        c.pages_sync_point.read_sync_point = AsyncMock(return_value=None)  # No checkpoint
-        c.pages_sync_point.update_sync_point = AsyncMock()
-
-        mock_datasource = MagicMock()
-        folders_response = _make_mock_response(
-            200,
-            {"results": [_folder_data("folder1", "Folder 1")], "_links": {}},
-        )
-        mock_datasource.get_folders_v1 = AsyncMock(return_value=folders_response)
-
-        with patch.object(c, "_get_fresh_datasource", return_value=mock_datasource):
-            with patch.object(c, "_fetch_page_permissions", new_callable=AsyncMock, return_value=[]):
-                await c._sync_folders("TEST")
-
-        # Should use the filter time
-        call_kwargs = mock_datasource.get_folders_v1.call_args[1]
-        assert call_kwargs["modified_after"] == "2024-03-01T00:00:00.000Z"
-
-    async def test_sync_folders_pagination_with_invalid_cursor(self):
-        """Test pagination when cursor extraction returns None."""
-        c = _make_connector()
-        c.sync_filters = MagicMock()
-        c.sync_filters.get = MagicMock(return_value=None)
-        c.pages_sync_point = MagicMock()
-        c.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c.pages_sync_point.update_sync_point = AsyncMock()
-
-        mock_datasource = MagicMock()
-        
-        # Response with next link but cursor extraction will fail
-        response_with_bad_cursor = _make_mock_response(
-            200,
-            {
-                "results": [_folder_data("folder1", "Folder 1")],
-                "_links": {"next": "/invalid-cursor-format"},
-            },
-        )
-        mock_datasource.get_folders_v1 = AsyncMock(return_value=response_with_bad_cursor)
-
-        with patch.object(c, "_get_fresh_datasource", return_value=mock_datasource):
-            with patch.object(c, "_fetch_page_permissions", new_callable=AsyncMock, return_value=[]):
-                with patch.object(c, "_extract_cursor_from_next_link", return_value=None):
-                    await c._sync_folders("TEST")
-
-        # Should only call API once (stops when cursor is None)
-        assert mock_datasource.get_folders_v1.call_count == 1
-
-    async def test_sync_folders_handles_exception(self):
-        """Test that exceptions during sync are logged and raised."""
-        c = _make_connector()
-        c.sync_filters = MagicMock()
-        c.sync_filters.get = MagicMock(return_value=None)
-        c.pages_sync_point = MagicMock()
-        c.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
-
-        mock_datasource = MagicMock()
-        # Simulate exception during API call
-        mock_datasource.get_folders_v1 = AsyncMock(side_effect=Exception("Network error"))
-
-        with patch.object(c, "_get_fresh_datasource", return_value=mock_datasource):
-            # Exception should be raised
-            with pytest.raises(Exception, match="Network error"):
-                await c._sync_folders("TEST")
-
-
-    async def test_sync_folders_skips_invalid_folder(self):
-        """Test that folders with missing id or title are skipped."""
-        c = _make_connector()
-        c.sync_filters = MagicMock()
-        c.sync_filters.get = MagicMock(return_value=None)
-        c.pages_sync_point = MagicMock()
-        c.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c.pages_sync_point.update_sync_point = AsyncMock()
-
-        mock_datasource = MagicMock()
-        folders_response = _make_mock_response(
-            200,
-            {
-                "results": [
                     {"id": "folder1", "title": None},
                     {"id": None, "title": "Folder 2"},
                     _folder_data("folder3", "Folder 3"),
@@ -1771,7 +1322,7 @@ class TestFetchPermissionAuditLogs:
 # ===========================================================================
 
 
-class TestFetchSpacePermissions:
+class TestFetchSpacePermissionsResults:
 
     @pytest.mark.asyncio
     async def test_fetches_permissions(self):
@@ -1790,16 +1341,6 @@ class TestFetchSpacePermissions:
 
         permissions = await connector._fetch_space_permissions("space-1", "Engineering")
         assert len(permissions) == 1
-
-    @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
-        connector = _make_connector()
-        mock_ds = MagicMock()
-        mock_ds.get_space_permissions_assignments = AsyncMock(return_value=_make_mock_response(500, {}))
-        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-
-        permissions = await connector._fetch_space_permissions("space-1", "Engineering")
-        assert permissions == []
 
 
 # ===========================================================================
@@ -2174,7 +1715,7 @@ class TestMapPagePermission:
 # ===========================================================================
 
 
-class TestConstructWebUrl:
+class TestConstructWebUrlSources:
     def test_v2_with_base_url(self):
         c = _conn()
         links = {"webui": "/spaces/ENG/pages/123"}
@@ -2512,7 +2053,7 @@ class TestCreatePermissionFromPrincipal:
 # ===========================================================================
 
 
-class TestCreatePseudoGroup:
+class TestCreatePseudoGroupSave:
     @pytest.mark.asyncio
     async def test_creates_and_saves(self):
         c = _conn()
@@ -2898,19 +2439,6 @@ class TestGetAppUsersByEmails:
 
 
 # ===========================================================================
-# get_signed_url
-# ===========================================================================
-
-
-class TestGetSignedUrl:
-    @pytest.mark.asyncio
-    async def test_returns_empty(self):
-        c = _conn()
-        result = await c.get_signed_url(MagicMock())
-        assert result == ""
-
-
-# ===========================================================================
 # cleanup
 # ===========================================================================
 
@@ -2953,7 +2481,7 @@ class TestHandleWebhookNotification:
 # ===========================================================================
 
 
-class TestGetFilterOptions:
+class TestGetFilterOptionsByKey:
     @pytest.mark.asyncio
     async def test_space_keys(self):
         c = _conn()
@@ -2987,7 +2515,7 @@ class TestGetFilterOptions:
 # ===========================================================================
 
 
-class TestGetSpaceOptions:
+class TestGetSpaceOptionsBasic:
     @pytest.mark.asyncio
     async def test_no_search(self):
         c = _conn()
@@ -3042,7 +2570,7 @@ class TestGetSpaceOptions:
 # ===========================================================================
 
 
-class TestGetPageOptions:
+class TestGetPageOptionsBasic:
     @pytest.mark.asyncio
     async def test_no_search(self):
         c = _conn()
@@ -3077,7 +2605,7 @@ class TestGetPageOptions:
             await c._get_page_options(1, 20, None, None)
 
 
-class TestGetBlogpostOptions:
+class TestGetBlogpostOptionsBasic:
     @pytest.mark.asyncio
     async def test_no_search(self):
         c = _conn()
@@ -3117,7 +2645,7 @@ class TestGetBlogpostOptions:
 # ===========================================================================
 
 
-class TestStreamRecord:
+class TestStreamRecordByType:
     @pytest.mark.asyncio
     async def test_stream_page(self):
         c = _conn()
@@ -3189,7 +2717,7 @@ class TestStreamRecord:
 # ===========================================================================
 
 
-class TestFetchPageContent:
+class TestFetchPageContentByType:
     @pytest.mark.asyncio
     async def test_page_success(self):
         c = _conn()
@@ -3400,7 +2928,7 @@ class TestCheckAndFetchUpdatedPage:
 # ===========================================================================
 
 
-class TestCheckAndFetchUpdatedAttachment:
+class TestCheckAndFetchUpdatedAttachmentNoUpdate:
     @pytest.mark.asyncio
     async def test_no_parent_page_id(self):
         c = _conn()
@@ -3645,7 +3173,7 @@ class TestSyncUserGroupsCoverage:
 # ===========================================================================
 # _fetch_attachment_content
 # ===========================================================================
-class TestFetchAttachmentContent:
+class TestFetchAttachmentContentMissingInputs:
     @pytest.mark.asyncio
     async def test_no_parent_page_id(self):
         c = _conn()

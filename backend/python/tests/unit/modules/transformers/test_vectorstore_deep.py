@@ -676,18 +676,7 @@ class TestCreateEmbeddingsDeeper:
 # _normalize_image_to_base64
 # ===================================================================
 
-class TestNormalizeImageToBase64:
-    @pytest.mark.asyncio
-    async def test_data_url(self):
-        vs = _make_vectorstore()
-        result = await vs._normalize_image_to_base64("data:image/png;base64,iVBORw0KGgo=")
-        assert result == "iVBORw0KGgo="
-
-    @pytest.mark.asyncio
-    async def test_data_url_no_comma(self):
-        vs = _make_vectorstore()
-        result = await vs._normalize_image_to_base64("data:image/png;base64")
-        assert result is None
+class TestNormalizeImageToBase64RawInput:
 
     @pytest.mark.asyncio
     async def test_raw_base64(self):
@@ -701,18 +690,6 @@ class TestNormalizeImageToBase64:
         result = await vs._normalize_image_to_base64("aGVsbG8")
         assert result is not None
         assert result.endswith("=")
-
-    @pytest.mark.asyncio
-    async def test_none_input(self):
-        vs = _make_vectorstore()
-        result = await vs._normalize_image_to_base64(None)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_empty_string(self):
-        vs = _make_vectorstore()
-        result = await vs._normalize_image_to_base64("")
-        assert result is None
 
     @pytest.mark.asyncio
     async def test_non_string_input(self):
@@ -1163,7 +1140,6 @@ dropped in the multi-vector-DB changeset:
 - Empty table_summary / row_natural_language_text produce no embedding.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 

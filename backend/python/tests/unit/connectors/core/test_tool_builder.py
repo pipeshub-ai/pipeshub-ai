@@ -20,7 +20,7 @@ from app.connectors.core.registry.tool_builder import (
 )
 from copy import deepcopy
 from types import SimpleNamespace
-from typing import Dict, List, Optional, Union
+from typing import Dict, Union
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.CRITICAL)

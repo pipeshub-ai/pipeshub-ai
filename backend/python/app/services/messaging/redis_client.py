@@ -33,9 +33,9 @@ connection pool independently.
 """
 from __future__ import annotations
 
-import asyncio
-import threading
 from typing import TYPE_CHECKING
+
+from app.services.redis.loop_clients import LoopBoundClients
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -77,12 +77,9 @@ class RedisClientRegistry:
         self._provider: "IRedisConnectionProvider" = get_redis_provider(
             RedisConnectionConfig.from_redis_config(config)
         )
-        self._lock = threading.Lock()
-        # Keyed by thread, with the bound loop stored alongside so a client
-        # left over from a closed loop (a worker thread restarted between a
-        # stop() and a start()) is discarded rather than raising
-        # "attached to a different loop" on first use.
-        self._clients: dict[int, tuple["RedisClient", asyncio.AbstractEventLoop | None]] = {}
+        self._clients: LoopBoundClients["RedisClient"] = LoopBoundClients(
+            lambda: self._provider.create_client(self._options)
+        )
 
     @property
     def max_connections(self) -> int:
@@ -97,43 +94,8 @@ class RedisClientRegistry:
 
     def client(self) -> "RedisClient":
         """The client bound to the currently running loop, created on first use."""
-        thread_id = threading.get_ident()
-        try:
-            current_loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
-        except RuntimeError:
-            current_loop = None
-
-        with self._lock:
-            existing = self._clients.get(thread_id)
-            if existing is not None:
-                client, bound_loop = existing
-                stale = bound_loop is not None and (
-                    bound_loop.is_closed()
-                    or (current_loop is not None and current_loop is not bound_loop)
-                )
-                if stale:
-                    self._logger.debug(
-                        "Discarding stale Redis client for thread %s", thread_id
-                    )
-                    del self._clients[thread_id]
-                else:
-                    return client
-
-            client = self._provider.create_client(self._options)
-            self._clients[thread_id] = (client, current_loop)
-            return client
+        return self._clients.get()
 
     async def aclose(self) -> None:
-        """Close every client this registry handed out.
-
-        Best-effort per client: a client bound to an already-closed loop
-        cannot be awaited, and one failing to close must not strand the rest.
-        """
-        with self._lock:
-            clients = [client for client, _ in self._clients.values()]
-            self._clients.clear()
-        for client in clients:
-            try:
-                await client.aclose()
-            except Exception as exc:
-                self._logger.debug("Error closing Redis client: %s", exc)
+        """Close every client this registry handed out."""
+        await self._clients.aclose()

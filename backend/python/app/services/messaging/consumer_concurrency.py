@@ -13,7 +13,8 @@ redis-py drops a connection whose command was cancelled. Both now hand out a
 client per event loop (``redis_client.RedisClientRegistry``), so these
 helpers call them directly and ``bridge_to_main_loop`` survives only for the
 genuinely broker-bound operations each consumer still owns (XACK/XPENDING,
-Kafka commit, producer sends).
+Kafka commit). The producers hand their own sends to the loop they were
+started on, so a handler may call them from either loop.
 
 Functions here take the consumer instance (``host``) as their first argument
 and read/write its existing attributes (``running``, ``concurrency_manager``,
@@ -43,6 +44,7 @@ from app.services.messaging.distributed_concurrency import (
 from app.services.messaging.redis_errors import report_redis_error
 from app.services.resource_governor import classify, gate_pool, index_pool, parse_cost
 from app.services.resource_governor.models import ParseTier, Pool
+from app.utils.loop_bridge import run_on_loop
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
@@ -110,48 +112,7 @@ async def bridge_to_main_loop(
     host: ConcurrencyHost, coro: Any, timeout: float = _MAIN_LOOP_OP_TIMEOUT
 ) -> Any:
     """Run ``coro`` on ``host.main_loop`` (safe when called from a worker loop)."""
-    current_loop = asyncio.get_running_loop()
-    main_loop = host.main_loop
-    if main_loop is not None and current_loop is not main_loop:
-        if not main_loop.is_running():
-            close = getattr(coro, "close", None)
-            if close is not None:
-                close()
-            raise RuntimeError("Main event loop is not running")
-        try:
-            future = asyncio.run_coroutine_threadsafe(coro, main_loop)
-        except BaseException:
-            close = getattr(coro, "close", None)
-            if close is not None:
-                close()
-            raise
-        wrapped = asyncio.wrap_future(future)
-        try:
-            # Shielded: a caller that times out or is cancelled (record
-            # timeout, lease loss, shutdown) must not cancel the XACK/commit/
-            # requeue already in flight on the main loop. redis-py tears down
-            # a connection whose command was cancelled mid-read, so under a
-            # mass cancellation every one of these cancels became a
-            # reconnect against a pool that was already starved -- the
-            # "No connection available" storm. Left to run, the operation is
-            # bounded by the client's own socket timeout; every caller is
-            # idempotent or already tolerates a late duplicate (the record's
-            # exclusivity lease and `_retry_tracking_id` absorb it).
-            return await asyncio.wait_for(asyncio.shield(wrapped), timeout=timeout)
-        except BaseException:
-            wrapped.add_done_callback(_consume_orphaned_result)
-            raise
-    return await coro
-
-
-def _consume_orphaned_result(fut: "asyncio.Future[Any]") -> None:
-    """Retrieve the outcome of a main-loop operation its caller stopped
-    waiting for, so asyncio does not log it as an unretrieved exception."""
-    if fut.cancelled():
-        return
-    exc = fut.exception()
-    if exc is not None:
-        logger.debug("Detached main-loop operation failed after its caller gave up: %r", exc)
+    return await run_on_loop(host.main_loop, coro, timeout)
 
 
 def _normalize_operation(operation: str) -> str:

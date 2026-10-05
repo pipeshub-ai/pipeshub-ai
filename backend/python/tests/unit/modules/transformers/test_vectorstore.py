@@ -284,7 +284,7 @@ class TestIndexRecordSummary:
 # get_embedding_model_instance
 # ===================================================================
 
-class TestGetEmbeddingModelInstance:
+class TestGetEmbeddingModelInstanceConfig:
     """Tests for VectorStore.get_embedding_model_instance."""
 
     @pytest.mark.asyncio
@@ -616,19 +616,8 @@ class TestCleanupOrphanedEmbeddings:
 # _store_image_points
 # ===================================================================
 
-class TestStoreImagePoints:
+class TestStoreImagePointsEmpty:
     """Tests for VectorStore._store_image_points."""
-
-    @pytest.mark.asyncio
-    async def test_stores_points(self):
-        """Stores points in vector DB."""
-        vs = _make_vectorstore()
-        vs.vector_db_service.upsert_points = AsyncMock()
-
-        mock_point = MagicMock()
-        await vs._store_image_points([mock_point], "test_collection")
-
-        vs.vector_db_service.upsert_points.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_empty_points_logs(self):
@@ -646,13 +635,8 @@ class TestStoreImagePoints:
 # _is_local_cpu_embedding
 # ===================================================================
 
-class TestIsLocalCpuEmbedding:
+class TestIsLocalCpuEmbeddingProviders:
     """Tests for VectorStore._is_local_cpu_embedding."""
-
-    def test_none_provider_is_local(self):
-        vs = _make_vectorstore()
-        vs.embedding_provider = None
-        assert vs._is_local_cpu_embedding() is True
 
     def test_default_provider_is_local(self):
         from app.utils.aimodels import EmbeddingProvider
@@ -692,7 +676,7 @@ class TestIsLocalCpuEmbedding:
 # _process_document_chunks
 # ===================================================================
 
-class TestProcessDocumentChunks:
+class TestProcessDocumentChunksBatching:
     """Tests for VectorStore._process_document_chunks."""
 
     @pytest.mark.asyncio
@@ -788,17 +772,8 @@ class TestProcessDocumentChunks:
 # _create_embeddings
 # ===================================================================
 
-class TestCreateEmbeddings:
+class TestCreateEmbeddingsChunkTypes:
     """Tests for VectorStore._create_embeddings."""
-
-    @pytest.mark.asyncio
-    async def test_no_chunks_raises(self):
-        """Raises EmbeddingError when no chunks provided."""
-        from app.exceptions.indexing_exceptions import EmbeddingError
-        vs = _make_vectorstore()
-
-        with pytest.raises(EmbeddingError, match="No chunks"):
-            await vs._create_embeddings([], "rec-1", "vr-1", "test_collection")
 
     @pytest.mark.asyncio
     async def test_separates_document_and_image_chunks(self):

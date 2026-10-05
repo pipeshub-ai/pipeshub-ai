@@ -8,6 +8,9 @@ Pages are written, changed and removed through the service's control API.
 
 A removed page stays linked: the crawler deletes a stored page only once it
 answers 404 on two syncs in a row, and it only asks for pages it is linked to.
+Because the link stays, the same crawl lists the page again as a FAILED
+placeholder under a new record id with nothing indexed, so that placeholder
+counts as the page being gone (``WebAdapter.is_removed``).
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from connectors.scenario_matrix import (
     FILTER_KEEPS_EXCLUDED_ITEM,
     Action,
     ConnectorScenarioMatrix,
+    RecordView,
     Role,
     ScenarioAdapter,
     SourceItem,
@@ -37,6 +41,7 @@ HTML = "text/html; charset=utf-8"
 TEXT = "text/plain; charset=utf-8"
 # The exclusion filter drops plain-text pages; every other item is HTML.
 FILTERED_EXTENSION = "txt"
+COMPLETED = "COMPLETED"
 
 
 def title_from_file_name(path: str) -> str:
@@ -92,6 +97,13 @@ class WebAdapter(ScenarioAdapter):
 
     async def delete_item(self, item: SourceItem) -> None:
         self.fixtures.delete(item.key)
+
+    def is_removed(self, now: RecordView | None, before: RecordView) -> bool:
+        # A still-linked page that is gone is listed again as a failed page with nothing
+        # indexed (WebConnector._retry_urls_generator creates the placeholder). Indexing
+        # retries the placeholder (QUEUED, IN_PROGRESS) before it settles on FAILED, so
+        # only a replacement that indexed means the page came back.
+        return now is None or (now.id != before.id and now.indexing_status != COMPLETED)
 
     async def exclusion_filter(self, excluded: SourceItem, kept: list[SourceItem]) -> dict[str, Any]:
         assert excluded.key.endswith(f".{FILTERED_EXTENSION}")

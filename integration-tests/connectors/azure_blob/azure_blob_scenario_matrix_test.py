@@ -64,11 +64,3 @@ async def scenario_adapter(
 class TestAzureBlobScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "Azure Blob"
     UNSUPPORTED = {Action.CHANGE_PERMISSION.value: APP_LEVEL_PERMISSIONS}
-    KNOWN_BUGS = {
-        "incr_delete": (
-            "a deleted blob's record is never removed. Each sync lists only the blobs that "
-            "exist (AzureBlobConnector._sync_container_prefix, azure_blob/connector.py:889) "
-            "and nothing in that file calls on_record_deleted, so the record, its vectors and "
-            "its search hit outlive the blob; a full sync does not prune it either (event_service.py:403)"
-        ),
-    }
