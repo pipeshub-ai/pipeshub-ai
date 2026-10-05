@@ -923,8 +923,8 @@ class RetrievalService:
                     Status.VECTOR_DB_EMPTY,
                 )
         except ValueError as e:
-            self.logger.error(f"ValueError: {e}")
-            return self._create_empty_response(f"Bad request: {str(e)}", Status.ERROR)
+            self.logger.error("Filtered search failed with a ValueError: %s", e, exc_info=True)
+            return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
         except Exception as e:
             self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)

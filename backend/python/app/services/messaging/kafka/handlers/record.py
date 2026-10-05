@@ -64,6 +64,9 @@ from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
     CONNECTOR_OFF,
+    ENRICHMENT_FAILED,
+    ENRICHMENT_STOPPED_CONNECTOR_OFF,
+    ENRICHMENT_STOPPED_CONNECTOR_REMOVED,
     FOLDER_NOTHING_TO_INDEX,
     RETRIES_EXHAUSTED,
     RETRY_SCHEDULED,
@@ -427,6 +430,134 @@ class RecordEventHandler(BaseEventService):
             key=str(record_id),
         )
 
+    async def _end_enrichment_without_running(
+        self,
+        record_id: str,
+        reason: str,
+        extraction_status: str = ProgressStatus.NOT_STARTED.value,
+    ) -> None:
+        """Give up a cut-short enrichment that will not be resumed, keeping the record indexed.
+
+        NOT_STARTED is the status deferred enrichment ends in, which promotion
+        treats as final, so the QUEUED copies are released with it and enrich
+        on their own reindex. FAILED would report an error that never happened,
+        and AUTO_INDEX_OFF would be copied onto copies whose connectors are on.
+        FAILED is for a resumed enrichment whose attempts all failed.
+        """
+        self.logger.info("Ending the cut-short enrichment of record %s without running it: %s", record_id, reason)
+        updated = await self.event_processor.graph_provider.update_node(
+            record_id,
+            CollectionNames.RECORDS.value,
+            {
+                "extractionStatus": extraction_status,
+                "processingStartedAt": None,
+                "reason": reason,
+            },
+        )
+        if not updated:
+            raise IndexingError(
+                f"Could not end the enrichment of record {record_id}",
+                details={"record_id": record_id},
+            )
+
+    async def _enrichment_still_cut_short(self, record_id: str) -> bool:
+        """False only on proof that this attempt re-indexed the record.
+
+        An unreadable record proves nothing, and the FAILED/FAILED write it
+        would otherwise get makes a searchable record unsearchable; the
+        resumed-enrichment exit writes only extraction, so it is the safe one.
+        """
+        try:
+            current = await self.event_processor.graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not re-read record %s after its last attempt; keeping it searchable: %s",
+                record_id, e,
+            )
+            return True
+        return bool(current) and (
+            current.get("indexingStatus") == ProgressStatus.COMPLETED.value
+            and current.get("extractionStatus") == ProgressStatus.IN_PROGRESS.value
+        )
+
+    async def _fail_resumed_enrichment(self, record_id: str) -> None:
+        """End a resumed enrichment whose attempts all failed as FAILED and release its copies.
+
+        Never raises: the attempt's own exception is already on its way out.
+        If the copies cannot be released, the enrichment is put back as
+        running with a fresh start time, so stale recovery tries again later.
+        """
+        try:
+            await self._end_enrichment_without_running(
+                record_id, ENRICHMENT_FAILED, extraction_status=ProgressStatus.FAILED.value
+            )
+            await self._release_queued_copies(record_id)
+            return
+        except Exception as e:
+            self.logger.error(
+                "Could not end the failed enrichment of record %s or release its copies; "
+                "leaving it for stale recovery: %s", record_id, e,
+            )
+        try:
+            await self.event_processor.graph_provider.update_node(
+                record_id,
+                CollectionNames.RECORDS.value,
+                {
+                    "extractionStatus": ProgressStatus.IN_PROGRESS.value,
+                    "processingStartedAt": get_epoch_timestamp_in_ms(),
+                },
+            )
+        except Exception as e:
+            self.logger.error("Could not hand record %s back to stale recovery: %s", record_id, e)
+
+    async def _release_queued_copies(self, record_id: str) -> None:
+        """Promote the QUEUED copies of a record that has just finished.
+
+        Raises when that could not be done: the copies are QUEUED with their
+        messages acknowledged, and the stranded sweep skips a QUEUED row with an
+        md5 and a vrid, so this record's redelivery is the only thing that can
+        still release them. It takes the already-indexed path back to here.
+        """
+        record = await self.event_processor.graph_provider.get_document(
+            record_id, CollectionNames.RECORDS.value, raise_on_error=True
+        )
+        if record is None:
+            self.logger.warning(f"Record {record_id} not found in database")
+            return
+        indexing_status = record.get("indexingStatus")
+        virtual_record_id = record.get("virtualRecordId")
+        if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
+            # Read before the promotion, which sets it afresh.
+            had_pending = bool(record.get(DUPLICATE_RECONCILE_PENDING_FIELD))
+            promoted = await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
+            if promoted < 0:
+                raise IndexingError(
+                    f"Could not release the queued copies of record {record_id}",
+                    details={"record_id": record_id},
+                )
+            # Reconciliation walks every sibling of the vrid, so running it
+            # when nothing was promoted costs the whole duplicate group on
+            # each completion. The flag covers a promotion whose reconcile
+            # failed or was cut short: a redelivery finds nothing QUEUED.
+            if promoted > 0 or had_pending:
+                await self._reconcile_pending_duplicates(record_id, virtual_record_id)
+            if indexing_status == ProgressStatus.COMPLETED.value:
+                # Duplicates just became searchable too. They can live in
+                # a different KB than this record, which only the TTL
+                # covers — the provider returns a count, not the ids.
+                await notify_record_indexed(
+                    connector_name=record.get("connectorName"),
+                    connector_id=record.get("connectorId"),
+                    external_record_group_id=record.get("externalGroupId"),
+                    org_id=record.get("orgId"),
+                )
+        elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
+            # Find and trigger indexing for the next queued duplicate
+            self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")
+            await self._trigger_next_queued_duplicate(record_id, virtual_record_id)
+
     async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
         try:
             self.logger.info(f"🔍 Looking for next queued duplicate for record {record_id}")
@@ -765,6 +896,7 @@ class RecordEventHandler(BaseEventService):
         last_exception: Exception | None = None
         cancelled = False
         record = None
+        resuming_enrichment = False
         try:
             if not event_type:
                 # A message with no event type is a producer bug: acking it
@@ -1076,7 +1208,20 @@ class RecordEventHandler(BaseEventService):
             # anyway, so it opts out rather than the guard being relaxed for
             # everyone: without this, reindex reports success while doing nothing.
             force_reindex = bool(payload.get("forceReindex"))
-            if (not force_reindex) and (event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value) and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
+            # Indexed but with enrichment still IN_PROGRESS means the handler
+            # that was enriching it was cut short: this delivery holds the
+            # record (its lease, or this process's claim on it), so nothing
+            # else is enriching it. Running it again
+            # finishes the enrichment, which is what lets its queued duplicates
+            # be promoted; acknowledging it here would leave them parked.
+            enrichment_cut_short = (
+                doc.get("extractionStatus") == ProgressStatus.IN_PROGRESS.value
+            )
+            resuming_enrichment = (
+                enrichment_cut_short
+                and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value
+            )
+            if (not force_reindex) and (not enrichment_cut_short) and (event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value) and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
                 self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1109,6 +1254,20 @@ class RecordEventHandler(BaseEventService):
                         # like a deleted connector.
                         raise_on_error=True,
                     )
+                    if resuming_enrichment and (
+                        not connector_instance or not connector_instance.get("isActive", False)
+                    ):
+                        # Stays searchable: only the enrichment is given up. Its
+                        # end lets the finally block promote the QUEUED copies.
+                        await self._end_enrichment_without_running(
+                            record_id,
+                            ENRICHMENT_STOPPED_CONNECTOR_OFF
+                            if connector_instance
+                            else ENRICHMENT_STOPPED_CONNECTOR_REMOVED,
+                        )
+                        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                        return
                     if not connector_instance:
                         self.logger.info(
                             f"⏭️ Skipping indexing for record {record_id}: "
@@ -1524,6 +1683,20 @@ class RecordEventHandler(BaseEventService):
                         f"🔄 Record {record_id} cancelled mid-flight; leaving it "
                         f"IN_PROGRESS for redelivery or stale recovery"
                     )
+                elif (
+                    is_final
+                    and resuming_enrichment
+                    and await self._enrichment_still_cut_short(record_id)
+                ):
+                    # Nothing re-indexed it in this attempt, so its vectors are
+                    # intact: only the enrichment failed, and the record stays
+                    # searchable. A first-time indexing failure takes the
+                    # branch below unchanged.
+                    self.logger.error(
+                        f"Final failure resuming the enrichment of record {record_id}: {error_msg}",
+                        exc_info=last_exception,
+                    )
+                    await self._fail_resumed_enrichment(record_id)
                 elif is_final:
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
@@ -1627,40 +1800,7 @@ class RecordEventHandler(BaseEventService):
                         )
             elif record is not None and event_type != EventTypes.DELETE_RECORD.value:
                 # Update queued duplicates for ALL record types (not just FILE)
-                record = await self.event_processor.graph_provider.get_document(
-                    record_id, CollectionNames.RECORDS.value
-                )
-                if record is not None:
-                    indexing_status = record.get("indexingStatus")
-                    virtual_record_id = record.get("virtualRecordId")
-                    if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
-                        # Read before the promotion, which sets it afresh.
-                        had_pending = bool(record.get(DUPLICATE_RECONCILE_PENDING_FIELD))
-                        promoted = await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
-                        # Reconciliation walks every sibling of the vrid, so
-                        # running it when nothing was promoted costs the whole
-                        # duplicate group on each completion. -1 is the
-                        # providers' query-failure return, not a promotion.
-                        # The flag covers a promotion whose reconcile failed or
-                        # was cut short: a redelivery finds nothing QUEUED.
-                        if promoted > 0 or had_pending:
-                            await self._reconcile_pending_duplicates(record_id, virtual_record_id)
-                        if indexing_status == ProgressStatus.COMPLETED.value:
-                            # Duplicates just became searchable too. They can live in
-                            # a different KB than this record, which only the TTL
-                            # covers — the provider returns a count, not the ids.
-                            await notify_record_indexed(
-                                connector_name=record.get("connectorName"),
-                                connector_id=record.get("connectorId"),
-                                external_record_group_id=record.get("externalGroupId"),
-                                org_id=record.get("orgId"),
-                            )
-                    elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
-                        # Find and trigger indexing for the next queued duplicate
-                        self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")
-                        await self._trigger_next_queued_duplicate(record_id, virtual_record_id)
-                else:
-                    self.logger.warning(f"Record {record_id} not found in database")
+                await self._release_queued_copies(record_id)
 
     async def __update_document_status(
         self,

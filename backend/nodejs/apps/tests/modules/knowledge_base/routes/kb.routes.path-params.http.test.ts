@@ -55,7 +55,7 @@ describe('Knowledge base routes over HTTP: path parameters stay one segment', ()
   it('knows a real value for every parameter the router declares', () => {
     const declared = new Set(withParams.flatMap((r) => paramsOf(r.pattern)))
     expect([...declared].sort()).to.deep.equal(Object.keys(VALID).sort())
-    expect(withParams).to.have.length(19)
+    expect(withParams).to.have.length(20)
   })
 
   for (const route of withParams) {

@@ -264,6 +264,7 @@ class TestAbstractMethodInventory:
         "find_taxonomy_nodes",
         "create_taxonomy_node_if_absent",
         "add_taxonomy_aliases",
+        "ensure_taxonomy_hierarchy_edge",
         # User operations
         "get_user_by_email",
         "get_user_by_source_id",
@@ -378,6 +379,8 @@ class TestAbstractMethodInventory:
         "get_uploaded_document_ids",
         "delete_single_record",
         "soft_delete_records",
+        "get_records_in_delete_batch",
+        "restore_records",
         "delete_connector_instance",
         "get_key_by_external_file_id",
         "organization_exists",

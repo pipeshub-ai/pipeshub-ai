@@ -16,6 +16,9 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.exceptions.indexing_exceptions import DocumentProcessingError, IndexingError
+from app.services.graph_db.interface.graph_db_provider import (
+    promoted_duplicate_extraction_status,
+)
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -1269,6 +1272,242 @@ class TestAlreadyIndexed:
         events = await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
 
         assert len(events) == 2
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("event_type", [EventTypes.NEW_RECORD.value, EventTypes.REINDEX_RECORD.value])
+    async def test_a_cut_short_enrichment_is_resumed_and_then_promotes_its_duplicates(self, event_type) -> None:
+        """Indexed, enrichment IN_PROGRESS: the handler enriching it was cancelled.
+
+        Acknowledging the redelivery would leave the enrichment unfinished and
+        every duplicate parked behind it QUEUED for good.
+        """
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.IN_PROGRESS.value,
+            "origin": OriginTypes.UPLOAD.value,
+            "mimeType": "application/pdf",
+        }
+        gp.get_document = AsyncMock(side_effect=lambda *_a, **_k: dict(record))
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
+
+        async def enrichment_finishes(*_a, **_k) -> AsyncGenerator:
+            record["extractionStatus"] = ProgressStatus.COMPLETED.value
+            async for event in _async_gen_events([
+                {"event": "parsing_complete", "data": {"record_id": "r1"}},
+                {"event": "indexing_complete", "data": {"record_id": "r1"}},
+            ]):
+                yield event
+
+        handler.event_processor.on_event = MagicMock(side_effect=enrichment_finishes)
+        payload = {
+            "recordId": "r1", "orgId": "org-1", "virtualRecordId": "vr1",
+            "mimeType": "application/pdf", "extension": "pdf",
+            "signedUrl": "https://example.com/file.pdf",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"pdf"):
+            await _collect_events(handler, event_type, payload)
+
+        handler.event_processor.on_event.assert_called_once()
+        gp.update_queued_duplicates_status.assert_awaited_once_with(
+            "r1", ProgressStatus.COMPLETED.value, "vr1"
+        )
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("connector", [{"_key": "conn-1", "isActive": False}, None], ids=["inactive", "removed"])
+    async def test_a_cut_short_enrichment_on_a_stopped_connector_ends_and_releases_its_copies(
+        self, connector
+    ) -> None:
+        """The record stays searchable; its enrichment ends, so its QUEUED copies are promoted."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        rows = {
+            "r1": {
+                "_key": "r1", "orgId": "org-1", "md5Checksum": "m1", "virtualRecordId": "vr1",
+                "indexingStatus": ProgressStatus.COMPLETED.value,
+                "extractionStatus": ProgressStatus.IN_PROGRESS.value,
+                "connectorId": "conn-1", "origin": OriginTypes.CONNECTOR.value, "mimeType": "application/pdf",
+            },
+            "copy": {
+                "_key": "copy", "orgId": "org-1", "md5Checksum": "m1", "virtualRecordId": "vr-old",
+                "indexingStatus": ProgressStatus.QUEUED.value,
+            },
+        }
+
+        async def get_document(doc_id, collection, **_k) -> dict | None:
+            if collection == CollectionNames.APPS.value:
+                return connector
+            return dict(rows[doc_id]) if doc_id in rows else None
+
+        async def update_node(doc_id, _collection, fields) -> bool:
+            rows[doc_id].update(fields)
+            return True
+
+        async def promote(record_id, status, vrid=None, *_a, **_k) -> int:
+            extraction = promoted_duplicate_extraction_status(status, rows[record_id])
+            if extraction is None:
+                return 0
+            queued = [r for k, r in rows.items() if k != record_id and r.get("indexingStatus") == ProgressStatus.QUEUED.value]
+            for r in queued:
+                r.update(indexingStatus=status, virtualRecordId=vrid, extractionStatus=extraction)
+            return len(queued)
+
+        gp.get_document = AsyncMock(side_effect=get_document)
+        gp.update_node = AsyncMock(side_effect=update_node)
+        gp.update_queued_duplicates_status = AsyncMock(side_effect=promote)
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=[])
+        handler.event_processor.on_event = MagicMock()
+
+        payload = {"recordId": "r1", "orgId": "org-1", "virtualRecordId": "vr1", "mimeType": "application/pdf", "extension": "pdf"}
+        await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        handler.event_processor.on_event.assert_not_called()
+        assert rows["r1"]["indexingStatus"] == ProgressStatus.COMPLETED.value, "still searchable"
+        assert rows["r1"]["extractionStatus"] == ProgressStatus.NOT_STARTED.value
+        assert rows["copy"]["indexingStatus"] == ProgressStatus.COMPLETED.value
+        assert rows["copy"]["virtualRecordId"] == "vr1"
+
+
+class TestReleasingQueuedCopies:
+    """The copies are QUEUED with their messages acknowledged, so their twin's
+    delivery is the only thing that can release them: a release that did not
+    happen must fail that delivery, never commit."""
+
+    @staticmethod
+    def _graph(handler, twin_extraction, connector=None) -> tuple[dict, dict]:
+        gp = handler.event_processor.graph_provider
+        rows = {
+            "r1": {
+                "_key": "r1", "orgId": "org-1", "md5Checksum": "m1", "virtualRecordId": "vr1",
+                "indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": twin_extraction,
+                "connectorId": "conn-1", "origin": OriginTypes.CONNECTOR.value, "mimeType": "application/pdf",
+            },
+            "copy": {
+                "_key": "copy", "orgId": "org-1", "md5Checksum": "m1", "virtualRecordId": "vr-old",
+                "indexingStatus": ProgressStatus.QUEUED.value,
+            },
+        }
+        state = {"failing_record_reads": 0, "connector_read_fails": False, "promotion_fails": 0}
+
+        async def get_document(doc_id, collection, *, raise_on_error=False, **_k) -> dict | None:
+            failing = (
+                state["connector_read_fails"] if collection == CollectionNames.APPS.value
+                else state["failing_record_reads"] > 0 and gp.get_document.await_count > 1
+            )
+            if failing:
+                if collection != CollectionNames.APPS.value:
+                    state["failing_record_reads"] -= 1
+                # Both providers log a failed read and answer None unless asked to raise.
+                if raise_on_error:
+                    raise ConnectionError("graph unavailable")
+                return None
+            if collection == CollectionNames.APPS.value:
+                return connector
+            return dict(rows[doc_id]) if doc_id in rows else None
+
+        async def update_node(doc_id, _collection, fields) -> bool:
+            rows[doc_id].update(fields)
+            return True
+
+        async def promote(record_id, status, vrid=None, *_a, **_k) -> int:
+            if state["promotion_fails"]:
+                state["promotion_fails"] -= 1
+                return -1
+            extraction = promoted_duplicate_extraction_status(status, rows[record_id])
+            if extraction is None:
+                return 0
+            queued = [r for k, r in rows.items() if k != record_id and r.get("indexingStatus") == ProgressStatus.QUEUED.value]
+            for r in queued:
+                r.update(indexingStatus=status, virtualRecordId=vrid, extractionStatus=extraction)
+            return len(queued)
+
+        gp.get_document = AsyncMock(side_effect=get_document)
+        gp.update_node = AsyncMock(side_effect=update_node)
+        gp.update_queued_duplicates_status = AsyncMock(side_effect=promote)
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=[])
+        return rows, state
+
+    _PAYLOAD = {"recordId": "r1", "orgId": "org-1", "virtualRecordId": "vr1", "mimeType": "application/pdf", "extension": "pdf"}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reread_fails_the_attempt_and_the_redelivery_releases_the_copies(self) -> None:
+        handler = _make_handler()
+        rows, state = self._graph(handler, ProgressStatus.COMPLETED.value, connector={"isActive": True})
+        state["failing_record_reads"] = 1
+
+        with pytest.raises(ConnectionError):
+            await _collect_events(handler, EventTypes.NEW_RECORD.value, dict(self._PAYLOAD))
+        assert rows["copy"]["indexingStatus"] == ProgressStatus.QUEUED.value
+
+        await _collect_events(handler, EventTypes.NEW_RECORD.value, dict(self._PAYLOAD))
+        assert rows["copy"]["indexingStatus"] == ProgressStatus.COMPLETED.value
+        assert rows["copy"]["virtualRecordId"] == "vr1"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_promotion_fails_the_attempt_so_it_is_redelivered(self) -> None:
+        handler = _make_handler()
+        rows, state = self._graph(handler, ProgressStatus.COMPLETED.value, connector={"isActive": True})
+        state["promotion_fails"] = 1
+        handler._reconcile_pending_duplicates = AsyncMock()
+
+        with pytest.raises(IndexingError, match="queued copies"):
+            await _collect_events(handler, EventTypes.NEW_RECORD.value, dict(self._PAYLOAD))
+        handler._reconcile_pending_duplicates.assert_not_awaited()
+
+        await _collect_events(handler, EventTypes.NEW_RECORD.value, dict(self._PAYLOAD))
+        assert rows["copy"]["indexingStatus"] == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_a_resumed_enrichment_failing_every_attempt_stays_searchable_and_releases_its_copies(self) -> None:
+        handler = _make_handler()
+        rows, state = self._graph(handler, ProgressStatus.IN_PROGRESS.value)
+        state["connector_read_fails"] = True
+
+        with pytest.raises(ConnectionError):
+            await _collect_events(
+                handler, EventTypes.NEW_RECORD.value, {**self._PAYLOAD, "is_final_failure": True}
+            )
+
+        assert rows["r1"]["indexingStatus"] == ProgressStatus.COMPLETED.value, "still searchable"
+        assert rows["r1"]["extractionStatus"] == ProgressStatus.FAILED.value
+        assert rows["copy"]["indexingStatus"] == ProgressStatus.COMPLETED.value
+        assert rows["copy"]["extractionStatus"] == ProgressStatus.FAILED.value
+
+    @pytest.mark.asyncio
+    async def test_a_blip_on_the_last_attempts_check_never_fails_a_searchable_record(self) -> None:
+        """The check's read fails once; the status write's own read then succeeds."""
+        handler = _make_handler()
+        rows, state = self._graph(handler, ProgressStatus.IN_PROGRESS.value)
+        state["connector_read_fails"] = True
+        real_get_document = handler.event_processor.graph_provider.get_document.side_effect
+        reads_after_the_attempt = {"n": 0}
+
+        async def get_document(doc_id, collection, *, raise_on_error=False, **kw) -> dict | None:
+            if collection == CollectionNames.RECORDS.value and raise_on_error and state["connector_read_fails"] is None:
+                reads_after_the_attempt["n"] += 1
+                if reads_after_the_attempt["n"] == 1:
+                    raise ConnectionError("graph unavailable")
+            if collection == CollectionNames.APPS.value and state["connector_read_fails"]:
+                state["connector_read_fails"] = None  # the attempt is over; what follows is the finally
+                raise ConnectionError("graph unavailable")
+            return await real_get_document(doc_id, collection, raise_on_error=raise_on_error, **kw)
+
+        handler.event_processor.graph_provider.get_document = AsyncMock(side_effect=get_document)
+
+        with pytest.raises(ConnectionError):
+            await _collect_events(
+                handler, EventTypes.NEW_RECORD.value, {**self._PAYLOAD, "is_final_failure": True}
+            )
+
+        assert reads_after_the_attempt["n"] >= 1, "the check's read was the one that failed"
+        assert rows["r1"]["indexingStatus"] == ProgressStatus.COMPLETED.value, "never FAILED/FAILED"
+        assert rows["r1"]["extractionStatus"] in (ProgressStatus.FAILED.value, ProgressStatus.IN_PROGRESS.value)
 
 
 # ===================================================================
@@ -2878,9 +3117,9 @@ class TestReconcilePromotedDuplicates:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "promoted,expected_calls",
-        # -1 is the providers' query-failure return: nothing was promoted, so
-        # the sibling sweep would be pure waste.
-        [(0, 0), (-1, 0), (2, 1)],
+        # -1, the providers' query-failure return, fails the attempt instead:
+        # see test_a_failed_promotion_fails_the_attempt_so_it_is_redelivered.
+        [(0, 0), (2, 1)],
     )
     async def test_reconcile_runs_only_when_a_duplicate_was_promoted(
         self, promoted, expected_calls
@@ -3126,10 +3365,8 @@ class TestReconcilePendingFlag:
         [
             # Redelivery: nothing left QUEUED, but the flag says the copy never finished.
             (0, True, 1),
-            (-1, True, 1),
             # The gate from before still holds without the flag.
             (0, False, 0),
-            (-1, False, 0),
             (3, False, 1),
         ],
     )

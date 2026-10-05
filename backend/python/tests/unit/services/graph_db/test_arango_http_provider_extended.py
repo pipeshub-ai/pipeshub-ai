@@ -1404,6 +1404,12 @@ class TestGetNodesByFilters:
         result = await connected_provider.get_nodes_by_filters("records", {"orgId": "org1"})
         assert result == []
 
+    @pytest.mark.asyncio
+    async def test_exception_is_raised_when_asked(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_nodes_by_filters("records", {"orgId": "org1"}, raise_on_error=True)
+
 
 class TestGetNodesByFieldIn:
     @pytest.mark.asyncio
@@ -1482,6 +1488,14 @@ class TestGetEdgesFromNodeWithTargetName:
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
         result = await connected_provider.get_edges_from_node_with_target_name("users/u1", "permission")
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_exception_is_raised_when_asked(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_edges_from_node_with_target_name(
+                "users/u1", "permission", raise_on_error=True,
+            )
 
 
 class TestRecordRelationHelpers:
@@ -1623,7 +1637,7 @@ class TestEnsureIndexes:
     async def test_ensure_indexes_success(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.call_count == 47
+        assert connected_provider.http_client.ensure_persistent_index.call_count == 48
 
 
 # ---------------------------------------------------------------------------

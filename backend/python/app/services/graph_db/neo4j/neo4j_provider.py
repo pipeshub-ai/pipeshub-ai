@@ -8,6 +8,7 @@ Maps ArangoDB concepts (collections, _key, edges) to Neo4j concepts (labels, pro
 from __future__ import annotations
 
 import asyncio
+import random
 import hashlib
 import json
 import os
@@ -103,12 +104,14 @@ from app.services.graph_db.common.utils import (
     MAX_DIRECT_GRANT_RECORDS,
     PATH_MAX_CANDIDATES,
     ROOT_SCOPED_CONNECTOR_TYPES,
+    TRASH_STATE_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
     EntityCandidateRows,
     PermittedEntityRows,
     build_connector_stats_response,
     dedupe_agents_by_id,
     empty_soft_delete_result,
+    restore_items,
     select_canonical_chain_names,
     soft_delete_request_result,
     soft_delete_result,
@@ -125,6 +128,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
     DUPLICATE_RECONCILE_DUE_AT_FIELD,
     DUPLICATE_RECONCILE_GRACE_MS,
+    promoted_duplicate_extraction_status,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
@@ -139,11 +143,13 @@ from app.services.graph_db.neo4j.neo4j_client import (
     Neo4jClient,
 )
 from app.services.graph_db.taxonomy import (
+    CATEGORY_HIERARCHY_PARENTS,
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
     check_edge_move,
     check_edge_move_target,
+    global_department_key,
     is_taxonomy_collection,
     subcategory_level,
 )
@@ -167,6 +173,11 @@ EDGE_DELETE_BATCH_SIZE = 2000  # Batch size for edge deletion to avoid huge sing
 # of scanning a list property on every node of the org (see find_taxonomy_nodes).
 TAXONOMY_ALIAS_LABEL = "TaxonomyAlias"
 TAXONOMY_ALIAS_REL = "ALIAS_OF"
+# Marks a database whose list-only aliases (stored before TaxonomyAlias
+# nodes existed) have been given alias nodes; see heal_taxonomy_alias_nodes.
+TAXONOMY_ALIAS_HEAL_MARKER = "taxonomy_alias_nodes_v1"
+SCHEMA_MIGRATION_LABEL = "SchemaMigration"
+_ALIAS_HEAL_BATCH = 1000
 
 # Quantified path pattern walking child -> canonical parent. The step predicate
 # sits inside the pattern so expansion stops at the first non-canonical edge
@@ -201,6 +212,13 @@ _METADATA_FILTERS: tuple[tuple[str, str, str, str, str], ...] = (
 
 # Edges one statement moves; a hub node's millions go in batches.
 _EDGE_MOVE_BATCH = 5000
+# Idempotent shared writes retried on a deadlock or lock timeout.
+_TRANSIENT_WRITE_ATTEMPTS = 6
+_WRITE_CONFLICT_CODES = frozenset({
+    "Neo.TransientError.Transaction.DeadlockDetected",
+    "Neo.TransientError.Transaction.LockAcquisitionTimeout",
+    "Neo.TransientError.Transaction.LockClientStopped",
+})
 
 
 # Promotions to these statuses leave the primary with taxonomy to copy to its
@@ -346,7 +364,8 @@ class Neo4jProvider(IGraphDBProvider):
             # Create departments from DepartmentNames enum
             departments = [
                 {
-                    "id": str(uuid.uuid4()),
+                    # Keyed by name: services seeding at once converge on one node.
+                    "id": global_department_key(dept.value),
                     "departmentName": dept.value,
                     "orgId": None,
                 }
@@ -415,6 +434,12 @@ class Neo4jProvider(IGraphDBProvider):
         if self.client is None or not self.client.explicit_transactions:
             return False
         return isinstance(error, TransientError)
+
+    def is_write_conflict(self, error: BaseException) -> bool:
+        """A deadlock or lock timeout, in either transaction mode. Other
+        transient errors (memory limits, a terminated transaction, an
+        unavailable database) are not collisions and are not retried here."""
+        return isinstance(error, TransientError) and getattr(error, "code", None) in _WRITE_CONFLICT_CODES
 
     async def rollback_transaction(self, transaction: str) -> None:
         """
@@ -629,6 +654,13 @@ class Neo4jProvider(IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_deleted_at IF NOT EXISTS "
             "FOR (n:Record) ON (n.deletedAtTimestamp)"
+        )
+
+        # Restore reads a whole delete batch; the property is cleared on
+        # restore, so this too covers only the trash.
+        indexes.append(
+            "CREATE INDEX record_delete_batch IF NOT EXISTS "
+            "FOR (n:Record) ON (n.deleteBatchId)"
         )
 
         indexes.append(
@@ -861,6 +893,13 @@ class Neo4jProvider(IGraphDBProvider):
 
             self.logger.info(f"✅ Created {len(indexes)} performance indexes")
             self.logger.info("✅ Neo4j schema initialized (constraints and indexes)")
+
+            try:
+                await self.heal_taxonomy_alias_nodes()
+            except Exception:
+                # Not fatal: affected aliases keep missing tier 0 until the
+                # next start retries, as they did before the heal existed.
+                self.logger.warning("Taxonomy alias heal failed; will retry at next start", exc_info=True)
 
             # Seed departments collection with predefined department types
             try:
@@ -1993,7 +2032,9 @@ class Neo4jProvider(IGraphDBProvider):
         collection: str,
         filters: dict[str, Any],
         return_fields: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """Get nodes by field filters"""
         try:
@@ -2055,6 +2096,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get nodes by filters failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_documents_by_status(
@@ -4800,6 +4843,16 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.debug(f"Record {record_id} missing orgId, skipping queued duplicate update")
                 return 0
 
+            extraction_status = promoted_duplicate_extraction_status(
+                new_indexing_status, ref_record
+            )
+            if extraction_status is None:
+                self.logger.info(
+                    "Record %s is indexed but its enrichment has not ended; its queued duplicates wait",
+                    record_id,
+                )
+                return 0
+
             # Find all queued duplicate records directly from RECORDS collection
             query = f"""
             MATCH (record:Record)
@@ -4856,15 +4909,6 @@ class Neo4jProvider(IGraphDBProvider):
                 record_key = doc.get("_key") or doc.get("id")
                 if not record_key:
                     continue
-
-                # Map indexing status to extraction status
-                # For EMPTY status, extraction status should also be EMPTY, not FAILED
-                if new_indexing_status == ProgressStatus.COMPLETED.value:
-                    extraction_status = ProgressStatus.COMPLETED.value
-                elif new_indexing_status == ProgressStatus.EMPTY.value:
-                    extraction_status = ProgressStatus.EMPTY.value
-                else:
-                    extraction_status = ProgressStatus.FAILED.value
 
                 update_doc = {
                     "id": record_key,
@@ -7960,6 +8004,53 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Delete records and relations failed: {str(e)}")
             raise
 
+    async def _attachments_to_delete(
+        self, record_id: str, org_id: str, transaction: str | None
+    ) -> tuple[list[str], list[dict]]:
+        """A record's direct ATTACHMENT children and their deleteRecord payloads, read before the delete."""
+        attachment_ids = await self._direct_attachment_ids(record_id, org_id, transaction)
+        payloads: list[dict] = []
+        for attachment_id in attachment_ids:
+            # Raises rather than answering None: an attachment deleted without its
+            # payload would keep its vectors.
+            attachment = await self.get_document(
+                attachment_id, CollectionNames.RECORDS.value, transaction, raise_on_error=True
+            )
+            if not attachment or not attachment.get("virtualRecordId"):
+                continue
+            file_doc = await self.get_document(attachment_id, CollectionNames.FILES.value, transaction)
+            payload = await self._create_deleted_record_event_payload(attachment, file_doc)
+            if payload:
+                payload["connectorName"] = attachment.get("connectorName")
+                payload["origin"] = attachment.get("origin")
+                payloads.append(payload)
+        return attachment_ids, payloads
+
+    async def _delete_records_with_their_types(self, record_ids: list[str], transaction: str | None) -> None:
+        # One statement, so a failure deletes nothing: with NEO4J_EXPLICIT_TRANSACTIONS
+        # off (the default) a caller's transaction cannot roll back separate statements.
+        # Type nodes are also matched by id, label by label (each an index seek):
+        # batch_upsert_records writes the IS_OF_TYPE edge in a statement of its own,
+        # so a type node can exist without it.
+        labels = sorted({collection_to_label(c) for c in RECORD_TYPE_COLLECTION_MAPPING.values()})
+        same_id = "\n".join(f"OPTIONAL MATCH (s{i}:`{label}` {{id: rid}})" for i, label in enumerate(labels))
+        candidates = ", ".join(f"s{i}" for i in range(len(labels)))
+        await self.client.execute_query(
+            f"""
+            UNWIND $record_ids AS rid
+            MATCH (v:Record {{id: rid}})
+            OPTIONAL MATCH (v)-[:IS_OF_TYPE]->(t)
+            WITH v, rid, collect(t) AS linked
+            {same_id}
+            UNWIND linked + [{candidates}] AS candidate
+            WITH v, collect(DISTINCT candidate) AS types
+            FOREACH (t IN types | DETACH DELETE t)
+            DETACH DELETE v
+            """,
+            parameters={"record_ids": record_ids},
+            txn_id=transaction,
+        )
+
     async def delete_record(
         self,
         record_id: str,
@@ -8045,8 +8136,11 @@ class Neo4jProvider(IGraphDBProvider):
             except Exception as e:
                 self.logger.debug(f"File record not found for record {record_id}: {e}")
 
-            # For Neo4j, use generic delete
-            await self.delete_records_and_relations(record_id, hard_delete=True, transaction=transaction)
+            # A mail's attachments go with it, as on ArangoDB: left behind, they stay
+            # searchable with nothing left to clean up their vectors.
+            attachment_ids, attachment_payloads = await self._attachments_to_delete(
+                record_id, org_id, transaction
+            )
 
             # Create event payload for router to publish
             event_data = None
@@ -8065,16 +8159,20 @@ class Neo4jProvider(IGraphDBProvider):
                     event_data = {
                         "eventType": "deleteRecord",
                         "topic": "record-events",
-                        "payload": payload
+                        "payload": payload,
+                        "payloads": [payload, *attachment_payloads],
                     }
             except Exception as e:
                 self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
                 event_data = None
 
+            await self._delete_records_with_their_types([*attachment_ids, record_id], transaction)
+
             return {
                 "success": True,
                 "record_id": record_id,
                 "message": "Record deleted successfully",
+                "attachments_deleted": len(attachment_ids),
                 "eventData": event_data,
                 # Lets the caller invalidate the right cache entry without
                 # re-reading the record it just deleted.
@@ -8117,7 +8215,11 @@ class Neo4jProvider(IGraphDBProvider):
                     record.id, user_id, record.org_id, transaction,
                     soft_delete=True, delete_source=DeleteSource.CONNECTOR,
                 )
-            return await self.delete_record(record.id, user_id, record.org_id, transaction)
+            result = await self.delete_record(record.id, user_id, record.org_id, transaction)
+            # Raised, as on ArangoDB, so the caller's transaction rolls back.
+            if not result.get("success"):
+                raise Exception(f"Deletion failed: {result.get('reason', 'Unknown error')}")
+            return result
 
         except Exception as e:
             self.logger.error(f"❌ Delete record by external ID failed: {str(e)}")
@@ -11921,6 +12023,115 @@ class Neo4jProvider(IGraphDBProvider):
             raise
         return soft_delete_result(record_ids, found.get("root_keys") or [], found.get("marked") or [], batch_id)
 
+    async def get_records_in_delete_batch(
+        self,
+        batch_id: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See ``IGraphDBProvider.get_records_in_delete_batch``."""
+        if not batch_id or not org_id:
+            return []
+        rows = await self.client.execute_query(
+            """
+            MATCH (r:Record {deleteBatchId: $batch_id})
+            WHERE r.isDeleted = true AND r.orgId = $org_id
+            OPTIONAL MATCH (p:Record)-[rel:RECORD_RELATION]->(r)
+            WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+            WITH r, head(collect(CASE WHEN p IS NULL THEN null ELSE {p: p, type: rel.relationshipType} END)) AS parent
+            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
+            WITH r, parent, head(collect(t)) AS t
+            RETURN r, parent.p AS p, parent.type AS parent_type, t.isFile AS is_file, t.mimeType AS file_mime
+            """,
+            parameters={"batch_id": batch_id, "org_id": org_id},
+            txn_id=transaction,
+        )
+        items = []
+        for row in rows or []:
+            parent = dict(row["p"]) if row.get("p") is not None else None
+            items.append({
+                "record": self._neo4j_to_arango_node(dict(row["r"]), CollectionNames.RECORDS.value),
+                "parentId": parent.get("id") if parent else None,
+                "parentRelation": row.get("parent_type"),
+                "parentIsDeleted": (parent.get("isDeleted") is True) if parent else None,
+                "parentBatchId": parent.get("deleteBatchId") if parent else None,
+                "parentName": parent.get("recordName") if parent else None,
+                "isFile": row.get("is_file"),
+                "fileMimeType": row.get("file_mime"),
+            })
+        return items
+
+    async def restore_records(
+        self,
+        restores: list[dict[str, Any]],
+        batch_id: str | None,
+        transaction: str | None = None,
+        *,
+        connector_id: str | None = None,
+        require_live_parent: bool = False,
+    ) -> list[str]:
+        """See ``IGraphDBProvider.restore_records``."""
+        if not restores:
+            return []
+        items, reclaims = restore_items(restores, connector_id)
+        cleared = ", ".join(f"r.{name} = null" for name in TRASH_STATE_FIELDS)
+        # Each statement commits on its own unless explicit transactions are on, so a
+        # restore split over statements could stop halfway, and an external id given
+        # up before a refused restore stayed given up. One statement re-checks every
+        # item and the ids taken back, releases them and restores: all or nothing.
+        rows = await self.client.execute_query(
+            f"""
+            UNWIND $items AS item
+            OPTIONAL MATCH (r:Record {{id: item.id}})
+            WHERE r.isDeleted = true
+              AND (r.deleteBatchId = $batch_id OR ($batch_id IS NULL AND r.deleteBatchId IS NULL))
+            WITH collect(CASE WHEN r IS NULL THEN null ELSE {{r: r, fields: item.set}} END) AS found
+            WHERE size(found) = size($items)
+              AND NOT EXISTS {{
+                  UNWIND $reclaims AS claim
+                  MATCH (taken:Record {{externalRecordId: claim.ext, connectorId: $connector_id}})
+                  WHERE taken.id <> claim.id AND ({cypher_live_record("taken")} OR taken.id IN $ids)
+                  RETURN taken
+              }}
+              AND NOT ($require_live_parent AND EXISTS {{
+                  UNWIND $ids AS child_id
+                  MATCH (parent:Record)-[edge:RECORD_RELATION]->(:Record {{id: child_id}})
+                  WHERE edge.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                    AND parent.isDeleted = true AND NOT parent.id IN $ids
+                  RETURN parent
+              }})
+            WITH found, COLLECT {{
+                UNWIND $reclaims AS claim
+                MATCH (holder:Record {{externalRecordId: claim.ext, connectorId: $connector_id}})
+                WHERE holder.isDeleted = true AND NOT holder.id IN $ids
+                RETURN holder
+            }} AS holders
+            FOREACH (holder IN holders |
+                SET holder += {{
+                    trashedExternalRecordId: holder.externalRecordId,
+                    externalRecordId: $trashed_prefix + holder.id
+                }})
+            WITH found
+            UNWIND found AS row
+            WITH row.r AS r, row.fields AS fields
+            SET r.isDeleted = false, {cleared}, r.updatedAtTimestamp = $now
+            SET r += fields
+            RETURN r.id AS id
+            """,
+            parameters={
+                "items": items,
+                "ids": [item["id"] for item in items],
+                "reclaims": reclaims,
+                "connector_id": connector_id,
+                "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
+                "require_live_parent": require_live_parent,
+                "batch_id": batch_id,
+                "now": get_epoch_timestamp_in_ms(),
+            },
+            txn_id=transaction,
+        )
+        return [row["id"] for row in rows or []]
+
     async def delete_single_record(
         self,
         record_id: str,
@@ -12034,7 +12245,9 @@ class Neo4jProvider(IGraphDBProvider):
         folder_name: str,
         parent_folder_id: str | None = None,
         exclude_folder_id: str | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Find a folder by name within a specific parent (KB root or folder).
@@ -12046,25 +12259,26 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             if parent_folder_id is None:
                 # KB root: Find immediate children (no incoming RECORD_RELATION edges)
-                query = """
-                MATCH (folder:Record)-[:BELONGS_TO]->(kb:App {id: $kb_id, type: "KB"})
+                query = f"""
+                MATCH (folder:Record)-[:BELONGS_TO]->(kb:App {{id: $kb_id, type: "KB"}})
                 WHERE folder.mimeType = "application/vnd.folder"
                   AND toLower(folder.recordName) = toLower($folder_name)
-                  AND (folder.isDeleted IS NULL OR folder.isDeleted <> true)
+                  AND {cypher_live_record("folder")}
                   AND ($exclude_folder_id IS NULL OR folder.id <> $exclude_folder_id)
-                  AND NOT EXISTS {
-                      MATCH (folder)<-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]-(:Record)
-                  }
+                  AND NOT EXISTS {{
+                      MATCH (folder)<-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]-(:Record)
+                  }}
                 RETURN folder
                 LIMIT 1
                 """
                 params = {"kb_id": kb_id, "folder_name": folder_name, "exclude_folder_id": exclude_folder_id}
             else:
                 # Nested folder: Find children via RECORD_RELATION edge
-                query = """
-                MATCH (parent:Record {id: $parent_folder_id})-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(folder:Record)
+                query = f"""
+                MATCH (parent:Record {{id: $parent_folder_id}})-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(folder:Record)
                 WHERE folder.mimeType = "application/vnd.folder"
                   AND toLower(folder.recordName) = toLower($folder_name)
+                  AND {cypher_live_record("folder")}
                   AND ($exclude_folder_id IS NULL OR folder.id <> $exclude_folder_id)
                 RETURN folder
                 LIMIT 1
@@ -12081,6 +12295,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to find folder by name: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def find_file_by_name_in_parent(
@@ -12155,6 +12371,8 @@ class Neo4jProvider(IGraphDBProvider):
         kb_id: str,
         parent_folder_id: str | None,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> set[tuple[str, str]]:
         """Return (name_lower, mime_type_str) tuples for all non-deleted file
         records that are immediate children of *parent_folder_id* (or KB root
@@ -12163,24 +12381,24 @@ class Neo4jProvider(IGraphDBProvider):
         """
         try:
             if parent_folder_id is None:
-                query = """
-                MATCH (rec:Record)-[:BELONGS_TO]->(kb:App {id: $kb_id, type: "KB"})
-                OPTIONAL MATCH (rec)-[:IS_OF_TYPE]->(file:File {isFile: true})
+                query = f"""
+                MATCH (rec:Record)-[:BELONGS_TO]->(kb:App {{id: $kb_id, type: "KB"}})
+                OPTIONAL MATCH (rec)-[:IS_OF_TYPE]->(file:File {{isFile: true}})
                 WITH rec, coalesce(rec.mimeType, file.mimeType) AS mime_type
-                WHERE (rec.isDeleted IS NULL OR rec.isDeleted <> true)
+                WHERE {cypher_live_record("rec")}
                   AND mime_type IS NOT NULL
                   AND mime_type <> "application/vnd.folder"
-                  AND NOT (rec)<-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]-(:Record)
+                  AND NOT (rec)<-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]-(:Record)
                 RETURN toLower(rec.recordName) AS name_lower, mime_type
                 """
                 params: dict = {"kb_id": kb_id}
             else:
-                query = """
-                MATCH (parent:Record {id: $parent_folder_id})
-                      -[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->
+                query = f"""
+                MATCH (parent:Record {{id: $parent_folder_id}})
+                      -[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->
                       (rec:Record)
-                MATCH (rec)-[:IS_OF_TYPE]->(file:File {isFile: true})
-                WHERE (rec.isDeleted IS NULL OR rec.isDeleted <> true)
+                MATCH (rec)-[:IS_OF_TYPE]->(file:File {{isFile: true}})
+                WHERE {cypher_live_record("rec")}
                 RETURN toLower(rec.recordName) AS name_lower, coalesce(rec.mimeType, file.mimeType) AS mime_type
                 """
                 params = {"parent_folder_id": parent_folder_id}
@@ -12192,6 +12410,8 @@ class Neo4jProvider(IGraphDBProvider):
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch existing file names: {str(e)}")
+            if raise_on_error:
+                raise
             return set()
 
     def _normalize_name(self, name: str | None) -> str | None:
@@ -14415,7 +14635,9 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a node with target node names.
@@ -14479,6 +14701,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get edges from node failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
 
@@ -17352,6 +17576,100 @@ class Neo4jProvider(IGraphDBProvider):
         await self.client.execute_query(
             query, parameters={"id": node_id, "props": props}, txn_id=transaction,
         )
+
+    async def ensure_taxonomy_hierarchy_edge(
+        self,
+        child_collection: str,
+        child_key: str,
+        parent_key: str,
+    ) -> None:
+        """See :meth:`IGraphDBProvider.ensure_taxonomy_hierarchy_edge`."""
+        parent_collection = CATEGORY_HIERARCHY_PARENTS.get(child_collection)
+        if parent_collection is None:
+            raise ValueError(f"{child_collection!r} is not a subcategory level")
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        relationship = edge_collection_to_relationship(CollectionNames.INTER_CATEGORY_RELATIONS.value)
+        query = f"""
+            MATCH (child:{collection_to_label(child_collection)} {{id: $child}})
+            MATCH (parent:{collection_to_label(parent_collection)} {{id: $parent}})
+            MERGE (child)-[r:{relationship}]->(parent)
+            ON CREATE SET r.createdAtTimestamp = $now
+        """
+        parameters = {"child": child_key, "parent": parent_key, "now": get_epoch_timestamp_in_ms()}
+        # MERGE locks both end nodes before creating, so concurrent callers
+        # converge on one relationship; those locks are also what deadlocks
+        # them against each other, and re-running the MERGE is harmless.
+        await self._run_idempotent_write(query, parameters)
+
+    async def _run_idempotent_write(self, query: str, parameters: dict[str, Any]) -> list[dict[str, Any]]:
+        """Run an auto-commit query that is safe to repeat, re-running it when
+        it collides with a concurrent writer."""
+        for attempt in range(_TRANSIENT_WRITE_ATTEMPTS - 1):
+            try:
+                return await self.client.execute_query(query, parameters=parameters)
+            except TransientError as exc:
+                if not self.is_write_conflict(exc):
+                    raise
+                await asyncio.sleep(random.uniform(0.02, 0.1) * (attempt + 1))
+        return await self.client.execute_query(query, parameters=parameters)
+
+    async def heal_taxonomy_alias_nodes(self) -> int:
+        """Give every stored alias its TaxonomyAlias node, once per database.
+
+        Aliases written before TaxonomyAlias nodes existed live only in the
+        node's lists, which find_taxonomy_nodes no longer reads, so those
+        spellings stopped matching (KG-50). Runs in batches of committed
+        transactions and marks the database only when every collection was
+        healed. Returns the alias links created.
+        """
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        rows = await self.client.execute_query(
+            f"OPTIONAL MATCH (m:{SCHEMA_MIGRATION_LABEL} {{id: $marker}}) RETURN count(m) > 0 AS done",
+            parameters={"marker": TAXONOMY_ALIAS_HEAL_MARKER},
+        )
+        if rows and rows[0].get("done"):
+            return 0
+        healed = 0
+        for collection in sorted(TAXONOMY_COLLECTIONS):
+            label = collection_to_label(collection)
+            # It takes the alias before the node and add_taxonomy_aliases the
+            # reverse, so a live writer can deadlock it; batches that committed
+            # are skipped on the re-run.
+            result = await self._run_idempotent_write(
+                f"""
+                MATCH (n:{label})
+                WHERE n.orgId IS NOT NULL AND size(coalesce(n.normalizedAliases, [])) > 0
+                UNWIND n.normalizedAliases AS normalized
+                CALL {{
+                    WITH n, normalized
+                    // Checked here, in the batch's transaction: in the outer
+                    // query the alias uniqueness constraint makes it a locking
+                    // seek, held across every batch, and each batch's MERGE
+                    // then waits on it for ever (an undetected self-deadlock).
+                    OPTIONAL MATCH (existing:{TAXONOMY_ALIAS_LABEL} {{orgId: n.orgId, collection: $collection,
+                                                                     normalized: normalized}})
+                                   -[:{TAXONOMY_ALIAS_REL}]->(n)
+                    WITH n, normalized, existing
+                    WHERE existing IS NULL
+                    MERGE (a:{TAXONOMY_ALIAS_LABEL} {{orgId: n.orgId, collection: $collection,
+                                                      normalized: normalized}})
+                    MERGE (a)-[:{TAXONOMY_ALIAS_REL}]->(n)
+                    RETURN 1 AS created
+                }} IN TRANSACTIONS OF {_ALIAS_HEAL_BATCH} ROWS
+                RETURN count(created) AS healed
+                """,
+                {"collection": collection},
+            )
+            healed += int((result or [{}])[0].get("healed") or 0)
+        await self.client.execute_query(
+            f"MERGE (m:{SCHEMA_MIGRATION_LABEL} {{id: $marker}}) ON CREATE SET m.completedAt = $now",
+            parameters={"marker": TAXONOMY_ALIAS_HEAL_MARKER, "now": get_epoch_timestamp_in_ms()},
+        )
+        if healed:
+            self.logger.info("Healed %d list-only taxonomy aliases into alias nodes", healed)
+        return healed
 
     async def add_taxonomy_aliases(
         self,

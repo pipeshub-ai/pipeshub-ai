@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
-from app.config.constants.arangodb import DeleteSource
+from app.config.constants.arangodb import DeleteSource, ProgressStatus
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
@@ -122,6 +122,30 @@ DUPLICATE_RECONCILE_ATTEMPTS_FIELD = "duplicateReconcileAttempts"
 # The record handler reconciles within seconds of a promotion; only after this
 # is the primary the retry sweep's to take.
 DUPLICATE_RECONCILE_GRACE_MS = 10 * 60 * 1000
+
+
+def promoted_duplicate_extraction_status(
+    new_indexing_status: str, primary: Mapping[str, Any]
+) -> str | None:
+    """``extractionStatus`` for a QUEUED duplicate promoted when ``primary`` finished,
+    or None while the primary's enrichment is still IN_PROGRESS, so the duplicates
+    stay QUEUED until the handler or stale recovery resumes and finishes it.
+
+    The duplicate shares the primary's enrichment, so an indexed primary lends
+    its own outcome: COMPLETED, FAILED, or NOT_STARTED when enrichment was
+    deliberately deferred (an inline enrichment is IN_PROGRESS from the same
+    write that marks the primary indexed). A primary with no status comes from
+    before that write existed; nothing would ever resume it, so it is promoted
+    as the old mapping did, COMPLETED.
+    """
+    if new_indexing_status == ProgressStatus.COMPLETED.value:
+        primary_status = primary.get("extractionStatus")
+        if primary_status == ProgressStatus.IN_PROGRESS.value:
+            return None
+        return primary_status or ProgressStatus.COMPLETED.value
+    if new_indexing_status == ProgressStatus.EMPTY.value:
+        return ProgressStatus.EMPTY.value
+    return ProgressStatus.FAILED.value
 
 
 def requested_scope_ids(filters: "Mapping[str, Any] | None") -> tuple[str, ...] | None:
@@ -425,6 +449,13 @@ class IGraphDBProvider(ABC):
         """Whether *error* means a rolled-back transaction block can simply
         be re-run (a deadlock, a lock timeout). Backends whose transactions
         cannot guarantee nothing landed answer False."""
+        return False
+
+    def is_write_conflict(self, error: BaseException) -> bool:
+        """Whether *error* came from colliding with a concurrent writer (a
+        deadlock, a lock timeout, a write-write conflict). Unlike
+        :meth:`is_transient_error` it says nothing about what landed, so only
+        an idempotent block may be re-run on it."""
         return False
 
     # ==================== Document Operations ====================
@@ -1027,7 +1058,9 @@ class IGraphDBProvider(ABC):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a node with target node names.
@@ -1038,6 +1071,7 @@ class IGraphDBProvider(ABC):
             node_id (str): Source node ID (e.g., "groups/123")
             edge_collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed read instead of returning []
 
         Returns:
             List[Dict]: List of edge documents enriched with target name
@@ -1129,7 +1163,9 @@ class IGraphDBProvider(ABC):
         collection: str,
         filters: dict[str, Any],
         return_fields: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get nodes from a collection matching multiple field filters.
@@ -1141,6 +1177,7 @@ class IGraphDBProvider(ABC):
             filters (Dict[str, Any]): Dictionary of field_name: value pairs to filter on
             return_fields (Optional[List[str]]): Optional list of fields to return (None = all fields)
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed read instead of returning []
 
         Returns:
             List[Dict]: List of matching node documents
@@ -2436,6 +2473,8 @@ class IGraphDBProvider(ABC):
         parent_folder_id: str | None = None,
         exclude_folder_id: str | None = None,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """Find a folder by name within a specific parent (KB root or folder).
         
@@ -2445,6 +2484,8 @@ class IGraphDBProvider(ABC):
             parent_folder_id: Parent folder ID, or None for KB root
             exclude_folder_id: Optional folder ID to exclude from results (for rename operations)
             transaction: Optional transaction ID
+            raise_on_error: Raise a failed lookup instead of returning None, which
+                reads as "no such folder"
         """
         pass
 
@@ -4374,6 +4415,58 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_records_in_delete_batch(
+        self,
+        batch_id: str,
+        org_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Every record in the trash under one ``deleteBatchId``, in this org.
+
+        Each item is ``record`` (the stored document, ``_key`` set on both
+        backends), ``parentId``, ``parentRelation`` (``PARENT_CHILD`` or
+        ``ATTACHMENT``), ``parentIsDeleted``, ``parentBatchId`` and
+        ``parentName`` for the record it hangs under (all None at a KB or group
+        root), and ``isFile`` and ``fileMimeType`` from its type doc (None when
+        it has none). A failed read raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def restore_records(
+        self,
+        restores: list[dict[str, Any]],
+        batch_id: str | None,
+        transaction: str | None = None,
+        *,
+        connector_id: str | None = None,
+        require_live_parent: bool = False,
+    ) -> list[str]:
+        """Bring records back from the trash; return the ids restored.
+
+        Each item is ``{"id": key, "set": {field: value}}``; ``set`` (optional)
+        is written as well, for an indexing status. An item may also carry
+        ``reclaimExternalRecordId``, the external id it gave up, to take back
+        within ``connector_id`` (required then): records in the trash outside
+        this batch that hold it give it up, keeping it in
+        ``trashedExternalRecordId`` behind a ``TRASHED_EXTERNAL_ID_PREFIX`` id.
+        All or nothing: every item must still be in the trash under
+        ``batch_id``, and no live record and no other item may hold an id being
+        taken back, or nothing is written and the result is empty, so a restore
+        racing a purge or another restore never brings back part of a batch.
+        With ``require_live_parent``, every record an item hangs under (its
+        ``PARENT_CHILD`` or ``ATTACHMENT`` parent) must also be live or among
+        the items, checked in the same write, so a folder trashed after the
+        caller looked keeps its file from coming back under it. A
+        write the graph refuses partway also leaves every record as it was,
+        even where each statement commits on its own (Neo4j by default). The
+        delete fields (``isDeleted``, ``deletedAtTimestamp``, ``deleteSource``,
+        ``deleteBatchId``, ``deletedByUserId``, the purge counters and
+        ``trashedExternalRecordId``) are cleared. A failure raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def delete_single_record(
         self,
         record_id: str,
@@ -6190,6 +6283,27 @@ class IGraphDBProvider(ABC):
 
         Raises:
             ValueError: when ``collection`` is not a taxonomy collection.
+            Exception: on write failure.
+        """
+        pass
+
+    @abstractmethod
+    async def ensure_taxonomy_hierarchy_edge(
+        self,
+        child_collection: str,
+        child_key: str,
+        parent_key: str,
+    ) -> None:
+        """Link a subcategory node to its parent (``interCategoryRelations``)
+        unless the edge exists, outside any transaction.
+
+        ``child_collection`` is a subcategory level; the parent collection
+        follows from it (``CATEGORY_HIERARCHY_PARENTS``). Records sharing a
+        new chain call this at once: the write is idempotent, safe under
+        concurrent callers, and never leaves two edges for one pair.
+
+        Raises:
+            ValueError: when ``child_collection`` is not a subcategory level.
             Exception: on write failure.
         """
         pass
