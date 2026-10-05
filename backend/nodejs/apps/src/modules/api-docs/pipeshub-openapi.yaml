@@ -5313,21 +5313,72 @@ components:
             One entry per requested id: `recordId`, `success`, `code`, and either the
             restore response fields or a `reason` that says what to do next.
           items:
-            type: object
-            required:
-              - recordId
-              - success
-            properties:
-              recordId:
-                type: string
-              success:
-                type: boolean
-              code:
-                type: integer
-              reason:
-                type: string
-              message:
-                type: string
+            $ref: '#/components/schemas/RestoreRecordsResultItemSchema'
+
+    RestoreRecordsResultItemSchema:
+      type: object
+      additionalProperties: false
+      description: |
+        The outcome for one id of POST /knowledgeBase/records/restore. A restored item
+        carries the fields of RestoreRecordResponseSchema; a refused one carries `reason`,
+        and, when the refusal names other records, the snake_case details below.
+      required:
+        - recordId
+        - success
+      properties:
+        recordId:
+          type: string
+        success:
+          type: boolean
+        code:
+          type: integer
+        reason:
+          type: string
+          description: Why it was not restored, and what to do next
+        message:
+          type: string
+        batchId:
+          type: string
+          nullable: true
+          description: The delete batch that was restored
+        restoredRecords:
+          type: array
+          items:
+            $ref: '#/components/schemas/RestoredRecordSchema'
+        reindexPending:
+          type: boolean
+          description: Some restored files could not be queued for indexing
+        reindexPendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Files to reindex by hand to make them searchable again
+        reindexPendingReason:
+          type: string
+        renamePendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Items restored under a name another item next to them has; rename them
+        renamePendingReason:
+          type: string
+        record_id:
+          type: string
+          description: The item a refusal is about
+        external_id:
+          type: string
+          description: The source item two of the restored items came from
+        conflicting_record_id:
+          type: string
+          description: The live item that holds this item's place
+        conflicting_record_name:
+          type: string
+          nullable: true
+        missing:
+          type: array
+          items:
+            type: string
+          description: Items of the batch that were no longer in the trash
 
     reIndexRecordResponseSchema:
       type: object

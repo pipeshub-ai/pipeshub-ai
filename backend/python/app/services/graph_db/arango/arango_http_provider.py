@@ -282,6 +282,7 @@ _WRITE_CONFLICT_ATTEMPTS = 6
 # Candidates per permitted-records query; see _walk_permitted_windows.
 _PERMITTED_WALK_CHUNK = 100
 _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
+_LOCK_TIMEOUT_RE = re.compile(r'"errorNum":\s*18\b|\[18\]')
 _T = TypeVar("_T")
 
 # Each inlined permission lookup gives this rule 16 loop orders to try, and the
@@ -294,6 +295,11 @@ _APP_CHILDREN_QUERY_OPTIONS = {"optimizer": {"rules": ["-interchange-adjacent-en
 def _is_write_conflict(exc: Exception) -> bool:
     """ArangoDB errorNum 1200: a write-write conflict or a lock timeout."""
     return bool(_WRITE_CONFLICT_RE.search(str(exc)))
+
+
+def _is_lock_timeout(exc: Exception) -> bool:
+    """ArangoDB errorNum 18: a transaction's collection locks were not granted within its lockTimeout."""
+    return bool(_LOCK_TIMEOUT_RE.search(str(exc)))
 
 
 EDGE_COLLECTIONS = [
@@ -14062,6 +14068,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 read, write, exclusive=exclusive, lock_timeout_seconds=_PURGE_LOCK_TIMEOUT_SECONDS
             )
         except Exception as exc:
+            if not (_is_lock_timeout(exc) or _is_write_conflict(exc)):
+                raise
             raise GraphLockUnavailableError(f"Could not lock {exclusive} for the purge: {exc}") from exc
 
     async def get_purgeable_trashed_records(

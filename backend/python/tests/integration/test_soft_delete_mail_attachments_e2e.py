@@ -162,10 +162,11 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)
         if isinstance(graph, Neo4jProvider):
-            # The index restore reads batches by; ensure_schema creates it on a real install.
-            await graph.client.execute_query(
-                "CREATE INDEX record_delete_batch IF NOT EXISTS FOR (n:Record) ON (n.deleteBatchId)"
-            )
+            # The indexes ensure_schema creates on a real install: restore reads batches
+            # by one, and the purge waits until its walk index is online.
+            for statement in graph._generate_performance_indexes():
+                await graph.client.execute_query(statement)
+            await graph.client.execute_query("CALL db.awaitIndexes(300)")
         suffix = uuid.uuid4().hex[:10]
         w = _World(
             graph=graph, org_id=f"org-mailatt-{suffix}", user_id=f"user-mailatt-{suffix}",
@@ -419,11 +420,6 @@ async def test_the_purge_removes_the_attachment_with_its_mail_in_one_run(
     monkeypatch.setattr(purge_module, "is_soft_delete_enabled", AsyncMock(return_value=True))
     # Only this test's org, whatever else the shared database holds.
     monkeypatch.setattr(TrashPurger, "_org_ids", AsyncMock(return_value=[world.org_id]))
-    if isinstance(world.graph, Neo4jProvider):
-        # The purge walks this index; ensure_schema creates it on a real install.
-        await world.graph.client.execute_query(
-            "CREATE INDEX record_deleted_at IF NOT EXISTS FOR (n:Record) ON (n.deletedAtTimestamp)"
-        )
     await _trash_mail(world)
     broker = _Broker()
     kv = _KV({"featureFlags": {"ENABLE_SOFT_DELETE": True}, "softDeletePurge": {"pageSize": 500}})
