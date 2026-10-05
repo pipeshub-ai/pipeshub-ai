@@ -95,6 +95,7 @@ class Outcome:
     NOT_LEADER = "not_leader"
     DISABLED = "disabled"
     NOT_DUE = "not_due"
+    INDEX_NOT_READY = "index_not_ready"
     FINISHED = "finished"
     PAUSED = "paused"
     STOPPED = "stopped"
@@ -313,6 +314,10 @@ class TrashPurger:
             if not await self._drain_outbox():
                 record_purge_run(Outcome.PAUSED)
                 return Outcome.PAUSED
+            if not await self.graph.is_trash_walk_index_ready():
+                # Without it each page reads the whole trash; the next tick looks again.
+                self.logger.warning("Trash purge skipped this tick: the index it walks is not built yet")
+                return Outcome.INDEX_NOT_READY
             state = await self._read_state()
             if state.run is None:
                 now = self.clock()

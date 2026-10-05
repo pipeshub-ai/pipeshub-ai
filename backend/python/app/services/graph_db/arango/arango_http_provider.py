@@ -14142,6 +14142,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             "next": (last["deletedAtTimestamp"], last["_key"]) if last else None,
         }
 
+    async def is_trash_walk_index_ready(self) -> bool:
+        """See ``IGraphDBProvider.is_trash_walk_index_ready``. ArangoDB builds an index before it lists it."""
+        return PURGE_WALK_INDEX in await self.http_client.get_index_names(CollectionNames.RECORDS.value)
+
     async def purge_trashed_records(
         self,
         record_ids: list[str],

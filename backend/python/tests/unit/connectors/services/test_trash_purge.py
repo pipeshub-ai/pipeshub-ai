@@ -55,6 +55,7 @@ class _Graph:
         self.lock_unavailable = False
         self.lose_answer = False
         self.orgs_unreadable = False
+        self.walk_index_ready = True
         self.refuse: set[str] = set()
         self.refuse_counting = False
         self.groups_removed: list[str] = []
@@ -102,6 +103,9 @@ class _Graph:
             "held": sum(1 for r in live_connector if self._has_children(r["_key"])),
             "next": (last["deletedAtTimestamp"], last["_key"]) if last else None,
         }
+
+    async def is_trash_walk_index_ready(self) -> bool:
+        return self.walk_index_ready
 
     async def purge_trashed_records(
         self, record_ids, org_id, deleted_before, *, max_attempts=5, transaction=None,
@@ -347,6 +351,18 @@ class TestTick:
 
         assert await _purger(graph, kv).tick() == Outcome.FINISHED
         assert set(graph.records) == {"a"}
+
+    async def test_without_the_walk_index_the_tick_waits(self, flag) -> None:
+        graph, kv = _Graph(), _KV()
+        graph.trash("a", days_ago=20)
+        graph.walk_index_ready = False
+
+        assert await _purger(graph, kv).tick() == Outcome.INDEX_NOT_READY
+        assert "list" not in graph.calls and STATE_KEY not in kv.values
+
+        graph.walk_index_ready = True
+        assert await _purger(graph, kv).tick() == Outcome.FINISHED
+        assert graph.records == {}
 
     async def test_with_the_trash_off_nothing_is_read_or_written(self, flag) -> None:
         graph, kv = _Graph(), _KV()
