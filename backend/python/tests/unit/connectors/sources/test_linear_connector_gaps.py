@@ -1890,10 +1890,12 @@ class TestMarkDeletedExtended:
 
         conn._tx_store.get_record_by_external_id = AsyncMock(return_value=parent)
         conn._tx_store.get_records_by_parent = AsyncMock(side_effect=[[child], [grandchild]])
-        conn._tx_store.delete_records_and_relations = AsyncMock()
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock()
 
         await conn._mark_record_and_children_deleted("ext-parent", "issue")
-        assert conn._tx_store.delete_records_and_relations.await_count == 3
+        conn.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["parent-id", "child-id", "grand-id"], conn.connector_id, cascade_children=False, include_trashed_roots=True,
+        )
 
 
 class TestParseBlocksExtended:

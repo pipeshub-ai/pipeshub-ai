@@ -283,7 +283,7 @@ class LocalFsTransactionStore(MockTransactionStore):
 
 class LocalFsDataStoreProvider(MockDataStoreProvider):
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[LocalFsTransactionStore]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator[LocalFsTransactionStore]:
         yield LocalFsTransactionStore(self._store)
 
 

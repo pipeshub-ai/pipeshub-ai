@@ -4,9 +4,9 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Set, Union
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import is_request_admin, require_scopes
 from app.config.constants.arangodb import ProgressStatus
 from app.config.constants.service import OAuthScopes
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
@@ -54,8 +54,12 @@ async def get_knowledge_hub_service(request: Request) -> KnowledgeHubService:
     container: ConnectorAppContainer = request.app.container
     logger = container.logger()
     graph_provider = request.app.state.graph_provider
+    # The cursor-signing key comes from the config service; without it the
+    # service hands out no cursors.
     return KnowledgeHubService(
-        logger=logger, graph_provider=graph_provider, config_service=container.config_service()
+        logger=logger,
+        graph_provider=graph_provider,
+        config_service=container.config_service(),
     )
 
 def _get_enum_values(enum_class) -> Set[str]:
@@ -67,16 +71,23 @@ def _validate_enum_values(
     valid_values: Set[str],
     field_name: str
 ) -> Optional[List[str]]:
-    """
-    Validate that all values are valid enum values.
-    Returns the filtered list with only valid values, or None if input is None.
-    Invalid values are silently filtered out to be lenient.
+    """Validate every value, or answer 400.
+
+    Dropping an unrecognised value silently leaves unapplied a filter the caller
+    believes is applied: a *wider* result set that looks like a correct answer.
     """
     if not values:
         return None
-    # Filter to only valid values (lenient approach - invalid values are ignored)
-    valid = [v for v in values if v in valid_values]
-    return valid if valid else None
+    invalid = [value for value in values if value not in valid_values]
+    if invalid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Invalid {field_name} value(s): {', '.join(invalid)}. "
+                f"Allowed: {', '.join(sorted(valid_values))}"
+            ),
+        )
+    return values
 
 def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
@@ -179,6 +190,16 @@ def _parse_size_range(value: Optional[str]) -> Optional[Dict[str, Optional[int]]
     return result if result else None
 
 
+def _serialized(result: Any) -> Any:
+    """The page as JSON, serialized once. Handed back as the model, FastAPI dumps
+    it, validates the dump against the model again, serializes that and encodes
+    the result: about six times the CPU for the same body, spent on the event
+    loop every request of this service shares."""
+    if isinstance(result, KnowledgeHubNodesResponse):
+        return Response(content=result.model_dump_json(by_alias=True), media_type="application/json")
+    return result
+
+
 @knowledge_hub_router.get(
     "/nodes",
     response_model=KnowledgeHubNodesResponse,
@@ -206,6 +227,7 @@ async def get_knowledge_hub_root_nodes(
     size: Optional[str] = Query(None, description="Size range: gte:bytes,lte:bytes"),
     flattened: Optional[bool] = Query(None, description="Force flattened/recursive search (true) or direct listing (false). When omitted, computed from which filters are present."),
     include: Optional[str] = Query(None, description="Comma-separated includes: breadcrumbs, counts, availableFilters, permissions"),
+    cursor: Optional[str] = Query(None, description="Opaque page cursor from a previous response; when set it decides sort, filters and parent context"),
     knowledge_hub_service: KnowledgeHubService = Depends(get_knowledge_hub_service),
 ) -> Union[KnowledgeHubNodesResponse, Dict[str, Any]]:
     """
@@ -214,7 +236,7 @@ async def get_knowledge_hub_root_nodes(
     For browsing children of a specific node, use:
     GET /nodes/{parent_type}/{parent_id}
     """
-    return await _handle_get_nodes(
+    return _serialized(await _handle_get_nodes(
         request=request,
         knowledge_hub_service=knowledge_hub_service,
         parent_id=None,
@@ -235,7 +257,8 @@ async def get_knowledge_hub_root_nodes(
         size=size,
         flattened=flattened,
         include=include,
-    )
+        cursor=cursor,
+    ))
 
 
 @knowledge_hub_router.get(
@@ -267,6 +290,7 @@ async def get_knowledge_hub_children_nodes(
     size: Optional[str] = Query(None, description="Size range: gte:bytes,lte:bytes"),
     flattened: Optional[bool] = Query(None, description="Force flattened/recursive search (true) or direct listing (false). When omitted, computed from which filters are present."),
     include: Optional[str] = Query(None, description="Comma-separated includes: breadcrumbs, counts, availableFilters, permissions"),
+    cursor: Optional[str] = Query(None, description="Opaque page cursor from a previous response; when set it decides sort, filters and parent context"),
     knowledge_hub_service: KnowledgeHubService = Depends(get_knowledge_hub_service),
 ) -> Union[KnowledgeHubNodesResponse, Dict[str, Any]]:
     """
@@ -280,7 +304,7 @@ async def get_knowledge_hub_children_nodes(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid parent_type. Must be one of: {', '.join(valid_types)}"
         )
-    return await _handle_get_nodes(
+    return _serialized(await _handle_get_nodes(
         request=request,
         knowledge_hub_service=knowledge_hub_service,
         parent_id=parent_id,
@@ -301,7 +325,8 @@ async def get_knowledge_hub_children_nodes(
         size=size,
         flattened=flattened,
         include=include,
-    )
+        cursor=cursor,
+    ))
 
 
 async def _handle_get_nodes(
@@ -325,6 +350,7 @@ async def _handle_get_nodes(
     size: Optional[str],
     flattened: Optional[bool],
     include: Optional[str],
+    cursor: Optional[str] = None,
 ) -> Union[KnowledgeHubNodesResponse, Dict[str, Any]]:
     """Shared handler for both root and children node retrieval."""
     try:
@@ -381,13 +407,25 @@ async def _handle_get_nodes(
             parsed_include, _get_enum_values(IncludeOption), "include"
         )
 
-        # Validate sort_by
+        # A silent fallback here sorts by something the caller did not ask for,
+        # and paging then resumes against that other order.
         if sort_by not in _get_enum_values(SortField):
-            sort_by = SortField.NAME.value
-
-        # Validate sort_order
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid sort_by: {sort_by}. "
+                    f"Allowed: {', '.join(sorted(_get_enum_values(SortField)))}"
+                ),
+            )
         if sort_order.lower() not in _get_enum_values(SortOrder):
-            sort_order = SortOrder.ASC.value
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid sort_order: {sort_order}. "
+                    f"Allowed: {', '.join(sorted(_get_enum_values(SortOrder)))}"
+                ),
+            )
+        sort_order = sort_order.lower()
 
         # Parse date and size ranges
         parsed_created_at = _parse_date_range(created_at)
@@ -416,6 +454,8 @@ async def _handle_get_nodes(
             size=parsed_size,
             flattened=flattened,
             include=parsed_include,
+            cursor=cursor,
+            is_org_admin=is_request_admin(request),
         )
 
         if not result.success:

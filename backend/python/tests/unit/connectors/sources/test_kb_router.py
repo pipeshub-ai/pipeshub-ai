@@ -31,7 +31,6 @@ def _mock_kb_service():
     svc.get_knowledge_base = AsyncMock()
     svc.update_knowledge_base = AsyncMock()
     svc.delete_knowledge_base = AsyncMock()
-    svc.create_records_in_kb = AsyncMock()
     svc.upload_records_to_kb = AsyncMock()
     svc.upload_records_to_folder = AsyncMock()
     svc.create_folder_in_kb = AsyncMock()
@@ -46,7 +45,6 @@ def _mock_kb_service():
     svc.update_kb_permission = AsyncMock()
     svc.remove_kb_permission = AsyncMock()
     svc.list_kb_permissions = AsyncMock()
-    svc.create_records_in_folder = AsyncMock()
     svc.update_record = AsyncMock()
     svc.delete_record = AsyncMock()
     return svc
@@ -423,28 +421,6 @@ class TestDeleteKnowledgeBase:
         assert result.message == "Knowledge base deleted successfully"
 
 
-class TestCreateRecordsInKB:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        from app.connectors.sources.localKB.api.kb_router import create_records_in_kb
-        kb_svc = _mock_kb_service()
-        kb_svc.create_records_in_kb.return_value = {
-            "success": True, "records": [], "message": "ok"
-        }
-        request = _make_request(body={"records": [{"name": "r1"}]})
-        result = await create_records_in_kb(kb_id="kb-1", request=request, kb_service=kb_svc)
-        assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_invalid_body(self):
-        from app.connectors.sources.localKB.api.kb_router import create_records_in_kb
-        kb_svc = _mock_kb_service()
-        request = _make_request()
-        with pytest.raises(HTTPException) as exc_info:
-            await create_records_in_kb(kb_id="kb-1", request=request, kb_service=kb_svc)
-        assert exc_info.value.status_code == 400
-
-
 class TestUploadRecordsToKB:
     @pytest.mark.asyncio
     async def test_success_with_events(self):
@@ -590,37 +566,6 @@ class TestCreateNestedFolder:
                 request=request, kb_service=kb_svc
             )
         assert exc_info.value.status_code == 400
-
-
-class TestGetFolderContents:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        from app.connectors.sources.localKB.api.kb_router import get_folder_contents
-        kb_svc = _mock_kb_service()
-        kb_svc.get_folder_contents.return_value = {
-            "success": True, "folders": [], "records": []
-        }
-        request = _make_request()
-        result = await get_folder_contents(
-            kb_id="kb-1", folder_id="fold-1",
-            request=request, kb_service=kb_svc
-        )
-        assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_failure(self):
-        from app.connectors.sources.localKB.api.kb_router import get_folder_contents
-        kb_svc = _mock_kb_service()
-        kb_svc.get_folder_contents.return_value = {
-            "success": False, "code": 404, "reason": "Not found"
-        }
-        request = _make_request()
-        with pytest.raises(HTTPException) as exc_info:
-            await get_folder_contents(
-                kb_id="kb-1", folder_id="fold-bad",
-                request=request, kb_service=kb_svc
-            )
-        assert exc_info.value.status_code == 404
 
 
 class TestUpdateFolder:
@@ -969,7 +914,6 @@ def _mock_kb_service():
     svc.get_knowledge_base = AsyncMock()
     svc.update_knowledge_base = AsyncMock()
     svc.delete_knowledge_base = AsyncMock()
-    svc.create_records_in_kb = AsyncMock()
     svc.upload_records_to_kb = AsyncMock()
     svc.upload_records_to_folder = AsyncMock()
     svc.create_folder_in_kb = AsyncMock()
@@ -984,7 +928,6 @@ def _mock_kb_service():
     svc.update_kb_permission = AsyncMock()
     svc.remove_kb_permission = AsyncMock()
     svc.list_kb_permissions = AsyncMock()
-    svc.create_records_in_folder = AsyncMock()
     svc.update_record = AsyncMock()
     svc.delete_record = AsyncMock()
     return svc
@@ -1361,28 +1304,6 @@ class TestDeleteKnowledgeBaseCoverage:
         assert result.message == "Knowledge base deleted successfully"
 
 
-class TestCreateRecordsInKBCoverage:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        from app.connectors.sources.localKB.api.kb_router import create_records_in_kb
-        kb_svc = _mock_kb_service()
-        kb_svc.create_records_in_kb.return_value = {
-            "success": True, "records": [], "message": "ok"
-        }
-        request = _make_request(body={"records": [{"name": "r1"}]})
-        result = await create_records_in_kb(kb_id="kb-1", request=request, kb_service=kb_svc)
-        assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_invalid_body(self):
-        from app.connectors.sources.localKB.api.kb_router import create_records_in_kb
-        kb_svc = _mock_kb_service()
-        request = _make_request()
-        with pytest.raises(HTTPException) as exc_info:
-            await create_records_in_kb(kb_id="kb-1", request=request, kb_service=kb_svc)
-        assert exc_info.value.status_code == 400
-
-
 class TestUploadRecordsToKBCoverage:
     @pytest.mark.asyncio
     async def test_success_with_events(self):
@@ -1528,37 +1449,6 @@ class TestCreateNestedFolderCoverage:
                 request=request, kb_service=kb_svc
             )
         assert exc_info.value.status_code == 400
-
-
-class TestGetFolderContentsCoverage:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        from app.connectors.sources.localKB.api.kb_router import get_folder_contents
-        kb_svc = _mock_kb_service()
-        kb_svc.get_folder_contents.return_value = {
-            "success": True, "folders": [], "records": []
-        }
-        request = _make_request()
-        result = await get_folder_contents(
-            kb_id="kb-1", folder_id="fold-1",
-            request=request, kb_service=kb_svc
-        )
-        assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_failure(self):
-        from app.connectors.sources.localKB.api.kb_router import get_folder_contents
-        kb_svc = _mock_kb_service()
-        kb_svc.get_folder_contents.return_value = {
-            "success": False, "code": 404, "reason": "Not found"
-        }
-        request = _make_request()
-        with pytest.raises(HTTPException) as exc_info:
-            await get_folder_contents(
-                kb_id="kb-1", folder_id="fold-bad",
-                request=request, kb_service=kb_svc
-            )
-        assert exc_info.value.status_code == 404
 
 
 class TestUpdateFolderCoverage:

@@ -42,48 +42,6 @@ class TestBuildGraphDataStore:
 
 
 # ---------------------------------------------------------------------------
-# lookup_user_for_records
-# ---------------------------------------------------------------------------
-
-
-class TestLookupUserForRecords:
-    async def test_returns_user(self) -> None:
-        from app.connectors.api.connector_resolvers import lookup_user_for_records
-
-        user = {"_key": "u1", "name": "Alice", "orgId": "org-1"}
-        graph_provider = AsyncMock()
-        graph_provider.get_user_by_user_id = AsyncMock(return_value=user)
-
-        result = await lookup_user_for_records(graph_provider, "u1", "org-1")
-        assert result["_key"] == "u1"
-        # A failed lookup must raise, not read as "user not found".
-        graph_provider.get_user_by_user_id.assert_awaited_once_with(user_id="u1", raise_on_error=True)
-
-    async def test_returns_none_when_not_found(self) -> None:
-        from app.connectors.api.connector_resolvers import lookup_user_for_records
-
-        graph_provider = AsyncMock()
-        graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
-
-        result = await lookup_user_for_records(graph_provider, "missing", "org-1")
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# records_user_id_arg
-# ---------------------------------------------------------------------------
-
-
-class TestRecordsUserIdArg:
-    def test_returns_user_key(self) -> None:
-        from app.connectors.api.connector_resolvers import records_user_id_arg
-
-        user = {"_key": "u1", "name": "Alice"}
-        result = records_user_id_arg(user, "ext-user-123")
-        assert result == "u1"
-
-
-# ---------------------------------------------------------------------------
 # authorize_connector_stats
 # ---------------------------------------------------------------------------
 
@@ -95,7 +53,7 @@ class TestAuthorizeConnectorStats:
         request = MagicMock()
         request.state.user = {"userId": "u1"}
         graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(return_value={"type": "GOOGLE_DRIVE"})
+        graph_provider.get_document = AsyncMock(return_value={"type": "GOOGLE_DRIVE", "orgId": "org-1"})
         connector_registry = AsyncMock()
         connector_registry.can_user_view_connector = AsyncMock(return_value=True)
 
@@ -113,7 +71,7 @@ class TestAuthorizeConnectorStats:
         request = MagicMock()
         request.state.user = {"userId": "u1"}
         graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(return_value={"type": "GOOGLE_DRIVE"})
+        graph_provider.get_document = AsyncMock(return_value={"type": "GOOGLE_DRIVE", "orgId": "org-1"})
         connector_registry = AsyncMock()
         connector_registry.can_user_view_connector = AsyncMock(return_value=True)
 
@@ -150,7 +108,7 @@ class TestAuthorizeConnectorStats:
         request = MagicMock()
         request.state.user = {"userId": "u1"}
         graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(return_value={"type": "GOOGLE_DRIVE"})
+        graph_provider.get_document = AsyncMock(return_value={"type": "GOOGLE_DRIVE", "orgId": "org-1"})
         connector_registry = AsyncMock()
         connector_registry.can_user_view_connector = AsyncMock(return_value=False)
 
@@ -170,7 +128,7 @@ class TestAuthorizeConnectorStats:
         request = MagicMock()
         request.state.user = {"userId": "u1"}
         graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(return_value={"type": "KB"})
+        graph_provider.get_document = AsyncMock(return_value={"type": "KB", "orgId": "org-1"})
         graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "ukey"})
         graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         connector_registry = AsyncMock()
@@ -189,7 +147,7 @@ class TestAuthorizeConnectorStats:
         request = MagicMock()
         request.state.user = {"userId": "u1"}
         graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(return_value={"type": "KB"})
+        graph_provider.get_document = AsyncMock(return_value={"type": "KB", "orgId": "org-1"})
         graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "ukey"})
         graph_provider.get_user_kb_permission = AsyncMock(return_value=None)
         connector_registry = AsyncMock()
@@ -203,6 +161,31 @@ class TestAuthorizeConnectorStats:
                     request, graph_provider, connector_registry, "conn-1", "org-1"
                 )
             assert exc_info.value.status_code == 403
+
+
+    @pytest.mark.parametrize("app_org", ["org-2", None])
+    async def test_connector_of_another_org_is_404_even_for_an_admin(self, app_org) -> None:
+        from app.connectors.api.connector_resolvers import authorize_connector_stats
+
+        request = MagicMock()
+        request.state.user = {"userId": "u1"}
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"type": "GOOGLE_DRIVE", "scope": "team", "orgId": app_org}
+        )
+        connector_registry = AsyncMock()
+        connector_registry.can_user_view_connector = AsyncMock(return_value=True)
+
+        with patch(
+            "app.connectors.api.connector_resolvers.is_request_admin",
+            return_value=True,
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await authorize_connector_stats(
+                    request, graph_provider, connector_registry, "conn-1", "org-1"
+                )
+        assert exc_info.value.status_code == 404
+        connector_registry.can_user_view_connector.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

@@ -587,7 +587,7 @@ class OutlookIndividualConnector(BaseConnector):
                             "from_collection": CollectionNames.RECORDS.value,
                             "to_id": record.id,
                             "to_collection": CollectionNames.RECORDS.value,
-                            "relationType": RecordRelations.SIBLING.value
+                            "relationshipType": RecordRelations.SIBLING.value
                         }
                         edges.append(edge)
                         processed_count += 1
@@ -596,7 +596,7 @@ class OutlookIndividualConnector(BaseConnector):
             if edges:
                 try:
                     async with self.data_store_provider.transaction() as tx_store:
-                        await tx_store.batch_create_edges(edges, collection=CollectionNames.RECORD_RELATIONS.value)
+                        await tx_store.batch_create_edges(edges, collection=CollectionNames.NODE_RELATIONS.value)
                 except Exception as e:
                     self.logger.error(f"Error creating thread edges batch for user {user.email}: {e}")
                     processed_count = 0

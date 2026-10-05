@@ -1924,7 +1924,7 @@ class ServiceNowConnector(BaseConnector):
 
         Creates:
         - RecordGroup nodes (type=SERVICENOW_CATEGORY) in recordGroups collection
-        - PARENT_CHILD edges in recordRelations collection
+        - PARENT_CHILD edges in nodeRelations collection
 
         First sync: Fetches all categories
         Subsequent syncs: Only fetches categories modified since last sync

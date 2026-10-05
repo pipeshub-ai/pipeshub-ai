@@ -28,7 +28,11 @@ from azure.identity.aio import CertificateCredential, ClientSecretCredential
 from bs4 import BeautifulSoup, Comment
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
+from kiota_abstractions.base_request_configuration import RequestConfiguration
 from msgraph import GraphServiceClient
+from msgraph.generated.drives.item.drive_item_request_builder import (
+    DriveItemRequestBuilder,
+)
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.group import Group
 from msgraph.generated.models.list_item import ListItem
@@ -39,6 +43,7 @@ from msgraph.generated.sites.item.pages.pages_request_builder import PagesReques
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -211,6 +216,97 @@ class SiteMetadata:
     parent_site_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+
+@dataclass
+class ListPermissionScope:
+    """Which parts of a SharePoint list carry their own permissions.
+
+    Graph marks no driveItem permission as inherited, so only SharePoint
+    REST can tell a uniquely permissioned item from one that inherits.
+    """
+    web_url: str
+    list_url: str
+    has_unique_role_assignments: bool
+    # Lower-cased list item UniqueId -> list item Id, for items with unique role assignments.
+    unique_items: dict[str, int]
+
+
+SHAREPOINT_REST_HEADERS = {
+    'Accept': 'application/json;odata=verbose',
+    'Content-Type': 'application/json;odata=verbose',
+}
+SHAREPOINT_REST_RETRY_STATUSES = (HTTPStatus.TOO_MANY_REQUESTS, HTTPStatus.SERVICE_UNAVAILABLE)
+SHAREPOINT_REST_MAX_ATTEMPTS = 3
+SHAREPOINT_REST_MAX_RETRY_AFTER_S = 30
+SHAREPOINT_ITEMS_PAGE_SIZE = 5000
+
+SP_PRINCIPAL_USER = 1
+SP_PRINCIPAL_SECURITY_GROUP = 4
+SP_PRINCIPAL_SHAREPOINT_GROUP = 8
+# RoleTypeKind 1 is Limited Access: SharePoint grants it so a principal can reach a
+# uniquely shared child, and it opens nothing at the level it is assigned on.
+SP_LIMITED_ACCESS_ROLE_KIND = 1
+SP_LIMITED_ACCESS_ROLE_NAMES = frozenset({"Limited Access", "Web-Only Limited Access"})
+
+GUID_PATTERN = re.compile(r'([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})')
+TENANT_CLAIM_PATTERN = re.compile(r'\|tenant\|([0-9a-fA-F-]{36})')
+DIRECTORY_ROLE_ODATA_TYPE = "#microsoft.graph.directoryRole"
+M365_OWNERS_DISPLAY_SUFFIX = " Owners"
+
+_PERMISSION_RANK = {PermissionType.READ: 0, PermissionType.WRITE: 1, PermissionType.OWNER: 2}
+
+
+def is_org_wide_claim(login_name: str) -> bool:
+    """Everyone except external users, or Everyone."""
+    return 'spo-grid-all-users' in login_name or 'c:0(.s|true' in login_name
+
+
+def is_m365_owners_claim(login_name: str) -> bool:
+    return 'federateddirectoryclaimprovider' in login_name.lower() and login_name.lower().endswith('_o')
+
+
+def role_bindings_to_permission_type(bindings: list[dict]) -> PermissionType | None:
+    """The role a SharePoint role assignment grants, or None when it grants only Limited Access."""
+    granting = [
+        b for b in bindings
+        if b.get('RoleTypeKind') != SP_LIMITED_ACCESS_ROLE_KIND and b.get('Name') not in SP_LIMITED_ACCESS_ROLE_NAMES
+    ]
+    if not granting:
+        return None
+    names = [b.get('Name', '') for b in granting]
+    if any(name in ('Full Control', 'Design') for name in names):
+        return PermissionType.OWNER
+    if any(name in ('Edit', 'Contribute') for name in names):
+        return PermissionType.WRITE
+    return PermissionType.READ
+
+
+def merge_permission(permissions: dict[tuple[str, str], Permission], permission: Permission) -> None:
+    """Keep one grant per principal, at the strongest role it is given."""
+    principal = permission.email or permission.external_id or ''
+    key = (permission.entity_type.value, principal.lower())
+    current = permissions.get(key)
+    if current is None or _PERMISSION_RANK[permission.type] > _PERMISSION_RANK[current.type]:
+        permissions[key] = permission
+
+
+def drive_item_unique_id(item: DriveItem) -> str | None:
+    """The SharePoint list item UniqueId of a drive item, lower-cased.
+
+    A drive item's eTag is ``"{GUID},n"`` and that GUID is the list item's UniqueId.
+    """
+    sharepoint_ids = getattr(item, 'sharepoint_ids', None)
+    unique_id = getattr(sharepoint_ids, 'list_item_unique_id', None) if sharepoint_ids else None
+    if isinstance(unique_id, str) and unique_id:
+        return unique_id.lower()
+    e_tag = getattr(item, 'e_tag', None)
+    if isinstance(e_tag, str):
+        match = GUID_PATTERN.search(e_tag)
+        if match:
+            return match.group(1).lower()
+    return None
+
 
 class MicrosoftRegion(str, Enum):
     """Microsoft 365 Multi-Geo region codes for Search API."""
@@ -548,6 +644,11 @@ class SharePointConnector(BaseConnector):
         # Cache for site metadata
         self.site_cache: Dict[str, SiteMetadata] = {}
 
+        # Site group ids (as strings), per site, whose members include Everyone or
+        # Everyone except external users. Rebuilt by _sync_user_groups.
+        self._org_wide_site_groups: dict[str, set] = {}
+        self._reset_permission_caches()
+
         self.tenant_region: str = None
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
@@ -564,6 +665,15 @@ class SharePointConnector(BaseConnector):
             'items_processed': 0,
             'errors_encountered': 0
         }
+
+    def _reset_permission_caches(self) -> None:
+        """Per-run caches of permission lookups that every item of a site or library repeats."""
+        # None marks a lookup that failed, so it is not retried for every item.
+        self._library_scopes: dict[str, ListPermissionScope | None] = {}
+        self._site_pages_scopes: dict[str, ListPermissionScope | None] = {}
+        self._m365_group_owners: dict[str, list[dict]] = {}
+        self._directory_object_types: dict[str, str | None] = {}
+        self._directory_role_members: dict[str, list[dict]] = {}
 
     async def init(self) -> bool:
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
@@ -1107,6 +1217,8 @@ class SharePointConnector(BaseConnector):
                 elif record_update.is_updated:
                     await self._handle_record_updates(record_update)
                     continue
+                elif record and await self._replace_unchanged_record_permissions(record, permissions, record_update):
+                    continue
                 elif record:
                     batch_records.append((record, permissions))
                     total_processed += 1
@@ -1143,6 +1255,8 @@ class SharePointConnector(BaseConnector):
                 elif record_update.is_updated:
                     await self._handle_record_updates(record_update)
                     continue
+                elif record and await self._replace_unchanged_record_permissions(record, permissions, record_update):
+                    continue
                 elif record:
                     batch_records.append((record, permissions))
                     total_processed += 1
@@ -1165,6 +1279,23 @@ class SharePointConnector(BaseConnector):
             self.logger.error(f"❌ Failed to sync site '{site_name}': {e}")
             self.stats['sites_failed'] += 1
             raise
+
+    async def _replace_unchanged_record_permissions(
+        self, record: Record, permissions: list[Permission], record_update: RecordUpdate
+    ) -> bool:
+        """Replace the stored grants of a stored record the source reports with an unchanged eTag.
+
+        A sharing-only change leaves the eTag alone, and on_new_records only adds
+        grant edges, so a grant revoked at the source would never be removed.
+        Returns False when the record must go through on_new_records instead.
+        """
+        if record_update.is_new or not record_update.permissions_changed:
+            return False
+        try:
+            await self.data_entities_processor.on_updated_record_permissions(record, permissions)
+        except Exception as e:
+            self.logger.error(f"❌ Error replacing permissions for record {record.record_name}: {e}")
+        return True
 
     async def _process_site_drives(self, site_id: str, internal_site_record_group_id: str, modified_after: Optional[datetime] = None, modified_before: Optional[datetime] = None, created_after: Optional[datetime] = None, created_before: Optional[datetime] = None) -> AsyncGenerator[Tuple[Record, List[Permission], RecordUpdate], None]:
         """
@@ -1202,8 +1333,8 @@ class SharePointConnector(BaseConnector):
                     # Create document library record
                     drive_record_group = self._create_document_library_record_group(drive, site_id, internal_site_record_group_id)
                     if drive_record_group:
-                        drive_record_groups_with_permissions.append((drive_record_group, []))
-                        # permissions = await self._get_drive_permissions(site_id, drive_id)
+                        drive_record_group.inherit_permissions, library_grants = await self._get_library_access(site_id, drive)
+                        drive_record_groups_with_permissions.append((drive_record_group, library_grants))
 
             self.logger.info(f"Found {len(drive_record_groups_with_permissions)} drive record groups to process.")
             await self.data_entities_processor.on_new_record_groups(drive_record_groups_with_permissions)
@@ -1395,21 +1526,26 @@ class SharePointConnector(BaseConnector):
                         content_changed = True
                         is_updated = True
 
+            has_unique_permissions = False if is_root else await self._drive_item_has_unique_permissions(item, drive_id)
+            if has_unique_permissions is None and existing_record and not is_updated:
+                # Any write of a stored record also writes its inheritance, which is unknown this run.
+                return None
+
             # Create file record
             file_record = await self._create_file_record(item, drive_id, existing_record)
             if not file_record:
                 return None
 
-            # Get permissions currently fetching permissions via site record group
-            permissions = await self._get_item_permissions(site_id, drive_id, item_id)
+            # An item's Graph permissions are its whole effective ACL, so a uniquely
+            # permissioned item needs nothing from its parent.
+            if has_unique_permissions is None:
+                file_record.inherit_permissions = await self._inheritance_when_unreadable(
+                    CollectionNames.RECORDS.value, existing_record.id if existing_record else None
+                )
+            elif has_unique_permissions:
+                file_record.inherit_permissions = False
 
-            # Todo: Get permissions for the record
-            # for user in users:
-            #     permissions.append(Permission(
-            #         email=user.email,
-            #         type=PermissionType.READ,
-            #         entity_type=EntityType.USER
-            #     ))
+            permissions = await self._get_item_permissions(site_id, drive_id, item_id)
 
             return RecordUpdate(
                 record=file_record,
@@ -1418,7 +1554,7 @@ class SharePointConnector(BaseConnector):
                 is_deleted=False,
                 metadata_changed=metadata_changed,
                 content_changed=content_changed,
-                permissions_changed=True,
+                permissions_changed=is_new or has_unique_permissions is not None,
                 new_permissions=permissions
             )
 
@@ -2009,6 +2145,7 @@ class SharePointConnector(BaseConnector):
             pages = pages_response.value
             self.logger.debug(f"Found {len(pages)} pages in site")
 
+            pages_scope = await self._get_site_pages_scope(site_id)
             pages_processed_count = 0
 
             for page in pages:
@@ -2060,7 +2197,16 @@ class SharePointConnector(BaseConnector):
                     page_record = await self._create_page_record(page, site_id, site_name, existing_record)
 
                     if page_record:
-                        permissions = await self._get_page_permissions(site_id, page.id)
+                        page_access = await self._get_page_access(site_id, page.id, pages_scope)
+                        if page_access is None:
+                            if existing_record and not is_updated:
+                                continue
+                            page_record.inherit_permissions = await self._inheritance_when_unreadable(
+                                CollectionNames.RECORDS.value, existing_record.id if existing_record else None
+                            )
+                            permissions = await self._get_page_permissions(site_id, page.id)
+                        else:
+                            page_record.inherit_permissions, permissions = page_access
                         if not self.indexing_filters.is_enabled(IndexingFilterKey.PAGES, default=True):
                             page_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
@@ -2071,7 +2217,7 @@ class SharePointConnector(BaseConnector):
                             is_deleted=False,
                             metadata_changed=metadata_changed,
                             content_changed=content_changed,
-                            permissions_changed=False,
+                            permissions_changed=page_access is not None,
                             new_permissions=permissions
                         ))
                         self.stats['pages_processed'] += 1
@@ -2492,7 +2638,7 @@ class SharePointConnector(BaseConnector):
             return None
 
     async def _get_site_permissions(self, site_id: str) -> List[Permission]:
-        permissions_dict = {} # Key: Email, Value: Permission Object
+        permissions_dict: dict[tuple[str, str], Permission] = {}
 
         try:
             # 1. Get Site URL from your existing cache
@@ -2511,172 +2657,27 @@ class SharePointConnector(BaseConnector):
                 self.logger.warning("❌ Could not get SharePoint access token")
                 return []
 
-            # Helper to check if user exists to avoid downgrading WRITE to READ
-            def add_or_update_permission(user_email, user_id, perm_type) -> None:
-                if not user_email:
-                    return
-
-                # If user exists and is already WRITE, don't downgrade to READ
-                if user_email in permissions_dict:
-                    if permissions_dict[user_email].type == PermissionType.WRITE:
-                        return
-
-                permissions_dict[user_email] = Permission(
-                    external_id=str(user_id),
-                    email=user_email,
-                    type=perm_type,
-                    entity_type=EntityType.USER
-                )
-
-            # Security Group Type constant (Pricipal type=4 means Security group) done to pass lint checks
-            SECURITY_GROUP_TYPE = 4
-
             # ==================================================================
             # STEP 1 & 2: Process Associated Groups (Owners & Members) -> WRITE
             # ==================================================================
             for group_type in ['associatedownergroup', 'associatedmembergroup']:
                 sp_users = await self._get_sharepoint_group_users(site_url, group_type, access_token)
                 for sp_user in sp_users:
-                    login_name = sp_user.get('LoginName', '')
-
-                    # CASE A: It's an M365 Group (The "True" Team)
-                    if 'federateddirectoryclaimprovider' in login_name:
-                        # Extract GUID
-                        match = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', login_name)
-                        if match:
-                            group_id = match.group(1)
-                            group_title = sp_user.get('Title', 'M365 Group')
-
-                            # Create edge with the M365 group itself instead of expanding members
-                            group_key = f"M365_GROUP_{group_id}"
-
-                            self.logger.info(f"      🔵 Found M365 Group: {group_title} (ID: {group_id})")
-
-                            permissions_dict[group_key] = Permission(
-                                external_id=group_id,
-                                email=None,
-                                type=PermissionType.WRITE,
-                                entity_type=EntityType.GROUP
-                            )
-
-                    # CASE B: It's the "Everyone" Claim (Public Site)
-                    elif 'spo-grid-all-users' in login_name:
+                    if is_org_wide_claim(sp_user.get('LoginName', '')):
                         self.logger.info(f"🌍 Site {site_id} is Public (Everyone claim found)")
-                        # Add org relation for public sites
-                        permissions_dict['ORGANIZATION_ACCESS'] = Permission(
-                            type=PermissionType.READ, # Default to READ for public access
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
-
-                    # CASE C: It's an AD Security Group (PrincipalType == 4)
-                    elif sp_user.get('PrincipalType') == SECURITY_GROUP_TYPE:
-                        # Security Group LoginNames often look like: "c:0t.c|tenant|32537252-0676-4c47-a372-2d93563456"
-                        # We need to extract that GUID at the end.
-                        group_title = sp_user.get('Title', 'Security Group')
-                        self.logger.info(f"🔒 Found Security Group: {group_title} ({login_name})")
-
-                        # Regex to capture the GUID after 'tenant|'
-                        match = re.search(r'\|tenant\|([0-9a-fA-F-]{36})', login_name)
-
-                        if match:
-                            group_id = match.group(1)
-
-                            # This ID is a virtual claim, not a real Graph Group.
-                            if group_id == '9908e57b-4444-4a0e-af96-e8ca83c0a0e5':
-                                self.logger.info("     -> Found 'Everyone except external users' claim. Skipping.")
-                                continue
-
-                            self.logger.info(f"   -> Extracted Group ID: {group_id}")
-
-                            # Create edge with the Security group itself instead of expanding members
-                            group_key = f"SECURITY_GROUP_{group_id}"
-
-                            permissions_dict[group_key] = Permission(
-                                external_id=group_id,
-                                email=None,
-                                type=PermissionType.WRITE,
-                                entity_type=EntityType.GROUP
-                            )
-                        else:
-                            self.logger.warning(f"   -> ⚠️ Could not extract GUID from Security Group LoginName: {login_name}")
-
-                    # CASE D: It's a direct individual user (Rare in modern sites, but possible)
-                    elif sp_user.get('PrincipalType') == 1: # 1 = User
-                        email = sp_user.get('Email') or sp_user.get('UserPrincipalName')
-                        add_or_update_permission(email, sp_user.get('Id'), PermissionType.WRITE)
+                        # Public access is read access, whichever associated group holds the claim.
+                        merge_permission(permissions_dict, self._org_permission(PermissionType.READ))
+                        continue
+                    for permission in await self._sharepoint_principal_permissions(sp_user, PermissionType.WRITE, site_id):
+                        merge_permission(permissions_dict, permission)
 
             # ==================================================================
             # STEP 3: Process Explicit Visitors -> READ
             # ==================================================================
             visitors = await self._get_sharepoint_group_users(site_url, 'associatedvisitorgroup', access_token)
-
-            # The standard GUID for "Everyone except external users"
-            EVERYONE_EXCEPT_EXTERNAL_ID = '9908e57b-4444-4a0e-af96-e8ca83c0a0e5'
-
-            for v in visitors:
-                login_name = v.get('LoginName', '')
-                principal_type = v.get('PrincipalType')
-                title = v.get('Title', '')
-
-                # CASE A: Standard User (Type 1)
-                if principal_type == 1:
-                    email = v.get('Email') or v.get('UserPrincipalName')
-                    add_or_update_permission(email, v.get('Id'), PermissionType.READ)
-
-                # CASE B: M365 Group in visitors
-                elif 'federateddirectoryclaimprovider' in login_name:
-                    match = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', login_name)
-                    if match:
-                        group_id = match.group(1)
-                        group_key = f"M365_GROUP_{group_id}"
-
-                        self.logger.info(f"      🔵 Found M365 Group in visitors: {title} (ID: {group_id})")
-
-                        permissions_dict[group_key] = Permission(
-                            external_id=group_id,
-                            email=None,
-                            type=PermissionType.READ,
-                            entity_type=EntityType.GROUP
-                        )
-
-                # CASE C: "Everyone" Claims (Modern)
-                elif 'spo-grid-all-users' in login_name or 'c:0(.s|true' in login_name:
-                    self.logger.info(f"🌍 Site {site_id} is Public (Everyone claim found)")
-                    permissions_dict['ORGANIZATION_ACCESS'] = Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id
-                    )
-
-                # CASE D: Security Groups (Type 4)
-                elif principal_type == SECURITY_GROUP_TYPE:
-                    # Check GUID or Title for "Everyone except external users"
-                    if EVERYONE_EXCEPT_EXTERNAL_ID in login_name or 'Everyone except external users' in title:
-                        self.logger.info(f"🌍 Site {site_id} is Public ('Everyone' Group found)")
-                        permissions_dict['ORGANIZATION_ACCESS'] = Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
-                    else:
-                        # Handle other security groups in visitors
-                        self.logger.info(f"      🔒 Found Security Group in visitors: {title} ({login_name})")
-                        match = re.search(r'\|tenant\|([0-9a-fA-F-]{36})', login_name)
-                        if match:
-                            group_id = match.group(1)
-                            group_key = f"SECURITY_GROUP_{group_id}"
-
-                            self.logger.info(f"         -> Extracted Group ID: {group_id}")
-
-                            permissions_dict[group_key] = Permission(
-                                external_id=group_id,
-                                email=None,
-                                type=PermissionType.READ,
-                                entity_type=EntityType.GROUP
-                            )
-                        else:
-                            self.logger.warning(f"         -> ⚠️ Could not extract GUID from Security Group LoginName: {login_name}")
+            for visitor in visitors:
+                for permission in await self._sharepoint_principal_permissions(visitor, PermissionType.READ, site_id):
+                    merge_permission(permissions_dict, permission)
 
             # ==================================================================
             # STEP 4: Process Custom SharePoint Groups -> GROUP entity type
@@ -2686,30 +2687,10 @@ class SharePointConnector(BaseConnector):
             self.logger.info(f"   Found {len(custom_groups)} custom groups")
 
             for group in custom_groups:
-                group_id = group.get('id')
-                group_title = group.get('title', '')
                 permission_level = group.get('permission_level', PermissionType.READ)
-
-                # Create a unique key for the group (use group_id as identifier)
-                group_key = f"GROUP_{group_id}"
-
-                # Skip if already processed (avoid duplicating default groups)
-                if group_key in permissions_dict:
-                    self.logger.debug(f"      Skipping already processed group: {group_title}")
-                    continue
-
-                self.logger.info(f"    👥 Found custom group: {group_title} (ID: {group_id}, Permission: {permission_level.value})")
-
-                # Add group permission with entity type GROUP
-                # Use site_id-group_id format to match the format used elsewhere (line 2924)
-                unique_group_id = f"{site_id}-{group_id}"
-
-                permissions_dict[group_key] = Permission(
-                    external_id=unique_group_id,
-                    email=None,  # Groups don't have emails in SharePoint
-                    type=permission_level,
-                    entity_type=EntityType.GROUP
-                )
+                self.logger.info(f"    👥 Found custom group: {group.get('title', '')} (ID: {group.get('id')}, Permission: {permission_level.value})")
+                for permission in self._site_group_permissions(site_id, group.get('id'), permission_level):
+                    merge_permission(permissions_dict, permission)
 
             self.logger.info(f"Found {len(permissions_dict)} unique permissions for site {site_id}")
             return list(permissions_dict.values())
@@ -2767,8 +2748,6 @@ class SharePointConnector(BaseConnector):
             "Accept": "application/json;odata=verbose"
         }
 
-        SHAREPOINT_GROUP_TYPE = 8
-
         try:
             self.logger.debug("📡 Fetching custom SharePoint groups via role assignments")
 
@@ -2783,22 +2762,17 @@ class SharePointConnector(BaseConnector):
                             member = assignment.get('Member', {})
                             principal_type = member.get('PrincipalType')
 
-                            # PrincipalType 8 = SharePoint Group
-                            if principal_type == SHAREPOINT_GROUP_TYPE:
+                            if principal_type == SP_PRINCIPAL_SHAREPOINT_GROUP:
                                 login_name = member.get('LoginName', '')
                                 title = member.get('Title', '')
                                 group_id = member.get('Id')
 
-                                # Get permission level (highest level if multiple)
                                 role_bindings = assignment.get('RoleDefinitionBindings', {}).get('results', [])
-                                permission_levels = [r.get('Name', '') for r in role_bindings]
-
-                                # Determine permission type based on role name
-                                perm_type = PermissionType.READ
-                                if any(level in ['Full Control', 'Design'] for level in permission_levels):
-                                    perm_type = PermissionType.OWNER
-                                elif any(level in ['Edit', 'Contribute'] for level in permission_levels):
-                                    perm_type = PermissionType.WRITE
+                                perm_type = role_bindings_to_permission_type(role_bindings)
+                                if perm_type is None:
+                                    # Limited Access groups (sharing links, system groups) open
+                                    # nothing on the site itself.
+                                    continue
 
                                 custom_groups.append({
                                     'id': group_id,
@@ -2817,6 +2791,17 @@ class SharePointConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error in _get_custom_sharepoint_groups: {e}")
             return []
+
+    @staticmethod
+    def _graph_member_user(item: object) -> dict | None:
+        """A Graph directory object as ``{'id', 'email', 'name'}`` when it is a user with an address."""
+        odata_type = getattr(item, 'odata_type', '').lower()
+        if 'user' in odata_type or hasattr(item, 'user_principal_name'):
+            email = getattr(item, 'mail', None) or getattr(item, 'user_principal_name', None)
+            user_id = getattr(item, 'id', None)
+            if email and user_id:
+                return {'id': user_id, 'email': email, 'name': getattr(item, 'display_name', 'Unknown')}
+        return None
 
     async def _fetch_graph_group_members(self, group_id: str, is_owner: bool = False) -> List[dict]:
         """
@@ -2837,20 +2822,9 @@ class SharePointConnector(BaseConnector):
                 # Process current page
                 if response.value:
                     for item in response.value:
-                        # Extract user details (same logic as before)
-                        odata_type = getattr(item, 'odata_type', '').lower()
-
-                        # We only want real users (#microsoft.graph.user)
-                        if 'user' in odata_type or hasattr(item, 'user_principal_name'):
-                            email = getattr(item, 'mail', None) or getattr(item, 'user_principal_name', None)
-                            user_id = getattr(item, 'id', None)
-
-                            if email and user_id:
-                                users.append({
-                                    'id': user_id,
-                                    'email': email,
-                                    'name': getattr(item, 'display_name', 'Unknown')
-                                })
+                        user = self._graph_member_user(item)
+                        if user:
+                            users.append(user)
 
                 # Check if there is a next page
                 next_link = getattr(response, 'odata_next_link', None)
@@ -2893,7 +2867,7 @@ class SharePointConnector(BaseConnector):
                     perms_response = None
 
             if perms_response and perms_response.value:
-                permissions = await self._convert_to_permissions(perms_response.value)
+                permissions = await self._convert_to_permissions(perms_response.value, site_id=site_id)
 
             return permissions
 
@@ -2915,7 +2889,7 @@ class SharePointConnector(BaseConnector):
                 )
 
             if perms_response and perms_response.value:
-                permissions = await self._convert_to_permissions(perms_response.value)
+                permissions = await self._convert_to_permissions(perms_response.value, site_id=site_id)
 
             return permissions
 
@@ -2962,10 +2936,11 @@ class SharePointConnector(BaseConnector):
             self.logger.debug(f"❌ Could not get page permissions: {e}")
             return []
 
-    async def _convert_to_permissions(self, msgraph_permissions: List) -> List[Permission]:
+    async def _convert_to_permissions(self, msgraph_permissions: List, site_id: str | None = None) -> list[Permission]:
         """
         Convert Microsoft Graph permissions to our Permission model.
-        Handles both user and group permissions.
+        Handles user, group and SharePoint site group permissions; site groups
+        need the ``site_id`` they were synced under.
         """
         permissions = []
 
@@ -2974,34 +2949,34 @@ class SharePointConnector(BaseConnector):
             try:
                 # Handle user permissions
                 if hasattr(perm, 'granted_to_v2') and perm.granted_to_v2:
-                    if hasattr(perm.granted_to_v2, 'user') and perm.granted_to_v2.user:
-                        user = perm.granted_to_v2.user
+                    granted_to = perm.granted_to_v2
+                    role = map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read")
+                    if hasattr(granted_to, 'user') and granted_to.user:
+                        user = granted_to.user
                         permissions.append(Permission(
                             external_id=user.id,
                             email=user.additional_data.get("email", None) if hasattr(user, 'additional_data') else None,
-                            type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
+                            type=role,
                             entity_type=EntityType.USER
                         ))
-                    if hasattr(perm.granted_to_v2, 'group') and perm.granted_to_v2.group:
-                        group = perm.granted_to_v2.group
-                        permissions.append(Permission(
-                            external_id=group.id,
-                            email=group.additional_data.get("email", None) if hasattr(group, 'additional_data') else None,
-                            type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
-                            entity_type=EntityType.GROUP
-                        ))
+                    if hasattr(granted_to, 'group') and granted_to.group:
+                        permissions.extend(
+                            await self._graph_group_grant(granted_to.group, getattr(granted_to, 'site_user', None), role)
+                        )
+                    site_group = getattr(granted_to, 'site_group', None)
+                    site_group_id = getattr(site_group, 'id', None) if site_group else None
+                    if site_id and isinstance(site_group_id, str):
+                        permissions.extend(self._site_group_permissions(site_id, site_group_id, role))
 
 
                 # Handle group permissions
                 if hasattr(perm, 'granted_to_identities_v2') and perm.granted_to_identities_v2:
                     for identity in perm.granted_to_identities_v2:
                         if hasattr(identity, 'group') and identity.group:
-                            group = identity.group
-                            permissions.append(Permission(
-                                external_id=group.id,
-                                email=group.additional_data.get("email", None) if hasattr(group, 'additional_data') else None,
-                                type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
-                                entity_type=EntityType.GROUP
+                            permissions.extend(await self._graph_group_grant(
+                                identity.group,
+                                getattr(identity, 'site_user', None),
+                                map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
                             ))
                         elif hasattr(identity, 'user') and identity.user:
                             user = identity.user
@@ -3012,17 +2987,11 @@ class SharePointConnector(BaseConnector):
                                 entity_type=EntityType.USER
                             ))
 
-                # Handle link permissions (anyone with link)
+                # An org-scoped link is an org grant; an anonymous one names no
+                # grantee and is not stored.
                 if hasattr(perm, 'link') and perm.link:
                     link = perm.link
-                    if link.scope == "anonymous":
-                        permissions.append(Permission(
-                            external_id="anyone_with_link",
-                            email=None,
-                            type=map_msgraph_role_to_permission_type(link.type),
-                            entity_type=EntityType.ANYONE_WITH_LINK
-                        ))
-                    elif link.scope == "organization":
+                    if link.scope == "organization":
                         permissions.append(Permission(
                             external_id="anyone_in_org",
                             email=None,
@@ -3035,6 +3004,336 @@ class SharePointConnector(BaseConnector):
                 continue
 
         return permissions
+
+    async def _graph_group_grant(self, group: object, site_user: object, role: PermissionType) -> list[Permission]:
+        """A Graph group grant. An M365 group's owners claim names the whole group, so it is narrowed to the owners."""
+        if self._is_m365_owners_grant(group, site_user):
+            return await self._m365_owner_permissions(group.id, role)
+        return [Permission(
+            external_id=group.id,
+            email=group.additional_data.get("email", None) if hasattr(group, 'additional_data') else None,
+            type=role,
+            entity_type=EntityType.GROUP
+        )]
+
+    @staticmethod
+    def _is_m365_owners_grant(group: object, site_user: object) -> bool:
+        # The site user's claim says owners or members outright; the " Owners" display
+        # name is what is left when the grant carries no claim.
+        login_name = getattr(site_user, 'login_name', None) if site_user else None
+        if isinstance(login_name, str) and 'federateddirectoryclaimprovider' in login_name.lower():
+            return is_m365_owners_claim(login_name)
+        display_name = getattr(group, 'display_name', None)
+        return isinstance(display_name, str) and display_name.endswith(M365_OWNERS_DISPLAY_SUFFIX)
+
+    def _org_permission(self, role: PermissionType) -> Permission:
+        return Permission(
+            type=role,
+            entity_type=EntityType.ORG,
+            external_id=self.data_entities_processor.org_id
+        )
+
+    def _site_group_permissions(self, site_id: str, group_id: object, role: PermissionType) -> list[Permission]:
+        """A SharePoint site group grant, keyed as _sync_user_groups saves the group."""
+        if group_id is None or not site_id:
+            return []
+        permissions = [Permission(
+            external_id=f"{site_id}-{group_id}",
+            email=None,
+            type=role,
+            entity_type=EntityType.GROUP
+        )]
+        # Everyone can't be saved as a group member, so the org stands in for it.
+        if str(group_id) in self._org_wide_site_groups.get(site_id, set()):
+            permissions.append(self._org_permission(role))
+        return permissions
+
+    async def _m365_owner_permissions(self, group_id: str, role: PermissionType) -> list[Permission]:
+        if group_id not in self._m365_group_owners:
+            self._m365_group_owners[group_id] = await self._fetch_graph_group_members(group_id, is_owner=True)
+        return [
+            Permission(external_id=owner['id'], email=owner['email'], type=role, entity_type=EntityType.USER)
+            for owner in self._m365_group_owners[group_id]
+        ]
+
+    async def _sharepoint_principal_permissions(self, principal: dict, role: PermissionType, site_id: str) -> list[Permission]:
+        """Grants for one SharePoint principal: a role assignment's Member, or a user of an associated site group."""
+        login_name = principal.get('LoginName') or ''
+        principal_type = principal.get('PrincipalType')
+
+        if 'federateddirectoryclaimprovider' in login_name:
+            match = GUID_PATTERN.search(login_name)
+            if not match:
+                self.logger.warning(f"⚠️ Could not extract a group id from M365 claim {login_name}")
+                return []
+            group_id = match.group(1)
+            if is_m365_owners_claim(login_name):
+                return await self._m365_owner_permissions(group_id, role)
+            self.logger.info(f"      🔵 Found M365 Group: {principal.get('Title', 'M365 Group')} (ID: {group_id})")
+            return [Permission(external_id=group_id, email=None, type=role, entity_type=EntityType.GROUP)]
+
+        if is_org_wide_claim(login_name):
+            self.logger.info(f"🌍 Everyone claim found on site {site_id}")
+            return [self._org_permission(role)]
+
+        if principal_type == SP_PRINCIPAL_SECURITY_GROUP:
+            self.logger.info(f"🔒 Found Security Group: {principal.get('Title', 'Security Group')} ({login_name})")
+            return await self._tenant_claim_permissions(login_name, role)
+
+        if principal_type == SP_PRINCIPAL_SHAREPOINT_GROUP:
+            return self._site_group_permissions(site_id, principal.get('Id'), role)
+
+        if principal_type == SP_PRINCIPAL_USER:
+            email = principal.get('Email') or principal.get('UserPrincipalName')
+            if email:
+                return [Permission(external_id=str(principal.get('Id')), email=email, type=role, entity_type=EntityType.USER)]
+        return []
+
+    async def _tenant_claim_permissions(self, login_name: str, role: PermissionType) -> list[Permission]:
+        """A ``c:0t.c|tenant|<guid>`` claim: a security group, or a directory role expanded to its members."""
+        match = TENANT_CLAIM_PATTERN.search(login_name)
+        if not match:
+            self.logger.warning(f"   -> ⚠️ Could not extract GUID from Security Group LoginName: {login_name}")
+            return []
+        object_id = match.group(1)
+        if await self._get_directory_object_type(object_id) == DIRECTORY_ROLE_ODATA_TYPE:
+            return [
+                Permission(external_id=member['id'], email=member['email'], type=role, entity_type=EntityType.USER)
+                for member in await self._get_directory_role_member_users(object_id)
+            ]
+        return [Permission(external_id=object_id, email=None, type=role, entity_type=EntityType.GROUP)]
+
+    async def _get_directory_object_type(self, object_id: str) -> str | None:
+        """The ``@odata.type`` of a directory object, or None when it can't be read."""
+        if object_id in self._directory_object_types:
+            return self._directory_object_types[object_id]
+        object_type = None
+        try:
+            async with self.rate_limiter:
+                directory_object = await self.client.directory_objects.by_directory_object_id(object_id).get()
+            odata_type = getattr(directory_object, 'odata_type', None)
+            object_type = odata_type if isinstance(odata_type, str) else None
+        except Exception as e:
+            self.logger.warning(f"⚠️ Could not resolve directory object {object_id}; treating it as a group: {e}")
+        self._directory_object_types[object_id] = object_type
+        return object_type
+
+    async def _get_directory_role_member_users(self, role_id: str) -> list[dict]:
+        """Users holding a directory role, directly or through a role-assignable group."""
+        if role_id in self._directory_role_members:
+            return self._directory_role_members[role_id]
+        users: list[dict] = []
+        try:
+            members = self.client.directory_roles.by_directory_role_id(role_id).members
+            async with self.rate_limiter:
+                response = await members.get()
+            while response:
+                for member in response.value or []:
+                    user = self._graph_member_user(member)
+                    if user:
+                        users.append(user)
+                    elif 'group' in (getattr(member, 'odata_type', None) or '').lower() and getattr(member, 'id', None):
+                        users.extend(await self._fetch_graph_group_members(member.id))
+                next_link = getattr(response, 'odata_next_link', None)
+                if not next_link:
+                    break
+                async with self.rate_limiter:
+                    response = await members.with_url(next_link).get()
+        except Exception as e:
+            self.logger.warning(f"⚠️ Could not read all members of directory role {role_id} ({len(users)} read): {e}")
+        self.logger.info(f"✅ Directory role {role_id} has {len(users)} member users")
+        self._directory_role_members[role_id] = users
+        return users
+
+    async def _sharepoint_rest_pages(self, url: str, *, follow_next: bool = False) -> AsyncGenerator[dict, None]:
+        """The ``d`` body of a SharePoint REST GET; with ``follow_next``, of every page of the collection.
+
+        Raises on any answer but 200, so a failed read can't pass for "nothing is unique".
+        Callers must exhaust the generator so its HTTP client is closed.
+        """
+        host = urlparse(url).netloc
+        access_token = await self._get_sharepoint_access_token(resource_host=f"https://{host}")
+        if not access_token:
+            raise RuntimeError(f"no SharePoint access token for {host}")
+        headers = {**SHAREPOINT_REST_HEADERS, 'Authorization': f'Bearer {access_token}'}
+
+        next_url: str | None = url
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            while next_url:
+                payload = (await self._sharepoint_rest_get(http_client, next_url, headers)).json()
+                body = payload.get('d', {})
+                yield body
+                next_url = (body.get('__next') or payload.get('odata.nextLink')) if follow_next else None
+
+    async def _sharepoint_rest_get(self, http_client: httpx.AsyncClient, url: str, headers: dict[str, str]) -> httpx.Response:
+        attempt = 1
+        while True:
+            async with self.rate_limiter:
+                response = await http_client.get(url, headers=headers)
+            if response.status_code == HTTPStatus.OK:
+                return response
+            if response.status_code not in SHAREPOINT_REST_RETRY_STATUSES or attempt >= SHAREPOINT_REST_MAX_ATTEMPTS:
+                raise RuntimeError(f"SharePoint REST answered {response.status_code} for {url}")
+            retry_after = response.headers.get('Retry-After', '')
+            delay = int(retry_after) if retry_after.isdigit() else 2 ** attempt
+            await asyncio.sleep(min(delay, SHAREPOINT_REST_MAX_RETRY_AFTER_S))
+            attempt += 1
+
+    async def _read_list_permission_scope(self, web_url: str, list_url: str) -> ListPermissionScope | None:
+        """A list's unique-permission flag and its uniquely permissioned items, or None when they can't be read."""
+        try:
+            list_body: dict = {}
+            async for body in self._sharepoint_rest_pages(f"{list_url}?$select=Id,HasUniqueRoleAssignments"):
+                list_body = body
+
+            unique_items: dict[str, int] = {}
+            items_url = f"{list_url}/items?$select=Id,UniqueId,HasUniqueRoleAssignments&$top={SHAREPOINT_ITEMS_PAGE_SIZE}"
+            async for body in self._sharepoint_rest_pages(items_url, follow_next=True):
+                for item in body.get('results', []):
+                    unique_id = item.get('UniqueId')
+                    if item.get('HasUniqueRoleAssignments') is True and isinstance(unique_id, str):
+                        unique_items[unique_id.lower()] = item.get('Id')
+
+            return ListPermissionScope(
+                web_url=web_url,
+                list_url=list_url,
+                has_unique_role_assignments=list_body.get('HasUniqueRoleAssignments') is True,
+                unique_items=unique_items,
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"⚠️ Could not read unique permissions of {list_url}; new content is saved without inheritance "
+                f"and stored content keeps its access for this run: {e}"
+            )
+            return None
+
+    async def _get_drive_sharepoint_ids(self, drive_id: str) -> object:
+        try:
+            query = DriveItemRequestBuilder.DriveItemRequestBuilderGetQueryParameters(select=["id", "sharePointIds"])
+            async with self.rate_limiter:
+                drive = await self.client.drives.by_drive_id(drive_id).get(
+                    request_configuration=RequestConfiguration(query_parameters=query)
+                )
+            return getattr(drive, 'share_point_ids', None)
+        except Exception as e:
+            self.logger.warning(f"⚠️ Could not read the SharePoint ids of drive {drive_id}: {e}")
+            return None
+
+    async def _get_library_scope(self, drive_id: str, drive: object = None) -> ListPermissionScope | None:
+        """The unique permissions of a document library, read once per sync run."""
+        if drive_id in self._library_scopes:
+            return self._library_scopes[drive_id]
+
+        sharepoint_ids = getattr(drive, 'share_point_ids', None) if drive is not None else None
+        if not isinstance(getattr(sharepoint_ids, 'list_id', None), str):
+            sharepoint_ids = await self._get_drive_sharepoint_ids(drive_id)
+        list_id = getattr(sharepoint_ids, 'list_id', None)
+        web_url = getattr(sharepoint_ids, 'site_url', None)
+
+        scope = None
+        if isinstance(list_id, str) and list_id and isinstance(web_url, str) and web_url:
+            web_url = web_url.rstrip('/')
+            scope = await self._read_list_permission_scope(web_url, f"{web_url}/_api/web/lists(guid'{list_id}')")
+        else:
+            self.logger.warning(
+                f"⚠️ No SharePoint list id for drive {drive_id}; new items are saved without inheritance "
+                f"and stored items keep their access for this run"
+            )
+        self._library_scopes[drive_id] = scope
+        return scope
+
+    async def _get_site_pages_scope(self, site_id: str, web_url: str | None = None) -> ListPermissionScope | None:
+        """The unique permissions of a site's Site Pages library, read once per sync run."""
+        if site_id in self._site_pages_scopes:
+            return self._site_pages_scopes[site_id]
+
+        if not isinstance(web_url, str) or not web_url:
+            site_metadata = self.site_cache.get(site_id)
+            web_url = site_metadata.site_url if site_metadata else None
+
+        scope = None
+        if isinstance(web_url, str) and web_url:
+            web_url = web_url.rstrip('/')
+            scope = await self._read_list_permission_scope(web_url, f"{web_url}/_api/web/lists/getbytitle('Site%20Pages')")
+        else:
+            self.logger.warning(
+                f"⚠️ No web URL for site {site_id}; new pages are saved without inheritance "
+                f"and stored pages keep their access for this run"
+            )
+        self._site_pages_scopes[site_id] = scope
+        return scope
+
+    async def _get_role_assignment_grants(self, role_assignments_url: str, site_id: str) -> list[Permission] | None:
+        """Grants from a SharePoint role assignments collection, or None when it can't be read."""
+        try:
+            assignments: list[dict] = []
+            async for body in self._sharepoint_rest_pages(role_assignments_url, follow_next=True):
+                assignments.extend(body.get('results', []))
+        except Exception as e:
+            self.logger.warning(f"⚠️ Could not read role assignments {role_assignments_url}: {e}")
+            return None
+        return await self._role_assignments_to_permissions(assignments, site_id)
+
+    async def _role_assignments_to_permissions(self, assignments: list[dict], site_id: str) -> list[Permission]:
+        permissions: dict[tuple[str, str], Permission] = {}
+        for assignment in assignments:
+            bindings = (assignment.get('RoleDefinitionBindings') or {}).get('results', [])
+            role = role_bindings_to_permission_type(bindings)
+            if role is None:
+                continue
+            for permission in await self._sharepoint_principal_permissions(assignment.get('Member') or {}, role, site_id):
+                merge_permission(permissions, permission)
+        return list(permissions.values())
+
+    async def _inheritance_when_unreadable(self, collection: str, stored_id: str | None) -> bool:
+        """``inherit_permissions`` when the scope can't be read: a stored node keeps its inheritance edge, a new one gets none."""
+        if stored_id is None:
+            return False
+        async with self.data_store_provider.transaction() as tx_store:
+            edges = await tx_store.get_edges_from_node(
+                f"{collection}/{stored_id}", CollectionNames.INHERIT_PERMISSIONS.value
+            )
+        return bool(edges)
+
+    async def _get_library_access(self, site_id: str, drive: object) -> tuple[bool, list[Permission] | None]:
+        """``(inherit_permissions, grants)`` for a library; the grants are None when they can't be read."""
+        drive_id = getattr(drive, 'id', None)
+        scope = await self._get_library_scope(drive_id, drive)
+        if scope is None:
+            stored = await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, drive_id)
+            inherits = await self._inheritance_when_unreadable(
+                CollectionNames.RECORD_GROUPS.value, stored.id if stored else None
+            )
+            return inherits, None
+        if not scope.has_unique_role_assignments:
+            return True, []
+        return False, await self._get_role_assignment_grants(
+            f"{scope.list_url}/roleassignments?$expand=Member,RoleDefinitionBindings", site_id
+        )
+
+    async def _drive_item_has_unique_permissions(self, item: DriveItem, drive_id: str) -> bool | None:
+        """None when the library's unique permissions can't be read."""
+        scope = await self._get_library_scope(drive_id)
+        if scope is None:
+            return None
+        unique_id = drive_item_unique_id(item)
+        return unique_id is not None and unique_id in scope.unique_items
+
+    async def _get_page_access(
+        self, site_id: str, page_id: str, pages_scope: ListPermissionScope | None
+    ) -> tuple[bool, list[Permission]] | None:
+        """``(inherit_permissions, grants)`` for a page; None when its permissions can't be told."""
+        if pages_scope is None or not isinstance(page_id, str):
+            return None
+        item_id = pages_scope.unique_items.get(page_id.lower())
+        if item_id is None:
+            return True, []
+        grants = await self._get_role_assignment_grants(
+            f"{pages_scope.list_url}/items({item_id})/roleassignments?$expand=Member,RoleDefinitionBindings", site_id
+        )
+        if grants is None:
+            return None
+        return False, grants
 
     def _parse_datetime(self, dt_obj) -> Optional[int]:
         """
@@ -3075,6 +3374,7 @@ class SharePointConnector(BaseConnector):
 
             sharepoint_groups_with_members = []
             total_groups = 0
+            self._org_wide_site_groups = {}
 
             # Create credential context manager based on authentication method
             credential_context = (
@@ -3196,22 +3496,25 @@ class SharePointConnector(BaseConnector):
                                                                         connector_id=self.connector_id,
                                                                     ))
 
-                                                        # CASE B: AD Security Group (PrincipalType == 4)
+                                                        # Everyone has no members to save; grants to this
+                                                        # group carry an org grant instead.
+                                                        elif is_org_wide_claim(login_name):
+                                                            self.logger.info(f"     -> Group {group_title} contains an Everyone claim")
+                                                            self._org_wide_site_groups.setdefault(site_id, set()).add(str(group_id))
+
+                                                        # CASE B: AD Security Group or directory role (PrincipalType == 4)
                                                         elif principal_type == SECURITY_GROUP_TYPE:
                                                             # Security Group LoginNames often look like: "c:0t.c|tenant|GUID"
-                                                            match = re.search(r'\|tenant\|([0-9a-fA-F-]{36})', login_name)
+                                                            match = TENANT_CLAIM_PATTERN.search(login_name)
                                                             if match:
-                                                                group_id = match.group(1)
-
-                                                                # This ID is a virtual claim, not a real Graph Group.
-                                                                if group_id == '9908e57b-4444-4a0e-af96-e8ca83c0a0e5':
-                                                                    self.logger.info("     -> Found 'Everyone except external users' claim. Skipping.")
-                                                                    continue
-
-
-                                                                self.logger.info(f"     -> Expanding Security Group: {group_id}")
-                                                                # Security groups imply members (is_owner=False)
-                                                                expanded_users = await self._fetch_graph_group_members(group_id, is_owner=False)
+                                                                claim_id = match.group(1)
+                                                                if await self._get_directory_object_type(claim_id) == DIRECTORY_ROLE_ODATA_TYPE:
+                                                                    self.logger.info(f"     -> Expanding directory role: {claim_id}")
+                                                                    expanded_users = await self._get_directory_role_member_users(claim_id)
+                                                                else:
+                                                                    self.logger.info(f"     -> Expanding Security Group: {claim_id}")
+                                                                    # Security groups imply members (is_owner=False)
+                                                                    expanded_users = await self._fetch_graph_group_members(claim_id, is_owner=False)
 
                                                                 for exp_u in expanded_users:
                                                                     app_users.append(AppUser(
@@ -3789,6 +4092,7 @@ class SharePointConnector(BaseConnector):
             # This is necessary because the connector instance may be reused across multiple
             # scheduled runs that are days apart, causing the HTTP session to timeout
             await self._reinitialize_credential_if_needed()
+            self._reset_permission_caches()
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "sharepointonline", self.connector_id, self.logger
@@ -3896,6 +4200,7 @@ class SharePointConnector(BaseConnector):
 
             # Reinitialize credential to prevent session timeout issues
             await self._reinitialize_credential_if_needed()
+            self._reset_permission_caches()
 
             sites = await self._get_all_sites()
 
@@ -4227,6 +4532,7 @@ class SharePointConnector(BaseConnector):
                 return
 
             self.logger.info(f"Starting reindex for {len(records)} SharePoint records")
+            self._reset_permission_caches()
 
             if not self.msgraph_client:
                 self.logger.error("MS Graph client not initialized. Call init() first.")
@@ -4390,6 +4696,7 @@ class SharePointConnector(BaseConnector):
 
             # Get site name for page record creation
             site_name = ""
+            site_web_url = None
             try:
                 async with self.rate_limiter:
                     site_response = await self._safe_api_call(
@@ -4397,6 +4704,7 @@ class SharePointConnector(BaseConnector):
                     )
                 if site_response:
                     site_name = getattr(site_response, 'display_name', '') or getattr(site_response, 'name', '')
+                    site_web_url = getattr(site_response, 'web_url', None)
             except Exception as e:
                 self.logger.warning(f"Could not fetch site name for site {site_id}: {e}")
 
@@ -4406,8 +4714,15 @@ class SharePointConnector(BaseConnector):
             if not page_record:
                 return None
 
-            # Get permissions
-            permissions = await self._get_page_permissions(site_id, page_id)
+            pages_scope = await self._get_site_pages_scope(site_id, web_url=site_web_url)
+            page_access = await self._get_page_access(site_id, page_id, pages_scope)
+            if page_access is None:
+                page_record.inherit_permissions = await self._inheritance_when_unreadable(
+                    CollectionNames.RECORDS.value, record.id
+                )
+                permissions = await self._get_page_permissions(site_id, page_id)
+            else:
+                page_record.inherit_permissions, permissions = page_access
 
             # Ensure we keep the internal DB ID
             page_record.id = record.id

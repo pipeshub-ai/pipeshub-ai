@@ -135,7 +135,7 @@ class TestWhoMayRestore:
         assert result["code"] == 404
         svc.graph_provider.get_records_in_delete_batch.assert_not_called()
 
-    @pytest.mark.parametrize(("role", "allowed"), [("FILEORGANIZER", True), ("WRITER", True), ("READER", False)])
+    @pytest.mark.parametrize(("role", "allowed"), [("OWNER", True), ("WRITER", True), ("FILEORGANIZER", False), ("READER", False)])
     async def test_a_single_file_needs_the_single_file_delete_role(self, svc, mock_processor, role, allowed) -> None:
         svc.graph_provider.get_user_kb_permission = AsyncMock(return_value=role)
         _batch(svc, _doc("r1"), [_member(_doc("r1"))])

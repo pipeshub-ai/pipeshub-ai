@@ -695,6 +695,10 @@ class EventService:
                 self.logger.error(f"❌ Failed to set lock for connector {connector_id}: {lock_err}")
                 return False, False
 
+            # The prep below deletes sync edges before the sync task runs: the knowledge hub stops listing this
+            # connector from its precomputed scopes first.
+            prep_generation = await self._kh_scope_begin(connector_id)
+
             try:
                 # Delete sync points
                 self.logger.info(f"Full sync requested - deleting sync points for connector {connector_id}")
@@ -776,6 +780,8 @@ class EventService:
 
             except Exception as e:
                 self.logger.error(f"❌ Failed during full sync prep for {connector_id}: {e}")
+                # No sync task will end this mark; the next stamp picks up whatever the prep deleted.
+                await self._kh_scope_end(connector_id, prep_generation, stamp=False)
                 # Release lock immediately so the connector is not stuck
                 try:
                     await self._update_app_status(connector_id, status=AppStatus.IDLE.value, is_locked=False)
@@ -979,6 +985,25 @@ class EventService:
                 f"Failed to persist pending resync for {connector_id}: {e}"
             )
 
+    async def _kh_scope_begin(self, connector_id: str) -> int | None:
+        """Mark the connector's knowledge hub scopes stale before a write; the generation this writer owns."""
+        try:
+            return await self.graph_provider.kh_scope_mark_stale(connector_id)
+        except Exception as e:
+            self.logger.error(f"❌ Could not mark knowledge hub scopes stale for {connector_id}: {e}")
+            return None
+
+    async def _kh_scope_end(self, connector_id: str, generation: int | None, *, stamp: bool) -> None:
+        """End this writer's mark and, when the scope listing is enabled, re-stamp from what it left."""
+        if generation is None:
+            return
+        try:
+            await self.graph_provider.kh_scope_sync_ended(connector_id, generation)
+            if stamp and await self.graph_provider.kh_scope_enabled():
+                await self.graph_provider.kh_scope_stamp(connector_id)
+        except Exception as e:
+            self.logger.error(f"❌ Knowledge hub scope stamp failed for {connector_id}: {e}")
+
     @staticmethod
     def _reindex_task_key(
         connector_id: str,
@@ -1097,6 +1122,27 @@ class EventService:
         moves forward, so every record is visited at most once and the walk is a
         single pass over the key range regardless of what changes underneath it.
         """
+        scope_generation = await self._kh_scope_begin(connector_id)
+        try:
+            await self._reindex_batches(
+                connector, connector_name, connector_id, org_id, record_id, record_group_id, depth,
+                user_key, status_filters,
+            )
+        finally:
+            await self._kh_scope_end(connector_id, scope_generation, stamp=True)
+
+    async def _reindex_batches(
+        self,
+        connector: BaseConnector,
+        connector_name: str,
+        connector_id: str,
+        org_id: str,
+        record_id: str | None,
+        record_group_id: str | None,
+        depth: int,
+        user_key: str | None,
+        status_filters: list[str] | None,
+    ) -> None:
         if record_id is not None:
             self.logger.info(f"Starting reindex for {connector_name}, {connector_id} connector record {record_id} with depth {depth}")
         elif record_group_id is not None:
@@ -1121,7 +1167,7 @@ class EventService:
                     connector_id=connector_id,
                     org_id=org_id,
                     depth=depth,
-                    user_key=user_key,
+                    user_key=None,
                     limit=batch_size,
                     status_filters=status_filters,
                     after_key=after_key,
@@ -1134,7 +1180,7 @@ class EventService:
                     connector_id=connector_id,
                     org_id=org_id,
                     depth=depth,
-                    user_key=user_key,
+                    user_key=None,
                     limit=batch_size,
                     status_filters=status_filters,
                     after_key=after_key,
@@ -1155,6 +1201,13 @@ class EventService:
             fetched_count = len(records)
             last_id = records[-1].id if records else None
             records = [r for r in records if not r.is_placeholder]
+            # The children a user may reindex are the ones the permission model
+            # lets them access, not the providers' own user filter.
+            if user_key is not None and records:
+                allowed = (await self.graph_provider.check_access(
+                    user_key, org_id, node_ids=[r.id for r in records],
+                )).node_ids
+                records = [r for r in records if r.id in allowed]
 
             if not records:
                 if not last_id or fetched_count < batch_size:

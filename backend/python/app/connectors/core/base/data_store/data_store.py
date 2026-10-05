@@ -3,14 +3,10 @@ from logging import Logger
 from typing import TYPE_CHECKING, AsyncContextManager, Optional
 
 from app.models.entities import (
-    Anyone,
-    AnyoneSameOrg,
-    AnyoneWithLink,
     AppMetadata,
     AppRole,
     AppUser,
     AppUserGroup,
-    Domain,
     FileRecord,
     Org,
     Person,
@@ -33,9 +29,12 @@ class DataStoreProvider(ABC):
 
     """Base class for all data store providers"""
     @abstractmethod
-    async def transaction(self) -> AsyncContextManager["TransactionStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncContextManager["TransactionStore"]:
         """
         Return a transaction store context manager.
+
+        ``explicit=True`` asks for one real transaction for the block where the
+        backend would otherwise commit each statement; None is the backend setting.
 
         Usage:
             async with datastore.transaction() as tx_store:
@@ -303,10 +302,6 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def delete_record_group_by_external_id(self, connector_id: str, external_id: str) -> None:
-        pass
-
-    @abstractmethod
     async def delete_user_group_by_id(self, group_id: str) -> None:
         pass
 
@@ -344,22 +339,6 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def batch_upsert_orgs(self, orgs: list[Org]) -> None:
-        pass
-
-    @abstractmethod
-    async def batch_upsert_domains(self, domains: list[Domain]) -> None:
-        pass
-
-    @abstractmethod
-    async def batch_upsert_anyone(self, anyone: list[Anyone]) -> None:
-        pass
-
-    @abstractmethod
-    async def batch_upsert_anyone_with_link(self, anyone_with_link: list[AnyoneWithLink]) -> None:
-        pass
-
-    @abstractmethod
-    async def batch_upsert_anyone_same_org(self, anyone_same_org: list[AnyoneSameOrg]) -> None:
         pass
 
     @abstractmethod

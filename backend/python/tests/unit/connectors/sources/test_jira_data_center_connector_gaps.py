@@ -195,42 +195,36 @@ class TestIssueDeletionGaps:
         conn = _make_connector()
         ds = MagicMock()
         ds.get_issue_v2 = AsyncMock(return_value=MagicMock(status=404))
-        tx = MagicMock()
-        tx.get_record_by_issue_key = AsyncMock(return_value=None)
-        conn.data_store_provider.transaction = MagicMock(return_value=_tx_ctx(tx))
+        conn.data_entities_processor = MagicMock()
+        conn.data_entities_processor.get_record_by_issue_key = AsyncMock(return_value=None)
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock()
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
             await conn._handle_deleted_issue("MISSING-1")
 
-        tx.delete_records_and_relations.assert_not_called()
+        conn.data_entities_processor.on_records_deleted_cascade.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_handle_deleted_issue_get_issue_exception_is_ignored(self):
         conn = _make_connector()
         ds = MagicMock()
         ds.get_issue_v2 = AsyncMock(side_effect=RuntimeError("network"))
-        tx = MagicMock()
-        tx.get_record_by_issue_key = AsyncMock(return_value=None)
-        conn.data_store_provider.transaction = MagicMock(return_value=_tx_ctx(tx))
+        conn.data_entities_processor = MagicMock()
+        conn.data_entities_processor.get_record_by_issue_key = AsyncMock(return_value=None)
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
             await conn._handle_deleted_issue("PROJ-9")
 
+        conn.data_entities_processor.get_record_by_issue_key.assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_handle_deleted_issue_outer_exception_logged(self):
         conn = _make_connector()
-        conn.data_store_provider.transaction = MagicMock(side_effect=RuntimeError("tx boom"))
+        conn.data_entities_processor = MagicMock()
+        conn.data_entities_processor.get_record_by_issue_key = AsyncMock(side_effect=RuntimeError("db boom"))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=MagicMock())):
             await conn._handle_deleted_issue("PROJ-1")
-
-    @pytest.mark.asyncio
-    async def test_delete_direct_attachment_records_error_returns_zero(self):
-        conn = _make_connector()
-        tx = MagicMock()
-        tx.get_records_by_parent = AsyncMock(side_effect=RuntimeError("db"))
-
-        assert await conn._delete_direct_attachment_records("100", tx) == 0
 
 
 class TestPermissionSchemeGaps:
@@ -475,6 +469,25 @@ class TestUserAndGroupGaps:
 
         assert result == GroupMemberships({})
         conn.data_entities_processor.on_new_user_groups.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_each_group_is_written_in_its_own_transaction(self):
+        # All groups of a large site in one transaction outlived its timeout and
+        # every group was rolled back.
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        groups = GroupPickerPage([
+            {"groupId": "g1", "name": "developers"},
+            {"groupId": "g2", "name": "designers"},
+            {"groupId": "g3", "name": "support"},
+        ])
+
+        with patch.object(conn, "_fetch_groups", new=AsyncMock(return_value=groups)),              patch.object(conn, "_fetch_group_members", new=AsyncMock(return_value=[])):
+            await conn._sync_user_groups([])
+
+        calls = conn.data_entities_processor.on_new_user_groups.await_args_list
+        assert [len(c.args[0]) for c in calls] == [1, 1, 1]
+        assert [c.args[0][0][0].source_user_group_id for c in calls] == ["g1", "g2", "g3"]
 
     @pytest.mark.asyncio
     async def test_fetch_groups_bad_payload_shapes(self):

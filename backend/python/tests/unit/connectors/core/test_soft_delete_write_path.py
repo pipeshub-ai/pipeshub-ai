@@ -1,6 +1,6 @@
 """The record delete paths with ENABLE_SOFT_DELETE off and on.
 
-Off, every path is today's hard delete, unchanged. On, the same paths mark the
+Off, every path is the hard delete, unchanged. On, the same paths mark the
 records (one batch id per action) and publish ``softDeleteRecords`` for their
 vectors, never ``deleteRecord``, which is what removes blob and Mongo content.
 """
@@ -95,10 +95,12 @@ class TestFlagOff:
         store = _with_store(proc, AsyncMock())
         # The stored document, as GraphTransactionStore.get_record_by_key returns it.
         store.get_record_by_key = AsyncMock(return_value={"_key": "r1", "connectorId": "c1", "virtualRecordId": "v1"})
-        with flag(False):
+        store.delete_single_record = AsyncMock(return_value={"success": True, "eventData": None})
+        orphans = [{"record_id": "child"}]
+        with flag(False), patch.object(proc, "_collect_orphans", AsyncMock(return_value=orphans)),                 patch.object(proc, "_reparent_orphans", AsyncMock()) as reparented:
             await proc.on_record_deleted("r1")
-        store.delete_parent_child_edge_to_record.assert_awaited_once_with("r1")
-        store.delete_record_by_key.assert_awaited_once_with("r1")
+        store.delete_single_record.assert_awaited_once_with("r1")
+        reparented.assert_awaited_once_with(store, orphans)
         store.soft_delete_records.assert_not_called()
         assert EventTypes.SOFT_DELETE_RECORDS.value not in _event_types(proc)
 
@@ -247,56 +249,71 @@ class TestFlagOn:
 # ---------------------------------------------------------------------------
 
 
-def _request_result(marked: list[tuple[str, str | None]], *, success: bool = True) -> dict:
-    """``delete_record``'s soft result, as both providers shape it."""
-    if not success:
-        return {"success": False, "code": 403, "reason": "Only mailbox owner can delete emails"}
-    return {
-        "success": True, "record_id": marked[0][0], "connectorId": "c1", "orgId": "org-1", "softDeleted": True,
-        "batchId": "b-ext", "softDeletedRecords": [{"record_id": r, "virtual_record_id": v} for r, v in marked],
-        "virtualRecordIds": [v for _, v in marked if v], "eventData": None,
-    }
-
-
 class TestDeleteByExternalId:
-    async def test_flag_off_hard_deletes_as_before(self) -> None:
+    """The record is looked up and handed to the cascade: its ATTACHMENT
+    descendants go with it, its PARENT_CHILD children stay."""
+
+    async def test_flag_off_hard_deletes_the_record_and_its_attachments(self) -> None:
         proc = _processor()
         store = _with_store(proc, AsyncMock())
-        with flag(False):
+        store.get_record_by_external_id = AsyncMock(return_value=_stored("m1"))
+        store.delete_records_recursive = AsyncMock(return_value={"success": True, "successfully_deleted": 1})
+        with flag(False), patch.object(proc, "_records_above_survivors", AsyncMock(return_value=({}, {}))),                 patch.object(proc, "_reparent_orphans", AsyncMock()):
             await proc.delete_record_by_external_id("c1", "msg-1", "u1")
-        store.delete_record_by_external_id.assert_awaited_once_with("c1", "msg-1", "u1")
+
+        store.get_record_by_external_id.assert_awaited_once_with("c1", "msg-1")
+        store.delete_records_recursive.assert_awaited_once_with(
+            ["m1"], "c1", cascade_children=False, within_folder_id=None, include_trashed_roots=True,
+        )
+        store.soft_delete_records.assert_not_called()
         proc.messaging_producer.send_message.assert_not_called()
 
     async def test_flag_on_trashes_what_the_hard_delete_removes_as_a_connector_delete(self) -> None:
         proc = _processor()
         store = _with_store(proc, AsyncMock())
-        store.delete_record_by_external_id = AsyncMock(
-            return_value=_request_result([("m1", "vm"), ("a1", "va")])
-        )
+        store.get_record_by_external_id = AsyncMock(return_value=_stored("m1"))
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([("m1", "vm"), ("a1", "va")]))
         with flag(True), patch(f"{MODULE}.record_soft_deleted") as counted:
             await proc.delete_record_by_external_id("c1", "msg-1", "u1")
 
-        store.delete_record_by_external_id.assert_awaited_once_with("c1", "msg-1", "u1", soft_delete=True)
+        call = store.soft_delete_records.await_args
+        assert call.args == (["m1"], "c1")
+        assert call.kwargs["delete_source"] == DeleteSource.CONNECTOR.value
+        assert call.kwargs["follow"] == ("ATTACHMENT",)
+        assert call.kwargs["include_trashed_roots"] is True
+        assert call.kwargs["deleted_by_user_id"] is None
+        store.delete_records_recursive.assert_not_called()
         counted.assert_called_once_with("CONNECTOR", 2)
         assert _event_types(proc) == [EventTypes.SOFT_DELETE_RECORDS.value]
         payload = proc.messaging_producer.send_message.await_args.args[1]["payload"]
         assert payload["virtualRecordIds"] == ["vm", "va"]
-        assert (payload["batchId"], payload["deleteSource"]) == ("b-ext", "CONNECTOR")
+        assert (payload["batchId"], payload["deleteSource"]) == (call.kwargs["batch_id"], "CONNECTOR")
 
-    async def test_flag_on_a_message_not_stored_or_already_trashed_is_left_alone(self) -> None:
+    async def test_flag_on_a_message_not_stored_is_left_alone(self) -> None:
         proc = _processor()
-        _with_store(proc, AsyncMock()).delete_record_by_external_id = AsyncMock(return_value=None)
+        store = _with_store(proc, AsyncMock())
+        store.get_record_by_external_id = AsyncMock(return_value=None)
         with flag(True):
             await proc.delete_record_by_external_id("c1", "msg-1", "u1")
+        store.soft_delete_records.assert_not_called()
         proc.messaging_producer.send_message.assert_not_called()
 
-    async def test_flag_on_a_refused_delete_raises_on_either_backend(self) -> None:
-        """Arango raises inside the store; Neo4j reports the refusal. The sync sees a failure either way."""
+    async def test_flag_on_a_message_already_in_the_trash_publishes_nothing(self) -> None:
         proc = _processor()
-        _with_store(proc, AsyncMock()).delete_record_by_external_id = AsyncMock(
-            return_value=_request_result([], success=False)
-        )
-        with flag(True), pytest.raises(RuntimeError, match="mailbox owner"):
+        store = _with_store(proc, AsyncMock())
+        store.get_record_by_external_id = AsyncMock(return_value=_stored("m1"))
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([]))
+        with flag(True):
+            await proc.delete_record_by_external_id("c1", "msg-1", "u1")
+        store.soft_delete_records.assert_awaited_once()
+        proc.messaging_producer.send_message.assert_not_called()
+
+    async def test_flag_on_a_failed_mark_raises(self) -> None:
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.get_record_by_external_id = AsyncMock(return_value=_stored("m1"))
+        store.soft_delete_records = AsyncMock(side_effect=RuntimeError("graph busy"))
+        with flag(True), pytest.raises(RuntimeError, match="graph busy"):
             await proc.delete_record_by_external_id("c1", "msg-1", "u1")
         proc.messaging_producer.send_message.assert_not_called()
 

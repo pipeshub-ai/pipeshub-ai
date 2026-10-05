@@ -22,7 +22,6 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
     Connectors,
-    DeleteSource,
     ProgressStatus,
     RecordRelations,
     get_mime_type_for_extension,
@@ -94,7 +93,6 @@ from app.models.entities import (
     get_epoch_timestamp_in_ms,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
@@ -1052,100 +1050,42 @@ class JiraDataCenterConnector(BaseConnector):
             except Exception:
                 pass
 
-            soft_delete = await is_soft_delete_enabled(self.config_service)
-            async with self.data_store_provider.transaction() as tx_store:
-                issue_record = await tx_store.get_record_by_issue_key(
-                    connector_id=self.connector_id,
-                    issue_key=issue_key,
-                )
-
-                if not issue_record:
-                    self.logger.warning(
-                        "⚠️ Issue %s not found in database "
-                        "(already deleted or never synced?)",
-                        issue_key,
-                    )
-                    return
-
-                issue_id = issue_record.external_record_id
-                record_internal_id = issue_record.id
-
-                self.logger.info(
-                    "✅ Found issue %s internal=%s external=%s",
-                    issue_key, record_internal_id, issue_id,
-                )
-
-                if soft_delete:
-                    # The same set the hard delete below removes: the issue and its direct file children.
-                    attachments = await tx_store.get_records_by_parent(
-                        connector_id=self.connector_id,
-                        parent_external_record_id=issue_id,
-                        record_type=RecordType.FILE.value,
-                    )
-                else:
-                    attachment_count = await self._delete_direct_attachment_records(
-                        issue_id, tx_store,
-                    )
-
-                    await tx_store.delete_records_and_relations(
-                        record_key=record_internal_id,
-                        hard_delete=True,
-                    )
-
-                    self.logger.info(
-                        "🗑️ Deleted issue %s (%s direct attachments)",
-                        issue_key, attachment_count,
-                    )
-                    return
-
-            await self.data_entities_processor.on_records_soft_deleted(
-                [record_internal_id, *(attachment.id for attachment in attachments)],
-                self.connector_id,
-                delete_source=DeleteSource.CONNECTOR,
-                follow=(),
+            issue_record = await self.data_entities_processor.get_record_by_issue_key(
+                connector_id=self.connector_id,
+                issue_key=issue_key,
             )
+
+            if not issue_record:
+                self.logger.warning(
+                    "⚠️ Issue %s not found in database "
+                    "(already deleted or never synced?)",
+                    issue_key,
+                )
+                return
+
             self.logger.info(
-                "🗑️ Moved issue %s (%s direct attachments) to the trash",
-                issue_key, len(attachments),
+                "✅ Found issue %s internal=%s external=%s",
+                issue_key, issue_record.id, issue_record.external_record_id,
             )
+
+            # Attachments hang off the issue by ATTACHMENT edges and go with it;
+            # sub-tasks survive and are re-pointed at what the issue hung under.
+            result = await self.data_entities_processor.on_records_deleted_cascade(
+                [issue_record.id], self.connector_id, cascade_children=False,
+                include_trashed_roots=True,
+            )
+
+            if (result or {}).get("success", False):
+                self.logger.info(
+                    "🗑️ %s issue %s (%s direct attachments)",
+                    "Moved to the trash" if result.get("softDeleted") else "Deleted",
+                    issue_key, max(len(result.get("deleted_records") or []) - 1, 0),
+                )
 
         except Exception as e:
             self.logger.error(
                 "❌ Error handling deleted issue %s: %s", issue_key, e, exc_info=True,
             )
-
-    async def _delete_direct_attachment_records(
-        self,
-        parent_issue_id: str,
-        tx_store,
-    ) -> int:
-        """Delete direct FILE children (attachments) of ``parent_issue_id``."""
-        try:
-            deleted_count = 0
-            child_records = await tx_store.get_records_by_parent(
-                connector_id=self.connector_id,
-                parent_external_record_id=parent_issue_id,
-                record_type=RecordType.FILE.value,
-            )
-
-            for record in child_records:
-                await tx_store.delete_records_and_relations(
-                    record_key=record.id,
-                    hard_delete=True,
-                )
-                deleted_count += 1
-                self.logger.debug(
-                    "  Deleted attachment %s", record.external_record_id,
-                )
-
-            return deleted_count
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Error deleting attachments for issue %s: %s",
-                parent_issue_id, e,
-            )
-            return 0
 
     # ============================================================================
     # User & Group Management
@@ -2030,9 +1970,10 @@ class JiraDataCenterConnector(BaseConnector):
                             groups_members_map[key] = None
                     continue
 
-            # Save all groups in one batch
+            # One transaction per group: a large site's groups in one outlive the transaction timeout.
             if user_groups_batch:
-                await self.data_entities_processor.on_new_user_groups(user_groups_batch)
+                for entry in user_groups_batch:
+                    await self.data_entities_processor.on_new_user_groups([entry])
             else:
                 self.logger.info("ℹ️ No groups with valid members to sync")
 
@@ -3788,7 +3729,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         When is_new_project is True (full sync wiped sync points), the "skip unchanged
         issues" short-circuit is bypassed so every issue flows through _process_record
-        and its BELONGS_TO / RECORD_RELATIONS / PERMISSION / ENTITY_RELATIONS edges are
+        and its BELONGS_TO / NODE_RELATIONS / PERMISSION / ENTITY_RELATIONS edges are
         recreated after full-sync edge deletion.
         """
         all_records: list[tuple[Record, list[Permission]]] = []

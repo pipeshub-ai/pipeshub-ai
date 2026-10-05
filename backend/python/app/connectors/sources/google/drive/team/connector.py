@@ -18,6 +18,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
     CollectionNames,
     Connectors,
     ExtensionTypes,
@@ -902,16 +903,14 @@ class GoogleDriveTeamConnector(BaseConnector):
             return PermissionType.OWNER
         elif role_lower in ["fileorganizer", "writer"]:
             return PermissionType.WRITE
-        elif role_lower == "commenter":
-            return PermissionType.COMMENT
-        elif role_lower == "reader":
+        elif role_lower in ["commenter", "reader"]:
             return PermissionType.READ
         else:
             # Default to read for unknown roles
             self.logger.warning(f"Unknown Google Drive role '{role}', defaulting to READ")
             return PermissionType.READ
 
-    def _map_drive_permission_type_to_entity_type(self, permission_type: str, email: Optional[str] = None) -> EntityType:
+    def _map_drive_permission_type_to_entity_type(self, permission_type: str, email: Optional[str] = None) -> Optional[EntityType]:
         """
         Map Google Drive permission type to EntityType enum.
 
@@ -920,7 +919,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             email: Optional email address for additional context
 
         Returns:
-            EntityType enum value
+            EntityType enum value, or None for a share with a whole domain, which is not stored as a grant
         """
         perm_type_lower = permission_type.lower()
         if perm_type_lower == "user":
@@ -928,11 +927,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         elif perm_type_lower == "group":
             return EntityType.GROUP
         elif perm_type_lower == "domain":
-            return EntityType.DOMAIN
-        elif perm_type_lower == "anyone":
-            return EntityType.ANYONE
-        elif perm_type_lower in ["anyonewithlink", "anyone_with_link"]:
-            return EntityType.ANYONE_WITH_LINK
+            # Not an org grant: the domain may be a partner's, and an org grant reaches every user.
+            return None
         else:
             # Default to user for unknown types
             self.logger.warning(f"Unknown Google Drive permission type '{permission_type}', defaulting to USER")
@@ -998,13 +994,20 @@ class GoogleDriveTeamConnector(BaseConnector):
                         role = perm_data.get("role", "reader")
                         perm_type = perm_data.get("type", "user")
 
-                        # Map role and type
                         permission_type = self._map_drive_role_to_permission_type(role)
-                        entity_type = self._map_drive_permission_type_to_entity_type(perm_type)
 
-                        # Extract email or domain based on permission type
+                        # Link sharing names no grantee, so it is not stored as a
+                        # grant. It still becomes a direct grant for the syncing
+                        # user, below.
+                        if perm_type.lower() in ("anyone", "anyonewithlink", "anyone_with_link"):
+                            anyone_with_link_permission_type = permission_type
+                            continue
+
+                        entity_type = self._map_drive_permission_type_to_entity_type(perm_type)
+                        if entity_type is None:
+                            continue
+
                         email = perm_data.get("emailAddress")
-                        perm_data.get("domain")
                         external_id = perm_data.get("id")
 
                         # Create permission object
@@ -1025,10 +1028,6 @@ class GoogleDriveTeamConnector(BaseConnector):
                             detail.get("permissionType") == "file" for detail in permission_details
                         ):
                             individually_shared_emails.add(email)
-
-                        # Track "anyone with link" permission type for fallback
-                        if entity_type == EntityType.ANYONE:
-                            anyone_with_link_permission_type = permission_type
 
                     except Exception as e:
                         resource_type = "drive" if is_drive else "file"
@@ -1718,13 +1717,13 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
             return
 
-        if existing_record.mime_type == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
+        if existing_record.mime_type in FOLDER_MIME_TYPES:
             self.logger.info(
                 "📁 Folder %s exited folder-filter scope; deleting folder and descendants",
                 existing_record.record_name,
             )
             result = await self.data_entities_processor.on_records_deleted_cascade(
-                [existing_record.id], self.connector_id
+                [existing_record.id], self.connector_id, include_trashed_roots=True
             )
             total_deleted = len((result or {}).get("deleted_records") or [])
             self.logger.info(
@@ -2031,8 +2030,10 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def _delete_record_tree(self, record: Record) -> None:
         """Delete a record; a folder takes the records under it along."""
         self.logger.info("Deleting record: %s", record.record_name)
-        if record.mime_type == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
-            await self.data_entities_processor.on_records_deleted_cascade([record.id], self.connector_id)
+        if record.mime_type in FOLDER_MIME_TYPES:
+            await self.data_entities_processor.on_records_deleted_cascade(
+                [record.id], self.connector_id, include_trashed_roots=True
+            )
         else:
             await self.data_entities_processor.on_record_deleted(record_id=record.id)
 
@@ -2066,11 +2067,17 @@ class GoogleDriveTeamConnector(BaseConnector):
         if group_id in self._listed_shared_drive_ids and not self._pass_drive_ids_filter(group_id):
             return False
         parent = record.parent_external_record_id or group_id
+        # A stored folder is text/directory; the filters know a folder by Google's type.
+        mime_type = (
+            MimeTypes.GOOGLE_DRIVE_FOLDER.value
+            if record.mime_type in FOLDER_MIME_TYPES
+            else record.mime_type
+        )
         metadata = {
             "id": record.external_record_id,
             "name": record.record_name,
             "fileExtension": getattr(record, "extension", None),
-            "mimeType": record.mime_type,
+            "mimeType": mime_type,
             "parents": [parent] if parent else [],
             "createdTime": self._epoch_ms_to_iso(record.source_created_at),
             "modifiedTime": self._epoch_ms_to_iso(record.source_updated_at),
@@ -2127,7 +2134,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 for record in page:
                     if self._record_passes_sync_filters(record):
                         continue
-                    if record.mime_type == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
+                    if record.mime_type in FOLDER_MIME_TYPES:
                         excluded_folders.append(record)
                         continue
                     try:
@@ -2391,7 +2398,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
                 weburl=metadata.get("webViewLink", None),
-                mime_type=mime_type if mime_type else MimeTypes.UNKNOWN.value,
+                # Every folder is written as text/directory, not Google's own folder type.
+                mime_type=MimeTypes.FOLDER.value if not is_file else (mime_type or MimeTypes.UNKNOWN.value),
                 is_file=is_file,
                 size_in_bytes=int(metadata.get("size", 0) or 0),
                 extension=file_extension,

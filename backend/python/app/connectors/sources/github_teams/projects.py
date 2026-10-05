@@ -573,6 +573,4 @@ def _permission_rank(ptype: PermissionType) -> int:
         PermissionType.OWNER: 3,
         PermissionType.WRITE: 2,
         PermissionType.READ: 1,
-        PermissionType.COMMENT: 1,
-        PermissionType.OTHER: 0,
     }.get(ptype, 0)
