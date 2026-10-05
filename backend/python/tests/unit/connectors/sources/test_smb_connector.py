@@ -308,6 +308,56 @@ class TestSmbConnectorConnection:
         assert kwargs["connection_cache"] is client.connection_cache()
 
 
+    def test_calls_on_one_connection_do_not_overlap(self):
+        import threading
+        import time
+
+        from app.sources.client.smb.smb import SmbClient
+
+        client = SmbClient(server="h", username="u", password="p")
+        client._registered = True
+        inside = 0
+        most = 0
+
+        def slow_scandir(*_args, **_kwargs):
+            nonlocal inside, most
+            inside += 1
+            most = max(most, inside)
+            time.sleep(0.02)
+            inside -= 1
+            scan = MagicMock()
+            scan.__enter__.return_value = []
+            return scan
+
+        handle = MagicMock()
+        handle.read.side_effect = lambda _size: slow_scandir() and b""
+        with patch.object(client, "_smbclient") as smbclient:
+            smbclient.return_value.scandir.side_effect = slow_scandir
+            workers = [threading.Thread(target=client.list_directory, args=(SHARE, "")) for _ in range(4)]
+            workers += [threading.Thread(target=client.serialized, args=(handle.read, 8192)) for _ in range(4)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join()
+        assert most == 1
+
+    async def test_file_chunks_are_read_through_the_connection_lock(self):
+        from app.sources.external.smb.smb import SmbDataSource
+
+        handle = MagicMock()
+        handle.read.side_effect = [b"ab", b""]
+        client = MagicMock()
+        client.open_file.return_value = handle
+        client.serialized.side_effect = lambda fn, *args: fn(*args)
+        chunks = [chunk async for chunk in SmbDataSource(client).read_file(SHARE, "a.txt")]
+        assert chunks == [b"ab"]
+        assert [call.args[0] for call in client.serialized.call_args_list] == [
+            handle.read,
+            handle.read,
+            handle.close,
+        ]
+
+
 class TestSmbConnectorSync:
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_creates_groups_walks_and_prunes(self, mock_filters, smb_connector, mock_processor):

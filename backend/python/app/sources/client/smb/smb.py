@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import stat
+import threading
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO, TypeVar
 
 from app.connectors.core.constants import ConfigPaths
 from app.connectors.sources.network_share.entry import DirectoryEntry, ShareInfo
@@ -18,11 +19,13 @@ from app.sources.client.iclient import IClient
 from app.sources.client.smb.share_enum import enumerate_shares
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from logging import Logger
 
     from app.config.configuration_service import ConfigurationService
 
 REPARSE_POINT = 0x0400
+_T = TypeVar("_T")
 
 
 def _as_datetime(value: object) -> datetime | None:
@@ -64,6 +67,10 @@ class SmbClient(IClient):
         self.logger = logger
         self._connection_cache: dict[str, Any] = {}
         self._registered = False
+        # smbprotocol does not wait for SMB credits. Requests from several
+        # threads on one connection fail with "requires 1 credits but only 0
+        # credits are available" and can leave the connection at zero for good.
+        self._io_lock = threading.RLock()
 
     def get_client(self) -> dict[str, Any]:
         return self._connection_cache
@@ -80,24 +87,31 @@ class SmbClient(IClient):
             ) from exc
         return smbclient
 
+    def serialized(self, fn: Callable[..., _T], *args: object) -> _T:
+        """Run one call on this connection at a time. Handles from open_file go through here too."""
+        with self._io_lock:
+            return fn(*args)
+
     def register(self) -> None:
-        if self._registered:
-            return
-        smbclient = self._smbclient()
-        smbclient.register_session(
-            self.server,
-            username=self.username,
-            password=self.password,
-            port=self.port,
-            connection_cache=self._connection_cache,
-        )
-        self._registered = True
+        with self._io_lock:
+            if self._registered:
+                return
+            smbclient = self._smbclient()
+            smbclient.register_session(
+                self.server,
+                username=self.username,
+                password=self.password,
+                port=self.port,
+                connection_cache=self._connection_cache,
+            )
+            self._registered = True
 
     def close(self) -> None:
-        smbclient = self._smbclient()
-        smbclient.reset_connection_cache(connection_cache=self._connection_cache)
-        self._connection_cache.clear()
-        self._registered = False
+        with self._io_lock:
+            smbclient = self._smbclient()
+            smbclient.reset_connection_cache(connection_cache=self._connection_cache)
+            self._connection_cache.clear()
+            self._registered = False
 
     def _kwargs(self) -> dict[str, Any]:
         # smbprotocol keeps credentials only inside the live session. After the
@@ -110,6 +124,10 @@ class SmbClient(IClient):
         }
 
     def list_directory(self, share: str, path: str) -> list[DirectoryEntry]:
+        with self._io_lock:
+            return self._list_directory(share, path)
+
+    def _list_directory(self, share: str, path: str) -> list[DirectoryEntry]:
         self.register()
         smbclient = self._smbclient()
         target = unc(self.server, share, path)
@@ -129,6 +147,10 @@ class SmbClient(IClient):
         return entries
 
     def stat(self, share: str, path: str, *, follow: bool = True) -> DirectoryEntry | None:
+        with self._io_lock:
+            return self._stat(share, path, follow=follow)
+
+    def _stat(self, share: str, path: str, *, follow: bool = True) -> DirectoryEntry | None:
         self.register()
         smbclient = self._smbclient()
         target = unc(self.server, share, path)
@@ -156,19 +178,21 @@ class SmbClient(IClient):
         )
 
     def open_file(self, share: str, path: str) -> BinaryIO:
-        self.register()
-        smbclient = self._smbclient()
-        target = unc(self.server, share, path)
-        return smbclient.open_file(target, mode="rb", buffering=0, **self._kwargs())
+        with self._io_lock:
+            self.register()
+            smbclient = self._smbclient()
+            target = unc(self.server, share, path)
+            return smbclient.open_file(target, mode="rb", buffering=0, **self._kwargs())
 
     def list_shares(self) -> list[ShareInfo]:
-        self.register()
-        try:
-            return enumerate_shares(self.server, self._connection_cache, port=self.port)
-        except ShareListingError:
-            if self.default_share:
-                return [ShareInfo(name=self.default_share, share_type="disk")]
-            raise
+        with self._io_lock:
+            self.register()
+            try:
+                return enumerate_shares(self.server, self._connection_cache, port=self.port)
+            except ShareListingError:
+                if self.default_share:
+                    return [ShareInfo(name=self.default_share, share_type="disk")]
+                raise
 
     def _from_dir_entry(self, item: object) -> DirectoryEntry:
         info = getattr(item, "smb_info", None)
