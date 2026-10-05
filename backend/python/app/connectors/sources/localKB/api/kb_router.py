@@ -254,7 +254,8 @@ async def list_user_knowledge_bases(
     "/{kb_id}",
     response_model=KnowledgeBaseResponse,
     responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
-    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
+    # kb:upload too: Node calls this with the caller's token to check access before an upload.
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ, OAuthScopes.KB_UPLOAD))],
 )
 @inject
 async def get_knowledge_base(
