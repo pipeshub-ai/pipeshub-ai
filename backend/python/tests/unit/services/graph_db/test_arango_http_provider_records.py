@@ -1368,7 +1368,7 @@ class TestUpdateQueuedDuplicatesStatus:
         )
         assert result == 1
 
-    @pytest.mark.parametrize("primary_extraction", ["IN_PROGRESS", None])
+    @pytest.mark.parametrize("primary_extraction", ["IN_PROGRESS"])
     async def test_queued_duplicates_wait_while_the_primarys_enrichment_has_not_ended(
         self, connected_provider, primary_extraction
     ) -> None:
@@ -1383,6 +1383,19 @@ class TestUpdateQueuedDuplicatesStatus:
 
         assert result == 0
         connected_provider.batch_update_nodes.assert_not_awaited()
+
+    async def test_a_primary_from_before_the_status_was_written_still_promotes(self, connected_provider) -> None:
+        ref = {"_key": "r1", "orgId": "org-1", "md5Checksum": "abc"}
+        dup = {"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}
+        connected_provider.http_client.execute_aql.side_effect = [[ref], [dup]]
+        connected_provider.batch_update_nodes = AsyncMock(return_value=True)
+
+        result = await connected_provider.update_queued_duplicates_status(
+            record_id="r1", new_indexing_status="COMPLETED", virtual_record_id="v-1",
+        )
+
+        assert result == 1
+        assert connected_provider.batch_update_nodes.await_args.args[0][0]["extractionStatus"] == "COMPLETED"
 
     async def test_promoted_duplicates_take_the_primarys_enrichment_outcome(self, connected_provider) -> None:
         ref = {"_key": "r1", "orgId": "org-1", "md5Checksum": "abc", "extractionStatus": "FAILED"}

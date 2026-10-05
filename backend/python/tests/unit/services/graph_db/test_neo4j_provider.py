@@ -2595,7 +2595,7 @@ class TestDuplicateAndSyncOperations:
         assert empty_payload[-1]["duplicateReconcilePending"] is True
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("primary_extraction", ["IN_PROGRESS", None])
+    @pytest.mark.parametrize("primary_extraction", ["IN_PROGRESS"])
     async def test_queued_duplicates_wait_while_the_primarys_enrichment_has_not_ended(
         self, neo4j_provider: Neo4jProvider, primary_extraction: str | None
     ) -> None:
@@ -2606,6 +2606,19 @@ class TestDuplicateAndSyncOperations:
         assert await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED", virtual_record_id="v-1") == 0
 
         neo4j_provider.batch_update_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_primary_from_before_the_status_was_written_still_promotes(
+        self, neo4j_provider: Neo4jProvider
+    ) -> None:
+        primary = {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1"}
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"record": primary}], [{"record": {"id": "rec-2"}}]])
+        neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "rec-2"})  # type: ignore[method-assign]
+        neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        assert await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED", virtual_record_id="v-1") == 1
+
+        assert neo4j_provider.batch_update_nodes.await_args.args[0][0]["extractionStatus"] == "COMPLETED"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("primary_extraction", ["FAILED", "NOT_STARTED"])

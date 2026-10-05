@@ -852,12 +852,23 @@ class EventProcessor:
         # twin that finished between the read above and this write would leave
         # this record parked until the stranded-record sweep. Applying the
         # finished twin twice is harmless: the reuse writes are idempotent.
+        # A failed read must not ack: the stranded sweep skips a QUEUED row
+        # with an md5 and a vrid, so nothing would revisit this record. The
+        # redelivery decides again, and its QUEUED write and reuse are idempotent.
         twin_key = _record_key(match.record)
         try:
-            twin = await self.graph_provider.get_document(twin_key, CollectionNames.RECORDS.value)
+            twin = await self.graph_provider.get_document(
+                twin_key, CollectionNames.RECORDS.value, raise_on_error=True
+            )
         except Exception as e:
-            self.logger.warning("Could not re-read duplicate %s after queueing %s: %s", twin_key, _record_key(doc), e)
-            twin = None
+            raise IndexingError(
+                f"Could not re-read duplicate {twin_key} after queueing {_record_key(doc)}",
+                details={"record_id": _record_key(doc), "duplicate_id": twin_key},
+            ) from e
+        if twin is None:
+            # Deleted meanwhile: no completion will ever promote this record.
+            self.logger.info("Duplicate %s is gone; indexing %s itself", twin_key, _record_key(doc))
+            return DedupDecision()
         if isinstance(twin, dict) and is_finished(twin):
             self.logger.info("Duplicate %s finished while %s was being queued; reusing it now", twin_key, _record_key(doc))
             return await self._reuse_finished_duplicate(

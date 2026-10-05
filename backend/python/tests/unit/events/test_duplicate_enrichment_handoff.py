@@ -19,6 +19,7 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.events.events import EventProcessor
+from app.exceptions.indexing_exceptions import IndexingError
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.services.graph_db.interface.graph_db_provider import (
     promoted_duplicate_extraction_status,
@@ -42,6 +43,7 @@ class RecordsStore:
         self.records: dict[str, dict[str, Any]] = {}
         self.copied_relationships: list[tuple[str, str]] = []
         self.before_write: dict[tuple[str, str], Any] = {}
+        self.failing_reads: set[str] = set()
 
     def add(self, key: str, **fields: Any) -> None:  # noqa: ANN401
         self.records[key] = {"_key": key, "orgId": ORG, "recordType": "FILE", **fields}
@@ -54,7 +56,14 @@ class RecordsStore:
         self.records[key].update(fields)
         return True
 
-    async def get_document(self, key: str, collection: str, **_: object) -> dict[str, Any] | None:
+    async def get_document(
+        self, key: str, collection: str, *, raise_on_error: bool = False, **_: object
+    ) -> dict[str, Any] | None:
+        if key in self.failing_reads:
+            # Both providers log a failed read and answer None unless asked to raise.
+            if raise_on_error:
+                raise ConnectionError("graph unavailable")
+            return None
         record = self.records.get(key)
         return dict(record) if record is not None else None
 
@@ -201,6 +210,29 @@ class TestTwinAlreadyFinished:
         assert {k: v for k, v in store.records["dup"].items() if not k.startswith("last")} == {
             k: v for k, v in first.items() if not k.startswith("last")
         }
+
+
+class TestTheTwinCannotBeReadAfterQueueing:
+    async def test_a_failed_read_fails_the_attempt_instead_of_acknowledging_it(self, store, processor) -> None:
+        add_twin(store, processor, NOT_STARTED, indexingStatus=IN_PROGRESS)
+        store.before_write[("dup", QUEUED)] = lambda: store.failing_reads.add("twin")
+
+        with pytest.raises(IndexingError):
+            await dedup(store, processor)
+
+        store.failing_reads.clear()
+        store.records["twin"].update(indexingStatus=COMPLETED, extractionStatus=COMPLETED)
+        decision = await dedup(store, processor)
+        assert decision.skip_indexing is True
+        assert store.records["dup"]["indexingStatus"] == COMPLETED, "the redelivery reuses the finished twin"
+
+    async def test_a_twin_deleted_meanwhile_leaves_the_duplicate_to_index_itself(self, store, processor) -> None:
+        add_twin(store, processor, NOT_STARTED, indexingStatus=IN_PROGRESS)
+        store.before_write[("dup", QUEUED)] = lambda: store.records.pop("twin")
+
+        decision = await dedup(store, processor)
+
+        assert decision.skip_indexing is False
 
 
 class TestTwinFinishesWhileTheDuplicateIsQueued:

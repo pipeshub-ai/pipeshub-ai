@@ -128,25 +128,24 @@ def promoted_duplicate_extraction_status(
     new_indexing_status: str, primary: Mapping[str, Any]
 ) -> str | None:
     """``extractionStatus`` for a QUEUED duplicate promoted when ``primary`` finished,
-    or None while the primary's enrichment has not ended, so the duplicates stay QUEUED.
+    or None while the primary's enrichment is still IN_PROGRESS, so the duplicates
+    stay QUEUED until the handler or stale recovery resumes and finishes it.
 
     The duplicate shares the primary's enrichment, so an indexed primary lends
     its own outcome: COMPLETED, FAILED, or NOT_STARTED when enrichment was
     deliberately deferred (an inline enrichment is IN_PROGRESS from the same
-    write that marks the primary indexed). IN_PROGRESS or no status at all
-    means the enrichment was cut short; its recovery promotes them later.
+    write that marks the primary indexed). A primary with no status comes from
+    before that write existed; nothing would ever resume it, so it is promoted
+    as the old mapping did, COMPLETED.
     """
     if new_indexing_status == ProgressStatus.COMPLETED.value:
         primary_status = primary.get("extractionStatus")
-        if primary_status in _UNFINISHED_EXTRACTION:
+        if primary_status == ProgressStatus.IN_PROGRESS.value:
             return None
-        return primary_status
+        return primary_status or ProgressStatus.COMPLETED.value
     if new_indexing_status == ProgressStatus.EMPTY.value:
         return ProgressStatus.EMPTY.value
     return ProgressStatus.FAILED.value
-
-
-_UNFINISHED_EXTRACTION = frozenset({None, "", ProgressStatus.IN_PROGRESS.value, ProgressStatus.QUEUED.value})
 
 
 def requested_scope_ids(filters: "Mapping[str, Any] | None") -> tuple[str, ...] | None:
