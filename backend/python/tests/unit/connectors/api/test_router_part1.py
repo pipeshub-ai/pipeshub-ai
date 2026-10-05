@@ -1356,7 +1356,7 @@ class TestDeleteRecord:
         assert result["vectorCleanupFailedRecordIds"] == ["rec-1"]
         assert kafka.publish_event.await_count == 3  # retried before giving up (#3008)
 
-    async def test_an_event_the_broker_refuses_flags_pending(self):
+    async def test_an_event_the_broker_refuses_flags_pending(self) -> None:
         """publish_event answers False without raising when the broker refuses an event."""
         from app.connectors.api.router import delete_record
 

@@ -6204,7 +6204,7 @@ class TestPublishDeleteEvents:
 
 
     @pytest.mark.asyncio
-    async def test_an_event_the_broker_refuses_is_unpublished(self):
+    async def test_an_event_the_broker_refuses_is_unpublished(self) -> None:
         """send_message answers False without raising when the broker refuses an event."""
         proc = _make_processor()
         proc.messaging_producer.send_message = AsyncMock(return_value=False)
