@@ -636,6 +636,8 @@ class TestCreateAndStartSync:
         )
         assert result is None
         logger.error.assert_called()
+        # spawn raised before it could own the lease, so nothing else will release it.
+        coord.end.assert_awaited_once_with(coord.begin.return_value[1])
 
     @pytest.mark.asyncio
     async def test_config_none_defaults_safely(self):

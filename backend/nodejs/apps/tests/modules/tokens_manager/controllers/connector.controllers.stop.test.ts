@@ -93,8 +93,11 @@ describe('tokens_manager/controllers connector stop + busy guard', () => {
 
       await stopConnectorSync(appConfig)(req, res, next);
 
-      expect(exec.callCount).to.equal(1);
-      expect(exec.firstCall.args[0]).to.contain('/sync/stop');
+      const urls = exec.getCalls().map((call) => String(call.args[0]));
+      expect(urls.some((url) => url.endsWith('/sync/stop'))).to.be.true;
+      // Ownership checks may come first; the instance read that feeds the busy
+      // guard (GET /connectors/<id>) may not.
+      expect(urls.filter((url) => /\/api\/v1\/connectors\/[^/]+$/.test(url))).to.be.empty;
     });
   });
 

@@ -643,13 +643,18 @@ class TestShutdownContainerResources:
         mock_container.messaging_producer = None
 
         with (
-            patch("app.connectors_main.get_coordinator", return_value=MagicMock(cancel_all=AsyncMock())),
+            patch(
+                "app.connectors_main.get_coordinator",
+                return_value=MagicMock(cancel_all=AsyncMock(), stop=AsyncMock()),
+            ) as get_coordinator,
             patch("app.connectors_main.stop_kafka_consumers", new_callable=AsyncMock) as mock_stop_kafka,
             patch("app.connectors_main.stop_messaging_producer", new_callable=AsyncMock) as mock_stop_producer,
             patch("app.connectors_main.startup_service.shutdown", new_callable=AsyncMock) as mock_startup_shutdown,
         ):
             await shutdown_container_resources(mock_container)
 
+        get_coordinator.return_value.cancel_all.assert_awaited_once()
+        get_coordinator.return_value.stop.assert_awaited_once()
         mock_stop_kafka.assert_awaited_once()
         mock_stop_producer.assert_awaited_once()
         mock_startup_shutdown.assert_awaited_once()
@@ -663,7 +668,7 @@ class TestShutdownContainerResources:
         mock_container.messaging_producer = None
 
         with (
-            patch("app.connectors_main.get_coordinator", return_value=MagicMock(cancel_all=AsyncMock(side_effect=RuntimeError("cancel fail")))),
+            patch("app.connectors_main.get_coordinator", return_value=MagicMock(cancel_all=AsyncMock(side_effect=RuntimeError("cancel fail")), stop=AsyncMock())),
             patch("app.connectors_main.stop_kafka_consumers", new_callable=AsyncMock) as mock_stop_kafka,
             patch("app.connectors_main.stop_messaging_producer", new_callable=AsyncMock),
             patch("app.connectors_main.startup_service.shutdown", new_callable=AsyncMock),
@@ -681,7 +686,7 @@ class TestShutdownContainerResources:
         mock_container.messaging_producer = None
 
         with (
-            patch("app.connectors_main.get_coordinator", return_value=MagicMock(cancel_all=AsyncMock())),
+            patch("app.connectors_main.get_coordinator", return_value=MagicMock(cancel_all=AsyncMock(), stop=AsyncMock())),
             patch("app.connectors_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.connectors_main.stop_messaging_producer", new_callable=AsyncMock),
             patch("app.connectors_main.startup_service.shutdown", new_callable=AsyncMock, side_effect=RuntimeError("shutdown fail")),
@@ -701,7 +706,7 @@ class TestShutdownContainerResources:
         mock_container.config_service.return_value.close = AsyncMock(side_effect=RuntimeError("close fail"))
 
         with (
-            patch("app.connectors_main.get_coordinator", return_value=MagicMock(cancel_all=AsyncMock())),
+            patch("app.connectors_main.get_coordinator", return_value=MagicMock(cancel_all=AsyncMock(), stop=AsyncMock())),
             patch("app.connectors_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.connectors_main.stop_messaging_producer", new_callable=AsyncMock),
             patch("app.connectors_main.startup_service.shutdown", new_callable=AsyncMock),
@@ -1291,89 +1296,29 @@ class TestRun:
             workers=max_connector_workers(),
         )
 
-    def test_run_defaults_to_one_worker_when_env_var_unset(self):
-        """No CONNECTOR_UVICORN_WORKERS set -> preserves the pre-existing
-        single-worker default (in-memory sync/reindex dedup is per-process,
-        see run()'s docstring)."""
+    @staticmethod
+    def _uvicorn_workers(*, seam, **run_kwargs) -> int:
         from app.connectors_main import run
 
         with (
             patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
-            patch.dict("os.environ", {}, clear=False),
+            patch("app.connectors_main.max_connector_workers", **seam),
         ):
-            import os
-            os.environ.pop("CONNECTOR_UVICORN_WORKERS", None)
-            run(reload=False)
+            run(**run_kwargs)
+        return mock_uvicorn.call_args.kwargs["workers"]
 
-        mock_uvicorn.assert_called_once_with(
-            "app.connectors_main:app",
-            host="0.0.0.0",
-            port=8088,
-            log_level="info",
-            reload=False,
-            workers=1,
-        )
+    def test_run_uses_what_the_edition_seam_answers(self):
+        assert self._uvicorn_workers(seam={"return_value": 3}, reload=False) == 3
 
-    def test_run_falls_back_to_one_worker_when_env_var_invalid(self):
-        """A malformed CONNECTOR_UVICORN_WORKERS value should not crash
-        startup; fall back to 1 worker instead of raising ValueError."""
-        from app.connectors_main import run
+    def test_run_falls_back_to_one_worker_when_the_seam_cannot_parse_its_setting(self):
+        assert self._uvicorn_workers(seam={"side_effect": ValueError("abc")}, reload=False) == 1
 
-        for invalid_value in ("abc", ""):
-            with (
-                patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
-                patch.dict("os.environ", {"CONNECTOR_UVICORN_WORKERS": invalid_value}),
-            ):
-                run(reload=False)
+    def test_run_reload_forces_a_single_worker(self):
+        """Matching docling/indexing/parsing's own reload-safety clamp."""
+        assert self._uvicorn_workers(seam={"return_value": 4}, reload=True) == 1
 
-            mock_uvicorn.assert_called_once_with(
-                "app.connectors_main:app",
-                host="0.0.0.0",
-                port=8088,
-                log_level="info",
-                reload=False,
-                workers=1,
-            )
-
-    def test_run_reload_with_multiple_workers_forces_single_worker(self):
-        """reload=True always clamps to 1 worker, even with an explicit
-        CONNECTOR_UVICORN_WORKERS override, matching docling/indexing/
-        parsing's own reload-safety clamp."""
-        from app.connectors_main import run
-
-        with (
-            patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
-            patch.dict("os.environ", {"CONNECTOR_UVICORN_WORKERS": "4"}),
-        ):
-            run(reload=True)
-
-        mock_uvicorn.assert_called_once_with(
-            "app.connectors_main:app",
-            host="0.0.0.0",
-            port=8088,
-            log_level="info",
-            reload=True,
-            workers=1,
-        )
-
-    def test_run_explicit_workers_argument_overrides_env_var(self):
-        """An explicit workers= argument takes priority over the env var."""
-        from app.connectors_main import run
-
-        with (
-            patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
-            patch.dict("os.environ", {"CONNECTOR_UVICORN_WORKERS": "5"}),
-        ):
-            run(workers=2, reload=False)
-
-        mock_uvicorn.assert_called_once_with(
-            "app.connectors_main:app",
-            host="0.0.0.0",
-            port=8088,
-            log_level="info",
-            reload=False,
-            workers=2,
-        )
+    def test_run_explicit_workers_argument_skips_the_seam(self):
+        assert self._uvicorn_workers(seam={"side_effect": AssertionError("asked")}, workers=2, reload=False) == 2
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,6 @@ Covers:
 - _handle_delete: missing ids, success, graph fails with revert, config delete fail, kafka fail
 """
 
-import contextlib
 import logging
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,19 +25,14 @@ from app.connectors.services.event_service import EventService
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
-
-
-def _spawned(key, coro):
-    """Stand-in for start_if_idle on the success path.
-
-    Must close the coroutine (start_if_idle owns it) *and* return a truthy
-    task: the caller treats a None return as "declined, another sync is
-    running" and skips the post-spawn bookkeeping.
-    """
-    coro.close()
-    return MagicMock()
-
-
+from tests.unit.connectors.services.coordinator_stub import (
+    at_capacity,
+    current,
+    current_coordinator,
+    declined,
+    installed_stub,
+    spawned,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -74,98 +68,10 @@ def mock_container():
     return container
 
 
-class _StubLeaseManager:
-    """A coordinator that always admits, so tests can assert the behaviour
-    around admission without wiring Redis.
-
-    `spawn` is an AsyncMock, which is what tests configure to decide whether a
-    sync "started": returning None is how the real coordinator reports that one
-    was already running for this connector.
-    """
-
-    def __init__(self) -> None:
-        self.acquired: list[str] = []
-        self.released: list[str] = []
-        self.spawn = AsyncMock(return_value=MagicMock(name="task"))
-        self.reports_liveness = False
-        # Mocks, not methods: tests set .return_value on these to say whether
-        # a sync is already in flight.
-        self.is_running_here = MagicMock(return_value=False)
-        self.is_running = AsyncMock(return_value=False)
-        #: What begin() answers. Tests set this to AT_CAPACITY to exercise
-        #: the queue path, which used to mean patching a separate predicate.
-        self.admission = None
-
-    async def try_claim_org(self, org_id) -> bool:
-        return True
-
-    async def begin(self, connector_id, *, org_id=None, message_ts_ms=None):
-        from app.connectors.core.sync.sync_coordinator import Admission, SyncLease
-
-        outcome = self.admission or Admission.GRANTED
-        if outcome is not Admission.GRANTED:
-            return outcome, None
-        self.acquired.append(connector_id)
-        return outcome, SyncLease(connector_id, "stub-token", 1)
-
-    async def end(self, lease) -> bool:
-        self.released.append(lease.connector_id)
-        return True
-
-    async def cancel_and_wait(self, connector_id) -> None:
-        return None
-
-    async def request_stop(self, connector_id) -> bool:
-        return False
-
-    def running_count(self) -> int:
-        return len(self.acquired) - len(self.released)
-
-
-#: The coordinator installed for the current test, so a `with` block can reach
-#: the same object the autouse fixture patched in rather than layering a second
-#: patch on top of it.
-_CURRENT: "_StubLeaseManager | None" = None
-
-
-def _stub():
-    return _CURRENT
-
-
-@contextlib.contextmanager
-def _at_capacity():
-    """Make the installed coordinator answer AT_CAPACITY.
-
-    Replaces patching a module-level `at_capacity` predicate: capacity is part
-    of the admission decision now, so there is nothing separate to patch.
-    """
-    from app.connectors.core.sync.sync_coordinator import Admission
-
-    assert _CURRENT is not None, "stub_lease_manager fixture is not active"
-    _CURRENT.admission = Admission.AT_CAPACITY
-    try:
-        yield _CURRENT
-    finally:
-        _CURRENT.admission = None
-
-
-@contextlib.contextmanager
-def _current_coordinator():
-    """Hand back the coordinator this test is already running against."""
-    assert _CURRENT is not None, "stub_lease_manager fixture is not active"
-    yield _CURRENT
-
-
 @pytest.fixture(autouse=True)
 def stub_lease_manager():
-    global _CURRENT
-    manager = _StubLeaseManager()
-    _CURRENT = manager
-    with patch(
-        "app.connectors.services.event_service.get_coordinator",
-        return_value=manager,
-    ):
-        yield manager
+    with installed_stub() as stub:
+        yield stub
 
 
 @pytest.fixture
@@ -519,9 +425,9 @@ class TestHandleStartSync:
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
-             _current_coordinator() as mock_stm:
+             current_coordinator() as mock_stm:
             mock_stm.is_running_here.return_value = False
-            mock_stm.spawn = AsyncMock(side_effect=_spawned)
+            mock_stm.spawn = AsyncMock(side_effect=spawned)
             result = await service._handle_start_sync("gmail", {"orgId": "org1", "connectorId": "c1"})
             assert result is True
 
@@ -538,8 +444,8 @@ class TestHandleStartSync:
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
-             _current_coordinator() as mock_stm:
-            mock_stm.spawn = AsyncMock(return_value=None)  # already running
+             current_coordinator() as mock_stm:
+            mock_stm.spawn = AsyncMock(side_effect=declined)  # already running
 
             result = await service._handle_start_sync(
                 "gmail", {"orgId": "org1", "connectorId": "c1"}
@@ -561,8 +467,12 @@ class TestHandleStartSync:
         """
         mock_conn = AsyncMock()
         mock_conn.run_sync = AsyncMock()
-        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn),              patch.object(service, "_get_connector", return_value=mock_conn),              patch.object(service, "_update_app_status", new_callable=AsyncMock),              patch.object(service, "_persist_pending_resync", new_callable=AsyncMock) as mock_persist,              _current_coordinator() as mock_stm:
-            mock_stm.spawn = AsyncMock(return_value=None)  # already running
+        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
+             patch.object(service, "_get_connector", return_value=mock_conn), \
+             patch.object(service, "_update_app_status", new_callable=AsyncMock), \
+             patch.object(service, "_persist_pending_resync", new_callable=AsyncMock) as mock_persist, \
+             current_coordinator() as mock_stm:
+            mock_stm.spawn = AsyncMock(side_effect=declined)  # already running
 
             result = await service._handle_start_sync(
                 "gmail", {"orgId": "org1", "connectorId": "c1"}
@@ -576,8 +486,12 @@ class TestHandleStartSync:
         """A declined *full* sync must come back as a full sync, not a normal one."""
         mock_conn = AsyncMock()
         mock_conn.run_sync = AsyncMock()
-        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn),              patch.object(service, "_get_connector", return_value=mock_conn),              patch.object(service, "_update_app_status", new_callable=AsyncMock),              patch.object(service, "_persist_pending_resync", new_callable=AsyncMock) as mock_persist,              _current_coordinator() as mock_stm:
-            mock_stm.spawn = AsyncMock(return_value=None)
+        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
+             patch.object(service, "_get_connector", return_value=mock_conn), \
+             patch.object(service, "_update_app_status", new_callable=AsyncMock), \
+             patch.object(service, "_persist_pending_resync", new_callable=AsyncMock) as mock_persist, \
+             current_coordinator() as mock_stm:
+            mock_stm.spawn = AsyncMock(side_effect=declined)
 
             result = await service._handle_start_sync(
                 "gmail", {"orgId": "org1", "connectorId": "c1", "fullSync": True}
@@ -593,9 +507,9 @@ class TestHandleStartSync:
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
-             _current_coordinator() as mock_stm:
+             current_coordinator() as mock_stm:
             mock_stm.is_running_here.return_value = False
-            mock_stm.spawn = AsyncMock(side_effect=_spawned)
+            mock_stm.spawn = AsyncMock(side_effect=spawned)
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": True
             })
@@ -678,9 +592,9 @@ class TestHandleStartSync:
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
-             _current_coordinator() as mock_stm:
+             current_coordinator() as mock_stm:
             mock_stm.is_running_here.return_value = False
-            mock_stm.spawn = AsyncMock(side_effect=_spawned)
+            mock_stm.spawn = AsyncMock(side_effect=spawned)
             
             # Call with fullSync=False in payload, but pendingFullSync=True in doc
             result = await service._handle_start_sync("gmail", {
@@ -727,9 +641,9 @@ class TestHandleStartSync:
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
-             _current_coordinator() as mock_stm:
+             current_coordinator() as mock_stm:
             mock_stm.is_running_here.return_value = False
-            mock_stm.spawn = AsyncMock(side_effect=_spawned)
+            mock_stm.spawn = AsyncMock(side_effect=spawned)
 
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1",
@@ -761,7 +675,7 @@ class TestHandleStartSync:
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
-             _current_coordinator() as mock_stm:
+             current_coordinator() as mock_stm:
             mock_stm.is_running_here.return_value = False
             mock_stm.spawn = AsyncMock(side_effect=_close_then_raise)
             
@@ -800,9 +714,9 @@ class TestHandleStartSync:
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
-             _current_coordinator() as mock_stm:
+             current_coordinator() as mock_stm:
             mock_stm.is_running_here.return_value = False
-            mock_stm.spawn = AsyncMock(side_effect=_spawned)
+            mock_stm.spawn = AsyncMock(side_effect=spawned)
             
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": False
@@ -1189,7 +1103,7 @@ class TestHandleDelete:
 
     @pytest.mark.asyncio
     async def test_success_no_records(self, service):
-        with _current_coordinator() as mock_stm:
+        with current_coordinator() as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             config_svc = AsyncMock()
             config_svc.delete_config = AsyncMock()
@@ -1204,7 +1118,7 @@ class TestHandleDelete:
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": True, "virtual_record_ids": ["vr1", "vr2"], "deleted_records_count": 2
         })
-        with _current_coordinator() as mock_stm:
+        with current_coordinator() as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             config_svc = AsyncMock()
             config_svc.delete_config = AsyncMock()
@@ -1223,7 +1137,7 @@ class TestHandleDelete:
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": False, "error": "DB error"
         })
-        with _current_coordinator() as mock_stm:
+        with current_coordinator() as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             result = await service._handle_delete("gmail", {
                 "orgId": "org1", "connectorId": "c1", "previousIsActive": True
@@ -1238,7 +1152,7 @@ class TestHandleDelete:
             "success": True, "virtual_record_ids": ["vr1"], "deleted_records_count": 1
         })
         service.app_container.messaging_producer.send_message = AsyncMock(side_effect=Exception("kafka down"))
-        with _current_coordinator() as mock_stm:
+        with current_coordinator() as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             config_svc = AsyncMock()
             config_svc.delete_config = AsyncMock()
@@ -1251,7 +1165,7 @@ class TestHandleDelete:
 
     @pytest.mark.asyncio
     async def test_config_delete_fails(self, service):
-        with _current_coordinator() as mock_stm:
+        with current_coordinator() as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             config_svc = AsyncMock()
             config_svc.delete_config = AsyncMock(side_effect=Exception("etcd error"))
@@ -1271,7 +1185,7 @@ class TestHandleDelete:
         })
         store = AsyncMock()
         service.app_container.entity_vector_store = AsyncMock(return_value=store)
-        with _current_coordinator() as mock_stm:
+        with current_coordinator() as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             service.app_container.config_service.return_value = AsyncMock()
             await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
@@ -1301,7 +1215,7 @@ class TestHandleDelete:
         config_svc.set_config = AsyncMock(side_effect=record)
         service.graph_provider.delete_connector_instance = AsyncMock(side_effect=delete_graph)
         service.app_container.config_service.return_value = config_svc
-        with _current_coordinator() as mock_stm:
+        with current_coordinator() as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is True
         assert calls == ["intent:/services/entityCleanup/pending/c1:org1", "graph-delete"]
@@ -1312,7 +1226,7 @@ class TestHandleDelete:
         config_svc.set_config = AsyncMock(return_value=False)
         service.app_container.config_service.return_value = config_svc
         service.graph_provider.delete_connector_instance = AsyncMock()
-        with _current_coordinator() as mock_stm:
+        with current_coordinator() as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             result = await service._handle_delete(
                 "gmail", {"orgId": "org1", "connectorId": "c1", "previousIsActive": True},
@@ -1369,7 +1283,7 @@ class TestConfigServiceFor:
     @pytest.mark.asyncio
     async def test_delete_event_deletes_config_through_org_service(self, service):
         org_config = AsyncMock()
-        with _current_coordinator() as mock_stm, \
+        with current_coordinator() as mock_stm, \
              patch.object(service, "_config_service_for", return_value=org_config) as config_for:
             mock_stm.cancel_sync = AsyncMock()
             result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
@@ -1636,7 +1550,8 @@ class TestFullSyncDoesNotDestroyARunningSyncsState:
         with patch(
             "app.connectors.services.event_service.get_coordinator",
             return_value=manager,
-        ), patch.object(service, "_ensure_connector", new_callable=AsyncMock),                 patch.object(service, "_update_app_status", new_callable=AsyncMock):
+        ), patch.object(service, "_ensure_connector", new_callable=AsyncMock), \
+                patch.object(service, "_update_app_status", new_callable=AsyncMock):
             ok = await service._handle_start_sync(
                 "gmail", {"orgId": "o1", "connectorId": "c1", "fullSync": True}
             )
@@ -1669,7 +1584,8 @@ class TestFullSyncDoesNotDestroyARunningSyncsState:
         with patch(
             "app.connectors.services.event_service.get_coordinator",
             return_value=manager,
-        ), patch.object(service, "_ensure_connector", new_callable=AsyncMock),                 patch.object(service, "_update_app_status", new_callable=AsyncMock):
+        ), patch.object(service, "_ensure_connector", new_callable=AsyncMock), \
+                patch.object(service, "_update_app_status", new_callable=AsyncMock):
             ok = await service._handle_start_sync(
                 "gmail", {"orgId": "o1", "connectorId": "c1", "fullSync": True}
             )
@@ -1711,7 +1627,7 @@ class TestConnectorCacheIsBounded:
         monkeypatch.setenv("CONNECTOR_CACHE_MAX", "3")
         mock_container = self._with_cache(service)
 
-        with _current_coordinator() as stm:
+        with current_coordinator() as stm:
             stm.is_running_here.return_value = False
             for i in range(10):
                 await service._store_connector(f"c{i}", self._connector())
@@ -1723,7 +1639,7 @@ class TestConnectorCacheIsBounded:
         monkeypatch.setenv("CONNECTOR_CACHE_MAX", "2")
         mock_container = self._with_cache(service)
 
-        with _current_coordinator() as stm:
+        with current_coordinator() as stm:
             stm.is_running_here.return_value = False
             await service._store_connector("a", self._connector())
             await service._store_connector("b", self._connector())
@@ -1739,7 +1655,7 @@ class TestConnectorCacheIsBounded:
         monkeypatch.setenv("CONNECTOR_CACHE_MAX", "1")
         mock_container = self._with_cache(service)
 
-        with _current_coordinator() as stm:
+        with current_coordinator() as stm:
             stm.is_running_here.side_effect = lambda cid: cid == "busy"
             await service._store_connector("busy", self._connector())
             await service._store_connector("idle", self._connector())
@@ -1756,7 +1672,7 @@ class TestConnectorCacheIsBounded:
         mock_container = self._with_cache(service)
         fresh = self._connector()
 
-        with _current_coordinator() as stm:
+        with current_coordinator() as stm:
             stm.is_running_here.side_effect = lambda cid: cid == "busy"
             await service._store_connector("busy", self._connector())
             await service._store_connector("fresh", fresh)
@@ -1773,7 +1689,7 @@ class TestConnectorCacheIsBounded:
         mock_container = self._with_cache(service)
         reindexing = self._connector()
 
-        with _current_coordinator() as stm, patch.object(
+        with current_coordinator() as stm, patch.object(
             reindex_task_manager, "active_keys", return_value=["reindex:r1:all"]
         ):
             stm.is_running_here.return_value = False
@@ -1791,7 +1707,7 @@ class TestConnectorCacheIsBounded:
         self._with_cache(service)
         doomed = self._connector()
 
-        with _current_coordinator() as stm:
+        with current_coordinator() as stm:
             stm.is_running_here.return_value = False
             await service._store_connector("old", doomed)
             await service._store_connector("new", self._connector())
@@ -1804,7 +1720,7 @@ class TestConnectorCacheIsBounded:
         monkeypatch.setenv("CONNECTOR_CACHE_MAX", "0")
         mock_container = self._with_cache(service)
 
-        with _current_coordinator() as stm:
+        with current_coordinator() as stm:
             stm.is_running_here.return_value = False
             for i in range(20):
                 await service._store_connector(f"c{i}", self._connector())
@@ -1823,8 +1739,8 @@ class TestSyncConcurrencyLimit:
 
         service.graph_provider.update_node = AsyncMock()
 
-        with _at_capacity(), patch.object(
-            _stub(), "spawn", new_callable=AsyncMock
+        with at_capacity(), patch.object(
+            current(), "spawn", new_callable=AsyncMock
         ) as spawn, patch.object(
             service, "_ensure_connector", new_callable=AsyncMock
         ) as ensure:
@@ -1853,8 +1769,8 @@ class TestSyncConcurrencyLimit:
         """
         service.graph_provider.update_node = AsyncMock()
 
-        with _at_capacity(), patch.object(
-            _stub(), "spawn", new_callable=AsyncMock
+        with at_capacity(), patch.object(
+            current(), "spawn", new_callable=AsyncMock
         ), patch.object(service, "_ensure_connector", new_callable=AsyncMock):
             await service._handle_start_sync(
                 "gmail", {"orgId": "o1", "connectorId": "c1"}
@@ -1908,7 +1824,8 @@ class TestSyncConcurrencyLimit:
         owed again. Without this stamp there is nothing to measure that against."""
         service.graph_provider.update_node = AsyncMock()
 
-        with _at_capacity(), patch.object(_stub(), "spawn", new_callable=AsyncMock),              patch.object(service, "_ensure_connector", new_callable=AsyncMock):
+        with at_capacity(), patch.object(current(), "spawn", new_callable=AsyncMock), \
+             patch.object(service, "_ensure_connector", new_callable=AsyncMock):
             await service._handle_start_sync(
                 "gmail", {"orgId": "o1", "connectorId": "c1"}
             )
@@ -1921,7 +1838,8 @@ class TestSyncConcurrencyLimit:
     async def test_a_queued_full_sync_stays_a_full_sync(self, service) -> None:
         service.graph_provider.update_node = AsyncMock()
 
-        with _at_capacity(), patch.object(_stub(), "spawn", new_callable=AsyncMock),              patch.object(service, "_ensure_connector", new_callable=AsyncMock):
+        with at_capacity(), patch.object(current(), "spawn", new_callable=AsyncMock), \
+             patch.object(service, "_ensure_connector", new_callable=AsyncMock):
             await service._handle_start_sync(
                 "gmail", {"orgId": "o1", "connectorId": "c1", "fullSync": True}
             )

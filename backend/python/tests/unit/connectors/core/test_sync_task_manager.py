@@ -364,3 +364,39 @@ class TestRequestStop:
         await mgr.start_sync("c1", instant())
         await asyncio.sleep(0.05)
         assert mgr.request_stop("c1") is False
+
+
+class TestDeregister:
+    @pytest.mark.asyncio
+    async def test_forgets_the_task_it_names(self) -> None:
+        mgr = SyncTaskManager()
+        task = await mgr.start_sync("c1", asyncio.sleep(10))
+        mgr.deregister("c1", task)
+        assert mgr.is_running("c1") is False
+        task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_stale_task_leaves_its_successor_registered(self) -> None:
+        """A finalizer running late must not unregister the sync that replaced it."""
+        mgr = SyncTaskManager()
+        old = await mgr.start_sync("c1", asyncio.sleep(10))
+        mgr.deregister("c1", old)
+        new = await mgr.start_sync("c1", asyncio.sleep(10))
+        mgr.deregister("c1", old)
+        assert mgr.is_running("c1") is True
+        for t in (old, new):
+            t.cancel()
+
+
+class TestRequestStopByPrefix:
+    @pytest.mark.asyncio
+    async def test_stops_only_the_matching_tasks(self) -> None:
+        mgr = SyncTaskManager()
+        tasks = {k: await mgr.start_sync(k, asyncio.sleep(10))
+                 for k in ("reindex:c1:a", "reindex:c1:b", "reindex:c2:a")}
+        assert mgr.request_stop_by_prefix("reindex:c1:") == 2
+        stopped = [tasks["reindex:c1:a"], tasks["reindex:c1:b"]]
+        await asyncio.gather(*stopped, return_exceptions=True)
+        assert all(t.cancelled() for t in stopped)
+        assert mgr.is_running("reindex:c2:a") is True
+        tasks["reindex:c2:a"].cancel()

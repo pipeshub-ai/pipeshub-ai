@@ -185,7 +185,9 @@ class TestStopDuringInitOnADrainedConnector:
             coordinator.lease.stop_requested.set()
             return MagicMock()
 
-        with patch("app.connectors.services.event_service.get_coordinator", return_value=coordinator),                 patch.object(svc, "_ensure_connector", AsyncMock(side_effect=ensure)),                 patch("app.connectors.services.event_service.drain_queued_syncs", AsyncMock(return_value=[])):
+        with patch("app.connectors.services.event_service.get_coordinator", return_value=coordinator), \
+                patch.object(svc, "_ensure_connector", AsyncMock(side_effect=ensure)), \
+                patch("app.connectors.services.event_service.drain_queued_syncs", AsyncMock(return_value=[])):
             await svc._handle_start_sync("gmail", {"orgId": "o1", "connectorId": "c1"})
 
         assert _updates(svc)[-1]["status"] == AppStatus.IDLE.value
@@ -265,7 +267,8 @@ class TestAReleasedAdmissionDrains:
         svc = _service({"id": "c1", ConnectorStateKeys.IS_ACTIVE: False})
         coordinator = _Coordinator(Admission.GRANTED)
         drain = AsyncMock(return_value=[])
-        with patch("app.connectors.services.event_service.get_coordinator", return_value=coordinator),                 patch("app.connectors.services.event_service.drain_queued_syncs", drain):
+        with patch("app.connectors.services.event_service.get_coordinator", return_value=coordinator), \
+                patch("app.connectors.services.event_service.drain_queued_syncs", drain):
             await svc._handle_start_sync("gmail", {"orgId": "o1", "connectorId": "c1"})
             await _asyncio.sleep(0)
             await _asyncio.sleep(0)

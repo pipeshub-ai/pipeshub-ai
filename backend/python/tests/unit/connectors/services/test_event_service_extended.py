@@ -16,6 +16,7 @@ import pytest
 
 from app.config.constants.arangodb import AppStatus, Connectors, ProgressStatus
 from app.connectors.services.event_service import EventService
+from tests.unit.connectors.services.coordinator_stub import installed_stub, spawned
 
 
 # ---------------------------------------------------------------------------
@@ -23,47 +24,10 @@ from app.connectors.services.event_service import EventService
 # ---------------------------------------------------------------------------
 
 
-def _spawned(key, coro):
-    """Stand-in for start_if_idle: owns the coroutine, returns a live task."""
-    coro.close()
-    return MagicMock()
-
-
-class _StubLeaseManager:
-    """A coordinator that always admits, so tests written before admission
-    existed keep asserting their original behaviour without wiring Redis."""
-
-    def __init__(self) -> None:
-        self.spawn = AsyncMock(return_value=MagicMock(name="task"))
-        self.is_running_here = MagicMock(return_value=False)
-        self.is_running = AsyncMock(return_value=False)
-        self.cancel_and_wait = AsyncMock()
-        self.request_stop = AsyncMock(return_value=False)
-        self.reports_liveness = False
-
-    async def try_claim_org(self, org_id) -> bool:
-        return True
-
-    async def begin(self, connector_id, *, org_id=None, message_ts_ms=None):
-        from app.connectors.core.sync.sync_coordinator import Admission, SyncLease
-
-        return Admission.GRANTED, SyncLease(connector_id, "stub-token", 1)
-
-    async def end(self, lease) -> bool:
-        return True
-
-    def running_count(self) -> int:
-        return 0
-
-
 @pytest.fixture(autouse=True)
 def stub_lease_manager():
-    manager = _StubLeaseManager()
-    with patch(
-        "app.connectors.services.event_service.get_coordinator",
-        return_value=manager,
-    ):
-        yield manager
+    with installed_stub() as stub:
+        yield stub
 
 
 @pytest.fixture
@@ -159,7 +123,7 @@ class TestSyncPointDeletionException:
 
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
-             patch.object(stub_lease_manager, "spawn", AsyncMock(side_effect=_spawned)):
+             patch.object(stub_lease_manager, "spawn", AsyncMock(side_effect=spawned)):
 
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1",
