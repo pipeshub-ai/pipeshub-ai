@@ -15,6 +15,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_PARSER_SCOPES,
     GOOGLE_SERVICE_SCOPES,
+    GOOGLE_TOOLSET_SCOPES,
     SERVICES_WITH_PARSER_SCOPES,
 )
 from app.sources.client.iclient import IClient
@@ -139,6 +140,7 @@ class GoogleClient(IClient):
         calendar_id: Optional[str] = 'primary', # Calendar ID to build the client for
         user_email: Optional[str] = None, # User email for enterprise impersonation
         connector_instance_id: Optional[str] = None,
+        delegated_scopes: list[str] | None = None,
     ) -> 'GoogleClient':
         """
         Build GoogleClient using configuration service and arango service
@@ -149,6 +151,8 @@ class GoogleClient(IClient):
             graph_db_service: GraphDB service instance
             is_individual: Flag to indicate if the client is for an individual user or an enterprise account
             version: Version of the service to build the client for
+            delegated_scopes: Exact scopes for the service account's delegated token,
+                replacing the service defaults. Ignored for personal connectors.
         Returns:
             GoogleClient instance
         """
@@ -240,8 +244,11 @@ class GoogleClient(IClient):
                 raise AdminAuthError("Failed to get enterprise token: " + str(e)) from e
 
             try:
-                # Get optimized scopes for the service
-                optimized_scopes = GoogleClient._get_optimized_scopes(service_name, scopes)
+                optimized_scopes = (
+                    list(delegated_scopes)
+                    if delegated_scopes
+                    else GoogleClient._get_optimized_scopes(service_name, scopes)
+                )
 
                 google_credentials = (
                         service_account.Credentials.from_service_account_info(
@@ -320,8 +327,10 @@ class GoogleClient(IClient):
             # If using shared OAuth config, fetch credentials from there
             if oauth_config_id and not (client_id and client_secret):
                 try:
-                    # Get connector type from config or derive from service_name
-                    connector_type = service_name.lower().replace(" ", "")
+                    # The shared app lives under the instance's own connector type: a
+                    # Gmail instance opening a Drive attachment asks for "drive", but its
+                    # OAuth app is stored under /services/oauth/gmail.
+                    connector_type = (auth_cfg.get("connectorType") or service_name).lower().replace(" ", "")
                     oauth_config_path = f"/services/oauth/{connector_type}"
                     oauth_configs = await config_service.get_config(oauth_config_path, default=[])
 
@@ -508,8 +517,13 @@ class GoogleClient(IClient):
             # Don't fail immediately - allow tool to work until token expires
             # The token will work for initial requests, but refresh will fail
 
-        # Get optimized scopes
-        optimized_scopes = cls._get_optimized_scopes(service_name, scopes)
+        # The service defaults add parser and read-only scopes the toolset's consent
+        # screen never asks for, and Google refuses a refresh that names any of them.
+        consented_scopes = GOOGLE_TOOLSET_SCOPES.get(service_name)
+        if consented_scopes is None:
+            optimized_scopes = cls._get_optimized_scopes(service_name, scopes)
+        else:
+            optimized_scopes = merge_scopes(consented_scopes, scopes)
 
         try:
             # Create Google credentials

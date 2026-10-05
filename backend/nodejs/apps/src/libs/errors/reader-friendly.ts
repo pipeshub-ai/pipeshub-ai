@@ -43,6 +43,10 @@ const READER_WRITTEN_MESSAGES: ReadonlySet<string> = new Set([
   // backend/python/app/api/middlewares/auth.py — the 503 when Node can't be
   // reached to check an access token.
   "We couldn't confirm your sign-in just now. Please try again in a few seconds.",
+  // backend/python/app/modules/retrieval/retrieval_service.py
+  // (PERMISSION_CHECK_UNAVAILABLE_MESSAGE) — the 503 when search cannot read
+  // which documents the user may see, and shows none.
+  "We couldn't check which documents you have access to just now, so no results are shown. Please try again in a minute.",
 ]);
 
 const normalise = (text: string): string => text.trim().replace(/\s+/g, ' ');

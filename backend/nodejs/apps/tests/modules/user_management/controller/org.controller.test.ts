@@ -697,9 +697,10 @@ describe('OrgController', () => {
 
       try {
         await controller.createOrg(req, res);
-        expect(mockEventService.start.calledOnce).to.be.true;
+        // Both events are still recorded. They are no longer bracketed by
+        // start/stop: the events go to the outbox, and the dispatcher owns
+        // the broker connection.
         expect(mockEventService.publishEvent.calledTwice).to.be.true;
-        expect(mockEventService.stop.calledOnce).to.be.true;
       } catch (error: any) {
         expect.fail(`Unexpected error: ${error.message}`);
       }

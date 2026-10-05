@@ -163,6 +163,9 @@ Only needed for the connectors you actually run. If a credential is missing, tha
 
 | Variable                         | Used by      | Purpose |
 |----------------------------------|-------------|---------|
+| `SCOPED_JWT_SECRET`              | `storage/`, `security/` | The deployment's scoped JWT secret. Storage routes accept only storage service tokens, so the suite mints its own. The integration compose files start the stack with `pipeshub-integration-scoped-jwt-secret-test-only` unless you set another value, and the nightly passes the same value to pytest. Without it the suite is skipped locally and fails on the nightly. |
+| `MAILPIT_URL`                    | `response-validation/auth/` | Mailpit's web API, where the emailed sign-in tests read the reset link and sign-in code. Default `http://localhost:8025`, which the integration compose publishes. |
+| `PIPESHUB_CONNECTOR_URL`         | `security/` | The connector service, for the checks that an ended session is refused by the Python services too. Default: the host of `PIPESHUB_BASE_URL` on port 8088. Skipped when unreachable. |
 | `S3_ACCESS_KEY`                  | S3          | AWS access key for test bucket. |
 | `S3_SECRET_KEY`                  | S3          | AWS secret key. |
 | `S3_REGION`                      | S3          | Optional; default `us-east-1`. |
@@ -275,9 +278,18 @@ pytest -m "integration and not slow" -v             # exclude slow
 **How CI splits this suite.** The nightly run does not run the whole suite in one
 job: `.github/workflows/integration-tests.yml` divides the connector suites across
 three shards (`CONN_SHARD_1` … `CONN_SHARD_3`), and a fourth `core` shard runs
-everything those three do not name, plus the browser tests. Each shard brings up
-its own stack and runs both graph databases, so a shard's wall clock is roughly
-the sum of its two legs.
+everything those three do not name, plus the browser tests. A fifth `demo` shard
+runs only the Acme Corp demo questions (`-m demo`) on a stack nothing else has
+indexed into, because the demo's answers are prompted differently once a
+workspace has data of its own; `core` leaves the `demo` marker out. A sixth
+`ai_agents` shard runs `ai_agents/` (AI model settings, Agent Builder agents
+calling tools, MCP, and the agent harness's skills, coding tool and artifacts)
+against a real model. Every test there costs model calls, so that shard runs on
+the nightly and on a full manual run, never on a pull request, and `core` leaves
+its marker out. The model-settings part (`-m ai_models`) also runs weekly
+against a local Ollama model in `integration-tests-ollama.yml`. Each shard
+brings up its own stack and runs both graph databases, so a shard's wall clock is
+roughly the sum of its two legs.
 
 Adding a connector means adding its marker to one of those shard lines. Connector
 tests are also marked `integration`, so a marker in none of them is not skipped —
@@ -292,7 +304,8 @@ python3 scripts/shard_balance.py --check
 
 It lists each shard's measured minutes and fails when a connector is unassigned,
 is in two shards, when a shard names something that is not a single connector's
-marker, when a shard list and the job matrix disagree, or when one shard drifts
+marker, when a shard list and the job matrix disagree, when the `demo` job and
+`core` would both run the demo (or neither would), or when one shard drifts
 well past the others. The measurements
 live in `scripts/shard_durations.json`; refresh them from a recent nightly's
 `reports-both-<shard>` artifacts (`*-results.xml`) when they look stale. The same

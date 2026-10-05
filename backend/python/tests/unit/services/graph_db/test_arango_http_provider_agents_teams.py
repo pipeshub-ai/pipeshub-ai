@@ -46,6 +46,10 @@ def provider(mock_logger, mock_config_service):
 @pytest.fixture
 def connected_provider(provider):
     provider.http_client = AsyncMock()
+    provider.get_authenticated_as = AsyncMock(return_value=[])
+    provider._get_authenticated_as_by_user_id = AsyncMock(return_value=[])
+    provider._resolve_acting_user_key_for_node = AsyncMock(side_effect=lambda user_key, *_: user_key)
+    provider._authenticated_as_apps = AsyncMock(return_value=[])
     return provider
 
 
@@ -447,8 +451,8 @@ class TestGetUserKBPermission:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_user_kb_permission("kb1", "user1")
-        assert result is None
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_user_kb_permission("kb1", "user1")
 
 
 # ===========================================================================
@@ -1122,7 +1126,13 @@ class TestGetKnowledgeHubBreadcrumbs:
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=[
             [{"id": "n1", "name": "Node1", "nodeType": "app", "parentId": None}],
         ])
-        crumbs = await connected_provider.get_knowledge_hub_breadcrumbs("n1")
+        connected_provider.filter_nodes_with_permission_role = AsyncMock(
+            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
+        )
+        connected_provider.get_knowledge_hub_node_access = AsyncMock(
+            side_effect=lambda node_id, **k: {"id": node_id}
+        )
+        crumbs = await connected_provider.get_knowledge_hub_breadcrumbs("n1", "u1", "org1")
         assert len(crumbs) == 1
         assert crumbs[0]["id"] == "n1"
 
@@ -1132,14 +1142,26 @@ class TestGetKnowledgeHubBreadcrumbs:
             [{"id": "n2", "name": "Child", "nodeType": "record", "parentId": "n1"}],
             [{"id": "n1", "name": "Parent", "nodeType": "app", "parentId": None}],
         ])
-        crumbs = await connected_provider.get_knowledge_hub_breadcrumbs("n2")
+        connected_provider.filter_nodes_with_permission_role = AsyncMock(
+            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
+        )
+        connected_provider.get_knowledge_hub_node_access = AsyncMock(
+            side_effect=lambda node_id, **k: {"id": node_id}
+        )
+        crumbs = await connected_provider.get_knowledge_hub_breadcrumbs("n2", "u1", "org1")
         assert len(crumbs) == 2
         assert crumbs[0]["id"] == "n1"
 
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[None])
-        crumbs = await connected_provider.get_knowledge_hub_breadcrumbs("n1")
+        connected_provider.filter_nodes_with_permission_role = AsyncMock(
+            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
+        )
+        connected_provider.get_knowledge_hub_node_access = AsyncMock(
+            side_effect=lambda node_id, **k: {"id": node_id}
+        )
+        crumbs = await connected_provider.get_knowledge_hub_breadcrumbs("n1", "u1", "org1")
         assert crumbs == []
 
 
@@ -1732,7 +1754,7 @@ class TestFindNextQueuedDuplicate:
     @pytest.mark.asyncio
     async def test_found(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=[
-            [{"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100}],
+            [{"_key": "r1", "md5Checksum": "abc", "sizeInBytes": 100, "orgId": "org-1"}],
             [{"_key": "r2", "indexingStatus": "QUEUED"}],
         ])
         result = await connected_provider.find_next_queued_duplicate("r1")

@@ -12,6 +12,7 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useNotificationStore } from '@/app/(main)/notifications/store';
 import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
+import { usePathname, useRouter } from 'next/navigation';
 import { SidebarItem } from './sidebar-item';
 
 // ========================================
@@ -22,6 +23,7 @@ interface NavItem {
   icon: string;
   labelKey: string;
   route: string;
+  beta?: boolean;
 }
 
 /** Primary navigation items — labels resolved via i18n */
@@ -29,6 +31,7 @@ const MAIN_NAV_ITEMS: NavItem[] = [
   // { icon: 'search', labelKey: 'nav.searchChats', route: '/search' },
   { icon: 'folder', labelKey: 'nav.collections', route: '/knowledge-base/' },
   { icon: 'inventory_2', labelKey: 'nav.allRecords', route: '/knowledge-base/?view=all-records' },
+  { icon: 'attachment', labelKey: 'nav.allArtifacts', route: '/artifacts/', beta: true },
 ];
 
 /** Projects nav item — gated behind `ENABLE_PROJECTS`, rendered separately below. */
@@ -37,6 +40,27 @@ const PROJECTS_NAV_ITEM: NavItem = { icon: 'folder_special', labelKey: 'nav.proj
 // ========================================
 // Components
 // ========================================
+
+/** Inline beta chip so the row stays one link, matching Projects. */
+function BetaNavLabel({ text }: { text: string }) {
+  const { t } = useTranslation();
+  return (
+    <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%' }}>
+      <span
+        style={{
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {text}
+      </span>
+      <Badge size="1" color="amber" variant="soft" style={{ flexShrink: 0 }}>
+        {t('nav.beta', { defaultValue: 'Beta' })}
+      </Badge>
+    </Flex>
+  );
+}
 
 /** Keyboard shortcut badge */
 const KbdBadge = ({ children }: { children: React.ReactNode }) => (
@@ -69,6 +93,8 @@ export function StaticNavSection() {
   const unreadCount = useNotificationStore((s) => s.unreadCount);
   const toggleNotificationsPanel = useNotificationStore((s) => s.togglePanel);
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
+  const pathname = usePathname();
+  const router = useRouter();
 
   const notificationLabel = unreadCount > 99 ? '99+' : String(unreadCount);
   const notificationBadgeSize =
@@ -98,11 +124,13 @@ export function StaticNavSection() {
 
   const handleNewChat = () => {
     if (isMobile) closeMobileSidebar();
-    dispatch('newChat');
+    useNotificationStore.getState().closePanel();
+    if (!dispatch('newChat')) router.push('/chat/');
   };
 
   const handleOpenSearch = () => {
-    dispatch('openCommandPalette');
+    if (isMobile) closeMobileSidebar();
+    if (!dispatch('openCommandPalette')) router.push('/chat/');
   };
 
   return (
@@ -144,22 +172,7 @@ export function StaticNavSection() {
       {!isMobile && projectsEnabled && (
         <SidebarItem
           icon={<MaterialIcon name={PROJECTS_NAV_ITEM.icon} size={ICON_SIZE_DEFAULT} />}
-          label={
-            <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%' }}>
-              <span
-                style={{
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {t(PROJECTS_NAV_ITEM.labelKey)}
-              </span>
-              <Badge size="1" color="amber" variant="soft" style={{ flexShrink: 0 }}>
-                {t('nav.beta', { defaultValue: 'Beta' })}
-              </Badge>
-            </Flex>
-          }
+          label={<BetaNavLabel text={t(PROJECTS_NAV_ITEM.labelKey)} />}
           href={PROJECTS_NAV_ITEM.route}
         />
       )}
@@ -168,8 +181,18 @@ export function StaticNavSection() {
           <SidebarItem
             key={item.route}
             icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} />}
-            label={t(item.labelKey)}
+            label={
+              item.beta ? (
+                <BetaNavLabel text={t(item.labelKey)} />
+              ) : (
+                t(item.labelKey)
+              )
+            }
             href={item.route}
+            isActive={
+              item.route.startsWith('/artifacts') &&
+              pathname.startsWith('/artifacts')
+            }
           />
         ))}
     </Flex>

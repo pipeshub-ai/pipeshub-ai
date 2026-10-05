@@ -30,6 +30,7 @@ for _p in (_ROOT, _RV_HELPER):
         sys.path.insert(0, s)
 
 from helper.agui_sse import (
+    decode_sse_envelope,
     AGUI,
     StreamOutcome,
     answer_from_completion,
@@ -146,7 +147,7 @@ class _AgentStreamTestBase:
             )
 
             for envelope in iter_sse_envelopes(resp):
-                assert_response_matches_openapi_ref(envelope, _AGENT_STREAM_SSE_EVENT_REF)
+                assert_response_matches_openapi_ref(decode_sse_envelope(envelope), _AGENT_STREAM_SSE_EVENT_REF)
                 event = envelope["event"]
                 payload = json.loads(envelope["data"])
 
@@ -236,7 +237,7 @@ class _AgentStreamTestBase:
 
             for envelope in iter_sse_envelopes(resp):
                 assert_response_matches_openapi_ref(
-                    envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
+                    decode_sse_envelope(envelope), _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
                 )
                 event = envelope["event"]
                 payload = json.loads(envelope["data"])
@@ -588,13 +589,13 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
         agent_key = self.agent_session["primary_agent"]
         conversation_id = self._create_agent_conversation_id(
             agent_key,
-            query="stream-create conversation for benign query param test",
+            query=seed_query(f"benign-param-{uuid.uuid4().hex}"),
         )
 
         outcome = self._stream_add_message(
             agent_key,
             conversation_id,
-            query="follow-up with debug query param",
+            query=seed_query(f"benign-param-follow-up-{uuid.uuid4().hex}"),
             params={"debug": "1"},
         )
 
@@ -698,7 +699,7 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
 
             for envelope in iter_sse_envelopes(resp):
                 assert_response_matches_openapi_ref(
-                    envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
+                    decode_sse_envelope(envelope), _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
                 )
                 payload = json.loads(envelope["data"])
                 if is_root_error(envelope["event"], payload):

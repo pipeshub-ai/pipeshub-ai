@@ -367,7 +367,7 @@ async function teamExists(
 ): Promise<boolean> {
   try {
     const command = new AIServiceCommand<unknown>({
-      uri: `${appConfig.connectorBackend}/api/v1/entity/team/${teamId}`,
+      uri: `${appConfig.connectorBackend}/api/v1/entity/team/${encodeURIComponent(teamId)}`,
       method: HttpMethod.GET,
       headers: req.headers as Record<string, string>,
     });
@@ -415,7 +415,7 @@ export const upsertProjectMembers =
           }
           try {
             const iamCommand = new IAMServiceCommand({
-              uri: `${appConfig.iamBackend}/api/v1/users/${member.principalId}`,
+              uri: `${appConfig.iamBackend}/api/v1/users/${encodeURIComponent(member.principalId)}`,
               method: HttpMethod.GET,
               headers: req.headers as Record<string, string>,
             });

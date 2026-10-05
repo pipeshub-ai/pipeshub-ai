@@ -2,7 +2,7 @@
 import pytest
 
 from app.modules.parsers.code_parser import CodeFileParser
-from app.modules.parsers.code_parser.engine import parse_code
+from app.modules.parsers.code_parser.engine import decode_source, parse_code
 
 NESTED_PY = b'''
 class Outer:
@@ -112,3 +112,14 @@ def test_docstring_extraction_with_annotated_signature():
     container = CodeFileParser().parse_to_blocks(src, "m.py", "src/m.py", "python")
     func = next(b for b in container.blocks if b.name == "process")
     assert func.code_metadata.docstring == "Transform data into strings."
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param(b"# \x93price\x94 \x80 5\n", "# “price” € 5\n", id="windows-1252"),
+        pytest.param("# Zoë €\n".encode(), "# Zoë €\n", id="utf-8"),
+    ],
+)
+def test_decode_source_reads_windows_1252(raw: bytes, expected: str) -> None:
+    assert decode_source(raw) == expected.encode("utf-8")

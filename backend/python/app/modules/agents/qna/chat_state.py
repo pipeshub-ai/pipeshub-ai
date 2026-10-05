@@ -4,16 +4,16 @@ from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
-from app.modules.transformers.blob_storage import BlobStorage
 from typing_extensions import TypedDict
 
-from app.utils.execute_query import agent_knowledge_has_sql_connector
-from app.utils.fetch_slack_thread import agent_knowledge_has_slack_connector
 from app.config.configuration_service import ConfigurationService
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.chat_helpers import CitationRefMapper
+from app.utils.execute_query import agent_knowledge_has_sql_connector
+from app.utils.fetch_slack_thread import agent_knowledge_has_slack_connector
 
 # Default persona when the UI does not supply systemPrompt (keep in sync with API defaults).
 DEFAULT_AGENT_SYSTEM_PROMPT = "You are an enterprise questions answering expert"
@@ -49,6 +49,7 @@ class ChatState(TypedDict):
     graph_provider: IGraphDBProvider
     reranker_service: RerankerService
     config_service: ConfigurationService
+    entity_vector_store: Any | None  # EntityVectorStore, optional for graceful degradation
 
     model_name: str | None
     model_key: str | None
@@ -443,7 +444,7 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
 
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, client_name: str | None = None) -> ChatState:
+                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, client_name: str | None = None, entity_vector_store: Any = None) -> ChatState:
     """
     Build the initial state from the chat query and user info.
 
@@ -551,6 +552,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "graph_provider": graph_provider,
         "reranker_service": reranker_service,
         "config_service": config_service,
+        "entity_vector_store": entity_vector_store,
         "model_name": model_name,
         "model_key": model_key,
 

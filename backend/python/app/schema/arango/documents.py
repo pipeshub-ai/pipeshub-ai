@@ -1,6 +1,7 @@
 from app.config.constants.arangodb import (
     Connectors,
     ConnectorScopes,
+    DeleteSource,
     OriginTypes,
     PermissionModel,
 )
@@ -25,6 +26,18 @@ orgs_schema = {
             "updatedAtTimestamp": {"type": "number"},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
+            # app.modules.indexing.entity_index_rebuild
+            "entityIndexState": {"type": ["string", "null"]},
+            "entityIndexPhase": {"type": ["string", "null"]},
+            "entityIndexAfterKey": {"type": ["string", "null"]},
+            "entityIndexAttempts": {"type": ["integer", "null"]},
+            "entityIndexFailures": {"type": ["integer", "null"]},
+            "entityIndexExhausted": {"type": ["boolean", "null"]},
+            "entityIndexTarget": {"type": ["string", "null"]},
+            "entityIndexErrors": {"type": ["integer", "null"]},
+            "entityIndexSweptAt": {"type": ["number", "null"]},
+            "entityIndexSweepOffset": {"type": ["string", "null"]},
+            "entityIndexSweepFailures": {"type": ["integer", "null"]},
         },
         "required": ["accountType", "isActive"],
         "additionalProperties": False,
@@ -156,15 +169,27 @@ app_schema = {
             "isConfigured": {"type": "boolean", "default": False},
             "isAuthenticated": {"type": "boolean", "default": False},
             "pendingFullSync": {"type": "boolean", "default": False},
+            "pendingResync": {"type": ["boolean", "null"]},
+            "queuedAtTimestamp": {"type": ["number", "null"]},
             "vectorMembershipBackfilled": {"type": "boolean", "default": False},
             "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
             "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},
             "vectorMembershipBackfillAttempts": {"type": ["integer", "null"]},
             "vectorMembershipBackfillVrids": {"type": ["integer", "null"]},
             "vectorMembershipBackfillExhausted": {"type": ["boolean", "null"]},
+            # app.modules.indexing.entity_index_rebuild
+            "entityIndexState": {"type": ["string", "null"]},
+            "entityIndexPhase": {"type": ["string", "null"]},
+            "entityIndexAfterKey": {"type": ["string", "null"]},
+            "entityIndexAttempts": {"type": ["integer", "null"]},
+            "entityIndexFailures": {"type": ["integer", "null"]},
+            "entityIndexExhausted": {"type": ["boolean", "null"]},
+            "entityIndexTarget": {"type": ["string", "null"]},
+            "entityIndexErrors": {"type": ["integer", "null"]},
             "rootMembershipRequested": {"type": ["boolean", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
+            "authenticatedBy": {"type": ["string", "null"]},
             "lastSyncedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
@@ -241,6 +266,20 @@ record_schema = {
             "isArchived": {"type": "boolean", "default": False},
             "isVLMOcrProcessed": {"type": "boolean", "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
+            # Soft delete: when the record entered the trash, who put it there,
+            # the batch a restore brings back together, and the purge's retries.
+            "deletedAtTimestamp": {"type": ["number", "null"]},
+            "deleteSource": {
+                "type": ["string", "null"],
+                "enum": [source.value for source in DeleteSource] + [None],
+            },
+            "deleteBatchId": {"type": ["string", "null"]},
+            "purgeAttempts": {"type": ["number", "null"]},
+            "purgeLastError": {"type": ["string", "null"]},
+            # The source id a trashed record gave up when a live record moved onto it.
+            "trashedExternalRecordId": {"type": ["string", "null"]},
+            # When a restore brought the record back; see RESTORED_AT_FIELD.
+            "restoredAtTimestamp": {"type": ["number", "null"]},
             "processingStartedAt": {"type": ["number", "null"]},
             # Clocks the stranded-record sweep in indexing_main ages rows on.
             "queuedAtTimestamp": {"type": ["number", "null"]},
@@ -290,6 +329,11 @@ record_schema = {
             "isLatestVersion": {"type": "boolean", "default": True},
             "isDirty": {"type": "boolean", "default": False},  # needs re indexing
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
+            # Promoted duplicates of this record still need its taxonomy copied.
+            "duplicateReconcilePending": {"type": "boolean"},
+            # app.modules.indexing.duplicate_reconcile
+            "duplicateReconcileAttempts": {"type": ["integer", "null"]},
+            "duplicateReconcileDueAt": {"type": ["number", "null"]},
             "lastIndexTimestamp": {"type": ["number", "null"]},
             "lastExtractionTimestamp": {"type": ["number", "null"]},
             "summaryDocumentId": {"type": ["string", "null"]},
@@ -1205,10 +1249,14 @@ people_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "_key": {"type": "string"},  # deterministic UUID based on email
+            "_key": {"type": "string"},  # uuid4; (orgId, email) is the business key (composite unique index)
             "email": {"type": "string"},
+            # Not in "required": pre-existing documents written before org-scoping
+            # was added have no orgId and must stay schema-valid.
+            "orgId": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "fullName": {"type": ["string", "null"]},
             "firstName": {"type": ["string", "null"]},
             "lastName": {"type": ["string", "null"]},
             "phone": {"type": ["string", "null"]},

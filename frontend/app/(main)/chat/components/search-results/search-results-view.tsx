@@ -9,6 +9,7 @@ import { useChatStore } from '@/chat/store';
 import { useCitationActions } from '../message-area/response-tabs/citations/use-citation-actions';
 import { SearchResultCard } from './search-result-card';
 import { searchResultToCitationData } from './search-result-to-citation';
+import { useDemoDataActive } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import type { SearchResultItem } from '@/chat/types';
 
 /**
@@ -102,6 +103,8 @@ function SearchResultSkeleton() {
  * Width is owned by the shared chat content column in page.tsx.
  */
 export function SearchResultsView() {
+  // Once per page, so each card's Demo badge is a cheap lookup.
+  useDemoDataActive();
   const { t } = useTranslation();
   const searchResults = useChatStore((s) => s.searchResults);
   const searchQuery = useChatStore((s) => s.searchQuery);

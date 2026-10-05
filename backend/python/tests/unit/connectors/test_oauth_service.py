@@ -7,12 +7,15 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from app.connectors.core.base.token_service import oauth_service
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
     OAuthToken,
     RefreshTokenInvalidError,
 )
+from tests.support.slack_oauth import TOKEN_URL as SLACK_TOKEN_URL
+from tests.support.slack_oauth import FakeSlackOAuth
 
 # ---------------------------------------------------------------------------
 # OAuthToken.is_expired
@@ -1469,3 +1472,39 @@ class TestHandleCallback:
 
         with pytest.raises(ValueError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="state")
+
+
+class TestSlackTokenEndpoint:
+    """Slack reports token-endpoint failures as HTTP 200 with ok=false."""
+
+    @staticmethod
+    def _provider(mock_config_service) -> OAuthProvider:
+        config = _make_oauth_config(token_url=SLACK_TOKEN_URL, token_response_path="authed_user")
+        return OAuthProvider(config, mock_config_service, "/services/connectors/c1/config")
+
+    @pytest.mark.asyncio
+    async def test_a_revoked_refresh_token_is_reported_as_permanent(self, mock_config_service, monkeypatch) -> None:
+        slack = FakeSlackOAuth("xoxe-1-live")
+        monkeypatch.setattr(oauth_service, "ClientSession", slack.client_session)
+
+        with pytest.raises(RefreshTokenInvalidError) as err:
+            await self._provider(mock_config_service).refresh_access_token("xoxe-1-revoked")
+
+        assert "invalid_refresh_token" in str(err.value)
+        assert "xoxe-1-revoked" not in str(err.value)
+        mock_config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_saves_the_new_access_and_refresh_token_in_one_write(
+        self, mock_config_service, monkeypatch,
+    ) -> None:
+        slack = FakeSlackOAuth("xoxe-1-live")
+        monkeypatch.setattr(oauth_service, "ClientSession", slack.client_session)
+
+        token = await self._provider(mock_config_service).refresh_access_token("xoxe-1-live")
+
+        new_access, new_refresh = slack.issued[0]
+        assert (token.access_token, token.refresh_token) == (new_access, new_refresh)
+        mock_config_service.set_config.assert_awaited_once()
+        saved = mock_config_service.set_config.await_args.args[1]["credentials"]
+        assert (saved["access_token"], saved["refresh_token"], saved["expires_in"]) == (new_access, new_refresh, 43200)

@@ -98,7 +98,7 @@ test.describe('Users Invite', () => {
       await expect(submitButton).toBeEnabled();
       await submitButton.click();
 
-      await expect(page.getByText('Invite sent!').first()).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByText('Invites queued').first()).toBeVisible({ timeout: 15_000 });
       await page.reload();
       await expect(page.getByText(email).first(), 'the invited user should be listed').toBeVisible({
         timeout: 15_000,

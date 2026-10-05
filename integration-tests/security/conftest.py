@@ -19,9 +19,30 @@ from helper.second_user import SecondUser, create_second_user, delete_second_use
 
 logger = logging.getLogger("security-fixtures")
 
-# userAccount.controller.ts:228 and :1131. The counter is incremented before the
-# comparison, so the block lands on the fifth wrong attempt, not after it.
+# authenticateWithPassword in userAccount.controller.ts locks the account on the
+# fifth wrong password, in the same request, before it answers.
 WRONG_ATTEMPTS_TO_BLOCK = 5
+
+
+def _try_password(base_url: str, email: str, password: str) -> requests.Response:
+    session = requests.post(
+        f"{base_url}/api/v1/userAccount/initAuth", json={"email": email}, timeout=30
+    )
+    session_token = session.headers.get("x-session-token")
+    assert session.status_code < 400 and session_token, (
+        f"initAuth for {email} failed, so the password step was never reached: "
+        f"{session.status_code} {session.text[:160]}"
+    )
+    return requests.post(
+        f"{base_url}/api/v1/userAccount/authenticate",
+        headers={"x-session-token": session_token, "Content-Type": "application/json"},
+        json={
+            "method": "password",
+            "credentials": {"password": password},
+            "email": email,
+        },
+        timeout=30,
+    )
 
 
 @pytest.fixture
@@ -47,51 +68,22 @@ def block_account(fresh_user: SecondUser) -> Callable[[], None]:
     the database, so the test exercises the product's own blocking path. A
     directly written flag would prove only that the test can write to MongoDB.
     """
+    from helper.config import TEST_USER_PASSWORD
 
     def _block() -> None:
         for attempt in range(WRONG_ATTEMPTS_TO_BLOCK):
-            session = requests.post(
-                f"{fresh_user.base_url}/api/v1/userAccount/initAuth",
-                json={"email": fresh_user.email},
-                timeout=30,
-            )
-            requests.post(
-                f"{fresh_user.base_url}/api/v1/userAccount/authenticate",
-                headers={
-                    "x-session-token": session.headers.get("x-session-token", ""),
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "method": "password",
-                    "credentials": {"password": f"DefinitelyWrong{attempt}!"},
-                    "email": fresh_user.email,
-                },
-                timeout=30,
-            )
+            _try_password(fresh_user.base_url, fresh_user.email, f"DefinitelyWrong{attempt}!")
 
-        # Confirm the account really is blocked, so a test that depends on it
-        # cannot quietly measure an unblocked account instead.
-        session = requests.post(
-            f"{fresh_user.base_url}/api/v1/userAccount/initAuth",
-            json={"email": fresh_user.email},
-            timeout=30,
-        )
-        probe = requests.post(
-            f"{fresh_user.base_url}/api/v1/userAccount/authenticate",
-            headers={
-                "x-session-token": session.headers.get("x-session-token", ""),
-                "Content-Type": "application/json",
-            },
-            json={
-                "method": "password",
-                "credentials": {"password": "StillWrong!"},
-                "email": fresh_user.email,
-            },
-            timeout=30,
-        )
-        assert "blocked" in probe.text.lower() or "disabled" in probe.text.lower(), (
+        # A locked account is answered exactly like a wrong password, so the
+        # wording can't show the lock. The right password being refused can: it
+        # opened this account's session moments ago, in fresh_user.
+        probe = _try_password(fresh_user.base_url, fresh_user.email, TEST_USER_PASSWORD)
+        # The body is left out: when the lock failed it holds live tokens.
+        token_returned = "accessToken" in probe.text
+        assert probe.status_code == 400 and not token_returned, (
             f"{WRONG_ATTEMPTS_TO_BLOCK} wrong logins did not block "
-            f"{fresh_user.email}; the reply was {probe.status_code} {probe.text[:160]}"
+            f"{fresh_user.email}: the right password afterwards got "
+            f"{probe.status_code} (access token returned: {token_returned})"
         )
         logger.info("Blocked %s via failed logins", fresh_user.email)
 

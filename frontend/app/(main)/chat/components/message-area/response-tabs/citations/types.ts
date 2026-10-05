@@ -23,6 +23,8 @@ export interface CitationData {
   recordName: string;
   /** Connector key e.g. "ONEDRIVE", "SHAREPOINT ONLINE", "SLACK" */
   connector: string;
+  /** Connector instance the record came from; absent on older saved answers */
+  connectorId?: string;
   /** Record type e.g. "FILE" */
   recordType: string;
   /** Direct URL to the source document */
@@ -82,6 +84,7 @@ export interface StreamingCitationData {
     recordVersion: number;
     origin: CitationOrigin;
     connector: string;
+    connectorId?: string;
     blockText: string;
     blockType: string;
     bounding_box?: Array<{ x: number; y: number }>;

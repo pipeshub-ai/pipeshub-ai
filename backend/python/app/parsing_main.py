@@ -150,11 +150,10 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     registry.register("pdf", ParserProvider.DOCLING, smart_pdf_docling)
     registry.register("pdf", ParserProvider.DEFAULT, smart_pdf_default)
 
-    # EPUB is converted to PDF via LibreOffice, then delegated to the same
-    # SmartPDFParser instances used for native PDFs (Docling / pdfplumber /
-    # OCR selection stays entirely inside SmartPDFParser).
-    registry.register("epub", ParserProvider.DOCLING, EPUBParser(smart_pdf_docling))
-    registry.register("epub", ParserProvider.DEFAULT, EPUBParser(smart_pdf_default))
+    # EPUB chapters are XHTML, so each book goes through the HTML parser of
+    # the same provider.
+    registry.register("epub", ParserProvider.DOCLING, EPUBParser(docling_html_parser))
+    registry.register("epub", ParserProvider.DEFAULT, EPUBParser(default_html_parser))
 
     # ----------------------------------------------------------------
     # DOCX / DOC — local Docling handles these in-process
@@ -337,7 +336,8 @@ async def health_check() -> JSONResponse:
         except Exception as stats_error:
             # Observability failure must not fail the liveness probe — the
             # service itself is still healthy.
-            content["resource_governor"] = {"error": str(stats_error)}
+            container.logger().warning("Resource governor stats failed: %s", stats_error)
+            content["resource_governor"] = {"error": "unavailable"}
     return JSONResponse(content=content)
 
 

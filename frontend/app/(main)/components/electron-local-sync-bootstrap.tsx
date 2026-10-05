@@ -22,7 +22,7 @@
 
 import { useEffect, useRef } from 'react';
 import { isElectron } from '@/lib/electron';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import {
   bootstrapElectronLocalSyncFromJournal,
   pushElectronDesktopAccessToken,

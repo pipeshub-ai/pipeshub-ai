@@ -3,6 +3,7 @@
 import json
 
 import pytest
+import yaml
 
 from app.models.blocks import BlockType, DataFormat, GroupType
 from app.modules.parsers.json.json_parser import JSONParser
@@ -36,17 +37,72 @@ class TestParseErrors:
         assert exc_info.value.code == ParseErrorCode.EMPTY_CONTENT
 
     @pytest.mark.asyncio
-    async def test_invalid_yaml_raises(self, parser):
-        bad_yaml = b"key: [unclosed\n  - broken"
-        with pytest.raises(ParseError) as exc_info:
-            await parser.parse(bad_yaml, "bad.yaml")
-        assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
-
-    @pytest.mark.asyncio
     async def test_document_with_only_null_raises_empty(self, parser):
         with pytest.raises(ParseError) as exc_info:
             await parser.parse(b"null", "null.yaml")
         assert exc_info.value.code == ParseErrorCode.EMPTY_CONTENT
+
+    @pytest.mark.asyncio
+    async def test_non_utf8_raises_parse_failed(self, parser):
+        with pytest.raises(ParseError) as exc_info:
+            await parser.parse(b"key: \xff\xfe", "latin.yaml")
+        assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
+
+
+class TestUnloadableYAMLFallsBackToStructuralParser:
+
+    @pytest.mark.asyncio
+    async def test_invalid_yaml_is_chunked_instead_of_failing(self, parser):
+        bad_yaml = b"key: [unclosed\n  - broken"
+        result = await parser.parse(bad_yaml, "bad.yaml")
+        assert result.metadata["parser"] == "structural"
+        assert result.metadata["template_dialect"] is None
+        assert result.block_container.blocks[0].data == bad_yaml.decode()
+
+    @pytest.mark.asyncio
+    async def test_helm_template_routes_to_structural_parser(self, parser):
+        helm = (
+            b"{{- if .Values.enabled }}\n"
+            b"apiVersion: v1\nkind: Service\nmetadata:\n"
+            b"  name: {{ include \"app.fullname\" . }}\n"
+            b"{{- end }}\n"
+        )
+        result = await parser.parse(helm, "service.yaml")
+        assert result.metadata["parser"] == "structural"
+        assert result.metadata["template_dialect"] == "go"
+        assert result.metadata["document_count"] == 1
+        bc = result.block_container
+        assert bc.block_groups[0].format == DataFormat.YAML
+        assert '{{ include "app.fullname" . }}' in bc.blocks[0].data
+
+    @pytest.mark.asyncio
+    async def test_valid_yaml_with_quoted_template_syntax_stays_on_walker(self, parser):
+        content = b'value: "{{ .Release.Name }}-redis"\nrun: echo ${{ github.sha }}\n'
+        result = await parser.parse(content, "workflow.yaml")
+        assert "parser" not in result.metadata
+        assert result.block_container.blocks[0].data == (
+            "value: {{ .Release.Name }}-redis, run: echo ${{ github.sha }}"
+        )
+
+
+class TestLocalTagsAreKept:
+
+    @pytest.mark.asyncio
+    async def test_cloudformation_and_gitlab_tags_load(self, parser):
+        content = (
+            b"Bucket: !Ref MyBucket\n"
+            b"Arn: !Sub 'arn:${AWS::Region}'\n"
+            b"script: !reference [.setup, script]\n"
+        )
+        result = await parser.parse(content, "template.yaml")
+        assert "parser" not in result.metadata
+        assert result.block_container.blocks[0].data == (
+            "Bucket.!Ref: MyBucket, Arn.!Sub: arn:${AWS::Region}, script.!reference: .setup, script"
+        )
+
+    def test_python_object_tags_are_still_rejected(self):
+        with pytest.raises(yaml.constructor.ConstructorError, match="python/object"):
+            YAMLParser._load_documents("!!python/object/apply:os.system ['id']")
 
 
 class TestBasicYAML:

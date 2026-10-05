@@ -56,6 +56,7 @@ from app.connectors.core.registry.connector_builder import (
     SyncStrategy,
 )
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
+from app.connectors.sources.salesforce.common.auth_fields import salesforce_login_url_field
 from app.connectors.core.registry.filters import (
     FilterCollection,
     IndexingFilterKey,
@@ -63,6 +64,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.salesforce.common.apps import SalesforceApp
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -751,11 +753,15 @@ def _ts_in_bounds(
                 AuthField(
                     name="instance_url",
                     display_name="Salesforce Instance URL",
-                    placeholder="https://login.salesforce.com",
-                    description="The base URL of your Salesforce instance",
+                    placeholder="https://yourcompany.my.salesforce.com",
+                    description=(
+                        "Your org's My Domain URL, shown in Salesforce Setup under My Domain. "
+                        "Don't use login.salesforce.com: it only handles sign-in, and API calls to it fail."
+                    ),
                     field_type="TEXT",
                     max_length=2048
                 ),
+                salesforce_login_url_field(),
                 CommonFields.client_id("Salesforce Connected App"),
                 CommonFields.client_secret("Salesforce Connected App")
             ],
@@ -4485,6 +4491,7 @@ class SalesforceConnector(BaseConnector):
 
                         person = self._create_person(
                             email=email,
+                            org_id=org_id,
                             first_name=contact.FirstName,
                             last_name=contact.LastName,
                             phone=contact.Phone,
@@ -4523,8 +4530,21 @@ class SalesforceConnector(BaseConnector):
                 if not contact_with_edges:
                     continue
 
+                email_to_contact_ids: DefaultDict[str, List[str]] = defaultdict(list)
+                for p, dup_contact_edge, _ in contact_with_edges:
+                    email_to_contact_ids[p.email.lower()].append(
+                        dup_contact_edge.get("externalId") if dup_contact_edge else None
+                    )
+                for dup_email, dup_contact_ids in email_to_contact_ids.items():
+                    if len(dup_contact_ids) > 1:
+                        self.logger.warning(
+                            "Multiple Salesforce Contacts %s share email %r. If only some of them "
+                            "changed, their CONTACT/MEMBER_OF edges may be dropped this sync.",
+                            dup_contact_ids, dup_email,
+                        )
+
                 async with self.data_store_provider.transaction() as tx_store:
-                    all_emails = [p.email for p, _, _ in contact_with_edges]
+                    all_emails = [p.email.lower() for p, _, _ in contact_with_edges]
                     all_account_names = list({
                         moe.get("accountName")
                         for _, sce, moe in contact_with_edges
@@ -4550,7 +4570,7 @@ class SalesforceConnector(BaseConnector):
                     )
                     parent_org_id = self._get_parent_org_id()
                     email_map = {
-                        node.get("email"): node
+                        (node.get("email") or "").lower(): node
                         for node in (existing_people_result or [])
                         if parent_org_id is None or node.get("orgId") == parent_org_id
                     }
@@ -4566,7 +4586,7 @@ class SalesforceConnector(BaseConnector):
                     unchanged_emails: set = set()
                     delete_tasks = []
                     for person, contact_edge, _ in contact_with_edges:
-                        node = email_map.get(person.email)
+                        node = email_map.get(person.email.lower())
                         if node:
                             person.id = node.get("id") or node.get("_key")
                             stored_updated = node.get("updatedAtTimestamp")
@@ -4576,7 +4596,7 @@ class SalesforceConnector(BaseConnector):
                                 and incoming_updated is not None
                                 and stored_updated == incoming_updated
                             ):
-                                unchanged_emails.add(person.email)
+                                unchanged_emails.add(person.email.lower())
                                 continue
                             delete_tasks.append(tx_store.delete_edges_to(
                                 to_id=person.id,
@@ -4595,7 +4615,7 @@ class SalesforceConnector(BaseConnector):
                     changed_contacts = [
                         (p, sce, moe)
                         for p, sce, moe in contact_with_edges
-                        if p.email not in unchanged_emails
+                        if p.email.lower() not in unchanged_emails
                     ]
                     if changed_contacts:
                         await tx_store.batch_upsert_people([p for p, _, _ in changed_contacts])
@@ -4695,6 +4715,7 @@ class SalesforceConnector(BaseConnector):
                             continue
                         person = self._create_person(
                             email=lead_email,
+                            org_id=org_id,
                             first_name=lead.FirstName,
                             last_name=lead.LastName,
                             phone=lead.Phone,
@@ -4710,7 +4731,7 @@ class SalesforceConnector(BaseConnector):
                     continue
 
                 async with self.data_store_provider.transaction() as tx_store:
-                    all_emails = [p.email for p, _ in lead_with_edges]
+                    all_emails = [p.email.lower() for p, _ in lead_with_edges]
                     existing_people = await tx_store.get_nodes_by_field_in(
                         collection=CollectionNames.PEOPLE.value,
                         field="email",
@@ -4718,14 +4739,14 @@ class SalesforceConnector(BaseConnector):
                     )
                     parent_org_id = self._get_parent_org_id()
                     email_map = {
-                        node.get("email"): node
+                        (node.get("email") or "").lower(): node
                         for node in (existing_people or [])
                         if parent_org_id is None or node.get("orgId") == parent_org_id
                     }
 
                     ids_to_delete = []
                     for person, _ in lead_with_edges:
-                        node = email_map.get(person.email)
+                        node = email_map.get(person.email.lower())
                         if node:
                             person.id = node.get("id") or node.get("_key")
                             ids_to_delete.append(person.id)
@@ -5511,6 +5532,10 @@ class SalesforceConnector(BaseConnector):
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
         """
         Handle different types of record updates (content changed, metadata changed).
+
+        A failed write is re-raised: the files checkpoint is saved after this
+        returns, so swallowing it would move the checkpoint past a change that
+        was never stored.
         """
         try:
             if record_update.is_deleted and record_update.external_record_id:
@@ -5529,6 +5554,7 @@ class SalesforceConnector(BaseConnector):
                     await self.data_entities_processor.on_record_metadata_update(record_update.record)
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
+            raise
 
     async def _sync_files(
         self,
@@ -5808,10 +5834,18 @@ class SalesforceConnector(BaseConnector):
                         or getattr(existing, "external_revision_id", None) != rec.external_revision_id
                         or getattr(existing, "source_updated_at", None) != rec.source_updated_at
                         or getattr(existing, "size_in_bytes", None) != rec.size_in_bytes
-                        or getattr(existing, "extension", None) != rec.extension
                         or getattr(existing, "mime_type", None) != rec.mime_type
                         or getattr(existing, "weburl", None) != rec.weburl
                     )
+                    if not metadata_changed:
+                        # The lookup above returns a base Record, which has no extension. If the file
+                        # record is missing or can't be read, the file can't be shown unchanged, so update it.
+                        try:
+                            existing_file = await self.data_entities_processor.get_file_record_by_id(existing.id)
+                        except GraphQueryError as read_error:
+                            self.logger.warning(f"Updating {ext_id}: its stored file record could not be read: {read_error}")
+                            existing_file = None
+                        metadata_changed = existing_file is None or existing_file.extension != rec.extension
                     if content_changed or metadata_changed:
                         rec.id = existing.id
                         rec.version = getattr(existing, "version", 0) + 1

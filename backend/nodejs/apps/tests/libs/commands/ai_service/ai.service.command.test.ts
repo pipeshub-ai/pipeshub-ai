@@ -161,6 +161,27 @@ describe('AIServiceCommand', () => {
       }
     })
 
+    it('should not retry when maxAttempts is 1', async () => {
+      fetchStub.rejects(new Error('ai unavailable'))
+
+      const cmd = new AIServiceCommand({
+        uri: 'http://ai.local/query',
+        method: HttpMethod.POST,
+        headers: {},
+        body: {},
+        timeoutMs: 50,
+        maxAttempts: 1,
+      })
+
+      try {
+        await cmd.execute()
+        expect.fail('Should have thrown')
+      } catch (err: any) {
+        expect(err.message).to.equal('ai unavailable')
+      }
+      expect(fetchStub.calledOnce).to.be.true
+    })
+
     it('should handle non-200 status codes without throwing', async () => {
       fetchStub.resolves(
         makeFetchResponse(

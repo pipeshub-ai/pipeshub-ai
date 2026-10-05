@@ -31,6 +31,7 @@ class AuthFieldKeys:
     CLIENT_SECRET = "clientSecret"
     CLIENT_SECRET_ALT = "client_secret"
     INSTANCE_URL = "instanceUrl"
+    LOGIN_URL = "loginUrl"
     HAS_ADMIN_CONSENT = "hasAdminConsent"
     AUTHORIZE_URL = "authorizeUrl"
     TOKEN_URL = "tokenUrl"
@@ -116,12 +117,14 @@ class ConnectorStateKeys:
     VECTOR_MEMBERSHIP_BACKFILL_VRIDS = "vectorMembershipBackfillVrids"
     VECTOR_MEMBERSHIP_BACKFILL_EXHAUSTED = "vectorMembershipBackfillExhausted"
     ROOT_MEMBERSHIP_REQUESTED = "rootMembershipRequested"
+    PENDING_RESYNC = "pendingResync"
     UPDATED_AT_TIMESTAMP = "updatedAtTimestamp"
     UPDATED_BY = "updatedBy"
     CREATED_AT_TIMESTAMP = "createdAtTimestamp"
     CREATED_BY = "createdBy"
     OWNER_DEVICE_ID = "ownerDeviceId"
     OWNER_DEVICE_NAME = "ownerDeviceName"
+    AUTHENTICATED_BY = "authenticatedBy"
 
 
 CONNECTOR_EMAIL_IDENTITY_INFO = (

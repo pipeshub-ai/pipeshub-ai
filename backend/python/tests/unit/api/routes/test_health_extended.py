@@ -319,7 +319,7 @@ class TestPerformTtsHealthCheck:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_openrouter_bad_key_returns_500(self):
+    async def test_openrouter_bad_key_is_a_settings_error(self):
         logger = MagicMock()
         mock_adapter = MagicMock()
 
@@ -338,7 +338,7 @@ class TestPerformTtsHealthCheck:
             resp = await perform_tts_health_check(
                 self._cfg("openRouter", model="tts-model"), logger
             )
-        assert resp.status_code == 500
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_litellm_proxy_success(self):
@@ -511,6 +511,29 @@ class TestPerformSttHealthCheck:
         assert "faster-whisper" in body
 
     @pytest.mark.asyncio
+    async def test_whisper_probe_error_is_not_echoed(self):
+        import json
+
+        logger = MagicMock()
+        error = RuntimeError("SENTINEL /opt/venv/lib/python3.12/site-packages unreadable")
+
+        with patch(f"{MODULE}.get_stt_model", return_value=MagicMock()), \
+             patch("importlib.util.find_spec", side_effect=error):
+            from app.api.routes.health import perform_stt_health_check
+
+            resp = await perform_stt_health_check(self._cfg("whisper", model="base"), logger)
+        assert resp.status_code == 500
+        body = json.loads(resp.body)
+        assert body["status"] == "error"
+        assert body["message"] == (
+            "Couldn't check the local Whisper install. Reinstall the service's dependencies, then try again."
+        )
+        assert "SENTINEL" not in resp.body.decode()
+        log_call = logger.error.call_args
+        assert log_call.kwargs["exc_info"] is True
+        assert error in log_call.args
+
+    @pytest.mark.asyncio
     async def test_gemini_success(self):
         logger = MagicMock()
         mock_adapter = MagicMock()
@@ -578,7 +601,7 @@ class TestPerformSttHealthCheck:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_openrouter_bad_key_returns_500(self):
+    async def test_openrouter_bad_key_is_a_settings_error(self):
         logger = MagicMock()
         mock_adapter = MagicMock()
 
@@ -597,7 +620,7 @@ class TestPerformSttHealthCheck:
             resp = await perform_stt_health_check(
                 self._cfg("openRouter", model="stt-model"), logger
             )
-        assert resp.status_code == 500
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_litellm_proxy_success(self):

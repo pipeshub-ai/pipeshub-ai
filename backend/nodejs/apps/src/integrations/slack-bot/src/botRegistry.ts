@@ -95,7 +95,7 @@ const backendUrl = process.env.BACKEND_URL || "http://localhost:3000";
 async function fetchAvailableSlackBots(): Promise<SlackBotConfig[]> {
   
   const configService = ConfigService.getInstance();
-  const staticToken = slackJwtGenerator("", await configService.getScopedJwtSecret(),[TokenScopes.FETCH_CONFIG]);
+  const staticToken = slackJwtGenerator("", await configService.getScopedJwtSecret(),[TokenScopes.SLACK_BOT_VERIFY]);
 
   const headers: Record<string, string> = {};
   headers.Authorization = `Bearer ${staticToken}`;

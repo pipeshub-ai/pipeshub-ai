@@ -2581,9 +2581,11 @@ class DropboxConnector(BaseConnector):
         self.logger.info(f"Deleting record group '{folder_name}' ({folder_id})")
 
         try:
+            # Team folder events run before the drive sync reaches the folder's files.
             await self.data_entities_processor.on_record_group_deleted(
                 external_group_id=folder_id,
-                connector_id=self.connector_id
+                connector_id=self.connector_id,
+                trash_live_records=True,
             )
         except Exception as e:
             self.logger.error(

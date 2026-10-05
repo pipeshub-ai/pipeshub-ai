@@ -45,9 +45,11 @@ import {
   reauthenticateAgentMcpInstance,
   getAgentMcpOAuthAuthorizationUrl,
 } from '../controller/mcp_servers.controller';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
 export function createMcpServersRouter(container: Container): Router {
   const router = Router();
+  guardPathParams(router, 'typeId', 'instanceId', 'agentKey');
   const config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
 

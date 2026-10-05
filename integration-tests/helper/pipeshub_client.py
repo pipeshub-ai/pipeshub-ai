@@ -148,6 +148,22 @@ class PipeshubClient:
         user_id = claims.get("userId")
         return str(user_id) if user_id else None
 
+    @property
+    def acting_user_id(self) -> Optional[str]:
+        """The user this token acts as, the way the backend resolves it.
+
+        A client_credentials token has no user: Node puts the app's client id
+        (a UUID) in ``userId`` and the account it acts as in ``createdBy``.
+        The Python auth middleware swaps them the same way. Anything that must
+        name a real user, such as the ``userId`` of a minted service token,
+        needs this rather than ``user_id``.
+        """
+        claims = self._claims()
+        user_id = claims.get("userId")
+        if user_id and user_id == claims.get("client_id") and claims.get("createdBy"):
+            user_id = claims["createdBy"]
+        return str(user_id) if user_id else None
+
     # --------------------------------------------------------------------- #
     # Internal helpers
     # --------------------------------------------------------------------- #

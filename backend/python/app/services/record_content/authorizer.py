@@ -1,7 +1,10 @@
 """`TieredRecordAuthorizer` — cheapest-first, no bypass.
 
-Three tiers, each a real check:
+Four tiers, each a real check:
 
+0. The record is live. A record in the trash keeps its permission edges so it
+   can be restored, and tier 2 would otherwise grant access from the edge alone.
+   Raises `RecordNotFoundError`: to the reader the item is gone.
 1. Org scope: `record.org_id == actor.org_id`. O(1), always runs.
 2. Direct permission-edge lookup: the same single `get_edge` call
    `AccessPolicy._authorize` already uses. Covers artifacts and user-uploaded
@@ -23,8 +26,9 @@ from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
 from app.services.artifact_registry.access import ArtifactNotFoundError
+from app.services.graph_db.common.record_visibility import is_live_record
 
-from .models import RecordAccessDeniedError
+from .models import RecordAccessDeniedError, RecordNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +49,16 @@ class TieredRecordAuthorizer:
         """Authorize `actor` to read `record`. Raises `RecordAccessDeniedError`
         on denial; returns `None` on success.
 
-        Never raises for reasons other than a confirmed denial — I/O errors
-        propagate as their own exception types.
+        Raises `RecordNotFoundError` for a record in the trash. Never raises
+        for reasons other than a confirmed denial — I/O errors propagate as
+        their own exception types.
         """
+        if not is_live_record(record):
+            record_id = getattr(record, "id", None) or (
+                record.get("_key") if isinstance(record, dict) else None
+            )
+            raise RecordNotFoundError(f"Record {record_id} was deleted")
+
         # Tier 1 — org scope (O(1), always runs)
         record_org = getattr(record, "org_id", None) or (
             record.get("orgId") if isinstance(record, dict) else None

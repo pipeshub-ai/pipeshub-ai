@@ -130,6 +130,7 @@ function AppLayout({
   children: React.ReactNode
   sidebar: React.ReactNode
 }) {
+  const { t } = useTranslation();
   const router = useRouter()
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
   const isHydrated = useAuthStore((s) => s.isHydrated)
@@ -272,7 +273,7 @@ function AppLayout({
                 size="2"
                 onClick={openMobileSidebar}
                 style={{ margin: 0 }}
-                aria-label="Open sidebar"
+                aria-label={t('sidebar.open')}
               >
                 <MaterialIcon name="menu" size={22} color="var(--gray-11)" />
               </IconButton>

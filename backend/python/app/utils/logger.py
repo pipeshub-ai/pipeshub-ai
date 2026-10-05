@@ -7,7 +7,7 @@ from collections.abc import Callable
 from httpx import URL
 
 from app.utils.request_context import NO_CONTEXT, current_display_id, get_context
-from app.utils.url_redaction import redact_url
+from app.utils.url_redaction import redact_sensitive_query_params, redact_url
 
 # ``%(trace)s`` expands to ``[req:<id> thr:<thread> task:<task>] `` only when a
 # context is in flight, so startup/background lines stay clean.
@@ -140,6 +140,22 @@ class HealthCheckFilter(logging.Filter):
         return not ("/health" in msg and '" 2' in msg)
 
 
+class AccessLogRedactionFilter(logging.Filter):
+    """Redact credentials from the request path uvicorn writes to its access log.
+
+    Signed download URLs carry their JWT in ``?token=``, so logging the raw path
+    would hand a working download link to anyone who can read the logs.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # uvicorn access log args: (client_addr, method, path, http_version, status_code)
+        if isinstance(record.args, tuple) and len(record.args) >= 3:
+            args = list(record.args)
+            args[2] = redact_sensitive_query_params(str(args[2]))
+            record.args = tuple(args)
+        return True
+
+
 # Ensure log directory exists
 log_dir = "logs"
 os.makedirs(log_dir, exist_ok=True)
@@ -172,6 +188,7 @@ logging.getLogger("opensearch").setLevel(logging.WARNING)
 
 # Suppress /health* endpoint noise from uvicorn access logs (process_monitor polling)
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+logging.getLogger("uvicorn.access").addFilter(AccessLogRedactionFilter())
 
 # httpx logs every outbound request at INFO. Keep the failures, drop the 2xx.
 logging.getLogger("httpx").addFilter(HttpxSuccessFilter())

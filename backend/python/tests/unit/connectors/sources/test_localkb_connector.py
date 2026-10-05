@@ -23,8 +23,6 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
 )
 from app.models.entities import FileRecord, RecordType
 from fastapi import HTTPException
-from app.config.constants.arangodb import Connectors, OriginTypes
-from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +63,9 @@ def _make_kb_service():
         logger=logger,
         graph_provider=graph_provider,
         kafka_service=kafka_service,
-        processor=processor,
+        processor_for_kb=AsyncMock(return_value=processor),
+        # A delete records its entity cleanup intent here first.
+        config_service=AsyncMock(),
     )
 
 
@@ -367,7 +367,7 @@ class TestKnowledgeBaseService:
 
         result = await svc.create_folder_in_kb("kb-1", "Docs", "user-1", "org-1")
         assert result["success"] is True
-        svc.processor.on_new_records.assert_awaited_once()
+        svc.processor_for_kb.return_value.on_new_records.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_create_folder_name_conflict(self):

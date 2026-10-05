@@ -14,7 +14,7 @@ import {
   InvalidRedirectUriError,
 } from '../../../../src/libs/errors/oauth.errors'
 import { NotFoundError, BadRequestError } from '../../../../src/libs/errors/http.errors'
-import { PAT_APP_CLIENT_ID_PREFIX, FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
+import { PAT_APP_CLIENT_ID_PREFIX, SERVICE_TOKEN_APP_CLIENT_ID_PREFIX, FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
 import { createMockLogger } from '../../../helpers/mock-logger'
 
 describe('OAuthAppService', () => {
@@ -297,13 +297,14 @@ describe('OAuthAppService', () => {
       expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
     })
 
-    it('should exclude the synthetic pat-system app clientId from the filter', async () => {
-      // The per-org PAT app (pat-system:<orgId>) is an internal pseudo-client
-      // (see PatService) — its creator must not be able to view, edit,
-      // suspend, delete, or regenerate its secret through this CRUD surface,
-      // since verifyAccessToken never checks app status and a working
+    it('should exclude the synthetic pat-system and svc-system apps from the filter', async () => {
+      // The per-org PAT app (pat-system:<orgId>) and service-token app
+      // (svc-system:<orgId>) are internal pseudo-clients (see PatService and
+      // ServiceTokenService) — their creator must not be able to view, edit,
+      // suspend, delete, or regenerate a secret for them through this CRUD
+      // surface, since verifyAccessToken never checks app status and a working
       // secret would let them mint client_credentials tokens outside the
-      // auditable PAT list.
+      // auditable token list.
       const findStub = sinon.stub(OAuthApp, 'findOne').resolves(null)
       try {
         await service.getAppById(fakeAppId, fakeOrgId, fakeUserId)
@@ -312,8 +313,12 @@ describe('OAuthAppService', () => {
       }
       const filter = findStub.firstCall.args[0] as Record<string, unknown>
       const clientIdFilter = filter.clientId as { $not: RegExp; $nin: string[] }
-      expect(clientIdFilter.$not.source).to.equal(`^${PAT_APP_CLIENT_ID_PREFIX}`)
+      // Asserting behaviour rather than the exact pattern, so adding a third
+      // internal pseudo-client later does not break this test for no reason.
       expect(clientIdFilter.$not.test(`${PAT_APP_CLIENT_ID_PREFIX}${fakeOrgId}`)).to.be.true
+      expect(
+        clientIdFilter.$not.test(`${SERVICE_TOKEN_APP_CLIENT_ID_PREFIX}${fakeOrgId}`),
+      ).to.be.true
       expect(clientIdFilter.$not.test('some-other-client-id')).to.be.false
       expect(clientIdFilter.$nin).to.deep.equal([FIRST_PARTY_DEVICE_CLIENT_ID])
     })

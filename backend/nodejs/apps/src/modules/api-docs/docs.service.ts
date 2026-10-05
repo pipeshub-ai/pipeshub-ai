@@ -169,10 +169,10 @@ export class ApiDocsService {
       {
         id: 'storage',
         name: 'Storage',
-        description: 'Document upload, storage, and version control',
+        description: 'Service-to-service document storage (not callable with a user token)',
         version: '1.0.0',
         basePath: '/api/v1/document',
-        tags: ['Document Upload', 'Document Management', 'Document Buffer', 'Version Control', 'Storage Internal'],
+        tags: ['Internal Storage'],
         source: 'nodejs',
         order: 4,
       },

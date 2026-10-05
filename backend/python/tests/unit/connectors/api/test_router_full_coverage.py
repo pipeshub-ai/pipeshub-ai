@@ -525,8 +525,8 @@ class TestBuildOAuthFlowConfigEdgeCases:
         assert result.get("instanceUrl") == "https://gitlab.corp.com"
 
     @pytest.mark.asyncio
-    async def test_shared_oauth_instance_url_from_auth_config(self):
-        """Line 4634 — instanceUrl from auth_config takes precedence."""
+    async def test_shared_oauth_instance_url_ignores_auth_config(self):
+        """A linked connector's own instanceUrl must not move the shared app's OAuth host."""
         from app.connectors.api.router import _build_oauth_flow_config
         auth_config = {
             "oauthConfigId": "cfg1", "authType": "OAUTH",
@@ -546,7 +546,97 @@ class TestBuildOAuthFlowConfigEdgeCases:
             result = await _build_oauth_flow_config(
                 auth_config, "GITLAB", "o1", cs, MagicMock()
             )
-        assert result.get("instanceUrl") == "https://my-instance.com"
+        assert result.get("instanceUrl") == "https://other.com"
+
+    @pytest.mark.asyncio
+    async def test_shared_oauth_urls_ignore_auth_config(self):
+        """authorizeUrl / tokenUrl / instanceUrl saved on a linked connector are not used."""
+        from app.connectors.api.router import _build_oauth_flow_config
+        from app.utils.oauth_config import get_oauth_config
+        auth_config = {
+            "oauthConfigId": "cfg1", "authType": "OAUTH",
+            "authorizeUrl": "https://elsewhere.example/oauth/authorize",
+            "tokenUrl": "https://elsewhere.example/oauth/token",
+            "instanceUrl": "https://elsewhere.example",
+        }
+        shared = {
+            "_id": "cfg1", "orgId": "o1",
+            "authorizeUrl": "https://gitlab.com/oauth/authorize",
+            "tokenUrl": "https://gitlab.com/oauth/token",
+            "scopes": ["read"],
+            "config": {"clientId": "c1", "clientSecret": "s1"},
+        }
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value=[shared])
+
+        with patch(f"{_ROUTER}._get_oauth_config_path", return_value="/path"), \
+             patch(f"{_ROUTER}._apply_confluence_optional_jira_scope", return_value=["read"]):
+            result = await _build_oauth_flow_config(
+                auth_config, "GITLAB", "o1", cs, MagicMock()
+            )
+        assert result["authorizeUrl"] == "https://gitlab.com/oauth/authorize"
+        assert result["tokenUrl"] == "https://gitlab.com/oauth/token"
+        assert "instanceUrl" not in result
+        assert get_oauth_config(result).token_url == "https://gitlab.com/oauth/token"
+
+    @pytest.mark.asyncio
+    async def test_shared_oauth_without_urls_falls_back_to_registry(self):
+        """A shared app saved without URLs gets the registry defaults, not the connector's."""
+        from app.connectors.api.router import _build_oauth_flow_config
+        auth_config = {
+            "oauthConfigId": "cfg1", "authType": "OAUTH",
+            "tokenUrl": "https://elsewhere.example/token",
+        }
+        shared = {"_id": "cfg1", "orgId": "o1", "scopes": ["read"], "config": {"clientId": "c1"}}
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value=[shared])
+        registry = MagicMock()
+        registry.get_config.return_value = MagicMock(
+            authorize_url="https://provider.example/authorize",
+            token_url="https://provider.example/token",
+        )
+
+        with patch(f"{_ROUTER}._get_oauth_config_path", return_value="/path"), \
+             patch(f"{_ROUTER}._apply_confluence_optional_jira_scope", return_value=["read"]), \
+             patch(
+                 "app.connectors.core.registry.oauth_config_registry.get_oauth_config_registry",
+                 return_value=registry,
+             ):
+            result = await _build_oauth_flow_config(
+                auth_config, "DROPBOXPERSONAL", "o1", cs, MagicMock(), registry_type="Dropbox Personal"
+            )
+        registry.get_config.assert_called_once_with("Dropbox Personal")
+        assert result["authorizeUrl"] == "https://provider.example/authorize"
+        assert result["tokenUrl"] == "https://provider.example/token"
+
+    @pytest.mark.asyncio
+    async def test_shared_oauth_config_urls_win_over_top_level(self):
+        """URLs an admin typed into the app's fields (ServiceNow) are the ones used."""
+        from app.connectors.api.router import _build_oauth_flow_config
+        auth_config = {"oauthConfigId": "cfg1", "authType": "OAUTH"}
+        shared = {
+            "_id": "cfg1", "orgId": "o1",
+            "authorizeUrl": "https://placeholder/oauth_auth.do",
+            "tokenUrl": "https://placeholder/oauth_token.do",
+            "scopes": ["read"],
+            "config": {
+                "clientId": "c1",
+                "authorizeUrl": "https://acme.service-now.com/oauth_auth.do",
+                "tokenUrl": "https://acme.service-now.com/oauth_token.do",
+                "instanceUrl": "https://acme.service-now.com",
+            },
+        }
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value=[shared])
+
+        with patch(f"{_ROUTER}._get_oauth_config_path", return_value="/path"), \
+             patch(f"{_ROUTER}._apply_confluence_optional_jira_scope", return_value=["read"]):
+            result = await _build_oauth_flow_config(
+                auth_config, "SERVICENOW", "o1", cs, MagicMock()
+            )
+        assert result["tokenUrl"] == "https://acme.service-now.com/oauth_token.do"
+        assert result["authorizeUrl"] == "https://acme.service-now.com/oauth_auth.do"
+        assert result["instanceUrl"] == "https://acme.service-now.com"
 
     @pytest.mark.asyncio
     async def test_shared_oauth_not_found_raises(self):
@@ -813,6 +903,44 @@ class TestGetPdfConversionInfo:
         assert needs is True
         assert name == "My Book"
         assert ext == "epub"
+
+    @pytest.mark.asyncio
+    async def test_epub_preview_is_refused_plainly_without_starting_libreoffice(self) -> None:
+        from app.connectors.api.router import convert_buffer_to_pdf_stream
+        from app.utils.user_messages import EPUB_PREVIEW_UNAVAILABLE
+        with patch("asyncio.create_subprocess_exec", AsyncMock()) as spawn:
+            with pytest.raises(HTTPException) as caught:
+                await convert_buffer_to_pdf_stream(b"PK\x03\x04 a book", "My Book", "epub")
+        assert caught.value.status_code == 422
+        assert caught.value.detail == EPUB_PREVIEW_UNAVAILABLE
+        spawn.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored_in_blob_storage", [True, False])
+    async def test_epub_preview_is_refused_before_fetching_the_file(self, stored_in_blob_storage: bool) -> None:
+        from app.connectors.api import router as router_module
+        from app.models.entities import RecordType
+        from app.utils.user_messages import EPUB_PREVIEW_UNAVAILABLE
+        record = MagicMock()
+        record.record_name = "book.epub"
+        record.mime_type = "application/epub+zip"
+        record.record_type = RecordType.ARTIFACT if stored_in_blob_storage else RecordType.FILE
+        record.connector_name = "DRIVE"
+        graph_provider = AsyncMock()
+        graph_provider.get_document.side_effect = HTTPException(status_code=502, detail="graph down")
+        failed_fetch = AsyncMock(side_effect=HTTPException(status_code=502, detail="storage down"))
+        with patch.object(router_module, "_stream_artifact_from_storage", failed_fetch), \
+             patch.object(router_module, "_invoke_connector_stream", failed_fetch):
+            with pytest.raises(HTTPException) as caught:
+                await router_module._resolve_record_content_response(
+                    record=record, org_id="o", user_id="u", is_admin=False,
+                    convert_to="application/pdf", version=None, request=MagicMock(),
+                    config_service=MagicMock(), graph_provider=graph_provider,
+                )
+        assert caught.value.status_code == 422
+        assert caught.value.detail == EPUB_PREVIEW_UNAVAILABLE
+        failed_fetch.assert_not_called()
+        graph_provider.get_document.assert_not_called()
 
 
 # ============================================================================

@@ -84,6 +84,9 @@ class S3StorageHelper:
     def move_object(self, bucket: str, old_key: str, new_key: str) -> None:
         self.rename_object(bucket, old_key, new_key)
 
+    def delete_object(self, bucket: str, key: str) -> None:
+        self._client.delete_object(Bucket=bucket, Key=key)
+
     def _clear_objects_versioned(self, bucket: str, prefix: str) -> None:
         paginator = self._client.get_paginator("list_object_versions")
         for page in paginator.paginate(Bucket=bucket, Prefix=prefix):

@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useToastStore } from '@/lib/store/toast-store';
 import { useConnectorsStore } from '../../store';
 import { CONNECTOR_OAUTH_POST_MESSAGE } from '@/app/(main)/connectors/oauth/connector-oauth-window-messages';
 import { isConnectorConfigAuthenticated } from '../../utils/auth-helpers';
@@ -71,6 +73,8 @@ export type ConnectorOAuthPopupOptions = {
  * listener stays alive while the panel is open (Radix Tabs unmounts inactive tab content).
  */
 export function useConnectorOAuthPopup(options?: ConnectorOAuthPopupOptions) {
+  const { t } = useTranslation();
+  const addToast = useToastStore((s) => s.addToast);
   const isPanelOpen = useConnectorsStore((s) => s.isPanelOpen);
   const setAuthState = useConnectorsStore((s) => s.setAuthState);
 
@@ -274,10 +278,10 @@ export function useConnectorOAuthPopup(options?: ConnectorOAuthPopupOptions) {
 
       const popup = openCenteredOAuthWindow(authorizationUrl, `connector-oauth-${id}`);
       if (!popup || popup.closed) {
-        // Popup was blocked
         setIsAuthenticating(false);
         const cfg = useConnectorsStore.getState().connectorConfig;
         setAuthState(isConnectorConfigAuthenticated(cfg) ? 'success' : 'empty');
+        addToast({ variant: 'error', title: t('agentBuilder.oauthPopupBlocked') });
         return;
       }
 
@@ -306,7 +310,7 @@ export function useConnectorOAuthPopup(options?: ConnectorOAuthPopupOptions) {
       setIsAuthenticating(false);
       setAuthState('failed');
     }
-  }, [setAuthState, clearOAuthPoll, completeOAuthFlow]);
+  }, [setAuthState, clearOAuthPoll, completeOAuthFlow, addToast, t]);
 
   return { startOAuthPopup, isAuthenticating };
 }

@@ -43,10 +43,13 @@ export type ConnectorType =
   | 'local-fs'
   | 'localfs'
   | 'nextcloud'
+  | 'smb'
+  | 'cifs'
   // Document & Knowledge
   | 'notion'
   | 'confluence'
   | 'bookstack'
+  | 'drupal-wiki'
   /** PipesHub Collections / KB — backend `Connectors.KNOWLEDGE_BASE` = `"KB"` */
   | 'kb'
   | 'knowledge-base'
@@ -136,10 +139,13 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'local-fs': { svg: `${CONNECTOR_ICONS_BASE_PATH}/local-fs.png`, fallback: 'folder', needDarkModeInvert: true },
   'localfs': { svg: `${CONNECTOR_ICONS_BASE_PATH}/local-fs.png`, fallback: 'folder', needDarkModeInvert: true },
   'nextcloud': { svg: svg('nextcloud'), fallback: 'cloud' },
+  'smb': { svg: svg('smb'), fallback: 'folder_shared' },
+  'cifs': { svg: svg('cifs'), fallback: 'folder_shared' },
   // Document & Knowledge
   'notion': { svg: svg('notion'), fallback: 'description' },
   'confluence': { svg: svg('confluence'), fallback: 'article' },
   'bookstack': { svg: svg('bookstack'), fallback: 'menu_book' },
+  'drupal-wiki': { svg: svg('drupalwiki'), fallback: 'menu_book' },
   'google-docs': { svg: svg('docs'), fallback: 'description' },
   'google-sheets': { svg: svg('sheets'), fallback: 'table_chart' },
   'google-slides': { svg: svg('slides'), fallback: 'slideshow' },
@@ -218,6 +224,8 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['local-files', 'local-fs'],
   ['dropbox', 'dropbox'], ['box', 'box'],
   ['minio', 'minio'], ['nextcloud', 'nextcloud'],
+  ['network-drive', 'smb'], ['smb3', 'smb'], ['smb2', 'smb'], ['smb', 'smb'],
+  ['cifs', 'cifs'],
   // Dev tools & project tracking
   ['linear', 'linear'],
   ['jira', 'jira'], ['confluence', 'confluence'],
@@ -229,6 +237,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['mariadb', 'mariadb'], ['airtable', 'airtable'],
   // Document & Knowledge
   ['notion', 'notion'], ['bookstack', 'bookstack'],
+  ['drupal', 'drupal-wiki'],
   // Media & Other
   ['youtube', 'youtube'], ['rss', 'rss'],
   ['seek', 'seek'], ['frame', 'frame'], ['vector', 'vector'],

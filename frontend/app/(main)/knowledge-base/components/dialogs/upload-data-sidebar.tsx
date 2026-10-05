@@ -6,6 +6,7 @@ import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
+import { folderLevelsInPath, uploadPathOf } from '../../utils/folder-depth';
 
 function createUploadItemId(prefix: 'file' | 'folder'): string {
   const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
@@ -740,6 +741,9 @@ export interface UploadDataSidebarProps {
   onOpenChange: (open: boolean) => void;
   onSave: (items: UploadFileItem[]) => void;
   isSaving?: boolean;
+  /** Folder levels that can still be added under the upload target. */
+  remainingFolderLevels?: number;
+  maxFolderDepth?: number;
 }
 
 export function UploadDataSidebar({
@@ -747,6 +751,8 @@ export function UploadDataSidebar({
   onOpenChange,
   onSave,
   isSaving = false,
+  remainingFolderLevels = Infinity,
+  maxFolderDepth,
 }: UploadDataSidebarProps) {
   const [fileItems, setFileItems] = useState<UploadFileItem[]>([]);
   const [folderItems, setFolderItems] = useState<UploadFileItem[]>([]);
@@ -812,6 +818,15 @@ export function UploadDataSidebar({
   );
 
   const hasItems = fileItems.length > 0 || folderItems.length > 0;
+
+  // Save stays disabled while the selected folders nest past the limit; the
+  // user trims the selection with the remove buttons until it fits.
+  const exceedsFolderDepth = folderItems.some((item) =>
+    (item.filesWithPaths ?? []).some(
+      (f) => folderLevelsInPath(uploadPathOf(item.name, f.relativePath, f.file.name)) > remainingFolderLevels,
+    ),
+  );
+  const foldersAllowed = remainingFolderLevels > 0;
 
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
@@ -1030,10 +1045,24 @@ export function UploadDataSidebar({
               </ScrollableList>
             )}
 
-            {folderItems.length === 0 && (
+            {exceedsFolderDepth && (
+              <Text size="1" color="red" data-testid="upload-depth-warning">
+                Only {remainingFolderLevels} more folder {remainingFolderLevels === 1 ? 'level fits' : 'levels fit'} here
+                (folders can be nested at most {maxFolderDepth} levels deep). Remove some folders to continue.
+              </Text>
+            )}
+
+            {folderItems.length === 0 && foldersAllowed && (
               <Box style={{ flex: 1 }}>
                 <DropZone type="folder" onDrop={handleAddFolders} isEmpty />
               </Box>
+            )}
+
+            {folderItems.length === 0 && !foldersAllowed && (
+              <Text size="1" style={{ color: 'var(--slate-9)' }} data-testid="upload-folder-limit-reached">
+                Folders can be nested at most {maxFolderDepth} levels deep and this folder is already at that
+                limit, so folders cannot be uploaded here. You can still upload files.
+              </Text>
             )}
           </Flex>
         </Box>
@@ -1066,7 +1095,7 @@ export function UploadDataSidebar({
             size="2"
             data-testid="upload-sidebar-save"
             onClick={handleSave}
-            disabled={!hasItems}
+            disabled={!hasItems || exceedsFolderDepth}
             loading={isSaving}
           >
             Save

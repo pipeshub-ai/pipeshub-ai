@@ -1,4 +1,4 @@
-﻿/**
+/**
  * External Store Runtime bridge for assistant-ui.
  *
  * Provides:
@@ -22,21 +22,28 @@ import {
   type AppliedFilterNode,
   type AppliedFilters,
   type AttachmentRef,
+  type AskUserQuestionAnswer,
   type AskUserQuestionPayload,
   type ChatCollectionAttachment,
   type ChatKnowledgeFilters,
   type ChatSettings,
   type ChatSlot,
   type ConversationMessage,
+  type MessagePart,
   type PendingAskUserQuestion,
   type StreamChatRequest,
-  DEFAULT_REASONING_EFFORT,
 } from './types';
 import {
   buildCitationMapsFromApi,
 } from './components/message-area/response-tabs/citations';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 import { bareToolFullName } from './tool-groups';
+import {
+  hasUnansweredQuestions,
+  mergeAskUserQuestionPayloads,
+  parseAnswerMessage,
+} from './components/message-area/ask-user-question-card';
+import { appendResumeParts } from './utils/tool-display';
 
 /** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
 const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
@@ -45,6 +52,14 @@ const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
  * Handles pre-fix conversations where `content` had narration mixed in,
  * and guards against backend regressions. Mirrors Python's extraction in
  * `AnswerFinalizer._run_success_path` (respond.py). */
+export const EMPTY_ANSWER_FALLBACK =
+  "I wasn't able to generate a response. Please try rephrasing.";
+
+export function isUsableFollowUpText(text: string | undefined): boolean {
+  const t = (text ?? '').trim();
+  return t.length > 0 && t !== EMPTY_ANSWER_FALLBACK;
+}
+
 function extractFinalAnswer(
   parts: ConversationMessage['parts'],
   fallback: string,
@@ -222,15 +237,13 @@ export function buildStreamChatRequestForSlot(
     showNoModelToast();
   }
   const effectiveModel = rawModel ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
-  // No explicit user choice → prefer the agent's configured default, then
-  // fall back to DEFAULT_REASONING_EFFORT for reasoning-capable models.
+  // Neither the user nor the agent chose an effort → leave it off the request
+  // so the backend applies the model's own default, then "high".
   const reasoningEffortOverride = currentState.settings.reasoningEffort[modelCtxKey] ?? null;
   const agentDefault = getAgentDefaultReasoningEffort(modelCtxKey);
   const reasoningEffort =
     reasoningEffortOverride ??
-    (isModelReasoningCapable(modelCtxKey, effectiveModel)
-      ? (agentDefault ?? DEFAULT_REASONING_EFFORT)
-      : null);
+    (isModelReasoningCapable(modelCtxKey, effectiveModel) ? agentDefault : null);
 
   const isAgent = Boolean(effectiveAgentId);
   const knowledgeScope = currentState.agentKnowledgeScope;
@@ -328,6 +341,145 @@ export interface LoadHistoricalResult {
   unansweredAskUserQuestion: PendingAskUserQuestion | null;
 }
 
+function isAskUserQuestionResumeQuery(text: string | undefined | null): boolean {
+  return typeof text === 'string' && text.trimStart().startsWith('User selections:');
+}
+
+/** The stored record of a card resume whose stream died. The live view reports
+ *  that with a toast and keeps the card, so replaying the row as an error
+ *  bubble would show a failure the user never saw. A plain chat failure sits
+ *  behind a real user query and still renders. */
+function isFailedAskUserQuestionResumeError(
+  messages: ConversationMessage[],
+  errorIndex: number,
+): boolean {
+  for (let j = errorIndex - 1; j >= 0; j -= 1) {
+    const prev = messages[j];
+    if (prev?.messageType === 'tool_call') continue;
+    return (
+      prev?.messageType === 'user_query' &&
+      isAskUserQuestionResumeQuery(prev.content)
+    );
+  }
+  return false;
+}
+
+function findQuestionAssistantRow(
+  result: ThreadMessageLike[],
+  unansweredAssistantId: string | null,
+): ThreadMessageLike | undefined {
+  for (let i = result.length - 1; i >= 0; i -= 1) {
+    const row = result[i];
+    if (row.role !== 'assistant') continue;
+    const custom = row.metadata?.custom as { persistedAskUserQuestion?: unknown } | undefined;
+    if (custom?.persistedAskUserQuestion) return row;
+    if (unansweredAssistantId && row.id === unansweredAssistantId) return row;
+  }
+  return undefined;
+}
+
+/** A resume row only completes the card when a later bot_response has text. */
+function hasFollowUpAfterResume(
+  messages: ConversationMessage[],
+  resumeIndex: number,
+): boolean {
+  for (let k = resumeIndex + 1; k < messages.length; k++) {
+    const next = messages[k];
+    if (next.messageType === 'tool_call') continue;
+    if (next.messageType === 'user_query') {
+      if (isAskUserQuestionResumeQuery(next.content)) continue;
+      return false;
+    }
+    if (next.messageType === 'error') return false;
+    if (next.messageType === 'bot_response') {
+      return isUsableFollowUpText(extractFinalAnswer(next.parts, next.content));
+    }
+  }
+  return false;
+}
+
+function isAskUserQuestionAnswered(
+  messages: ConversationMessage[],
+  cardBotIndex: number,
+): boolean {
+  for (let j = cardBotIndex + 1; j < messages.length; j++) {
+    if (messages[j].messageType !== 'user_query') continue;
+    if (!isAskUserQuestionResumeQuery(messages[j].content)) continue;
+    if (hasFollowUpAfterResume(messages, j)) return true;
+  }
+  return false;
+}
+
+function stampPersistedQuestionCard(
+  result: ThreadMessageLike[],
+  assistantId: string,
+  payload: AskUserQuestionPayload,
+  overwrite = false,
+): void {
+  const row = result.find((m) => m.role === 'assistant' && m.id === assistantId);
+  if (!row) return;
+  const prevCustom = (row.metadata?.custom ?? {}) as Record<string, unknown>;
+  const prevPayload = prevCustom.persistedAskUserQuestion as AskUserQuestionPayload | undefined;
+  if (prevPayload && !overwrite) return;
+  const next = prevPayload && overwrite
+    ? mergeAskUserQuestionPayloads(prevPayload, payload)
+    : payload;
+  Object.assign(row, {
+    metadata: {
+      ...row.metadata,
+      custom: { ...prevCustom, persistedAskUserQuestion: next },
+    },
+  });
+}
+
+function askPayloadFromUnknown(raw: unknown): AskUserQuestionPayload | null {
+  if (typeof raw === 'string') {
+    try {
+      return askPayloadFromUnknown(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  }
+  if (!raw || typeof raw !== 'object') return null;
+  const tr = raw as Record<string, unknown>;
+  if (Array.isArray(tr.questions) && tr.questions.length > 0) {
+    return tr as unknown as AskUserQuestionPayload;
+  }
+  return askPayloadFromUnknown(tr.toolData);
+}
+
+function askPayloadFromToolCall(msg: ConversationMessage): AskUserQuestionPayload | null {
+  const askTool = msg.tools?.find((t) =>
+    typeof t.toolName === 'string' && t.toolName.includes('ask_user_question'),
+  );
+  return askPayloadFromUnknown(askTool?.toolResult);
+}
+
+function askPayloadFromParts(parts: ConversationMessage['parts']): AskUserQuestionPayload | null {
+  if (!parts?.length) return null;
+  for (const part of parts) {
+    if (part.type !== 'tool_call' || !part.toolName?.includes('ask_user_question')) {
+      continue;
+    }
+    const payload = askPayloadFromUnknown(part.resultPreview ?? part.resultSummary);
+    if (payload) return payload;
+  }
+  return null;
+}
+
+function peekFollowingAskPayload(
+  messages: ConversationMessage[],
+  botIndex: number,
+): AskUserQuestionPayload | null {
+  for (let j = botIndex + 1; j < messages.length; j++) {
+    const next = messages[j];
+    if (next.messageType !== 'tool_call') break;
+    const payload = askPayloadFromToolCall(next);
+    if (payload) return payload;
+  }
+  return null;
+}
+
 /**
  * Transform backend conversation messages into assistant-ui thread format.
  *
@@ -336,10 +488,14 @@ export interface LoadHistoricalResult {
  * Handles `tool_call` messages:
  *   - Filters them out of the output (no ThreadMessageLike entry).
  *   - When a `tool_call` with `ask_user_question` precedes a `bot_response`:
- *     â€¢ If a subsequent `user_query` exists â†’ attaches payload as
+ *     • If a later `User selections:` row exists → attaches payload as
  *       `persistedAskUserQuestion` in metadata (read-only display).
- *     â€¢ If no subsequent `user_query` â†’ returns it as
+ *     • If no `User selections:` follows → returns it as
  *       `unansweredAskUserQuestion` for the caller to restore interactive state.
+ *   - A `user_query` that starts with `User selections:` is the synthetic
+ *     resume of that card — it is not shown as a user bubble. The following
+ *     `bot_response` is merged into the question's assistant row so the
+ *     answer continues in the same turn.
  */
 export function loadHistoricalMessages(
   messages: ConversationMessage[]
@@ -348,16 +504,44 @@ export function loadHistoricalMessages(
   let toolPayload: AskUserQuestionPayload | null = null;
   let lastUnansweredAssistantId: string | null = null;
   let lastUnansweredPayload: AskUserQuestionPayload | null = null;
+  let lastUnansweredAnswers: Record<string, AskUserQuestionAnswer> = {};
+  let mergeNextBotIntoId: string | null = null;
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
 
     if (msg.messageType === 'tool_call') {
-      const askTool = msg.tools?.find(t => t.toolName === 'ask_user_question');
-      if (askTool?.toolResult) {
-        const tr = askTool.toolResult as Record<string, unknown>;
-        if (tr.name === 'ask_user_question' && Array.isArray(tr.questions)) {
-          toolPayload = tr as unknown as AskUserQuestionPayload;
+      const payload = askPayloadFromToolCall(msg);
+      if (payload) {
+        const last = result[result.length - 1];
+        if (last?.role === 'assistant' && typeof last.id === 'string') {
+          const botIndex = messages.findIndex(
+            (m) => String(m._id) === String(last.id),
+          );
+          stampPersistedQuestionCard(result, last.id, payload, true);
+          const rowCustom = (last.metadata?.custom ?? {}) as {
+            persistedAskUserQuestion?: AskUserQuestionPayload;
+            persistedAskUserQuestionAnswers?: Record<string, AskUserQuestionAnswer>;
+          };
+          const stamped = rowCustom.persistedAskUserQuestion ?? payload;
+          const stampedAnswers = rowCustom.persistedAskUserQuestionAnswers ?? {};
+          toolPayload = stamped;
+          // A resume that ended on another question leaves this turn answered
+          // while the newly merged question is not — keep the card interactive,
+          // carrying the earlier selections so it reopens on the new question.
+          const answered =
+            botIndex >= 0 &&
+            isAskUserQuestionAnswered(messages, botIndex) &&
+            !hasUnansweredQuestions(stamped, stampedAnswers);
+          if (!answered) {
+            lastUnansweredAssistantId = last.id;
+            lastUnansweredPayload = stamped;
+            lastUnansweredAnswers = { ...lastUnansweredAnswers, ...stampedAnswers };
+          }
+        } else {
+          toolPayload = toolPayload
+            ? mergeAskUserQuestionPayloads(toolPayload, payload)
+            : payload;
         }
       }
       continue;
@@ -365,6 +549,9 @@ export function loadHistoricalMessages(
 
     if (msg.messageType === 'error') {
       toolPayload = null;
+      if (isFailedAskUserQuestionResumeError(messages, i)) {
+        continue;
+      }
       result.push({
         id: msg._id,
         role: 'assistant' as const,
@@ -379,20 +566,29 @@ export function loadHistoricalMessages(
     }
 
     if (msg.messageType === 'bot_response') {
-      const capturedPayload = toolPayload;
+      const capturedPayload =
+        toolPayload ?? askPayloadFromParts(msg.parts) ?? askPayloadFromToolCall(msg);
       toolPayload = null;
 
-      let isAnswered = false;
-      if (capturedPayload) {
-        for (let j = i + 1; j < messages.length; j++) {
-          if (messages[j].messageType === 'tool_call') continue;
-          if (messages[j].messageType === 'user_query') { isAnswered = true; }
-          break;
+      const isAnswered = capturedPayload
+        ? isAskUserQuestionAnswered(messages, i)
+        : false;
+      // A reply merged into an earlier card row (`mergeNextBotIntoId`) never
+      // becomes a row of its own, so the card must stay addressed to the row
+      // that survives: a resume bound to the merged-away id cannot find it and
+      // streams onto the newest turn instead. When that row is already the
+      // tracked one, its payload and selections are the fuller pair — the
+      // `tool_call` branch above merged the new question into them.
+      const cardRowId = mergeNextBotIntoId ?? msg._id;
+      if (capturedPayload && !isAnswered && cardRowId !== lastUnansweredAssistantId) {
+        if (lastUnansweredAssistantId && lastUnansweredPayload) {
+          stampPersistedQuestionCard(
+            result, lastUnansweredAssistantId, lastUnansweredPayload,
+          );
         }
-        if (!isAnswered) {
-          lastUnansweredAssistantId = msg._id;
-          lastUnansweredPayload = capturedPayload;
-        }
+        lastUnansweredAssistantId = cardRowId;
+        lastUnansweredPayload = capturedPayload;
+        lastUnansweredAnswers = {};
       }
 
       const feedbackEntry = (msg.feedback as Array<{ isHelpful?: boolean }> | undefined)?.[0];
@@ -406,9 +602,49 @@ export function loadHistoricalMessages(
       // A run stopped before any text arrived is saved as an empty stopped
       // reply. The live view drops that row (`buildStoppedMessages`); showing
       // it after a reload would add an empty "Stopped" bubble the user never saw.
-      if (msg.status === 'stopped' && !answerText.trim() && !msg.parts?.length && !capturedPayload) {
+      if (
+        msg.status === 'stopped' &&
+        !answerText.trim() &&
+        !msg.parts?.length &&
+        !capturedPayload &&
+        !peekFollowingAskPayload(messages, i)
+      ) {
         continue;
       }
+
+      if (mergeNextBotIntoId) {
+        if (!answerText.trim() && !msg.parts?.length) {
+          mergeNextBotIntoId = null;
+          continue;
+        }
+        const last = result.find((m) => m.role === 'assistant' && m.id === mergeNextBotIntoId);
+        mergeNextBotIntoId = null;
+        if (last?.role === 'assistant') {
+          const prevCustom = (last.metadata?.custom ?? {}) as Record<string, unknown>;
+          const prevParts = Array.isArray(prevCustom.persistedParts)
+            ? (prevCustom.persistedParts as MessagePart[])
+            : [];
+          const nextParts = msg.parts?.length ? appendResumeParts(prevParts, msg.parts) : prevParts;
+          Object.assign(last, {
+            content: [{ type: 'text' as const, text: answerText }],
+            metadata: {
+              ...last.metadata,
+              custom: {
+                ...prevCustom,
+                messageId: msg._id,
+                citationMaps: buildCitationMapsFromApi(msg.citations || []),
+                confidence: msg.confidence,
+                modelInfo: msg.modelInfo,
+                ...(feedbackInfo ? { feedbackInfo } : {}),
+                ...(msg.status === 'stopped' ? { status: 'stopped' as const } : {}),
+                ...(nextParts.length ? { persistedParts: nextParts } : {}),
+              },
+            },
+          });
+          continue;
+        }
+      }
+
       result.push({
         id: msg._id,
         role: 'assistant' as const,
@@ -421,7 +657,7 @@ export function loadHistoricalMessages(
             modelInfo: msg.modelInfo,
             ...(feedbackInfo ? { feedbackInfo } : {}),
             ...(msg.status === 'stopped' ? { status: 'stopped' as const } : {}),
-            ...(capturedPayload && isAnswered
+            ...(capturedPayload
               ? { persistedAskUserQuestion: capturedPayload }
               : {}),
             // Agent-activity transcript (`agui` protocol only — see
@@ -435,7 +671,47 @@ export function loadHistoricalMessages(
       continue;
     }
 
-    // user_query
+    if (isAskUserQuestionResumeQuery(msg.content)) {
+      const last = findQuestionAssistantRow(result, lastUnansweredAssistantId);
+      if (last?.role === 'assistant' && typeof last.id === 'string') {
+        mergeNextBotIntoId = last.id;
+        const prevCustom = (last.metadata?.custom ?? {}) as Record<string, unknown>;
+        const payload = (
+          prevCustom.persistedAskUserQuestion ?? lastUnansweredPayload
+        ) as AskUserQuestionPayload | undefined;
+        const parsed = payload ? parseAnswerMessage(msg.content, payload) : {};
+        const prevAnswers = (
+          (prevCustom.persistedAskUserQuestionAnswers as Record<string, AskUserQuestionAnswer> | undefined)
+          ?? lastUnansweredAnswers
+        );
+        const answers = { ...prevAnswers, ...parsed };
+        const followUpComplete = hasFollowUpAfterResume(messages, i);
+        Object.assign(last, {
+          metadata: {
+            ...last.metadata,
+            custom: {
+              ...prevCustom,
+              ...(payload ? { persistedAskUserQuestion: payload } : {}),
+              ...(followUpComplete && Object.keys(answers).length
+                ? { persistedAskUserQuestionAnswers: answers }
+                : {}),
+            },
+          },
+        });
+        if (followUpComplete) {
+          lastUnansweredAssistantId = null;
+          lastUnansweredPayload = null;
+          lastUnansweredAnswers = {};
+        } else {
+          lastUnansweredAssistantId = last.id;
+          if (payload) lastUnansweredPayload = payload;
+          lastUnansweredAnswers = answers;
+        }
+      }
+      toolPayload = null;
+      continue;
+    }
+
     toolPayload = null;
     result.push({
       id: msg._id,
@@ -456,7 +732,7 @@ export function loadHistoricalMessages(
     unanswered = {
       assistantMessageId: lastUnansweredAssistantId,
       payload: lastUnansweredPayload,
-      answers: {},
+      answers: lastUnansweredAnswers,
       status: 'pending',
     };
   }

@@ -15,8 +15,9 @@
 #   SMOKE_VARIANT=arangodb-redis bash deployment/helm/tests/kind_smoke.sh
 #
 # Optional env:
-#   SMOKE_VARIANT   neo4j-kafka (default, the values-local.yaml preset) |
-#                   arangodb-redis
+#   SMOKE_VARIANT   neo4j-kafka (default) | arangodb-redis | eks
+#                   eks uses values-eks.yaml on a 3-worker cluster, scaled down
+
 #   APP_IMAGE       image to install (default pipeshubai/pipeshub-ai:slim)
 #   KIND_CLUSTER    cluster name (default pipeshub-helm-smoke-<pid>)
 #   SMOKE_PORT      local port for the port-forward (default 13001)
@@ -45,6 +46,8 @@ for tool in kind kubectl helm docker curl python3 openssl; do
 done
 docker info >/dev/null 2>&1 || die "docker daemon is not running"
 
+VALUES_FILE="$CHART/values-local.yaml"
+KIND_NODES=1
 case "$VARIANT" in
   neo4j-kafka)
     VARIANT_ARGS=()
@@ -57,8 +60,13 @@ case "$VARIANT" in
       --set messageBroker.type=redis
     )
     ;;
+  eks)
+    VARIANT_ARGS=(-f "$CHART/../tests/values-eks-kind.yaml")
+    VALUES_FILE="$CHART/values-eks.yaml"
+    KIND_NODES=3
+    ;;
   *)
-    die "SMOKE_VARIANT must be neo4j-kafka or arangodb-redis (got ${VARIANT})"
+    die "SMOKE_VARIANT must be neo4j-kafka, arangodb-redis, or eks (got ${VARIANT})"
     ;;
 esac
 
@@ -100,7 +108,18 @@ trap cleanup EXIT
 
 echo "${LOG_PREFIX}: variant=${VARIANT} image=${APP_IMAGE} cluster=${CLUSTER}"
 
-kind create cluster --name "$CLUSTER" --wait 180s
+if [[ "$KIND_NODES" -gt 1 ]]; then
+  {
+    echo "kind: Cluster"
+    echo "apiVersion: kind.x-k8s.io/v1alpha4"
+    echo "nodes:"
+    echo "- role: control-plane"
+    for ((n = 0; n < KIND_NODES; n++)); do echo "- role: worker"; done
+  } >"$WORK/kind.yaml"
+  kind create cluster --name "$CLUSTER" --config "$WORK/kind.yaml" --wait 180s
+else
+  kind create cluster --name "$CLUSTER" --wait 180s
+fi
 kubectl config use-context "kind-${CLUSTER}" >/dev/null
 
 helm dependency build "$CHART" >/dev/null
@@ -110,7 +129,7 @@ helm dependency build "$CHART" >/dev/null
 echo "${LOG_PREFIX}: installing (helm waits up to ${HELM_TIMEOUT} for every pod to be Ready)"
 if ! helm install "$RELEASE" "$CHART" \
   --namespace "$NAMESPACE" --create-namespace \
-  -f "$CHART/values-local.yaml" \
+  -f "$VALUES_FILE" \
   --set image.repository="${APP_IMAGE%:*}" \
   --set image.tag="${APP_IMAGE##*:}" \
   --set secretKey="$(openssl rand -hex 32)" \
@@ -176,4 +195,58 @@ fi
 # compose healthcheck: on slim it downloads its model on first use, and it is
 # unused when a hosted embedding model is configured.
 echo "${LOG_PREFIX}: services $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"])' "$WORK/health.json")"
+
+if [[ "$VARIANT" == "eks" ]]; then
+  MONGO_POD="${RELEASE}-mongodb-0"
+  QDRANT_POD="${RELEASE}-qdrant-0"
+  REDIS_POD="${RELEASE}-redis-master-0"
+  kubectl exec -n "$NAMESPACE" "$MONGO_POD" -- mongosh --quiet --username root \
+    --password "$(kubectl get secret -n "$NAMESPACE" "${RELEASE}-secrets" -o jsonpath='{.data.mongodb-password}' | base64 -d)" \
+    --authenticationDatabase admin --eval 'const s=rs.status(); if (s.members.filter(m => m.health===1).length < 3) quit(1)' \
+    || die "mongo replica set does not have 3 healthy members"
+  kubectl exec -n "$NAMESPACE" "deploy/${RELEASE}" -- python -c '
+import json, os, urllib.request
+key = os.environ["QDRANT_API_KEY"]
+req = urllib.request.Request("http://pipeshub-ai-qdrant:6333/cluster", headers={"api-key": key})
+body = json.load(urllib.request.urlopen(req, timeout=30))
+peers = (body.get("result") or {}).get("peers") or {}
+print("peers", len(peers))
+if len(peers) < 3:
+    raise SystemExit(1)
+' || die "qdrant does not have 3 peers"
+  kubectl exec -n "$NAMESPACE" "deploy/${RELEASE}" -- python -c '
+import json, os, urllib.request
+key = os.environ["QDRANT_API_KEY"]
+create = urllib.request.Request(
+    "http://pipeshub-ai-qdrant:6333/collections/kind_smoke",
+    data=b"{\"vectors\":{\"size\":4,\"distance\":\"Cosine\"}}",
+    headers={"api-key": key, "Content-Type": "application/json"},
+    method="PUT",
+)
+urllib.request.urlopen(create, timeout=30).read()
+req = urllib.request.Request("http://pipeshub-ai-qdrant:6333/collections/kind_smoke", headers={"api-key": key})
+params = ((json.load(urllib.request.urlopen(req, timeout=30)).get("result") or {}).get("config") or {}).get("params") or {}
+print(params.get("replication_factor"))
+if params.get("replication_factor") != 2:
+    raise SystemExit(1)
+' || die "qdrant replication_factor is not 2"
+  kubectl exec -n "$NAMESPACE" "$REDIS_POD" -- redis-cli INFO replication | grep -q 'connected_slaves:1' \
+    || die "redis replica is not connected"
+  kubectl exec -n "$NAMESPACE" "$REDIS_POD" -- redis-cli CONFIG GET maxmemory-policy | grep -q noeviction \
+    || die "redis maxmemory-policy is not noeviction"
+  kubectl exec -i -n "$NAMESPACE" "deploy/${RELEASE}" -- python - <<'PY' || die "sandbox run_code via DinD failed"
+import os
+os.environ.setdefault("DOCKER_HOST", "tcp://127.0.0.1:2375")
+import docker
+client = docker.from_env()
+image = os.environ["SANDBOX_DOCKER_IMAGE"]
+client.images.pull(image)
+out = client.containers.run(image, ["python", "-c", "print(1+1)"], network_mode="none", remove=True)
+text = out.decode() if isinstance(out, bytes) else str(out)
+if "2" not in text:
+    raise SystemExit(text)
+print(text)
+PY
+fi
+
 echo "${LOG_PREFIX}: ok (variant=${VARIANT}, core services healthy, UI 200)"

@@ -83,7 +83,9 @@ export function buildServiceAccountEmail(slug: string, orgId: string): string {
  *
  * This is a convenience for reading and for defence in depth. It is never the
  * thing that decides whether a record is a service account — the `kind` field
- * is, because a human could in principle be given any address at all.
+ * is. What keeps the two in step is
+ * {@link assertReservedEmailDomainBelongsToServiceAccount}, which refuses to
+ * store an address here on anything else.
  */
 export function isServiceAccountEmail(
   email: string | undefined | null,
@@ -112,4 +114,51 @@ export function serviceAccountSlugFromEmail(
   return withoutPrefix.endsWith(orgSuffix)
     ? withoutPrefix.slice(0, -orgSuffix.length)
     : withoutPrefix;
+}
+
+/**
+ * The domain is reserved, so only a service account may hold an address in it.
+ *
+ * Without this the domain is a naming convention rather than a reservation. A
+ * person invited at `svc-nightly-<orgId>@service.pipeshub.internal` would read
+ * as a machine identity everywhere the address is shown, while being a human
+ * account that can sign in and hold a password — which is the opposite of what
+ * a service account is, and the opposite of what someone reviewing the account
+ * list would conclude. It would also take a name a real service account might
+ * later need, since email is unique across the collection.
+ *
+ * Enforced from the user schema's save and update hooks rather than at the
+ * endpoints, because four paths set a human's address — create, bulk invite,
+ * the CSV invite upload, and the change-email endpoint — and only the write
+ * boundary covers all of them.
+ */
+export const SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE =
+  `Only a service account can use an address at ${SERVICE_ACCOUNT_EMAIL_DOMAIN}`;
+
+export function assertReservedEmailDomainBelongsToServiceAccount(
+  kind: string | undefined,
+  email: string | undefined | null,
+): void {
+  if (isServiceAccountEmail(email) && kind !== 'service') {
+    throw new Error(SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE);
+  }
+}
+
+/**
+ * Matches any address in the reserved domain, for querying stored records.
+ *
+ * Written out as a literal rather than built from
+ * {@link SERVICE_ACCOUNT_EMAIL_DOMAIN}. Assembling a pattern from a string
+ * means escaping whatever that string might contain, and escaping only the
+ * dots — which is all this domain needs — is the kind of half-measure that is
+ * correct until the constant changes. A literal cannot be mis-escaped at all.
+ *
+ * The two are kept in step by a test that builds an address from the constant
+ * and requires this to match it, so changing the domain without changing this
+ * fails rather than silently stopping the guard from finding anything.
+ */
+const RESERVED_EMAIL_DOMAIN_PATTERN = /@service\.pipeshub\.internal$/i;
+
+export function reservedEmailDomainPattern(): RegExp {
+  return RESERVED_EMAIL_DOMAIN_PATTERN;
 }

@@ -22,6 +22,20 @@ export interface IOAuthApp extends Document {
   description?: string
   orgId: Types.ObjectId
   createdBy: Types.ObjectId
+  /**
+   * The identity this app's `client_credentials` tokens act as.
+   *
+   * Absent means the app's creator, which is how every app behaved before
+   * this field existed and how every app behaves until an administrator
+   * points it at a service account.
+   *
+   * Kept separate from `createdBy` on purpose. `createdBy` is who manages the
+   * app, and it is what the Developer Settings queries filter on — moving it
+   * to a service account would leave the app visible to nobody, since no
+   * person can sign in as one. Who an app acts as and who looks after it are
+   * genuinely different questions, so they are genuinely different fields.
+   */
+  tokenIdentityUserId?: Types.ObjectId
   redirectUris: string[]
   allowedGrantTypes: OAuthGrantType[]
   allowedScopes: string[]
@@ -73,6 +87,11 @@ const OAuthAppSchema = new Schema<IOAuthApp>(
       type: Schema.Types.ObjectId,
       ref: 'users',
       required: true,
+    },
+    tokenIdentityUserId: {
+      type: Schema.Types.ObjectId,
+      ref: 'users',
+      required: false,
     },
     redirectUris: {
       type: [String],

@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, AsyncGenerator, Awaitable, Callable, Dict, Lis
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
-from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
@@ -80,6 +79,7 @@ from app.connectors.sources.google.common.impersonation import (
     is_delegation_error,
     resolve_explicit_user,
 )
+from app.connectors.sources.google.common.scopes import GMAIL_WORKSPACE_DELEGATED_SCOPES
 from app.connectors.sources.google.gmail.talon_utils import quotations
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
@@ -92,12 +92,14 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
     User,
+    USER_EMAIL_PLACEHOLDER,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.google.google import GoogleClient, configure_google_http_timeout
+from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.admin.admin import GoogleAdminDataSource
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
+from app.utils.filename_utils import temp_path_for
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
@@ -338,7 +340,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                     config_service=self.config_service,
                     is_individual=False,  # This is a workspace connector
                     version="v1",
-                    connector_instance_id=self.connector_id
+                    connector_instance_id=self.connector_id,
+                    delegated_scopes=GMAIL_WORKSPACE_DELEGATED_SCOPES["gmail"],
                 )
 
                 # Create Google Gmail Data Source from the client
@@ -483,7 +486,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_created_at,
                 mime_type=MimeTypes.GMAIL.value,
-                weburl=f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
                 preview_renderable=False,
                 subject=subject,
                 from_email=from_email,
@@ -771,7 +774,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                         is_individual=False,  # Workspace connector
                         version="v3",
                         user_email=user_email,  # Use this user's credentials
-                        connector_instance_id=self.connector_id
+                        connector_instance_id=self.connector_id,
+                        delegated_scopes=GMAIL_WORKSPACE_DELEGATED_SCOPES["drive"],
                     )
 
 
@@ -840,7 +844,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 source_created_at=get_epoch_timestamp_in_ms(),
                 source_updated_at=get_epoch_timestamp_in_ms(),
                 mime_type=mime_type,
-                weburl=f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
                 size_in_bytes=size,
                 extension=extension,
                 is_file=True,
@@ -1743,7 +1747,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                 is_individual=False,  # Workspace connector
                 version="v1",
                 user_email=user_email,  # Impersonate this user
-                connector_instance_id=self.connector_id
+                connector_instance_id=self.connector_id,
+                delegated_scopes=GMAIL_WORKSPACE_DELEGATED_SCOPES["gmail"],
             )
 
             user_gmail_data_source = GoogleGmailDataSource(
@@ -2400,49 +2405,23 @@ class GoogleGmailTeamConnector(BaseConnector):
             StreamingResponse with file content
         """
         try:
-            # Create Drive client for the user (same pattern as _process_gmail_attachment)
-            drive_service = None
-            if user_email:
-                try:
-                    user_drive_client = await GoogleClient.build_from_services(
-                        service_name="drive",
-                        logger=self.logger,
-                        config_service=self.config_service,
-                        is_individual=False,  # Workspace connector
-                        version="v3",
-                        user_email=user_email,  # Use this user's credentials
-                        connector_instance_id=self.connector_id
-                    )
-                    drive_service = user_drive_client.get_client()
-                    self.logger.info(f"Using user OAuth credentials for Drive access: {user_email}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to create user Drive client for {user_email}: {e}, falling back to service account")
-                    user_email = None  # Fall through to service account
-
-            # Fallback to service account if user_email not provided or failed
-            if not drive_service:
-                # Get credentials from config for Drive service
-                if not self.config or "credentials" not in self.config:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail="Credentials not available for Drive access"
-                    )
-
-                from google.oauth2 import service_account
-                credentials_json = self.config.get("credentials", {}).get("auth", {})
-                if not credentials_json:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail="Service account credentials not found for Drive access"
-                    )
-
-                credentials = service_account.Credentials.from_service_account_info(
-                    credentials_json
-                )
-                drive_service = configure_google_http_timeout(
-                    build("drive", "v3", credentials=credentials)
-                )
-                self.logger.info("Using service account credentials for Drive access")
+            # With no user_email the Gmail side has already fallen back to the admin's
+            # mailbox (_get_gmail_service_with_fallback), so Drive acts as the admin too.
+            # A service account acting as itself can't see anyone's Drive files.
+            drive_client = await GoogleClient.build_from_services(
+                service_name="drive",
+                logger=self.logger,
+                config_service=self.config_service,
+                is_individual=False,
+                version="v3",
+                user_email=user_email,
+                connector_instance_id=self.connector_id,
+                delegated_scopes=GMAIL_WORKSPACE_DELEGATED_SCOPES["drive"],
+            )
+            drive_service = drive_client.get_client()
+            self.logger.info(
+                f"Using delegated Drive access as {user_email or 'the admin'} for {drive_file_id}"
+            )
 
             drive_data_source = GoogleDriveDataSource(
                 drive_service,
@@ -2451,7 +2430,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             if convertTo == MimeTypes.PDF.value:
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_file_path = os.path.join(temp_dir, file_name)
+                    temp_file_path = temp_path_for(temp_dir, file_name)
 
                     # Download from Drive to temp file
                     with open(temp_file_path, "wb") as f:
@@ -2821,7 +2800,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             if convertTo == MimeTypes.PDF.value:
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_file_path = os.path.join(temp_dir, file_name)
+                    temp_file_path = temp_path_for(temp_dir, file_name)
 
                     # Write attachment data to temp file
                     with open(temp_file_path, "wb") as f:

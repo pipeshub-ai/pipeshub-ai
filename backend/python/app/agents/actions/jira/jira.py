@@ -3,8 +3,10 @@ import json
 import logging
 import re
 import traceback
+from http import HTTPStatus
 from typing import Any, Optional
 
+import httpx
 from pydantic import BaseModel, Field, model_validator
 
 from app.agents.actions.response_transformer import ResponseTransformer
@@ -354,6 +356,73 @@ class GetCreateIssueFieldsInput(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# Enough candidates to tell an exact name from a crowd of partial matches.
+_USER_LOOKUP_LIMIT = 10
+
+
+def _left_out_note(field_name: str, reason: object) -> str:
+    who = "nobody was assigned" if field_name == "assignee" else "the reporter was not changed"
+    return (
+        f"{who}: Jira would not accept that {field_name} ({reason}). "
+        f"Tell the user, and check the person with search_users before trying again."
+    )
+
+
+def _with_notes(message: str, notes: list[str]) -> str:
+    return f"{message}, but {'; '.join(notes)}" if notes else message
+
+
+_ERROR_DETAILS_LIMIT = 500
+_RECONNECT_STEP = "Reconnect the Jira toolset in Settings > Toolsets and try again."
+
+
+def _jira_error_message(status: int, reason: object, headers: dict[str, str]) -> str:
+    """Plain-language failure the agent can relay, with what to do next."""
+    said = f" Jira said: {reason}." if reason else ""
+    if status == HTTPStatus.TOO_MANY_REQUESTS:
+        retry_after = str({k.lower(): v for k, v in headers.items()}.get("retry-after") or "").strip()
+        wait = f"Wait {retry_after} seconds" if retry_after.isdigit() else "Wait a minute"
+        return f"Jira is receiving too many requests right now. {wait} and try again."
+    if status == HTTPStatus.UNAUTHORIZED:
+        return f"Jira did not accept the saved sign-in.{said} {_RECONNECT_STEP}"
+    if status == HTTPStatus.FORBIDDEN:
+        return f"The signed-in Jira account is not allowed to do that.{said} Ask a Jira admin for access."
+    if status == HTTPStatus.NOT_FOUND:
+        return (
+            f"Jira could not find it, or the signed-in account cannot see it.{said} Check the issue or project "
+            "key, or use get_projects or search_issues to find the right one."
+        )
+    if status == HTTPStatus.GONE:
+        return f"This Jira site is no longer available.{said} {_RECONNECT_STEP}"
+    if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+        return "Jira is having a temporary problem. Try again in a moment."
+    return f"Jira rejected the request.{said} Correct it and try again."
+
+
+def _jira_failure(doing: str, error: Exception) -> tuple[bool, str]:
+    """A request that raised instead of answering: say so plainly, never relay the exception text."""
+    logger.error("Error %s: %s", doing, error)
+    if isinstance(error, httpx.TransportError):
+        message = f"Jira could not be reached while {doing}. Try again in a moment."
+    else:
+        message = (
+            f"Something unexpected went wrong while {doing}. Try again, and if it keeps failing, "
+            "reconnect the Jira toolset in Settings > Toolsets."
+        )
+    return False, json.dumps({"error": message})
+
+
+# Backstops against a server that keeps pointing to more pages.
+_MAX_SEARCH_PAGES = 50
+_MAX_CREATE_FIELD_PAGES = 100
+
+
+def _next_page_token(page: dict) -> str | None:
+    """Jira's token for the next page of an enhanced search, or None on the last page."""
+    token = page.get("nextPageToken")
+    return None if page.get("isLast") is True or not isinstance(token, str) or not token else token
+
+
 def _jira_issue_label(issue: dict[str, Any]) -> str:
     key = issue.get("key") or "?"
     fields = issue.get("fields")
@@ -536,17 +605,17 @@ class Jira:
                 logger.debug(f"Error parsing error response: {e}")
                 error_text = response.text() if hasattr(response, 'text') else str(response)
 
-            # Build error response
+            headers = response.headers if isinstance(getattr(response, "headers", None), dict) else {}
             error_response: dict[str, object] = {
-                "error": error_message or f"HTTP {response.status}",
+                "error": _jira_error_message(response.status, error_message, headers),
                 "status_code": response.status,
-                "details": error_text
+                "details": str(error_text)[:_ERROR_DETAILS_LIMIT],
             }
 
-            if include_guidance:
-                guidance = self._get_error_guidance(response.status)
-                if guidance:
-                    error_response["guidance"] = guidance
+            # Guidance is always attached; include_guidance is kept so existing callers still read the same.
+            guidance = self._get_error_guidance(response.status)
+            if guidance:
+                error_response["guidance"] = guidance
 
             logger.error(f"HTTP error {response.status}: {error_text}")
             return False, json.dumps(error_response)
@@ -561,6 +630,9 @@ class Jira:
             Guidance message or None
         """
         guidance_map = {
+            HTTPStatus.TOO_MANY_REQUESTS.value: (
+                "Jira is rate limiting requests. Wait before retrying, and avoid repeating the same call in a loop."
+            ),
             HttpStatusCode.GONE.value: (
                 "JIRA instance is no longer available. This usually means: "
                 "1) The JIRA instance has been deleted or moved, "
@@ -683,45 +755,55 @@ class Jira:
     async def _resolve_user_to_account_id(
         self,
         project_key: str,
-        query: str
-    ) -> Optional[str]:
-        """Resolve a user query to a JIRA account ID.
+        query: str,
+        role: str = "assignee",
+    ) -> tuple[str | None, str | None]:
+        """Find the one person in the project that ``query`` names.
 
-        Args:
-            project_key: Project key for assignable user search
-            query: User query (name, email, or ID)
-
-        Returns:
-            Account ID or None if not found
+        Returns ``(account_id, None)``, or ``(None, message)`` when the lookup failed,
+        nobody matched, or several people did. A name must never resolve to a guess:
+        the caller writes nothing unless an account id comes back.
         """
+        not_looked_up = (
+            f"Jira could not look up '{query}' just now, so nothing was changed. Try again in a moment, "
+            f"or pass {role}_account_id (search_users finds it)."
+        )
         try:
-            # First try assignable users for the project
             response = await self.client.find_assignable_users(
                 project=project_key,
                 query=query,
-                maxResults=1
+                maxResults=_USER_LOOKUP_LIMIT,
             )
-
-            if response.status == HttpStatusCode.SUCCESS.value:
-                data = response.json()
-                if data and isinstance(data, list) and len(data) > 0:
-                    return data[0].get('accountId')
-
-            # Fallback: global user search
-            response = await self.client.find_users_by_query(
-                query=query,
-                maxResults=1
-            )
-
-            if response.status == HttpStatusCode.SUCCESS.value:
-                data = response.json()
-                if data and isinstance(data, list) and len(data) > 0:
-                    return data[0].get('accountId')
-
-            return None
+            if response.status != HttpStatusCode.SUCCESS.value:
+                logger.warning("Jira user lookup for %r failed: HTTP %s", query, response.status)
+                return None, not_looked_up
+            candidates = [u for u in (response.json() or []) if isinstance(u, dict) and u.get("accountId")]
         except Exception as e:
-            logger.warning(f"Error resolving user to account ID: {e}")
-            return None
+            logger.warning("Jira user lookup for %r failed: %s", query, e)
+            return None, not_looked_up
+
+        wanted = query.strip().casefold()
+        exact = [
+            u for u in candidates
+            if wanted in {str(u.get(k) or "").casefold() for k in ("accountId", "displayName", "emailAddress")}
+        ]
+        if len(exact) == 1:
+            return exact[0]["accountId"], None
+        matches = exact or candidates
+        if len(matches) == 1:
+            return matches[0]["accountId"], None
+        if not matches:
+            return None, (
+                f"No one who can be assigned issues in {project_key} matches '{query}', so nothing was changed. "
+                f"Check the name with search_users, then pass {role}_account_id."
+            )
+        names = ", ".join(
+            f"{u.get('displayName') or '?'} ({u.get('emailAddress') or u['accountId']})" for u in matches[:5]
+        )
+        return None, (
+            f"Several people match '{query}': {names}. Nothing was changed. Ask the user which one they mean, "
+            f"then pass that person's {role}_account_id."
+        )
 
     def _normalize_description(self, description: str) -> str:
         """Normalize description by removing Slack mention markup.
@@ -908,18 +990,26 @@ class Jira:
         issue_type_id: Optional[str] = None
         available_types: list[str] = []
         issue_types_raw: list[dict[str, Any]] = []
+        types_unreadable = (
+            f"Jira could not list the issue types of project '{project_key}' just now. Try again in a moment."
+        )
         try:
             r = await self.client.get_create_issue_meta_issue_types(projectIdOrKey=project_key)
-            if r.status == HttpStatusCode.SUCCESS.value:
-                issue_types_raw = r.json().get("issueTypes", [])
-                for it in issue_types_raw:
-                    name = it.get("name", "")
-                    if name:
-                        available_types.append(name)
-                    if name.lower() == issue_type_name.lower():
-                        issue_type_id = it.get("id")
+            if r.status == HttpStatusCode.NOT_FOUND.value:
+                return [], f"Project '{project_key}' was not found, or the signed-in account cannot create issues in it."
+            if r.status != HttpStatusCode.SUCCESS.value:
+                logger.warning(f"createmeta issue types HTTP {r.status} for {project_key}")
+                return [], types_unreadable
+            issue_types_raw = r.json().get("issueTypes", [])
+            for it in issue_types_raw:
+                name = it.get("name", "")
+                if name:
+                    available_types.append(name)
+                if name.lower() == issue_type_name.lower():
+                    issue_type_id = it.get("id")
         except Exception as e:
             logger.warning(f"Error fetching issue types for {project_key}: {e}")
+            return [], types_unreadable
 
         # Fuzzy fallback: LLM may pass an approximate name (e.g. "story" for "User Story").
         # difflib.get_close_matches returns the best match above the cutoff threshold.
@@ -952,8 +1042,13 @@ class Jira:
         fields_by_id: dict[str, dict[str, Any]] = {}
         start_at = 0
         page_size = 50
+        # A partial field list would hide required fields, so an unread page fails the whole lookup.
+        fields_unreadable = (
+            f"Jira could not list every field of a {issue_type_name} in project '{project_key}' just now, "
+            "so the required fields are not known yet. Try again in a moment."
+        )
 
-        while True:
+        for _page in range(_MAX_CREATE_FIELD_PAGES):
             try:
                 response = await self.client.get_create_issue_meta_issue_type_id(
                     projectIdOrKey=project_key,
@@ -963,22 +1058,25 @@ class Jira:
                 )
             except Exception as e:
                 logger.error(f"createmeta fields error for {project_key}/{issue_type_name}: {e}")
-                break
+                return [], fields_unreadable
 
             if response.status != HttpStatusCode.SUCCESS.value:
                 logger.warning(
                     f"createmeta HTTP {response.status} for {project_key}/{issue_type_name}"
                 )
-                break
+                return [], fields_unreadable
 
             try:
                 data = response.json()
             except Exception:
-                break
+                return [], fields_unreadable
 
-            page_fields = data.get("fields", [])
-            if not isinstance(page_fields, list):
-                break
+            page_fields = data.get("fields", []) if isinstance(data, dict) else None
+            if not isinstance(page_fields, list) or not all(isinstance(f, dict) for f in page_fields):
+                return [], fields_unreadable
+            total = data.get("total")
+            if not isinstance(total, int) or isinstance(total, bool):
+                return [], fields_unreadable
 
             for f in page_fields:
                 field_id = f.get("fieldId") or f.get("key") or f.get("id")
@@ -996,10 +1094,14 @@ class Jira:
                 }
 
             fetched = start_at + len(page_fields)
-            total = data.get("total", 0)
-            if not page_fields or fetched >= total:
+            if fetched >= total:
                 break
+            if not page_fields:
+                # Jira says more fields exist but sent none; a short list would hide required ones.
+                return [], fields_unreadable
             start_at = fetched
+        else:
+            return [], fields_unreadable
 
         fields = list(fields_by_id.values())
         logger.info(
@@ -1262,6 +1364,74 @@ class Jira:
                             add_url_to_issue_ref(item)
 
 
+    async def _read_remaining_pages(
+        self, jql: str, first_page: object, limit: int
+    ) -> tuple[object, str | None]:
+        """Follow Jira's page tokens until ``limit`` issues are read.
+
+        Returns the first page's payload holding every issue read, and a note for
+        the agent when the list is not the whole result (None when it is).
+        """
+        if not isinstance(first_page, dict) or not isinstance(first_page.get("issues", []), list):
+            return first_page, None
+        first_issues = first_page.get("issues") or []
+        issues = [i for i in first_issues if isinstance(i, dict)]
+        token = _next_page_token(first_page)
+        seen = {token}
+        failure: str | None = None
+        if len(issues) < len(first_issues):
+            failure = "Jira sent entries that could not be read"
+            token = None
+        pages_read = 1
+        while token and len(issues) < limit:
+            if pages_read >= _MAX_SEARCH_PAGES:
+                failure = f"the search stopped after {_MAX_SEARCH_PAGES} pages"
+                break
+            pages_read += 1
+            try:
+                page = await self.client.search_and_reconsile_issues_using_jql_post(
+                    jql=jql, maxResults=limit - len(issues), fields=["*all"], nextPageToken=token,
+                )
+                if page.status != HttpStatusCode.SUCCESS.value:
+                    failure = f"Jira answered HTTP {page.status}"
+                    break
+                payload = page.json()
+            except Exception as e:
+                logger.warning("Reading the next page of Jira issues failed: %s", e)
+                failure = "Jira could not be reached"
+                break
+            page_issues = payload.get("issues") if isinstance(payload, dict) else None
+            if not isinstance(page_issues, list) or not all(isinstance(i, dict) for i in page_issues):
+                failure = "Jira sent a page that could not be read"
+                break
+            if not page_issues:
+                if _next_page_token(payload):
+                    # Following an empty page that still points further could go on forever.
+                    failure = "Jira sent an empty page"
+                else:
+                    token = None
+                break
+            issues.extend(page_issues)
+            token = _next_page_token(payload)
+            if token in seen:
+                # The rest can't be read, and whether more match is unknown: report it as incomplete.
+                failure = "Jira sent the same page again"
+                break
+            seen.add(token)
+        first_page["issues"] = issues[:limit]
+        shown = len(first_page["issues"])
+        if failure:
+            return first_page, (
+                f". Only the first {shown} matching issues could be read ({failure} for the rest), so this list "
+                "is incomplete. Say so to the user, or try again."
+            )
+        if token or len(issues) > limit:
+            return first_page, (
+                f". Showing the first {shown} matching issues; more match. Narrow the JQL, or raise maxResults "
+                "to see more."
+            )
+        return first_page, None
+
     def _validate_and_fix_jql(self, jql: str) -> tuple[str, str | None]:
         """Validate and fix common JQL syntax errors.
 
@@ -1377,8 +1547,7 @@ class Jira:
                 )
 
         except Exception as e:
-            logger.error(f"Error validating JIRA connection: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("validating JIRA connection", e)
 
     @tool(
         path="/tools/jira/get_current_user",
@@ -1422,8 +1591,7 @@ class Jira:
                 )
 
         except Exception as e:
-            logger.error(f"Error getting current user: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting current user", e)
 
     @tool(
         path="/tools/jira/convert_text_to_adf",
@@ -1442,8 +1610,7 @@ class Jira:
                 "usage_note": "Use this ADF document in the 'description' field when creating JIRA issues"
             })
         except Exception as e:
-            logger.error(f"Error converting text to ADF: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("converting text to ADF", e)
 
     @tool(
         path="/tools/jira/get_create_issue_fields",
@@ -1581,8 +1748,7 @@ class Jira:
             })
 
         except Exception as e:
-            logger.error(f"Error getting create issue fields: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting create issue fields", e)
 
     @tool(
         path="/tools/jira/create_issue",
@@ -1643,12 +1809,10 @@ class Jira:
                 "issuetype": {"name": issue_type_name},
             }
 
-            # Resolve assignee
             if assignee_query and not assignee_account_id:
-                assignee_account_id = await self._resolve_user_to_account_id(
-                    project_key,
-                    assignee_query
-                )
+                assignee_account_id, lookup_error = await self._resolve_user_to_account_id(project_key, assignee_query)
+                if lookup_error:
+                    return False, json.dumps({"error": lookup_error})
 
             if description:
                 fields["description"] = self._normalize_description(description)
@@ -1688,21 +1852,20 @@ class Jira:
             # Create issue
             response = await self.client.create_issue(fields=fields)
 
-            # Handle reporter field errors by retrying without it
+            # Jira may refuse just the reporter or assignee; create the issue without it and say so.
+            left_out: str | None = None
             if response.status == HttpStatusCode.BAD_REQUEST.value:
                 try:
                     error_body = response.json()
                     errors = error_body.get('errors', {})
 
-                    if 'reporter' in errors and 'reporter' in fields:
-                        logger.info("Retrying without reporter field")
-                        del fields['reporter']
-                        response = await self.client.create_issue(fields=fields)
-
-                    elif 'assignee' in errors and 'assignee' in fields:
-                        logger.info("Retrying without assignee field")
-                        del fields['assignee']
-                        response = await self.client.create_issue(fields=fields)
+                    for refused in ("reporter", "assignee"):
+                        if refused in errors and refused in fields:
+                            logger.info("Retrying without %s field", refused)
+                            del fields[refused]
+                            left_out = _left_out_note(refused, errors[refused])
+                            response = await self.client.create_issue(fields=fields)
+                            break
                 except Exception:
                     pass
 
@@ -1728,10 +1891,11 @@ class Jira:
                 if site_url:
                     self._add_urls_to_issue_references(cleaned_data, site_url)
 
-                return True, json.dumps({
-                    "message": "Issue created successfully",
-                    "data": cleaned_data
-                })
+                created: dict[str, object] = {"message": "Issue created successfully", "data": cleaned_data}
+                if left_out:
+                    created["message"] = f"Issue created, but {left_out}"
+                    created["warning"] = left_out
+                return True, json.dumps(created)
             elif response.status == HttpStatusCode.BAD_REQUEST.value:
                 # Translate field IDs to human-readable names and guide LLM to retry correctly
                 try:
@@ -1768,8 +1932,7 @@ class Jira:
                 )
 
         except Exception as e:
-            logger.error(f"Error creating issue: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("creating issue", e)
 
     @tool(
         path="/tools/jira/update_issue",
@@ -1896,20 +2059,27 @@ class Jira:
                         )
                 fields["issuetype"] = {"name": resolved_type}
 
-            if assignee_query and not assignee_account_id:
-                if project_key:
-                    assignee_account_id = await self._resolve_user_to_account_id(
-                        project_key, assignee_query
-                    )
+            for role, query, given in (
+                ("assignee", assignee_query, assignee_account_id),
+                ("reporter", reporter_query, reporter_account_id),
+            ):
+                if not query or given:
+                    continue
+                if not project_key:
+                    return False, json.dumps({"error": (
+                        f"Jira could not look up '{query}' because issue {issue_key} could not be read, so nothing "
+                        f"was changed. Check the issue key, or pass {role}_account_id (search_users finds it)."
+                    )})
+                account_id, lookup_error = await self._resolve_user_to_account_id(project_key, query, role)
+                if lookup_error:
+                    return False, json.dumps({"error": lookup_error})
+                if role == "assignee":
+                    assignee_account_id = account_id
+                else:
+                    reporter_account_id = account_id
 
             if assignee_account_id:
                 fields["assignee"] = {"accountId": assignee_account_id}
-
-            if reporter_query and not reporter_account_id:
-                if project_key:
-                    reporter_account_id = await self._resolve_user_to_account_id(
-                        project_key, reporter_query
-                    )
 
             if reporter_account_id:
                 fields["reporter"] = {"accountId": reporter_account_id}
@@ -1929,7 +2099,12 @@ class Jira:
                         fields[field_id] = field_value
 
             transition = None
+            status_problem: str | None = None
             if status:
+                status_problem = (
+                    f"the status was not changed: Jira's list of statuses {issue_key} can move to could not be "
+                    "read. Try the status change again in a moment"
+                )
                 try:
                     transitions_response = await self.client.get_transitions(issueIdOrKey=issue_key)
                     if transitions_response.status == HttpStatusCode.SUCCESS.value:
@@ -1938,14 +2113,23 @@ class Jira:
                             if trans.get("to", {}).get("name", "").lower() == status.lower():
                                 transition = {"id": trans.get("id")}
                                 break
-                        if not transition:
-                            logger.warning(
-                                f"Status transition '{status}' not found for {issue_key}. "
-                                f"Available: {[t.get('to', {}).get('name') for t in transitions]}"
+                        if transition:
+                            status_problem = None
+                        else:
+                            reachable = ", ".join(
+                                sorted({t.get("to", {}).get("name") for t in transitions if t.get("to", {}).get("name")})
+                            ) or "none"
+                            status_problem = (
+                                f"the status was not changed: {issue_key} cannot move to '{status}' from its current "
+                                f"status. It can move to: {reachable}"
                             )
+                            logger.warning(f"Status transition '{status}' not found for {issue_key}: {reachable}")
                 except Exception as e:
                     logger.warning(f"Could not get transitions for {issue_key}: {e}")
 
+            notes: list[str] = [status_problem] if status_problem else []
+            if status_problem and not fields:
+                return False, json.dumps({"error": f"Nothing was changed: {status_problem.split(': ', 1)[1]}."})
             if not fields and not transition:
                 return False, json.dumps({
                     "error": "No updates provided",
@@ -1996,6 +2180,7 @@ class Jira:
                                         fields=fields_no_reporter,
                                         transition=None,
                                     )
+                                    notes.append(_left_out_note("reporter", errors["reporter"]))
                         except Exception:
                             pass
 
@@ -2039,7 +2224,7 @@ class Jira:
                     tr = await self.client.do_transition(issueIdOrKey=issue_key, transition=transition)
                     if tr.status not in [HttpStatusCode.SUCCESS.value, HttpStatusCode.NO_CONTENT.value]:
                         transition_success = False
-                        transition_error = f"HTTP {tr.status}"
+                        transition_error = f"Jira refused the status change (status {tr.status})"
                         try:
                             err_data = tr.json()
                             if isinstance(err_data, dict) and "errorMessages" in err_data:
@@ -2049,8 +2234,12 @@ class Jira:
                         logger.warning(f"Transition to '{status}' failed for {issue_key}: {transition_error}")
                 except Exception as e:
                     transition_success = False
-                    transition_error = str(e)
+                    transition_error = "Jira could not be reached; try the status change again in a moment"
                     logger.warning(f"Exception during transition to '{status}' for {issue_key}: {e}")
+            if transition and not transition_success and not fields:
+                return False, json.dumps({
+                    "error": f"Nothing was changed: {issue_key} could not move to '{status}': {transition_error}.",
+                })
 
             issue_response = await self.client.get_issue(issueIdOrKey=issue_key)
             if issue_response.status != HttpStatusCode.SUCCESS.value:
@@ -2059,6 +2248,7 @@ class Jira:
                 message = "Issue updated successfully"
                 if transition and not transition_success:
                     message += f" (but status transition failed: {transition_error})"
+                message = _with_notes(message, notes)
                 return True, json.dumps({
                     "message": message,
                     "data": {"key": issue_key, "url": url} if url else {"key": issue_key},
@@ -2083,12 +2273,12 @@ class Jira:
             message = "Issue updated successfully"
             if transition and not transition_success:
                 message += f" (but status transition failed: {transition_error})"
+            message = _with_notes(message, notes)
 
             return True, json.dumps({"message": message, "data": cleaned_data})
 
         except Exception as e:
-            logger.error(f"Error updating issue: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("updating issue", e)
 
     @tool(
         path="/tools/jira/get_projects",
@@ -2139,8 +2329,7 @@ class Jira:
                     include_guidance=True
                 )
         except Exception as e:
-            logger.error(f"Error getting projects: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting projects", e)
 
     @tool(
         path="/tools/jira/get_project",
@@ -2186,8 +2375,7 @@ class Jira:
                     "Project fetched successfully"
                 )
         except Exception as e:
-            logger.error(f"Error getting project: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting project", e)
 
     @tool(
         path="/tools/jira/get_issues",
@@ -2226,6 +2414,7 @@ class Jira:
 
             if response.status == HttpStatusCode.SUCCESS.value:
                 data = response.json()
+                data, paging_note = await self._read_remaining_pages(jql, data, max_results or 50)
                 # Clean response: remove redundant fields
                 cleaned_data = (
                     ResponseTransformer(data)
@@ -2271,8 +2460,9 @@ class Jira:
                         self._add_urls_to_issue_references(issue, site_url)
 
                 return True, json.dumps({
-                    "message": "Issues fetched successfully",
-                    "data": cleaned_data
+                    "message": "Issues fetched successfully" + (paging_note or ""),
+                    "data": cleaned_data,
+                    "has_more": paging_note is not None,
                 })
             else:
                 return self._handle_response(
@@ -2281,8 +2471,7 @@ class Jira:
                     include_guidance=True
                 )
         except Exception as e:
-            logger.error(f"Error getting issues: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting issues", e)
 
     @tool(
         path="/tools/jira/get_issue",
@@ -2347,8 +2536,7 @@ class Jira:
                     "Issue fetched successfully"
                 )
         except Exception as e:
-            logger.error(f"Error getting issue: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting issue", e)
 
     @tool(
         path="/tools/jira/search_issues",
@@ -2421,6 +2609,7 @@ class Jira:
                         "jql_query": fixed_jql
                     })
 
+                data, paging_note = await self._read_remaining_pages(fixed_jql, data, maxResults or 50)
                 try:
                     # Clean response: remove redundant fields
                     cleaned_data = (
@@ -2479,8 +2668,9 @@ class Jira:
                     })
 
                 result = {
-                    "message": "Issues fetched successfully",
-                    "data": cleaned_data
+                    "message": "Issues fetched successfully" + (paging_note or ""),
+                    "data": cleaned_data,
+                    "has_more": paging_note is not None,
                 }
                 if jql_warning:
                     result["warning"] = jql_warning
@@ -2526,8 +2716,7 @@ class Jira:
                 f"Exception: {type(e).__name__}: {e}, "
                 f"Traceback: {traceback.format_exc()}"
             )
-            error_response = {"error": str(e)}
-            # jql is always in scope here as it's a function parameter
+            error_response = json.loads(_jira_failure("searching issues", e)[1])
             error_response["jql_query"] = jql
             return False, json.dumps(error_response)
 
@@ -2591,8 +2780,7 @@ class Jira:
                     "Comment added successfully"
                 )
         except Exception as e:
-            logger.error(f"Error adding comment: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("adding comment", e)
 
     @tool(
         path="/tools/jira/get_comments",
@@ -2630,8 +2818,7 @@ class Jira:
                     "Comments fetched successfully"
                 )
         except Exception as e:
-            logger.error(f"Error getting comments: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting comments", e)
 
     @tool(
         path="/tools/jira/search_users",
@@ -2701,21 +2888,30 @@ class Jira:
                     if cleaned_user.get("accountId"):
                         cleaned_users.append(cleaned_user)
 
-                return True, json.dumps({
+                jira_total = data.get("total") if isinstance(data, dict) else None
+                total = jira_total if isinstance(jira_total, int) and jira_total >= len(cleaned_users) else len(cleaned_users)
+                found: dict[str, object] = {
                     "message": "Users fetched successfully",
                     "data": {
                         "results": cleaned_users,
-                        "total": len(cleaned_users)
-                    }
-                })
+                        "total": total,
+                        "returned": len(cleaned_users),
+                        "has_more": total > len(cleaned_users),
+                    },
+                }
+                if total > len(cleaned_users):
+                    found["message"] = (
+                        f"Showing {len(cleaned_users)} of {total} matching users. Use a fuller name or an email "
+                        "address to find the right person."
+                    )
+                return True, json.dumps(found)
             else:
                 return self._handle_response(
                     response,
                     "Users fetched successfully"
                 )
         except Exception as e:
-            logger.error(f"Error searching users: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("searching users", e)
     @tool(
         path="/tools/jira/get_project_metadata",
         short_description="Get project metadata including issue types and components",
@@ -2775,8 +2971,7 @@ class Jira:
                 "metadata": metadata
             })
         except Exception as e:
-            logger.error(f"Error getting project metadata: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _jira_failure("getting project metadata", e)
 
     # @tool(
     #     app_name="jira",

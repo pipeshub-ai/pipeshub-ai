@@ -4,6 +4,9 @@ from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.zammad.zammad import ZammadClient, ZammadResponse
 
 SUCCESS_CODE_IS_LESS_THAN = 400
+# /api/v1/tickets/search pages 50 tickets by default and at most 200.
+TICKET_SEARCH_DEFAULT_PER_PAGE = 50
+TICKET_SEARCH_MAX_PER_PAGE = 200
 
 
 class ZammadDataSource:
@@ -610,10 +613,16 @@ class ZammadDataSource:
     async def init_knowledge_base(
         self
     ) -> ZammadResponse:
-        """Initialize knowledge base
+        """List every knowledge base, category and answer the account can see.
+
+        Zammad 6.0 and later answer with one assets map, not paged, keyed by
+        type (KnowledgeBase, KnowledgeBaseCategory, KnowledgeBaseAnswer,
+        KnowledgeBaseAnswerTranslation, ...). Answer bodies are not included.
 
         Returns:
-            ZammadResponse
+            ZammadResponse with that assets map. It is empty when the account
+            has no knowledge-base role and the knowledge base is not public,
+            where Zammad answers with an empty list.
         """
         url = f"{self.base_url}/api/v1/knowledge_bases/init"
         request_body = None
@@ -629,10 +638,22 @@ class ZammadDataSource:
 
             response_text = response.text()
             status_ok = response.status < SUCCESS_CODE_IS_LESS_THAN
+            json_data = response.json() if response_text else None
+            error = None
+            if json_data == []:
+                json_data = {}
+            if not isinstance(json_data, dict):
+                error = "unexpected knowledge base listing response"
+            elif json_data.get("error"):
+                error = str(json_data["error"])
+            if error:
+                status_ok = False
             return ZammadResponse(
                 success=status_ok,
-                data=response.json() if response_text else None,
-                message="init_knowledge_base succeeded" if status_ok else "init_knowledge_base failed"
+                data=json_data if status_ok else None,
+                error=error,
+                message="init_knowledge_base succeeded" if status_ok else "init_knowledge_base failed",
+                status_code=response.status,
             )
         except Exception as e:
             return ZammadResponse(
@@ -1112,7 +1133,6 @@ class ZammadDataSource:
         # Build URL without query parameters
         url = f"{self.base_url}/api/v1/knowledge_bases/{kb_id}/answers/{id}"
 
-        # Build query parameters (like search_kb_answers does)
         query_params = {
             "full": "1"
         }
@@ -2310,66 +2330,92 @@ class ZammadDataSource:
         self,
         query: str,
         limit: Optional[int] = None,
-        offset: Optional[int] = None
+        offset: Optional[int] = None,
+        sort_by: str = "updated_at,id",
+        order_by: str = "desc,desc",
     ) -> ZammadResponse:
-        """Search tickets using global search API with objects=Ticket
+        """Search tickets through /api/v1/tickets/search, one page at a time.
+
+        /api/v1/search ignores ``offset`` before Zammad 6.5 and answers every
+        page with the first one. This endpoint pages by ``page``/``per_page`` on
+        every version, so ``limit``/``offset`` are turned into those.
 
         Args:
             query: str (required) - Search query using Elasticsearch syntax
-            limit: Optional[int] (optional) - Number of results to return
-            offset: Optional[int] (optional) - Number of results to skip for pagination
+            limit: Optional[int] (optional) - Page size, 1 to 200 (default 50)
+            offset: Optional[int] (optional) - Tickets to skip, a multiple of the page size
+            sort_by: str - Comma separated ticket columns to sort by
+            order_by: str - Matching comma separated asc/desc. The id tie-break
+                keeps tickets that share an updated_at in one order across pages.
 
         Returns:
-            ZammadResponse with tickets extracted from assets.Ticket as a list
+            ZammadResponse with the page's tickets as a list, in search order
         """
-        # Use global search endpoint with objects=Ticket
-        url = f"{self.base_url}/api/v1/search"
-        query_params = {"objects": "Ticket"}
+        per_page = TICKET_SEARCH_DEFAULT_PER_PAGE if limit is None else limit
+        skip = offset or 0
+        # Zammad shrinks a larger per_page to 200 without saying so, and the page
+        # number only lands on ``offset`` when it is a whole number of pages.
+        if not 1 <= per_page <= TICKET_SEARCH_MAX_PER_PAGE:
+            return ZammadResponse(
+                success=False,
+                error=f"limit must be between 1 and {TICKET_SEARCH_MAX_PER_PAGE}, got {per_page}",
+                message="search_tickets failed: invalid limit",
+            )
+        if skip < 0 or skip % per_page:
+            return ZammadResponse(
+                success=False,
+                error=f"offset must be a non-negative multiple of limit {per_page}, got {skip}",
+                message="search_tickets failed: invalid offset",
+            )
 
-        if query is not None:
-            query_params["query"] = query
-        if limit is not None:
-            query_params["limit"] = str(limit)
-        if offset is not None:
-            query_params["offset"] = str(offset)
-
-        request_body = None
+        url = f"{self.base_url}/api/v1/tickets/search"
+        query_params = {
+            "query": query,
+            "page": str(skip // per_page + 1),
+            "per_page": str(per_page),
+            "sort_by": sort_by,
+            "order_by": order_by,
+            # The expanded answer is a plain list of tickets on every version;
+            # without it 6.5 answers with a list and earlier versions with ids and assets.
+            "expand": "true",
+        }
 
         try:
             request = HTTPRequest(
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body,
                 query=query_params
             )
             response = await self.http_client.execute(request)
 
             response_text = response.text()
             status_ok = response.status < SUCCESS_CODE_IS_LESS_THAN
+            json_data = response.json() if response_text else []
 
-            # Parse response: extract tickets from assets.Ticket dict
-            data = None
-            if response_text:
-                json_data = response.json()
-                if isinstance(json_data, dict):
-                    # Response structure:
-                    # {
-                    #   "assets": {"Ticket": {"1": {...}, "7": {...}}, ...},
-                    #   "result": [{"type": "Ticket", "id": 1}, ...]
-                    # }
-                    assets = json_data.get("assets", {})
-                    ticket_assets = assets.get("Ticket", {})
-                    # Convert dict {id: ticket_obj} to list of ticket objects
-                    data = list(ticket_assets.values()) if ticket_assets else []
-                else:
-                    # Fallback: if response is not a dict, return as-is
-                    data = json_data if isinstance(json_data, list) else []
+            if isinstance(json_data, list) and all(isinstance(ticket, dict) for ticket in json_data):
+                data = json_data
+                error = None
+            elif isinstance(json_data, list):
+                # Dropping the entry would shorten the page, and a short page ends
+                # the listing before the tickets after it are read.
+                data = None
+                error = "ticket search returned an entry that is not a ticket object"
+                status_ok = False
+            else:
+                # An error body, or a shape this method does not know, read as
+                # "no tickets" would end a listing early, so it is a failure.
+                data = None
+                error = json_data.get("error") if isinstance(json_data, dict) else None
+                error = str(error) if error else "unexpected ticket search response"
+                status_ok = False
 
             return ZammadResponse(
                 success=status_ok,
                 data=data,
-                message="search_tickets succeeded" if status_ok else "search_tickets failed"
+                error=error,
+                message="search_tickets succeeded" if status_ok else "search_tickets failed",
+                status_code=response.status,
             )
         except Exception as e:
             return ZammadResponse(
@@ -2378,89 +2424,55 @@ class ZammadDataSource:
                 message="search_tickets failed: " + str(e)
             )
 
-    async def search_kb_answers(
+    async def count_tickets(
         self,
         query: str,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None
+        ids: list[int] | None = None,
     ) -> ZammadResponse:
-        """Search KB answers using global search API with objects=KnowledgeBaseAnswerTranslation
+        """Count the tickets a search matches, among ``ids`` only when given.
 
         Args:
-            query: str (required) - Search query (use "*" for all, or "updated_at:[timestamp TO *]" for incremental)
-            limit: Optional[int] - Number of results to return
-            offset: Optional[int] - Number of results to skip for pagination
+            query: str (required) - Search query using Elasticsearch syntax
+            ids: list[int] | None (optional) - Ticket ids the count is limited to
 
         Returns:
-            ZammadResponse with full assets dict containing:
-            - KnowledgeBase
-            - KnowledgeBaseCategory (with permissions_effective)
-            - KnowledgeBaseAnswer (with visibility fields and attachments)
-            - KnowledgeBaseAnswerTranslation
-            - KnowledgeBaseCategoryTranslation
-            - KnowledgeBaseTranslation
+            ZammadResponse with data {"total_count": int}. Zammad before 6.5
+            ignores only_total_count and answers with a page of tickets; data is
+            then None.
         """
-        url = f"{self.base_url}/api/v1/search"
-        query_params = {"objects": "KnowledgeBaseAnswerTranslation"}
-
-        if query is not None:
-            query_params["query"] = query
-        if limit is not None:
-            query_params["limit"] = str(limit)
-        if offset is not None:
-            query_params["offset"] = str(offset)
-
-        request_body = None
+        # POST, so a long id list travels in the body rather than the URL.
+        url = f"{self.base_url}/api/v1/tickets/search"
+        request_body: dict[str, object] = {"query": query, "only_total_count": True}
+        if ids is not None:
+            request_body["ids"] = [str(i) for i in ids]
 
         try:
             request = HTTPRequest(
                 url=url,
-                method="GET",
+                method="POST",
                 headers={"Content-Type": "application/json"},
                 body=request_body,
-                query=query_params
             )
             response = await self.http_client.execute(request)
 
-            response_text = response.text()
             status_ok = response.status < SUCCESS_CODE_IS_LESS_THAN
-
-            # Return full assets dict with result count for proper pagination
-            data = None
-            if response_text:
-                json_data = response.json()
-                if isinstance(json_data, dict):
-                    # Response structure:
-                    # {
-                    #   "assets": {
-                    #     "KnowledgeBase": {...},
-                    #     "KnowledgeBaseCategory": {...},
-                    #     "KnowledgeBaseAnswer": {...},
-                    #     "KnowledgeBaseAnswerTranslation": {...},
-                    #     ...
-                    #   },
-                    #   "result": [{"type": "KnowledgeBaseAnswerTranslation", "id": 1}, ...]
-                    # }
-                    assets = json_data.get("assets", {})
-                    result = json_data.get("result", [])
-                    # Include result_count for pagination
-                    data = {
-                        **assets,
-                        "_result_count": len(result)
-                    }
-                else:
-                    data = {}
+            json_data = response.json() if response.text() else None
+            if isinstance(json_data, dict) and json_data.get("error"):
+                status_ok = False
+            total = json_data.get("total_count") if isinstance(json_data, dict) else None
+            counted = isinstance(total, int) and not isinstance(total, bool)
 
             return ZammadResponse(
                 success=status_ok,
-                data=data,
-                message="search_kb_answers succeeded" if status_ok else "search_kb_answers failed"
+                data={"total_count": total} if status_ok and counted else None,
+                message="count_tickets succeeded" if status_ok else "count_tickets failed",
+                status_code=response.status,
             )
         except Exception as e:
             return ZammadResponse(
                 success=False,
                 error=str(e),
-                message="search_kb_answers failed: " + str(e)
+                message="count_tickets failed: " + str(e)
             )
 
     async def get_ticket_history(

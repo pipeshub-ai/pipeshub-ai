@@ -379,7 +379,7 @@
       "source_name": null,
       "source_type": null,
       "data": {
-        "row_natural_language_text": "Subject / Teacher: Languages, Term 1: , Term 2: , Annual Exam: , Total %: , Grade: , Position: ",
+        "row_natural_language_text": "Subject / Teacher: Languages",
         "row_number": 1,
         "cells": [
           "Languages",
@@ -511,7 +511,7 @@
       "source_name": null,
       "source_type": null,
       "data": {
-        "row_natural_language_text": "Subject / Teacher: Science & Mathematics, Term 1: , Term 2: , Annual Exam: , Total %: , Grade: , Position: ",
+        "row_natural_language_text": "Subject / Teacher: Science & Mathematics",
         "row_number": 4,
         "cells": [
           "Science & Mathematics",
@@ -643,7 +643,7 @@
       "source_name": null,
       "source_type": null,
       "data": {
-        "row_natural_language_text": "Subject / Teacher: Social Science, Term 1: , Term 2: , Annual Exam: , Total %: , Grade: , Position: ",
+        "row_natural_language_text": "Subject / Teacher: Social Science",
         "row_number": 7,
         "cells": [
           "Social Science",
@@ -731,7 +731,7 @@
       "source_name": null,
       "source_type": null,
       "data": {
-        "row_natural_language_text": "Subject / Teacher: Aggregate Score, Term 1: 424 / 500, Term 2: 442 / 500, Annual Exam: 450 / 500, Total %: 87.6% Overall, Grade: , Position: 5th / 42",
+        "row_natural_language_text": "Subject / Teacher: Aggregate Score, Term 1: 424 / 500, Term 2: 442 / 500, Annual Exam: 450 / 500, Total %: 87.6% Overall, Position: 5th / 42",
         "row_number": 9,
         "cells": [
           "Aggregate Score",

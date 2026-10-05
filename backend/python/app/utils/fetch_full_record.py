@@ -8,6 +8,7 @@ from typing import Any
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.config.constants.service import config_node_constants
@@ -187,11 +188,46 @@ class _RecordResolver:
         self._user_id = user_id
         self._frontend_url = frontend_url
         self._endpoints_read = False
+        self._excluded: asyncio.Future[frozenset[str]] | None = None
+
+    async def _excluded_apps(self) -> frozenset[str]:
+        """The Acme Corp demo, when this person switched it off; read once per fetch.
+
+        Records resolve concurrently, so every caller waits on the same lookup
+        rather than reading a placeholder while it is still running.
+        """
+        if self._excluded is None:
+            self._excluded = asyncio.ensure_future(self._read_excluded())
+        return await self._excluded
+
+    async def _read_excluded(self) -> frozenset[str]:
+        if not (self._config_service and self._graph_provider and self._org_id and self._user_id):
+            return frozenset()
+        try:
+            return await excluded_demo_connector_ids(
+                self._graph_provider, self._config_service, self._org_id, self._user_id
+            )
+        except Exception:
+            logger.warning("Demo data setting unreadable for %s", self._user_id, exc_info=True)
+            return frozenset()
 
     async def resolve(self, record_id: str) -> tuple[str, dict[str, Any] | None, str | None]:
         cached = self._from_map(record_id)
         if cached is not None:
-            return record_id, await self._enrich(cached), None
+            if "record_name" in cached:
+                return record_id, await self._enrich(cached), None
+            # Raw graph metadata (e.g. from pattern match) — fetch blob content.
+            # ACL was already verified when the entry was added to the map.
+            if not cached.get("virtualRecordId"):
+                cached["virtualRecordId"] = cached.get("virtual_record_id")
+            try:
+                record = await self._download(cached)
+            except Exception:
+                logger.warning("Blob read failed for map entry %s", record_id, exc_info=True)
+                return record_id, None, STORAGE_ERROR
+            if record is None:
+                return record_id, None, UNAVAILABLE
+            return record_id, await self._enrich(record), None
 
         # An id that is not already in the (ACL-filtered) map is unverified.
         # Without a user to check against, it is never served.
@@ -217,9 +253,10 @@ class _RecordResolver:
 
         if not graph_record:
             return record_id, None, UNAVAILABLE
+        # Search leaves switched-off demo data out; opening it by id must too.
+        if graph_record.get("connectorId") in await self._excluded_apps():
+            return record_id, None, UNAVAILABLE
         if graph_record.get("indexingStatus") != ProgressStatus.COMPLETED.value:
-            # Actionable: "try again shortly" is a different instruction from
-            # "this record does not exist".
             return record_id, None, NOT_INDEXED_YET
 
         try:

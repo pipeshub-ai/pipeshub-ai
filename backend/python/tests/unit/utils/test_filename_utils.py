@@ -1,8 +1,14 @@
 """Unit tests for app.utils.filename_utils.sanitize_filename_for_content_disposition()."""
 
+import os
+
 import pytest
 
-from app.utils.filename_utils import sanitize_filename_for_content_disposition
+from app.utils.filename_utils import (
+    sanitize_filename_for_content_disposition,
+    temp_path_for,
+    upload_extension,
+)
 
 
 class TestSanitizeFilenameForContentDisposition:
@@ -107,3 +113,76 @@ class TestSanitizeFilenameForContentDisposition:
         # Path separators are normal latin-1 chars, not stripped
         result = sanitize_filename_for_content_disposition("path/to/file.txt")
         assert result == "path/to/file.txt"
+
+
+_OFFICE = frozenset({"ppt", "pptx", "docx"})
+
+
+class TestUploadExtension:
+    """upload_extension() decides how an upload is handled and must never let a
+    client name carry a path component through."""
+
+    @pytest.mark.parametrize(
+        ("filename", "expected"),
+        [
+            ("deck.pptx", "pptx"),
+            ("DECK.PPTX", "pptx"),
+            ("my deck (final).docx", "docx"),
+            ("a.b.c.ppt", "ppt"),
+        ],
+    )
+    def test_accepts_plain_names_with_allowed_extension(self, filename, expected) -> None:
+        assert upload_extension(filename, _OFFICE) == expected
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "../../outside.pptx",
+            "/tmp/abs.pptx",
+            "..\\..\\win.pptx",
+            "%2e%2e/enc.pptx",
+            "sub/deck.pptx",
+            "deck\x00.pptx",
+        ],
+    )
+    def test_rejects_any_path_separator_or_nul(self, filename) -> None:
+        assert upload_extension(filename, _OFFICE) is None
+
+    @pytest.mark.parametrize("filename", ["", None, ".pptx", "..pptx", "deck", "deck.", " .pptx"])
+    def test_rejects_empty_or_stemless_names(self, filename) -> None:
+        assert upload_extension(filename, _OFFICE) is None
+
+    @pytest.mark.parametrize("filename", ["deck.exe", "deck.pdf", "deck.pptx.sh", "deck.PPTX.html"])
+    def test_rejects_extension_outside_allowlist(self, filename) -> None:
+        assert upload_extension(filename, _OFFICE) is None
+
+
+class TestTempPathFor:
+    """temp_path_for() keeps a write inside the directory whatever the name carries."""
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("report.docx", "report.docx"),
+            ("my report (1).docx", "my report (1).docx"),
+            ("../../report.docx", "report.docx"),
+            ("/etc/cron.d/report.docx", "report.docx"),
+            ("nested/dir/report.docx", "report.docx"),
+            ("report.docx/", "report.docx"),
+            ("..", "file"),
+            (".", "file"),
+            ("/", "file"),
+            ("", "file"),
+            (None, "file"),
+        ],
+    )
+    def test_only_the_last_component_is_used(self, name, expected):
+        assert temp_path_for("/tmp/work", name) == os.path.join("/tmp/work", expected)
+
+    @pytest.mark.parametrize("name", ["../x", "/abs/x", "a/../../x", "..", "x"])
+    def test_result_is_directly_inside_the_directory(self, tmp_path, name):
+        path = temp_path_for(str(tmp_path), name)
+        assert os.path.dirname(os.path.realpath(path)) == os.path.realpath(str(tmp_path))
+
+    def test_custom_fallback(self):
+        assert temp_path_for("/tmp/work", None, fallback="upload") == os.path.join("/tmp/work", "upload")

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Box, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
@@ -21,6 +22,7 @@ interface SidebarExpandButtonProps {
  * is visible or on mobile (which has its own hamburger in the app shell).
  */
 export function SidebarExpandButton({ placement = 'absolute' }: SidebarExpandButtonProps) {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const isNavCollapsed = useSidebarWidthStore((s) => s.isNavCollapsed);
   const setNavCollapsed = useSidebarWidthStore((s) => s.setNavCollapsed);
@@ -39,12 +41,12 @@ export function SidebarExpandButton({ placement = 'absolute' }: SidebarExpandBut
   if (placement === 'shell' && pageExpandControls > 0) return null;
 
   const button = (
-    <Tooltip content="Expand sidebar" side="right">
+    <Tooltip content={t('sidebar.expand')} side="right">
       <IconButton
         variant="ghost"
         color="gray"
         size="2"
-        aria-label="Expand sidebar"
+        aria-label={t('sidebar.expand')}
         onClick={() => setNavCollapsed(false)}
         style={{ margin: 0, flexShrink: 0 }}
       >

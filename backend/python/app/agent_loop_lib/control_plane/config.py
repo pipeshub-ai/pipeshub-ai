@@ -170,6 +170,9 @@ class DockerBackendConfig(BaseModel):
     # always joins `egress_network` regardless — a package install with no
     # registry reachable is not an install.
     allow_network: bool = False
+    # Private ranges networked containers may still reach, e.g. a package mirror.
+    egress_allow_cidrs: list[str] = Field(default_factory=list)
+    sandbox_user: str = "sandbox"
 
 
 class GovernorConfig(BaseModel):

@@ -1,3 +1,7 @@
+'use client';
+
+import type { TFunction } from 'i18next';
+
 // ============================================================================
 // SHARE COMPONENT TYPES (entity-agnostic)
 // ============================================================================
@@ -8,12 +12,14 @@ export type ShareEntityType = 'collection' | 'conversation' | 'search' | 'connec
 /** Permission roles */
 export type ShareRole = 'OWNER' | 'WRITER' | 'READER';
 
-/** Display labels for roles */
-export const SHARE_ROLE_LABELS: Record<ShareRole, { label: string; description: string }> = {
-  OWNER: { label: 'Full Access', description: 'Shared ownership of the collection' },
-  WRITER: { label: 'Can edit', description: 'Only edit & organise files & folders' },
-  READER: { label: 'Can view', description: 'Only viewing access' },
-};
+/** Localized display labels for roles. */
+export function getShareRoleLabels(t: TFunction): Record<ShareRole, { label: string; description: string }> {
+  return {
+    OWNER: { label: t('shareSidebar.roles.owner.label'), description: t('shareSidebar.roles.owner.description') },
+    WRITER: { label: t('shareSidebar.roles.writer.label'), description: t('shareSidebar.roles.writer.description') },
+    READER: { label: t('shareSidebar.roles.reader.label'), description: t('shareSidebar.roles.reader.description') },
+  };
+}
 
 /** A member with whom the entity is already shared */
 export interface SharedMember {

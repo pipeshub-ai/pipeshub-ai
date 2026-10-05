@@ -169,6 +169,17 @@ class MariaDBSourceHelper:
         for table in tables:
             self._execute(f"DROP TABLE IF EXISTS `{table}`")
 
+    def drop_tables_starting(self, prefix: str) -> None:
+        """Drop every base table whose name starts with ``prefix``, from this run or an interrupted one."""
+        rows = self._execute(
+            "SELECT TABLE_NAME FROM information_schema.TABLES "
+            "WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'",
+            (self.database,),
+        )
+        for (name,) in rows:
+            if name.startswith(prefix):
+                self._execute(f"DROP TABLE IF EXISTS `{name}`")
+
     def drop_created(self) -> None:
         """Drop what this helper created, children and views first."""
         views = set(self._views())

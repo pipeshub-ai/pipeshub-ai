@@ -17,13 +17,36 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
+    // jsdom's per-window storage, not Node's native Web Storage, which shadows it.
+    // Node versions without the flag reject it, so only pass it where it exists.
+    execArgv: process.allowedNodeEnvironmentFlags.has('--no-experimental-webstorage')
+      ? ['--no-experimental-webstorage']
+      : [],
     globals: false,
     // Every unit test under app/ and lib/. A hand-kept list let new test
     // files sit unrun: three never ran, and one of them caught a real bug.
     // Playwright (tests/e2e) and Electron (electron/, run by
-    // test:electron:local-sync) have their own runners.
+    // test:electron) have their own runners.
     include: ['app/**/*.test.{ts,tsx}', 'lib/**/*.test.{ts,tsx}'],
     passWithNoTests: false,
+    // `include` lists every source file, loaded by a test or not, so the
+    // percentage counts untested files instead of hiding them.
+    coverage: {
+      provider: 'v8',
+      include: ['app/**/*.{ts,tsx}', 'lib/**/*.{ts,tsx}'],
+      exclude: ['**/*.test.{ts,tsx}', '**/__tests__/**', '**/*.d.ts'],
+      reporter: ['text-summary', 'json-summary', 'json', 'html'],
+      reportsDirectory: 'coverage/unit',
+      // Only ever raise the frontend minimum; never lower it to make a PR pass. Add tests instead.
+      // Enforced only by `npm run test:unit:coverage` (plain `test:unit` skips coverage).
+      // Keep this in step with the Slack text in .github/workflows/weekly-coverage.yml.
+      thresholds: {
+        statements: 33,
+        branches: 30,
+        functions: 29,
+        lines: 34,
+      },
+    },
   },
   resolve: {
     alias: {

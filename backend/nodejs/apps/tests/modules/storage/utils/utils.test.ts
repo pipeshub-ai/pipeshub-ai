@@ -11,6 +11,7 @@ import {
   encodeRFC5987,
   extractOrgId,
   extractUserId,
+  toObjectId,
   validateFileAndDocumentName,
   getDocumentInfo,
   generatePresignedUrlForDirectUpload,
@@ -267,6 +268,36 @@ describe('storage/utils/utils', () => {
       const req: any = { user: { orgId: 'org-user' }, tokenPayload: { orgId: 'org-token' } }
       expect(extractOrgId(req)).to.equal('org-user')
     })
+  })
+
+  // -------------------------------------------------------------------------
+  // toObjectId
+  // -------------------------------------------------------------------------
+  describe('toObjectId', () => {
+    it('should return an ObjectId for a valid id', () => {
+      expect(toObjectId('64d000000000000000000a01', 'organization').toHexString()).to.equal('64d000000000000000000a01')
+    })
+
+    // new ObjectId('user-123') throws a BSONError, which the error middleware answers with 500.
+    // A number and a 12-character string are not ids a token should carry; new ObjectId(6)
+    // would build an unrelated timestamp id instead of failing.
+    const malformed: ReadonlyArray<readonly [unknown, 'organization' | 'user']> = [
+      ['user-123', 'user'],
+      ['org-1', 'organization'],
+      ['', 'user'],
+      [6, 'organization'],
+      [1234567890123, 'user'],
+      ['0123456789ab', 'organization'],
+      [{ id: '64d000000000000000000a01' }, 'user'],
+    ]
+    for (const [id, kind] of malformed) {
+      it(`should throw BadRequestError naming the ${kind} id for ${JSON.stringify(id)}`, () => {
+        expect(() => toObjectId(id, kind))
+          .to.throw(BadRequestError)
+          .with.property('message')
+          .that.contains(`The ${kind} id in the storage token isn't valid`)
+      })
+    }
   })
 
   // -------------------------------------------------------------------------

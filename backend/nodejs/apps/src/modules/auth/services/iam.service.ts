@@ -136,7 +136,7 @@ export class IamService {
     try {
       const config = {
         method: 'get',
-        url: `${this.authConfig.iamBackend}/api/v1/users/internal/${userId}`,
+        url: `${this.authConfig.iamBackend}/api/v1/users/internal/${encodeURIComponent(userId)}`,
         headers: {
           Authorization: `Bearer ${authServiceToken}`,
           'Content-Type': 'application/json',
@@ -172,7 +172,7 @@ export class IamService {
     try {
       const config = {
         method: 'put',
-        url: `${this.authConfig.iamBackend}/api/v1/users/${userId}`,
+        url: `${this.authConfig.iamBackend}/api/v1/users/${encodeURIComponent(userId)}`,
         headers: {
           Authorization: `Bearer ${authServiceToken}`,
           'Content-Type': 'application/json',
@@ -210,7 +210,7 @@ export class IamService {
       const config = {
         method: 'get',
         // Internal S2S path: USER_LOOKUP scoped token (no user-session role claim).
-        url: `${this.authConfig.iamBackend}/api/v1/users/internal/${userId}/adminCheck`,
+        url: `${this.authConfig.iamBackend}/api/v1/users/internal/${encodeURIComponent(userId)}/adminCheck`,
         headers: {
           Authorization: `Bearer ${authServiceToken}`,
           'Content-Type': 'application/json',

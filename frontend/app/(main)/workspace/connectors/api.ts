@@ -89,10 +89,12 @@ export const ConnectorsApi = {
   async getActiveConnectors(
     scope: ConnectorScope,
     page = 1,
-    limit = 100
+    limit = 100,
+    options?: { suppressErrorToast?: boolean }
   ): Promise<ConnectorListResponse> {
     const { data } = await apiClient.get<ConnectorListResponse>(BASE_URL, {
       params: { scope, page, limit },
+      ...options,
     });
     return data;
   },
@@ -371,6 +373,19 @@ export const ConnectorsApi = {
       // See toggleConnector: suppresses only the desktop-offline refusal.
       { suppressErrorToast: isDesktopOfflineError }
     );
+    return data;
+  },
+
+  /**
+   * Ask the backend to stop the in-flight sync for a connector.
+   *
+   * Best-effort by nature: the request returns as soon as the stop is signalled,
+   * but the running sync unwinds asynchronously, so the instance can still
+   * report SYNCING for a while afterwards. Callers should refresh rather than
+   * assume the connector is idle on return.
+   */
+  async stopConnectorSync(connectorId: string) {
+    const { data } = await apiClient.post(`${BASE_URL}/${connectorId}/sync/stop`, {});
     return data;
   },
 

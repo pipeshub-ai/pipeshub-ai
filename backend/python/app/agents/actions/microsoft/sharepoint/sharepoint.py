@@ -1,6 +1,8 @@
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
+from http import HTTPStatus
 from typing import Any, Optional
 
 # JSON-serializable value produced by _serialize_response (avoids Any)
@@ -34,11 +36,18 @@ from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.models.entities import FileRecord, RecordType
 from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.microsoft.microsoft import MSGraphClient
-from app.sources.external.microsoft.sharepoint.sharepoint import SharePointDataSource
+from app.sources.external.microsoft.sharepoint.sharepoint import (
+    SharePointDataSource,
+    SharePointResponse,
+    failure_response,
+)
 
 logger = logging.getLogger(__name__)
 
 _MAX_FILE_CONTENT_BYTES = 50 * 1024 * 1024  # 50 MB — matches OneDrive
+_NOTEBOOK_PAGE_SIZE = 50
+_MAX_NOTEBOOK_PAGES = 20
+_MAX_NOTEBOOK_PAGES_PER_CALL = 20
 
 
 def _sharepoint_file_label(entry: dict) -> str:
@@ -182,6 +191,45 @@ class GetNotebookPageContentInput(BaseModel):
 # Toolset registration
 # ---------------------------------------------------------------------------
 
+_RECONNECT_STEP = "Reconnect the SharePoint toolset in Settings > Toolsets and try again."
+_KIOTA_UNMAPPED = "The server returned an unexpected status code"
+_STATUS_SUFFIX = re.compile(r"\s*\(status \d{3}\)$")
+
+
+def _graph_failure_message(*, action: str, response: SharePointResponse) -> str:
+    """Plain words and a next step for a failure Graph answered with an HTTP status."""
+    status = response.status_code or 0
+    if status == HTTPStatus.TOO_MANY_REQUESTS:
+        retry_after = (response.retry_after or "").strip()
+        wait = f"Wait {retry_after} seconds" if retry_after.isdigit() else "Wait a minute"
+        return f"SharePoint is receiving too many requests right now, so it could not {action}. {wait} and try again."
+    if status == HTTPStatus.UNAUTHORIZED:
+        return f"Could not {action}: Microsoft did not accept the saved sign-in. {_RECONNECT_STEP}"
+    if status == HTTPStatus.FORBIDDEN:
+        return (
+            f"Could not {action}: the signed-in account does not have access to that site or item. "
+            "Ask its owner for access, or choose one you can open."
+        )
+    if status == HTTPStatus.NOT_FOUND:
+        return (
+            f"Could not {action}: SharePoint could not find that site, page or item. Check the id, or call "
+            "get_sites, list_files or search_files to find the right one."
+        )
+    if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+        return f"SharePoint is having a temporary problem and could not {action}. Try again in a moment."
+    detail = _STATUS_SUFFIX.sub("", response.error or "")
+    if not detail or detail.startswith(_KIOTA_UNMAPPED):
+        return f"SharePoint refused to {action} (status {status}). Check the arguments and try again."
+    return f"SharePoint refused to {action}: {detail}"
+
+
+def _failure_text(response: SharePointResponse, action: str, fallback: str) -> str:
+    if isinstance(getattr(response, "status_code", None), int):
+        return _graph_failure_message(action=action, response=response)
+    return response.error or fallback
+
+
+
 @ToolsetBuilder("SharePoint")\
     .in_group("Microsoft 365")\
     .with_description("SharePoint sites, files, and pages")\
@@ -277,8 +325,32 @@ class SharePoint:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    async def _all_onenote_items(
+        fetch: Callable[[int], Awaitable[SharePointResponse]], key: str,
+    ) -> tuple[list[Any], SharePointResponse | None, bool]:
+        """Every page of a OneNote listing: (items, the failed response if one failed, whether the list is complete)."""
+        items: list[Any] = []
+        for page_number in range(_MAX_NOTEBOOK_PAGES):
+            response = await fetch(page_number * _NOTEBOOK_PAGE_SIZE)
+            if not response.success:
+                return items, response, False
+            data = response.data or {}
+            items.extend(data.get("results") or data.get(key) or [])
+            if not data.get("has_more"):
+                return items, None, True
+        return items, None, False
+
+    def _failed(self, response: SharePointResponse, action: str, fallback: str) -> tuple[bool, str]:
+        return False, json.dumps({"error": _failure_text(response, action, fallback)})
+
     def _handle_error(self, error: Exception, operation: str = "operation") -> tuple[bool, str]:
         """Return a standardised error tuple."""
+        status = getattr(error, "response_status_code", None)
+        if isinstance(status, int):
+            logger.error(f"Failed to {operation}: {error}")
+            failure = failure_response(error)
+            return False, json.dumps({"error": _graph_failure_message(action=operation, response=failure)})
         error_msg = str(error).lower()
 
         if isinstance(error, AttributeError) and (
@@ -500,7 +572,7 @@ class SharePoint:
                     ),
                 })
             else:
-                return False, json.dumps({"error": response.error or "Failed to list sites"})
+                return self._failed(response, "list sites", "Failed to list sites")
         except Exception as e:
             return self._handle_error(e, "get sites")
 
@@ -523,7 +595,7 @@ class SharePoint:
             if response.success:
                 return True, json.dumps(response.data)
             else:
-                return False, json.dumps({"error": response.error or "Site not found"})
+                return self._failed(response, "read that site", "Site not found")
         except Exception as e:
             return self._handle_error(e, f"get site {site_id}")
 
@@ -570,11 +642,21 @@ class SharePoint:
                     item["page_id"] = item["id"]
 
             logger.info(f"✅ Retrieved {len(items)} pages from site")
+            more = {}
+            if getattr(response, "odata_next_link", None):
+                more = {
+                    "has_more": True,
+                    "note": (
+                        f"The site has more than {query_params.top} pages, so this list is not complete. "
+                        "Use search_pages to find a page by name."
+                    ),
+                }
             return True, json.dumps({
                 "pages": items,
                 "results": items,
                 "value": items,
                 "count": len(items),
+                **more,
             })
 
         except Exception as e:
@@ -615,7 +697,7 @@ class SharePoint:
             logger.info(f"📍 Getting page {page_id} from site {site_id}")
             response = await self.client.get_site_page_with_canvas(site_id=site_id, page_id=page_id)
             if not response.success:
-                return False, json.dumps({"error": response.error or "Failed to get page"})
+                return self._failed(response, "read that page", "Failed to get page")
             page_data = self._serialize_response(response.data)
 
             if not isinstance(page_data, dict) or not page_data.get("id"):
@@ -693,7 +775,7 @@ class SharePoint:
                     ),
                 })
             else:
-                return False, json.dumps({"error": response.error or "Failed to search pages"})
+                return self._failed(response, "search pages", "Failed to search pages")
         except Exception as e:
             return self._handle_error(e, f"search pages '{query}'")
 
@@ -764,7 +846,7 @@ class SharePoint:
                         "count": 0,
                         "note": "This site is not accessible via the drives API (it may be a hub site, archived, or a subsite with a different URL structure).",
                     })
-                return False, json.dumps({"error": error})
+                return self._failed(response, "list the site's document libraries", error)
         except Exception as e:
             error_msg = str(e)
             if any(k in error_msg for k in ("404", "itemNotFound", "not found", "could not be found")):
@@ -845,7 +927,17 @@ class SharePoint:
                         "parent_path": parent_ref.get("path"),
                     })
                 logger.info(f"✅ list_files: {len(normalized)} items (drive={drive_id}, folder={folder_id})")
+                more = {}
+                if data.get("has_more"):
+                    more = {
+                        "has_more": True,
+                        "note": (
+                            f"At least one folder holds more than {capped_top} items, so this list is not complete. "
+                            "Use search_files to find a file by name, or call list_files on a subfolder."
+                        ),
+                    }
                 return True, json.dumps({
+                    **more,
                     "items": normalized,
                     "files": [i for i in normalized if not i["is_folder"]],
                     "folders": [i for i in normalized if i["is_folder"]],
@@ -860,7 +952,7 @@ class SharePoint:
                     ),
                 })
             else:
-                return False, json.dumps({"error": response.error or "Failed to list files"})
+                return self._failed(response, "list the files", "Failed to list files")
         except Exception as e:
             return self._handle_error(e, f"list files (site={site_id}, drive={drive_id})")
 
@@ -954,7 +1046,7 @@ class SharePoint:
                     ),
                 })
             else:
-                return False, json.dumps({"error": response.error or "Failed to search files"})
+                return self._failed(response, "search files", "Failed to search files")
         except Exception as e:
             return self._handle_error(e, f"search files '{query}'")
 
@@ -1021,7 +1113,7 @@ class SharePoint:
                 result["content_readable_as_text"] = bool(is_text_readable)
                 return True, json.dumps(result)
             else:
-                return False, json.dumps({"error": response.error or "File not found"})
+                return self._failed(response, "read that file's details", "File not found")
         except Exception as e:
             return self._handle_error(e, f"get file metadata {item_id}")
 
@@ -1054,7 +1146,7 @@ class SharePoint:
                 site_id=site_id, drive_id=drive_id, item_id=item_id,
             )
             if not meta.success:
-                return False, json.dumps({"error": meta.error or "File not found"})
+                return self._failed(meta, "read that file", "File not found")
             raw_meta = meta.data or {}
             file_facet = raw_meta.get("file") or {}
             mime_type = file_facet.get("mimeType") if isinstance(file_facet, dict) else None
@@ -1089,7 +1181,7 @@ class SharePoint:
                 site_id=site_id, drive_id=drive_id, item_id=item_id,
             )
             if not resp.success:
-                return False, json.dumps({"error": resp.error or "Failed to read file content"})
+                return self._failed(resp, "read that file", "Failed to read file content")
 
             raw = resp.data
             if not isinstance(raw, (bytes, bytearray)) or not raw:
@@ -1175,7 +1267,7 @@ class SharePoint:
                 publish=bool(publish),
             )
             if not response.success:
-                return False, json.dumps({"error": response.error or "Failed to create page"})
+                return self._failed(response, "create the page", "Failed to create page")
 
             page_data = response.data or {}
             page_id = page_data.get("id")
@@ -1234,7 +1326,7 @@ class SharePoint:
                 publish=bool(publish),
             )
             if not response.success:
-                return False, json.dumps({"error": response.error or "Failed to update page"})
+                return self._failed(response, "update the page", "Failed to update page")
 
             data = response.data or {}
             published = data.get("published", False)
@@ -1323,7 +1415,7 @@ class SharePoint:
                     ),
                 })
             else:
-                return False, json.dumps({"error": response.error or "Failed to create folder"})
+                return self._failed(response, "create the folder", "Failed to create folder")
         except Exception as e:
             return self._handle_error(e, f"create folder '{folder_name}'")
 
@@ -1380,7 +1472,7 @@ class SharePoint:
                     ),
                 })
             else:
-                return False, json.dumps({"error": response.error or "Failed to create Word document"})
+                return self._failed(response, "create the Word document", "Failed to create Word document")
         except Exception as e:
             return self._handle_error(e, f"create Word document '{file_name}'")
 
@@ -1449,7 +1541,7 @@ class SharePoint:
                     f"to {result['destination_folder_id']}"
                 )
                 return True, json.dumps(result)
-            return False, json.dumps({"error": response.error or "Failed to move item"})
+            return self._failed(response, "move the item", "Failed to move item")
         except Exception as e:
             return self._handle_error(e, f"move item '{item_id}'")
 
@@ -1474,13 +1566,29 @@ class SharePoint:
     ) -> tuple[bool, str]:
         """Resolve a OneNote notebook by name in the given site. Lists notebooks for that site and matches by name."""
         try:
-            list_resp = await self.client.list_onenote_notebooks(site_id=site_id, top=50, skip=0)
-            if not list_resp.success:
+            notebooks: list[Any] = []
+            for page_number in range(_MAX_NOTEBOOK_PAGES):
+                list_resp = await self.client.list_onenote_notebooks(
+                    site_id=site_id, top=_NOTEBOOK_PAGE_SIZE, skip=page_number * _NOTEBOOK_PAGE_SIZE,
+                )
+                if not list_resp.success:
+                    # A match on the pages read so far could be the wrong notebook.
+                    return False, json.dumps({
+                        "resolved": False,
+                        "error": _failure_text(list_resp, "list the site's notebooks", "Failed to list notebooks for this site."),
+                    })
+                data = list_resp.data or {}
+                notebooks.extend(data.get("results") or data.get("notebooks") or [])
+                if not data.get("has_more"):
+                    break
+            else:
                 return False, json.dumps({
                     "resolved": False,
-                    "error": list_resp.error or "Failed to list notebooks for this site.",
+                    "error": (
+                        f"This site has more than {_MAX_NOTEBOOK_PAGES * _NOTEBOOK_PAGE_SIZE} notebooks, so not all "
+                        "of them could be checked. Ask the user for the notebook's exact name or link."
+                    ),
                 })
-            notebooks = (list_resp.data or {}).get("results") or (list_resp.data or {}).get("notebooks") or []
             query_norm = self._normalize_notebook_name(notebook_query)
             matches: list[dict[str, Any]] = []
             for nb in notebooks:
@@ -1491,7 +1599,7 @@ class SharePoint:
                 if not query_norm:
                     matches.append({**nb, "site_id": site_id})
                     continue
-                if nb_norm == query_norm or (query_norm in nb_norm) or (nb_norm in query_norm):
+                if nb_norm and (nb_norm == query_norm or (query_norm in nb_norm) or (nb_norm in query_norm)):
                     matches.append({**nb, "site_id": site_id})
             if len(matches) == 1:
                 m = matches[0]
@@ -1542,17 +1650,18 @@ class SharePoint:
     ) -> tuple[bool, str]:
         """List sections and pages of a OneNote notebook (metadata only, no content)."""
         try:
-            sec_resp = await self.client.list_onenote_sections(
-                site_id=site_id,
-                notebook_id=notebook_id,
-                top=50,
-                skip=0,
+            sections_data, sec_failure, sections_complete = await self._all_onenote_items(
+                lambda skip: self.client.list_onenote_sections(
+                    site_id=site_id, notebook_id=notebook_id, top=_NOTEBOOK_PAGE_SIZE, skip=skip,
+                ),
+                "sections",
             )
-            if not sec_resp.success:
-                return False, json.dumps({"error": sec_resp.error or "Failed to list sections"})
-            sections_data = (sec_resp.data or {}).get("results") or (sec_resp.data or {}).get("sections") or []
+            if sec_failure is not None and not sections_data:
+                return self._failed(sec_failure, "list the notebook's sections", "Failed to list sections")
             sections_with_pages: list[dict[str, Any]] = []
             flat_pages: list[dict[str, Any]] = []
+            unreadable_sections: list[dict[str, Any]] = []
+            capped_sections: list[str] = []
             for sec in sections_data:
                 if not isinstance(sec, dict):
                     continue
@@ -1560,13 +1669,17 @@ class SharePoint:
                 sec_name = sec.get("display_name") or sec.get("displayName")
                 if not sec_id:
                     continue
-                page_resp = await self.client.list_onenote_pages(
-                    site_id=site_id,
-                    section_id=sec_id,
-                    top=50,
-                    skip=0,
+                raw_pages, page_failure, pages_complete = await self._all_onenote_items(
+                    lambda skip, sec_id=sec_id: self.client.list_onenote_pages(
+                        site_id=site_id, section_id=sec_id, top=_NOTEBOOK_PAGE_SIZE, skip=skip,
+                    ),
+                    "pages",
                 )
-                raw_pages = (page_resp.data.get("results") or page_resp.data.get("pages") or []) if (page_resp.success and page_resp.data) else []
+                if page_failure is not None and not raw_pages:
+                    unreadable_sections.append({"section_id": sec_id, "section_name": sec_name})
+                    continue
+                if not pages_complete:
+                    capped_sections.append(sec_name or sec_id)
                 section_pages: list[dict[str, Any]] = []
                 for p in raw_pages:
                     if not isinstance(p, dict):
@@ -1585,13 +1698,36 @@ class SharePoint:
                     "section_name": sec_name,
                     "pages": section_pages,
                 })
-            return True, json.dumps({
+            out: dict[str, Any] = {
                 "notebook_id": notebook_id,
                 "site_id": site_id,
                 "sections": sections_with_pages,
                 "pages": flat_pages,
                 "usage_hint": "Use sharepoint_get_notebook_page_content(site_id, page_ids=[...]) for selected page_ids.",
-            })
+            }
+            notes: list[str] = []
+            if unreadable_sections:
+                names = ", ".join(str(sec["section_name"] or sec["section_id"]) for sec in unreadable_sections)
+                out["unreadable_sections"] = unreadable_sections
+                notes.append(
+                    f"The pages of these sections could not be read, so they are missing from this list: {names}. "
+                    "Try again in a moment, or tell the user those sections could not be opened."
+                )
+            if not sections_complete:
+                out["has_more"] = True
+                notes.append(
+                    "Not every section of this notebook could be listed, so some sections are missing. "
+                    "Tell the user the list is incomplete."
+                )
+            if capped_sections:
+                out["has_more"] = True
+                notes.append(
+                    f"Not every page of these sections could be listed, so some of their pages are missing: "
+                    f"{', '.join(str(n) for n in capped_sections)}."
+                )
+            if notes:
+                out["note"] = " ".join(notes)
+            return True, json.dumps(out)
         except Exception as e:
             return self._handle_error(e, f"list notebook pages {notebook_id}")
 
@@ -1612,8 +1748,8 @@ class SharePoint:
     ) -> tuple[bool, str]:
         """Get content for selected OneNote pages."""
         try:
-            cap = min(len(page_ids), 20)
-            page_ids = page_ids[:cap]
+            skipped_page_ids = page_ids[_MAX_NOTEBOOK_PAGES_PER_CALL:]
+            page_ids = page_ids[:_MAX_NOTEBOOK_PAGES_PER_CALL]
             results: list[dict[str, Any]] = []
             failed_page_ids: list[str] = []
             for pid in page_ids:
@@ -1626,6 +1762,24 @@ class SharePoint:
                     results.append(content_resp.data)
                 else:
                     failed_page_ids.append(pid)
+            skipped: dict[str, Any] = {}
+            if skipped_page_ids:
+                skipped = {
+                    "skipped_page_ids": skipped_page_ids,
+                    "note": (
+                        f"Only the first {_MAX_NOTEBOOK_PAGES_PER_CALL} pages are read per call. Call again with the "
+                        f"remaining page_ids to read them: {', '.join(skipped_page_ids)}."
+                    ),
+                }
+            if failed_page_ids and not results:
+                return False, json.dumps({
+                    "error": (
+                        f"None of the OneNote pages that were tried could be read ({', '.join(failed_page_ids)}). "
+                        "Check the ids with list_notebook_pages, or try again in a moment."
+                    ),
+                    "failed_page_ids": failed_page_ids,
+                    **skipped,
+                })
             out: dict[str, Any] = {
                 "pages": results,
                 "count": len(results),
@@ -1633,6 +1787,7 @@ class SharePoint:
             }
             if failed_page_ids:
                 out["failed_page_ids"] = failed_page_ids
+            out.update(skipped)
             return True, json.dumps(out)
         except Exception as e:
             return self._handle_error(e, "get notebook page content")
@@ -1692,6 +1847,6 @@ class SharePoint:
                 )
                 return True, json.dumps(result)
             else:
-                return False, json.dumps({"error": response.error or "Failed to create OneNote notebook"})
+                return self._failed(response, "create the notebook", "Failed to create OneNote notebook")
         except Exception as e:
             return self._handle_error(e, f"create OneNote notebook '{notebook_name}'")

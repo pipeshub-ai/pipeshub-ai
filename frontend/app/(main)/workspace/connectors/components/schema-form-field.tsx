@@ -644,6 +644,7 @@ function PasswordInput({
   startAdornment?: React.ReactNode;
   hasError?: boolean;
 }) {
+  const { t } = useTranslation();
   const [showPassword, setShowPassword] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
 
@@ -679,6 +680,7 @@ function PasswordInput({
           variant="ghost"
           color="gray"
           size="1"
+          aria-label={t(showPassword ? 'auth.common.hidePassword' : 'auth.common.showPassword')}
           onClick={() => setShowPassword(!showPassword)}
           style={{
             position: 'absolute',

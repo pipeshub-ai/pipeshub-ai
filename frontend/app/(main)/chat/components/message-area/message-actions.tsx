@@ -863,11 +863,18 @@ function FeedbackChip({ label, selected, onClick }: FeedbackChipProps) {
   const [hovered, setHovered] = useState(false);
 
   return (
+    // A real button, not a styled div: these are the only way to send feedback,
+    // and as a div they could not be tabbed to, activated with the keyboard, or
+    // announced by a screen reader as something to press.
     <Box
-      onClick={onClick}
+      asChild
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={{
+    >
+      <button
+        type="button"
+        onClick={onClick}
+        style={{
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -882,19 +889,21 @@ function FeedbackChip({ label, selected, onClick }: FeedbackChipProps) {
         cursor: 'pointer',
         transition: 'all 0.12s ease',
         userSelect: 'none',
-      }}
-    >
-      <Text
-        size="2"
-        weight="medium"
-        style={{
-          color: selected ? 'var(--accent-11)' : 'var(--slate-12)',
-          whiteSpace: 'nowrap',
-          fontSize: '13px',
+        font: 'inherit',
         }}
       >
-        {label}
-      </Text>
+        <Text
+          size="2"
+          weight="medium"
+          style={{
+            color: selected ? 'var(--accent-11)' : 'var(--slate-12)',
+            whiteSpace: 'nowrap',
+            fontSize: '13px',
+          }}
+        >
+          {label}
+        </Text>
+      </button>
     </Box>
   );
 }

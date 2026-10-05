@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { googleWorkspaceTypes, storageTypes } from '../constants/constants';
+import { REASONING_EFFORT_VALUES } from '../../enterprise_search/constants/constants';
 import {
   resolveS3Credentials,
   S3_PARTIAL_CREDENTIALS_MESSAGE,
@@ -510,7 +511,23 @@ export const configurationSchema = z.object({
   region: z.string().optional().describe("AWS region"),
   model_kwargs: z.record(z.any()).optional().describe("Additional model kwargs"),
   encode_kwargs: z.record(z.any()).optional().describe("Additional encoding kwargs"),
-  cache_folder: z.string().optional().describe("Cache folder for models")
+  cache_folder: z.string().optional().describe("Cache folder for models"),
+  // Python's LLM factory treats a blank value as "no default", same as absent.
+  defaultReasoningEffort: z
+    .string()
+    .nullable()
+    .optional()
+    .refine(
+      (value) =>
+        value == null ||
+        value.trim() === '' ||
+        (REASONING_EFFORT_VALUES as readonly string[]).includes(value.trim()),
+      {
+        message:
+          'Default reasoning effort must be low, medium, high or max. Leave it empty to use the platform default.',
+      },
+    )
+    .describe('Reasoning effort used when a request does not choose one'),
 }).passthrough().refine(
   (data) => {
     // If modelFriendlyName is provided, model must be a single model (not comma-separated)

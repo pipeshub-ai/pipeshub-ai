@@ -9,6 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.services.messaging.config import MessageBrokerType
+from tests.support.host_header import POISONED_HOSTS, request_with_host
 
 
 # ---------------------------------------------------------------------------
@@ -649,6 +650,32 @@ class TestAuthenticateRequests:
 
         assert isinstance(result, JSONResponse)
         assert result.status_code == 500
+
+    @pytest.mark.parametrize("host", POISONED_HOSTS)
+    async def test_poisoned_host_header_does_not_skip_auth(self, host):
+        """A Host header naming an excluded path does not replace the request path."""
+        from app.query_main import authenticate_requests
+
+        request = request_with_host("/api/v1/x", host)
+        call_next = AsyncMock()
+
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock, return_value=request) as auth:
+            await authenticate_requests(request, call_next)
+
+        auth.assert_awaited_once_with(request)
+
+    async def test_health_path_of_a_real_request_skips_auth(self):
+        """The exclusion still applies to a real request for /health."""
+        from app.query_main import authenticate_requests
+
+        request = request_with_host("/health")
+        call_next = AsyncMock()
+
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock) as auth:
+            await authenticate_requests(request, call_next)
+
+        auth.assert_not_awaited()
+        call_next.assert_awaited_once_with(request)
 
 
 # ===========================================================================

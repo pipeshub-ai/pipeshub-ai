@@ -7,6 +7,9 @@ import { toast } from '@/lib/store/toast-store';
 import { fetchAndSetCurrentUser } from '@/lib/auth/hydrate-user';
 import { AuthApi } from '../api';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+import { desktopOAuthErrorMessage, isElectron, runDesktopOAuth } from '@/lib/electron';
+import { createPkcePair, makeDesktopState } from '@/lib/auth/desktop-oauth';
+import { getSamlErrorDescription } from '@/lib/auth/saml-errors';
 import {
   getUserAccountApiErrorMessage,
   getUserAccountApiResponseMessage,
@@ -139,10 +142,12 @@ export function useAuthActions({
   const router = useRouter();
   const setTokens = useAuthStore((s) => s.setTokens);
   const setUser = useAuthStore((s) => s.setUser);
+  const logout = useAuthStore((s) => s.logout);
 
   const [loading, setLoading] = useState(false);
   const [forgotLoading, setForgotLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [ssoLoading, setSsoLoading] = useState(false);
   const [microsoftLoading, setMicrosoftLoading] = useState(false);
   const [oauthLoading, setOauthLoading] = useState(false);
   const [otpSendLoading, setOtpSendLoading] = useState(false);
@@ -263,13 +268,62 @@ export function useAuthActions({
       typeof window !== 'undefined'
         ? sessionStorage.getItem('auth_session_token')
         : null;
-    const baseUrl = getApiBaseUrl();
-    let url = `${baseUrl}/api/v1/saml/signIn?email=${encodeURIComponent(email)}`;
-    if (sessionToken) {
-      url += `&sessionToken=${encodeURIComponent(sessionToken)}`;
+    const params = new URLSearchParams({ email });
+    if (sessionToken) params.set('sessionToken', sessionToken);
+    const signInUrl = `${getApiBaseUrl()}/api/v1/saml/signIn`;
+
+    if (!isElectron()) {
+      window.location.href = `${signInUrl}?${params}`;
+      return;
     }
-    window.location.href = url;
-  }, [email]);
+
+    if (ssoLoading) return;
+    setSsoLoading(true);
+    setError(null);
+    void (async () => {
+      try {
+        const { verifier, challenge } = await createPkcePair();
+        const random = Array.from(window.crypto.getRandomValues(new Uint8Array(16)))
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('');
+        const state = makeDesktopState(random);
+        params.set('client', 'desktop');
+        params.set('state', state);
+        params.set('code_challenge', challenge);
+
+        const result = await runDesktopOAuth({
+          provider: 'saml',
+          authUrl: `${signInUrl}?${params}`,
+          expectedState: state,
+        }).promise;
+
+        if (result.saml_error) {
+          toast.error('Error in logging in with SAML', {
+            description: getSamlErrorDescription(result.saml_error),
+          });
+          return;
+        }
+        if (!result.code) throw new Error('No sign-in code was returned.');
+
+        const response = await AuthApi.exchangeSamlDesktopCode(result.code, verifier);
+        if (!response.accessToken || !response.refreshToken) {
+          throw new Error('SSO sign-in did not return a session.');
+        }
+        setTokens(response.accessToken, response.refreshToken);
+        if (!(await fetchAndSetCurrentUser())) {
+          logout();
+          throw new Error('Could not load your account after SSO sign-in.');
+        }
+        localStorage.setItem('pipeshub_last_email', email);
+        router.push(postAuthRedirectTo);
+      } catch (err: unknown) {
+        const message = desktopOAuthErrorMessage(err, 'SSO');
+        if (message) toast.error('SSO sign-in failed', { description: message });
+      } finally {
+        setSsoLoading(false);
+      }
+    })();
+  }, [email, ssoLoading, postAuthRedirectTo, router, setTokens, logout]);
 
   /**
    * Google sign-in via custom popup flow.
@@ -407,7 +461,8 @@ export function useAuthActions({
     try {
       await AuthApi.generateLoginOtp(email.trim());
       toast.success('Check your email', {
-        description: 'We sent a verification code to your inbox.',
+        description:
+          'If that email can sign in with a code, one is being sent. If nothing arrives in a few minutes, check your spam folder or try again later.',
       });
       return true;
     } catch (err: unknown) {
@@ -581,6 +636,7 @@ export function useAuthActions({
     loading,
     forgotLoading,
     googleLoading,
+    ssoLoading,
     microsoftLoading,
     oauthLoading,
     otpSendLoading,

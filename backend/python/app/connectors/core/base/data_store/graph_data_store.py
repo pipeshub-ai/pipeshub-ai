@@ -1,9 +1,11 @@
 import asyncio
 import functools
 import logging
+import random
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from logging import Logger
-from typing import AsyncContextManager, Optional
+from typing import AsyncContextManager, Optional, TypeVar
 
 # Import Neo4j exceptions with fallback for compatibility
 try:
@@ -35,11 +37,26 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-_TRANSACTION_RETRY_ATTEMPTS = 3
-_TRANSACTION_RETRY_BASE_DELAY = 0.5
+_T = TypeVar("_T")
+
+# An ArangoDB write-write conflict (1200) clears only once the other transaction
+# commits, and an indexing stream transaction can hold a record for seconds. So
+# the waits are 0.5, 1, 2, 4, 4s, each +/-20% so colliding writers drift apart:
+# 9.2s to 13.8s across six attempts. Neo4j deadlocks share the schedule.
+_RETRY_ATTEMPTS = 6
+_RETRY_BASE_DELAY = 0.5
+_RETRY_MAX_DELAY = 4.0
+_RETRY_JITTER = 0.2
+
+
+def _retry_delay(failed_attempt: int) -> float:
+    """Seconds to wait after the failed attempt with this 0-based number."""
+    nominal = min(_RETRY_MAX_DELAY, _RETRY_BASE_DELAY * (2 ** failed_attempt))
+    return nominal * random.uniform(1 - _RETRY_JITTER, 1 + _RETRY_JITTER)
 
 
 def _is_deadlock_error(exception: Exception) -> bool:
@@ -59,20 +76,32 @@ def _is_deadlock_error(exception: Exception) -> bool:
     )
 
 
-def retry_on_deadlock(max_retries: int = 3):
+def _is_retryable(instance: object, exception: Exception) -> bool:
+    """A Neo4j deadlock, or a failure the instance's data store calls transient
+    (an ArangoDB write-write conflict, which never says "deadlock")."""
+    if _is_deadlock_error(exception):
+        return True
+    store = getattr(instance, "data_store_provider", None)
+    # `is True`: a mocked provider answers with a truthy mock, which is not a yes.
+    return isinstance(store, DataStoreProvider) and store.is_transient_error(exception) is True
+
+
+def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
     """
-    Decorator that retries an async function on Neo4j deadlock errors.
+    Decorator that retries an async function on deadlocks and write conflicts.
 
-    When a deadlock is detected, the entire function is re-executed from scratch,
-    which naturally creates a fresh transaction on retry.
+    When one is detected, the entire function is re-executed from scratch,
+    which naturally creates a fresh transaction on retry. Besides Neo4j's
+    deadlock error, it retries whatever the decorated object's
+    ``data_store_provider`` reports as transient.
 
-    Uses exponential backoff: 0.1s, 0.2s, 0.4s, ...
+    Waits between attempts follow ``_retry_delay``: about 11.5s in all by default.
 
     Args:
-        max_retries: Maximum number of attempts (default: 3)
+        max_retries: Maximum number of attempts (default: 6)
 
     Usage:
-        @retry_on_deadlock(max_retries=3)
+        @retry_on_deadlock()
         async def on_new_records(self, records):
             async with self.data_store_provider.transaction() as tx_store:
                 # transaction code here
@@ -90,20 +119,21 @@ def retry_on_deadlock(max_retries: int = 3):
                     return await func(*args, **kwargs)
                 except Exception as e:
                     last_exception = e
+                    retryable = _is_retryable(args[0] if args else None, e)
 
-                    if _is_deadlock_error(e) and attempt < max_retries - 1:
-                        backoff = 0.1 * (2 ** attempt)  # 0.1s, 0.2s, 0.4s
+                    if retryable and attempt < max_retries - 1:
+                        backoff = _retry_delay(attempt)
                         logger.warning(
-                            f"Deadlock detected in {func.__name__} "
+                            f"Deadlock or write conflict in {func.__name__} "
                             f"(attempt {attempt + 1}/{max_retries}), "
                             f"retrying in {backoff:.1f}s: {str(e)[:200]}"
                         )
                         await asyncio.sleep(backoff)
                         continue
                     else:
-                        if _is_deadlock_error(e):
+                        if retryable:
                             logger.error(
-                                f"Deadlock persists in {func.__name__} "
+                                f"Deadlock or write conflict persists in {func.__name__} "
                                 f"after {max_retries} attempts: {str(e)[:200]}"
                             )
                         raise
@@ -129,6 +159,49 @@ class GraphTransactionStore(TransactionStore):
         self.graph_provider = graph_provider
         self.txn = txn  # Transaction ID (string) for HTTP provider
         self.logger = graph_provider.logger
+        # Lookups whose answer cannot change for the life of the transaction.
+        # One batch is 100 records from a single connector, so the record group
+        # and the permission users are a handful of objects fetched a hundred
+        # times each: measured at 12 graph calls per record, ~5 of them these
+        # repeats. The transaction is exactly how long the answers are stable,
+        # which makes it the right scope.
+        self._memo: dict[tuple, object] = {}
+
+    def _memo_put(self, key: tuple, value: object) -> None:
+        """Cache positives only. A miss usually means "not created yet", and the
+        caller creates it moments later; caching that would hide it."""
+        if value is not None:
+            self._memo[key] = value
+
+    def _memo_drop(self, key: tuple) -> None:
+        """Deleting inside the transaction must not leave a positive behind, or
+        the next lookup reports something that is gone."""
+        self._memo.pop(key, None)
+
+    def _memo_drop_external_id(self, connector_id: str, external_id: str) -> None:
+        """Record lookups are cached per visibility; a change drops every one."""
+        for key in [key for key in self._memo if key[:3] == ("record", connector_id, external_id)]:
+            del self._memo[key]
+
+    def _memo_forget_record(self, record_id: str) -> None:
+        """Drop every cached lookup that resolves to this vertex.
+
+        A move re-upserts the vertex under a new external id, and a delete by key
+        removes it without naming its path; either way its old path must stop
+        answering with it. on_records_moved retires whatever holds a destination
+        path, so a stale hit there deletes a record moved earlier in the batch.
+        """
+        stale = [
+            key for key, value in self._memo.items()
+            if key[0] == "record" and getattr(value, "id", None) == record_id
+        ]
+        for key in stale:
+            del self._memo[key]
+
+    def _memo_forget_all_records(self) -> None:
+        """For deletes whose victims are not known here by id (whole subtrees)."""
+        for key in [key for key in self._memo if key[0] == "record"]:
+            del self._memo[key]
 
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         return await self.graph_provider.batch_upsert_nodes(nodes, collection, transaction=self.txn)
@@ -136,19 +209,36 @@ class GraphTransactionStore(TransactionStore):
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         return await self.graph_provider.batch_update_nodes(nodes, collection, transaction=self.txn)
 
-    async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> Optional[Record]:
+    async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> dict | None:
         return await self.graph_provider.get_record_by_path(connector_id, path, external_record_group_id, transaction=self.txn)
 
-    async def get_record_by_key(self, key: str) -> Optional[Record]:
-        return await self.graph_provider.get_document(key, CollectionNames.RECORDS.value, transaction=self.txn)
+    async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Optional[dict]:
+        return await self.graph_provider.get_document(
+            key, CollectionNames.RECORDS.value, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_app_by_id(self, connector_id: str) -> Optional[AppMetadata]:
         """Get app metadata by connector ID."""
         doc = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value, transaction=self.txn)
         return AppMetadata.from_db_document(doc) if doc else None
 
-    async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
-        return await self.graph_provider.get_record_by_external_id(connector_id, external_id, transaction=self.txn)
+    async def get_record_by_external_id(
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+    ) -> Optional[Record]:
+        # Sync decides create-or-update on this answer; hiding a trashed record
+        # would mint a second record for the same source item.
+        #
+        # Every record in a folder asks for the same parent. The first one
+        # creates it, and without this the other ninety-nine each pay a round
+        # trip to rediscover it.
+        key = ("record", connector_id, external_id, visibility)
+        if key in self._memo:
+            return self._memo[key]  # type: ignore[return-value]
+        value = await self.graph_provider.get_record_by_external_id(
+            connector_id, external_id, transaction=self.txn, visibility=visibility
+        )
+        self._memo_put(key, value)
+        return value
 
     async def get_record_by_external_revision_id(self, connector_id: str, external_revision_id: str) -> Optional[Record]:
         return await self.graph_provider.get_record_by_external_revision_id(connector_id, external_revision_id, transaction=self.txn)
@@ -164,6 +254,7 @@ class GraphTransactionStore(TransactionStore):
         is_placeholder: Optional[bool] = None,
         after_key: Optional[str] = None,
         exclude_statuses: Optional[list[str]] = None,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Get records by status. Returns properly typed Record instances.
 
@@ -181,10 +272,16 @@ class GraphTransactionStore(TransactionStore):
             is_placeholder=is_placeholder,
             after_key=after_key,
             exclude_statuses=exclude_statuses,
+            visibility=visibility,
         )
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
-        return await self.graph_provider.get_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
+        key = ("record_group", connector_id, external_id)
+        if key in self._memo:
+            return self._memo[key]  # type: ignore[return-value]
+        value = await self.graph_provider.get_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
+        self._memo_put(key, value)
+        return value
 
     async def find_slack_burst_record_by_ts(
         self,
@@ -212,7 +309,15 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.create_record_groups_relation(child_id, parent_id, transaction=self.txn)
 
     async def get_user_by_email(self, email: str) -> Optional[User]:
-        return await self.graph_provider.get_user_by_email(email, transaction=self.txn)
+        # Every record in a batch carries the same owner, so this is the same
+        # lookup a hundred times over. Users are not created inside a record
+        # transaction, so the answer cannot go stale within it.
+        key = ("user_email", email)
+        if key in self._memo:
+            return self._memo[key]  # type: ignore[return-value]
+        value = await self.graph_provider.get_user_by_email(email, transaction=self.txn)
+        self._memo_put(key, value)
+        return value
 
     async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> Optional[User]:
         return await self.graph_provider.get_user_by_source_id(source_user_id, connector_id, transaction=self.txn)
@@ -220,29 +325,43 @@ class GraphTransactionStore(TransactionStore):
     async def get_app_user_by_email(self, email: str, connector_id: str) -> Optional[AppUser]:
         return await self.graph_provider.get_app_user_by_email(email, connector_id, transaction=self.txn)
 
-    async def get_record_owner_source_user_email(self, record_id: str) -> Optional[str]:
-        return await self.graph_provider.get_record_owner_source_user_email(record_id, transaction=self.txn)
+    async def get_record_owner_source_user_email(
+        self, record_id: str, *, raise_on_error: bool = False
+    ) -> str | None:
+        return await self.graph_provider.get_record_owner_source_user_email(
+            record_id, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
         return await self.graph_provider.get_user_by_user_id(user_id)
 
     async def delete_record_by_key(self, key: str) -> None:
+        self._memo_forget_record(key)
         # Delete the record node from the records collection
         return await self.graph_provider.delete_nodes([key], CollectionNames.RECORDS.value, transaction=self.txn)
 
-    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> None:
-        return await self.graph_provider.delete_record_by_external_id(connector_id, external_id, user_id, transaction=self.txn)
+    async def delete_record_by_external_id(
+        self, connector_id: str, external_id: str, user_id: str | None = None, *, soft_delete: bool = False,
+    ) -> dict | None:
+        self._memo_drop_external_id(connector_id, external_id)
+        return await self.graph_provider.delete_record_by_external_id(
+            connector_id, external_id, user_id, transaction=self.txn, soft_delete=soft_delete
+        )
 
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
         return await self.graph_provider.remove_user_access_to_record(connector_id, external_id, user_id, transaction=self.txn)
 
     async def delete_record_group_by_external_id(self, connector_id: str, external_id: str) -> None:
+        self._memo_drop(("record_group", connector_id, external_id))
         return await self.graph_provider.delete_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
 
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
 
     async def delete_nodes(self, keys: list[str], collection: str) -> None:
+        if collection == CollectionNames.RECORDS.value:
+            for key in keys:
+                self._memo_forget_record(key)
         return await self.graph_provider.delete_nodes(keys, collection, transaction=self.txn)
 
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> None:
@@ -278,6 +397,7 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_records_recursive(
         self, record_ids: list[str], connector_id: str, cascade_children: bool = True,
+        within_folder_id: str | None = None, *, include_trashed_roots: bool = False,
     ) -> dict:
         """Delete records within the active transaction.
 
@@ -285,22 +405,71 @@ class GraphTransactionStore(TransactionStore):
         ATTACHMENT subtree is deleted.  When False, only ATTACHMENT edges are
         traversed — child records linked via PARENT_CHILD survive.
         """
+        self._memo_forget_all_records()
         return await self.graph_provider.delete_records_recursive(
             record_ids, connector_id, transaction=self.txn, cascade_children=cascade_children,
+            within_folder_id=within_folder_id, include_trashed_roots=include_trashed_roots,
+        )
+
+    async def soft_delete_records(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+        *,
+        delete_source: str,
+        batch_id: str,
+        deleted_by_user_id: str | None = None,
+        follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
+        within_folder_id: str | None = None,
+        include_trashed_roots: bool = False,
+    ) -> dict:
+        """Move records to the trash within the active transaction."""
+        # A trashed record no longer answers a LIVE lookup, and the walk can reach
+        # records not named here.
+        self._memo_forget_all_records()
+        return await self.graph_provider.soft_delete_records(
+            record_ids,
+            connector_id,
+            delete_source=delete_source,
+            batch_id=batch_id,
+            deleted_by_user_id=deleted_by_user_id,
+            follow=follow,
+            transaction=self.txn,
+            within_folder_id=within_folder_id,
+            include_trashed_roots=include_trashed_roots,
+        )
+
+    async def restore_records(
+        self,
+        restores: list[dict],
+        batch_id: str | None,
+        *,
+        connector_id: str | None = None,
+        require_live_parent: bool = False,
+    ) -> list[str]:
+        """Bring records back from the trash within the active transaction."""
+        return await self.graph_provider.restore_records(
+            restores, batch_id, transaction=self.txn,
+            connector_id=connector_id, require_live_parent=require_live_parent,
         )
 
     async def delete_single_record(self, record_id: str) -> dict:
         """Single-record delete within the active transaction — no containment walk."""
+        self._memo_forget_record(record_id)
         return await self.graph_provider.delete_single_record(record_id, transaction=self.txn)
 
-    async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppUserGroup]:
-        return await self.graph_provider.get_user_group_by_external_id(connector_id, external_id, transaction=self.txn)
+    async def get_user_group_by_external_id(self, connector_id: str, external_id: str, *, raise_on_error: bool = False) -> Optional[AppUserGroup]:
+        return await self.graph_provider.get_user_group_by_external_id(
+            connector_id, external_id, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def delete_user_group_by_id(self, group_id: str) -> None:
         return await self.graph_provider.delete_nodes_and_edges([group_id],CollectionNames.GROUPS.value,graph_name="knowledgeGraph",transaction=self.txn)
 
-    async def get_app_role_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppRole]:
-        return await self.graph_provider.get_app_role_by_external_id(connector_id, external_id, transaction=self.txn)
+    async def get_app_role_by_external_id(self, connector_id: str, external_id: str, *, raise_on_error: bool = False) -> Optional[AppRole]:
+        return await self.graph_provider.get_app_role_by_external_id(
+            connector_id, external_id, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_users(self, org_id: str, active: bool = True) -> list[User]:
         users_dict = await self.graph_provider.get_users(org_id, active=active)
@@ -315,6 +484,35 @@ class GraphTransactionStore(TransactionStore):
 
     async def batch_upsert_people(self, people: list[Person]) -> None:
         return await self.graph_provider.batch_upsert_people(people, transaction=self.txn)
+
+    async def get_person_by_email(self, email: str, org_id: str) -> Optional[Person]:
+        return await self.graph_provider.get_person_by_email(email, org_id, transaction=self.txn)
+
+    async def upsert_person_by_email(self, person: Person) -> Optional[str]:
+        return await self.graph_provider.upsert_person_by_email(person, transaction=self.txn)
+
+    async def ensure_app_membership(
+        self,
+        principal_id: str,
+        principal_collection: str,
+        connector_id: str,
+        *,
+        is_external: bool,
+        source_user_id: str | None = None,
+    ) -> None:
+        return await self.graph_provider.ensure_app_membership(
+            principal_id,
+            principal_collection,
+            connector_id,
+            is_external=is_external,
+            source_user_id=source_user_id,
+            transaction=self.txn,
+        )
+
+    async def reap_stale_external_app_relations(self, connector_id: str) -> int:
+        return await self.graph_provider.reap_stale_external_app_relations(
+            connector_id, transaction=self.txn
+        )
 
     async def create_user_group_hierarchy(
         self,
@@ -422,8 +620,19 @@ class GraphTransactionStore(TransactionStore):
     async def get_first_user_with_permission_to_node(self, node_id: str, node_collection: str) -> Optional[User]:
         return await self.graph_provider.get_first_user_with_permission_to_node(node_id, node_collection, transaction=self.txn)
 
-    async def get_users_with_permission_to_node(self, node_id: str, node_collection: str) -> list[User]:
-        return await self.graph_provider.get_users_with_permission_to_node(node_id, node_collection, transaction=self.txn)
+    async def get_users_with_permission_to_node(
+        self, node_id: str, node_collection: str, *, raise_on_error: bool = False
+    ) -> list[User]:
+        return await self.graph_provider.get_users_with_permission_to_node(
+            node_id, node_collection, transaction=self.txn, raise_on_error=raise_on_error
+        )
+
+    async def get_groups_with_permission_to_node(
+        self, node_id: str, node_collection: str, *, raise_on_error: bool = False
+    ) -> list[AppUserGroup]:
+        return await self.graph_provider.get_groups_with_permission_to_node(
+            node_id, node_collection, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[dict]:
         return await self.graph_provider.get_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
@@ -443,11 +652,13 @@ class GraphTransactionStore(TransactionStore):
         self,
         connector_id: str,
         parent_external_record_id: str,
-        record_type: Optional[str] = None
+        record_type: Optional[str] = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
         """Get all child records for a parent record by parent_external_record_id. Optionally filter by record_type."""
         return await self.graph_provider.get_records_by_parent(
-            connector_id, parent_external_record_id, record_type, transaction=self.txn
+            connector_id, parent_external_record_id, record_type, transaction=self.txn, visibility=visibility
         )
 
     async def get_records_by_record_type(
@@ -464,17 +675,39 @@ class GraphTransactionStore(TransactionStore):
         """Get full hierarchical path for a record by traversing parent-child edges."""
         return await self.graph_provider.get_record_path(record_id, transaction=self.txn)
 
+    async def get_record_path_segments(self, record_id: str) -> list[str]:
+        """Get individual record names from root to this record."""
+        return await self.graph_provider.get_record_path_segments(record_id, transaction=self.txn)
+
     async def get_app_creator_user(self, connector_id:str) ->Optional[User]:
         """Get the creator user for a connector/app by connectorId."""
         return await self.graph_provider.get_app_creator_user(connector_id,transaction=self.txn)
 
-    async def batch_upsert_records(self, records: list[Record]) -> None:
+    async def batch_upsert_records(
+        self, records: list[Record], *, release_trashed_external_ids: bool = False
+    ) -> None:
         """
         Batch upsert records (base + specific type + IS_OF_TYPE edge).
 
         Delegates to graph_provider for the full record upsert logic.
         """
-        return await self.graph_provider.batch_upsert_records(records, transaction=self.txn)
+        result = await self.graph_provider.batch_upsert_records(
+            records, transaction=self.txn, release_trashed_external_ids=release_trashed_external_ids
+        )
+        # Forget, never cache, what was just written: the upsert merges into the
+        # stored vertex, so the caller's object is not what a read returns (it
+        # lacks virtualRecordId, which the upsert never writes), and some record
+        # types are skipped by the provider altogether. The next lookup rereads.
+        for record in records:
+            record_id = getattr(record, "id", None)
+            if record_id:
+                self._memo_forget_record(record_id)
+            external_id = getattr(record, "external_record_id", None)
+            connector_id = getattr(record, "connector_id", None)
+            if external_id and connector_id:
+                # Every visibility: releasing a trashed record's external id renames it.
+                self._memo_drop_external_id(connector_id, external_id)
+        return result
 
     async def batch_upsert_record_groups(self, record_groups: list[RecordGroup]) -> None:
         """
@@ -482,7 +715,13 @@ class GraphTransactionStore(TransactionStore):
 
         Delegates to graph_provider for implementation.
         """
-        return await self.graph_provider.batch_upsert_record_groups(record_groups, transaction=self.txn)
+        result = await self.graph_provider.batch_upsert_record_groups(record_groups, transaction=self.txn)
+        for group in record_groups:
+            external_id = getattr(group, "external_group_id", None)
+            connector_id = getattr(group, "connector_id", None)
+            if external_id and connector_id:
+                self._memo_drop(("record_group", connector_id, external_id))
+        return result
 
     async def batch_upsert_record_permissions(self, record_id: str, permissions: list[Permission]) -> None:
         return await self.graph_provider.batch_upsert_record_permissions(record_id, permissions, transaction=self.txn)
@@ -520,6 +759,16 @@ class GraphTransactionStore(TransactionStore):
         Idempotent. Used by TEAM-scope connectors.
         """
         return await self.graph_provider.ensure_team_app_edge(connector_id, org_id, transaction=self.txn)
+
+    async def upsert_authenticated_as(
+        self, creator_key: str, source_user_key: str, connector_id: str, org_id: str
+    ) -> None:
+        return await self.graph_provider.upsert_authenticated_as(
+            creator_key, source_user_key, connector_id, org_id, transaction=self.txn
+        )
+
+    async def remove_authenticated_as(self, connector_id: str) -> bool:
+        return await self.graph_provider.remove_authenticated_as(connector_id, transaction=self.txn)
 
     async def batch_upsert_orgs(self, orgs: list[Org]) -> None:
         return await self.graph_provider.batch_upsert_orgs(orgs, transaction=self.txn)
@@ -614,8 +863,13 @@ class GraphTransactionStore(TransactionStore):
         await self.graph_provider.batch_create_edges(
             [record_edge], collection=CollectionNames.INHERIT_PERMISSIONS.value, transaction=self.txn
         )
-    async def get_sync_point(self, sync_point_key: str) -> Optional[dict]:
-        return await self.graph_provider.get_sync_point(sync_point_key, CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+    async def get_sync_point(self, sync_point_key: str, *, raise_on_error: bool = False) -> Optional[dict]:
+        return await self.graph_provider.get_sync_point(
+            sync_point_key,
+            CollectionNames.SYNC_POINTS.value,
+            transaction=self.txn,
+            raise_on_error=raise_on_error,
+        )
 
     async def get_all_orgs(self, *, active: bool = True, is_external: bool = False) -> list[Org]:
         return await self.graph_provider.get_all_orgs(
@@ -656,10 +910,16 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 
     async def delete_sync_point(self, sync_point_key: str) -> None:
-        return await self.graph_provider.remove_sync_point([sync_point_key],
+        return await self.graph_provider.remove_sync_point(sync_point_key,
                     collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
-    async def read_sync_point(self, sync_point_key: str) -> None:
-        return await self.graph_provider.get_sync_point(sync_point_key, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
+
+    async def read_sync_point(self, sync_point_key: str, *, raise_on_error: bool = False) -> Optional[dict]:
+        return await self.graph_provider.get_sync_point(
+            sync_point_key,
+            collection=CollectionNames.SYNC_POINTS.value,
+            transaction=self.txn,
+            raise_on_error=raise_on_error,
+        )
 
     async def update_sync_point(self, sync_point_key: str, sync_point_data: dict) -> None:
         return await self.graph_provider.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
@@ -756,9 +1016,13 @@ class GraphTransactionStore(TransactionStore):
         """Get all edges originating from a specific node"""
         return await self.graph_provider.get_edges_from_node(from_node_id, edge_collection, transaction=self.txn)
 
-    async def get_edges_from_node_with_target_name(self, from_node_id: str, edge_collection: str) -> list[dict]:
+    async def get_edges_from_node_with_target_name(
+        self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False
+    ) -> list[dict]:
         """Get all edges originating from a specific node with a specific target name"""
-        return await self.graph_provider.get_edges_from_node_with_target_name(from_node_id, edge_collection, transaction=self.txn)
+        return await self.graph_provider.get_edges_from_node_with_target_name(
+            from_node_id, edge_collection, transaction=self.txn, raise_on_error=raise_on_error
+        )
     
     async def get_related_node_field(
         self, node_id: str, edge_collection: str, target_collection: str,
@@ -771,6 +1035,7 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_records_and_relations(self, record_key: str, hard_delete: bool = False) -> None:
         """Delete a record and all its relations"""
+        self._memo_forget_record(record_key)
         return await self.graph_provider.delete_records_and_relations(record_key, hard_delete=hard_delete, transaction=self.txn)
 
     async def process_file_permissions(self, org_id: str, file_key: str, permissions: list[dict]) -> None:
@@ -795,14 +1060,44 @@ class GraphTransactionStore(TransactionStore):
         self,
         collection: str,
         filters: dict,
-        return_fields: Optional[list[str]] = None
+        return_fields: Optional[list[str]] = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """Get nodes from a collection matching multiple field filters."""
         return await self.graph_provider.get_nodes_by_filters(
             collection=collection,
             filters=filters,
             return_fields=return_fields,
-            transaction=self.txn
+            transaction=self.txn,
+            raise_on_error=raise_on_error,
+        )
+
+    async def find_taxonomy_nodes(
+        self, collection: str, org_id: str, normalized_names: list[str]
+    ) -> list[dict]:
+        return await self.graph_provider.find_taxonomy_nodes(
+            collection, org_id, normalized_names, transaction=self.txn
+        )
+
+    async def create_taxonomy_node_if_absent(self, collection: str, node: dict) -> None:
+        await self.graph_provider.create_taxonomy_node_if_absent(
+            collection, node, transaction=self.txn
+        )
+
+    async def add_taxonomy_aliases(
+        self,
+        collection: str,
+        key: str,
+        aliases: list[str],
+        normalized_aliases: list[str],
+        *,
+        org_id: str,
+        max_aliases: int = 20,
+    ) -> None:
+        await self.graph_provider.add_taxonomy_aliases(
+            collection, key, aliases, normalized_aliases,
+            org_id=org_id, max_aliases=max_aliases, transaction=self.txn,
         )
 
 
@@ -815,6 +1110,9 @@ class GraphDataStore(DataStoreProvider):
     def __init__(self, logger: Logger, graph_provider: IGraphDBProvider) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        return self.graph_provider.is_transient_error(error)
 
     async def compare_and_set_indexing_status(
         self, record_ids: list[str], expected: str, new_status: str
@@ -859,7 +1157,9 @@ class GraphDataStore(DataStoreProvider):
             # each such cancel leaked one of the pool's 100 connections until
             # every query waited out the 60s acquisition timeout -- which
             # produced more record timeouts, more cancels, more leaks.
-            if isinstance(e, Exception):
+            if isinstance(e, Exception) and self.graph_provider.is_write_conflict(e):
+                self.logger.warning("Transaction hit a write conflict, rolling back: %s", str(e)[:200])
+            elif isinstance(e, Exception):
                 self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")
             else:
                 self.logger.warning("Transaction interrupted (%s); rolling back", type(e).__name__)
@@ -888,12 +1188,42 @@ class GraphDataStore(DataStoreProvider):
                 async with self.transaction() as tx_store:
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
-                if attempts >= _TRANSACTION_RETRY_ATTEMPTS or not self.graph_provider.is_transient_error(e):
+                if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_transient_error(e):
                     raise
-                delay = _TRANSACTION_RETRY_BASE_DELAY * attempts
+                delay = _retry_delay(attempts - 1)
                 self.logger.warning(
                     "Transient graph transaction failure (attempt %d/%d), retrying in %.1fs: %s",
-                    attempts, _TRANSACTION_RETRY_ATTEMPTS, delay, e,
+                    attempts, _RETRY_ATTEMPTS, delay, e,
+                )
+                await asyncio.sleep(delay)
+
+    async def execute_idempotent_in_transaction(
+        self,
+        func: Callable[..., Awaitable[_T]],
+        *args: object,
+        **kwargs: object,
+    ) -> _T:
+        """Run ``func(tx_store, ...)`` in a transaction, re-running it when it
+        collides with a concurrent writer (``is_write_conflict``).
+
+        Unlike :meth:`execute_in_transaction` this retries even where the
+        failed attempt may have partly landed (Neo4j auto-commit), so
+        ``func`` must be safe to run again from the start: read what is
+        there, then write only the difference.
+        """
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                async with self.transaction() as tx_store:
+                    return await func(tx_store, *args, **kwargs)
+            except Exception as e:
+                if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_write_conflict(e):
+                    raise
+                delay = _retry_delay(attempts - 1)
+                self.logger.warning(
+                    "Graph write conflict (attempt %d/%d), retrying in %.1fs: %s",
+                    attempts, _RETRY_ATTEMPTS, delay, str(e)[:200],
                 )
                 await asyncio.sleep(delay)
 

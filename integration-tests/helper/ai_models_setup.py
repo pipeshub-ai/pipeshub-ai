@@ -50,6 +50,11 @@ provider is tried):
         TEST_GEMINI_API_KEY, TEST_GEMINI_LLM_MODEL
         TEST_GROQ_API_KEY, TEST_GROQ_LLM_MODEL
 
+    Ollama (no key; tried only when TEST_OLLAMA_ENDPOINT is set):
+        TEST_OLLAMA_ENDPOINT          – as the stack reaches it, e.g. http://ollama:11434
+        TEST_OLLAMA_LLM_MODEL         – default: qwen2.5:0.5b
+        TEST_OLLAMA_EMBEDDING_MODEL   – default: nomic-embed-text
+
 Reasoning LLMs for agent ITs use provider-specific model names when no override
 is passed. On OpenAI that is gpt-5.6-luna, and no env var overrides it —
 TEST_OPENAI_LLM_MODEL applies only to the non-reasoning default.
@@ -76,33 +81,46 @@ _PROVIDER_OPENAI = "openAI"
 _PROVIDER_AZURE_OPENAI = "azureOpenAI"
 _PROVIDER_GEMINI = "gemini"
 _PROVIDER_GROQ = "groq"
+_PROVIDER_OLLAMA = "ollama"
 
 _DEFAULT_LLM_MODEL_TYPE = "llm"
 _DEFAULT_EMBEDDING_MODEL_TYPE = "embedding"
 _DEFAULT_MODEL_NAME = "gpt-5.4-nano"
 _DEFAULT_REASONING_MODEL_NAME = "gpt-5.6-luna"
 _DEFAULT_EMBEDDING_MODEL_NAME = "text-embedding-3-small"
+# The model PipesHub embeds with when the org has configured none.
+_BUILT_IN_EMBEDDING_MODEL_NAME = "BAAI/bge-large-en-v1.5"
+# Part of the product's refusal to change or delete the embedding model while
+# the vector store holds vectors from it (cm_controller.ts
+# EMBEDDING_MODEL_IN_USE_MESSAGE).
+_EMBEDDING_IN_USE_MARKER = "is embedding your indexed content"
 
 _LLM_PROVIDER_ORDER = (
     _PROVIDER_AZURE_OPENAI,
     _PROVIDER_OPENAI,
     _PROVIDER_GEMINI,
     _PROVIDER_GROQ,
+    _PROVIDER_OLLAMA,
 )
 _EMBEDDING_PROVIDER_ORDER = (
     _PROVIDER_AZURE_OPENAI,
     _PROVIDER_OPENAI,
+    _PROVIDER_OLLAMA,
 )
 
 
 @dataclass
 class SeededAIModel:
-    """A model configured by a setup helper and pending teardown."""
+    """A model configured by a setup helper and pending teardown.
+
+    ``owned`` is False for a model the org already had, which teardown leaves.
+    """
 
     model_type: str
     provider: str
     model_name: str
     model_key: str
+    owned: bool = True
 
 
 @dataclass
@@ -111,6 +129,15 @@ class SeededIndexingModels:
 
     llm: SeededAIModel
     embedding: SeededAIModel
+
+
+class _ModelRefused(RuntimeError):
+    """The providers POST answered with an error status."""
+
+    def __init__(self, message: str, *, status_code: int, body: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
 
 
 @dataclass(frozen=True)
@@ -181,6 +208,8 @@ def _provider_credentials_available(provider: str, *, for_embedding: bool) -> bo
         return bool(_openai_api_key())
     if provider == _PROVIDER_AZURE_OPENAI:
         return _azure_credentials_complete(for_embedding=for_embedding)
+    if provider == _PROVIDER_OLLAMA:
+        return bool(_env("TEST_OLLAMA_ENDPOINT"))
     if for_embedding:
         return False
     if provider == _PROVIDER_GEMINI:
@@ -204,6 +233,13 @@ def _provider_order(*, for_embedding: bool) -> List[str]:
 
 def _build_openai_configuration(api_key: str, model_name: str) -> Dict[str, Any]:
     return {"model": model_name, "apiKey": api_key}
+
+
+def _build_ollama_configuration(model_name: str) -> Optional[Dict[str, Any]]:
+    endpoint = _env("TEST_OLLAMA_ENDPOINT")
+    if not endpoint:
+        return None
+    return {"model": model_name, "endpoint": endpoint}
 
 
 def _build_azure_configuration(
@@ -264,6 +300,13 @@ def _build_llm_candidate(
             configuration=_build_openai_configuration(api_key, resolved_name),
         )
 
+    if provider == _PROVIDER_OLLAMA:
+        resolved_name = model_name or _env("TEST_OLLAMA_LLM_MODEL") or "qwen2.5:0.5b"
+        configuration = _build_ollama_configuration(resolved_name)
+        if configuration is None:
+            return None
+        return _ProviderCandidate(provider=provider, model_name=resolved_name, configuration=configuration)
+
     if provider == _PROVIDER_GROQ:
         api_key = _env("TEST_GROQ_API_KEY")
         if not api_key:
@@ -313,6 +356,13 @@ def _build_embedding_candidate(
             ),
         )
 
+    if provider == _PROVIDER_OLLAMA:
+        resolved_name = model_name or _env("TEST_OLLAMA_EMBEDDING_MODEL") or "nomic-embed-text"
+        configuration = _build_ollama_configuration(resolved_name)
+        if configuration is None:
+            return None
+        return _ProviderCandidate(provider=provider, model_name=resolved_name, configuration=configuration)
+
     return None
 
 
@@ -343,6 +393,24 @@ def _embedding_provider_candidates(
         if candidate is not None:
             candidates.append(candidate)
     return candidates
+
+
+def llm_configuration(
+    *,
+    is_reasoning: bool = False,
+    model_name: str | None = None,
+) -> Optional[tuple[str, str, Dict[str, Any]]]:
+    """``(provider, model_name, configuration)`` for the first LLM provider with
+    credentials, as a providers POST sends it; ``None`` when there is none.
+
+    For tests that add a model themselves (a friendly name, a bad key) rather
+    than through :func:`setup_test_llm_model`.
+    """
+    candidates = _llm_provider_candidates(is_reasoning=is_reasoning, model_name=model_name)
+    if not candidates:
+        return None
+    first = candidates[0]
+    return first.provider, first.model_name, dict(first.configuration)
 
 
 def _missing_credentials_message(*, for_embedding: bool) -> str:
@@ -387,23 +455,60 @@ def _parse_model_name_from_config(entry: Dict[str, Any]) -> str:
     return str(raw).strip() if raw else ""
 
 
-def list_configured_llm_models(client: PipeshubClient) -> List[Dict[str, Any]]:
-    """Return all org-configured LLM entries from Configuration Manager."""
-    url = client._url(_LLM_BY_TYPE_PATH)
+def _list_configured_models(
+    client: PipeshubClient, path: str, kind: str
+) -> List[Dict[str, Any]]:
     resp = requests.get(
-        url,
+        client._url(path),
         headers=_admin_headers(client),
         timeout=client.timeout_seconds,
     )
     if resp.status_code >= 300:
         raise RuntimeError(
-            f"Failed to list LLM models: HTTP {resp.status_code} {resp.text[:500]}"
+            f"Failed to list {kind} models: HTTP {resp.status_code} {resp.text[:500]}"
         )
     data = _as_dict(resp.json())
     models = data.get("models")
     if not isinstance(models, list):
         return []
     return [m for m in models if isinstance(m, dict)]
+
+
+def list_configured_llm_models(client: PipeshubClient) -> List[Dict[str, Any]]:
+    """Return all org-configured LLM entries from Configuration Manager."""
+    return _list_configured_models(client, _LLM_BY_TYPE_PATH, "LLM")
+
+
+def list_configured_embedding_models(client: PipeshubClient) -> List[Dict[str, Any]]:
+    """Return all org-configured embedding entries from Configuration Manager."""
+    return _list_configured_models(client, _EMBEDDING_BY_TYPE_PATH, "embedding")
+
+
+def _active_embedding_entry(entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The entry the services embed with: the default one, else the first."""
+    return next((e for e in entries if e.get("isDefault")), entries[0] if entries else None)
+
+
+def _entry_matches(entry: Dict[str, Any], candidate: _ProviderCandidate) -> bool:
+    """Whether ``entry`` embeds with the model ``candidate`` would add.
+
+    Provider and model only. The list response keeps only the public config keys
+    (``AI_PUBLIC_CONFIG_KEYS`` in maskConfigSecrets.ts), so the endpoint and
+    deployment cannot be compared, and the product's own guard treats the same
+    model name as no change. Each CI stack configures one Azure deployment, so
+    a match there is the suite's own model.
+    """
+    if entry.get("provider") != candidate.provider:
+        return False
+    have = _parse_model_name_from_config(entry).strip().lower()
+    return bool(have) and have == candidate.model_name.strip().lower()
+
+
+def _describe_entry(entry: Optional[Dict[str, Any]]) -> str:
+    if entry is None:
+        return f"the built-in model ({_BUILT_IN_EMBEDDING_MODEL_NAME})"
+    model = _parse_model_name_from_config(entry) or entry.get("modelKey") or "?"
+    return f"{entry.get('provider')} {model} (modelKey={entry.get('modelKey')})"
 
 
 def seeded_model_from_config(entry: Dict[str, Any]) -> SeededAIModel:
@@ -454,11 +559,13 @@ def _post_provider_model(
             body = resp.text or ""
         except Exception:
             pass
-        raise RuntimeError(
+        raise _ModelRefused(
             f"Failed to configure test {model_type} model "
             f"(provider={candidate.provider}, model={candidate.model_name}, "
             f"isReasoning={is_reasoning}, isMultimodal={is_multimodal}): "
-            f"HTTP {resp.status_code} {body[:500]}"
+            f"HTTP {resp.status_code} {body[:500]}",
+            status_code=resp.status_code,
+            body=body,
         )
 
     try:
@@ -518,6 +625,10 @@ def _seed_model_with_fallback(
                 is_default=is_default,
             )
         except RuntimeError as exc:
+            if isinstance(exc, _ModelRefused) and _EMBEDDING_IN_USE_MARKER in exc.body:
+                # The refusal is about what the vector store holds, so every
+                # other provider would get the same answer.
+                raise
             logger.warning(
                 "Test %s provider %s failed health check / configure: %s",
                 model_type,
@@ -569,22 +680,61 @@ def setup_test_embedding_model(
     is_default: bool = True,
     model_name: str | None = None,
 ) -> SeededAIModel:
-    """Add a single embedding model and return its assigned modelKey.
+    """Make the wanted embedding model the one the org embeds with.
 
-    Tries OpenAI then Azure OpenAI when credentials are present.
+    When the org already embeds with it (same provider and model name), that entry is
+    reused as it is and teardown leaves it: the stack is shared by every pytest
+    session and the Playwright run, and PipesHub refuses to delete or replace
+    the embedding model while the vector store holds its vectors. Otherwise the
+    model is added, trying Azure OpenAI, OpenAI, then Ollama when credentials
+    are present.
 
-    Raises ``RuntimeError`` if no provider credentials are available or all fail.
+    Raises ``RuntimeError`` if no provider credentials are available, all fail,
+    or another model has already embedded content. The suite does not delete
+    those embeddings itself: Labs' cleanup empties the vector store for every
+    org on the deployment, and refuses while anything is indexing.
     """
     candidates = _embedding_provider_candidates(model_name=model_name)
-    return _seed_model_with_fallback(
-        client,
-        candidates=candidates,
-        model_type=_DEFAULT_EMBEDDING_MODEL_TYPE,
-        is_reasoning=False,
-        is_multimodal=is_multimodal,
-        is_default=is_default,
-        missing_credentials_message=_missing_credentials_message(for_embedding=True),
-    )
+    active = _active_embedding_entry(list_configured_embedding_models(client))
+    if active is not None and isinstance(active.get("modelKey"), str):
+        for candidate in candidates:
+            if _entry_matches(active, candidate):
+                logger.info(
+                    "Reusing the org's embedding model: provider=%s model=%s modelKey=%s",
+                    candidate.provider,
+                    candidate.model_name,
+                    active["modelKey"],
+                )
+                return SeededAIModel(
+                    model_type=_DEFAULT_EMBEDDING_MODEL_TYPE,
+                    provider=candidate.provider,
+                    model_name=candidate.model_name,
+                    model_key=active["modelKey"],
+                    owned=False,
+                )
+    try:
+        return _seed_model_with_fallback(
+            client,
+            candidates=candidates,
+            model_type=_DEFAULT_EMBEDDING_MODEL_TYPE,
+            is_reasoning=False,
+            is_multimodal=is_multimodal,
+            is_default=is_default,
+            missing_credentials_message=_missing_credentials_message(for_embedding=True),
+        )
+    except _ModelRefused as exc:
+        if _EMBEDDING_IN_USE_MARKER not in exc.body:
+            raise
+        wanted = ", ".join(f"{c.provider} {c.model_name}" for c in candidates)
+        raise RuntimeError(
+            f"Cannot configure the test embedding model ({wanted}): this "
+            f"deployment already embeds content with {_describe_entry(active)}, "
+            "and PipesHub refuses to switch models while those vectors are "
+            "stored. Run the suite on a fresh stack, configure the test model "
+            "before anything is indexed, or delete the embeddings in Labs "
+            "(Workspace > Labs > Vector Store) and run it again. "
+            f"PipesHub answered: HTTP {exc.status_code} {exc.body[:300]}"
+        ) from exc
 
 
 def setup_test_indexing_models(client: PipeshubClient) -> SeededIndexingModels:
@@ -619,7 +769,14 @@ def teardown_test_llm_model(
     seeded: SeededAIModel,
 ) -> None:
     """DELETE a previously seeded model. Logs (does not raise) on failure so
-    teardown never masks the real test outcome."""
+    teardown never masks the real test outcome. A model the org already had
+    (``owned`` False) is left alone."""
+    if not seeded.owned:
+        logger.info(
+            "Leaving the org's %s model in place: provider=%s model=%s modelKey=%s",
+            seeded.model_type, seeded.provider, seeded.model_name, seeded.model_key,
+        )
+        return
     url = client._url(
         f"{_PROVIDERS_PATH}/{seeded.model_type}/{seeded.model_key}"
     )
@@ -642,6 +799,14 @@ def teardown_test_llm_model(
             body = resp.text or ""
         except Exception:
             pass
+        if _EMBEDDING_IN_USE_MARKER in body:
+            logger.info(
+                "Left the test %s model modelKey=%s configured: its vectors are "
+                "stored, so PipesHub refuses to delete it. The next session on "
+                "this stack reuses it.",
+                seeded.model_type, seeded.model_key,
+            )
+            return
         logger.warning(
             "Failed to delete test %s model modelKey=%s: HTTP %d %s",
             seeded.model_type, seeded.model_key, resp.status_code, body[:300],

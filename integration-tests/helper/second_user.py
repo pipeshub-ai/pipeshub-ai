@@ -9,10 +9,10 @@ Deliberately *not* built on ``PIPESHUB_TEST_NON_ADMIN_EMAIL`` /
 template, so the one suite that reads them skips on every run. A fixture that
 silently does nothing is worse than no fixture.
 
-Deliberately *not* built on ``second_user_auth.second_pipeshub_client`` either:
-that routes through an OAuth app whose scope list is fixed at creation, and
-search is not in it. Logging in returns the same token the UI uses, which
-carries the user's real permissions -- which is precisely what is under test.
+Deliberately *not* built on an OAuth app either: an app's scope list is fixed
+at creation. Logging in returns the same token the UI uses, which carries the
+user's real permissions -- which is precisely what is under test. It is also
+the only token session-only routes accept, such as ``/oauth-clients`` (#3626).
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ for _p in (_ROOT, _ROOT / "helper"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+import local_auth  # noqa: E402
 from config import MONGO_DB_NAME, MONGO_URI, TEST_USER_PASSWORD  # noqa: E402
 from pipeshub_client import PipeshubClient  # noqa: E402
 
@@ -239,36 +240,9 @@ def _delete_credentials(org_id: str, user_id: str) -> None:
         logger.warning("Could not clean up credentials for user %s", user_id)
 
 
-def _login(base_url: str, email: str, timeout: int) -> str:
-    init_resp = requests.post(
-        f"{base_url}/api/v1/userAccount/initAuth",
-        json={"email": email},
-        timeout=timeout,
-    )
-    if init_resp.status_code >= 400:
-        raise RuntimeError(
-            f"initAuth failed for {email}: HTTP {init_resp.status_code}: {init_resp.text[:200]}"
-        )
-    session_token = init_resp.headers.get("x-session-token")
-    if not session_token:
-        raise RuntimeError("initAuth returned no x-session-token")
-
-    auth_resp = requests.post(
-        f"{base_url}/api/v1/userAccount/authenticate",
-        headers={"x-session-token": session_token},
-        json={
-            "method": "password",
-            "credentials": {"password": TEST_USER_PASSWORD},
-            "email": email,
-        },
-        timeout=timeout,
-    )
-    if auth_resp.status_code >= 400:
-        raise RuntimeError(
-            f"authenticate failed for {email}: "
-            f"HTTP {auth_resp.status_code}: {auth_resp.text[:200]}"
-        )
-    return str(auth_resp.json()["accessToken"])
+def log_in(base_url: str, email: str, timeout: int) -> str:
+    """Log in as a disposable user with the password ``_seed_password`` gave it."""
+    return local_auth.log_in(base_url, email, TEST_USER_PASSWORD, timeout)
 
 
 def _wait_for_graph_user(client: PipeshubClient, email: str) -> dict[str, Any]:
@@ -322,7 +296,7 @@ def create_second_user(client: PipeshubClient) -> SecondUser:
     if not graph_id:
         raise RuntimeError(f"graph user for {email} has no id: {graph_user}")
 
-    token = _login(client.base_url, email, client.timeout_seconds)
+    token = log_in(client.base_url, email, client.timeout_seconds)
     logger.info("Second user ready: %s (graph id %s)", email, graph_id)
     return SecondUser(
         user_id=user_id,
@@ -385,7 +359,7 @@ def log_in_existing_user(client: PipeshubClient, user_id: str, email: str) -> Se
         graph_id = str(graph_user.get("id") or "")
         if not graph_id:
             raise RuntimeError(f"graph user for {email} has no id: {graph_user}")
-        token = _login(client.base_url, email, client.timeout_seconds)
+        token = log_in(client.base_url, email, client.timeout_seconds)
     except BaseException:
         # The caller never gets a user to log out, so restore here.
         _restore_credentials(client.org_id, user_id, saved)

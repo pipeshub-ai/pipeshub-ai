@@ -1,6 +1,8 @@
 import json
 import logging
+import re
 from enum import Enum
+from http import HTTPStatus
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field, model_validator
@@ -26,11 +28,130 @@ from app.connectors.core.registry.tool_builder import (
 )
 from app.connectors.core.registry.types import DocumentationLink
 from app.sources.client.clickup.clickup import ClickUpClient, ClickUpResponse
-from app.sources.external.clickup.clickup import ClickUpDataSource
+from app.sources.external.clickup.clickup import VALID_PRIORITIES, ClickUpDataSource
 
 logger = logging.getLogger(__name__)
 
 CLICKUP_APP_BASE = "https://app.clickup.com"
+
+# Shared by the input schemas and the tools: the agent runtime does not run the schema validators.
+_LIST_PARENT_REQUIRED = (
+    "Provide folder_id (from get_folders) to create the list in a folder, "
+    "or space_id (from get_spaces) to create a folderless list."
+)
+_GET_COMMENTS_TARGET_REQUIRED = (
+    "At least one of task_id or comment_id is required. Use task_id for comments on a task, "
+    "comment_id for replies to a comment (optionally task_id for web_url)."
+)
+_CREATE_COMMENT_TARGET_REQUIRED = (
+    "At least one of task_id or comment_id is required. Use task_id for a new comment, "
+    "comment_id for a reply (optionally task_id too for reply web_url)."
+)
+
+
+_FAILED_STATUS = re.compile(r"Failed with status (\d+)")
+_RECONNECT_STEP = "Reconnect the ClickUp toolset in Settings > Toolsets and try again."
+
+
+def _clickup_error_message(response: ClickUpResponse) -> str:
+    """Plain-language failure the agent can relay, with what to do next."""
+    match = _FAILED_STATUS.search(response.message or "")
+    if match is None:
+        return "ClickUp could not be reached. Try again in a moment."
+    status = int(match.group(1))
+    body = response.data if isinstance(response.data, dict) else {}
+    reason = body.get("err") or body.get("error")
+    said = f" ClickUp said: {reason}." if isinstance(reason, str) and reason else ""
+    if status == HTTPStatus.TOO_MANY_REQUESTS:
+        return "ClickUp's rate limit has been reached. Wait a minute and try again."
+    if status == HTTPStatus.UNAUTHORIZED:
+        return f"ClickUp did not accept the saved sign-in.{said} {_RECONNECT_STEP}"
+    if status == HTTPStatus.FORBIDDEN:
+        return f"The signed-in ClickUp account is not allowed to do that.{said} Ask a workspace admin for access."
+    if status == HTTPStatus.NOT_FOUND:
+        return (
+            f"ClickUp could not find it, or the signed-in account cannot see it.{said} Check the id, or use "
+            "get_spaces, get_lists or search_tasks to find the right one."
+        )
+    if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+        return "ClickUp is having a temporary problem. Try again in a moment."
+    return f"ClickUp rejected the request.{said} Correct it and try again."
+
+
+def _unexpected_failure(tool_name: str, error: Exception) -> tuple[bool, str]:
+    logger.error("Error in %s: %s", tool_name, error)
+    return False, json.dumps({"error": (
+        f"Something unexpected went wrong in {tool_name}. Try again, and if it keeps failing, "
+        "reconnect the ClickUp toolset in Settings > Toolsets."
+    )})
+
+
+# ClickUp returns at most this many task comments per request, newest first.
+_COMMENTS_PAGE_SIZE = 25
+
+
+def _mark_older_comments(data: dict[str, Any]) -> bool:
+    """A full page of comments may not be all of them: say so, and how to read the older ones.
+
+    Returns False when the page is full but no comment carries a cursor (numeric date and id) to continue from.
+    """
+    page = data["comments"]
+    data["has_more"] = len(page) >= _COMMENTS_PAGE_SIZE
+    if not data["has_more"]:
+        return True
+    oldest = next(
+        (c for c in reversed(page)
+         if isinstance(c, dict) and c.get("id") is not None and str(c.get("date", "")).isdigit()),
+        None,
+    )
+    if oldest is None:
+        return False
+    data["next_start"] = int(oldest["date"])
+    data["next_start_id"] = str(oldest["id"])
+    data["note"] = (
+        f"These are the {len(page)} most recent comments; there may be older ones. To read them, call "
+        "get_comments again with start=next_start and start_id=next_start_id."
+    )
+    return True
+
+
+def _unreadable_comments() -> tuple[bool, str]:
+    return False, json.dumps({
+        "error": "ClickUp's reply did not include a readable list of comments. Try again in a moment.",
+    })
+
+
+def _missing_text(**fields: object) -> tuple[bool, str] | None:
+    """Refuse a call whose required text is empty, before ClickUp is called."""
+    empty = [name for name, value in fields.items() if not isinstance(value, str) or not value.strip()]
+    if not empty:
+        return None
+    return False, json.dumps({"error": f"{' and '.join(empty)} cannot be empty. Ask the user what it should be, then try again."})
+
+
+def _no_update_fields(*values: object, empty_is_unset: bool = False) -> Optional[str]:
+    """Message for an update with nothing to change.
+
+    empty_is_unset: the datasource method also leaves out "" and [] (update_task does).
+    """
+    if all(value is None or (empty_is_unset and value in ("", [])) for value in values):
+        return "No fields provided to update. Pass at least one field to change, for example name or status."
+    return None
+
+
+def _normalize_priority(priority: object) -> tuple[Optional[int], Optional[str]]:
+    """Return (priority, None), or (None, message) for a value the datasource would silently drop."""
+    if priority is None:
+        return None, None
+    value = priority
+    if isinstance(priority, str):
+        try:
+            value = int(priority.strip())
+        except ValueError:
+            value = priority
+    if isinstance(value, bool) or not isinstance(value, int) or value not in VALID_PRIORITIES:
+        return None, f"priority {priority!r} is not valid. Use 1 (Urgent), 2 (High), 3 (Normal) or 4 (Low)."
+    return value, None
 
 
 def _clickup_task_label(task: dict) -> str:
@@ -307,7 +428,7 @@ class CreateListInput(BaseModel):
     @model_validator(mode="after")
     def require_folder_or_space(self) -> "CreateListInput":
         if not self.folder_id and not self.space_id:
-            raise ValueError("At least one of folder_id or space_id is required.")
+            raise ValueError(_LIST_PARENT_REQUIRED)
         return self
 
 
@@ -336,7 +457,7 @@ class GetCommentsInput(BaseModel):
     @model_validator(mode="after")
     def require_task_or_comment(self) -> "GetCommentsInput":
         if not self.task_id and not self.comment_id:
-            raise ValueError("At least one of task_id or comment_id is required. Use task_id for comments on a task, comment_id for replies to a comment (optionally task_id for web_url).")
+            raise ValueError(_GET_COMMENTS_TARGET_REQUIRED)
         return self
 
 
@@ -353,7 +474,7 @@ class CreateTaskCommentInput(BaseModel):
     @model_validator(mode="after")
     def require_task_or_comment(self) -> "CreateTaskCommentInput":
         if not self.task_id and not self.comment_id:
-            raise ValueError("At least one of task_id or comment_id is required. Use task_id for a new comment, comment_id for a reply (optionally task_id too for reply web_url).")
+            raise ValueError(_CREATE_COMMENT_TARGET_REQUIRED)
         return self
 
 
@@ -448,7 +569,10 @@ class ClickUp:
             return (response.success, json.dumps(payload))
         if response.success:
             return True, response.to_json()
-        return False, response.to_json()
+        logger.error("ClickUp request failed: %s %s", response.message, response.error or "")
+        payload = response.to_dict()
+        payload["error"] = _clickup_error_message(response)
+        return False, json.dumps(payload)
 
     @tool(
         path="/tools/clickup/get_authorized_user",
@@ -463,8 +587,7 @@ class ClickUp:
             response = await self.client.get_authorized_user()
             return self._handle_response(response)
         except Exception as e:
-            logger.error(f"Error in get_authorized_user: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("get_authorized_user", e)
 
     @tool(
         path="/tools/clickup/get_authorized_teams_workspaces",
@@ -486,8 +609,7 @@ class ClickUp:
                         item["web_url"] = _build_clickup_web_url(ClickUpEntityType.WORKSPACE, team_id=str(item["id"]))
             return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in get_authorized_teams_workspaces: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("get_authorized_teams_workspaces", e)
 
     @tool(
         path="/tools/clickup/get_spaces",
@@ -517,8 +639,7 @@ class ClickUp:
                         item["web_url"] = _build_clickup_web_url(ClickUpEntityType.SPACE, team_id=team_id, space_id=str(item["id"]))
             return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in get_spaces: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("get_spaces", e)
 
     @tool(
         path="/tools/clickup/get_folders",
@@ -555,8 +676,7 @@ class ClickUp:
                         )
             return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in get_folders: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("get_folders", e)
 
     @tool(
         path="/tools/clickup/get_lists",
@@ -593,8 +713,7 @@ class ClickUp:
                         )
             return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in get_lists: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("get_lists", e)
 
     @tool(
         path="/tools/clickup/get_folderless_lists",
@@ -631,8 +750,7 @@ class ClickUp:
                         )
             return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in get_folderless_lists: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("get_folderless_lists", e)
 
     @tool(
         path="/tools/clickup/create_space",
@@ -671,8 +789,7 @@ class ClickUp:
             )
             return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in create_space: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("create_space", e)
 
     @tool(
         path="/tools/clickup/create_folder",
@@ -706,8 +823,7 @@ class ClickUp:
                 )
             return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in create_folder: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("create_folder", e)
 
     @tool(
         path="/tools/clickup/create_list",
@@ -746,6 +862,11 @@ class ClickUp:
         status: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Create a list in a folder or a folderless list in a space."""
+        if not folder_id and not space_id:
+            return False, json.dumps({"error": _LIST_PARENT_REQUIRED})
+        priority, priority_error = _normalize_priority(priority)
+        if priority_error:
+            return False, json.dumps({"error": priority_error})
         try:
             if folder_id:
                 response = await self.client.create_list(
@@ -783,8 +904,7 @@ class ClickUp:
                 )
             return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in create_list: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("create_list", e)
 
     @tool(
         path="/tools/clickup/update_list",
@@ -817,6 +937,14 @@ class ClickUp:
         unset_status: Optional[bool] = None,
     ) -> tuple[bool, str]:
         """Update a list."""
+        nothing_to_change = _no_update_fields(
+            name, content, due_date, due_date_time, priority, assignee_add, assignee_rem, unset_status,
+        )
+        if nothing_to_change:
+            return False, json.dumps({"error": nothing_to_change})
+        priority, priority_error = _normalize_priority(priority)
+        if priority_error:
+            return False, json.dumps({"error": priority_error})
         try:
             response = await self.client.update_list(
                 list_id,
@@ -831,8 +959,7 @@ class ClickUp:
             )
             return self._handle_response(response)
         except Exception as e:
-            logger.error(f"Error in update_list: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("update_list", e)
 
     @tool(
         path="/tools/clickup/get_tasks",
@@ -923,8 +1050,7 @@ class ClickUp:
             )
             return self._handle_response(response)
         except Exception as e:
-            logger.error(f"Error in get_tasks: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("get_tasks", e)
 
     @tool(
         path="/tools/clickup/search_tasks",
@@ -953,6 +1079,9 @@ class ClickUp:
         page: Optional[int] = None,
     ) -> tuple[bool, str]:
         """Search tasks by keyword via temporary workspace view."""
+        # A view with no search text lists every task, which would read as "all of these match".
+        if missing := _missing_text(keyword=keyword):
+            return missing
         view_id = None
         try:
             create_resp = await self.client.create_team_view(
@@ -972,8 +1101,7 @@ class ClickUp:
             tasks_resp = await self.client.get_view_tasks(view_id, page=page)
             result = self._handle_response(tasks_resp)
         except Exception as e:
-            logger.error(f"Error in search_tasks: {e}")
-            result = False, json.dumps({"error": str(e)})
+            result = _unexpected_failure("search_tasks", e)
         finally:
             if view_id:
                 try:
@@ -997,8 +1125,7 @@ class ClickUp:
             response = await self.client.get_task(task_id)
             return self._handle_response(response)
         except Exception as e:
-            logger.error(f"Error in get_task: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("get_task", e)
 
     @tool(
         path="/tools/clickup/create_task",
@@ -1031,6 +1158,11 @@ class ClickUp:
         parent: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Create a new task in a list."""
+        if missing := _missing_text(name=name):
+            return missing
+        priority, priority_error = _normalize_priority(priority)
+        if priority_error:
+            return False, json.dumps({"error": priority_error})
         try:
             response = await self.client.create_task(
                 list_id,
@@ -1043,8 +1175,7 @@ class ClickUp:
             )
             return self._handle_response(response)
         except Exception as e:
-            logger.error(f"Error in create_task: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("create_task", e)
 
     @tool(
         path="/tools/clickup/update_task",
@@ -1101,6 +1232,18 @@ class ClickUp:
             "clickup update_task: task_id=%s assignees_add=%s assignees_rem=%s (name=%s status=%s priority=%s)",
             task_id, assignees_add, assignees_rem, name, status, priority,
         )
+        # The datasource also leaves out due_date, time_estimate and start_date when they are 0.
+        nothing_to_change = _no_update_fields(
+            name, description, markdown_description, status, priority, due_date_time, start_date_time,
+            assignees_add, assignees_rem, archived,
+            *(None if value == 0 else value for value in (due_date, time_estimate, start_date)),
+            empty_is_unset=True,
+        )
+        if nothing_to_change:
+            return False, json.dumps({"error": nothing_to_change})
+        priority, priority_error = _normalize_priority(priority)
+        if priority_error:
+            return False, json.dumps({"error": priority_error})
         try:
             response = await self.client.update_task(
                 task_id,
@@ -1122,8 +1265,7 @@ class ClickUp:
             )
             return self._handle_response(response)
         except Exception as e:
-            logger.error(f"Error in update_task: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("update_task", e)
 
     @tool(
         path="/tools/clickup/get_comments",
@@ -1160,6 +1302,8 @@ class ClickUp:
         start_id: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Get comments on a task or replies to a comment."""
+        if not task_id and not comment_id:
+            return False, json.dumps({"error": _GET_COMMENTS_TARGET_REQUIRED})
         try:
             if comment_id:
                 response = await self.client.get_comment_replies(comment_id)
@@ -1186,19 +1330,24 @@ class ClickUp:
                 )
                 if not response.success:
                     return self._handle_response(response)
-                data = response.data if response.data is not None else {}
-                if isinstance(data, dict) and task_id:
-                    for item in data.get("comments") or []:
+                data = response.data
+                # Treating an unreadable page as empty would claim there are no more comments.
+                page = data.get("comments") if isinstance(data, dict) else None
+                if not isinstance(page, list) or (page and not any(isinstance(c, dict) for c in page)):
+                    return _unreadable_comments()
+                if task_id:
+                    for item in data["comments"]:
                         if isinstance(item, dict) and item.get("id") is not None:
                             item["web_url"] = _build_clickup_web_url(
                                 ClickUpEntityType.COMMENT,
                                 task_id=task_id,
                                 comment_id=str(item["id"]),
                             )
+                if not _mark_older_comments(data):
+                    return _unreadable_comments()
                 return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in get_comments: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("get_comments", e)
 
     @tool(
         path="/tools/clickup/create_task_comment",
@@ -1237,6 +1386,10 @@ class ClickUp:
         team_id: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Add a comment to a task or a reply to a comment."""
+        if missing := _missing_text(comment_text=comment_text):
+            return missing
+        if not task_id and not comment_id:
+            return False, json.dumps({"error": _CREATE_COMMENT_TARGET_REQUIRED})
         try:
             if comment_id:
                 response = await self.client.create_task_comment_reply(
@@ -1273,8 +1426,7 @@ class ClickUp:
                     )
             return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in create_task_comment: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("create_task_comment", e)
 
     @tool(
         path="/tools/clickup/create_checklist",
@@ -1306,8 +1458,7 @@ class ClickUp:
             )
             return self._handle_response(response)
         except Exception as e:
-            logger.error(f"Error in create_checklist: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("create_checklist", e)
 
     @tool(
         path="/tools/clickup/create_checklist_item",
@@ -1335,8 +1486,7 @@ class ClickUp:
             )
             return self._handle_response(response)
         except Exception as e:
-            logger.error(f"Error in create_checklist_item: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("create_checklist_item", e)
 
     @tool(
         path="/tools/clickup/update_checklist_item",
@@ -1363,6 +1513,9 @@ class ClickUp:
         parent: Optional[str] = None,
     ) -> tuple[bool, str]:
         """Update or check/uncheck a checklist item."""
+        nothing_to_change = _no_update_fields(name, assignee, resolved, parent)
+        if nothing_to_change:
+            return False, json.dumps({"error": nothing_to_change})
         try:
             response = await self.client.update_checklist_item(
                 checklist_id,
@@ -1374,8 +1527,7 @@ class ClickUp:
             )
             return self._handle_response(response)
         except Exception as e:
-            logger.error(f"Error in update_checklist_item: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("update_checklist_item", e)
 
     @tool(
         path="/tools/clickup/get_workspace_docs",
@@ -1425,8 +1577,7 @@ class ClickUp:
                             )
             return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in get_workspace_docs: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("get_workspace_docs", e)
 
     @tool(
         path="/tools/clickup/get_doc_pages",
@@ -1462,8 +1613,7 @@ class ClickUp:
                             )
             return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in get_doc_pages: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("get_doc_pages", e)
 
     @tool(
         path="/tools/clickup/get_doc_page",
@@ -1497,8 +1647,7 @@ class ClickUp:
                 )
             return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in get_doc_page: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("get_doc_page", e)
 
     @tool(
         path="/tools/clickup/create_doc",
@@ -1545,8 +1694,7 @@ class ClickUp:
                 )
             return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in create_doc: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("create_doc", e)
 
     @tool(
         path="/tools/clickup/create_doc_page",
@@ -1596,8 +1744,7 @@ class ClickUp:
                 )
             return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in create_doc_page: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("create_doc_page", e)
 
     @tool(
         path="/tools/clickup/update_doc_page",
@@ -1630,6 +1777,9 @@ class ClickUp:
         content_format: str = "text/md",
     ) -> tuple[bool, str]:
         """Edit or update a doc page."""
+        nothing_to_change = _no_update_fields(name, sub_title, content)
+        if nothing_to_change:
+            return False, json.dumps({"error": nothing_to_change})
         try:
             response = await self.client.update_doc_page(
                 workspace_id,
@@ -1653,5 +1803,4 @@ class ClickUp:
                 )
             return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in update_doc_page: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("update_doc_page", e)

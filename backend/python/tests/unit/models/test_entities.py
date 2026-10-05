@@ -30,8 +30,44 @@ from app.models.entities import (
     SQLTableRecord,
     SQLViewRecord,
     TicketRecord,
+    substitute_user_email,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+
+
+class TestSubstituteUserEmail:
+    TEMPLATE = "https://mail.google.com/mail?authuser={user.email}#all/m1"
+    GMAIL = Connectors.GOOGLE_MAIL.value
+    GMAIL_WORKSPACE = Connectors.GOOGLE_MAIL_WORKSPACE.value
+
+    @pytest.mark.parametrize("connector", [GMAIL, GMAIL_WORKSPACE])
+    def test_replaces_placeholder_for_gmail_connectors(self, connector):
+        assert substitute_user_email(self.TEMPLATE, "a@b.com", connector) == (
+            "https://mail.google.com/mail?authuser=a@b.com#all/m1"
+        )
+
+    def test_encodes_plus_so_it_is_not_read_as_space(self):
+        assert "authuser=a%2Btag@b.com" in substitute_user_email(
+            self.TEMPLATE, "a+tag@b.com", self.GMAIL
+        )
+
+    @pytest.mark.parametrize("connector", [
+        Connectors.OUTLOOK.value,
+        Connectors.GOOGLE_DRIVE.value,
+        None,
+        "",
+    ])
+    def test_leaves_placeholder_for_non_gmail_connectors(self, connector):
+        assert substitute_user_email(self.TEMPLATE, "a@b.com", connector) == self.TEMPLATE
+
+    @pytest.mark.parametrize("weburl,email", [
+        (TEMPLATE, None),
+        (TEMPLATE, ""),
+        (None, "a@b.com"),
+        ("https://example.com/doc", "a@b.com"),
+    ])
+    def test_returns_input_unchanged(self, weburl, email):
+        assert substitute_user_email(weburl, email, self.GMAIL) == weburl
 
 
 def _record_kwargs(**overrides):

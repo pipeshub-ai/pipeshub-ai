@@ -11,10 +11,9 @@ from app.modules.parsers.html_parser.html_to_blocks import (
     HtmlToBlocksConverter,
     NormalizedCell,
     NormalizedTable,
-    _body_output_row_span,
+    _collapse_body_cell,
     _collapse_body_rows,
     _collapse_header_row,
-    _collapse_single_column_cell,
     _column_groups,
     _escape_markdown_cell,
     _html_to_markdown,
@@ -98,24 +97,30 @@ class TestTableGridHelpers:
     def test_collapse_body_rows_empty(self) -> None:
         assert _collapse_body_rows([], [(0, 1)]) == []
 
-    def test_body_output_row_span(self) -> None:
-        row = [NormalizedCell(text="x", rowspan=3, is_origin=True)]
-        assert _body_output_row_span(row) == 3
-        assert _body_output_row_span([]) == 1
-
-    def test_collapse_single_column_cell_value_column(self) -> None:
-        rows = [
-            [NormalizedCell(text="L", is_origin=True), NormalizedCell(text="v1", is_origin=True)],
-            [NormalizedCell(text="", is_origin=False), NormalizedCell(text="v2", is_origin=True)],
+    def test_collapse_body_rows_keeps_one_row_per_html_row(self) -> None:
+        """A first-column rowspan no longer folds the rows it covers into one;
+        each row repeats the spanning value."""
+        grid = [
+            [NormalizedCell(text="L", rowspan=2, is_origin=True), NormalizedCell(text="v1", is_origin=True)],
+            [NormalizedCell(text="L", rowspan=2, is_origin=False), NormalizedCell(text="v2", is_origin=True)],
         ]
-        assert _collapse_single_column_cell(rows, 1) == "v1\nv2"
+        assert _collapse_body_rows(grid, [(0, 1), (1, 2)]) == [["L", "v1"], ["L", "v2"]]
 
-    def test_collapse_single_column_cell_rowspan_wins(self) -> None:
-        rows = [
-            [NormalizedCell(text="Span", rowspan=2, is_origin=True)],
-            [NormalizedCell(text="", is_origin=False)],
+    def test_collapse_body_cell_under_a_cell_spanning_both_ways(self) -> None:
+        row = [
+            NormalizedCell(text="a", colspan=2, rowspan=2, is_origin=False),
+            NormalizedCell(text="", colspan=2, rowspan=2, is_origin=False),
+            NormalizedCell(text="b", is_origin=True),
         ]
-        assert _collapse_single_column_cell(rows, 0) == "Span"
+        assert _collapse_body_cell(row, 0, 3) == "a | b"
+
+    def test_collapse_body_cell_keeps_equal_neighbours(self) -> None:
+        row = [NormalizedCell(text="5", is_origin=True), NormalizedCell(text="5", is_origin=True)]
+        assert _collapse_body_cell(row, 0, 2) == "5 | 5"
+
+    def test_collapse_body_cell_drops_colspan_slots(self) -> None:
+        row = [NormalizedCell(text="x", colspan=2, is_origin=True), NormalizedCell(text="", is_origin=False)]
+        assert _collapse_body_cell(row, 0, 2) == "x"
 
     def test_escape_markdown_cell(self) -> None:
         assert "|" in _escape_markdown_cell("a | b")

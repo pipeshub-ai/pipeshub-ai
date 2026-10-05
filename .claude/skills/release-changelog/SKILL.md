@@ -164,11 +164,15 @@ short intro ("Curated changelogs for PipesHub releases, newest first.") and that
 condensed entries only; the `changelog/<version>.md` file stays the detailed record.
 Make two insertions:
 
-1. A new row at the **top of the index table** (just under the header row):
+1. A new row in the **index table**, in release-date order (at the top, just under the
+   header row, when this is the newest release):
    `| [<version>](#<anchor>) | <Mon D, YYYY> | <Channel> | <short theme, ≤8 words> |`
-2. The new release entry directly below the `## Unreleased` section (after its `---`
-   separator), ending with its own `---`, so the previous newest release slides down.
-3. Refresh the `## Unreleased` compare link to start from the new tag:
+2. The new release entry, ending with its own `---`, in release-date order: directly
+   below the `## Unreleased` section (after its `---` separator) when this is the newest
+   release, so the previous newest slides down; otherwise just below the next-newer
+   release's entry.
+3. Refresh the `## Unreleased` compare link to start from the newest published release's
+   tag (the new tag, unless you are writing an older release):
    `[`<tag>...HEAD`](https://github.com/pipeshub-ai/pipeshub-ai/compare/<tag>...HEAD)`.
 
 If the file doesn't exist, create it with this skeleton before inserting:
@@ -223,7 +227,8 @@ the Breaking section when the detailed file has one.
 - **Anchors:** GitHub's slug of the H2 — lowercase, dots and the em dash removed,
   spaces become hyphens (`## 0.4.0-beta.2 — 2026-05-02` → `#040-beta2--2026-05-02`).
   Verify the new index row's link matches the heading you actually wrote.
-- Never rewrite existing registry entries except the pre-release pointer above.
+- Never rewrite existing registry entries except the pre-release pointer above, and this
+  release's own row and entry when it is regenerated (update them in place).
 
 ## Step 6 — Report
 

@@ -3,22 +3,14 @@
 import { useRouter, useSearchParams } from 'next/navigation';
 import KnowledgeBaseSidebar from '../../knowledge-base/sidebar';
 import { useKnowledgeBaseStore } from '../../knowledge-base/store';
-import { KnowledgeHubApi, KnowledgeBaseApi } from '../../knowledge-base/api';
-import {
-  ADMIN_MORE_CONNECTORS,
-  PERSONAL_MORE_CONNECTORS,
-  SIDEBAR_PAGINATION_PAGE_SIZE,
-} from '../../knowledge-base/constants';
-import { sidebarNodeChildrenMetaFromResponse } from '../../knowledge-base/utils/sidebar-child-pagination-meta';
+import { KnowledgeBaseApi } from '../../knowledge-base/api';
+import { ADMIN_MORE_CONNECTORS, PERSONAL_MORE_CONNECTORS } from '../../knowledge-base/constants';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
-import {
-  categorizeNode,
-  effectiveHasChildrenAfterSidebarExpand,
-  mergeChildrenIntoTree,
-  treeHasNodeWithId,
-} from '../../knowledge-base/utils/tree-builder';
 import { useKnowledgeBaseSidebarAutoExpand } from './use-knowledge-base-sidebar-auto-expand';
 import { refreshKbTree } from '../../knowledge-base/utils/refresh-kb-tree';
+import { openFolderChildren, reloadOpenFoldersUnder } from '../../knowledge-base/utils/folder-children';
+// Registers the sign-out reset for the knowledge base's cached state.
+import '../../knowledge-base/utils/sidebar-session';
 import { fetchAppDirectChildren } from '../../knowledge-base/utils/fetch-app-direct-children';
 import { buildNavUrl, getIsAllRecordsMode } from '../../knowledge-base/utils/nav';
 import { findNodeInCategorized } from '../../knowledge-base/utils/find-node';
@@ -26,7 +18,7 @@ import { useCallback, useMemo, Suspense } from 'react';
 import { toast } from '@/lib/store/toast-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
-import type { NodeType, EnhancedFolderTreeNode, KnowledgeHubNode } from '../../knowledge-base/types';
+import type { NodeType, EnhancedFolderTreeNode } from '../../knowledge-base/types';
 import { useUserPermission, usePermissionDeniedDialog } from '@/config';
 
 function KnowledgeBaseSidebarSlotContent() {
@@ -56,13 +48,8 @@ function KnowledgeBaseSidebarSlotContent() {
     tableData,
     allRecordsTableData,
     setNodeLoading,
-    cacheNodeChildren,
-    addNodes,
-    setCategorizedNodes,
-    mergeConnectorAppTreeChildren,
     setCurrentFolderId,
     setAllRecordsSidebarSelection,
-    clearNodeCacheEntries,
     setPendingSidebarAction,
   } = useKnowledgeBaseStore();
 
@@ -89,7 +76,9 @@ function KnowledgeBaseSidebarSlotContent() {
 
   const handleNodeExpand = useCallback(
     async (nodeId: string, nodeType: NodeType) => {
-      if (nodeType === 'app') {
+      // All Records lists an app's children in its own connector tree. In the
+      // Collections tree a collection is a folder like any other, loaded below.
+      if (nodeType === 'app' && isAllRecordsMode) {
         try {
           await fetchAppDirectChildren(nodeId);
         } catch (error) {
@@ -98,11 +87,8 @@ function KnowledgeBaseSidebarSlotContent() {
         return;
       }
 
-      const {
-        categorizedNodes: freshCategorized,
-        nodeChildrenCache: freshCache,
-        connectorAppTrees: freshConnectorTrees,
-      } = useKnowledgeBaseStore.getState();
+      const { categorizedNodes: freshCategorized, connectorAppTrees: freshConnectorTrees } =
+        useKnowledgeBaseStore.getState();
 
       const hasChildrenInTree = (tree: EnhancedFolderTreeNode[], targetId: string): boolean => {
         for (const node of tree) {
@@ -125,99 +111,16 @@ function KnowledgeBaseSidebarSlotContent() {
         if (alreadyInKbTree) return;
       }
 
-      const mergeIntoConnectorTrees = (
-        children: KnowledgeHubNode[],
-        effectiveHasChildFolders?: boolean
-      ) => {
-        const { connectorAppTrees } = useKnowledgeBaseStore.getState();
-        for (const [appId, tree] of Array.from(connectorAppTrees.entries())) {
-          if (!treeHasNodeWithId(tree, nodeId)) continue;
-          mergeConnectorAppTreeChildren(appId, nodeId, children, effectiveHasChildFolders);
-          return;
-        }
-      };
-
-      const cachedChildren = freshCache.get(nodeId);
-      if (cachedChildren !== undefined) {
-        const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(cachedChildren);
-
-        if (cachedChildren.length > 0) {
-          addNodes(cachedChildren);
-        }
-
-        const latest = useKnowledgeBaseStore.getState();
-        if (latest.categorizedNodes) {
-          const parentNode = latest.nodes.find((n) => n.id === nodeId);
-          if (parentNode) {
-            const section = categorizeNode(parentNode);
-            const updatedTree = mergeChildrenIntoTree(
-              latest.categorizedNodes[section],
-              nodeId,
-              cachedChildren,
-              effectiveHasChildFolders
-            );
-            setCategorizedNodes({ ...latest.categorizedNodes, [section]: updatedTree });
-          }
-        }
-        mergeIntoConnectorTrees(cachedChildren, effectiveHasChildFolders);
-        return;
-      }
-
       try {
         setNodeLoading(nodeId, true);
-        const nodeInStore = useKnowledgeBaseStore.getState().nodes.find((n) => n.id === nodeId);
-        const resolvedNodeType = (nodeInStore?.nodeType ?? nodeType) as NodeType;
-        const response = await KnowledgeHubApi.getNodeChildren(resolvedNodeType, nodeId, {
-          onlyContainers: true,
-          page: 1,
-          limit: SIDEBAR_PAGINATION_PAGE_SIZE,
-          include: 'counts',
-          sortBy: 'name',
-          sortOrder: 'asc',
-        });
-
-        cacheNodeChildren(nodeId, response.items);
-        addNodes(response.items);
-
-        const { setNodeChildrenPagination } = useKnowledgeBaseStore.getState();
-        if (resolvedNodeType !== 'app') {
-          setNodeChildrenPagination(
-            nodeId,
-            sidebarNodeChildrenMetaFromResponse(
-              response.pagination,
-              response.items.length,
-              SIDEBAR_PAGINATION_PAGE_SIZE,
-              resolvedNodeType
-            )
-          );
-        }
-
-        const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(response.items);
-
-        const latest = useKnowledgeBaseStore.getState();
-        if (latest.categorizedNodes) {
-          const parentNode = latest.nodes.find((n) => n.id === nodeId);
-          if (parentNode) {
-            const section = categorizeNode(parentNode);
-
-            const updatedTree = mergeChildrenIntoTree(
-              latest.categorizedNodes[section],
-              nodeId,
-              response.items,
-              effectiveHasChildFolders
-            );
-            setCategorizedNodes({ ...latest.categorizedNodes, [section]: updatedTree });
-          }
-        }
-
-        mergeIntoConnectorTrees(response.items, effectiveHasChildFolders);
+        await openFolderChildren(nodeId, nodeType);
       } catch (error) {
         console.error('Failed to expand node', { nodeId, error });
       } finally {
         setNodeLoading(nodeId, false);
       }
     },
-    [setNodeLoading, cacheNodeChildren, addNodes, setCategorizedNodes, mergeConnectorAppTreeChildren]
+    [setNodeLoading, isAllRecordsMode]
   );
 
   const { isAutoExpanding } = useKnowledgeBaseSidebarAutoExpand({
@@ -305,39 +208,38 @@ function KnowledgeBaseSidebarSlotContent() {
   );
 
   const handleSidebarRename = useCallback(async (nodeId: string, newName: string) => {
+    const state = useKnowledgeBaseStore.getState();
+    const { node, rootKbId } = findNodeInCategorized(state.categorizedNodes, nodeId);
+    const kind = node?.nodeType === 'folder' ? 'folder' : 'collection';
     try {
-      const state = useKnowledgeBaseStore.getState();
-      const { node, rootKbId } = findNodeInCategorized(state.categorizedNodes, nodeId);
-
       await KnowledgeBaseApi.renameNode({
         nodeId,
         newName,
         nodeType: node?.nodeType,
         rootKbId: rootKbId ?? undefined,
       });
-      toast.success(
-        node?.nodeType === 'folder' ? 'Folder renamed successfully' : 'Collection renamed successfully'
-      );
-
-      const currentState = useKnowledgeBaseStore.getState();
-      const cacheIdsToClear: string[] = [];
-      if (currentState.tableData?.breadcrumbs) {
-        cacheIdsToClear.push(...currentState.tableData.breadcrumbs.map(bc => bc.id));
-      }
-      if (rootKbId) {
-        cacheIdsToClear.push(rootKbId);
-      }
-      if (cacheIdsToClear.length > 0) {
-        clearNodeCacheEntries(cacheIdsToClear);
-      }
-
-      await refreshKbTree();
     } catch (error: unknown) {
       const httpError = error as { response?: { data?: { message?: string } }; message?: string };
       toast.error(httpError?.response?.data?.message || 'Failed to rename');
       throw error;
     }
-  }, [clearNodeCacheEntries]);
+    toast.success(kind === 'folder' ? 'Folder renamed successfully' : 'Collection renamed successfully');
+
+    // Reload in place rather than clearing the caches first: the reload walks
+    // the cached tree to find every open folder that may show the old name.
+    const breadcrumbIds = useKnowledgeBaseStore.getState().tableData?.breadcrumbs?.map((bc) => bc.id) ?? [];
+    const roots = [...(rootKbId ? [rootKbId] : []), nodeId, ...breadcrumbIds];
+
+    try {
+      await refreshKbTree();
+      await reloadOpenFoldersUnder(roots, nodeId);
+    } catch (error: unknown) {
+      console.error('Failed to refresh after rename:', error);
+      toast.warning("Couldn't update the list", {
+        description: `The ${kind} was renamed, but the list didn't refresh. Refresh the page to see the latest list.`,
+      });
+    }
+  }, []);
 
   const handleSidebarDelete = useCallback((nodeId: string) => {
     if (!canDeleteCollection) return;

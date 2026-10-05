@@ -12,6 +12,7 @@ import json
 import logging
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -19,12 +20,14 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from jose import jwt
 
+from app.api.middlewares import auth as auth_module
 from app.api.middlewares.auth import (
     authMiddleware,
     deny_service_tokens,
     require_scopes,
     require_service_token,
 )
+from app.api.middlewares.caller_role import CallerRole, CallerRoleStatus
 from app.config.constants.service import OAuthScopes, TokenScopes
 
 JWT_SECRET = "session-secret-for-tests"
@@ -86,6 +89,19 @@ def _build_app() -> FastAPI:
 @pytest.fixture(scope="module")
 def client() -> TestClient:
     return TestClient(_build_app())
+
+
+@pytest.fixture(autouse=True)
+def _node_confirms_sessions():
+    """Node vouches for every session; the checks here are about token classes."""
+    auth_module._session_checks.clear()
+    with patch(
+        "app.api.middlewares.auth.fetch_caller_role",
+        new_callable=AsyncMock,
+        return_value=CallerRole(CallerRoleStatus.VALID, "member"),
+    ):
+        yield
+    auth_module._session_checks.clear()
 
 
 def _sign(claims: dict, secret: str, ttl_seconds: int = 3600) -> str:

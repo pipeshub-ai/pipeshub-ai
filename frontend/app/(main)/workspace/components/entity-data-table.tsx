@@ -1,5 +1,7 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
+
 import React, { useState } from 'react';
 import { Flex, Box, Text, Checkbox } from '@radix-ui/themes';
 import { EmptyIcon } from '@/app/components/ui/empty-icon';
@@ -67,6 +69,7 @@ export function EntityDataTable<T>({
   isLoading,
   onRowClick,
 }: EntityDataTableProps<T>) {
+  const { t } = useTranslation();
   const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
 
   const allSelected = data.length > 0 && data.every((item) => selectedIds.has(getItemId(item)));
@@ -182,7 +185,7 @@ export function EntityDataTable<T>({
               color: 'var(--slate-11)',
             }}
             aria-live="polite"
-            aria-label="Refreshing"
+            aria-label={t('common.refreshing')}
           >
             <Spinner size={14} />
           </Box>

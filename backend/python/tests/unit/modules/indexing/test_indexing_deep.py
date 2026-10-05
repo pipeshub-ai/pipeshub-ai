@@ -385,25 +385,6 @@ class TestProcessMetadataDeep:
 
 
 # ===================================================================
-# IndexingPipeline._initialize_collection — additional
-# ===================================================================
-
-@pytest.mark.skip(reason="_initialize_collection is in VectorStore, not IndexingPipeline")
-class TestInitializeCollectionDeep:
-    @pytest.mark.asyncio
-    async def test_sparse_idf_parameter(self):
-        """sparse_idf parameter is passed to create_collection."""
-        pipeline = _make_pipeline()
-        pipeline.vector_db_service.get_collection = AsyncMock(side_effect=Exception("not found"))
-        pipeline.vector_db_service.create_collection = AsyncMock()
-        pipeline.vector_db_service.create_index = AsyncMock()
-
-        await pipeline._initialize_collection(embedding_size=1024, sparse_idf=True)
-        call_kwargs = pipeline.vector_db_service.create_collection.call_args[1]
-        assert call_kwargs.get("sparse_idf") is True
-
-
-# ===================================================================
 # _process_metadata — additional edge cases
 # ===================================================================
 

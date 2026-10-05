@@ -1,8 +1,11 @@
 import 'reflect-metadata';
+import bcrypt from 'bcryptjs';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
-import { UserController } from '../../../../src/modules/user_management/controller/users.controller';
+import { UserController, USER_DELETE_NOT_RECORDED } from '../../../../src/modules/user_management/controller/users.controller';
+import { ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
+import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
@@ -149,6 +152,47 @@ describe('UserController', () => {
   });
 
   describe('getAllUsers', () => {
+  /** A `Users.find` chain that resolves the given documents. */
+  function stubUsersFind(docs: Record<string, unknown>[]): sinon.SinonStub {
+    return sinon.stub(Users, 'find').returns({
+      sort: sinon.stub().returns({
+        skip: sinon.stub().returns({
+          limit: sinon.stub().returns({
+            lean: sinon.stub().returns({ exec: sinon.stub().resolves(docs) }),
+          }),
+        }),
+      }),
+    } as unknown as ReturnType<typeof Users.find>);
+  }
+
+  /**
+   * The three lookups the handler runs once it has users: pictures, groups and
+   * credentials. Stubbed together so a case that returns a document does not
+   * then wait on a database.
+   */
+  function stubUserEnrichment(): void {
+    sinon.stub(UserDisplayPicture, 'find').returns({
+      lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+    } as unknown as ReturnType<typeof UserDisplayPicture.find>);
+    sinon.stub(UserGroups, 'find').returns({
+      select: sinon.stub().returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+      }),
+    } as unknown as ReturnType<typeof UserGroups.find>);
+    sinon.stub(UserCredentials, 'find').returns({
+      select: sinon.stub().returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+      }),
+    } as unknown as ReturnType<typeof UserCredentials.find>);
+  }
+
+  function stubUsersCount(total: number): sinon.SinonStub {
+    return sinon
+      .stub(Users, 'countDocuments')
+      .resolves(total as unknown as never);
+  }
+
+
     it('should return all non-deleted users', async () => {
       sinon.stub(Users, 'find').returns({
         sort: sinon.stub().returns({
@@ -170,6 +214,88 @@ describe('UserController', () => {
       const response = res.json.firstCall.args[0];
       expect(response).to.have.property('users');
       expect(response).to.have.property('pagination');
+    });
+
+    it('leaves service accounts out of the list of people by default', async () => {
+      // They can never sign in, so listing them here would park them in the
+      // pending-invite set for good and sweep them into bulk invites meant for
+      // colleagues who have not signed in yet.
+      const find = stubUsersFind([]);
+      stubUsersCount(0);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = find.firstCall.args[0] as Record<string, unknown>;
+      expect(filter.kind).to.deep.equal({ $ne: 'service' });
+    });
+
+    it('includes them for an administrator, for the group and team pickers', async () => {
+      // Membership is how a service account is given anything to read, and the
+      // create panel tells an administrator to grant access that way.
+      req.query = { includeServiceAccounts: 'true' };
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+      const find = stubUsersFind([]);
+      stubUsersCount(0);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = find.firstCall.args[0] as Record<string, unknown>;
+      expect(filter.kind).to.equal(undefined);
+    });
+
+    it('ignores the flag for someone who does not administer the org', async () => {
+      // This route is authenticated but not admin-only, and scope checks do
+      // nothing for a session token. Listing service accounts is an
+      // administrator's action on its own screen, so this must not be a way
+      // around that.
+      req.query = { includeServiceAccounts: 'true' };
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false);
+      const find = stubUsersFind([]);
+      stubUsersCount(0);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = find.firstCall.args[0] as Record<string, unknown>;
+      expect(filter.kind).to.deep.equal({ $ne: 'service' });
+    });
+
+    it('only opens up for an explicit true, not any other value', async () => {
+      req.query = { includeServiceAccounts: 'false' };
+      const find = stubUsersFind([]);
+      stubUsersCount(0);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = find.firstCall.args[0] as Record<string, unknown>;
+      expect(filter.kind).to.deep.equal({ $ne: 'service' });
+    });
+
+    it('sends each returned record its kind, so a picker can mark a machine', async () => {
+      // Filtering them in is only half of it. Without `kind` on the way out,
+      // the picker offers a service account with nothing to distinguish it,
+      // which is worse than not offering it at all.
+      req.query = { includeServiceAccounts: 'true' };
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+      stubUserEnrichment();
+      stubUsersFind([
+        {
+          _id: new mongoose.Types.ObjectId(),
+          orgId: new mongoose.Types.ObjectId(),
+          fullName: 'Nightly sync',
+          email: 'svc-nightly-org@service.pipeshub.internal',
+          kind: 'service',
+        },
+      ]);
+      stubUsersCount(1);
+
+      await controller.getAllUsers(req, res);
+
+      const body = res.json.firstCall.args[0] as {
+        users: { kind?: string; name?: string }[];
+      };
+      const [returned] = body.users;
+      expect(returned?.name).to.equal('Nightly sync');
+      expect(returned?.kind).to.equal('service');
     });
 
     it('should return blocked users when isBlocked=true query param', async () => {
@@ -401,6 +527,34 @@ describe('UserController', () => {
       expect(filter.$or).to.be.undefined;
       expect(filter.$and[0].$or).to.be.an('array').with.length(2); // search(fullName/email)
       expect(filter.$and[1].$or).to.be.an('array').with.length(2); // hasLoggedIn + blocked
+    });
+
+    it('escapes regex metacharacters in the user search query (OT-9)', async () => {
+      req.query = { search: 'a(b).*' };
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = Users.find.firstCall.args[0];
+      const rx = filter.$or[0].fullName.$regex;
+      // Metacharacters are escaped, so search is matched literally (no 500, no match-all).
+      expect(rx).to.equal('a\\(b\\)\\.\\*');
+      expect(filter.$or[1].email.$regex).to.equal(rx);
+      const re = new RegExp(rx, 'i');
+      expect(re.test('a(b).*')).to.be.true;
+      expect(re.test('anybody')).to.be.false;
     });
 
     it('should apply groupIds filter and restrict users to group members', async () => {
@@ -840,6 +994,7 @@ describe('UserController', () => {
         save: mockSave,
       };
 
+      sinon.stub(Users, 'findOne').resolves(null);
       sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
       sinon.stub(UserGroups, 'updateOne').resolves({} as any);
 
@@ -857,9 +1012,82 @@ describe('UserController', () => {
         expect(mockEventService.stop.calledOnce).to.be.true;
       }
     });
+
+    // The live-account check passes, but the unique index covers every row:
+    // a concurrent create, or an address held by a soft-deleted account,
+    // still collides at save(). That is a refused duplicate, not a 500.
+    it('answers an email duplicate-key error at save as a refused duplicate', async () => {
+      req.body = { fullName: 'New User', email: 'dup@test.com', role: 'member' };
+      sinon.stub(Users, 'findOne').resolves(null);
+      const duplicate = Object.assign(new Error('E11000 duplicate key error'), {
+        code: 11000,
+        keyPattern: { email: 1 },
+        keyValue: { email: 'dup@test.com' },
+      });
+      const save = sinon.stub(Users.prototype, 'save').rejects(duplicate);
+
+      await controller.createUser(req, res, next);
+
+      // Asserted so this cannot pass by failing earlier, before save().
+      expect(save.calledOnce, 'save() was never reached').to.be.true;
+      expect(next.calledOnce).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error).to.be.an('error');
+      expect(error.message).to.equal('A user with this email already exists');
+      expect(mockEventService.publishEvent.called).to.be.false;
+    });
+
+    it('passes a duplicate on another unique key through unchanged', async () => {
+      // slug is unique too; a collision there is not a duplicate address.
+      req.body = { fullName: 'New User', email: 'new@test.com', role: 'member' };
+      sinon.stub(Users, 'findOne').resolves(null);
+      const slugDuplicate = Object.assign(new Error('E11000 duplicate key error'), {
+        code: 11000,
+        keyPattern: { slug: 1 },
+        keyValue: { slug: 'new-user' },
+      });
+      const save = sinon.stub(Users.prototype, 'save').rejects(slugDuplicate);
+
+      await controller.createUser(req, res, next);
+
+      expect(save.calledOnce, 'save() was never reached').to.be.true;
+      expect(next.firstCall.args[0]).to.equal(slugDuplicate);
+    });
   });
 
   describe('updateUser', () => {
+    it('removes the saved user again when the everyone-group update fails', async () => {
+      // Two collections and no transaction. Without the undo the address is
+      // taken, every retry is refused as a duplicate, and the account sits
+      // with no group and no way to repair it from the API.
+      req.body = { fullName: 'New User', email: 'new@test.com', role: 'member' };
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserGroups, 'updateOne').rejects(new Error('group write failed'));
+      const deleteOne = sinon.stub(Users, 'deleteOne').resolves({} as any);
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('group write failed');
+      expect(deleteOne.calledOnce).to.be.true;
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(res.status.called).to.be.false;
+    });
+
+    it('still reports the original failure when the undo itself fails', async () => {
+      req.body = { fullName: 'New User', email: 'new@test.com', role: 'member' };
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserGroups, 'updateOne').rejects(new Error('group write failed'));
+      sinon.stub(Users, 'deleteOne').rejects(new Error('undo failed'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('group write failed');
+    });
+
     it('should call next with UnauthorizedError when req.user is missing', async () => {
       req.user = undefined;
 
@@ -1324,9 +1552,9 @@ describe('UserController', () => {
   });
 
   describe('updateEmail', () => {
-    it('should update email and publish event', async () => {
-      req.params.id = '507f1f77bcf86cd799439011';
-      req.body = { email: 'new@test.com' };
+    it('sends a verification link to the new address and does not write the email', async () => {
+      req.params.id = '507f1f77bcf86cd799439011'; // same as req.user.userId: the owner
+      req.body = { email: 'New@Test.com' };
 
       const mockUser = {
         _id: '507f1f77bcf86cd799439011',
@@ -1334,15 +1562,93 @@ describe('UserController', () => {
         fullName: 'Test User',
         email: 'old@test.com',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ email: 'new@test.com' }),
       };
-
-      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().resolves(mockUser as any);
+      findOneStub.onSecondCall().resolves(null); // no duplicate
+      const emailChangeStub = sinon
+        .stub(controller as any, 'emailChange')
+        .resolves({ statusCode: 200, data: {} });
 
       await controller.updateEmail(req, res, next);
 
-      expect(mockUser.email).to.equal('new@test.com');
-      expect(mockUser.save.calledOnce).to.be.true;
+      expect(next.called).to.be.false;
+      expect(emailChangeStub.calledOnce).to.be.true;
+      expect(emailChangeStub.firstCall.args[1]).to.equal('new@test.com');
+      expect(mockUser.email).to.equal('old@test.com');
+      expect(mockUser.save.called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(res.json.firstCall.args[0]).to.deep.equal({ email: 'old@test.com', emailChangeMailStatus: 'sent' });
+    });
+
+    it('lets an admin send another user\'s address unchanged, as nothing changes', async () => {
+      // A client writing back the whole record carries the email it read.
+      req.params.id = '507f1f77bcf86cd799439099';
+      req.body = { email: '  Alice@Company.example ' };
+      const mockUser = { _id: '507f1f77bcf86cd799439099', orgId: req.user.orgId, email: 'alice@company.example', save: sinon.stub().resolves() };
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      const emailChangeStub = sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 200, data: {} });
+
+      await controller.updateEmail(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(emailChangeStub.called).to.be.false;
+      expect(res.json.firstCall.args[0]).to.deep.equal({ email: 'alice@company.example', emailChangeMailStatus: 'notNeeded' });
+    });
+
+    it('checks for a duplicate with the normalised address, not the raw request', async () => {
+      // Stored addresses are lowercased and the unique index is
+      // case-sensitive, so a mixed-case request that missed an existing
+      // lowercase match would send a verification mail and only fail on save.
+      req.params.id = '507f1f77bcf86cd799439011';
+      req.body = { email: '  Taken@Test.com ' };
+      const mockUser = {
+        _id: '507f1f77bcf86cd799439011',
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'old@test.com',
+        save: sinon.stub().resolves(),
+      };
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().resolves(mockUser as any);
+      findOneStub.onSecondCall().resolves({ _id: 'someone-else' } as any);
+      const emailChangeStub = sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 200, data: {} });
+
+      await controller.updateEmail(req, res, next);
+
+      expect(findOneStub.secondCall.args[0].email).to.equal('taken@test.com');
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.include('already exists');
+      expect(emailChangeStub.called).to.be.false;
+    });
+
+    it('refuses an admin changing another user\'s email address', async () => {
+      // Permissions attach to the address; moving a colleague's account to an
+      // address the admin controls would let the admin sign in as them.
+      req.params.id = '507f1f77bcf86cd799439099';
+      req.body = { email: 'attacker@evil.example' };
+      const mockUser = { _id: '507f1f77bcf86cd799439099', orgId: req.user.orgId, email: 'alice@company.example', save: sinon.stub().resolves() };
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      const emailChangeStub = sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 200, data: {} });
+
+      await controller.updateEmail(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.include('Only the account owner');
+      expect(emailChangeStub.called).to.be.false;
+      expect(mockUser.email).to.equal('alice@company.example');
+      expect(mockUser.save.called).to.be.false;
+    });
+
+    it('reports notNeeded when the address is unchanged', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+      req.body = { email: 'OLD@test.com' };
+      sinon.stub(Users, 'findOne').resolves({ _id: '507f1f77bcf86cd799439011', orgId: req.user.orgId, email: 'old@test.com', save: sinon.stub() } as any);
+      const emailChangeStub = sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 200, data: {} });
+
+      await controller.updateEmail(req, res, next);
+
+      expect(emailChangeStub.called).to.be.false;
+      expect(res.json.firstCall.args[0]).to.deep.equal({ email: 'old@test.com', emailChangeMailStatus: 'notNeeded' });
     });
   });
 
@@ -1403,6 +1709,7 @@ describe('UserController', () => {
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
       stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      const recordActivity = sinon.stub(UserActivities, 'create').resolves({} as any);
 
       await controller.deleteUser(req, res, next);
 
@@ -1411,6 +1718,46 @@ describe('UserController', () => {
       expect(mockUser.save.calledOnce).to.be.true;
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
       expect(res.json.calledWith({ message: 'User deleted successfully' })).to.be.true;
+      expect(
+        recordActivity.calledWithMatch({
+          userId: mockUser._id,
+          orgId: mockUser.orgId,
+          activityType: userActivitiesType.ACCOUNT_DELETED,
+        }),
+        'the deletion is recorded as ending the account\'s sessions',
+      ).to.be.true;
+      // Recorded before anything is changed, so a deletion always leaves one.
+      expect(recordActivity.calledBefore(UserGroups.updateMany as sinon.SinonStub)).to.be.true;
+      expect(recordActivity.calledBefore(mockUser.save)).to.be.true;
+    });
+
+    it('deletes nothing, and says to retry, when the deletion cannot be recorded', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+      const mockUser = {
+        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'test@test.com',
+        isDeleted: false,
+        role: 'member',
+        save: sinon.stub().resolves(),
+      };
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      stubOAuthAppsForDeletedUser([]);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      sinon.stub(UserActivities, 'create').rejects(new Error('mongo timeout'));
+
+      await controller.deleteUser(req, res, next);
+
+      const error = next.firstCall.args[0];
+      expect(error).to.be.instanceOf(ServiceUnavailableError);
+      expect(error.message).to.equal(USER_DELETE_NOT_RECORDED);
+      expect(mockUser.isDeleted).to.be.false;
+      expect(mockUser.save.called).to.be.false;
+      expect((UserGroups.updateMany as sinon.SinonStub).called).to.be.false;
+      expect((UserCredentials.updateOne as sinon.SinonStub).called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(res.json.called).to.be.false;
     });
   });
 
@@ -1765,6 +2112,12 @@ describe('UserController', () => {
   });
 
   describe('deleteUser (additional)', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should call next with BadRequestError when userId or orgId is missing', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
 
@@ -1889,7 +2242,8 @@ describe('UserController', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true;
-        expect(res.json.calledWith({ message: 'Invite sent successfully' })).to.be.true;
+        expect(res.json.calledWith({ message: 'Invite sent successfully' })).to.be
+          .true;
         expect(mockMailService.sendMail.calledOnce).to.be.true;
 
         // Verify the link uses #token= hash fragment, not ?token= query param
@@ -1954,6 +2308,12 @@ describe('UserController', () => {
   });
 
   describe('deleteUser (additional cases)', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should throw NotFoundError when user._id or orgId is missing', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
 
@@ -2173,6 +2533,54 @@ describe('UserController', () => {
           },
         });
       }
+    });
+
+    it('lets an admin edit another user when the request carries their address unchanged', async () => {
+      // The role edit goes through; the unchanged address is neither refused nor re-verified.
+      req.params.id = '507f1f77bcf86cd799439099'; // not req.user.userId
+      req.body = { email: 'ALICE@company.example ', fullName: 'Alice Smith' };
+
+      const mockUser = {
+        _id: '507f1f77bcf86cd799439099',
+        orgId: req.user.orgId,
+        email: 'alice@company.example',
+        fullName: 'Alice',
+        save: sinon.stub().resolves(),
+        toObject: sinon.stub().returns({}),
+      };
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      const emailChangeStub = sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 200, data: {} });
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.called, next.firstCall?.args[0]?.message).to.be.false;
+      expect(emailChangeStub.called).to.be.false;
+      expect(mockUser.email).to.equal('alice@company.example');
+      expect(mockUser.fullName).to.equal('Alice Smith');
+      expect(mockUser.save.calledOnce).to.be.true;
+      expect(res.json.firstCall.args[0].meta.emailChangeMailStatus).to.equal('notNeeded');
+    });
+
+    it('refuses an admin changing another user\'s email through updateUser', async () => {
+      req.params.id = '507f1f77bcf86cd799439099'; // not req.user.userId
+      req.body = { email: 'attacker@evil.example' };
+
+      const mockUser = {
+        _id: '507f1f77bcf86cd799439099',
+        orgId: req.user.orgId,
+        email: 'alice@company.example',
+        save: sinon.stub().resolves(),
+        toObject: sinon.stub().returns({}),
+      };
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      const emailChangeStub = sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 200, data: {} });
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.include('Only the account owner');
+      expect(emailChangeStub.called).to.be.false;
+      expect(mockUser.save.called).to.be.false;
     });
 
     it('should reject email update when email already exists for another user', async () => {
@@ -2548,15 +2956,55 @@ describe('UserController', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true;
-        // Verify all invite emails use #token= hash fragment, not ?token= query param
         for (const call of mockMailService.sendMail.getCalls()) {
-          const link: string = call.args[0].templateData.link;
-          if (link.includes('reset-password')) {
-            expect(link).to.match(/\/reset-password#token=.+/);
-            expect(link).to.not.include('?token=');
-          }
+          expect(call.args[0].deliverAsync).to.equal(true);
+          expect(JSON.stringify(call.args[0].templateData)).to.not.include('token=');
         }
       }
+    });
+
+    it('records the restore before bringing a deleted account back', async () => {
+      req.body = { emails: ['deleted@test.com'], groupIds: [] };
+      stubActorAsOrgAdmin();
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      const deletedUser = { _id: 'du1', email: 'deleted@test.com', isDeleted: true };
+      sinon.stub(Users, 'find')
+        .onFirstCall().resolves([deletedUser] as any)
+        .onSecondCall().resolves([{ ...deletedUser, isDeleted: false }] as any);
+      const order: string[] = [];
+      const record = sinon.stub(UserActivities, 'insertMany').callsFake((async () => {
+        order.push('restore recorded');
+        return [];
+      }) as any);
+      sinon.stub(Users, 'updateMany').callsFake((async () => {
+        order.push('account restored');
+        return {};
+      }) as any);
+      sinon.stub(Users, 'create').resolves([] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(order).to.deep.equal(['restore recorded', 'account restored']);
+      const [docs] = record.firstCall.args as any[];
+      expect(docs).to.have.lengthOf(1);
+      expect(docs[0]).to.include({ userId: 'du1', activityType: 'ACCOUNT RESTORED' });
+    });
+
+    it('restores nothing when the restore cannot be recorded', async () => {
+      req.body = { emails: ['deleted@test.com'], groupIds: [] };
+      stubActorAsOrgAdmin();
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      sinon.stub(Users, 'find').resolves([{ _id: 'du1', email: 'deleted@test.com', isDeleted: true }] as any);
+      sinon.stub(UserActivities, 'insertMany').rejects(new Error('mongo timeout'));
+      const restore = sinon.stub(Users, 'updateMany').resolves({} as any);
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(restore.called).to.be.false;
+      expect(next.called).to.be.true;
     });
 
     it('should return error message when all emails already have active accounts', async () => {
@@ -2665,7 +3113,7 @@ describe('UserController', () => {
       expect(mockMailService.sendMail.calledOnce).to.be.true;
       expect(mockMailService.sendMail.firstCall.args[0].usersMails).to.deep.equal(['pending@test.com']);
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith({ message: 'Invite sent successfully' })).to.be.true;
+      expect(res.json.firstCall.args[0].queued).to.equal(true);
     });
 
     it('should not resend invite for pending blocked users', async () => {
@@ -2708,6 +3156,8 @@ describe('UserController', () => {
 
   describe('addManyUsers - promote restored/pending to admin', () => {
     it('should set role admin on restored and pending users when inviteRole is admin', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       const deletedId = new mongoose.Types.ObjectId();
       const pendingId = new mongoose.Types.ObjectId();
 
@@ -2773,6 +3223,8 @@ describe('UserController', () => {
     });
 
     it('should not promote users to admin when inviteRole is member', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       const deletedId = new mongoose.Types.ObjectId();
 
       req.body = {
@@ -2945,6 +3397,12 @@ describe('UserController', () => {
   });
 
   describe('deleteUser - admin check', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should throw BadRequestError when deleting admin user', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
 
@@ -3114,13 +3572,17 @@ describe('UserController', () => {
       expect(res.json.calledOnce).to.be.true;
       expect(mockEventService.publishEvent.called).to.be.true;
 
-      // Verify all invite emails use #token= hash fragment, not ?token= query param
-      for (const call of mockMailService.sendMail.getCalls()) {
-        const link: string = call.args[0].templateData.link;
-        if (link.includes('reset-password')) {
-          expect(link).to.match(/\/reset-password#token=.+/);
-          expect(link).to.not.include('?token=');
-        }
+      // The set-password token is minted by the mail consumer, never queued.
+      const calls = mockMailService.sendMail.getCalls();
+      expect(calls).to.have.length(2);
+      for (const call of calls) {
+        const params = call.args[0];
+        expect(params.deliverAsync).to.equal(true);
+        expect(params.templateData).to.not.have.property('link');
+        expect(params.passwordResetLinkFor).to.include({
+          orgId: '507f1f77bcf86cd799439012',
+          email: params.usersMails[0],
+        });
       }
     });
 
@@ -3335,6 +3797,7 @@ describe('UserController', () => {
         role: 'member',
       };
 
+      sinon.stub(Users, 'findOne').resolves(null);
       sinon.stub(UserGroups, 'updateOne').resolves({} as any);
       sinon.stub(Users.prototype, 'save').resolves();
 
@@ -3343,6 +3806,288 @@ describe('UserController', () => {
       expect(res.status.calledWith(201)).to.be.true;
       expect(mockEventService.start.calledOnce).to.be.true;
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
+    });
+
+    it('saves the user before publishing the created event', async () => {
+      req.body = { email: 'newuser@test.com', fullName: 'New User' };
+      const order: string[] = [];
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(UserGroups, 'updateOne').callsFake(async () => { order.push('group'); return {} as any; });
+      sinon.stub(Users.prototype, 'save').callsFake(async () => { order.push('save'); });
+      mockEventService.publishEvent.callsFake(async () => { order.push('publish'); });
+
+      await controller.createUser(req, res, next);
+
+      expect(order).to.deep.equal(['save', 'group', 'publish']);
+    });
+
+    it('refuses a duplicate email before any side effect', async () => {
+      // The graph upserts users by email, so an event for an unsaved
+      // duplicate would overwrite the existing account's id.
+      req.body = { email: 'taken@test.com', fullName: 'Someone' };
+      sinon.stub(Users, 'findOne').resolves({ _id: 'existing' } as any);
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      const save = sinon.stub(Users.prototype, 'save').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.include('already exists');
+      expect(save.called).to.be.false;
+      expect(groupUpdate.called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+    });
+
+    it('publishes nothing when the save itself fails', async () => {
+      req.body = { email: 'newuser@test.com', fullName: 'New User' };
+      sinon.stub(Users, 'findOne').resolves(null);
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      sinon.stub(Users.prototype, 'save').rejects(new Error('E11000 duplicate key'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(groupUpdate.called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+    });
+
+    it('should store a hashed credential when a starting password is given', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      const userSave = sinon.stub(Users.prototype, 'save').resolves();
+      const credentialSave = sinon.stub(UserCredentials.prototype, 'save').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(res.status.calledWith(201)).to.be.true;
+      expect(userSave.calledOnce).to.be.true;
+      expect(credentialSave.calledOnce).to.be.true;
+      const credential = credentialSave.firstCall.thisValue;
+      expect(credential.hashedPassword).to.be.a('string');
+      expect(credential.hashedPassword).to.not.equal('Str0ng-pass!');
+      // The plaintext must not land on the user document.
+      const responseBody = res.json.firstCall.args[0];
+      expect(responseBody.password).to.be.undefined;
+    });
+
+    it('hashes the starting password before anything is written', async () => {
+      // A hash that fails must cost nothing. If it ran after the user was
+      // saved, the account would exist with no way to sign in and no way to
+      // create it again.
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves();
+      const userSave = sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(bcrypt, 'hash').rejects(new Error('hash failed'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('hash failed');
+      expect(groupUpdate.called).to.be.false;
+      expect(userSave.called).to.be.false;
+    });
+
+    it('removes the saved user when the credential save fails, before any group write or event', async () => {
+      // The credential is saved right after the user and before the group
+      // membership and the creation event, so a failure has one thing to
+      // undo and nothing downstream has been told about the account.
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(Users, 'findOne').resolves(null);
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').rejects(new Error('credential save failed'));
+      sinon.stub(UserCredentials, 'deleteOne').resolves();
+      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('credential save failed');
+      expect(userDelete.calledOnce).to.be.true;
+      expect(groupUpdate.called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(res.status.called).to.be.false;
+    });
+
+    it('reports the credential error even when removing the half-created user fails', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(UserGroups, 'updateOne').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').rejects(new Error('credential save failed'));
+      sinon.stub(UserCredentials, 'deleteOne').resolves();
+      sinon.stub(Users, 'deleteOne').rejects(new Error('db down'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('credential save failed');
+      expect(mockLogger.error.calledOnce).to.be.true;
+      expect(mockLogger.error.firstCall.args[0]).to.include('removing it failed');
+    });
+
+    it('removes the user and its credential when the everyone-group write fails', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups, 'updateOne').rejects(new Error('group write failed'));
+      const credentialDelete = sinon.stub(UserCredentials, 'deleteOne').resolves();
+      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('group write failed');
+      expect(credentialDelete.calledOnce).to.be.true;
+      expect(userDelete.calledOnce).to.be.true;
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(res.status.called).to.be.false;
+    });
+
+    it('undoes the whole account when the creation event cannot be published', async () => {
+      // Publishing writes an outbox row and can fail on its own. Left alone,
+      // the address would stay taken by an account the graph side has never
+      // heard of, a password account could sign in, and a retry would hit the
+      // unique email index.
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves();
+      const credentialDelete = sinon.stub(UserCredentials, 'deleteOne').resolves();
+      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+      mockEventService.publishEvent.rejects(new Error('outbox insert failed'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('outbox insert failed');
+      expect(credentialDelete.calledOnce).to.be.true;
+      expect(userDelete.calledOnce).to.be.true;
+      const pull = groupUpdate.getCalls().find((call) => '$pull' in call.args[1]);
+      expect(pull, 'the user is taken back out of the everyone group').to.exist;
+      expect(String(pull!.args[1].$pull.users)).to.equal(String(userDelete.firstCall.args[0]._id));
+      expect(mockEventService.stop.calledOnce).to.be.true;
+      expect(res.status.called).to.be.false;
+    });
+
+    it('still removes the account when taking it out of the everyone group fails', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups, 'updateOne').rejects(new Error('group write failed'));
+      const credentialDelete = sinon.stub(UserCredentials, 'deleteOne').resolves();
+      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('group write failed');
+      expect(credentialDelete.calledOnce).to.be.true;
+      expect(userDelete.calledOnce).to.be.true;
+      expect(mockLogger.warn.called).to.be.true;
+    });
+
+    it('publishes the creation event only after the user and credential are saved', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      const order: string[] = [];
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').callsFake(async () => { order.push('user'); });
+      sinon.stub(UserCredentials.prototype, 'save').callsFake(async () => { order.push('credential'); });
+      sinon.stub(UserGroups, 'updateOne').callsFake(async () => { order.push('group'); });
+      mockEventService.publishEvent.callsFake(async () => { order.push('event'); });
+
+      await controller.createUser(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(order).to.deep.equal(['user', 'credential', 'group', 'event']);
+    });
+
+    it('should reject a weak starting password before creating anything', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'weak',
+      };
+
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves();
+      const userSave = sinon.stub(Users.prototype, 'save').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.include('Password must be');
+      expect(groupUpdate.called).to.be.false;
+      expect(userSave.called).to.be.false;
+    });
+
+    it('should refuse a starting password for any address outside the demo domain', async () => {
+      // Connector permissions attach to the email, so a password on a real
+      // colleague's address would let the admin see everything they can see.
+      for (const email of ['alice@example.com', 'ceo@acme-demo.example.com', 'bob@acme-demo.example.evil.io']) {
+        req.body = { email, fullName: 'Someone Real', password: 'Str0ng-pass!' };
+        const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+        const userSave = sinon.stub(Users.prototype, 'save').resolves();
+        const credentialSave = sinon.stub(UserCredentials.prototype, 'save').resolves();
+
+        await controller.createUser(req, res, next);
+
+        expect(next.calledOnce, email).to.be.true;
+        expect(next.firstCall.args[0].message).to.include('demo accounts');
+        expect(groupUpdate.called, email).to.be.false;
+        expect(userSave.called, email).to.be.false;
+        expect(credentialSave.called, email).to.be.false;
+        sinon.restore();
+        next.resetHistory();
+      }
+    });
+
+    it('should not create a credential when no password is given', async () => {
+      req.body = { email: 'nopass@test.com', fullName: 'No Pass' };
+
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      sinon.stub(Users.prototype, 'save').resolves();
+      const credentialSave = sinon.stub(UserCredentials.prototype, 'save').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(res.status.calledWith(201)).to.be.true;
+      expect(credentialSave.called).to.be.false;
     });
   });
 
@@ -3389,6 +4134,12 @@ describe('UserController', () => {
   // deleteUser - full success flow
   // -----------------------------------------------------------------------
   describe('deleteUser - full success flow', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should soft delete user, remove from groups, clear password, and publish event', async () => {
       req.params = { id: '507f1f77bcf86cd799439013' };
 
@@ -3423,6 +4174,12 @@ describe('UserController', () => {
   // deleteUser - OAuth apps soft-delete cascade
   // -----------------------------------------------------------------------
   describe('deleteUser - OAuth apps cascade', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     function stubOAuthAppQueryChain(appsFromExec: unknown[]) {
       const chain = {
         select: sinon.stub(),
@@ -3986,67 +4743,90 @@ describe('UserController', () => {
     });
   });
 
-  describe('updateEmail - conditional spread branches', () => {
-    it('should include all optional fields when truthy', async () => {
-      req.params.id = '507f1f77bcf86cd799439011';
-      req.body = { email: 'new@test.com' };
+  describe('sendValidateEmailIdEmail', () => {
+    const user = () => ({ _id: '507f1f77bcf86cd799439011', orgId: '507f1f77bcf86cd799439012', email: 'alice@old.example', fullName: 'Alice' });
 
-      const mockUser = {
-        _id: '507f1f77bcf86cd799439011',
-        orgId: new mongoose.Types.ObjectId(req.user.orgId),
-        fullName: 'Test',
-        firstName: 'F',
-        lastName: 'L',
-        designation: 'Dev',
-        email: 'old@test.com',
-        save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ email: 'new@test.com' }),
+    it('sends the verification to the new address and a notice to the current one', async () => {
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'Acme' } as any);
+
+      const result = await controller.sendValidateEmailIdEmail(user(), 'alice@new.example');
+
+      expect(result.statusCode).to.equal(200);
+      expect(mockMailService.sendMail.calledTwice).to.be.true;
+      // Only the fields asserted below; the mail payload's full shape is the
+      // service's concern, not this test's.
+      type SentMail = {
+        emailTemplateType: string;
+        usersMails: string[];
+        templateData: { newEmail?: string };
       };
-
-      sinon.stub(Users, 'findOne').resolves(mockUser as any);
-
-      await controller.updateEmail(req, res, next);
-
-      if (!next.called) {
-        const event = mockEventService.publishEvent.firstCall.args[0];
-        expect(event.payload).to.have.property('firstName', 'F');
-        expect(event.payload).to.have.property('lastName', 'L');
-        expect(event.payload).to.have.property('designation', 'Dev');
-      }
+      const [verification, notice] = mockMailService.sendMail.args.map(
+        (a: [SentMail, ...unknown[]]) => a[0],
+      );
+      expect(verification.emailTemplateType).to.equal('resetEmail');
+      expect(verification.usersMails).to.deep.equal(['alice@new.example']);
+      expect(notice.emailTemplateType).to.equal('emailChangeNotice');
+      expect(notice.usersMails).to.deep.equal(['alice@old.example']);
+      expect(notice.templateData.newEmail).to.equal('alice@new.example');
+      // The notice carries no link: nothing in it can be used to complete or undo the change.
+      expect(notice.templateData.link).to.be.undefined;
     });
 
-    it('should omit optional fields when falsy', async () => {
-      req.params.id = '507f1f77bcf86cd799439011';
-      req.body = { email: 'new@test.com' };
+    it('still succeeds when the notice to the current address cannot be sent', async () => {
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'Acme' } as any);
+      mockMailService.sendMail.onFirstCall().resolves({ statusCode: 200, data: {} });
+      mockMailService.sendMail.onSecondCall().rejects(new Error('smtp down'));
 
-      const mockUser = {
-        _id: '507f1f77bcf86cd799439011',
-        orgId: new mongoose.Types.ObjectId(req.user.orgId),
-        fullName: 'Test',
-        firstName: '',
-        lastName: '',
-        designation: '',
-        email: 'old@test.com',
-        save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ email: 'new@test.com' }),
-      };
+      const result = await controller.sendValidateEmailIdEmail(user(), 'alice@new.example');
 
-      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      expect(result.statusCode).to.equal(200);
+      expect(mockLogger.warn.calledOnce).to.be.true;
+    });
 
-      await controller.updateEmail(req, res, next);
+    it('does not send the notice when the verification mail itself failed', async () => {
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'Acme' } as any);
+      mockMailService.sendMail.onFirstCall().resolves({ statusCode: 500, data: 'no' });
 
-      if (!next.called) {
-        const event = mockEventService.publishEvent.firstCall.args[0];
-        expect(event.payload).to.not.have.property('firstName');
-        expect(event.payload).to.not.have.property('lastName');
-        expect(event.payload).to.not.have.property('designation');
-      }
+      const result = await controller.sendValidateEmailIdEmail(user(), 'alice@new.example');
+
+      expect(result.statusCode).to.equal(400);
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
     });
   });
 
-  // -----------------------------------------------------------------------
-  // Branch coverage: updateUser - conditional spread in event payload
-  // -----------------------------------------------------------------------
+  describe('updateEmail - verification failures', () => {
+    it('surfaces a failure to send the verification mail without touching the account', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+      req.body = { email: 'new@test.com' };
+      const mockUser = { _id: '507f1f77bcf86cd799439011', orgId: req.user.orgId, email: 'old@test.com', save: sinon.stub() };
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().resolves(mockUser as any);
+      findOneStub.onSecondCall().resolves(null);
+      sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 400, data: 'Failed to send email' });
+
+      await controller.updateEmail(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.include('verification email');
+      expect(mockUser.email).to.equal('old@test.com');
+      expect(mockUser.save.called).to.be.false;
+    });
+
+    it('rejects an address another user already has', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+      req.body = { email: 'taken@test.com' };
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().resolves({ _id: '507f1f77bcf86cd799439011', orgId: req.user.orgId, email: 'old@test.com', save: sinon.stub() } as any);
+      findOneStub.onSecondCall().resolves({ _id: 'other' } as any);
+      const emailChangeStub = sinon.stub(controller as any, 'emailChange').resolves({ statusCode: 200, data: {} });
+
+      await controller.updateEmail(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.include('already exists');
+      expect(emailChangeStub.called).to.be.false;
+    });
+  });
+
   describe('updateUser - conditional spread in event payload', () => {
     it('should include firstName, lastName, designation when truthy', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
@@ -4617,6 +5397,12 @@ describe('UserController', () => {
   // Branch coverage: deleteUser - userId/orgId null check
   // -----------------------------------------------------------------------
   describe('deleteUser - userId/orgId branches', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should throw NotFoundError when user._id is falsy', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
       sinon.stub(Users, 'findOne').resolves({
@@ -4832,6 +5618,8 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('addManyUsers - restored accounts mail error branches', () => {
     it('should return the specific error code when mail fails for restored users with password enabled', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
@@ -4872,6 +5660,8 @@ describe('UserController', () => {
     });
 
     it('should return the specific error code when mail fails for restored users with password disabled', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
@@ -4912,6 +5702,8 @@ describe('UserController', () => {
     });
 
     it('should skip restored user without email', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['valid@test.com'],
         groupIds: ['g1'],
@@ -5071,6 +5863,8 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('addManyUsers - restored user missing userId throws', () => {
     it('should throw when restored user has no _id', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
@@ -5113,6 +5907,8 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('addManyUsers - auth method fetch error for restored users', () => {
     it('should throw when passwordMethodEnabled returns non-200 for restored users', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],

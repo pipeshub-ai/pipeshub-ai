@@ -18,6 +18,7 @@ from app.modules.parsers.markdown.docling_markdown_parser import (
     _extract_and_replace_images,
 )
 from app.modules.parsers.markdown.markdown_to_blocks import MarkdownToBlocksConverter
+from app.modules.parsers.text_decoding import decode_text
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.services.parsing.interface import ParseResult
 
@@ -52,10 +53,7 @@ class MarkdownItParser:
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
         """Parse file bytes into a :class:`ParseResult` (:class:`IParser` contract)."""
-        if isinstance(content, bytes):
-            md_content = content.decode("utf-8")
-        else:
-            md_content = content
+        md_content = decode_text(content)
 
         markdown = md_content.strip()
 

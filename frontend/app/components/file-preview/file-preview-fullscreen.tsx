@@ -169,8 +169,8 @@ export function FilePreviewFullscreen({
               href={linkedWebUrl}
               target="_blank"
               rel="noopener noreferrer"
-              aria-label={`Open ${file.name} in source`}
-              title="Open in source"
+              aria-label={t('filePreview.openNamedInSource', { name: file.name })}
+              title={t('filePreview.openInSource')}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -206,7 +206,7 @@ export function FilePreviewFullscreen({
                   blob: file.blob,
                 })
               }
-              title="Download"
+              title={t('action.download')}
             >
               <MaterialIcon name="download" size={ICON_SIZES.HEADER} />
             </IconButton>
@@ -217,7 +217,7 @@ export function FilePreviewFullscreen({
               color="gray"
               size="1"
               onClick={onExitFullscreen}
-              title="Exit full screen"
+              title={t('recordView.exitFullscreen')}
             >
               <MaterialIcon name="close_fullscreen" size={ICON_SIZES.HEADER} />
             </IconButton>
@@ -227,7 +227,7 @@ export function FilePreviewFullscreen({
             color="gray"
             size="1"
             onClick={onClose}
-            title="Close"
+            title={t('common.close')}
           >
             <MaterialIcon name="close" size={ICON_SIZES.HEADER} />
           </IconButton>
@@ -332,7 +332,7 @@ export function FilePreviewFullscreen({
                   height: '24px',
                   padding: 0,
                 }}
-                aria-label="Zoom out"
+                aria-label={t('chat.zoomOut')}
               >
                 <MaterialIcon name="remove" size={ICON_SIZES.SECONDARY} />
               </IconButton>
@@ -362,7 +362,7 @@ export function FilePreviewFullscreen({
                   height: '24px',
                   padding: 0,
                 }}
-                aria-label="Zoom in"
+                aria-label={t('chat.zoomIn')}
               >
                 <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
               </IconButton>
@@ -450,7 +450,7 @@ export function FilePreviewFullscreen({
             <Box
               role="separator"
               aria-orientation="vertical"
-              aria-label="Resize citations panel"
+              aria-label={t('filePreview.resizeCitations')}
               onPointerDown={beginCitationsSplitResize}
               style={{
                 width: '6px',

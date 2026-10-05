@@ -555,7 +555,11 @@ class TestCreateTeam(TeamsTestBase):
             },
         )
         assert resp.status_code == 400
-        _assert_backend_bad_request(resp.json(), "createTeam", "not found")
+        # The message says who is missing and what to do about it, rather than
+        # "not found": see PEOPLE_GONE in backend/python/app/utils/user_messages.
+        _assert_backend_bad_request(
+            resp.json(), "createTeam", "no longer in this workspace"
+        )
 
 
 # ====================================================================

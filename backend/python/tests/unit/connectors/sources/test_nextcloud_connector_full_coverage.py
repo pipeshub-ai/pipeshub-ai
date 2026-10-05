@@ -329,7 +329,7 @@ class TestConnectorInitEdges:
             mock_ds.return_value = mock_ds_instance
             result = await nextcloud_connector.init()
             assert result is True
-            assert "nextcloud.local" in nextcloud_connector.current_user_email
+            assert nextcloud_connector.current_user_email is None, "a failed read must not invent an owner"
 
     @pytest.mark.asyncio
     async def test_init_user_details_exception(self, nextcloud_connector):
@@ -344,7 +344,7 @@ class TestConnectorInitEdges:
             mock_ds.return_value = mock_ds_instance
             result = await nextcloud_connector.init()
             assert result is True
-            assert "nextcloud.local" in nextcloud_connector.current_user_email
+            assert nextcloud_connector.current_user_email is None, "a failed read must not invent an owner"
 
     @pytest.mark.asyncio
     async def test_init_exception(self, nextcloud_connector):
@@ -604,7 +604,7 @@ class TestStreamRecord:
         nextcloud_connector.data_source = MagicMock()
         nextcloud_connector.current_user_id = "admin"
         file_rec = MagicMock()
-        file_rec.mime_type = MimeTypes.FOLDER
+        file_rec.mime_type = MimeTypes.FOLDER.value  # records store the MIME text, not the enum
         file_rec.record_name = "Documents"
         nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_rec)
         nextcloud_connector.data_entities_processor.get_record_path = AsyncMock(return_value="/Documents")

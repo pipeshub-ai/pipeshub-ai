@@ -54,13 +54,14 @@ def _shows_a_problem(state: dict[str, str]) -> bool:
 
 
 def _cut_off(compose: ComposeStack) -> None:
-    compose.exec("pipeshub-ai", ["sh", "-c", block_hosts_script(ai_provider_hosts())])
+    # /etc/hosts is root-owned and the app container runs as an unprivileged user.
+    compose.exec("pipeshub-ai", ["sh", "-c", block_hosts_script(ai_provider_hosts())], user="0")
     # A process that already holds a provider connection could keep using it.
     compose.exec("pipeshub-ai", ["sh", "-c", KILL_INDEXING])
 
 
 def _reconnect(compose: ComposeStack) -> None:
-    compose.exec("pipeshub-ai", ["sh", "-c", restore_hosts_script()])
+    compose.exec("pipeshub-ai", ["sh", "-c", restore_hosts_script()], user="0")
 
 
 @dataclass

@@ -108,6 +108,9 @@ async def resolve_attachments_for_goal(
             ref_mapper=ref_mapper,
             out_records=attachment_records,
             image_budget=image_budget,
+            user_id=context.user_id,
+            graph_provider=context.graph_provider,
+            is_service_account=context.is_service_account,
         )
     except Exception as exc:
         log.warning("Failed to resolve attachments: %s", exc)
@@ -265,6 +268,7 @@ async def _rehydrate_citation_maps(
     """
     from app.utils.chat_helpers import CitationRefMapper
     from app.utils.chat_helpers import record_to_message_content
+    from app.utils.record_access import caller_can_read_virtual_record
 
     state = context.tool_state
 
@@ -286,6 +290,15 @@ async def _rehydrate_citation_maps(
             rec_id = vrmap[vrid].get("id")
             if rec_id:
                 resolved_ids.append(rec_id)
+            continue
+        if not await caller_can_read_virtual_record(
+            context.graph_provider,
+            user_id=context.user_id,
+            org_id=context.org_id,
+            virtual_record_id=vrid,
+            logger=logger,
+            is_service_account=context.is_service_account,
+        ):
             continue
         try:
             record = await blob_store.get_record_from_storage(
@@ -374,6 +387,9 @@ async def resolve_history_attachments(
     is_multimodal_llm: bool = False,
     image_budget: "ImageBudget | None" = None,
     image_admission: "ImageAdmission | None" = None,
+    user_id: str | None = None,
+    graph_provider: Any = None,
+    is_service_account: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Resolve document and image attachments from blob for a historical turn.
 
@@ -407,6 +423,7 @@ async def resolve_history_attachments(
     multimodal injection.
     """
     from app.utils.chat_helpers import ImageBudget, record_to_message_content
+    from app.utils.record_access import caller_can_read_virtual_record
 
     if image_budget is None:
         image_budget = ImageBudget()
@@ -420,6 +437,19 @@ async def resolve_history_attachments(
         mime = (att.get("mimeType") or "").lower()
         vrid = att.get("virtualRecordId") or ""
         if not vrid:
+            continue
+        if mime not in _DOC_MIME_TYPES and not (
+            mime in _IMAGE_MIME_TYPES and is_multimodal_llm
+        ):
+            continue
+        if not await caller_can_read_virtual_record(
+            graph_provider,
+            user_id=user_id,
+            org_id=org_id,
+            virtual_record_id=vrid,
+            logger=logger,
+            is_service_account=is_service_account,
+        ):
             continue
 
         if mime in _DOC_MIME_TYPES:

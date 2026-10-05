@@ -96,6 +96,16 @@ class TestCodeExecutionEnabled:
         monkeypatch.setenv("PIPESHUB_ENABLE_CODE_EXECUTION", "false")
         assert code_execution_enabled({"enable_code_execution": True}) is True
 
+    def test_flag_read_failure_disables_code_execution(self, monkeypatch) -> None:
+        """An outage in flag resolution must not switch code execution on."""
+        monkeypatch.delenv("PIPESHUB_ENABLE_CODE_EXECUTION", raising=False)
+
+        class _BrokenState(dict):
+            def get(self, *args, **kwargs) -> None:
+                raise RuntimeError("flag store down")
+
+        assert code_execution_enabled(_BrokenState()) is False
+
 
 class TestGetToolResultsSummary:
     def test_empty_results(self):

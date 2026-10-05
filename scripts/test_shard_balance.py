@@ -121,6 +121,75 @@ class TestCatchesMistakes(unittest.TestCase):
                 f"{broad}: {problems}",
             )
 
+    def test_a_held_out_connector_must_stay_out_of_core(self) -> None:
+        pytest_ini = PYTEST_INI.replace(
+            "    cleanup:",
+            "    cifs: marks tests specific to the CIFS/SMB1 connector\n    cleanup:",
+        )
+        missing, _ = run(pytest_ini=pytest_ini)
+        self.assertTrue(any("cifs" in p and "fall into core" in p for p in missing), missing)
+        held_in_shard, _ = run(
+            workflow=WORKFLOW.replace('"gamma"', '"gamma or cifs"') + "\n# not cifs\n",
+            pytest_ini=pytest_ini,
+        )
+        self.assertTrue(any("still selects" in p for p in held_in_shard), held_in_shard)
+        # A comment is not an exclusion. Both core jobs still select cifs.
+        comment_only = WORKFLOW + (
+            '            core)         MARKERS="integration and not (alpha or beta or gamma)" ;;\n'
+            '            core)         MARKERS="integration and not (alpha or beta or gamma) and not cifs" ;;\n'
+            "# not cifs\n"
+        )
+        commented, _ = run(workflow=comment_only, pytest_ini=pytest_ini)
+        self.assertTrue(any("cifs" in p and "fall into core" in p for p in commented), commented)
+        excluded = WORKFLOW + (
+            '            core)         MARKERS="integration and not (alpha or beta or gamma) and not cifs" ;;\n'
+            '            core)         MARKERS="integration and not (alpha or beta or gamma) and not cifs" ;;\n'
+        )
+        allowed, _ = run(workflow=excluded, pytest_ini=pytest_ini)
+        self.assertEqual(allowed, [])
+        # "not cifs" as text is not enough: the or-branch still selects it.
+        disjunction = WORKFLOW + (
+            '            core)         MARKERS="not cifs or cifs" ;;\n'
+            '            core)         MARKERS="integration and not cifs" ;;\n'
+        )
+        or_selects, _ = run(workflow=disjunction, pytest_ini=pytest_ini)
+        self.assertTrue(any("cifs" in p and "fall into core" in p for p in or_selects), or_selects)
+        stronger = WORKFLOW + (
+            '            core)         MARKERS="integration and not (alpha or cifs)" ;;\n'
+            '            core)         MARKERS="integration and not (alpha or cifs)" ;;\n'
+        )
+        strong_ok, _ = run(workflow=stronger, pytest_ini=pytest_ini)
+        self.assertEqual(strong_ok, [])
+
+    def test_the_demo_shard_runs_the_demo_exactly_once(self) -> None:
+        with_job = WORKFLOW.replace('"core"]', '"core","demo"]')
+        core = '            core)         MARKERS="integration and not (alpha or beta or gamma){}" ;;\n'
+        case = '            demo)         MARKERS="demo" ;;\n'
+
+        def step(*lines: str) -> str:
+            return '          case "$SHARD" in\n' + "".join(lines) + "          esac\n"
+
+        sound = with_job + step(core.format(" and not demo"), case) * 2
+        self.assertEqual(run(workflow=sound)[0], [])
+        twice, _ = run(workflow=with_job + step(core.format(""), case) * 2)
+        self.assertTrue(any("run twice" in p for p in twice), twice)
+        one_leg, _ = run(workflow=with_job + step(core.format(" and not demo"), case) + step(core.format(" and not demo")))
+        self.assertTrue(any("unknown shard" in p for p in one_leg), one_leg)
+        # Two in one step and none in the other still totals two; the second step fails.
+        lopsided = with_job + step(core.format(" and not demo"), case, case) + step(core.format(" and not demo"))
+        self.assertTrue(any("unknown shard" in p for p in run(workflow=lopsided)[0]))
+        # The shell reads `MARKERS="demo"extra` as the marker "demoextra".
+        suffixed = with_job + step(core.format(" and not demo"), case.replace('"demo" ;;', '"demo"extra ;;')) * 2
+        self.assertTrue(any("unknown shard" in p for p in run(workflow=suffixed)[0]))
+        # Named only in the one-marker dispatch list, the demo job never runs on the nightly.
+        dispatch_only = WORKFLOW.replace("'[\"dispatch\"]'", "'[\"dispatch\",\"demo\"]'")
+        self.assertNotEqual(dispatch_only, WORKFLOW)
+        only_dispatch, _ = run(workflow=dispatch_only + step(core.format(" and not demo"), case) * 2)
+        self.assertTrue(any("stop running" in p for p in only_dispatch), only_dispatch)
+        dropped, _ = run(workflow=WORKFLOW + step(core.format(" and not demo")) * 2)
+        self.assertTrue(any("stop running" in p for p in dropped), dropped)
+        self.assertEqual(run(workflow=WORKFLOW + step(core.format("")) * 2)[0], [])
+
     def test_an_unmeasured_suite_is_named_but_allowed(self) -> None:
         # beta has no measured time; the two shards still weigh the same without it.
         problems, report = run(minutes={"alpha": 30.0, "gamma": 30.0})
@@ -154,6 +223,14 @@ class TestThisRepo(unittest.TestCase):
             workflow,
             f"{owner} runs nextcloud/bookstack but does not start selfhosted-sources",
         )
+
+    def test_the_ai_agents_shard_never_runs_on_a_pull_request(self) -> None:
+        """Every ai_agents test costs model calls; the nightly runs them, a PR must not."""
+        workflow = balance.WORKFLOW.read_text(encoding="utf-8")
+        line = balance._MATRIX_LINE.search(workflow).group(0)
+        pr_list = line.split("github.event_name == 'pull_request_target' && ", 1)[1].split("'", 2)[1]
+        self.assertNotIn("ai_agents", pr_list)
+        self.assertIn("ai_agents", balance.matrix_solo_shards(workflow))
 
 
 if __name__ == "__main__":

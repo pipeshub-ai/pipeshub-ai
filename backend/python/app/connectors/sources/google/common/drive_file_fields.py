@@ -21,7 +21,7 @@ DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS = (
 DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS = (
     "id, name, mimeType, size, createdTime, modifiedTime, webViewLink, fileExtension, "
     "headRevisionId, version, shared, owners, md5Checksum, sha1Checksum, sha256Checksum, parents, "
-    "driveId, sharedWithMeTime"
+    "driveId, sharedWithMeTime, trashed"
 )
 
 DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS = (
@@ -30,7 +30,7 @@ DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS = (
 
 DRIVE_WORKSPACE_SYNC_CHANGES_LIST_FIELDS = (
     "nextPageToken, newStartPageToken, "
-    f"changes(changeType, fileId, removed, file({DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS}))"
+    f"changes(changeType, fileId, removed, driveId, file({DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS}))"
 )
 
 # files.get for workspace reindex: same projection as list.

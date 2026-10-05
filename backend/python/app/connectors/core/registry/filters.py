@@ -10,6 +10,7 @@ This module provides:
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
@@ -225,6 +226,7 @@ class SyncFilterKey(str, Enum):
 
     # Container/scope filters
     SPACE_KEYS = "space_keys"
+    SPACE_IDS = "space_ids"
     FOLDER_IDS = "folder_ids"
     FOLDERS = "folders"
     CUSTOM_FOLDERS = "custom_folders"
@@ -988,6 +990,48 @@ class FilterCollection(BaseModel):
                 continue
 
         return cls(filters=filters)
+
+
+def _passes_list_filter(list_filter: Filter | None, value: str | None, normalise: Callable[[str], str]) -> bool:
+    """Whether ``value`` passes a list-valued sync filter, honouring In and Not in; None is kept only by Not in."""
+    if list_filter is None or list_filter.is_empty():
+        return True
+    raw = list_filter.value if isinstance(list_filter.value, list) else [list_filter.value]
+    listed = {normalise(str(item)) for item in raw if item}
+    operator = list_filter.operator_value
+    if operator == FilterOperator.NOT_IN:
+        return value is None or normalise(value) not in listed
+    if operator == FilterOperator.IN:
+        return value is not None and normalise(value) in listed
+    return True
+
+
+def extension_passes_filter(sync_filters: FilterCollection | None, extension: str | None) -> bool:
+    """Whether a file passes the file-extensions sync filter, honouring In and Not in.
+
+    ``extension`` is the file's extension without the dot, or None when it has
+    none; a file without one is kept only by Not in.
+    """
+    return _passes_list_filter(
+        sync_filters.get(SyncFilterKey.FILE_EXTENSIONS) if sync_filters else None,
+        extension, lambda ext: ext.lower().lstrip("."),
+    )
+
+
+def name_passes_filter(sync_filters: FilterCollection | None, key: str, name: str | None) -> bool:
+    """Whether a bucket, container or other named scope passes the sync filter ``key``, honouring In and Not in."""
+    return _passes_list_filter(sync_filters.get(key) if sync_filters else None, name, lambda n: n)
+
+
+def included_names(sync_filters: FilterCollection | None, key: str) -> list[str]:
+    """The names an In filter ``key`` picks, to sync just those.
+
+    Empty when the filter is unset or Not in: every name the source lists is
+    then synced unless ``name_passes_filter`` leaves it out.
+    """
+    names_filter = sync_filters.get(key) if sync_filters else None
+    raw = names_filter.value if names_filter and isinstance(names_filter.value, list) else []
+    return [n for n in raw if isinstance(n, str) and n and name_passes_filter(sync_filters, key, n)]
 
 
 def _selected_ids(raw: Any) -> list[str]:

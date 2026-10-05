@@ -19,6 +19,7 @@ from app.modules.parsers.code_parser.lang_config import (
     LanguageConfig,
 )
 from app.modules.parsers.code_parser.models import ParsedFile, ParsedSymbol
+from app.modules.parsers.text_decoding import decode_text
 
 if TYPE_CHECKING:
     from tree_sitter import Node, Parser
@@ -75,7 +76,7 @@ def decode_source(raw: bytes) -> bytes:
         raw.decode("utf-8")
         return raw
     except UnicodeDecodeError:
-        return raw.decode("latin-1", errors="replace").encode("utf-8")
+        return decode_text(raw).encode("utf-8")
 
 
 def _text(node: Node, src: bytes) -> str:

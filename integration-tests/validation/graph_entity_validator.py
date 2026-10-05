@@ -88,7 +88,9 @@ _DEFAULT_SKIP_COMPARE_BY_ENTITY: Final[dict[str, frozenset[str]]] = {
     "record_group": frozenset({"id", "org_id"}),
     "app_user_group": frozenset({"id", "org_id"}),
     "app_role": frozenset({"id", "org_id"}),
-    "app_metadata": frozenset(),
+    # Which user supplied the connector credentials is decided by whoever ran the
+    # setup, so no test can know it up front.
+    "app_metadata": frozenset({"authenticated_by"}),
 }
 
 

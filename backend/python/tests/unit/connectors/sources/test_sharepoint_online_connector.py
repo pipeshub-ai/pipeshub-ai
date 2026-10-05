@@ -940,6 +940,7 @@ class TestProcessDriveItem:
         mock_tx, _ = _make_tx_store(existing)
         c.data_store_provider.transaction = MagicMock(return_value=mock_tx)
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        c.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=existing)
 
         item = _make_drive_item(e_tag="etag-new")
         result = await c._process_drive_item(item, "site-1", "drive-1", [])
@@ -962,6 +963,7 @@ class TestProcessDriveItem:
         mock_tx, _ = _make_tx_store(existing)
         c.data_store_provider.transaction = MagicMock(return_value=mock_tx)
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        c.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=existing)
 
         item = _make_drive_item(e_tag="etag-1", quick_xor_hash="new-hash")
         result = await c._process_drive_item(item, "site-1", "drive-1", [])

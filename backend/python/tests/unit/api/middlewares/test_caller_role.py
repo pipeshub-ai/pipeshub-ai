@@ -1,18 +1,28 @@
 """Tests for app.api.middlewares.caller_role."""
 
+import asyncio
+from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from jose import jwt
 
+from app.api.middlewares import caller_role
 from app.api.middlewares.caller_role import (
     CALLER_ROLE_PATH,
+    SERVICE_AUTHORIZATION_HEADER,
     CallerRole,
+    CallerRoleCache,
     CallerRoleStatus,
     fetch_caller_role,
     normalize_auth_role,
 )
-from app.config.constants.service import DefaultEndpoints
+from app.config.constants.service import (
+    DefaultEndpoints,
+    TokenScopes,
+    config_node_constants,
+)
 
 _NODE = "http://nodejs:3000"
 _REAL_ASYNC_CLIENT = httpx.AsyncClient
@@ -43,6 +53,25 @@ def _node(handler):
 
 
 _BEARER = {"authorization": "Bearer caller-token"}
+_SCOPED_SECRET = "scoped-secret-for-tests"
+
+
+def _config_with_secret() -> AsyncMock:
+    values = {
+        config_node_constants.ENDPOINTS.value: {"nodejs": {"endpoint": _NODE}},
+        config_node_constants.SECRET_KEYS.value: {"scopedJwtSecret": _SCOPED_SECRET},
+    }
+    config_service = AsyncMock()
+    config_service.get_config = AsyncMock(side_effect=lambda key, **_kwargs: values[key])
+    return config_service
+
+
+def _seen_by_node(seen: list) -> Callable[[httpx.Request], httpx.Response]:
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"role": "member"})
+
+    return handler
 
 
 class TestFetchCallerRole:
@@ -88,6 +117,19 @@ class TestFetchCallerRole:
             result = await fetch_caller_role(_request(_BEARER), _config_service())
         assert result == CallerRole(CallerRoleStatus.UNKNOWN)
 
+    async def test_an_unreadable_ca_bundle_fails_closed_without_calling_node(self) -> None:
+        seen: list = []
+        # The context is cached once built; start from none, and leave none behind.
+        caller_role._ssl_context.cache_clear()
+        with _node(_seen_by_node(seen)), patch(
+            "app.api.middlewares.caller_role.httpx.create_ssl_context",
+            side_effect=FileNotFoundError("no such CA file"),
+        ):
+            result = await fetch_caller_role(_request(_BEARER), _config_service())
+        caller_role._ssl_context.cache_clear()
+        assert result == CallerRole(CallerRoleStatus.UNKNOWN)
+        assert seen == []
+
     async def test_non_json_body_fails_closed(self):
         with _node(lambda _: httpx.Response(200, text="<html>")):
             result = await fetch_caller_role(_request(_BEARER), _config_service())
@@ -116,6 +158,26 @@ class TestFetchCallerRole:
         assert "x-organization-id" not in sent
         assert "x-is-admin" not in sent
         assert sent["host"] == "nodejs:3000"
+
+    async def test_carries_a_caller_role_service_token_for_nodes_rate_limiter(self):
+        seen: list = []
+        request = _request({**_BEARER, "X-Service-Authorization": "Bearer from-the-client"})
+        with _node(_seen_by_node(seen)):
+            await fetch_caller_role(request, _config_with_secret())
+
+        header = seen[0].headers[SERVICE_AUTHORIZATION_HEADER]
+        assert header != "Bearer from-the-client"
+        claims = jwt.decode(header.removeprefix("Bearer "), _SCOPED_SECRET, algorithms=["HS256"])
+        assert claims["scopes"] == [TokenScopes.CALLER_ROLE.value]
+        assert claims["exp"] - claims["iat"] <= 300
+
+    async def test_without_the_secret_the_lookup_still_goes_out(self):
+        seen: list = []
+        with _node(_seen_by_node(seen)):
+            result = await fetch_caller_role(_request(_BEARER), _config_service())
+
+        assert result == CallerRole(CallerRoleStatus.VALID, "member")
+        assert SERVICE_AUTHORIZATION_HEADER not in seen[0].headers
 
     @pytest.mark.parametrize(
         "headers",
@@ -165,3 +227,83 @@ class TestNormalizeAuthRole:
     @pytest.mark.parametrize("value", [None, "", "member", "superadmin", True, 1])
     def test_everything_else_is_member(self, value):
         assert normalize_auth_role(value) == "member"
+
+
+_LIVE = CallerRole(CallerRoleStatus.VALID, "member")
+_ENDED = CallerRole(CallerRoleStatus.REJECTED)
+_UNSURE = CallerRole(CallerRoleStatus.UNKNOWN)
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class TestCallerRoleCache:
+    async def test_answer_is_reused_until_it_expires(self):
+        clock = _Clock()
+        cache = CallerRoleCache(ttl_seconds=2.0, max_entries=10, clock=clock)
+        lookup = AsyncMock(side_effect=[_LIVE, _ENDED])
+
+        assert await cache.get("tok", lookup) == _LIVE
+        clock.now += 1.9
+        assert await cache.get("tok", lookup) == _LIVE
+        clock.now += 0.2
+        # The session ended meanwhile; once the reused answer lapses, that shows.
+        assert await cache.get("tok", lookup) == _ENDED
+        assert lookup.await_count == 2
+
+    async def test_unknown_is_asked_again(self):
+        cache = CallerRoleCache(ttl_seconds=30.0, max_entries=10)
+        lookup = AsyncMock(side_effect=[_UNSURE, _LIVE])
+
+        assert await cache.get("tok", lookup) == _UNSURE
+        assert await cache.get("tok", lookup) == _LIVE
+
+    async def test_tokens_do_not_share_answers(self):
+        cache = CallerRoleCache(ttl_seconds=30.0, max_entries=10)
+        await cache.get("live", AsyncMock(return_value=_LIVE))
+        assert await cache.get("ended", AsyncMock(return_value=_ENDED)) == _ENDED
+
+    async def test_oldest_answer_is_dropped_past_the_limit(self):
+        cache = CallerRoleCache(ttl_seconds=30.0, max_entries=2)
+        for token in ("a", "b", "c"):
+            await cache.get(token, AsyncMock(return_value=_LIVE))
+
+        lookup = AsyncMock(return_value=_LIVE)
+        await cache.get("c", lookup)
+        lookup.assert_not_awaited()
+        await cache.get("a", lookup)
+        lookup.assert_awaited_once()
+
+    async def test_token_is_not_kept_in_the_clear(self):
+        cache = CallerRoleCache(ttl_seconds=30.0, max_entries=10)
+        await cache.get("secret-token", AsyncMock(return_value=_LIVE))
+        assert "secret-token" not in repr(cache.__dict__)
+
+    async def test_a_cancelled_waiter_leaves_the_shared_lookup_running(self):
+        cache = CallerRoleCache(ttl_seconds=30.0, max_entries=10)
+        release = asyncio.Event()
+
+        async def slow_lookup() -> CallerRole:
+            await release.wait()
+            return _LIVE
+
+        first = asyncio.ensure_future(cache.get("tok", slow_lookup))
+        second = asyncio.ensure_future(cache.get("tok", AsyncMock(return_value=_ENDED)))
+        await asyncio.sleep(0)
+        first.cancel()
+        release.set()
+
+        assert await second == _LIVE
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+    async def test_a_failed_lookup_is_not_left_in_flight(self):
+        cache = CallerRoleCache(ttl_seconds=30.0, max_entries=10)
+        with pytest.raises(RuntimeError):
+            await cache.get("tok", AsyncMock(side_effect=RuntimeError("boom")))
+        assert await cache.get("tok", AsyncMock(return_value=_LIVE)) == _LIVE

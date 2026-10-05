@@ -3,6 +3,8 @@
 import asyncio
 import contextlib
 import logging
+import random
+from collections.abc import Callable
 from typing import Never
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,6 +16,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
     _is_deadlock_error,
     retry_on_deadlock,
 )
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
 def create_deadlock_error() -> Exception:
@@ -125,6 +128,183 @@ class TestGraphTransactionStore:
         return GraphTransactionStore(mock_graph_provider, "txn-123")
 
     @pytest.mark.asyncio
+    async def test_repeated_group_lookup_hits_the_database_once(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        """One batch is 100 records from one connector sharing one group."""
+        mock_graph_provider.get_record_group_by_external_id = AsyncMock(
+            return_value=MagicMock()
+        )
+
+        for _ in range(5):
+            await tx_store.get_record_group_by_external_id("conn-1", "bucket-1")
+
+        assert mock_graph_provider.get_record_group_by_external_id.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_miss_is_not_cached(self, tx_store, mock_graph_provider) -> None:
+        """The group is created moments later; caching the miss would hide it."""
+        mock_graph_provider.get_record_group_by_external_id = AsyncMock(return_value=None)
+
+        await tx_store.get_record_group_by_external_id("conn-1", "bucket-1")
+        await tx_store.get_record_group_by_external_id("conn-1", "bucket-1")
+
+        assert mock_graph_provider.get_record_group_by_external_id.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_deleting_a_record_drops_it_from_the_cache(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        """A stale positive would report something that is gone."""
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=MagicMock())
+        mock_graph_provider.delete_record_by_external_id = AsyncMock()
+
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+        assert mock_graph_provider.get_record_by_external_id.await_count == 1
+
+        await tx_store.delete_record_by_external_id("conn-1", "ext-1", "user-1")
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        assert mock_graph_provider.get_record_by_external_id.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_moved_record_stops_answering_for_its_old_path(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        """A move re-upserts the vertex under a new path. The old path must go
+        back to the database, which no longer finds it there."""
+        vertex = MagicMock(id="rec-x", connector_id="conn-1", external_record_id="log.1")
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=vertex)
+        mock_graph_provider.batch_upsert_records = AsyncMock()
+        await tx_store.get_record_by_external_id("conn-1", "log.1")
+
+        moved = MagicMock(id="rec-x", connector_id="conn-1", external_record_id="log.2")
+        await tx_store.batch_upsert_records([moved])
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=None)
+
+        assert await tx_store.get_record_by_external_id("conn-1", "log.1") is None
+
+    @pytest.mark.asyncio
+    async def test_an_upserted_record_is_reread_not_served_from_the_callers_object(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        """The upsert merges into the stored vertex and never writes
+        virtualRecordId, so the caller's object is not what the store holds.
+
+        Serving it made a move onto an occupied path retire the occupant without
+        its VRID -- no deleteRecord event, so its vectors were orphaned.
+        """
+        mock_graph_provider.batch_upsert_records = AsyncMock()
+        written = MagicMock(id="rec-x", connector_id="conn-1", external_record_id="z",
+                            virtual_record_id=None)
+        await tx_store.batch_upsert_records([written])
+
+        stored = MagicMock(id="rec-x", connector_id="conn-1", external_record_id="z",
+                           virtual_record_id="vr-x")
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=stored)
+
+        assert await tx_store.get_record_by_external_id("conn-1", "z") is stored
+        assert await tx_store.get_record_by_external_id("conn-1", "z") is stored
+        assert mock_graph_provider.get_record_by_external_id.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_deleting_by_key_drops_it_from_the_cache(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        """Delete by key names no path, so the cache is cleared by vertex id."""
+        vertex = MagicMock(id="rec-dup")
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=vertex)
+        mock_graph_provider.delete_nodes = AsyncMock()
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        await tx_store.delete_record_by_key("rec-dup")
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        assert mock_graph_provider.get_record_by_external_id.await_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("delete", ["delete_nodes", "delete_single_record"])
+    async def test_every_record_delete_drops_it_from_the_cache(
+        self, tx_store, mock_graph_provider, delete
+    ) -> None:
+        vertex = MagicMock(id="rec-1")
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=vertex)
+        mock_graph_provider.delete_nodes = AsyncMock()
+        mock_graph_provider.delete_single_record = AsyncMock(return_value={})
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        if delete == "delete_nodes":
+            await tx_store.delete_nodes(["rec-1"], "records")
+        else:
+            await tx_store.delete_single_record("rec-1")
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        assert mock_graph_provider.get_record_by_external_id.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_each_visibility_is_cached_on_its_own(self, tx_store, mock_graph_provider) -> None:
+        """A trashed record answers ALL but not LIVE; one answer must not stand in for the other."""
+        trashed = MagicMock(id="rec-1")
+
+        async def lookup(connector_id, external_id, transaction=None, visibility=RecordVisibility.ALL):
+            return None if visibility is RecordVisibility.LIVE else trashed
+
+        mock_graph_provider.get_record_by_external_id = AsyncMock(side_effect=lookup)
+        assert await tx_store.get_record_by_external_id("conn-1", "ext-1") is trashed
+        assert await tx_store.get_record_by_external_id(
+            "conn-1", "ext-1", visibility=RecordVisibility.LIVE
+        ) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("delete", ["soft_delete_records", "delete_record_by_external_id"])
+    async def test_trashing_drops_the_cached_record(self, tx_store, mock_graph_provider, delete) -> None:
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-1"))
+        mock_graph_provider.soft_delete_records = AsyncMock(return_value={})
+        mock_graph_provider.delete_record_by_external_id = AsyncMock(return_value={})
+        await tx_store.get_record_by_external_id("conn-1", "ext-1", visibility=RecordVisibility.LIVE)
+
+        if delete == "soft_delete_records":
+            await tx_store.soft_delete_records(["rec-1"], "conn-1", delete_source="sync", batch_id="b1")
+        else:
+            await tx_store.delete_record_by_external_id("conn-1", "ext-1", soft_delete=True)
+        await tx_store.get_record_by_external_id("conn-1", "ext-1", visibility=RecordVisibility.LIVE)
+
+        assert mock_graph_provider.get_record_by_external_id.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_deleting_other_nodes_keeps_cached_records(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-1"))
+        mock_graph_provider.delete_nodes = AsyncMock()
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        await tx_store.delete_nodes(["rec-1"], "recordGroups")
+        await tx_store.get_record_by_external_id("conn-1", "ext-1")
+
+        assert mock_graph_provider.get_record_by_external_id.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_subtree_delete_drops_every_cached_record(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        """The victims of a recursive delete are not known here by id."""
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="child"))
+        mock_graph_provider.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())
+        mock_graph_provider.delete_records_recursive = AsyncMock(return_value={})
+        await tx_store.get_record_by_external_id("conn-1", "child-ext")
+        await tx_store.get_record_group_by_external_id("conn-1", "group-ext")
+
+        await tx_store.delete_records_recursive(["parent"], "conn-1")
+        await tx_store.get_record_by_external_id("conn-1", "child-ext")
+        await tx_store.get_record_group_by_external_id("conn-1", "group-ext")
+
+        assert mock_graph_provider.get_record_by_external_id.await_count == 2
+        # Groups are not records and are not part of the subtree.
+        assert mock_graph_provider.get_record_group_by_external_id.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_commit(self, tx_store, mock_graph_provider) -> None:
         await tx_store.commit()
         mock_graph_provider.commit_transaction.assert_awaited_once_with("txn-123")
@@ -142,7 +322,20 @@ class TestGraphTransactionStore:
     @pytest.mark.asyncio
     async def test_get_record_by_external_id(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_record_by_external_id("conn1", "ext1")
-        mock_graph_provider.get_record_by_external_id.assert_awaited_once_with("conn1", "ext1", transaction="txn-123")
+        mock_graph_provider.get_record_by_external_id.assert_awaited_once_with(
+            "conn1", "ext1", transaction="txn-123", visibility=RecordVisibility.ALL
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_record_by_external_id_propagates_a_failed_lookup(self, tx_store, mock_graph_provider) -> None:
+        """The connectors read None as "create this record", so it cannot also mean "we could not ask"."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
+        mock_graph_provider.get_record_by_external_id = AsyncMock(
+            side_effect=GraphQueryError("db down")
+        )
+        with pytest.raises(GraphQueryError):
+            await tx_store.get_record_by_external_id("conn1", "ext1")
 
     @pytest.mark.asyncio
     async def test_get_record_by_external_revision_id(self, tx_store, mock_graph_provider) -> None:
@@ -169,7 +362,16 @@ class TestGraphTransactionStore:
     @pytest.mark.asyncio
     async def test_batch_upsert_records(self, tx_store, mock_graph_provider) -> None:
         await tx_store.batch_upsert_records([])
-        mock_graph_provider.batch_upsert_records.assert_awaited_once_with([], transaction="txn-123")
+        mock_graph_provider.batch_upsert_records.assert_awaited_once_with(
+            [], transaction="txn-123", release_trashed_external_ids=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_records_releasing_trashed_external_ids(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.batch_upsert_records([], release_trashed_external_ids=True)
+        mock_graph_provider.batch_upsert_records.assert_awaited_once_with(
+            [], transaction="txn-123", release_trashed_external_ids=True
+        )
 
     @pytest.mark.asyncio
     async def test_batch_upsert_record_groups(self, tx_store, mock_graph_provider) -> None:
@@ -267,7 +469,11 @@ class TestGraphTransactionStore:
     @pytest.mark.asyncio
     async def test_delete_sync_point(self, tx_store, mock_graph_provider) -> None:
         await tx_store.delete_sync_point("sp1")
-        mock_graph_provider.remove_sync_point.assert_awaited_once()
+        # Both providers match syncPointKey by equality, so a key wrapped in a
+        # list matches no stored sync point and the delete silently does nothing.
+        mock_graph_provider.remove_sync_point.assert_awaited_once_with(
+            "sp1", collection="syncPoints", transaction="txn-123"
+        )
 
     @pytest.mark.asyncio
     async def test_read_sync_point(self, tx_store, mock_graph_provider) -> None:
@@ -352,7 +558,7 @@ class TestGraphTransactionStore:
     async def test_get_record_owner_source_user_email(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_record_owner_source_user_email("rec1")
         mock_graph_provider.get_record_owner_source_user_email.assert_awaited_once_with(
-            "rec1", transaction="txn-123"
+            "rec1", transaction="txn-123", raise_on_error=False
         )
 
     @pytest.mark.asyncio
@@ -364,7 +570,7 @@ class TestGraphTransactionStore:
     async def test_delete_record_by_external_id(self, tx_store, mock_graph_provider) -> None:
         await tx_store.delete_record_by_external_id("conn1", "ext1", "user1")
         mock_graph_provider.delete_record_by_external_id.assert_awaited_once_with(
-            "conn1", "ext1", "user1", transaction="txn-123"
+            "conn1", "ext1", "user1", transaction="txn-123", soft_delete=False
         )
 
     @pytest.mark.asyncio
@@ -425,7 +631,16 @@ class TestGraphTransactionStore:
     async def test_get_user_group_by_external_id(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_user_group_by_external_id("conn1", "ext1")
         mock_graph_provider.get_user_group_by_external_id.assert_awaited_once_with(
-            "conn1", "ext1", transaction="txn-123"
+            "conn1", "ext1", transaction="txn-123", raise_on_error=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_user_group_by_external_id_forwards_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        # Dropping this forward would leave the upsert's lookup swallowing
+        # again: it would read a failed lookup as "absent" and create a duplicate.
+        await tx_store.get_user_group_by_external_id("conn1", "ext1", raise_on_error=True)
+        mock_graph_provider.get_user_group_by_external_id.assert_awaited_once_with(
+            "conn1", "ext1", transaction="txn-123", raise_on_error=True
         )
 
     @pytest.mark.asyncio
@@ -437,7 +652,16 @@ class TestGraphTransactionStore:
     async def test_get_app_role_by_external_id(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_app_role_by_external_id("conn1", "role1")
         mock_graph_provider.get_app_role_by_external_id.assert_awaited_once_with(
-            "conn1", "role1", transaction="txn-123"
+            "conn1", "role1", transaction="txn-123", raise_on_error=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_app_role_by_external_id_forwards_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        # Dropping this forward would leave the upsert's lookup swallowing
+        # again: it would read a failed lookup as "absent" and create a duplicate.
+        await tx_store.get_app_role_by_external_id("conn1", "role1", raise_on_error=True)
+        mock_graph_provider.get_app_role_by_external_id.assert_awaited_once_with(
+            "conn1", "role1", transaction="txn-123", raise_on_error=True
         )
 
     @pytest.mark.asyncio
@@ -495,7 +719,7 @@ class TestGraphTransactionStore:
     async def test_get_users_with_permission_to_node(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_users_with_permission_to_node("node1", "records")
         mock_graph_provider.get_users_with_permission_to_node.assert_awaited_once_with(
-            "node1", "records", transaction="txn-123"
+            "node1", "records", transaction="txn-123", raise_on_error=False
         )
 
     @pytest.mark.asyncio
@@ -630,9 +854,9 @@ class TestGraphTransactionStore:
 
     @pytest.mark.asyncio
     async def test_get_edges_from_node_with_target_name(self, tx_store, mock_graph_provider) -> None:
-        await tx_store.get_edges_from_node_with_target_name("node1", "edge_coll")
+        await tx_store.get_edges_from_node_with_target_name("node1", "edge_coll", raise_on_error=True)
         mock_graph_provider.get_edges_from_node_with_target_name.assert_awaited_once_with(
-            "node1", "edge_coll", transaction="txn-123"
+            "node1", "edge_coll", transaction="txn-123", raise_on_error=True
         )
 
     @pytest.mark.asyncio
@@ -654,7 +878,16 @@ class TestGraphTransactionStore:
         """Transaction store forwards recursive deletes to the graph provider."""
         await tx_store.delete_records_recursive(["r1", "r2"], "kb-1")
         mock_graph_provider.delete_records_recursive.assert_awaited_once_with(
-            ["r1", "r2"], "kb-1", transaction="txn-123", cascade_children=True
+            ["r1", "r2"], "kb-1", transaction="txn-123", cascade_children=True, within_folder_id=None,
+            include_trashed_roots=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_graph_data_store_forwards_the_folder_scope(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.delete_records_recursive(["r1"], "kb-1", within_folder_id="f1")
+        mock_graph_provider.delete_records_recursive.assert_awaited_once_with(
+            ["r1"], "kb-1", transaction="txn-123", cascade_children=True, within_folder_id="f1",
+            include_trashed_roots=False,
         )
 
     @pytest.mark.asyncio
@@ -690,7 +923,8 @@ class TestGraphTransactionStore:
     async def test_get_nodes_by_filters(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_nodes_by_filters("records", {"status": "active"}, return_fields=["_key"])
         mock_graph_provider.get_nodes_by_filters.assert_awaited_once_with(
-            collection="records", filters={"status": "active"}, return_fields=["_key"], transaction="txn-123"
+            collection="records", filters={"status": "active"}, return_fields=["_key"], transaction="txn-123",
+            raise_on_error=False,
         )
 
 
@@ -853,6 +1087,20 @@ class TestGraphDataStore:
         mock_graph_provider.commit_transaction.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_write_conflict_rollback_is_not_logged_as_an_error(self, mock_graph_provider) -> None:
+        mock_graph_provider.is_write_conflict = MagicMock(return_value=True)
+        logger = MagicMock()
+        store = GraphDataStore(logger, mock_graph_provider)
+
+        with pytest.raises(RuntimeError):
+            async with store.transaction():
+                raise RuntimeError("DeadlockDetected")
+
+        logger.error.assert_not_called()
+        logger.warning.assert_called()
+        mock_graph_provider.rollback_transaction.assert_awaited_once_with("txn-123")
+
+    @pytest.mark.asyncio
     async def test_execute_in_transaction(self, mock_graph_provider) -> None:
         store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
 
@@ -878,6 +1126,10 @@ class TestDeadlockDetection:
 
 class TestRetryOnDeadlockDecorator:
     """Tests for the @retry_on_deadlock decorator."""
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch) -> None:
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
 
     @pytest.mark.asyncio
     async def test_succeeds_without_retry(self) -> None:
@@ -968,16 +1220,16 @@ class TestRetryOnDeadlockDecorator:
             raise create_deadlock_error()
 
         with patch('app.connectors.core.base.data_store.graph_data_store.asyncio.sleep',
-                   new_callable=AsyncMock) as mock_sleep:
+                   new_callable=AsyncMock) as mock_sleep, \
+             patch('app.connectors.core.base.data_store.graph_data_store.random.uniform',
+                   side_effect=lambda low, high: (low + high) / 2):
             with contextlib.suppress(Exception):
                 await my_func()
 
             # 4 attempts means 3 sleeps (between attempts)
             assert mock_sleep.await_count == 3
             sleep_calls = [call.args[0] for call in mock_sleep.await_args_list]
-            assert sleep_calls[0] == pytest.approx(0.1, rel=0.01)
-            assert sleep_calls[1] == pytest.approx(0.2, rel=0.01)
-            assert sleep_calls[2] == pytest.approx(0.4, rel=0.01)
+            assert sleep_calls == pytest.approx([0.5, 1.0, 2.0])
 
     @pytest.mark.asyncio
     async def test_custom_max_retries(self) -> None:
@@ -1236,4 +1488,225 @@ class TestExecuteInTransactionRetriesTransientFailures:
 
         with pytest.raises(RuntimeError, match="Deadlock"):
             await store.execute_in_transaction(always_deadlocks)
-        assert provider.rollback_transaction.await_count == 3
+        assert provider.rollback_transaction.await_count == 6
+
+
+# The exception text ArangoDB's HTTP client raised in the 2 October nightly, when an
+# SMB sync's on_new_records collided with indexing writing the same record.
+ARANGO_BATCH_CONFLICT = "Batch insert failed with 1 error(s): Item 0: [1200] write-write conflict"
+
+
+class _Processor:
+    """Stands in for DataSourceEntitiesProcessor: the decorator reads `data_store_provider`."""
+
+    def __init__(self, data_store_provider: object, failures: list[Exception]) -> None:
+        self.data_store_provider = data_store_provider
+        self.failures = failures
+        self.calls = 0
+
+    @retry_on_deadlock()
+    async def on_new_records(self) -> str:
+        self.calls += 1
+        if self.failures:
+            raise self.failures.pop(0)
+        return "stored"
+
+
+def _arango_store() -> GraphDataStore:
+    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+
+    provider = ArangoHTTPProvider(logger=MagicMock(spec=logging.Logger), config_service=MagicMock())
+    return GraphDataStore(MagicMock(), provider)
+
+
+class TestRetryOnArangoWriteConflict:
+    """ArangoDB reports a clash with another writer as errorNum 1200, never as a deadlock."""
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch) -> None:
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            ARANGO_BATCH_CONFLICT,
+            'Query failed (status=409): {"code":409,"error":true,"errorMessage":"write-write conflict","errorNum":1200}',
+        ],
+    )
+    def test_the_arango_store_calls_a_write_conflict_transient(self, message: str) -> None:
+        assert _arango_store().is_transient_error(RuntimeError(message)) is True
+
+    def test_the_arango_store_does_not_call_other_failures_transient(self) -> None:
+        store = _arango_store()
+        assert store.is_transient_error(RuntimeError("unique constraint violated - [1210]")) is False
+        assert store.is_transient_error(asyncio.CancelledError()) is False
+
+    @pytest.mark.asyncio
+    async def test_a_write_conflict_reruns_the_method(self) -> None:
+        processor = _Processor(_arango_store(), [RuntimeError(ARANGO_BATCH_CONFLICT)])
+        assert await processor.on_new_records() == "stored"
+        assert processor.calls == 2
+
+    @pytest.mark.asyncio
+    async def test_a_lasting_write_conflict_still_raises(self) -> None:
+        processor = _Processor(_arango_store(), [RuntimeError(ARANGO_BATCH_CONFLICT) for _ in range(10)])
+        with pytest.raises(RuntimeError, match=r"\[1200\]"):
+            await processor.on_new_records()
+        assert processor.calls == 6
+
+    @pytest.mark.asyncio
+    async def test_any_other_failure_raises_at_once(self) -> None:
+        processor = _Processor(_arango_store(), [RuntimeError("unique constraint violated - [1210]")])
+        with pytest.raises(RuntimeError, match="1210"):
+            await processor.on_new_records()
+        assert processor.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_a_mocked_store_is_not_taken_as_saying_retry(self) -> None:
+        processor = _Processor(MagicMock(), [RuntimeError(ARANGO_BATCH_CONFLICT)])
+        with pytest.raises(RuntimeError, match=r"\[1200\]"):
+            await processor.on_new_records()
+        assert processor.calls == 1
+
+
+class TestWriteConflictRetryBudget:
+    """A 1200 conflict clears only when the other writer commits, and an indexing
+    stream transaction can hold a record for seconds: the retries must outlast that."""
+
+    @pytest.fixture
+    def slept(self, monkeypatch) -> list[float]:
+        waits: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            waits.append(seconds)
+
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", fake_sleep)
+        return waits
+
+    @staticmethod
+    def _pin_jitter(monkeypatch, pick) -> None:
+        monkeypatch.setattr(random, "uniform", pick)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("pick", "waits"),
+        [
+            (lambda low, high: (low + high) / 2, [0.5, 1.0, 2.0, 4.0, 4.0]),
+            (lambda low, high: low, [0.4, 0.8, 1.6, 3.2, 3.2]),
+            (lambda low, high: high, [0.6, 1.2, 2.4, 4.8, 4.8]),
+        ],
+        ids=["nominal", "shortest", "longest"],
+    )
+    async def test_the_schedule_spans_seconds_and_stays_bounded(self, slept, monkeypatch, pick, waits) -> None:
+        self._pin_jitter(monkeypatch, pick)
+        processor = _Processor(_arango_store(), [RuntimeError(ARANGO_BATCH_CONFLICT) for _ in range(10)])
+        with pytest.raises(RuntimeError, match=r"\[1200\]"):
+            await processor.on_new_records()
+        assert processor.calls == 6
+        assert slept == pytest.approx(waits)
+
+    @staticmethod
+    def _conflict_until(slept: list[float], seconds: float) -> Callable[[], None]:
+        def raise_while_held() -> None:
+            if sum(slept) < seconds:
+                raise RuntimeError(ARANGO_BATCH_CONFLICT)
+        return raise_while_held
+
+    @pytest.mark.asyncio
+    async def test_the_decorator_outlasts_a_five_second_conflict(self, slept, monkeypatch) -> None:
+        self._pin_jitter(monkeypatch, lambda low, high: low)
+        held = self._conflict_until(slept, 5.0)
+
+        class Indexing(_Processor):
+            @retry_on_deadlock()
+            async def on_new_records(self) -> str:
+                self.calls += 1
+                held()
+                return "stored"
+
+        processor = Indexing(_arango_store(), [])
+        assert await processor.on_new_records() == "stored"
+        assert processor.calls == 5
+
+    @pytest.mark.asyncio
+    async def test_execute_in_transaction_outlasts_a_five_second_conflict(self, slept, monkeypatch) -> None:
+        self._pin_jitter(monkeypatch, lambda low, high: low)
+        held = self._conflict_until(slept, 5.0)
+        provider = MagicMock()
+        provider.begin_transaction = AsyncMock(side_effect=[f"txn-{i}" for i in range(10)])
+        provider.commit_transaction = AsyncMock()
+        provider.rollback_transaction = AsyncMock()
+        provider.is_transient_error = MagicMock(return_value=True)
+        store = GraphDataStore(MagicMock(), provider)
+
+        async def write(tx_store) -> str:
+            held()
+            return "done"
+
+        assert await store.execute_in_transaction(write) == "done"
+        assert provider.rollback_transaction.await_count == 4
+        provider.commit_transaction.assert_awaited_once()
+
+
+class TestExecuteIdempotentInTransactionRetriesConflicts:
+    """KG-32: an idempotent block is re-run on any write conflict, including
+    where the failed attempt may have partly landed (Neo4j auto-commit)."""
+
+    @staticmethod
+    def _store(conflict: bool) -> tuple[GraphDataStore, MagicMock]:
+        provider = MagicMock()
+        provider.begin_transaction = AsyncMock(side_effect=[f"txn-{i}" for i in range(10)])
+        provider.commit_transaction = AsyncMock()
+        provider.rollback_transaction = AsyncMock()
+        provider.is_transient_error = MagicMock(return_value=False)
+        provider.is_write_conflict = MagicMock(return_value=conflict)
+        return GraphDataStore(MagicMock(), provider), provider
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_is_retried_from_the_start(self, monkeypatch) -> None:
+        store, provider = self._store(conflict=True)
+        sleep = AsyncMock()
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", sleep)
+        calls = 0
+
+        async def flaky(tx_store, value: str) -> str:
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise RuntimeError("[1200] write-write conflict")
+            return value
+
+        assert await store.execute_idempotent_in_transaction(flaky, "done") == "done"
+        assert calls == 3
+        assert provider.rollback_transaction.await_count == 2
+        provider.commit_transaction.assert_awaited_once()
+        assert sleep.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_other_failures_are_not_retried(self) -> None:
+        store, provider = self._store(conflict=False)
+
+        async def failing(tx_store) -> None:
+            raise RuntimeError("record not found")
+
+        with pytest.raises(RuntimeError, match="not found"):
+            await store.execute_idempotent_in_transaction(failing)
+        provider.rollback_transaction.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_retries_follow_the_shared_bounded_schedule(self, monkeypatch) -> None:
+        store, provider = self._store(conflict=True)
+        sleep = AsyncMock()
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", sleep)
+
+        async def always_conflicts(tx_store) -> None:
+            raise RuntimeError("DeadlockDetected")
+
+        with pytest.raises(RuntimeError, match="Deadlock"):
+            await store.execute_idempotent_in_transaction(always_conflicts)
+        from app.connectors.core.base.data_store import graph_data_store as module
+
+        assert provider.rollback_transaction.await_count == module._RETRY_ATTEMPTS
+        delays = [c.args[0] for c in sleep.await_args_list]
+        assert len(delays) == module._RETRY_ATTEMPTS - 1
+        assert all(0 < d <= module._RETRY_MAX_DELAY * (1 + module._RETRY_JITTER) for d in delays)

@@ -47,9 +47,22 @@ class TestAuthorizeReadWrite:
 
         record = await policy.authorize_read(actor, "art-1")
         assert record["_key"] == "art-1"
-        # Write authorization is identical to read today (no share model yet).
         record2 = await policy.authorize_write(actor, "art-1")
         assert record2 == record
+
+    async def test_reader_edge_authorizes_read_but_not_write(self) -> None:
+        """A READER edge from a shared conversation must not let the viewer
+        version or promote the owner's artifact."""
+        graph = FakeGraphProvider()
+        graph.add_user(USER, key="ukey-1")
+        _seed_record(graph, "art-1")
+        graph.edges["permission"].append({"from_id": "ukey-1", "to_id": "art-1", "role": "READER"})
+        policy = AccessPolicy(graph)
+        actor = Actor(org_id=ORG, user_id=USER)
+
+        assert (await policy.authorize_read(actor, "art-1"))["_key"] == "art-1"
+        with pytest.raises(AccessDeniedError):
+            await policy.authorize_write(actor, "art-1")
 
     async def test_missing_record_raises_not_found(self) -> None:
         graph = FakeGraphProvider()

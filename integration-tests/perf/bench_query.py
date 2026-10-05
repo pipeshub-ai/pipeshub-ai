@@ -271,11 +271,13 @@ def warm_up(args: argparse.Namespace, kb_id: str, clients: dict[str, Any]) -> No
         run_chat(clients["conversations"], CHAT_QUESTIONS[0], args.chat_timeout)
 
 
-def seed_corpus(args: argparse.Namespace, kb_client: Any, run_id: str) -> tuple[str, Any, RunState]:
+def seed_corpus(
+    args: argparse.Namespace, kb_client: Any, run_id: str, kb_prefix: str = "perf-query",
+) -> tuple[str, Any, RunState]:
     """Upload the corpus and wait for the indexer, so questions have something to find."""
     corpus = generate_corpus(args.docs, args.seed, salt=f"run {run_id}", kinds=args.kinds_tuple)
     print(f"Seeding {len(corpus.files)} files ({corpus.total_bytes / 1e6:.1f} MB)", flush=True)
-    kb_id = create_kb(kb_client, f"perf-query-{run_id}")
+    kb_id = create_kb(kb_client, f"{kb_prefix}-{run_id}")
     folder_ids = create_folders(kb_client, kb_id, corpus)
     state = RunState()
     t0 = time.perf_counter()

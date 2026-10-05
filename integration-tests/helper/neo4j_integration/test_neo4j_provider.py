@@ -1086,3 +1086,82 @@ class TestNeo4jProvider(Neo4jProvider):
         )
         return [dict(row["props"]) for row in result] if result else []
 
+    # =========================================================================
+    # Delete footprints. A handle is "<label>/<id>", the Neo4j counterpart of
+    # ArangoDB's "<collection>/<key>", so a node is named the same way on both.
+    # =========================================================================
+
+    async def connector_node_handles(self, connector_id: str) -> List[str]:
+        """Every node a connector (or knowledge base) owns: nodes carrying its
+        connectorId, the node whose id is the connector id, and its records' type nodes."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            CALL {
+                MATCH (n {connectorId: $cid}) RETURN n
+                UNION
+                MATCH (n {id: $cid}) RETURN n
+                UNION
+                MATCH (:Record {connectorId: $cid})-[:IS_OF_TYPE]->(n) RETURN n
+            }
+            WITH n WHERE n.id IS NOT NULL
+            RETURN DISTINCT labels(n)[0] + '/' + n.id AS handle
+            """,
+            {"cid": connector_id},
+        )
+        return sorted(row["handle"] for row in result or [])
+
+    async def record_node_handles(self, record_ids: Iterable[str]) -> List[str]:
+        """The given records and their type nodes (File, Mail, ...)."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (r:Record) WHERE r.id IN $ids
+            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
+            WITH collect(DISTINCT r) + collect(DISTINCT t) AS nodes
+            UNWIND nodes AS n
+            WITH n WHERE n.id IS NOT NULL
+            RETURN DISTINCT labels(n)[0] + '/' + n.id AS handle
+            """,
+            {"ids": list(record_ids)},
+        )
+        return sorted(row["handle"] for row in result or [])
+
+    @staticmethod
+    def _handles_by_label(handles: Iterable[str]) -> Dict[str, List[str]]:
+        grouped: Dict[str, List[str]] = {}
+        for handle in handles:
+            label, _, node_id = handle.partition("/")
+            if not label.isidentifier():
+                raise ValueError(f"Not a node handle: {handle!r}")
+            grouped.setdefault(label, []).append(node_id)
+        return grouped
+
+    async def count_existing_nodes(self, handles: Iterable[str]) -> int:
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        total = 0
+        for label, ids in self._handles_by_label(handles).items():
+            result = await self.client.execute_query(
+                f"MATCH (n:`{label}`) WHERE n.id IN $ids RETURN count(DISTINCT n) AS c",
+                {"ids": ids},
+            )
+            total += int(result[0]["c"]) if result else 0
+        return total
+
+    async def count_edges_touching(self, handles: Iterable[str]) -> int:
+        """Relationships with either end on one of these nodes, each counted once."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        seen: set = set()
+        for label, ids in self._handles_by_label(handles).items():
+            result = await self.client.execute_query(
+                f"MATCH (n:`{label}`)-[r]-() WHERE n.id IN $ids "
+                "RETURN collect(DISTINCT elementId(r)) AS rels",
+                {"ids": ids},
+            )
+            if result:
+                seen.update(result[0]["rels"] or [])
+        return len(seen)

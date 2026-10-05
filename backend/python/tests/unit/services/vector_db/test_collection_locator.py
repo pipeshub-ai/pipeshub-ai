@@ -33,7 +33,7 @@ from tests.unit.services.vector_db.test_strategy_contract import (
 def _manifest_store(entries=()) -> CollectionManifestStore:
     data: dict = {}
 
-    async def get_config(key, default=None):
+    async def get_config(key, default=None, raise_on_error=False):
         return data.get(key, default)
 
     async def set_config(key, value):

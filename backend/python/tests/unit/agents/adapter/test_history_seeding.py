@@ -253,6 +253,28 @@ class TestSeedConversationHistory:
         assert isinstance(messages[3], AssistantMessage) and not messages[3].tool_calls
         assert isinstance(messages[4], UserMessage)
 
+    async def test_keeps_the_ask_user_question_answers_in_history(self) -> None:
+        """A later turn ("what did I pick?") can only answer if the card's
+        answers are still in context — the questions payload alone reads as
+        an unanswered card."""
+        agent = _FakeAgent()
+        previous_conversations = [
+            {"role": "user_query", "content": "ask me a question"},
+            {"role": "bot_response", "content": ""},
+            {"role": "user_query", "content": 'User selections:\n1. "Which step?" → Quiet break'},
+            {"role": "bot_response", "content": "You picked the quiet break."},
+        ]
+
+        await PipesHubAgentFactory._seed_conversation_history(
+            agent, previous_conversations, _make_context()
+        )
+
+        messages = await agent.context.messages()
+        assert any(
+            isinstance(msg, UserMessage) and "Quiet break" in (msg.content or "")
+            for msg in messages
+        )
+
     async def test_empty_history_yields_empty_context(self) -> None:
         agent = _FakeAgent()
 

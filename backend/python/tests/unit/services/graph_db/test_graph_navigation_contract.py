@@ -45,6 +45,10 @@ def mock_config_service():
 def arango(mock_logger, mock_config_service):
     p = ArangoHTTPProvider(mock_logger, mock_config_service)
     p.http_client = AsyncMock()
+    p.get_authenticated_as = AsyncMock(return_value=[])
+    p._get_authenticated_as_by_user_id = AsyncMock(return_value=[])
+    p._resolve_acting_user_key_for_node = AsyncMock(side_effect=lambda user_key, *_: user_key)
+    p._authenticated_as_apps = AsyncMock(return_value=[])
     return p
 
 

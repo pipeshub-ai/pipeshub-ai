@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import socket
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,15 +15,17 @@ from app.connectors.sources.web.fetch_strategy import (
     FetchResponse,
     _BOT_DETECTION_CODES,
     _NON_RETRYABLE_CLIENT_ERRORS,
-    _sync_cloudscraper_fetch,
-    _sync_curl_cffi_fetch,
-    _try_aiohttp,
-    _try_cloudscraper,
-    _try_curl_cffi,
     build_stealth_headers,
     fetch_url_with_fallback,
 )
 from app.services.base_client import parse_retry_after
+
+
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch):
+    """Every host resolves to one public address, without real DNS."""
+    answer = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.215.14", 0))]
+    monkeypatch.setattr(socket, "getaddrinfo", MagicMock(return_value=answer))
 
 
 @pytest.fixture
@@ -102,406 +105,6 @@ class TestBuildStealthHeaders:
 
 
 # ============================================================================
-# _try_aiohttp
-# ============================================================================
-class TestTryAiohttp:
-    @pytest.mark.asyncio
-    async def test_success(self, log):
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=b"content")
-        mock_resp.headers = {"Content-Type": "text/html"}
-        mock_resp.url = "https://example.com"
-
-        mock_session = MagicMock()
-        mock_ctx = MagicMock()
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_session.get = MagicMock(return_value=mock_ctx)
-
-        result = await _try_aiohttp(mock_session, "https://example.com", {}, 15, log)
-        assert result is not None
-        assert result.status_code == 200
-        assert result.strategy == "aiohttp"
-        assert result.content_bytes == b"content"
-        assert result.final_url == "https://example.com"
-
-    @pytest.mark.asyncio
-    async def test_timeout(self, log):
-        mock_session = MagicMock()
-        mock_ctx = MagicMock()
-        mock_ctx.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError())
-        mock_ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_session.get = MagicMock(return_value=mock_ctx)
-
-        result = await _try_aiohttp(mock_session, "https://example.com", {}, 15, log)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_client_error(self, log):
-        mock_session = MagicMock()
-        mock_ctx = MagicMock()
-        mock_ctx.__aenter__ = AsyncMock(side_effect=aiohttp.ClientError("fail"))
-        mock_ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_session.get = MagicMock(return_value=mock_ctx)
-
-        result = await _try_aiohttp(mock_session, "https://example.com", {}, 15, log)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_os_error(self, log):
-        mock_session = MagicMock()
-        mock_ctx = MagicMock()
-        mock_ctx.__aenter__ = AsyncMock(side_effect=OSError("connection refused"))
-        mock_ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_session.get = MagicMock(return_value=mock_ctx)
-
-        result = await _try_aiohttp(mock_session, "https://example.com", {}, 15, log)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_unexpected_error(self, log):
-        mock_session = MagicMock()
-        mock_ctx = MagicMock()
-        mock_ctx.__aenter__ = AsyncMock(side_effect=RuntimeError("unexpected"))
-        mock_ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_session.get = MagicMock(return_value=mock_ctx)
-
-        result = await _try_aiohttp(mock_session, "https://example.com", {}, 15, log)
-        assert result is None
-
-
-# ============================================================================
-# _sync_curl_cffi_fetch
-# ============================================================================
-class TestSyncCurlCffiFetch:
-    def test_import_error_with_logger(self, log):
-        """ImportError is caught and logged; returns None."""
-        with patch.dict("sys.modules", {"curl_cffi": None, "curl_cffi.requests": None}):
-            with patch("builtins.__import__", side_effect=ImportError("no curl_cffi")):
-                result = _sync_curl_cffi_fetch(
-                    "https://example.com", {}, 15, True, logger=log
-                )
-                assert result is None
-
-    def test_import_error_without_logger(self):
-        """ImportError without a logger should still return None without raising."""
-        with patch.dict("sys.modules", {"curl_cffi": None, "curl_cffi.requests": None}):
-            with patch("builtins.__import__", side_effect=ImportError("no curl_cffi")):
-                result = _sync_curl_cffi_fetch(
-                    "https://example.com", {}, 15, True, logger=None
-                )
-                assert result is None
-
-    def test_empty_pool(self, log):
-        """When both profiles=[] and _CURL_PROFILES=[], return None."""
-        with patch("app.connectors.sources.web.fetch_strategy._CURL_PROFILES", []):
-            result = _sync_curl_cffi_fetch(
-                "https://example.com", {}, 15, True, profiles=[], logger=log
-            )
-            assert result is None
-
-    def test_successful_fetch_http2(self, log):
-        """Successful fetch with HTTP/2 returns a FetchResponse."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.content = b"hello"
-        mock_resp.headers = {"Content-Type": "text/html"}
-        mock_resp.url = "https://example.com"
-
-        mock_session = MagicMock()
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
-        mock_session.get.return_value = mock_resp
-
-        mock_curl_opt = MagicMock()
-        mock_curl_opt.HTTP_VERSION = 33
-
-        mock_session_cls = MagicMock(return_value=mock_session)
-
-        mock_curl_cffi = MagicMock()
-        mock_curl_cffi.CurlOpt = mock_curl_opt
-        mock_curl_cffi_requests = MagicMock()
-        mock_curl_cffi_requests.Session = mock_session_cls
-
-        with patch.dict("sys.modules", {
-            "curl_cffi": mock_curl_cffi,
-            "curl_cffi.requests": mock_curl_cffi_requests,
-        }):
-            result = _sync_curl_cffi_fetch(
-                "https://example.com", {}, 15, True,
-                profiles=["chrome120"],
-                logger=log,
-            )
-            assert result is not None
-            assert result.status_code == 200
-            assert result.content_bytes == b"hello"
-            assert "chrome120" in result.strategy
-            assert "h2=True" in result.strategy
-
-    def test_successful_fetch_http1(self, log):
-        """Successful fetch with HTTP/1.1 (use_http2=False) sets the CurlOpt."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.content = b"data"
-        mock_resp.headers = {}
-        mock_resp.url = "https://example.com"
-
-        mock_session = MagicMock()
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
-        mock_session.get.return_value = mock_resp
-        mock_session.curl = MagicMock()
-
-        mock_curl_opt = MagicMock()
-        mock_curl_opt.HTTP_VERSION = 33
-
-        mock_session_cls = MagicMock(return_value=mock_session)
-
-        mock_curl_cffi = MagicMock()
-        mock_curl_cffi.CurlOpt = mock_curl_opt
-        mock_curl_cffi_requests = MagicMock()
-        mock_curl_cffi_requests.Session = mock_session_cls
-
-        with patch.dict("sys.modules", {
-            "curl_cffi": mock_curl_cffi,
-            "curl_cffi.requests": mock_curl_cffi_requests,
-        }):
-            result = _sync_curl_cffi_fetch(
-                "https://example.com", {}, 15, False,
-                profiles=["chrome120"],
-                logger=log,
-            )
-            assert result is not None
-            assert "h2=False" in result.strategy
-
-    def test_all_profiles_fail(self, log):
-        """When all profiles raise exceptions, return None."""
-        mock_curl_opt = MagicMock()
-        mock_curl_opt.HTTP_VERSION = 33
-
-        mock_session_cls = MagicMock()
-        mock_session_instance = MagicMock()
-        mock_session_instance.__enter__ = MagicMock(return_value=mock_session_instance)
-        mock_session_instance.__exit__ = MagicMock(return_value=False)
-        mock_session_instance.get.side_effect = Exception("TLS error")
-        mock_session_cls.return_value = mock_session_instance
-
-        mock_curl_cffi = MagicMock()
-        mock_curl_cffi.CurlOpt = mock_curl_opt
-        mock_curl_cffi_requests = MagicMock()
-        mock_curl_cffi_requests.Session = mock_session_cls
-
-        with patch.dict("sys.modules", {
-            "curl_cffi": mock_curl_cffi,
-            "curl_cffi.requests": mock_curl_cffi_requests,
-        }):
-            result = _sync_curl_cffi_fetch(
-                "https://example.com", {}, 15, True,
-                profiles=["chrome120", "chrome119"],
-                logger=log,
-            )
-            assert result is None
-
-    def test_uses_module_profiles_when_profiles_none(self, log):
-        """When profiles=None, _CURL_PROFILES module list is used."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.content = b"ok"
-        mock_resp.headers = {}
-        mock_resp.url = "https://example.com"
-
-        mock_session = MagicMock()
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
-        mock_session.get.return_value = mock_resp
-
-        mock_curl_opt = MagicMock()
-        mock_curl_opt.HTTP_VERSION = 33
-
-        mock_session_cls = MagicMock(return_value=mock_session)
-
-        mock_curl_cffi = MagicMock()
-        mock_curl_cffi.CurlOpt = mock_curl_opt
-        mock_curl_cffi_requests = MagicMock()
-        mock_curl_cffi_requests.Session = mock_session_cls
-
-        with patch("app.connectors.sources.web.fetch_strategy._CURL_PROFILES", ["test_profile"]):
-            with patch.dict("sys.modules", {
-                "curl_cffi": mock_curl_cffi,
-                "curl_cffi.requests": mock_curl_cffi_requests,
-            }):
-                result = _sync_curl_cffi_fetch(
-                    "https://example.com", {}, 15, True,
-                    profiles=None,
-                    logger=log,
-                )
-                assert result is not None
-
-    def test_http1_setopt_exception_suppressed(self, log):
-        """When use_http2=False and setopt raises, it's suppressed via contextlib."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.content = b"ok"
-        mock_resp.headers = {}
-        mock_resp.url = "https://example.com"
-
-        mock_session = MagicMock()
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
-        mock_session.get.return_value = mock_resp
-        mock_session.curl = MagicMock()
-        mock_session.curl.setopt.side_effect = Exception("setopt failed")
-
-        mock_curl_opt = MagicMock()
-        mock_curl_opt.HTTP_VERSION = 33
-
-        mock_session_cls = MagicMock(return_value=mock_session)
-
-        mock_curl_cffi = MagicMock()
-        mock_curl_cffi.CurlOpt = mock_curl_opt
-        mock_curl_cffi_requests = MagicMock()
-        mock_curl_cffi_requests.Session = mock_session_cls
-
-        with patch.dict("sys.modules", {
-            "curl_cffi": mock_curl_cffi,
-            "curl_cffi.requests": mock_curl_cffi_requests,
-        }):
-            result = _sync_curl_cffi_fetch(
-                "https://example.com", {}, 15, False,
-                profiles=["chrome120"],
-                logger=log,
-            )
-            # Should still succeed despite setopt error
-            assert result is not None
-            assert result.status_code == 200
-
-
-# ============================================================================
-# _try_curl_cffi
-# ============================================================================
-class TestTryCurlCffi:
-    @pytest.mark.asyncio
-    async def test_returns_none_when_all_exhausted(self, log):
-        with patch(
-            "app.connectors.sources.web.fetch_strategy._sync_curl_cffi_fetch",
-            return_value=None,
-        ):
-            result = await _try_curl_cffi("https://example.com", {}, 15, True, log)
-            assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_result(self, log):
-        mock_result = FetchResponse(200, b"ok", {}, "https://example.com", "curl_cffi")
-        with patch(
-            "app.connectors.sources.web.fetch_strategy._sync_curl_cffi_fetch",
-            return_value=mock_result,
-        ):
-            result = await _try_curl_cffi("https://example.com", {}, 15, True, log)
-            assert result is not None
-            assert result.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_handles_exception(self, log):
-        with patch("asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = AsyncMock(
-                side_effect=RuntimeError("fail")
-            )
-            result = await _try_curl_cffi("https://example.com", {}, 15, True, log)
-            assert result is None
-
-    @pytest.mark.asyncio
-    async def test_http2_false_label(self, log):
-        mock_result = FetchResponse(
-            200, b"ok", {}, "https://example.com", "curl_cffi(chrome120, h2=False)"
-        )
-        with patch(
-            "app.connectors.sources.web.fetch_strategy._sync_curl_cffi_fetch",
-            return_value=mock_result,
-        ):
-            result = await _try_curl_cffi("https://example.com", {}, 15, False, log)
-            assert result is not None
-
-
-# ============================================================================
-# _sync_cloudscraper_fetch
-# ============================================================================
-class TestSyncCloudscraperFetch:
-    def test_import_error(self, log):
-        with patch.dict("sys.modules", {"cloudscraper": None}):
-            with patch("builtins.__import__", side_effect=ImportError("no cloudscraper")):
-                result = _sync_cloudscraper_fetch("https://example.com", {}, 15, log)
-                assert result is None
-
-    def test_successful_fetch(self, log):
-        """Successful cloudscraper fetch returns FetchResponse."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.content = b"page content"
-        mock_resp.headers = {"Content-Type": "text/html"}
-        mock_resp.url = "https://example.com/final"
-
-        mock_scraper = MagicMock()
-        mock_scraper.get.return_value = mock_resp
-
-        mock_cloudscraper = MagicMock()
-        mock_cloudscraper.create_scraper.return_value = mock_scraper
-
-        with patch.dict("sys.modules", {"cloudscraper": mock_cloudscraper}):
-            result = _sync_cloudscraper_fetch("https://example.com", {}, 15, log)
-            assert result is not None
-            assert result.status_code == 200
-            assert result.content_bytes == b"page content"
-            assert result.strategy == "cloudscraper"
-            assert result.final_url == "https://example.com/final"
-
-    def test_exception_returns_none(self, log):
-        mock_cloudscraper = MagicMock()
-        mock_scraper = MagicMock()
-        mock_scraper.get.side_effect = Exception("fail")
-        mock_cloudscraper.create_scraper.return_value = mock_scraper
-
-        with patch.dict("sys.modules", {"cloudscraper": mock_cloudscraper}):
-            result = _sync_cloudscraper_fetch("https://example.com", {}, 15, log)
-            assert result is None
-
-
-# ============================================================================
-# _try_cloudscraper
-# ============================================================================
-class TestTryCloudscraper:
-    @pytest.mark.asyncio
-    async def test_returns_none_on_failure(self, log):
-        with patch(
-            "app.connectors.sources.web.fetch_strategy._sync_cloudscraper_fetch",
-            return_value=None,
-        ):
-            result = await _try_cloudscraper("https://example.com", {}, 15, log)
-            assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_result(self, log):
-        mock_result = FetchResponse(
-            200, b"ok", {}, "https://example.com", "cloudscraper"
-        )
-        with patch(
-            "app.connectors.sources.web.fetch_strategy._sync_cloudscraper_fetch",
-            return_value=mock_result,
-        ):
-            result = await _try_cloudscraper("https://example.com", {}, 15, log)
-            assert result is not None
-
-    @pytest.mark.asyncio
-    async def test_handles_exception(self, log):
-        with patch("asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = AsyncMock(
-                side_effect=RuntimeError("fail")
-            )
-            result = await _try_cloudscraper("https://example.com", {}, 15, log)
-            assert result is None
-
-
-# ============================================================================
 # _get_supported_profiles
 # ============================================================================
 class TestGetSupportedProfiles:
@@ -548,7 +151,7 @@ class TestFetchUrlWithFallback:
             200, b"ok", {}, "https://example.com", "curl_cffi"
         )
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=success_resp,
         ):
             result = await fetch_url_with_fallback(
@@ -564,7 +167,7 @@ class TestFetchUrlWithFallback:
             404, b"", {}, "https://example.com", "curl_cffi"
         )
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=not_found_resp,
         ):
             result = await fetch_url_with_fallback(
@@ -578,7 +181,7 @@ class TestFetchUrlWithFallback:
         mock_session = AsyncMock()
         gone_resp = FetchResponse(410, b"", {}, "https://example.com", "curl_cffi")
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=gone_resp,
         ):
             result = await fetch_url_with_fallback(
@@ -592,7 +195,7 @@ class TestFetchUrlWithFallback:
         mock_session = AsyncMock()
         resp = FetchResponse(405, b"", {}, "https://example.com", "curl_cffi")
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=resp,
         ):
             result = await fetch_url_with_fallback(
@@ -608,7 +211,7 @@ class TestFetchUrlWithFallback:
             500, b"", {}, "https://example.com", "curl_cffi"
         )
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=error_resp,
         ):
             result = await fetch_url_with_fallback(
@@ -624,7 +227,7 @@ class TestFetchUrlWithFallback:
             502, b"", {}, "https://example.com", "curl_cffi"
         )
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=error_resp,
         ):
             result = await fetch_url_with_fallback(
@@ -637,15 +240,15 @@ class TestFetchUrlWithFallback:
     async def test_all_strategies_fail_returns_none(self, log):
         mock_session = AsyncMock()
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=None,
         ):
             with patch(
-                "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+                "app.connectors.sources.web.fetch_strategy._hops_cloudscraper",
                 return_value=None,
             ):
                 with patch(
-                    "app.connectors.sources.web.fetch_strategy._try_aiohttp",
+                    "app.connectors.sources.web.fetch_strategy._hops_aiohttp",
                     return_value=None,
                 ):
                     result = await fetch_url_with_fallback(
@@ -667,11 +270,11 @@ class TestFetchUrlWithFallback:
         )
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=bot_resp,
         ):
             with patch(
-                "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+                "app.connectors.sources.web.fetch_strategy._hops_cloudscraper",
                 return_value=success_resp,
             ):
                 result = await fetch_url_with_fallback(
@@ -693,11 +296,11 @@ class TestFetchUrlWithFallback:
         )
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=bot_resp,
         ):
             with patch(
-                "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+                "app.connectors.sources.web.fetch_strategy._hops_cloudscraper",
                 return_value=success_resp,
             ):
                 result = await fetch_url_with_fallback(
@@ -719,15 +322,15 @@ class TestFetchUrlWithFallback:
         )
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=bot_resp,
         ):
             with patch(
-                "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+                "app.connectors.sources.web.fetch_strategy._hops_cloudscraper",
                 return_value=bot_resp,
             ):
                 with patch(
-                    "app.connectors.sources.web.fetch_strategy._try_aiohttp",
+                    "app.connectors.sources.web.fetch_strategy._hops_aiohttp",
                     return_value=success_resp,
                 ):
                     result = await fetch_url_with_fallback(
@@ -744,7 +347,7 @@ class TestFetchUrlWithFallback:
         mock_session = AsyncMock()
         resp = FetchResponse(418, b"", {}, "https://example.com", "curl_cffi")
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=resp,
         ):
             result = await fetch_url_with_fallback(
@@ -758,7 +361,7 @@ class TestFetchUrlWithFallback:
         mock_session = AsyncMock()
         resp = FetchResponse(401, b"", {}, "https://example.com", "curl_cffi")
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=resp,
         ):
             result = await fetch_url_with_fallback(
@@ -822,7 +425,7 @@ class TestFetchUrlWithFallback:
             200, b"ok", {}, "https://example.com", "curl_cffi"
         )
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=success_resp,
         ):
             result = await fetch_url_with_fallback(
@@ -846,7 +449,7 @@ class TestFetchUrlWithFallback:
             200, b"ok", {}, "https://example.com", "curl_cffi"
         )
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=success_resp,
         ):
             result = await fetch_url_with_fallback(
@@ -872,7 +475,7 @@ class TestFetchUrlWithFallback:
             200, b"ok", {}, "https://example.com", "curl_cffi"
         )
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=success_resp,
         ):
             result = await fetch_url_with_fallback(
@@ -890,7 +493,7 @@ class TestFetchUrlWithFallback:
             200, b"ok", {}, "https://example.com", "aiohttp"
         )
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_aiohttp",
+            "app.connectors.sources.web.fetch_strategy._hops_aiohttp",
             return_value=success_resp,
         ):
             result = await fetch_url_with_fallback(
@@ -909,7 +512,7 @@ class TestFetchUrlWithFallback:
             200, b"ok", {}, "https://example.com", "curl_cffi(chrome120, h2=True)"
         )
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=success_resp,
         ):
             result = await fetch_url_with_fallback(
@@ -928,7 +531,7 @@ class TestFetchUrlWithFallback:
             200, b"ok", {}, "https://example.com", "cloudscraper"
         )
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+            "app.connectors.sources.web.fetch_strategy._hops_cloudscraper",
             return_value=success_resp,
         ):
             result = await fetch_url_with_fallback(
@@ -947,7 +550,7 @@ class TestFetchUrlWithFallback:
             200, b"ok", {}, "https://example.com", "curl_cffi"
         )
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=success_resp,
         ):
             result = await fetch_url_with_fallback(
@@ -965,15 +568,15 @@ class TestFetchUrlWithFallback:
             403, b"blocked", {}, "https://example.com", "any"
         )
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=bot_resp,
         ):
             with patch(
-                "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+                "app.connectors.sources.web.fetch_strategy._hops_cloudscraper",
                 return_value=bot_resp,
             ):
                 with patch(
-                    "app.connectors.sources.web.fetch_strategy._try_aiohttp",
+                    "app.connectors.sources.web.fetch_strategy._hops_aiohttp",
                     return_value=bot_resp,
                 ):
                     result = await fetch_url_with_fallback(
@@ -1006,7 +609,7 @@ class TestFetchUrlWithFallback:
             return success_resp
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             side_effect=mock_curl,
         ):
             with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
@@ -1042,7 +645,7 @@ class TestFetchUrlWithFallback:
             return success_resp
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             side_effect=mock_curl,
         ):
             with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
@@ -1079,7 +682,7 @@ class TestFetchUrlWithFallback:
             return rate_limited_resp if call_count <= 1 else success_resp
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             side_effect=mock_curl,
         ):
             with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
@@ -1110,7 +713,7 @@ class TestFetchUrlWithFallback:
             return rate_limited_resp if call_count <= 1 else success_resp
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             side_effect=mock_curl,
         ):
             with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
@@ -1132,7 +735,7 @@ class TestFetchUrlWithFallback:
         )
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             new_callable=AsyncMock,
             return_value=rate_limited_resp,
         ):
@@ -1167,7 +770,7 @@ class TestFetchUrlWithFallback:
             return success_resp
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             side_effect=mock_curl,
         ):
             with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
@@ -1203,7 +806,7 @@ class TestFetchUrlWithFallback:
             return success_resp
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             side_effect=mock_curl,
         ):
             with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
@@ -1232,11 +835,11 @@ class TestFetchUrlWithFallback:
             4,
         ):
             with patch(
-                "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+                "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
                 return_value=rate_limited_resp,
             ):
                 with patch(
-                    "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+                    "app.connectors.sources.web.fetch_strategy._hops_cloudscraper",
                     return_value=success_resp,
                 ):
                     with patch("asyncio.sleep", new_callable=AsyncMock):
@@ -1262,15 +865,15 @@ class TestFetchUrlWithFallback:
             4,
         ):
             with patch(
-                "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+                "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
                 return_value=rate_limited_resp,
             ):
                 with patch(
-                    "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+                    "app.connectors.sources.web.fetch_strategy._hops_cloudscraper",
                     return_value=rate_limited_resp,
                 ):
                     with patch(
-                        "app.connectors.sources.web.fetch_strategy._try_aiohttp",
+                        "app.connectors.sources.web.fetch_strategy._hops_aiohttp",
                         return_value=rate_limited_resp,
                     ):
                         with patch("asyncio.sleep", new_callable=AsyncMock):
@@ -1302,11 +905,11 @@ class TestFetchUrlWithFallback:
             return bot_resp
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             side_effect=mock_curl,
         ):
             with patch(
-                "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+                "app.connectors.sources.web.fetch_strategy._hops_cloudscraper",
                 return_value=success_resp,
             ):
                 with patch("asyncio.sleep", new_callable=AsyncMock):
@@ -1338,15 +941,15 @@ class TestFetchUrlWithFallback:
             return None  # Connection failed
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             side_effect=mock_curl,
         ):
             with patch(
-                "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+                "app.connectors.sources.web.fetch_strategy._hops_cloudscraper",
                 return_value=success_resp,
             ):
                 with patch(
-                    "app.connectors.sources.web.fetch_strategy._try_aiohttp",
+                    "app.connectors.sources.web.fetch_strategy._hops_aiohttp",
                     return_value=None,
                 ):
                     with patch("asyncio.sleep", new_callable=AsyncMock):
@@ -1371,11 +974,11 @@ class TestFetchUrlWithFallback:
         )
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=bot_resp,
         ):
             with patch(
-                "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+                "app.connectors.sources.web.fetch_strategy._hops_cloudscraper",
                 return_value=success_resp,
             ):
                 with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
@@ -1403,7 +1006,7 @@ class TestFetchUrlWithFallback:
         )
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=success_resp,
         ) as mock_curl:
             with patch(
@@ -1434,7 +1037,7 @@ class TestFetchUrlWithFallback:
             200, b"ok", {}, "https://example.com", "curl_cffi"
         )
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=success_resp,
         ):
             result = await fetch_url_with_fallback(
@@ -1461,7 +1064,7 @@ class TestFetchUrlWithFallback:
             return error_resp
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             side_effect=mock_curl,
         ):
             result = await fetch_url_with_fallback(
@@ -1487,11 +1090,11 @@ class TestFetchUrlWithFallback:
         )
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=cf_resp,
         ):
             with patch(
-                "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+                "app.connectors.sources.web.fetch_strategy._hops_cloudscraper",
                 return_value=success_resp,
             ):
                 with patch("asyncio.sleep", new_callable=AsyncMock):
@@ -1513,11 +1116,11 @@ class TestFetchUrlWithFallback:
         )
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=None,
         ):
             with patch(
-                "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+                "app.connectors.sources.web.fetch_strategy._hops_cloudscraper",
                 return_value=success_resp,
             ):
                 with patch("asyncio.sleep", new_callable=AsyncMock):
@@ -1540,15 +1143,15 @@ class TestFetchUrlWithFallback:
         )
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=None,
         ):
             with patch(
-                "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+                "app.connectors.sources.web.fetch_strategy._hops_cloudscraper",
                 return_value=None,
             ):
                 with patch(
-                    "app.connectors.sources.web.fetch_strategy._try_aiohttp",
+                    "app.connectors.sources.web.fetch_strategy._hops_aiohttp",
                     return_value=success_resp,
                 ):
                     with patch("asyncio.sleep", new_callable=AsyncMock):
@@ -1583,7 +1186,7 @@ class TestFetchUrlWithFallback:
             return success_resp
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             side_effect=mock_curl,
         ):
             with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
@@ -1610,7 +1213,7 @@ class TestFetchUrlWithFallback:
         )
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=success_resp,
         ) as mock_curl:
             result = await fetch_url_with_fallback(
@@ -1629,7 +1232,7 @@ class TestFetchUrlWithFallback:
             301, b"", {}, "https://example.com/new", "curl_cffi"
         )
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+            "app.connectors.sources.web.fetch_strategy._hops_curl_cffi",
             return_value=redirect_resp,
         ):
             result = await fetch_url_with_fallback(

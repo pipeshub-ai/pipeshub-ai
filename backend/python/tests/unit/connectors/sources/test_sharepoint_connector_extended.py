@@ -1202,6 +1202,7 @@ class TestProcessDriveItem:
         existing.version = 1
 
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        c.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=existing)
 
         item = _make_drive_item(name="updated.pdf", e_tag="new-etag")
         result = await c._process_drive_item(item, "site-1", "drive-1", [])

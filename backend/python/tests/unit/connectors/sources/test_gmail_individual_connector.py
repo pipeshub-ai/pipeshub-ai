@@ -655,8 +655,8 @@ class TestStreamFromDriveFileStreamGenerator:
         assert captured_gen is not None
 
     @pytest.mark.asyncio
-    async def test_stream_from_drive_non_http_exception(self):
-        """Cover lines 1304-1306: non-HTTPException in _stream_from_drive."""
+    async def test_stream_from_drive_settings_failure_is_not_a_reconnect(self):
+        """A failure that isn't about the user's sign-in is a server error, not a reconnect."""
         connector = _make_connector()
         record = MagicMock()
         record.id = "rec-1"
@@ -672,6 +672,7 @@ class TestStreamFromDriveFileStreamGenerator:
                     "drive-id", record, "file.txt", "text/plain"
                 )
             assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+            assert "settings" in exc_info.value.detail
 
 
 # ===========================================================================

@@ -10,7 +10,7 @@ keys, while everything else — dimension validation, blockType/isImage
 metadata, page_content handling, and storage/retrieval — runs through the
 real ``VectorStore`` and a real vector DB backend.
 
-Requires: docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml up -d
+Requires: docker compose -f tests/integration/compose/vector-db.yml up -d
 Run: pytest tests/integration/test_multimodal_indexing.py -m integration --timeout=120
 
 These tests skip automatically when Docker vector DB services aren't
@@ -92,7 +92,7 @@ def _make_vector_store(vector_db_service):
     registry = CollectionRegistry(
         vector_db_service=vector_db_service,
         strategy=SingleCollectionStrategy(),
-        collection_config_factory=lambda size, sparse_idf=False: CollectionConfig(
+        collection_config_factory=lambda size: CollectionConfig(
             embedding_size=size
         ),
         manifest_store=CollectionManifestStore(AsyncMock(), MagicMock()),
@@ -137,7 +137,7 @@ async def _index_and_upsert_images(vs, vector_db_service, collection: str, chunk
 
 
 class TestQdrantMultimodalIndexing:
-    async def test_image_points_stored_with_blocktype_metadata_and_retrievable(self, qdrant_service):
+    async def test_image_points_stored_with_blocktype_metadata_and_retrievable(self, qdrant_service):  # noqa: F811  (fixture imported above)
         pytest.importorskip("qdrant_client", reason="qdrant_client not installed")
         from app.services.vector_db.models import CollectionConfig, DistanceMetric, HybridSearchRequest
 
@@ -174,7 +174,7 @@ class TestQdrantMultimodalIndexing:
         finally:
             await qdrant_service.delete_collection(col)
 
-    async def test_dimension_mismatch_dropped_before_upsert(self, qdrant_service):
+    async def test_dimension_mismatch_dropped_before_upsert(self, qdrant_service):  # noqa: F811  (fixture imported above)
         """An image embedding whose dimension doesn't match the collection
         must never reach upsert_points — it would corrupt cosine similarity
         for the whole collection or be rejected outright by the DB."""
@@ -209,7 +209,7 @@ class TestQdrantMultimodalIndexing:
 
 
 class TestRedisMultimodalIndexing:
-    async def test_image_points_stored_with_blocktype_metadata_and_retrievable(self, redis_service):
+    async def test_image_points_stored_with_blocktype_metadata_and_retrievable(self, redis_service):  # noqa: F811  (fixture imported above)
         import asyncio
 
         from app.services.vector_db.models import CollectionConfig, DistanceMetric, HybridSearchRequest

@@ -1,0 +1,286 @@
+name: Sustained Load
+
+# Weekly sustained-load test for search and chat (integration-tests/perf/
+# bench_load.py): ramp simulated users up, hold them, and fail on errors, on
+# searches that find nothing, or, against the committed baseline, on a p95 that
+# got slower or searches that found less. Never runs on pull
+# requests: it holds secrets and only ever checks out this repository's own
+# branches, the same way the scheduled integration run does.
+on:
+  # Wednesday 02:30 UTC (08:00 IST). Clear of the nightly integration run
+  # (18:30 UTC, finished by about 01:00), the daily answer-quality evals at
+  # 02:00 (done within 30 minutes, and on the same AI provider), and the
+  # weekend's indexing and query benchmarks.
+  schedule:
+    - cron: '30 2 * * 3'
+  workflow_dispatch:
+    inputs:
+      stages:
+        description: 'seconds:users per stage, comma-separated, no spaces; users move linearly between stages (change only when you also refresh the baseline)'
+        required: true
+        default: '120:4,120:8,900:8'
+      think_time:
+        description: 'Seconds a user waits between operations: a number, or min:max with no spaces'
+        required: true
+        default: '1:3'
+      docs:
+        description: 'Documents to seed before the load (change only when you also refresh the baseline)'
+        required: true
+        default: '80'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-load
+  cancel-in-progress: false
+
+env:
+  PIPESHUB_BASE_URL: http://localhost:3000
+  MESSAGE_BROKER: redis
+  COMPOSE_FILE_NEO4J: docker-compose.integration.neo4j.yml
+  PERF_LABEL: ci-load-neo4j-4cpu
+
+jobs:
+  load-test:
+    name: Sustained load (neo4j)
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
+    # About 15 minutes to build and start, up to 30 to seed, 19 of load.
+    timeout-minutes: 120
+
+    # Same environments, and so the same approval gate and secrets, as the
+    # integration workflow.
+    environment:
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
+
+    env:
+      SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      DOCKER_BUILDKIT: "1"
+      PIPESHUB_TEST_ENV: local
+      PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+      PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+      # Azure OpenAI is where the credits are. TEST_AI_MODEL_PROVIDER stops a
+      # failure here quietly falling back to a key we no longer fund.
+      TEST_AI_MODEL_PROVIDER: azureOpenAI
+      TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
+      TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+      TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
+      TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
+      # Without its own value this falls back to the LLM deployment, which
+      # would send embedding requests to a chat model.
+      TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
+      TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
+      # Routed through env (never interpolated into the shell) so dispatch
+      # input cannot inject; validated before use.
+      STAGES_INPUT: ${{ github.event.inputs.stages || '120:4,120:8,900:8' }}
+      THINK_TIME_INPUT: ${{ github.event.inputs.think_time || '1:3' }}
+      DOCS_INPUT: ${{ github.event.inputs.docs || '80' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # Accepts exactly what bench_load.py's parse_stages, parse_think_time and
+      # parse_docs do, so a bad input stops here rather than after the stack is
+      # built. unit/test_perf_load.py runs this step against all three. Only
+      # patterns, no shell arithmetic, so a huge number cannot overflow.
+      - name: Validate inputs
+        run: |
+          # Digit caps as in bench_load.py: every value finite, at most 9999 users.
+          number='[0-9]{1,6}(\.[0-9]{1,3})?'
+          stage="$number:[0-9]{1,4}"
+          if ! [[ "$STAGES_INPUT" =~ ^$stage(,$stage)*$ ]]; then
+            echo "stages must be seconds:users pairs separated by commas, up to 999999.999 seconds and 9999 users, like 120:4,900:8; got '$STAGES_INPUT'"
+            exit 1
+          fi
+          someone=false
+          IFS=',' read -ra pairs <<< "$STAGES_INPUT"
+          for pair in "${pairs[@]}"; do
+            if [[ "${pair%%:*}" =~ ^0+(\.0+)?$ ]]; then
+              echo "every stage must last longer than 0 seconds; got '$pair'"
+              exit 1
+            fi
+            if [[ "${pair#*:}" =~ [1-9] ]]; then someone=true; fi
+          done
+          if [ "$someone" != true ]; then
+            echo "at least one stage must have a user in it; got '$STAGES_INPUT'"
+            exit 1
+          fi
+          if ! [[ "$THINK_TIME_INPUT" =~ ^$number(:$number)?$ ]] \
+            || ! awk -v a="${THINK_TIME_INPUT%%:*}" -v b="${THINK_TIME_INPUT#*:}" 'BEGIN { exit !(a + 0 <= b + 0) }'; then
+            echo "think_time must be seconds or min:max with min no more than max, like 1:3; got '$THINK_TIME_INPUT'"
+            exit 1
+          fi
+          if ! [[ "$DOCS_INPUT" =~ ^[0-9]{1,6}$ && "$DOCS_INPUT" =~ [1-9] ]]; then
+            echo "docs must be a whole number from 1 to 999999; got '$DOCS_INPUT'"
+            exit 1
+          fi
+
+      - name: Pull pre-built base images
+        run: |
+          docker pull pipeshubai/pipeshub-ai-base:python-deps || true
+          docker pull pipeshubai/pipeshub-ai-base:runtime || true
+
+      - name: Build Neo4j stack images
+        working-directory: deployment/docker-compose
+        run: docker compose -f "$COMPOSE_FILE_NEO4J" build
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Install integration-test dependencies
+        working-directory: integration-tests
+        run: |
+          uv venv
+          uv pip install -e .
+
+      # Only the app and the stores it depends on: the connector source
+      # databases the integration suite also starts would be idle neighbours
+      # competing for the same four CPUs.
+      - name: Start services
+        working-directory: deployment/docker-compose
+        run: docker compose -f "$COMPOSE_FILE_NEO4J" up -d pipeshub-ai
+
+      - name: Wait for core services
+        run: |
+          deadline=$((SECONDS + 300))
+          delay=1
+          until curl -sf "${PIPESHUB_BASE_URL}/api/v1/health" | grep -q '"status":"healthy"'; do
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "Core services not healthy after 300s"; exit 1; fi
+            echo "Not ready, retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$((delay * 2))
+            if [ "$delay" -gt 64 ]; then delay=64; fi
+          done
+
+      - name: Wait for Python microservices
+        run: |
+          deadline=$((SECONDS + 300))
+          delay=1
+          until curl -sf "${PIPESHUB_BASE_URL}/api/v1/health/services" | grep -q '"status":"healthy"'; do
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "Python services not healthy after 300s"; exit 1; fi
+            echo "Not ready, retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$((delay * 2))
+            if [ "$delay" -gt 64 ]; then delay=64; fi
+          done
+
+      # Bodies are built with jq so a secret containing a quote, backslash or
+      # newline still produces valid JSON.
+      - name: Create organization and admin user
+        run: |
+          jq -n \
+            --arg email "$PIPESHUB_TEST_USER_EMAIL" \
+            --arg password "$PIPESHUB_TEST_USER_PASSWORD" \
+            '{
+              accountType: "business",
+              adminFullName: "Integration Test Admin",
+              contactEmail: $email,
+              password: $password,
+              confirmPassword: $password,
+              registeredName: "Integration Test Org",
+              shortName: "INTTEST"
+            }' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
+                -H "Content-Type: application/json" \
+                --data-binary @- > /dev/null
+
+      - name: Skip onboarding
+        run: |
+          HEADERS=$(mktemp)
+          jq -n --arg email "$PIPESHUB_TEST_USER_EMAIL" '{email: $email}' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
+                -H "Content-Type: application/json" \
+                --data-binary @- \
+                -D "${HEADERS}" -o /dev/null
+          SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
+          rm -f "${HEADERS}"
+
+          ACCESS_TOKEN=$(jq -n \
+              --arg email "$PIPESHUB_TEST_USER_EMAIL" \
+              --arg password "$PIPESHUB_TEST_USER_PASSWORD" \
+              '{method: "password", credentials: {password: $password}, email: $email}' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
+                -H "Content-Type: application/json" \
+                -H "x-session-token: ${SESSION_TOKEN}" \
+                --data-binary @- \
+            | jq -r '.accessToken')
+
+          curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -d '{"status": "configured"}' > /dev/null
+
+      # --fail-on-violation: the run's own checks (error rate at most 2%,
+      # enough operations in the steady window, every operation succeeding at
+      # least once, plain and filtered searches each finding something) fail
+      # the job. They need no
+      # baseline, so they count from the first run. The result and summary are
+      # written before the exit, so a failed run still has its numbers.
+      - name: Run sustained load
+        id: load
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          CONTAINER=$(docker compose -f "../deployment/docker-compose/$COMPOSE_FILE_NEO4J" ps -q pipeshub-ai)
+          python perf/bench_load.py \
+            --docs "$DOCS_INPUT" --stages "$STAGES_INPUT" --think-time "$THINK_TIME_INPUT" \
+            --label "$PERF_LABEL" --graph-db neo4j --ai-models seed \
+            --container "$CONTAINER" \
+            --fail-on-violation \
+            --output reports/perf/load.json \
+            --summary reports/perf/summary.md
+
+      # --fail-on-regression: a p95 that rose more than 30% and by more than a
+      # fixed amount over the baseline, or a fall in the share of plain or
+      # filtered searches that found a hit, fails the job. While the baseline is the committed placeholder there is
+      # nothing to compare with, so this reports and passes; see "Updating a
+      # baseline" in integration-tests/perf/README.md. It runs after a failed
+      # load step too, so the summary shows both verdicts.
+      - name: Compare with baseline
+        if: ${{ !cancelled() }}
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          if [ ! -s reports/perf/load.json ]; then
+            echo "The load test wrote no result at reports/perf/load.json."
+            echo "Check the 'Run sustained load' step above, and the docker logs in this run's artifact."
+            exit 1
+          fi
+          python perf/compare.py \
+            --baseline "perf/baselines/$PERF_LABEL.json" \
+            --current reports/perf/load.json \
+            --summary reports/perf/summary.md \
+            --fail-on-regression
+
+      - name: Write job summary
+        if: ${{ !cancelled() && hashFiles('integration-tests/reports/perf/summary.md') != '' }}
+        run: cat integration-tests/reports/perf/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dump docker logs
+        if: failure()
+        working-directory: deployment/docker-compose
+        run: |
+          mkdir -p ../../integration-tests/reports/perf/docker-logs
+          docker compose -f "$COMPOSE_FILE_NEO4J" logs --no-color --timestamps pipeshub-ai \
+            > ../../integration-tests/reports/perf/docker-logs/pipeshub-ai.log 2>&1 || true
+
+      - name: Upload load test result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-load-${{ github.run_id }}
+          path: integration-tests/reports/perf/
+          if-no-files-found: ignore
+
+      - name: Tear down services
+        if: always()
+        working-directory: deployment/docker-compose
+        run: docker compose -f "$COMPOSE_FILE_NEO4J" down -v

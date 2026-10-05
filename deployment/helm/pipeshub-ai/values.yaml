@@ -1,4 +1,7 @@
 replicaCount: 2
+rollingUpdate:
+  maxSurge: 1
+  maxUnavailable: 0
 terminationGracePeriodSeconds: 300
 
 # Global configuration
@@ -12,6 +15,9 @@ global:
   
   # Storage class for persistent volumes
   storageClass: ""
+  # Existing StatefulSets cannot change volumeClaimTemplates. Only new installs
+  # that set this true render global.storageClass onto those claims.
+  applyStorageClassToStatefulSets: false
 
 # Secret management configuration
 secretManagement:
@@ -113,6 +119,16 @@ telemetry:
       enabled: false
       insecure: false
 
+# Express `trust proxy` (TRUST_PROXY): how many proxies in front of the app
+# may set X-Forwarded-For, or a comma-separated list of their CIDRs. Empty
+# means "1" when ingress.enabled, otherwise trust no proxy. Use "2" when an L7
+# load balancer sits in front of the ingress controller (e.g. GCE, which adds
+# its own X-Forwarded-For entry). Never "true".
+trustProxy: ""
+
+# Per-IP limit for login, OTP and password endpoints.
+maxAuthRequestsPerMinute: 10
+
 ingress:
   enabled: false
   className: "" # Fill
@@ -159,6 +175,21 @@ extraVolumes: []
 #   - name: branding
 #     mountPath: /app/public/branding
 extraVolumeMounts: []
+
+# Extra env entries for the app container. Use a secretKeyRef for values that
+# must not sit in the release, such as E2B_API_KEY.
+# extraEnv:
+#   - name: E2B_API_KEY
+#     valueFrom:
+#       secretKeyRef:
+#         name: pipeshub-e2b
+#         key: api-key
+extraEnv: []
+extraEnvFrom: []
+
+# aws-sdk v2 presigns us-east-1 with Signature V2. SSE-KMS buckets reject those
+# URLs. Images that set signatureVersion on the S3 client do not need this.
+s3SignatureV4Preload: false
 
 volumes: {}
 
@@ -303,8 +334,31 @@ config:
   # daemon error — set sandboxMode to "local" deliberately if that is what
   # you want on this cluster, and understand the isolation you are giving up.
   sandboxMode: "docker"
+  # Required alongside sandboxMode "local", which the service refuses
+  # otherwise: local runs generated code with this pod's identity, network
+  # and filesystem. Development clusters only.
+  sandboxAllowLocal: false
   # Image `run_code` containers are started from (SANDBOX_MODE=docker only).
-  sandboxDockerImage: "pipeshub/sandbox:latest"
+  sandboxDockerImage: "pipeshubai/pipeshub-sandbox:latest"
+  # false: generated code runs with no network. Allowlisted package installs
+  # still reach the configured registries from a separate install container.
+  # true: generated code may reach public internet addresses only. Each
+  # sandbox container firewalls private, CGNAT, link-local (cloud metadata)
+  # and bridge addresses before the code starts; if the image can't, the
+  # code runs offline instead.
+  sandboxAllowNetwork: false
+  # Comma-separated IPv4 CIDRs exempt from that firewall, e.g. a private
+  # package mirror. Link-local and metadata addresses stay blocked.
+  sandboxEgressAllowCidrs: ""
+  sandboxEgressNetwork: "pipeshub_sandbox_egress"
+  # Writable-layer cap for EACH docker-mode sandbox container (default 10g;
+  # 0/off disables), so one run cannot fill the daemon's storage. This is a
+  # per-container limit, not an aggregate cap: many containers and image layers
+  # can still exhaust the daemon's storage (under the DinD sidecar, the
+  # sidecar's storage). Enforced only where the daemon's storage driver
+  # supports it (overlay2 on xfs+pquota, or btrfs/zfs/devicemapper); otherwise
+  # the service logs a warning once and runs continue uncapped.
+  sandboxDiskQuota: "10g"
   # Address of the Docker daemon for SANDBOX_MODE=docker. Leave empty to use
   # the DinD sidecar (see `sandbox.dind`) when it is enabled, or set it to
   # reach a daemon you run yourself, e.g. "tcp://docker-daemon.svc:2375".
@@ -359,6 +413,15 @@ config:
 
 # --- Coding sandbox execution ------------------------------------------------
 sandbox:
+  # Pod-level RuntimeClass (empty = cluster default). It applies to the whole
+  # pod, including the privileged DinD sidecar, so an escape lands in the
+  # sandboxed runtime rather than on the node. The RuntimeClass must already
+  # exist in the cluster; left empty nothing changes. This chart does NOT
+  # configure gVisor's required DinD daemon flags or nested-container
+  # networking, so do not combine gVisor with sandbox.dind.enabled until that
+  # is set up and smoke-tested; a VM runtime (Kata) or e2b avoids that gap.
+  runtimeClassName: ""
+
   # Docker-in-Docker sidecar, so SANDBOX_MODE=docker has a daemon to talk to.
   #
   # Off by default, and that is deliberate. DinD needs a PRIVILEGED container,
@@ -408,6 +471,20 @@ sandbox:
 secretKey: "" # Fill
 
 mongodb:
+  # Bitnami subchart. Existing installs keep this. New AWS installs set it false
+  # and use mongodb.builtin instead (official mongo image, chart-owned StatefulSet).
+  enabled: true
+  builtin:
+    enabled: false
+    image:
+      repository: mongo
+      tag: "8.0.17"
+      pullPolicy: IfNotPresent
+    cacheSizeGB: 1
+    resources: {}
+    nodeSelector: {}
+    tolerations: []
+    topologySpreadConstraints: []
   architecture: replicaset
   replicaSetName: rs0
   replicaCount: 2  # 2 data nodes + 1 arbiter = quorum with less storage than 3 full copies
@@ -430,6 +507,7 @@ mongodb:
   persistence:
     enabled: true
     storageClass: "" # Fill
+    size: 8Gi
   arbiter:
     enabled: true  # Provides the quorum vote without storing a full data copy
   podSecurityContext:
@@ -445,12 +523,27 @@ mongodb:
       - ALL
 
 redis:
-  # Set to false (with redis.external.enabled=true) to skip deploying the
-  # bundled Bitnami subchart entirely, e.g. when pointing at AWS MemoryDB or a
-  # self-hosted Redis Cluster. Wired via `condition: redis.enabled` in
-  # Chart.yaml, so this must stay a plain boolean the chart can read before
-  # dependency resolution.
+  # Set to false (with redis.external.enabled=true, or redis.builtin.enabled=true)
+  # to skip deploying the bundled Bitnami subchart entirely. Wired via
+  # `condition: redis.enabled` in Chart.yaml, so this must stay a plain boolean
+  # the chart can read before dependency resolution.
   enabled: true
+  # Chart-owned Redis (official redis image). New AWS installs use this and set
+  # enabled=false. Do not enable both.
+  builtin:
+    enabled: false
+    image:
+      repository: redis
+      tag: "7.4-bookworm"
+      pullPolicy: IfNotPresent
+    maxmemory: 2gb
+    maxmemoryPolicy: noeviction
+    resources: {}
+    persistence:
+      size: 8Gi
+    nodeSelector: {}
+    tolerations: []
+    topologySpreadConstraints: []
   architecture: replication  # 1 master + 1 replica for minimal read failover
   master:
     count: 1
@@ -665,6 +758,8 @@ kafka:
 
 qdrant:
   replicaCount: 2  # 2 nodes: one can fail while the other keeps serving
+  # Existing releases were created with Parallel. OrderedReady is immutable to change.
+  orderedStartup: false
   image:
     repository: qdrant/qdrant
     tag: v1.15
@@ -706,6 +801,7 @@ qdrant:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  topologySpreadConstraints: []
   apiKey: "api_key"
 
 # Neo4j (enabled by default). When enabled, the app uses Neo4j as the graph database (DATA_STORE=neo4j).
@@ -730,6 +826,7 @@ neo4j:
   persistence:
     enabled: true
     size: 10Gi
+    logsSize: 5Gi
     accessModes:
       - ReadWriteOnce
     storageClass: "" # Fill
@@ -752,6 +849,8 @@ neo4j:
     capabilities:
       drop:
       - ALL
+  nodeSelector: {}
+  tolerations: []
   # apoc plugin and memory tuning for production (4Gi K8s limit).
   # heap (2g) + pagecache (1g) + JVM overhead (~500m) fits within 4Gi limit.
   env:

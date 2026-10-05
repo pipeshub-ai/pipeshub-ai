@@ -16,6 +16,7 @@ RECOVERY_TIMEOUT = int(os.getenv("RESILIENCE_RECOVERY_TIMEOUT_SEC", "900"))
 POLL = 5
 # UNKNOWN: the record was read but carried no status yet, so it is still in flight.
 UNFINISHED = {"NOT_STARTED", "QUEUED", "IN_PROGRESS", "UNKNOWN"}
+EXTRACTION_FINISHED = frozenset({"COMPLETED", "FAILED"})
 
 
 def document(token: str) -> bytes:
@@ -74,4 +75,28 @@ async def wait_until_finished(
             if last_error is not None:
                 raise last_error
             return current
+        await asyncio.sleep(poll)
+
+
+async def wait_until_enriched(
+    kb_client: KBClient, record_id: str, *, timeout: float, poll: float = POLL
+) -> str:
+    """Wait until enrichment is done with a record, and return its extractionStatus.
+
+    Enrichment writes one more vector, the record summary, after the content
+    chunks are already searchable, so a vector count read before this returns
+    is not the record's final count.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        status = record_fields(kb_client.get_record(record_id)).get("extractionStatus") or ""
+        if status in EXTRACTION_FINISHED:
+            return status
+        if asyncio.get_event_loop().time() >= deadline:
+            raise AssertionError(
+                f"Record {record_id} was still being enriched after {timeout}s "
+                f"(extractionStatus {status or 'missing'}), so its embeddings were "
+                "not final yet. With DEFER_EXTRACTION set, enrichment never starts "
+                "on its own and this wait cannot end."
+            )
         await asyncio.sleep(poll)

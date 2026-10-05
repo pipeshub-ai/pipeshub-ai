@@ -54,7 +54,7 @@ export interface AuthorizeRequest {
   scope: string
   state: string
   code_challenge?: string
-  code_challenge_method?: 'S256' | 'plain'
+  code_challenge_method?: 'S256'
   nonce?: string
 }
 

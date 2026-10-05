@@ -1,5 +1,7 @@
 """Comprehensive unit tests for app.connectors_main module."""
 
+import json
+import logging
 import sys
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,6 +11,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from app.services.messaging.config import MessageBrokerType
+from tests.support.host_header import POISONED_HOSTS, request_with_host
 
 
 # ---------------------------------------------------------------------------
@@ -52,16 +55,6 @@ def _mock_os_getenv(data_store="arangodb"):
             return MessageBrokerType.KAFKA.value
         return default
     return _getenv
-
-
-def _patch_kb_entities_processor():
-    mock_proc = MagicMock()
-    mock_proc.initialize = AsyncMock()
-    return patch(
-        "app.connectors_main.DataSourceEntitiesProcessor",
-        return_value=mock_proc,
-        create=True,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +214,37 @@ class TestResumeSyncServices:
         assert result is True
         assert mock_container.connectors_map["app1"] is mock_connector
         assert mock_container.connectors_map["app2"] is mock_connector
+
+    async def test_connector_owed_a_full_sync_is_published_not_started(self) -> None:
+        """Started here it would sync incrementally; only the event path runs
+        the full sync its pendingFullSync flag asks for."""
+        from app.connectors_main import resume_sync_services
+
+        mock_container = _make_container()
+        mock_container.connectors_map = {}
+        gp = _make_graph_provider()
+        gp.get_all_orgs = AsyncMock(return_value=[{"_key": "org1"}])
+        gp.get_org_apps = AsyncMock(return_value=[
+            {"_key": "owed", "type": "Slack", "pendingFullSync": True},
+            {"_key": "plain", "type": "Slack"},
+        ])
+        gp.get_users = AsyncMock(return_value=[{"_key": "user1"}])
+        ds = _make_data_store(gp)
+
+        with (
+            patch("app.connectors_main.sync_executor_enabled", return_value=False),
+            patch(
+                "app.connectors_main.ConnectorFactory.create_and_start_sync",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as create,
+            patch("app.connectors_main._publish_startup_resync", new_callable=AsyncMock) as publish,
+        ):
+            assert await resume_sync_services(mock_container, ds) is True
+
+        started = {c.kwargs["connector_id"]: c.kwargs["start_sync"] for c in create.await_args_list}
+        assert started == {"owed": False, "plain": True}
+        assert [c.kwargs["connector_id"] for c in publish.await_args_list] == ["owed"]
 
     async def test_connector_none_not_stored(self):
         """If ConnectorFactory returns None, it should not be stored."""
@@ -621,13 +645,18 @@ class TestShutdownContainerResources:
         mock_container.messaging_producer = None
 
         with (
-            patch("app.connectors_main.sync_task_manager.cancel_all", new_callable=AsyncMock),
+            patch(
+                "app.connectors_main.get_coordinator",
+                return_value=MagicMock(cancel_all=AsyncMock(), stop=AsyncMock()),
+            ) as get_coordinator,
             patch("app.connectors_main.stop_kafka_consumers", new_callable=AsyncMock) as mock_stop_kafka,
             patch("app.connectors_main.stop_messaging_producer", new_callable=AsyncMock) as mock_stop_producer,
             patch("app.connectors_main.startup_service.shutdown", new_callable=AsyncMock) as mock_startup_shutdown,
         ):
             await shutdown_container_resources(mock_container)
 
+        get_coordinator.return_value.cancel_all.assert_awaited_once()
+        get_coordinator.return_value.stop.assert_awaited_once()
         mock_stop_kafka.assert_awaited_once()
         mock_stop_producer.assert_awaited_once()
         mock_startup_shutdown.assert_awaited_once()
@@ -641,7 +670,7 @@ class TestShutdownContainerResources:
         mock_container.messaging_producer = None
 
         with (
-            patch("app.connectors_main.sync_task_manager.cancel_all", new_callable=AsyncMock, side_effect=RuntimeError("cancel fail")),
+            patch("app.connectors_main.get_coordinator", return_value=MagicMock(cancel_all=AsyncMock(side_effect=RuntimeError("cancel fail")), stop=AsyncMock())),
             patch("app.connectors_main.stop_kafka_consumers", new_callable=AsyncMock) as mock_stop_kafka,
             patch("app.connectors_main.stop_messaging_producer", new_callable=AsyncMock),
             patch("app.connectors_main.startup_service.shutdown", new_callable=AsyncMock),
@@ -659,7 +688,7 @@ class TestShutdownContainerResources:
         mock_container.messaging_producer = None
 
         with (
-            patch("app.connectors_main.sync_task_manager.cancel_all", new_callable=AsyncMock),
+            patch("app.connectors_main.get_coordinator", return_value=MagicMock(cancel_all=AsyncMock(), stop=AsyncMock())),
             patch("app.connectors_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.connectors_main.stop_messaging_producer", new_callable=AsyncMock),
             patch("app.connectors_main.startup_service.shutdown", new_callable=AsyncMock, side_effect=RuntimeError("shutdown fail")),
@@ -679,7 +708,7 @@ class TestShutdownContainerResources:
         mock_container.config_service.return_value.close = AsyncMock(side_effect=RuntimeError("close fail"))
 
         with (
-            patch("app.connectors_main.sync_task_manager.cancel_all", new_callable=AsyncMock),
+            patch("app.connectors_main.get_coordinator", return_value=MagicMock(cancel_all=AsyncMock(), stop=AsyncMock())),
             patch("app.connectors_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.connectors_main.stop_messaging_producer", new_callable=AsyncMock),
             patch("app.connectors_main.startup_service.shutdown", new_callable=AsyncMock),
@@ -723,7 +752,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock) as mock_shutdown,
             patch("os.getenv", side_effect=_mock_os_getenv("arangodb")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -765,7 +793,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -805,7 +832,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -844,7 +870,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, side_effect=RuntimeError("kafka fail")),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -880,7 +905,6 @@ class TestLifespan:
             patch("app.connectors_main.startup_service.initialize", new_callable=AsyncMock),
             patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock, side_effect=RuntimeError("producer fail")),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -920,7 +944,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -959,7 +982,6 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock, side_effect=RuntimeError("shutdown fail")),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            _patch_kb_entities_processor(),
             patch.dict("sys.modules", {
                 "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
                 "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
@@ -1123,6 +1145,34 @@ class TestAuthenticateRequestsMiddleware:
 
         mock_auth.assert_awaited_once_with(mock_request)
 
+    @pytest.mark.parametrize("host", POISONED_HOSTS)
+    async def test_poisoned_host_header_does_not_skip_auth(self, host):
+        """A Host header naming an excluded path does not replace the request path."""
+        from app.connectors_main import authenticate_requests, app
+
+        request = request_with_host("/api/v1/x", host)
+        mock_call_next = AsyncMock(return_value=MagicMock(spec=JSONResponse))
+        app.container = MagicMock()
+
+        with patch("app.connectors_main.authMiddleware", new_callable=AsyncMock, return_value=request) as mock_auth:
+            await authenticate_requests(request, mock_call_next)
+
+        mock_auth.assert_awaited_once_with(request)
+
+    async def test_health_path_of_a_real_request_skips_auth(self):
+        """The exclusion still applies to a real request for /health."""
+        from app.connectors_main import authenticate_requests, app
+
+        request = request_with_host("/health")
+        mock_call_next = AsyncMock(return_value=MagicMock(spec=JSONResponse))
+        app.container = MagicMock()
+
+        with patch("app.connectors_main.authMiddleware", new_callable=AsyncMock) as mock_auth:
+            await authenticate_requests(request, mock_call_next)
+
+        mock_auth.assert_not_awaited()
+        mock_call_next.assert_awaited_once_with(request)
+
 
 # ---------------------------------------------------------------------------
 # health_check (connector)
@@ -1148,6 +1198,19 @@ class TestConnectorHealthCheck:
             result = await health_check()
 
         assert result.status_code == 500
+
+    async def test_a_failed_startup_is_unhealthy(self):
+        """Coordinator init failing in the background startup task used to leave
+        the service answering 200 while it consumed no events at all."""
+        from app.connectors_main import app, health_check
+
+        app.state.startup_error = "sync coordinator init failed: boom"
+        try:
+            result = await health_check()
+        finally:
+            app.state.startup_error = None
+
+        assert result.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -1211,9 +1274,14 @@ class TestRun:
             workers=4,
         )
 
-    def test_run_defaults_to_connector_uvicorn_workers_env_var(self):
-        """workers=None (the default) reads CONNECTOR_UVICORN_WORKERS."""
+    def test_run_defaults_to_the_edition_worker_count(self):
+        """workers=None asks the edition seam, not the env var directly.
+
+        The open-source build pins to one worker whatever is set, because
+        multi-worker sync needs a cross-process lease it does not have.
+        """
         from app.connectors_main import run
+        from app.edition_services import max_connector_workers
 
         with (
             patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
@@ -1227,92 +1295,32 @@ class TestRun:
             port=8088,
             log_level="info",
             reload=False,
-            workers=3,
+            workers=max_connector_workers(),
         )
 
-    def test_run_defaults_to_one_worker_when_env_var_unset(self):
-        """No CONNECTOR_UVICORN_WORKERS set -> preserves the pre-existing
-        single-worker default (in-memory sync/reindex dedup is per-process,
-        see run()'s docstring)."""
+    @staticmethod
+    def _uvicorn_workers(*, seam, **run_kwargs) -> int:
         from app.connectors_main import run
 
         with (
             patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
-            patch.dict("os.environ", {}, clear=False),
+            patch("app.connectors_main.max_connector_workers", **seam),
         ):
-            import os
-            os.environ.pop("CONNECTOR_UVICORN_WORKERS", None)
-            run(reload=False)
+            run(**run_kwargs)
+        return mock_uvicorn.call_args.kwargs["workers"]
 
-        mock_uvicorn.assert_called_once_with(
-            "app.connectors_main:app",
-            host="0.0.0.0",
-            port=8088,
-            log_level="info",
-            reload=False,
-            workers=1,
-        )
+    def test_run_uses_what_the_edition_seam_answers(self):
+        assert self._uvicorn_workers(seam={"return_value": 3}, reload=False) == 3
 
-    def test_run_falls_back_to_one_worker_when_env_var_invalid(self):
-        """A malformed CONNECTOR_UVICORN_WORKERS value should not crash
-        startup; fall back to 1 worker instead of raising ValueError."""
-        from app.connectors_main import run
+    def test_run_falls_back_to_one_worker_when_the_seam_cannot_parse_its_setting(self):
+        assert self._uvicorn_workers(seam={"side_effect": ValueError("abc")}, reload=False) == 1
 
-        for invalid_value in ("abc", ""):
-            with (
-                patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
-                patch.dict("os.environ", {"CONNECTOR_UVICORN_WORKERS": invalid_value}),
-            ):
-                run(reload=False)
+    def test_run_reload_forces_a_single_worker(self):
+        """Matching docling/indexing/parsing's own reload-safety clamp."""
+        assert self._uvicorn_workers(seam={"return_value": 4}, reload=True) == 1
 
-            mock_uvicorn.assert_called_once_with(
-                "app.connectors_main:app",
-                host="0.0.0.0",
-                port=8088,
-                log_level="info",
-                reload=False,
-                workers=1,
-            )
-
-    def test_run_reload_with_multiple_workers_forces_single_worker(self):
-        """reload=True always clamps to 1 worker, even with an explicit
-        CONNECTOR_UVICORN_WORKERS override, matching docling/indexing/
-        parsing's own reload-safety clamp."""
-        from app.connectors_main import run
-
-        with (
-            patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
-            patch.dict("os.environ", {"CONNECTOR_UVICORN_WORKERS": "4"}),
-        ):
-            run(reload=True)
-
-        mock_uvicorn.assert_called_once_with(
-            "app.connectors_main:app",
-            host="0.0.0.0",
-            port=8088,
-            log_level="info",
-            reload=True,
-            workers=1,
-        )
-
-    def test_run_explicit_workers_argument_overrides_env_var(self):
-        """An explicit workers= argument takes priority over the env var."""
-        from app.connectors_main import run
-
-        with (
-            patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
-            patch.dict("os.environ", {"CONNECTOR_UVICORN_WORKERS": "5"}),
-        ):
-            run(workers=2, reload=False)
-
-        mock_uvicorn.assert_called_once_with(
-            "app.connectors_main:app",
-            host="0.0.0.0",
-            port=8088,
-            log_level="info",
-            reload=False,
-            workers=2,
-        )
+    def test_run_explicit_workers_argument_skips_the_seam(self):
+        assert self._uvicorn_workers(seam={"side_effect": AssertionError("asked")}, workers=2, reload=False) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1549,6 +1557,161 @@ class TestGraphDbHealthNeo4jUnhealthy:
             response = await graph_db_health_check(request)
 
         assert response.status_code == 503
+
+
+SENTINEL = "SENTINEL bolt://neo4j:hunter2@10.0.0.5:7687"
+
+
+class _FakeNeo4jAuthError(Exception):
+    pass
+
+
+class _FakeNeo4jServiceUnavailable(Exception):
+    pass
+
+
+class _Records(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+def _request_with_service_logger() -> tuple[MagicMock, list[logging.LogRecord]]:
+    """A request whose container logger is built like ``create_logger``'s: its own
+    handler and nothing propagated, so a line sent to any other logger is not counted."""
+    handler = _Records()
+    service_logger = logging.Logger("connector_service")
+    service_logger.propagate = False
+    service_logger.addHandler(handler)
+    request = MagicMock()
+    request.app.container = _make_container()
+    request.app.container.logger.return_value = service_logger
+    return request, handler.records
+
+
+def _traceback_text(records: list[logging.LogRecord]) -> str:
+    """Text of the exception the one ERROR line carries as a traceback."""
+    assert [record.levelno for record in records] == [logging.ERROR]
+    return str(records[0].exc_info[1])
+
+
+def _line_without_traceback(records: list[logging.LogRecord], level: int) -> str:
+    assert [record.levelno for record in records] == [level]
+    assert records[0].exc_info is None
+    return records[0].getMessage()
+
+
+class TestHealthProbesReturnFixedText:
+    """These routes skip authentication, so what the driver said goes to the service log only."""
+
+    async def test_arangodb_failure(self):
+        from app.connectors_main import graph_db_health_check
+
+        request, records = _request_with_service_logger()
+        request.app.container.config_service.return_value.get_config = AsyncMock(
+            side_effect=RuntimeError(SENTINEL)
+        )
+
+        with patch("app.connectors_main.os.getenv", return_value="arangodb"):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        body = json.loads(response.body)
+        assert body["status"] == "unhealthy"
+        assert body["error"] == "ArangoDB health check failed"
+        assert "SENTINEL" not in response.body.decode()
+        assert _traceback_text(records) == SENTINEL
+
+    @pytest.mark.parametrize(
+        ("error_type", "expected"),
+        [
+            (_FakeNeo4jAuthError, "Neo4j auth failed"),
+            (_FakeNeo4jServiceUnavailable, "Neo4j unavailable"),
+            (RuntimeError, "Neo4j health check failed"),
+        ],
+    )
+    async def test_neo4j_failure(self, error_type: type[Exception], expected: str):
+        """An outage is polled on every /health call: one line for it, a traceback only for the unexpected."""
+        from app.connectors_main import graph_db_health_check
+
+        request, records = _request_with_service_logger()
+        mock_driver = AsyncMock()
+        mock_driver.verify_connectivity = AsyncMock(side_effect=error_type(SENTINEL))
+        mock_neo4j = MagicMock()
+        mock_neo4j.AsyncGraphDatabase.driver = MagicMock(return_value=mock_driver)
+        neo4j_exceptions = types.ModuleType("neo4j.exceptions")
+        neo4j_exceptions.AuthError = _FakeNeo4jAuthError
+        neo4j_exceptions.ServiceUnavailable = _FakeNeo4jServiceUnavailable
+
+        def _getenv(key, default=None):
+            return {"DATA_STORE": "neo4j"}.get(key, default)
+
+        with patch("app.connectors_main.os.getenv", side_effect=_getenv), \
+             patch.dict("sys.modules", {"neo4j": mock_neo4j, "neo4j.exceptions": neo4j_exceptions}):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        body = json.loads(response.body)
+        assert body["status"] == "unhealthy"
+        assert body["error"] == expected
+        assert "SENTINEL" not in response.body.decode()
+        if error_type is RuntimeError:
+            assert _traceback_text(records) == SENTINEL
+        else:
+            assert _line_without_traceback(records, logging.ERROR) == f"{expected}: {SENTINEL}"
+        mock_driver.close.assert_awaited_once()
+
+    async def test_vector_db_exception(self):
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_health_check
+
+        request, records = _request_with_service_logger()
+        request.app.state = SimpleNamespace()
+
+        with patch("app.connectors_main.os.getenv", return_value="qdrant"), \
+             patch(
+                 "app.services.vector_db.vector_db_provider_factory.VectorDBProviderFactory.create_provider",
+                 new_callable=AsyncMock,
+                 side_effect=RuntimeError(SENTINEL),
+             ):
+            response = await vector_db_health_check(request)
+
+        assert response.status_code == 503
+        body = json.loads(response.body)
+        assert body["provider"] == "qdrant"
+        assert body["error"] == "Vector DB (qdrant) health check failed"
+        assert "SENTINEL" not in response.body.decode()
+        assert _traceback_text(records) == SENTINEL
+
+    async def test_vector_db_unhealthy_result_message(self):
+        """Providers put ``str(e)`` in ``VectorDBHealth.message``."""
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_health_check
+        from app.services.vector_db.models import HealthStatus, VectorDBHealth
+
+        request, records = _request_with_service_logger()
+        request.app.state = SimpleNamespace()
+        mock_provider = AsyncMock()
+        mock_provider.health_check = AsyncMock(return_value=VectorDBHealth(
+            status=HealthStatus.UNHEALTHY,
+            message=SENTINEL,
+        ))
+        request.app.state._vector_db_health_provider = mock_provider
+
+        with patch("app.connectors_main.os.getenv", return_value="qdrant"):
+            response = await vector_db_health_check(request)
+
+        assert response.status_code == 503
+        body = json.loads(response.body)
+        assert body["provider"] == "qdrant"
+        assert body["error"] == "qdrant health check failed"
+        assert "SENTINEL" not in response.body.decode()
+        assert SENTINEL in _line_without_traceback(records, logging.WARNING)
 
 
 class TestRefreshConnectorMetrics:

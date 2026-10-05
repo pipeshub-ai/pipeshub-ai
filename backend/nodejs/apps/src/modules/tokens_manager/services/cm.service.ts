@@ -25,6 +25,11 @@ const SIGNING_SECRETS_CAS_MAX_RETRIES = 5;
 export const randomKeyGenerator = (): string =>
   randomBytes(SIGNING_SECRET_BYTES).toString('hex');
 
+export const resolveFrontendPublicUrl = (storedEndpoint = ''): string =>
+  normalizeUrl(process.env.FRONTEND_PUBLIC_URL!) ||
+  normalizeUrl(storedEndpoint) ||
+  `http://localhost:${process.env.PORT ?? 3000}`;
+
 export interface KafkaConfig {
   brokers: string[];
   ssl?: boolean;
@@ -511,10 +516,9 @@ export class ConfigService {
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.frontend = {
       ...parsedUrl.frontend,
-      publicEndpoint:
-        normalizeUrl(process.env.FRONTEND_PUBLIC_URL!) ||
-        normalizeUrl(parsedUrl.frontend?.publicEndpoint) ||
-        `http://localhost:${process.env.PORT ?? 3000}`,
+      publicEndpoint: resolveFrontendPublicUrl(
+        parsedUrl.frontend?.publicEndpoint,
+      ),
     };
 
     // Save the updated object back to configPaths.endpoint

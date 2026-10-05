@@ -137,7 +137,14 @@ class SyncPoint(ISyncPoint):
     async def read_sync_point(self, sync_point_key: str) -> Dict[str, Any]:
         async with self.data_store_provider.transaction() as tx_store:
             full_sync_point_key = self._get_full_sync_point_key(sync_point_key)
-            sync_point = await tx_store.get_sync_point(full_sync_point_key)
+            # Raising: every connector reads an empty result here as "this has
+            # never synced" and falls back to a first-sync window -- 30 days for
+            # Slack. A checkpoint older than that window would then be skipped
+            # over, and the sync that follows writes a fresh checkpoint on top,
+            # so the gap is sealed and never fetched again.
+            sync_point = await tx_store.get_sync_point(
+                full_sync_point_key, raise_on_error=True
+            )
 
             if not sync_point:
                 return {}

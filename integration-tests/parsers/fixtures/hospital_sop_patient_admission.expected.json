@@ -2588,7 +2588,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "  Priority 1 — ICU / HDU beds:\n    - ESI 1 &amp; 2 patients with critical diagnoses (MI, stroke,\n      polytrauma, respiratory failure, septic shock, etc.)\n    - Post-operative patients requiring intensive monitoring\n    - ICU beds allocated by ICU Intensivist, not Bed Manager\n\n  Priority 2 — HDU beds (step-down):\n    - Patients being shifted from ICU as condition stabilises\n    - High-dependency post-operative cases\n\n  Priority 3 — Specialty/Observation beds:\n    - Allocated by Bed Manager per physician specialty request\n    - Patient preference (General/Semi-Private/Private) applied\n      when medically equivalent beds are available",
+      "data": "  Priority 1 — ICU / HDU beds:\n    - ESI 1 & 2 patients with critical diagnoses (MI, stroke,\n      polytrauma, respiratory failure, septic shock, etc.)\n    - Post-operative patients requiring intensive monitoring\n    - ICU beds allocated by ICU Intensivist, not Bed Manager\n\n  Priority 2 — HDU beds (step-down):\n    - Patients being shifted from ICU as condition stabilises\n    - High-dependency post-operative cases\n\n  Priority 3 — Specialty/Observation beds:\n    - Allocated by Bed Manager per physician specialty request\n    - Patient preference (General/Semi-Private/Private) applied\n      when medically equivalent beds are available",
       "links": null,
       "weburl": null,
       "public_data_link": null,

@@ -16,6 +16,7 @@ at the shared prompt pieces — the classification call itself lives in
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -26,6 +27,8 @@ from app.modules.agents.capability_summary import (
     format_connector_filter_lines,
 )
 from app.modules.agents.qna.tool_system import code_execution_enabled
+
+logger = logging.getLogger(__name__)
 
 
 class RouteDecision(BaseModel):
@@ -164,6 +167,10 @@ async def build_prior_routing_messages(
     blob_store: Any = None,
     org_id: str = "",
     is_multimodal_llm: bool = False,
+    *,
+    user_id: str = "",
+    graph_provider: Any = None,
+    is_service_account: bool = False,
 ) -> list:
     """
     Build prior conversation turns as LangChain HumanMessage/AIMessage objects
@@ -180,6 +187,7 @@ async def build_prior_routing_messages(
     """
     from app.utils.attachment_utils import resolve_attachment_blocks_simple
     from app.utils.chat_helpers import is_base64_image
+    from app.utils.record_access import caller_can_read_virtual_record
 
     previous = query_info.get("previous_conversations", [])
     if not previous:
@@ -202,6 +210,17 @@ async def build_prior_routing_messages(
                     mime = (att.get("mimeType") or "").lower()
                     vrid = att.get("virtualRecordId") or ""
                     if not vrid:
+                        continue
+                    # previous_conversations comes from the client, so a
+                    # virtualRecordId in it proves nothing about access.
+                    if not await caller_can_read_virtual_record(
+                        graph_provider,
+                        user_id=user_id,
+                        org_id=org_id,
+                        virtual_record_id=vrid,
+                        logger=logger,
+                        is_service_account=is_service_account,
+                    ):
                         continue
                     try:
                         record = await blob_store.get_record_from_storage(vrid, org_id)

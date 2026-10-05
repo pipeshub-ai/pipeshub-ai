@@ -1,6 +1,8 @@
 """Unit tests for Google client module."""
 
+import importlib
 import logging
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -330,6 +332,33 @@ class TestGetIndividualToken:
         )
         assert result["clientId"] == "shared-id"
         assert result["clientSecret"] == "shared-sec"
+
+    @pytest.mark.asyncio
+    async def test_drive_client_for_gmail_instance_reads_gmail_oauth_app(self, logger, mock_config_service) -> None:
+        """A personal Gmail instance opening a Drive attachment asks for the "drive"
+        service, but its shared OAuth app is stored under the Gmail connector type."""
+        store = {
+            "/services/connectors/gmail-1/config": {
+                "auth": {"oauthConfigId": "gmail-app", "connectorType": "Gmail"},
+                "credentials": {"access_token": "at", "refresh_token": "rt"},
+            },
+            "/services/oauth/gmail": [
+                {"_id": "gmail-app", "config": {"clientId": "gmail-cid", "clientSecret": "gmail-sec"}},
+            ],
+            "/services/oauth/drive": [
+                {"_id": "drive-app", "config": {"clientId": "drive-cid", "clientSecret": "drive-sec"}},
+            ],
+        }
+
+        async def fake_get_config(path: str, default: object = None) -> object:
+            return store.get(path, default)
+
+        mock_config_service.get_config = AsyncMock(side_effect=fake_get_config)
+        result = await GoogleClient.get_individual_token(
+            "drive", logger, mock_config_service, "gmail-1"
+        )
+        assert result["clientId"] == "gmail-cid"
+        assert result["clientSecret"] == "gmail-sec"
 
     @pytest.mark.asyncio
     async def test_shared_oauth_fallback_on_error(self, logger, mock_config_service):
@@ -677,6 +706,29 @@ class TestBuildFromServicesEnterprise:
     @pytest.mark.asyncio
     @patch("app.sources.client.google.google.build")
     @patch("app.sources.client.google.google.service_account")
+    async def test_delegated_scopes_replace_the_service_defaults(
+        self, mock_sa, mock_build, logger, mock_config_service
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(
+            return_value={"auth": {"connectorScope": "team", "adminEmail": "admin@co.com"}}
+        )
+        mock_sa.Credentials.from_service_account_info.return_value = MagicMock()
+
+        await GoogleClient.build_from_services(
+            service_name="drive",
+            logger=logger,
+            config_service=mock_config_service,
+            is_individual=False,
+            connector_instance_id="inst-1",
+            delegated_scopes=["https://www.googleapis.com/auth/drive.readonly"],
+        )
+
+        call_kwargs = mock_sa.Credentials.from_service_account_info.call_args.kwargs
+        assert call_kwargs["scopes"] == ["https://www.googleapis.com/auth/drive.readonly"]
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.google.google.build")
+    @patch("app.sources.client.google.google.service_account")
     async def test_enterprise_with_user_email(
         self, mock_sa, mock_build, logger, mock_config_service
     ):
@@ -910,6 +962,71 @@ class TestBuildFromServicesIndividualScopeEdgeCases:
 # ---------------------------------------------------------------------------
 # build_from_toolset - edge cases
 # ---------------------------------------------------------------------------
+
+
+class TestToolsetRefreshScopes:
+    @staticmethod
+    def _consent_scopes(module_path: str, class_name: str) -> list[str]:
+        toolset_cls = getattr(importlib.import_module(module_path), class_name)
+        return toolset_cls._toolset_metadata["config"]["auth"]["oauthConfigs"]["OAUTH"]["scopes"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("service_name", "version", "consent_screen"),
+        [
+            ("gmail", "v1", ("app.agents.actions.google.gmail.gmail", "Gmail")),
+            ("drive", "v3", ("app.agents.actions.google.drive.drive", "GoogleDrive")),
+            ("calendar", "v3", ("app.agents.actions.google.calendar.calendar", "GoogleCalendar")),
+            # The Meet toolset module does not import today (it names a ToolCategory
+            # that tool_builder no longer has), so its consent list is spelled out.
+            (
+                "meet",
+                "v2",
+                [
+                    "https://www.googleapis.com/auth/calendar",
+                    "https://www.googleapis.com/auth/calendar.events",
+                    "https://www.googleapis.com/auth/meetings.space.created",
+                ],
+            ),
+        ],
+    )
+    @patch("app.sources.client.google.google.build")
+    @patch("app.sources.client.google.google.Credentials")
+    async def test_refresh_asks_for_exactly_what_the_user_consented_to(
+        self,
+        mock_credentials_cls,
+        mock_build,
+        logger,
+        mock_config_service,
+        service_name,
+        version,
+        consent_screen,
+    ) -> None:
+        # google-auth sends these scopes on every refresh, and Google answers
+        # invalid_scope if one of them was not on the consent screen.
+        consented = (
+            self._consent_scopes(*consent_screen) if isinstance(consent_screen, tuple) else consent_screen
+        )
+        # Importing the real routes module alone trips a circular import.
+        toolsets_routes = MagicMock()
+        toolsets_routes.get_oauth_credentials_for_toolset = AsyncMock(
+            return_value={"clientId": "cid", "clientSecret": "csec"}
+        )
+        with patch.dict(sys.modules, {"app.api.routes.toolsets": toolsets_routes}):
+            await GoogleClient.build_from_toolset(
+                toolset_config={
+                    "isAuthenticated": True,
+                    "credentials": {"access_token": "at", "refresh_token": "rt"},
+                    "auth": {},
+                },
+                service_name=service_name,
+                logger=logger,
+                config_service=mock_config_service,
+                version=version,
+            )
+
+        refresh_scopes = mock_credentials_cls.call_args.kwargs["scopes"]
+        assert sorted(refresh_scopes) == sorted(consented)
 
 
 class TestBuildFromToolsetEdgeCases:

@@ -1251,7 +1251,9 @@ class TestDownloadFileErrorPaths:
         connector_type="googledrive",
     ):
         """Build all mocks for download_file."""
-        payload = SimpleNamespace(record_id="rec-1", user_id="user-1")
+        payload = SimpleNamespace(
+            record_id="rec-1", user_id="user-1", additional_claims={"org_id": "org-1"}
+        )
         handler = MagicMock()
         handler.validate_token = MagicMock(return_value=payload)
 
@@ -1373,7 +1375,9 @@ class TestDownloadFileErrorPaths:
     @pytest.mark.asyncio
     async def test_connector_instance_no_type_raises_404(self):
         """Connector instance exists but has no type -> 404."""
-        payload = SimpleNamespace(record_id="rec-1", user_id="user-1")
+        payload = SimpleNamespace(
+            record_id="rec-1", user_id="user-1", additional_claims={"org_id": "org-1"}
+        )
         handler = MagicMock()
         handler.validate_token = MagicMock(return_value=payload)
 

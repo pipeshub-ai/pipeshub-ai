@@ -22,9 +22,9 @@ from app.models.permission import EntityType, Permission, PermissionType
 import json
 from collections import defaultdict
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import PropertyMock
 from uuid import uuid4
-from app.config.constants.arangodb import Connectors, ProgressStatus, RecordRelations
+from app.config.constants.arangodb import ProgressStatus, RecordRelations
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperatorType,
@@ -42,43 +42,19 @@ from app.models.blocks import (
     GroupType,
 )
 from app.models.entities import (
-    AppUser,
     AppUserGroup,
     FileRecord,
     ItemType,
     LinkPublicStatus,
     LinkRecord,
     MimeTypes,
-    OriginTypes,
     ProjectRecord,
     Record,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
     RelatedExternalRecord,
     Status,
-    TicketRecord,
     WebpageRecord,
 )
 import base64
-from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
-from app.models.entities import (
-    AppUser,
-    FileRecord,
-    ItemType,
-    LinkPublicStatus,
-    LinkRecord,
-    MimeTypes,
-    ProjectRecord,
-    Record,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
-    RelatedExternalRecord,
-    Status,
-    TicketRecord,
-    WebpageRecord,
-)
 
 
 # ---------------------------------------------------------------------------

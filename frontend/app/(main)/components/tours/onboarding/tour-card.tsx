@@ -1,5 +1,7 @@
 'use client';
 
+import { Trans, useTranslation } from 'react-i18next';
+
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Box, Flex, Text, Heading } from '@radix-ui/themes';
@@ -79,6 +81,7 @@ function TourStepRow({
 // ===============================
 
 export function OnboardingTour() {
+  const { t } = useTranslation();
   const router = useRouter();
   const { isVisible, tourState, showTour, completeStep, dismissTour, hydrateTour } =
     useOnboardingTourStore();
@@ -148,7 +151,7 @@ export function OnboardingTour() {
               onClick={() => dismissTour()}
               onMouseEnter={() => setCloseHovered(true)}
               onMouseLeave={() => setCloseHovered(false)}
-              aria-label="Dismiss tour"
+              aria-label={t('onboarding.tour.dismiss')}
               style={{
                 background: 'transparent',
                 border: 'none',
@@ -193,16 +196,17 @@ export function OnboardingTour() {
               marginBottom: '14px',
             }}
           >
-            You&apos;re all set now. If you want to know more check out{' '}
-            <a
-              href="https://docs.pipeshub.com/"
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ color: 'var(--accent-9)', textDecoration: 'none' }}
-            >
-              documentation
-            </a>
-            .
+            <Trans
+              i18nKey="onboarding.tour.completedDescription"
+              components={{
+                docs: <a
+                  href="https://docs.pipeshub.com/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: 'var(--accent-9)', textDecoration: 'none' }}
+                />,
+              }}
+            />
           </Text>
         ) : (
           <Text

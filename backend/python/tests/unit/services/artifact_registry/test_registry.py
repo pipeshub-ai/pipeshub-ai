@@ -588,6 +588,36 @@ class TestVersionPinnedRetrieval:
         assert "version=0" in v1_url
         assert "version=" not in latest_url
 
+    async def test_get_download_url_uses_record_stream_when_storage_cannot_sign(self) -> None:
+        service, _, blob = _make_service()
+        blob.signs_urls = False
+        actor = Actor(org_id=ORG, user_id=USER)
+        created = await service.register(
+            actor=actor, name="report.pdf", artifact_type=ArtifactType.OTHER,
+            mime_type="application/pdf", content=b"v1-bytes", conversation_id="conv-1",
+        )
+        await service.add_version(actor=actor, artifact_id=created.artifact_id, content=b"v2-bytes-longer")
+
+        latest_url = await service.get_download_url(actor=actor, artifact_id=created.artifact_id)
+        v1_url = await service.get_download_url(actor=actor, artifact_id=created.artifact_id, version=1)
+
+        stream = f"https://app.example/api/v1/knowledgeBase/stream/record/{created.artifact_id}"
+        assert latest_url == stream
+        # The stream route takes the registry version, not the storage index.
+        assert v1_url == f"{stream}?version=1"
+        assert "/api/v1/document/" not in latest_url + v1_url
+
+    async def test_get_download_url_denies_user_without_permission(self) -> None:
+        service, _, blob = _make_service()
+        blob.signs_urls = False
+        created = await service.register(
+            actor=Actor(org_id=ORG, user_id=USER), name="report.pdf", artifact_type=ArtifactType.OTHER,
+            mime_type="application/pdf", content=b"v1-bytes", conversation_id="conv-1",
+        )
+
+        with pytest.raises(AccessDeniedError):
+            await service.get_download_url(actor=Actor(org_id=ORG, user_id=OTHER_USER), artifact_id=created.artifact_id)
+
 
 class TestTwoPhaseUpload:
     async def test_commit_version_verifies_content_before_bumping(self) -> None:

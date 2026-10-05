@@ -7,7 +7,11 @@ from app.modules.reconciliation.service import ReconciliationMetadata, Reconcili
 from app.modules.transformers.block_container_validator import BlockContainerValidator
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.modules.transformers.transformer import ReconciliationContext, TransformContext
+from app.modules.transformers.transformer import (
+    ENRICHMENT_FOLLOWS,
+    ReconciliationContext,
+    TransformContext,
+)
 from app.utils.logger import create_logger
 
 
@@ -136,10 +140,22 @@ class IndexingPipeline:
                             f"🗑️ Deleted old embeddings for empty document update (1:1): "
                             f"{record.virtual_record_id}"
                         )
-                        # Save empty reconciliation metadata so future diffs start clean
+                        # Save empty reconciliation metadata so future diffs
+                        # start clean. document_path is derived from
+                        # content's actual current location (not guessed) so
+                        # metadata stays selectable by future move-tree
+                        # operations -- see blob_storage.py's apply()'s
+                        # actual_storage_path tracking and
+                        # get_actual_content_path().
                         empty_metadata = ReconciliationMetadata().to_dict()
+                        actual_content_path = await self.sink_orchestrator.blob_storage.get_actual_content_path(
+                            record.org_id, record.virtual_record_id
+                        )
                         await self.sink_orchestrator.blob_storage.save_reconciliation_metadata(
-                            record.org_id, record_id, record.virtual_record_id, empty_metadata
+                            record.org_id, record_id, record.virtual_record_id, empty_metadata,
+                            document_path=actual_content_path,
+                            connector_id=getattr(record, "connector_id", None),
+                            record_group_id=getattr(record, "record_group_id", None),
                         )
                     except Exception as e:
                         self.logger.warning(
@@ -170,7 +186,9 @@ class IndexingPipeline:
                 )
 
             # Phase 1: Index (VectorStore + BlobStorage)
-            # Document becomes searchable after this call.
+            # Document becomes searchable after this call. Deferral is still a
+            # stub that enriches inline, so enrichment always follows here.
+            ctx.settings = {**ctx.settings, ENRICHMENT_FOLLOWS: True}
             await self._index(ctx)
 
             # Phase 2: Enrich (DocumentExtraction + GraphDB)
@@ -194,6 +212,9 @@ class IndexingPipeline:
 
         record = ctx.record
         if record.semantic_metadata:
+            # Canonical taxonomy names must be decided before the blob,
+            # summary and graph writes below all consume them.
+            await self.sink_orchestrator.resolve_entities(ctx)
             await self.sink_orchestrator.blob_storage.apply(ctx)
             if (record.semantic_metadata.summary or "").strip():
                 await self.sink_orchestrator.vector_store.index_record_summary(

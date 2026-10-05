@@ -27,7 +27,7 @@ const SECONDS_PER_DAY = 86400
 // Short-lived by default: a token minted without an explicit expiryDays
 // (e.g. a direct API call rather than the UI) should not silently get the
 // longest lifetime.
-const DEFAULT_EXPIRY_DAYS = 30
+export const DEFAULT_EXPIRY_DAYS = 30
 // OAuthAccessToken.expiresAt is required and TTL-indexed, so there's no
 // real "never expires" value to store — a 100-year lifetime is the
 // practical stand-in for the UI's "never" expiry option.

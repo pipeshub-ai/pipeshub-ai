@@ -21,11 +21,9 @@ from app.models.entities import AppUser, AppUserGroup, RecordGroupType, RecordTy
 from app.models.permission import EntityType, Permission, PermissionType
 import asyncio
 from app.connectors.core.registry.filters import (
-    FilterCollection,
     FilterOperator,
     SyncFilterKey,
 )
-from app.models.entities import AppUser, RecordGroupType, RecordType
 
 
 # ---------------------------------------------------------------------------
@@ -113,46 +111,6 @@ def mock_data_entities_processor():
     proc.remove_user_access_to_record = AsyncMock()
     proc.reindex_existing_records = AsyncMock()
     return proc
-
-
-@pytest.fixture()
-def mock_data_store_provider():
-    return _make_mock_data_store_provider()
-
-
-@pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "auth": {
-            "clientId": "box-client-id",
-            "clientSecret": "box-client-secret",
-            "enterpriseId": "box-ent-123",
-        },
-    })
-    return svc
-
-
-@pytest.fixture()
-def box_connector(mock_logger, mock_data_entities_processor,
-                  mock_data_store_provider, mock_config_service):
-    with patch("app.connectors.sources.box.connector.BoxApp"):
-        connector = BoxConnector(
-            logger=mock_logger,
-            data_entities_processor=mock_data_entities_processor,
-            data_store_provider=mock_data_store_provider,
-            config_service=mock_config_service,
-            connector_id="box-conn-1",
-            scope="team",
-            created_by="test-user",
-        )
-    connector.sync_filters = FilterCollection()
-    connector.indexing_filters = FilterCollection()
-    connector.data_source = AsyncMock()
-    connector.box_cursor_sync_point = AsyncMock()
-    connector.box_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
-    connector.box_cursor_sync_point.update_sync_point = AsyncMock()
-    return connector
 
 
 # ===========================================================================
@@ -460,12 +418,13 @@ class TestBoxGetPermissions:
         assert len(perms) == 1
         assert perms[0].type == PermissionType.WRITE
 
-    async def test_failed_response_returns_empty(self, box_connector):
+    async def test_failed_response_returns_none(self, box_connector):
+        # None, not []: an unread list must not be applied as "no collaborators".
         box_connector.data_source.collaborations_get_file_collaborations = AsyncMock(
-            return_value=MagicMock(success=False, error="Access denied")
+            return_value=MagicMock(success=False, error="503 Service Unavailable")
         )
         perms = await box_connector._get_permissions("f1", "file")
-        assert perms == []
+        assert perms is None
 
     async def test_404_returns_empty(self, box_connector):
         box_connector.data_source.collaborations_get_file_collaborations = AsyncMock(
@@ -486,12 +445,12 @@ class TestBoxGetPermissions:
         perms = await box_connector._get_permissions("f1", "file")
         assert perms == []
 
-    async def test_exception_returns_empty(self, box_connector):
+    async def test_exception_returns_none(self, box_connector):
         box_connector.data_source.collaborations_get_file_collaborations = AsyncMock(
             side_effect=Exception("API error")
         )
         perms = await box_connector._get_permissions("f1", "file")
-        assert perms == []
+        assert perms is None
 
 
 # ===========================================================================
@@ -820,7 +779,7 @@ class TestBoxRunSync:
             new_callable=AsyncMock,
             return_value=(MagicMock(), MagicMock()),
         ):
-            # It should still proceed past read_sync_point failure
+            # An unreadable cursor stops the run; a full sync would re-anchor at "now" and drop events.
             box_connector.data_source.events_get_events = AsyncMock(
                 return_value=MagicMock(success=False, data={})
             )
@@ -830,7 +789,10 @@ class TestBoxRunSync:
             box_connector._sync_user_groups = AsyncMock()
             box_connector._sync_record_groups = AsyncMock()
             box_connector._process_users_in_batches = AsyncMock()
-            await box_connector.run_sync()
+            with pytest.raises(Exception, match="read fail"):
+                await box_connector.run_sync()
+            box_connector._sync_users.assert_not_awaited()
+            box_connector.data_source.events_get_events.assert_not_awaited()
 
 
 class TestBoxSyncFolderRecursively:

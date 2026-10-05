@@ -6,6 +6,7 @@ import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import type { CitationData } from './types';
 import { getCitationCopyHref } from './utils';
 import { useOrgHref } from '@/lib/navigation';
+import { DemoSourceBadge } from '@/app/(main)/workspace/connectors/demo-data/components';
 
 const titleTextStyle: React.CSSProperties = {
   color: 'var(--accent-11)',
@@ -41,6 +42,7 @@ interface CitationSourceLinkRowProps {
 /**
  * Connector icon + truncated record name; wraps in `<a href>` when the
  * citation exposes a copyable `webUrl` so the browser offers **Copy link**.
+ * A "Demo" badge follows, outside the link, when the source is sample data.
  */
 export function CitationSourceLinkRow({
   citation,
@@ -58,18 +60,28 @@ export function CitationSourceLinkRow({
     </>
   );
 
+  const badge = <DemoSourceBadge connectorId={citation.connectorId} />;
+
   if (!copyHref) {
-    return label;
+    return (
+      <>
+        {label}
+        {badge}
+      </>
+    );
   }
 
   return (
-    <a
-      href={copyHref}
-      rel="noopener noreferrer"
-      onClick={suppressPlainCitationCopyLinkClick}
-      style={linkWrapperStyle}
-    >
-      {label}
-    </a>
+    <>
+      <a
+        href={copyHref}
+        rel="noopener noreferrer"
+        onClick={suppressPlainCitationCopyLinkClick}
+        style={linkWrapperStyle}
+      >
+        {label}
+      </a>
+      {badge}
+    </>
   );
 }

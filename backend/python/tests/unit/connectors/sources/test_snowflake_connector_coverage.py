@@ -109,9 +109,6 @@ def _make_connector() -> SnowflakeConnector:
     c._record_id_cache = {}
     c.sync_stats = SyncStats()
     c._sync_state_key = "snowflake_sync_state"
-    c._checkpoint_key = "snowflake_sync_checkpoint"
-    c._enable_streams = True
-    c._stream_prefix = "PIPESHUB_CDC_"
 
     # Default mocks for dependencies
     data_source = MagicMock()
@@ -148,7 +145,7 @@ def _make_connector() -> SnowflakeConnector:
     dep.ensure_team_app_edge = AsyncMock()
     c.data_entities_processor = dep
 
-    # Data store provider (used for checkpoint/transactions)
+    # Data store provider (used for transactions)
     dsp = MagicMock()
     tx_store = AsyncMock()
     tx_store.get_record_by_external_id = AsyncMock(return_value=None)
@@ -217,40 +214,25 @@ class TestSyncStats:
         s = SyncStats()
         assert s.databases_synced == 0
         assert s.errors == 0
-        assert s.checkpoint_resumed is False
 
     def test_to_dict_includes_all_fields(self) -> None:
-        s = SyncStats(
-            databases_synced=2,
-            tables_new=3,
-            checkpoint_resumed=True,
-            errors=1,
-        )
+        s = SyncStats(databases_synced=2, tables_new=3, errors=1)
         d = s.to_dict()
         assert d["databases_synced"] == 2
         assert d["tables_new"] == 3
-        assert d["checkpoint_resumed"] == 1
         assert d["errors"] == 1
 
-    def test_to_dict_checkpoint_resumed_false(self) -> None:
-        s = SyncStats(checkpoint_resumed=False)
-        assert s.to_dict()["checkpoint_resumed"] == 0
+    def test_count(self) -> None:
+        s = SyncStats()
+        s.count("views", "deleted")
+        assert s.views_deleted == 1
 
-    def test_log_summary_no_resume(self) -> None:
+    def test_log_summary(self) -> None:
         s = SyncStats()
         logger = MagicMock()
         s.log_summary(logger)
         logger.info.assert_called_once()
-        msg = logger.info.call_args[0][0]
-        assert "Sync Stats" in msg
-        assert "(resumed from checkpoint)" not in msg
-
-    def test_log_summary_with_resume(self) -> None:
-        s = SyncStats(checkpoint_resumed=True)
-        logger = MagicMock()
-        s.log_summary(logger)
-        msg = logger.info.call_args[0][0]
-        assert "(resumed from checkpoint)" in msg
+        assert "Sync Stats" in logger.info.call_args[0][0]
 
 
 # ===========================================================================
@@ -312,50 +294,6 @@ class TestComputeHashes:
 
 
 # ===========================================================================
-# _is_table_changed / _is_file_changed
-# ===========================================================================
-
-
-class TestIsChanged:
-    def test_table_last_altered_changed(self) -> None:
-        c = _make_connector()
-        t = SnowflakeTable(name="T", database_name="DB", schema_name="S", last_altered="2024-06-01")
-        assert c._is_table_changed(t, {"last_altered": "2024-01-01"}) is True
-
-    def test_table_last_altered_same_and_metrics_unchanged(self) -> None:
-        c = _make_connector()
-        t = SnowflakeTable(
-            name="T", database_name="DB", schema_name="S",
-            last_altered="2024-06-01", row_count=100, bytes=200,
-        )
-        assert c._is_table_changed(
-            t,
-            {"last_altered": "2024-06-01", "row_count": 100, "bytes": 200},
-        ) is False
-
-    def test_table_row_count_changed(self) -> None:
-        c = _make_connector()
-        t = SnowflakeTable(name="T", database_name="DB", schema_name="S", row_count=10, bytes=20)
-        assert c._is_table_changed(t, {"row_count": 5, "bytes": 20}) is True
-
-    def test_file_last_modified_changed(self) -> None:
-        c = _make_connector()
-        f = SnowflakeFile(relative_path="a", stage_name="S", database_name="D", schema_name="SC", last_modified="b", md5="m")
-        assert c._is_file_changed(f, {"last_modified": "a", "md5": "m"}) is True
-
-    def test_file_last_modified_same(self) -> None:
-        c = _make_connector()
-        f = SnowflakeFile(relative_path="a", stage_name="S", database_name="D", schema_name="SC", last_modified="a", md5="other")
-        # last_modified match => unchanged regardless of md5
-        assert c._is_file_changed(f, {"last_modified": "a", "md5": "m"}) is False
-
-    def test_file_md5_fallback(self) -> None:
-        c = _make_connector()
-        f = SnowflakeFile(relative_path="a", stage_name="S", database_name="D", schema_name="SC", md5="new")
-        assert c._is_file_changed(f, {"md5": "old"}) is True
-
-
-# ===========================================================================
 # _parse_source_tables
 # ===========================================================================
 
@@ -407,41 +345,6 @@ class TestParseSourceTables:
 
 
 # ===========================================================================
-# _should_skip_to_checkpoint
-# ===========================================================================
-
-
-class TestShouldSkipToCheckpoint:
-    def test_no_checkpoint(self) -> None:
-        c = _make_connector()
-        assert c._should_skip_to_checkpoint(None, "DB1") is False
-
-    def test_no_db_in_checkpoint(self) -> None:
-        c = _make_connector()
-        assert c._should_skip_to_checkpoint({}, "DB1") is False
-
-    def test_db_before_checkpoint(self) -> None:
-        c = _make_connector()
-        assert c._should_skip_to_checkpoint({"current_database": "M"}, "A") is True
-
-    def test_db_after_checkpoint(self) -> None:
-        c = _make_connector()
-        assert c._should_skip_to_checkpoint({"current_database": "A"}, "M") is False
-
-    def test_same_db_schema_before(self) -> None:
-        c = _make_connector()
-        assert c._should_skip_to_checkpoint(
-            {"current_database": "DB", "current_schema": "M"}, "DB", "A"
-        ) is True
-
-    def test_same_db_schema_after(self) -> None:
-        c = _make_connector()
-        assert c._should_skip_to_checkpoint(
-            {"current_database": "DB", "current_schema": "A"}, "DB", "M"
-        ) is False
-
-
-# ===========================================================================
 # Permissions
 # ===========================================================================
 
@@ -456,235 +359,6 @@ class TestGetPermissions:
         from app.models.permission import EntityType, PermissionType
         assert perms[0].type == PermissionType.OWNER
         assert perms[0].entity_type == EntityType.ORG
-
-
-# ===========================================================================
-# Checkpoint operations
-# ===========================================================================
-
-
-class TestCheckpointOperations:
-    @pytest.mark.asyncio
-    async def test_save_checkpoint(self) -> None:
-        c = _make_connector()
-        await c._save_checkpoint({"current_database": "DB", "current_schema": "S"})
-        c.record_sync_point.update_sync_point.assert_awaited_once_with(
-            c._checkpoint_key, {"current_database": "DB", "current_schema": "S"}
-        )
-
-    @pytest.mark.asyncio
-    async def test_save_checkpoint_swallows_errors(self) -> None:
-        c = _make_connector()
-        c.record_sync_point.update_sync_point.side_effect = RuntimeError("boom")
-        # Should not raise
-        await c._save_checkpoint({"x": 1})
-
-    @pytest.mark.asyncio
-    async def test_load_checkpoint(self) -> None:
-        c = _make_connector()
-        c.record_sync_point.read_sync_point.return_value = {"current_database": "DB"}
-        out = await c._load_checkpoint()
-        assert out == {"current_database": "DB"}
-
-    @pytest.mark.asyncio
-    async def test_load_checkpoint_exception_returns_none(self) -> None:
-        c = _make_connector()
-        c.record_sync_point.read_sync_point.side_effect = RuntimeError("boom")
-        assert await c._load_checkpoint() is None
-
-    @pytest.mark.asyncio
-    async def test_clear_checkpoint(self) -> None:
-        c = _make_connector()
-        await c._clear_checkpoint()
-        c.record_sync_point.update_sync_point.assert_awaited_once_with(c._checkpoint_key, {})
-
-
-# ===========================================================================
-# Stream operations
-# ===========================================================================
-
-
-class TestStreamOperations:
-    @pytest.mark.asyncio
-    async def test_ensure_stream_exists_no_data_source(self) -> None:
-        c = _make_connector()
-        c.data_source = None
-        assert await c._ensure_stream_exists("DB.S.T") is None
-
-    @pytest.mark.asyncio
-    async def test_ensure_stream_exists_invalid_fqn(self) -> None:
-        c = _make_connector()
-        assert await c._ensure_stream_exists("invalid") is None
-
-    @pytest.mark.asyncio
-    async def test_ensure_stream_exists_already_present(self) -> None:
-        c = _make_connector()
-        # First call (SHOW STREAMS LIKE) returns rows => already exists
-        c.data_source.execute_sql.return_value = _resp(data={"data": [["row1"]]})
-        result = await c._ensure_stream_exists("DB.S.T")
-        assert result == "DB.S.PIPESHUB_CDC_DB_S_T"
-        # Should only call once — no CREATE STREAM
-        assert c.data_source.execute_sql.await_count == 1
-
-    @pytest.mark.asyncio
-    async def test_ensure_stream_creates_if_missing(self) -> None:
-        c = _make_connector()
-        # First call: no rows, second call: create succeeds
-        c.data_source.execute_sql.side_effect = [
-            _resp(data={"data": []}),
-            _resp(success=True, data={}),
-        ]
-        result = await c._ensure_stream_exists("DB.S.T")
-        assert result == "DB.S.PIPESHUB_CDC_DB_S_T"
-        assert c.data_source.execute_sql.await_count == 2
-
-    @pytest.mark.asyncio
-    async def test_ensure_stream_create_fails(self) -> None:
-        c = _make_connector()
-        c.data_source.execute_sql.side_effect = [
-            _resp(data={"data": []}),
-            _resp(success=False, error="permission denied"),
-        ]
-        assert await c._ensure_stream_exists("DB.S.T") is None
-
-    @pytest.mark.asyncio
-    async def test_ensure_stream_exception(self) -> None:
-        c = _make_connector()
-        c.data_source.execute_sql.side_effect = RuntimeError("fail")
-        assert await c._ensure_stream_exists("DB.S.T") is None
-
-    @pytest.mark.asyncio
-    async def test_check_stream_has_changes_no_data_source(self) -> None:
-        c = _make_connector()
-        c.data_source = None
-        assert await c._check_stream_has_changes("DB.S.STREAM") == (False, 0)
-
-    @pytest.mark.asyncio
-    async def test_check_stream_has_changes_invalid_name(self) -> None:
-        c = _make_connector()
-        assert await c._check_stream_has_changes("invalid") == (False, 0)
-
-    @pytest.mark.asyncio
-    async def test_check_stream_no_changes(self) -> None:
-        c = _make_connector()
-        c.data_source.execute_sql.return_value = _resp(data={"data": [[False]]})
-        assert await c._check_stream_has_changes("DB.S.STREAM") == (False, 0)
-
-    @pytest.mark.asyncio
-    async def test_check_stream_has_changes(self) -> None:
-        c = _make_connector()
-        c.data_source.execute_sql.side_effect = [
-            _resp(data={"data": [[True]]}),
-            _resp(data={"data": [[42]]}),
-        ]
-        has_changes, count = await c._check_stream_has_changes("DB.S.STREAM")
-        assert has_changes is True
-        assert count == 42
-
-    @pytest.mark.asyncio
-    async def test_check_stream_exception(self) -> None:
-        c = _make_connector()
-        c.data_source.execute_sql.side_effect = RuntimeError("fail")
-        assert await c._check_stream_has_changes("DB.S.STREAM") == (False, 0)
-
-    @pytest.mark.asyncio
-    async def test_consume_stream_changes_empty(self) -> None:
-        c = _make_connector()
-        c.data_source = None
-        assert await c._consume_stream_changes("DB.S.STREAM") == []
-
-    @pytest.mark.asyncio
-    async def test_consume_stream_invalid_name(self) -> None:
-        c = _make_connector()
-        assert await c._consume_stream_changes("invalid") == []
-
-    @pytest.mark.asyncio
-    async def test_consume_stream_success(self) -> None:
-        c = _make_connector()
-        c.data_source.execute_sql.return_value = _resp(
-            data={
-                "resultSetMetaData": {"rowType": [{"name": "ID"}, {"name": "METADATA$ACTION"}]},
-                "data": [[1, "INSERT"], [2, "UPDATE"]],
-            }
-        )
-        result = await c._consume_stream_changes("DB.S.STREAM")
-        assert len(result) == 2
-        assert result[0]["METADATA$ACTION"] == "INSERT"
-
-    @pytest.mark.asyncio
-    async def test_consume_stream_exception(self) -> None:
-        c = _make_connector()
-        c.data_source.execute_sql.side_effect = RuntimeError("fail")
-        assert await c._consume_stream_changes("DB.S.STREAM") == []
-
-
-# ===========================================================================
-# _batch_get_records_by_external_ids
-# ===========================================================================
-
-
-class TestBatchGetRecords:
-    @pytest.mark.asyncio
-    async def test_empty(self) -> None:
-        c = _make_connector()
-        result = await c._batch_get_records_by_external_ids([])
-        assert result == {}
-
-    @pytest.mark.asyncio
-    async def test_returns_found_records(self) -> None:
-        c = _make_connector()
-        mock_record = MagicMock()
-        mock_record.id = "rec-1"
-
-        async def fetch(*, connector_id: str, external_record_id: str):
-            if external_record_id == "ext-1":
-                return mock_record
-            return None
-
-        c.data_entities_processor.get_record_by_external_id.side_effect = fetch
-        result = await c._batch_get_records_by_external_ids(["ext-1", "ext-2"])
-        assert "ext-1" in result
-        assert "ext-2" not in result
-
-    @pytest.mark.asyncio
-    async def test_handles_exceptions_per_record(self) -> None:
-        c = _make_connector()
-
-        async def fetch(*, connector_id: str, external_record_id: str):
-            if external_record_id == "bad":
-                raise RuntimeError("err")
-            return MagicMock()
-
-        c.data_entities_processor.get_record_by_external_id.side_effect = fetch
-        result = await c._batch_get_records_by_external_ids(["bad", "good"])
-        assert "good" in result
-        assert "bad" not in result
-
-
-# ===========================================================================
-# _mark_records_for_reindex
-# ===========================================================================
-
-
-class TestMarkRecordsForReindex:
-    @pytest.mark.asyncio
-    async def test_empty_list_noop(self) -> None:
-        c = _make_connector()
-        await c._mark_records_for_reindex([])
-        c.data_entities_processor.reindex_existing_records.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_calls_reindex(self) -> None:
-        c = _make_connector()
-        mock_record = MagicMock()
-
-        async def fetch(*, connector_id: str, external_record_id: str):
-            return mock_record
-
-        c.data_entities_processor.get_record_by_external_id.side_effect = fetch
-        await c._mark_records_for_reindex(["ext-1", "ext-2"])
-        c.data_entities_processor.reindex_existing_records.assert_awaited_once()
-        assert c.sync_stats.records_reindexed == 2
 
 
 # ===========================================================================
@@ -1416,87 +1090,6 @@ class TestInit:
 
 
 # ===========================================================================
-# _process_deletions_batch
-# ===========================================================================
-
-
-class TestProcessDeletionsBatch:
-    @pytest.mark.asyncio
-    async def test_nothing_to_delete(self) -> None:
-        c = _make_connector()
-        await c._process_deletions_batch(set(), set(), set(), set(), set(), set())
-        c.data_entities_processor.on_record_deleted.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_deletes_tables(self) -> None:
-        c = _make_connector()
-        mock_rec = MagicMock()
-        mock_rec.id = "rec-1"
-
-        async def fetch(*, connector_id: str, external_record_id: str):
-            return mock_rec
-
-        c.data_entities_processor.get_record_by_external_id.side_effect = fetch
-        await c._process_deletions_batch(
-            deleted_databases=set(),
-            deleted_schemas=set(),
-            deleted_stages=set(),
-            deleted_tables={"DB.S.T1"},
-            deleted_views=set(),
-            deleted_files=set(),
-        )
-        assert c.sync_stats.tables_deleted == 1
-
-    @pytest.mark.asyncio
-    async def test_legacy_process_deletions(self) -> None:
-        c = _make_connector()
-        # Just ensure the legacy wrapper calls through without error
-        await c._process_deletions(set(), set(), set(), set(), set(), set())
-
-    @pytest.mark.asyncio
-    async def test_deletes_views_and_files(self) -> None:
-        c = _make_connector()
-        mock_rec = MagicMock()
-        mock_rec.id = "rec"
-
-        async def fetch(*, connector_id: str, external_record_id: str):
-            return mock_rec
-
-        c.data_entities_processor.get_record_by_external_id.side_effect = fetch
-        await c._process_deletions_batch(
-            deleted_databases=set(),
-            deleted_schemas=set(),
-            deleted_stages=set(),
-            deleted_tables=set(),
-            deleted_views={"DB.S.V1"},
-            deleted_files={"DB.S.STG/a.csv"},
-        )
-        assert c.sync_stats.views_deleted == 1
-        assert c.sync_stats.files_deleted == 1
-
-    @pytest.mark.asyncio
-    async def test_error_in_table_delete_increments_errors(self) -> None:
-        c = _make_connector()
-        mock_rec = MagicMock()
-        mock_rec.id = "rec"
-
-        async def fetch(*, connector_id: str, external_record_id: str):
-            return mock_rec
-
-        c.data_entities_processor.get_record_by_external_id.side_effect = fetch
-        c.data_entities_processor.on_record_deleted.side_effect = RuntimeError("boom")
-        await c._process_deletions_batch(
-            deleted_databases=set(),
-            deleted_schemas=set(),
-            deleted_stages=set(),
-            deleted_tables={"DB.S.T"},
-            deleted_views={"DB.S.V"},
-            deleted_files={"DB.S.STG/a"},
-        )
-        assert c.sync_stats.errors == 3
-
-
-# ===========================================================================
 # __init__ real construction (covers lines 372-413)
 # ===========================================================================
 
@@ -1547,9 +1140,6 @@ class TestRealInit:
         assert c._record_id_cache == {}
         assert isinstance(c.sync_stats, SyncStats)
         assert c._sync_state_key == "snowflake_sync_state"
-        assert c._checkpoint_key == "snowflake_sync_checkpoint"
-        assert c._enable_streams is True
-        assert c._stream_prefix == "PIPESHUB_CDC_"
 
 
 # ===========================================================================
@@ -1590,7 +1180,7 @@ class TestInitAuthSuccess:
 
 
 # ===========================================================================
-# _run_full_sync_internal
+# _sync_objects
 # ===========================================================================
 
 
@@ -1629,7 +1219,7 @@ class TestRunFullSyncInternal:
 
         c._fetch_view_definition = _fake_def  # type: ignore[assignment]
 
-        await c._run_full_sync_internal()
+        await c._sync_objects(None)
         assert c.sync_stats.databases_synced == 1
         assert c.sync_stats.schemas_synced == 1
         assert c.sync_stats.tables_new == 1
@@ -1698,7 +1288,7 @@ class TestRunFullSyncInternal:
             return "SELECT 1"
 
         c._fetch_view_definition = _fake_def  # type: ignore[assignment]
-        await c._run_full_sync_internal()
+        await c._sync_objects(None)
         # Filters should narrow to 1 of each
         assert c.sync_stats.tables_new == 1
         assert c.sync_stats.views_new == 1
@@ -1710,339 +1300,8 @@ class TestRunFullSyncInternal:
         c = _make_connector()
         c._ensure_scope_app_edges = AsyncMock(side_effect=RuntimeError("boom"))
         with pytest.raises(RuntimeError):
-            await c._run_full_sync_internal()
+            await c._sync_objects(None)
         assert c.sync_stats.errors == 1
-
-
-# ===========================================================================
-# _run_incremental_sync_internal
-# ===========================================================================
-
-
-class TestRunIncrementalSyncInternal:
-    @pytest.mark.asyncio
-    async def test_incremental_new_objects(self) -> None:
-        c = _make_connector()
-        c._ensure_stream_exists = AsyncMock(return_value="DB.S.PIPESHUB_CDC_DB_S_T")
-
-        h = SnowflakeHierarchy(
-            databases=[SnowflakeDatabase(name="DB")],
-            schemas={"DB": [SnowflakeSchema(name="S", database_name="DB")]},
-            tables={
-                "DB.S": [
-                    SnowflakeTable(
-                        name="T",
-                        database_name="DB",
-                        schema_name="S",
-                        columns=[{"name": "c", "data_type": "INT"}],
-                    )
-                ]
-            },
-            views={
-                "DB.S": [SnowflakeView(name="V", database_name="DB", schema_name="S")]
-            },
-            stages={
-                "DB.S": [SnowflakeStage(name="STG", database_name="DB", schema_name="S")]
-            },
-            files={
-                "DB.S.STG": [
-                    SnowflakeFile(
-                        relative_path="a.csv",
-                        stage_name="STG",
-                        database_name="DB",
-                        schema_name="S",
-                        md5="m",
-                        last_modified="t0",
-                    )
-                ]
-            },
-        )
-        c.data_fetcher.fetch_all.return_value = h
-
-        async def _fake_def(*a, **k):
-            return "SELECT 1"
-
-        c._fetch_view_definition = _fake_def  # type: ignore[assignment]
-
-        await c._run_incremental_sync_internal(prev_state={})
-        assert c.sync_stats.tables_new == 1
-        assert c.sync_stats.views_new == 1
-        assert c.sync_stats.files_new == 1
-        # stream recorded
-        assert c.record_sync_point.update_sync_point.await_count >= 2
-
-    @pytest.mark.asyncio
-    async def test_incremental_unchanged_and_updated(self) -> None:
-        c = _make_connector()
-        c._ensure_stream_exists = AsyncMock(return_value=None)
-        c._check_stream_has_changes = AsyncMock(return_value=(False, 0))
-
-        table = SnowflakeTable(
-            name="T",
-            database_name="DB",
-            schema_name="S",
-            columns=[{"name": "c", "data_type": "INT"}],
-            last_altered="t1",
-            row_count=10,
-            bytes=100,
-        )
-        column_sig = c._compute_column_signature(table.columns)
-
-        h = SnowflakeHierarchy(
-            databases=[SnowflakeDatabase(name="DB")],
-            schemas={"DB": [SnowflakeSchema(name="S", database_name="DB")]},
-            tables={"DB.S": [table]},
-            views={
-                "DB.S": [
-                    SnowflakeView(
-                        name="V",
-                        database_name="DB",
-                        schema_name="S",
-                        definition="SELECT 1",
-                    )
-                ]
-            },
-            stages={},
-            files={},
-        )
-        c.data_fetcher.fetch_all.return_value = h
-
-        prev_state = {
-            "databases": ["DB"],
-            "tables": {
-                "DB.S.T": {
-                    "row_count": 10,
-                    "bytes": 100,
-                    "last_altered": "t1",
-                    "column_signature": column_sig,
-                }
-            },
-            "views": {
-                "DB.S.V": {
-                    "definition_hash": c._compute_definition_hash("SELECT 1"),
-                }
-            },
-            "streams": {},
-            "files": {},
-        }
-
-        async def _fake_def(*a, **k):
-            return "SELECT 1"
-
-        c._fetch_view_definition = _fake_def  # type: ignore[assignment]
-        await c._run_incremental_sync_internal(prev_state=prev_state)
-        assert c.sync_stats.tables_unchanged == 1
-        assert c.sync_stats.views_unchanged == 1
-
-    @pytest.mark.asyncio
-    async def test_incremental_schema_change(self) -> None:
-        c = _make_connector()
-
-        new_cols = [{"name": "c2", "data_type": "VARCHAR"}]
-        table = SnowflakeTable(
-            name="T",
-            database_name="DB",
-            schema_name="S",
-            columns=new_cols,
-            last_altered="t2",
-        )
-        h = SnowflakeHierarchy(
-            databases=[SnowflakeDatabase(name="DB")],
-            schemas={"DB": [SnowflakeSchema(name="S", database_name="DB")]},
-            tables={"DB.S": [table]},
-            views={},
-            stages={},
-            files={},
-        )
-        c.data_fetcher.fetch_all.return_value = h
-
-        prev_state = {
-            "databases": ["DB"],
-            "tables": {
-                "DB.S.T": {
-                    "row_count": 0,
-                    "bytes": 0,
-                    "last_altered": "t1",
-                    "column_signature": "different_signature_hash",
-                }
-            },
-            "views": {},
-            "streams": {},
-            "files": {},
-        }
-        await c._run_incremental_sync_internal(prev_state=prev_state)
-        assert c.sync_stats.tables_schema_changed == 1
-
-    @pytest.mark.asyncio
-    async def test_incremental_stream_changes(self) -> None:
-        c = _make_connector()
-        c._check_stream_has_changes = AsyncMock(return_value=(True, 5))
-        c._consume_stream_changes = AsyncMock(return_value=[])
-        c.data_entities_processor.reindex_existing_records = AsyncMock()
-
-        mock_record = MagicMock()
-
-        async def fetch(*, connector_id: str, external_record_id: str):
-            return mock_record
-
-        c.data_entities_processor.get_record_by_external_id.side_effect = fetch
-
-        table = SnowflakeTable(
-            name="T",
-            database_name="DB",
-            schema_name="S",
-            columns=[{"name": "c", "data_type": "INT"}],
-        )
-        column_sig = c._compute_column_signature(table.columns)
-
-        h = SnowflakeHierarchy(
-            databases=[SnowflakeDatabase(name="DB")],
-            schemas={"DB": [SnowflakeSchema(name="S", database_name="DB")]},
-            tables={"DB.S": [table]},
-            views={},
-            stages={},
-            files={},
-        )
-        c.data_fetcher.fetch_all.return_value = h
-
-        prev_state = {
-            "databases": ["DB"],
-            "tables": {
-                "DB.S.T": {
-                    "row_count": 0,
-                    "bytes": 0,
-                    "last_altered": None,
-                    "column_signature": column_sig,
-                }
-            },
-            "views": {},
-            "streams": {"DB.S.T": "DB.S.PIPESHUB_CDC_DB_S_T"},
-            "files": {},
-        }
-        await c._run_incremental_sync_internal(prev_state=prev_state)
-        assert c.sync_stats.tables_stream_changes == 1
-        c._consume_stream_changes.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_incremental_skips_checkpoint(self) -> None:
-        c = _make_connector()
-        c.record_sync_point.read_sync_point.return_value = {
-            "current_database": "ZZ",
-            "current_schema": None,
-        }
-        h = SnowflakeHierarchy(
-            databases=[SnowflakeDatabase(name="AA"), SnowflakeDatabase(name="ZZ")],
-            schemas={
-                "AA": [SnowflakeSchema(name="S", database_name="AA")],
-                "ZZ": [SnowflakeSchema(name="S", database_name="ZZ")],
-            },
-        )
-        c.data_fetcher.fetch_all.return_value = h
-        await c._run_incremental_sync_internal(prev_state={})
-        # AA should be skipped, so schemas_synced reflects only ZZ's schema
-        assert c.sync_stats.checkpoint_resumed is True
-
-    @pytest.mark.asyncio
-    async def test_incremental_error_reraises(self) -> None:
-        c = _make_connector()
-        c.data_fetcher.fetch_all.side_effect = RuntimeError("boom")
-        with pytest.raises(RuntimeError):
-            await c._run_incremental_sync_internal(prev_state={})
-        assert c.sync_stats.errors == 1
-
-    @pytest.mark.asyncio
-    async def test_incremental_updates_and_new_view(self) -> None:
-        c = _make_connector()
-
-        view = SnowflakeView(
-            name="V",
-            database_name="DB",
-            schema_name="S",
-            definition="SELECT 2",
-        )
-        h = SnowflakeHierarchy(
-            databases=[SnowflakeDatabase(name="DB")],
-            schemas={"DB": [SnowflakeSchema(name="S", database_name="DB")]},
-            tables={},
-            views={"DB.S": [view]},
-            stages={},
-            files={},
-        )
-        c.data_fetcher.fetch_all.return_value = h
-
-        async def _fake_def(*a, **k):
-            return "SELECT 2"
-
-        c._fetch_view_definition = _fake_def  # type: ignore[assignment]
-        prev_state = {
-            "databases": ["DB"],
-            "tables": {},
-            "views": {
-                "DB.S.V": {
-                    "definition_hash": c._compute_definition_hash("SELECT 1"),
-                }
-            },
-            "streams": {},
-            "files": {},
-        }
-        await c._run_incremental_sync_internal(prev_state=prev_state)
-        assert c.sync_stats.views_updated == 1
-
-    @pytest.mark.asyncio
-    async def test_incremental_files_updated_and_unchanged(self) -> None:
-        c = _make_connector()
-        # One changed file, one unchanged, one new
-        file1 = SnowflakeFile(
-            relative_path="a.csv",
-            stage_name="STG",
-            database_name="DB",
-            schema_name="S",
-            md5="new",
-            last_modified="t2",
-        )
-        file2 = SnowflakeFile(
-            relative_path="b.csv",
-            stage_name="STG",
-            database_name="DB",
-            schema_name="S",
-            md5="same",
-            last_modified="t1",
-        )
-        file3 = SnowflakeFile(
-            relative_path="new.csv",
-            stage_name="STG",
-            database_name="DB",
-            schema_name="S",
-        )
-        folder_file = SnowflakeFile(
-            relative_path="folder/",
-            stage_name="STG",
-            database_name="DB",
-            schema_name="S",
-        )
-        h = SnowflakeHierarchy(
-            databases=[SnowflakeDatabase(name="DB")],
-            schemas={"DB": [SnowflakeSchema(name="S", database_name="DB")]},
-            stages={
-                "DB.S": [SnowflakeStage(name="STG", database_name="DB", schema_name="S")]
-            },
-            files={"DB.S.STG": [file1, file2, file3, folder_file]},
-        )
-        c.data_fetcher.fetch_all.return_value = h
-        prev_state = {
-            "databases": ["DB"],
-            "tables": {},
-            "views": {},
-            "streams": {},
-            "files": {
-                "DB.S.STG/a.csv": {"md5": "old", "last_modified": "t1"},
-                "DB.S.STG/b.csv": {"md5": "same", "last_modified": "t1"},
-            },
-        }
-        await c._run_incremental_sync_internal(prev_state=prev_state)
-        assert c.sync_stats.files_updated == 1
-        assert c.sync_stats.files_unchanged == 1
-        assert c.sync_stats.files_new == 1
 
 
 # ===========================================================================
@@ -2052,38 +1311,11 @@ class TestRunIncrementalSyncInternal:
 
 class TestRunIncrementalSync:
     @pytest.mark.asyncio
-    async def test_no_previous_state_runs_full(self) -> None:
+    async def test_delegates_to_run_sync(self) -> None:
         c = _make_connector()
-        c.get_sync_point = AsyncMock(return_value=None)
-        c._run_full_sync_internal = AsyncMock()
-        c._run_incremental_sync_internal = AsyncMock()
-        # Ensure sync_stats has all attrs for log line
-        c.sync_stats.tables_synced = 0
-        c.sync_stats.tables_skipped = 0
-        c.sync_stats.views_synced = 0
-        c.sync_stats.views_skipped = 0
-        c.sync_stats.files_synced = 0
-        c.sync_stats.files_skipped = 0
-        c.sync_stats.deletions_processed = 0
+        c.run_sync = AsyncMock()
         await c.run_incremental_sync()
-        c._run_full_sync_internal.assert_awaited_once()
-        c._run_incremental_sync_internal.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_with_cursor_runs_incremental(self) -> None:
-        c = _make_connector()
-        c.get_sync_point = AsyncMock(return_value={"cursor": {"databases": []}})
-        c._run_full_sync_internal = AsyncMock()
-        c._run_incremental_sync_internal = AsyncMock()
-        c.sync_stats.tables_synced = 0
-        c.sync_stats.tables_skipped = 0
-        c.sync_stats.views_synced = 0
-        c.sync_stats.views_skipped = 0
-        c.sync_stats.files_synced = 0
-        c.sync_stats.files_skipped = 0
-        c.sync_stats.deletions_processed = 0
-        await c.run_incremental_sync()
-        c._run_incremental_sync_internal.assert_awaited_once()
+        c.run_sync.assert_awaited_once()
 
 
 # ===========================================================================
@@ -2452,19 +1684,6 @@ class TestCleanupException:
 
 
 # ===========================================================================
-# _clear_checkpoint error path
-# ===========================================================================
-
-
-class TestClearCheckpointError:
-    @pytest.mark.asyncio
-    async def test_clear_checkpoint_swallows_error(self) -> None:
-        c = _make_connector()
-        c.record_sync_point.update_sync_point.side_effect = RuntimeError("bad")
-        await c._clear_checkpoint()
-
-
-# ===========================================================================
 # get_mimetype_from_path ValueError path (unparseable mime type)
 # ===========================================================================
 
@@ -2478,44 +1697,6 @@ class TestGetMimetypeValueError:
             mt = get_mimetype_from_path("file.weird")
             # The fallback path returns MimeTypes.BIN.value on ValueError
             assert mt == MimeTypes.BIN.value
-
-
-# ===========================================================================
-# _consume_stream_changes with dict rows
-# ===========================================================================
-
-
-class TestConsumeStreamDictRows:
-    @pytest.mark.asyncio
-    async def test_consume_stream_dict_rows(self) -> None:
-        c = _make_connector()
-        c.data_source.execute_sql.return_value = _resp(
-            data={
-                "resultSetMetaData": {"rowType": [{"name": "ID"}]},
-                "data": [{"ID": 1}, {"ID": 2}],
-            }
-        )
-        result = await c._consume_stream_changes("DB.S.STREAM")
-        assert len(result) == 2
-        assert result[0]["ID"] == 1
-
-
-# ===========================================================================
-# _check_stream_has_changes dict row
-# ===========================================================================
-
-
-class TestCheckStreamDictRow:
-    @pytest.mark.asyncio
-    async def test_dict_row_true(self) -> None:
-        c = _make_connector()
-        c.data_source.execute_sql.side_effect = [
-            _resp(data={"data": [{"HAS_DATA": "TRUE"}]}),
-            _resp(data={"data": [{"CNT": 7}]}),
-        ]
-        has_changes, count = await c._check_stream_has_changes("DB.S.STREAM")
-        assert has_changes is True
-        assert count == 7
 
 
 # ===========================================================================
@@ -2733,55 +1914,6 @@ class TestCreateConnector:
 
 
 # ===========================================================================
-# _is_table_changed with no last_altered (fallback path)
-# ===========================================================================
-
-
-class TestIsTableChangedFallback:
-    def test_no_prev_last_altered_uses_row_count(self) -> None:
-        c = _make_connector()
-        t = SnowflakeTable(
-            name="T",
-            database_name="DB",
-            schema_name="S",
-            row_count=10,
-            bytes=100,
-            last_altered=None,
-        )
-        assert c._is_table_changed(t, {"row_count": 10, "bytes": 100}) is False
-
-    def test_table_bytes_changed(self) -> None:
-        c = _make_connector()
-        t = SnowflakeTable(
-            name="T",
-            database_name="DB",
-            schema_name="S",
-            row_count=10,
-            bytes=200,
-        )
-        assert c._is_table_changed(t, {"row_count": 10, "bytes": 100}) is True
-
-
-# ===========================================================================
-# _is_file_changed fallback (no last_modified)
-# ===========================================================================
-
-
-class TestIsFileChangedFallback:
-    def test_no_prev_last_modified_uses_md5(self) -> None:
-        c = _make_connector()
-        f = SnowflakeFile(
-            relative_path="a",
-            stage_name="S",
-            database_name="D",
-            schema_name="SC",
-            md5="same",
-            last_modified=None,
-        )
-        assert c._is_file_changed(f, {"md5": "same"}) is False
-
-
-# ===========================================================================
 # run_sync error path (additional coverage)
 # ===========================================================================
 
@@ -2797,13 +1929,13 @@ class TestRunSyncError:
     @pytest.mark.asyncio
     async def test_run_sync_happy_path(self) -> None:
         c = _make_connector()
-        c._run_full_sync_internal = AsyncMock()
+        c._sync_objects = AsyncMock()
         with patch(
             "app.connectors.sources.snowflake.connector.load_connector_filters",
             new=AsyncMock(return_value=({"a": 1}, {"b": 2})),
         ):
             await c.run_sync()
-        c._run_full_sync_internal.assert_awaited_once()
+        c._sync_objects.assert_awaited_once_with(None)
         assert c.sync_filters == {"a": 1}
         assert c.indexing_filters == {"b": 2}
 
@@ -2845,21 +1977,14 @@ class TestEnsureScopeAppEdges:
 # ===========================================================================
 
 
+_EMPTY_STATE = {"tables": {}, "views": {}, "files": {}}
+
+
 class TestFinalEdges:
-    @pytest.mark.asyncio
-    async def test_consume_stream_changes_returns_empty_on_no_success(self) -> None:
-        c = _make_connector()
-        c.data_source.execute_sql.return_value = _resp(success=True, data=None)
-        assert await c._consume_stream_changes("DB.S.STREAM") == []
-
-    def test_should_skip_to_checkpoint_empty_db_string(self) -> None:
-        c = _make_connector()
-        # checkpoint_db is falsy ""
-        assert c._should_skip_to_checkpoint({"current_database": ""}, "AA") is False
-
     @pytest.mark.asyncio
     async def test_incremental_schema_filter_applied(self) -> None:
         c = _make_connector()
+        c._ensure_scope_app_edges = AsyncMock()
         c.sync_filters = {
             "schemas": SimpleNamespace(value=["DB.KEEP"]),
         }
@@ -2873,33 +1998,13 @@ class TestFinalEdges:
             },
         )
         c.data_fetcher.fetch_all.return_value = h
-        await c._run_incremental_sync_internal(prev_state={})
-        assert c.sync_stats.schemas_synced == 1
-
-    @pytest.mark.asyncio
-    async def test_incremental_checkpoint_schema_skip(self) -> None:
-        c = _make_connector()
-        c.record_sync_point.read_sync_point.return_value = {
-            "current_database": "DB",
-            "current_schema": "M",
-        }
-        h = SnowflakeHierarchy(
-            databases=[SnowflakeDatabase(name="DB")],
-            schemas={
-                "DB": [
-                    SnowflakeSchema(name="A", database_name="DB"),
-                    SnowflakeSchema(name="Z", database_name="DB"),
-                ]
-            },
-        )
-        c.data_fetcher.fetch_all.return_value = h
-        await c._run_incremental_sync_internal(prev_state={})
-        # A should be skipped; Z proceeds
+        await c._sync_objects(_EMPTY_STATE)
         assert c.sync_stats.schemas_synced == 1
 
     @pytest.mark.asyncio
     async def test_incremental_filters_tables_views_stages(self) -> None:
         c = _make_connector()
+        c._ensure_scope_app_edges = AsyncMock()
         c.sync_filters = {
             "tables": SimpleNamespace(value=["DB.S.T_KEEP"]),
             "views": SimpleNamespace(value=["DB.S.V_KEEP"]),
@@ -2933,14 +2038,14 @@ class TestFinalEdges:
             return "SELECT 1"
 
         c._fetch_view_definition = _fake_def  # type: ignore[assignment]
-        await c._run_incremental_sync_internal(prev_state={})
+        await c._sync_objects(_EMPTY_STATE)
         assert c.sync_stats.tables_new == 1
         assert c.sync_stats.views_new == 1
 
     @pytest.mark.asyncio
     async def test_incremental_table_metadata_updated(self) -> None:
         c = _make_connector()
-        c._check_stream_has_changes = AsyncMock(return_value=(False, 0))
+        c._ensure_scope_app_edges = AsyncMock()
         table = SnowflakeTable(
             name="T",
             database_name="DB",
@@ -2957,25 +2062,17 @@ class TestFinalEdges:
         )
         c.data_fetcher.fetch_all.return_value = h
         prev_state = {
-            "databases": ["DB"],
-            "tables": {
-                "DB.S.T": {
-                    "row_count": 100,
-                    "bytes": 0,
-                    "last_altered": "t1",
-                    "column_signature": column_sig,
-                }
-            },
+            "tables": {"DB.S.T": f"100|0|t1|{column_sig}"},
             "views": {},
-            "streams": {},
             "files": {},
         }
-        await c._run_incremental_sync_internal(prev_state=prev_state)
+        await c._sync_objects(prev_state)
         assert c.sync_stats.tables_updated == 1
 
     @pytest.mark.asyncio
     async def test_incremental_file_filter_applied(self) -> None:
         c = _make_connector()
+        c._ensure_scope_app_edges = AsyncMock()
         c.sync_filters = {"files": SimpleNamespace(value=["DB.S.STG/keep.csv"])}
         h = SnowflakeHierarchy(
             databases=[SnowflakeDatabase(name="DB")],
@@ -3001,7 +2098,7 @@ class TestFinalEdges:
             },
         )
         c.data_fetcher.fetch_all.return_value = h
-        await c._run_incremental_sync_internal(prev_state={})
+        await c._sync_objects(_EMPTY_STATE)
         assert c.sync_stats.files_new == 1
 
     @pytest.mark.asyncio

@@ -37,6 +37,25 @@ export const deleteRecordSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
 });
 
+export const restoreRecordSchema = z.object({
+  params: z.object({ recordId: z.string().min(1) }),
+});
+
+// Matches MAX_RESTORE_RECORD_IDS in the connector service.
+export const MAX_RESTORE_RECORD_IDS = 100;
+
+export const restoreRecordsSchema = z.object({
+  body: z.object({
+    recordIds: z
+      .array(z.string().min(1))
+      .min(1, 'Choose at least one item to restore.')
+      .max(
+        MAX_RESTORE_RECORD_IDS,
+        `Restore at most ${MAX_RESTORE_RECORD_IDS} items at a time.`,
+      ),
+  }),
+});
+
 export const reindexRecordSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
   body: z
@@ -357,4 +376,14 @@ export const moveRecordSchema = z.object({
     kbId: z.string().uuid(),
     recordId: z.string().min(1),
   }),
+});
+
+// Each person's switch for the bundled Acme Corp demo data; null goes back to the default.
+export const demoDataPreferenceSchema = z.object({
+  body: z.object({ include: z.boolean().nullable() }).strict(),
+});
+
+// Admins only: turn the demo off, or back on, for the whole organization.
+export const demoDataWorkspaceSchema = z.object({
+  body: z.object({ enabled: z.boolean() }).strict(),
 });

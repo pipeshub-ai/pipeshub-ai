@@ -9,6 +9,7 @@ import { OAuthRefreshToken } from '../../../../src/modules/oauth_provider/schema
 import {
   InvalidTokenError,
   ExpiredTokenError,
+  InvalidGrantError,
 } from '../../../../src/libs/errors/oauth.errors'
 import { createMockLogger } from '../../../helpers/mock-logger'
 
@@ -1092,6 +1093,121 @@ describe('OAuthTokenService - branch coverage', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(InvalidTokenError)
       }
+    })
+
+    describe('client binding', () => {
+      const secret = 'test-secret-key-for-signing-tokens-at-least-32-bytes'
+      const userId = new Types.ObjectId()
+      const orgId = new Types.ObjectId()
+
+      function signRefreshToken(clientId: string): string {
+        return jwt.sign(
+          {
+            isRefreshToken: true,
+            userId: userId.toString(),
+            orgId: orgId.toString(),
+            client_id: clientId,
+            scope: 'user:read offline_access',
+          },
+          secret,
+        )
+      }
+
+      function storedRefreshToken(clientId: string) {
+        return {
+          clientId,
+          userId,
+          orgId,
+          scopes: ['user:read', 'offline_access'],
+          isRevoked: false,
+          revokedAt: undefined as Date | undefined,
+          rotationCount: 0,
+          save: sinon.stub().resolves(),
+        }
+      }
+
+      const app = (clientId: string) => ({
+        clientId,
+        accessTokenLifetime: 3600,
+        refreshTokenLifetime: 86400,
+        createdBy: new Types.ObjectId(),
+      }) as any
+
+      it('rotates and issues new tokens when the presenting client matches the issuing client', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+        const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+
+        const result = await service.refreshTokens(app('client-a'), signRefreshToken('client-a'))
+
+        expect(result.accessToken).to.be.a('string')
+        expect(result.refreshToken).to.be.a('string')
+        expect(stored.isRevoked).to.be.true
+        expect(stored.save.calledOnce).to.be.true
+        expect(accessCreate.calledOnce).to.be.true
+        expect(refreshCreate.calledOnce).to.be.true
+      })
+
+      it('rejects a refresh token issued to a different client with invalid_grant', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+        const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+
+        try {
+          await service.refreshTokens(app('client-b'), signRefreshToken('client-a'))
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+        }
+
+        expect(accessCreate.called).to.be.false
+        expect(refreshCreate.called).to.be.false
+      })
+
+      it('does not rotate or revoke the stored token when a different client is rejected', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+
+        try {
+          await service.refreshTokens(app('client-b'), signRefreshToken('client-a'))
+        } catch {
+          // asserted in the previous case
+        }
+
+        expect(stored.isRevoked).to.be.false
+        expect(stored.revokedAt).to.be.undefined
+        expect(stored.save.called).to.be.false
+      })
+
+      it('binds to the stored clientId, not the client_id claim inside the JWT', async () => {
+        // A token whose JWT claim says client-b but whose stored record says
+        // client-a must still be rejected for client-b: the database row is
+        // the source of truth for who the grant was issued to.
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+
+        try {
+          await service.refreshTokens(app('client-b'), signRefreshToken('client-b'))
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+        }
+        expect(stored.isRevoked).to.be.false
+      })
     })
   })
 

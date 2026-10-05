@@ -1,11 +1,13 @@
 """Tests for app.api.middlewares.auth"""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 from jose import JWTError
 
+from app.api.middlewares import auth as auth_module
 from app.api.middlewares.auth import (
     AUTH_POLICY_ATTR,
     authMiddleware,
@@ -18,9 +20,17 @@ from app.api.middlewares.auth import (
     require_scopes,
     require_service_token,
     resolve_request_role,
+    service_token_org,
 )
 from app.api.middlewares.caller_role import CallerRole, CallerRoleStatus
 from app.config.constants.service import TokenScopes
+
+
+@pytest.fixture(autouse=True)
+def _fresh_session_checks():
+    auth_module._session_checks.clear()
+    yield
+    auth_module._session_checks.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +372,10 @@ class TestDenyServiceTokens:
 # ---------------------------------------------------------------------------
 
 
+def _session_payload(role="member", token="session.token"):
+    return {"userId": "user-1", "role": role, "token_type": "regular", "user": token}
+
+
 def _make_fake_request(authorization=None):
     """Build a fake FastAPI Request with mocked container/logger."""
     headers = {}
@@ -550,10 +564,16 @@ class TestIsJwtTokenValid:
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.get_config_service")
     @patch("app.api.middlewares.auth.jwt.decode")
-    async def test_oauth_client_credentials_resolves_owner_from_created_by(
+    async def test_oauth_client_credentials_resolves_identity_from_created_by(
         self, mock_jwt_decode, mock_get_config
     ):
-        """client_credentials tokens act on behalf of the app owner (createdBy claim)."""
+        """client_credentials tokens act as the identity in the createdBy claim.
+
+        The claim keeps its original name for tokens already in circulation,
+        but it carries whoever the application acts as, which Node resolves
+        when minting: the application's service account where one has been
+        set, its creator otherwise.
+        """
         mock_config_service = AsyncMock()
         mock_config_service.get_config.return_value = {
             "jwtSecret": "regular-secret",
@@ -573,6 +593,40 @@ class TestIsJwtTokenValid:
         result = await isJwtTokenValid(request)
         assert result["isOAuth"] is True
         assert result["userId"] == "app-owner-id"
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.get_config_service")
+    @patch("app.api.middlewares.auth.jwt.decode")
+    async def test_oauth_client_credentials_acts_as_the_apps_service_account(
+        self, mock_jwt_decode, mock_get_config
+    ):
+        """An application pointed at a service account acts as it here too.
+
+        This is the case the whole feature exists for. Retrieval keys on the
+        userId this returns, so if it came back as the person who created the
+        application, search and the connectors would go on reading as them
+        while the Node routes read as the service account.
+        """
+        mock_config_service = AsyncMock()
+        mock_config_service.get_config.return_value = {
+            "jwtSecret": "regular-secret",
+            "scopedJwtSecret": "scoped-secret",
+        }
+        mock_get_config.return_value = mock_config_service
+
+        mock_jwt_decode.return_value = {
+            "userId": "client-xyz",
+            "tokenType": "oauth",
+            "scope": "kb:read",
+            "client_id": "client-xyz",
+            # Minted after the application was pointed at a service account,
+            # so the claim carries the service account rather than the person.
+            "createdBy": "service-account-id",
+        }
+
+        request = _make_fake_request(authorization="Bearer oauth.jwt.token")
+        result = await isJwtTokenValid(request)
+        assert result["userId"] == "service-account-id"
 
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.get_config_service")
@@ -785,6 +839,16 @@ class TestIsJwtTokenValid:
 class TestAuthMiddleware:
     """Tests for authMiddleware()."""
 
+    @pytest.fixture(autouse=True)
+    def _node_confirms_sessions(self):
+        """Node vouches for every token unless a test patches it to say otherwise."""
+        with patch(
+            "app.api.middlewares.auth.fetch_caller_role",
+            new_callable=AsyncMock,
+            return_value=CallerRole(CallerRoleStatus.VALID, "member"),
+        ):
+            yield
+
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.isJwtTokenValid")
     async def test_success_attaches_user(self, mock_validate):
@@ -841,7 +905,7 @@ class TestAuthMiddleware:
     @patch("app.api.middlewares.auth.isJwtTokenValid")
     async def test_session_jwt_admin_role_attached(self, mock_validate):
         """Session JWT with role=admin is stored on request.state.user."""
-        payload = {"userId": "user-1", "role": "admin", "token_type": "regular"}
+        payload = {"userId": "user-1", "role": "admin", "token_type": "regular", "user": "tok"}
         mock_validate.return_value = payload
 
         request = _make_fake_request(authorization="Bearer valid.token")
@@ -909,28 +973,144 @@ class TestAuthMiddleware:
         assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "payload",
-        [
-            {"userId": "user-1", "role": "admin", "token_type": "regular"},
-            {"userId": "svc", "token_type": "scoped", "role": "member"},
-        ],
-        ids=["session", "service"],
-    )
     @patch("app.api.middlewares.auth.fetch_caller_role", new_callable=AsyncMock)
     @patch("app.api.middlewares.auth.isJwtTokenValid")
-    async def test_non_oauth_tokens_never_call_node(self, mock_validate, mock_role, payload):
-        mock_validate.return_value = dict(payload)
+    async def test_service_tokens_never_call_node(self, mock_validate, mock_role):
+        mock_validate.return_value = {"userId": "svc", "token_type": "scoped", "role": "member"}
 
         await authMiddleware(_make_fake_request(authorization="Bearer tok"))
 
         mock_role.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("node_role", ["admin", "member"])
+    @patch("app.api.middlewares.auth.fetch_caller_role", new_callable=AsyncMock)
+    @patch("app.api.middlewares.auth.isJwtTokenValid")
+    async def test_live_session_passes_with_its_claimed_role(
+        self, mock_validate, mock_role, node_role
+    ):
+        """A session Node confirms passes, and keeps the role its token was issued with."""
+        mock_validate.return_value = _session_payload(role="member")
+        mock_role.return_value = CallerRole(CallerRoleStatus.VALID, node_role)
+
+        request = _make_fake_request(authorization="Bearer session.token")
+        await authMiddleware(request)
+
+        assert request.state.user["role"] == "member"
+        mock_role.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.fetch_caller_role", new_callable=AsyncMock)
+    @patch("app.api.middlewares.auth.isJwtTokenValid")
+    async def test_ended_session_is_refused(self, mock_validate, mock_role):
+        """Signed out, password changed, locked or deleted: Node refuses it, so do we."""
+        from types import SimpleNamespace
+
+        mock_validate.return_value = _session_payload()
+        mock_role.return_value = CallerRole(CallerRoleStatus.REJECTED)
+
+        request = _make_fake_request(authorization="Bearer session.token")
+        request.state = SimpleNamespace()
+        with pytest.raises(HTTPException) as exc_info:
+            await authMiddleware(request)
+
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail == "Your session has ended. Please sign in again."
+        assert not hasattr(request.state, "user")
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.fetch_caller_role", new_callable=AsyncMock)
+    @patch("app.api.middlewares.auth.isJwtTokenValid")
+    async def test_session_refused_when_node_cannot_confirm_it(self, mock_validate, mock_role):
+        """Node unreachable: an ended session would look live, so none is let through."""
+        mock_validate.return_value = _session_payload()
+        mock_role.return_value = CallerRole(CallerRoleStatus.UNKNOWN)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await authMiddleware(_make_fake_request(authorization="Bearer session.token"))
+
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.headers == {"Retry-After": "5"}
+        assert exc_info.value.detail == (
+            "We couldn't confirm your sign-in just now. Please try again in a few seconds."
+        )
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.fetch_caller_role", new_callable=AsyncMock)
+    @patch("app.api.middlewares.auth.isJwtTokenValid")
+    async def test_repeat_requests_reuse_nodes_answer(self, mock_validate, mock_role):
+        mock_validate.side_effect = lambda _request: _session_payload()
+        mock_role.return_value = CallerRole(CallerRoleStatus.VALID, "member")
+
+        for _ in range(3):
+            await authMiddleware(_make_fake_request(authorization="Bearer session.token"))
+
+        mock_role.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.fetch_caller_role", new_callable=AsyncMock)
+    @patch("app.api.middlewares.auth.isJwtTokenValid")
+    async def test_reused_refusal_still_refuses(self, mock_validate, mock_role):
+        mock_validate.side_effect = lambda _request: _session_payload()
+        mock_role.return_value = CallerRole(CallerRoleStatus.REJECTED)
+
+        for _ in range(2):
+            with pytest.raises(HTTPException) as exc_info:
+                await authMiddleware(_make_fake_request(authorization="Bearer session.token"))
+            assert exc_info.value.status_code == 401
+
+        mock_role.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.fetch_caller_role", new_callable=AsyncMock)
+    @patch("app.api.middlewares.auth.isJwtTokenValid")
+    async def test_one_sessions_answer_is_not_used_for_another(self, mock_validate, mock_role):
+        mock_validate.side_effect = lambda request: _session_payload(
+            token=request.headers["Authorization"][7:]
+        )
+        mock_role.side_effect = [
+            CallerRole(CallerRoleStatus.VALID, "member"),
+            CallerRole(CallerRoleStatus.REJECTED),
+        ]
+
+        await authMiddleware(_make_fake_request(authorization="Bearer live.session"))
+        with pytest.raises(HTTPException) as exc_info:
+            await authMiddleware(_make_fake_request(authorization="Bearer ended.session"))
+
+        assert exc_info.value.status_code == 401
+        assert mock_role.await_count == 2
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.isJwtTokenValid")
+    async def test_concurrent_requests_share_one_lookup(self, mock_validate):
+        mock_validate.side_effect = lambda _request: _session_payload()
+        release = asyncio.Event()
+        calls = 0
+
+        async def slow_node(*_args):
+            nonlocal calls
+            calls += 1
+            await release.wait()
+            return CallerRole(CallerRoleStatus.VALID, "member")
+
+        with patch("app.api.middlewares.auth.fetch_caller_role", side_effect=slow_node):
+            burst = [
+                asyncio.ensure_future(
+                    authMiddleware(_make_fake_request(authorization="Bearer session.token"))
+                )
+                for _ in range(5)
+            ]
+            await asyncio.sleep(0.05)
+            release.set()
+            await asyncio.gather(*burst)
+
+        assert calls == 1
+
+    @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.isJwtTokenValid")
     async def test_forged_x_is_admin_header_ignored(self, mock_validate):
         """X-Is-Admin on the request does not grant admin."""
-        payload = {"userId": "user-1", "role": "member", "token_type": "regular"}
+        payload = {"userId": "user-1", "role": "member", "token_type": "regular", "user": "tok"}
         mock_validate.return_value = payload
 
         request = _make_fake_request(authorization="Bearer valid.token")
@@ -945,6 +1125,21 @@ class TestAuthMiddleware:
 # ---------------------------------------------------------------------------
 # role helpers
 # ---------------------------------------------------------------------------
+
+
+class TestSessionCheckTtl:
+    def test_defaults_to_thirty_seconds(self, monkeypatch):
+        monkeypatch.delenv("SESSION_CHECK_CACHE_SECONDS", raising=False)
+        assert auth_module.session_check_ttl_seconds() == 30.0
+
+    def test_reads_the_environment(self, monkeypatch):
+        monkeypatch.setenv("SESSION_CHECK_CACHE_SECONDS", "2")
+        assert auth_module.session_check_ttl_seconds() == 2.0
+
+    @pytest.mark.parametrize("raw", ["soon", "-1", "nan", "inf"])
+    def test_unusable_values_fall_back_to_the_default(self, monkeypatch, raw):
+        monkeypatch.setenv("SESSION_CHECK_CACHE_SECONDS", raw)
+        assert auth_module.session_check_ttl_seconds() == 30.0
 
 
 class TestAuthRoleHelpers:
@@ -971,10 +1166,13 @@ class TestAuthRoleHelpers:
         assert is_request_admin(request) is False
 
     @pytest.mark.asyncio
-    async def test_resolve_skips_lookup_when_session_admin(self):
+    @patch("app.api.middlewares.auth.fetch_caller_role", new_callable=AsyncMock)
+    async def test_resolve_keeps_session_claim_once_node_confirms(self, mock_role):
+        mock_role.return_value = CallerRole(CallerRoleStatus.VALID, "member")
         request = _make_fake_request()
-        role = await resolve_request_role(request, {"role": "admin"})
+        role = await resolve_request_role(request, _session_payload(role="admin"))
         assert role == "admin"
+        mock_role.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -996,3 +1194,28 @@ class TestGetConfigService:
 
         assert result is fake_config_service
         request.app.container.config_service.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# service_token_org
+# ---------------------------------------------------------------------------
+
+
+class TestServiceTokenOrg:
+    def test_service_token_org_returns_claim(self):
+        claims = {"orgId": "org-1", "scopes": ["document:parse"]}
+        assert service_token_org(claims) == "org-1"
+        assert service_token_org(claims, "org-1") == "org-1"
+        assert service_token_org(claims, "") == "org-1"
+
+    def test_service_token_org_missing_claim_is_401(self):
+        with pytest.raises(HTTPException) as exc_info:
+            service_token_org({"scopes": ["document:parse"]}, "org-1")
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail == "Token missing orgId"
+
+    def test_service_token_org_mismatch_is_403(self):
+        with pytest.raises(HTTPException) as exc_info:
+            service_token_org({"orgId": "org-1"}, "org-2")
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.detail == "org_id does not match the service token"

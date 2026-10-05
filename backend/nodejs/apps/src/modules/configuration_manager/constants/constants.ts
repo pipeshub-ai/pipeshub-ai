@@ -129,6 +129,13 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     defaultEnabled: false,
   },
   {
+    key: 'ENABLE_SOFT_DELETE',
+    label: 'Move Deleted Records to the Trash',
+    description:
+      'When you delete a record, move it to the trash instead of removing it straight away. It disappears from search, chat and lists at once, and its search data is removed, but the record, its file and its sharing are kept. A record in the trash can be restored through the records API, and a record a connector sync put there comes back when the source has it again; restoring re-indexes it. Nothing empties the trash. Disable to delete records immediately, as before.',
+    defaultEnabled: false,
+  },
+  {
     key: 'ENABLE_USER_CONTEXT',
     label: 'Send User & Organization Context to Agents',
     description:

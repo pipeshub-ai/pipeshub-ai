@@ -278,7 +278,7 @@ class TestHandleUpdatedRecord:
         record = _make_record(version=2)
         existing = _make_record(version=1)
 
-        await proc._handle_updated_record(record, existing, tx_store)
+        await proc._handle_updated_record(record, existing, tx_store, old_path=None)
 
         tx_store.batch_upsert_records.assert_awaited_once_with([record])
 
@@ -371,10 +371,11 @@ class TestProcessRecord:
         tx_store = _make_tx_store()
         record = _make_record()
 
-        result = await proc._process_record(record, [], tx_store)
+        result, pending_moves = await proc._process_record(record, [], tx_store)
 
         assert result is not None
         assert result.org_id == "org-1"
+        assert pending_moves == []
         tx_store.batch_upsert_records.assert_awaited()
 
     @pytest.mark.asyncio
@@ -391,7 +392,7 @@ class TestProcessRecord:
         record = _make_record(version=2)
         record.external_revision_id = "rev-2"
 
-        result = await proc._process_record(record, [], tx_store)
+        result, pending_moves = await proc._process_record(record, [], tx_store)
 
         assert result.id == "existing-id"
         # Should have been called at least once for initial upsert
@@ -411,7 +412,7 @@ class TestProcessRecord:
         record = _make_record(version=1)
         record.external_revision_id = "rev-1"
 
-        result = await proc._process_record(record, [], tx_store)
+        result, _ = await proc._process_record(record, [], tx_store)
 
         assert result.id == "existing-id"
 
@@ -733,12 +734,9 @@ class TestOnRecordDeleted:
     async def test_deletes_record_publishes_when_vrid_present(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
-        existing = MagicMock()
-        existing.virtual_record_id = "vr-9"
-        existing.org_id = "org-1"
-        existing.id = "rec-1"
-        existing.version = 1
-        existing.connector_id = "conn-9"
+        # The stored document, as GraphTransactionStore.get_record_by_key returns it.
+        existing = {"_key": "rec-1", "orgId": "org-1", "version": 1,
+                    "virtualRecordId": "vr-9", "connectorId": "conn-9"}
         tx_store.get_record_by_key = AsyncMock(return_value=existing)
 
         ctx = AsyncMock()
@@ -1004,24 +1002,30 @@ class TestHandleRecordPermissions:
         tx_store.batch_create_edges.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_user_permission_unknown_user_skipped(self):
-        """External user without record in DB is skipped."""
+    async def test_user_permission_unknown_user_becomes_person(self):
+        """An email with no user in the DB is an external collaborator: a Person is
+        created for it and the grant is recorded, rather than being dropped."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
 
         record = _make_record()
         record.id = "rec-1"
 
-        permission = MagicMock()
-        permission.entity_type = EntityType.USER.value
-        permission.email = "external@example.com"
-        permission.external_id = None
+        permission = Permission(
+            type=PermissionType.READ,
+            entity_type=EntityType.USER.value,
+            email="external@example.com",
+        )
 
         await proc._handle_record_permissions(record, [permission], tx_store)
 
-        # No edges created for unknown user
-        tx_store.batch_create_edges.assert_not_awaited()
+        tx_store.batch_create_edges.assert_awaited()
+        edges = tx_store.batch_create_edges.await_args.args[0]
+        assert edges[0]["from_id"] == "person-1"
+        assert edges[0]["from_collection"] == CollectionNames.PEOPLE.value
 
     @pytest.mark.asyncio
     async def test_group_permission(self):
@@ -1577,17 +1581,92 @@ class TestLinkRecordToGroup:
         tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_deletes_inherit_when_no_inherit(self):
-        """Deletes inherit permissions edge when inherit is False."""
+    async def test_deletes_inherit_when_no_inherit_on_an_existing_record(self):
+        """Deletes the inherit-permissions edge when inherit is turned off."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         record = _make_record()
         record.id = "rec-1"
         record.inherit_permissions = False
 
-        await proc._link_record_to_group(record, "group-1", tx_store)
+        existing = _make_record()
+        existing.id = "rec-1"
+
+        await proc._link_record_to_group(record, "group-1", tx_store, existing)
 
         tx_store.delete_inherit_permissions_relation_record_group.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_pre_existing_placeholder_still_gets_its_stale_edge_removed(self):
+        """The skip above is for *new* records, and must not swallow this one.
+
+        `_handle_parent_record` re-anchors a placeholder that already exists in
+        the store, precisely to repair edges a full sync deleted. It reaches
+        `_link_record_to_group`, whose `existing_record` defaults to None -- so
+        omitting it there made the brand-new-record skip fire for a row that is
+        not new, and the stale inherit-permissions edge survived.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+
+        placeholder = _make_record()
+        placeholder.id = "ph-1"
+        placeholder.is_placeholder = True
+        placeholder.inherit_permissions = False
+
+        # Read back from the store: this is a pre-existing row, not a new one.
+        tx_store.get_record_by_external_id = AsyncMock(return_value=placeholder)
+
+        child = _make_record()
+        child.id = "child-1"
+        child.parent_external_record_id = "ext-1"
+        child.parent_record_type = RecordType.FILE
+
+        with patch.object(
+            proc, "_handle_record_group", new=AsyncMock(return_value="group-1")
+        ):
+            await proc._handle_parent_record(child, tx_store)
+
+        tx_store.delete_inherit_permissions_relation_record_group.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_inherit_delete_for_a_brand_new_record(self):
+        """A record created moments ago has no edge to remove.
+
+        Issuing the delete anyway cost one round trip per record on the hot path
+        of every full sync — measured at one seventh of all graph traffic.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        record = _make_record()
+        record.id = "rec-1"
+        record.inherit_permissions = False
+
+        await proc._link_record_to_group(record, "group-1", tx_store, None)
+
+        tx_store.delete_inherit_permissions_relation_record_group.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_new_record_keeps_the_id_its_connector_set(self):
+        """Connectors hand that id to other records before processing.
+
+        Jira, Confluence, Linear, Slack, Outlook and Zammad copy a new parent's id
+        into its attachments' parent_node_id, Gmail writes sibling edges with it,
+        and the object stores move a record by reusing its id under a new key.
+        Replacing it here left all of those pointing at a record that does not
+        exist.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+
+        for origin in (OriginTypes.CONNECTOR.value, OriginTypes.UPLOAD.value):
+            record = _make_record(origin=origin)
+            record.id = "given-by-caller"
+
+            await proc._process_record(record, [], tx_store)
+
+            assert record.id == "given-by-caller"
 
     @pytest.mark.asyncio
     async def test_deletes_old_group_edge_when_group_changed(self):
@@ -1901,23 +1980,25 @@ class TestOnNewAppRoles:
 # ===========================================================================
 
 
-class TestUpsertExternalPerson:
+class TestResolvePrincipal:
     @pytest.mark.asyncio
-    async def test_returns_person_id(self):
+    async def test_returns_surviving_person_id(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
 
-        result = await proc._upsert_external_person("ext@test.com", tx_store)
-        assert result is not None
-        tx_store.batch_upsert_people.assert_awaited()
+        result = await proc._resolve_principal("ext@test.com", tx_store)
+        assert result == ("person-1", CollectionNames.PEOPLE.value)
 
     @pytest.mark.asyncio
     async def test_returns_none_on_error(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
-        tx_store.batch_upsert_people.side_effect = Exception("db fail")
+        tx_store.get_user_by_email.side_effect = Exception("db fail")
 
-        result = await proc._upsert_external_person("ext@test.com", tx_store)
+        result = await proc._resolve_principal("ext@test.com", tx_store)
         assert result is None
 
 
@@ -2719,7 +2800,7 @@ class TestOnNewRecordGroupsAdditional:
         parent_rg = MagicMock()
         parent_rg.id = "parent-rg-id"
         parent_rg.name = "Parent Group"
-        tx_store.get_record_group_by_external_id.side_effect = [None, parent_rg]
+        tx_store.get_record_group_by_external_id.side_effect = [None, None, parent_rg]
 
         rg = RecordGroup(
             external_group_id="ext-g1",
@@ -2828,8 +2909,89 @@ class TestNewRecordsAreStoredNotStarted:
         await proc.on_new_records([(record, [])])
 
         proc.messaging_producer.send_messages.assert_awaited_once()
+        published = proc.messaging_producer.send_messages.await_args.args[1]
+        assert [key for key, _ in published] == ["rec-1"]
         proc.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
             ["rec-1"],
             ProgressStatus.NOT_STARTED.value,
             ProgressStatus.QUEUED.value,
         )
+
+
+# ===========================================================================
+# A failed lookup must not create a second group or role
+# ===========================================================================
+
+
+class TestUpsertDoesNotDuplicateOnAFailedLookup:
+    """on_new_user_groups and on_new_app_roles read by external id and, on
+    None, create with a fresh id. The providers answered a failed read with
+    None, so a graph that could not be read produced a second group (or role)
+    for the same external id, splitting members and permission edges across
+    the two. Pseudo-groups for users without an email reach the same code.
+
+    Everything is real except the Neo4j client: the processor, the transaction
+    store it is handed, and Neo4jProvider. The flag has to survive every hop,
+    and a stand-in at any layer could quietly drop it.
+    """
+
+    @staticmethod
+    def _processor_over_a_flapping_graph():
+        from app.connectors.core.base.data_store.graph_data_store import GraphTransactionStore
+        from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+        provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+        provider.client = AsyncMock()
+        calls = []
+
+        async def flapping(query, *args, **kwargs):
+            # The lookup is the first query and fails. Anything after it --
+            # the write that would create the duplicate -- succeeds.
+            calls.append(query)
+            if len(calls) == 1:
+                raise RuntimeError("graph is restarting")
+            return []
+
+        provider.client.execute_query = AsyncMock(side_effect=flapping)
+        tx_store = GraphTransactionStore(graph_provider=provider, txn="txn-1")
+
+        proc = _make_processor()
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+        return proc, calls
+
+    @pytest.mark.asyncio
+    async def test_a_failed_group_lookup_does_not_create_a_second_group(self):
+        from app.models.entities import AppUserGroup, Connectors
+
+        proc, calls = self._processor_over_a_flapping_graph()
+        group = AppUserGroup(
+            app_name=Connectors.GOOGLE_MAIL,
+            connector_id="conn-1",
+            source_user_group_id="sg-1",
+            name="Engineering",
+        )
+
+        with pytest.raises(RuntimeError):
+            await proc.on_new_user_groups([(group, [])])
+
+        assert len(calls) == 1, f"a write followed the failed lookup: {calls[1:]}"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_role_lookup_does_not_create_a_second_role(self):
+        from app.models.entities import AppRole, Connectors
+
+        proc, calls = self._processor_over_a_flapping_graph()
+        role = AppRole(
+            app_name=Connectors.GOOGLE_MAIL,
+            connector_id="conn-1",
+            source_role_id="role-1",
+            name="Admin",
+        )
+
+        with pytest.raises(RuntimeError):
+            await proc.on_new_app_roles([(role, [])])
+
+        assert len(calls) == 1, f"a write followed the failed lookup: {calls[1:]}"

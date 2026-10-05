@@ -123,7 +123,10 @@ from ai_models_setup import (  # noqa: E402
 )
 from xdist_shared import shared_session_resource  # noqa: E402
 from integration_report import TestReportEntry, write_html_report  # noqa: E402
-from local_auth import obtain_local_oauth_credentials  # noqa: E402
+from local_auth import (  # noqa: E402
+    obtain_local_oauth_credentials,
+    obtain_user_session_token,
+)
 from pipeshub_client import PipeshubClient  # noqa: E402
 from helper.clients.agents_client import AgentsClient  # noqa: E402
 from helper.clients.ai_models_client import AIModelsClient  # noqa: E402
@@ -145,6 +148,7 @@ from helper.http.request_id import (  # noqa: E402
     install_requests_hook,
     set_current_test,
 )
+from helper.http.session_client import SessionClient  # noqa: E402
 from sample_data import ensure_sample_data_files_root  # noqa: E402
 
 # Module-level refs so pytest_runtest_logreport can merge even when report.config is missing
@@ -406,8 +410,28 @@ def oauth_provider_client(pipeshub_client: PipeshubClient) -> OAuthProviderClien
 
 
 @pytest.fixture(scope="session")
-def oauth_apps_client(pipeshub_client: PipeshubClient) -> OAuthAppsClient:
-    return OAuthAppsClient(pipeshub_client)
+def user_session_client(pipeshub_client: PipeshubClient) -> SessionClient:
+    """The test user logged in with a password, for session-only routes.
+
+    OAuth client management, OAuth consent and personal access tokens refuse
+    the client-credentials token ``pipeshub_client`` holds (#3626).
+    """
+    if not (os.getenv("PIPESHUB_TEST_USER_EMAIL") and os.getenv("PIPESHUB_TEST_USER_PASSWORD")):
+        pytest.skip(
+            "PIPESHUB_TEST_USER_EMAIL / PIPESHUB_TEST_USER_PASSWORD are not set; "
+            "session-only routes cannot be called with CLIENT_ID / CLIENT_SECRET alone"
+        )
+    base_url = pipeshub_client.base_url
+    return SessionClient(
+        base_url,
+        login=lambda: obtain_user_session_token(base_url),
+        timeout_seconds=pipeshub_client.timeout_seconds,
+    )
+
+
+@pytest.fixture(scope="session")
+def oauth_apps_client(user_session_client: SessionClient) -> OAuthAppsClient:
+    return OAuthAppsClient(user_session_client)
 
 
 @pytest.fixture(scope="session")
@@ -458,8 +482,11 @@ def ai_models_configured(
     embedding is also written to org config via the same API call path; indexing
     services load it from Configuration Manager, not from this fixture object.
 
-    On teardown, both models are DELETEd via the providers endpoint so no test
-    residue is left on the backend.
+    An embedding model the org already embeds with (same provider and model) is
+    reused rather than added again, and teardown leaves it. On teardown the
+    models this fixture added are DELETEd via the providers endpoint; PipesHub
+    refuses to delete an embedding model whose vectors are stored, so that one
+    stays for the next session on the stack to reuse.
 
     These models are org-wide singletons, so under ``-n`` they are seeded once
     per run and shared by every worker rather than once per worker session.

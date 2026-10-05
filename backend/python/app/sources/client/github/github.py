@@ -31,6 +31,10 @@ class GitHubResponse(BaseModel):
     # stringifying the exception into `error` loses that distinction.
     status_code: int | None = None
     exception_type: str | None = None
+    # GitHub's own explanation (its "message" plus any field errors), and how long
+    # it asked us to wait on a rate limit, so tools can explain a failure plainly.
+    api_message: str | None = None
+    retry_after_seconds: int | None = None
 
     def to_dict(self) -> dict[str, Any]:  # type: ignore
         return self.model_dump()

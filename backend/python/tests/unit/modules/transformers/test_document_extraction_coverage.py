@@ -240,8 +240,6 @@ class TestProcessDocument:
             category="Policy",
             subcategories=SubCategories(level1="a", level2="b", level3="c"),
             languages=["en"],
-            sentiment="Neutral",
-            confidence_score=0.8,
             topics=["test"],
             summary="Test summary",
         )
@@ -251,7 +249,9 @@ class TestProcessDocument:
         blocks = [_make_text_block("content")]
         result = await ext.process_document(blocks, "org-1")
 
-        ext.extract_metadata.assert_awaited_once_with(blocks, "org-1")
+        ext.extract_metadata.assert_awaited_once_with(
+            blocks, "org-1", record_name="", record_type=""
+        )
         assert result is fake_result
 
     @pytest.mark.asyncio
@@ -287,8 +287,6 @@ class TestExtractMetadataDepartmentsFallback:
             category="Technical",
             subcategories=SubCategories(level1="SW", level2="", level3=""),
             languages=["English"],
-            sentiment="Neutral",
-            confidence_score=0.8,
             topics=["test"],
             summary="Test summary",
         )
@@ -327,8 +325,6 @@ class TestExtractMetadataDepartmentsFallback:
             category="General",
             subcategories=SubCategories(level1="", level2="", level3=""),
             languages=["en"],
-            sentiment="Neutral",
-            confidence_score=0.5,
             topics=[],
             summary="A summary",
         )

@@ -250,3 +250,10 @@ def answer_from_completion(payload: dict[str, Any]) -> str:
 def parse_envelope(envelope: SSEEnvelope) -> tuple[str, Any]:
     """``(event_name, decoded_payload)`` for one envelope."""
     return envelope["event"], json.loads(envelope["data"])
+
+
+def decode_sse_envelope(envelope: SSEEnvelope) -> dict[str, Any]:
+    """The envelope with ``data`` decoded from JSON — the shape the OpenAPI
+    SSE event schemas describe, and the order generated SDKs parse in
+    (decode ``data``, then validate). Validate this, not the raw envelope."""
+    return {"event": envelope["event"], "data": json.loads(envelope["data"])}

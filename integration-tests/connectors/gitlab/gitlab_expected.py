@@ -142,10 +142,19 @@ class GitLabExpected:
         }
         if kind not in names:
             raise ValueError(f"unknown child group kind {kind!r}")
+        # Confidential work items is the one child the connector leaves unset, so
+        # each of its records is checked individually at search time rather than
+        # search trusting the group. That is the slower answer and the safe one,
+        # and on the group it would hurt most to over-share it is the right
+        # trade; asserting it here stops it being "fixed" by accident.
         return RecordGroup(
             id="", org_id="",
             name=names[kind],
             group_type=RecordGroupType.PROJECT.value,
+            permission_model=(
+                None if kind == "confidential-work-items"
+                else PermissionModel.RECORD_GROUP_LEVEL
+            ),
             connector_name=Connectors.GITLAB,
             connector_id=connector_id,
             external_group_id=f"{project['id']}-{kind}",

@@ -18,6 +18,8 @@ from app.connectors.core.base.connector.connector_service import ConnectorInitEr
 from app.connectors.core.registry.filters import IndexingFilterKey, ListOperator, SyncFilterKey
 from app.models.blocks import ChildRecord, ChildType, GroupSubType
 from app.connectors.sources.atlassian.jira_data_center.connector import (
+    GroupMemberships,
+    GroupPickerPage,
     JiraDataCenterConnector,
     _normalize_jira_dc_group_row,
 )
@@ -607,7 +609,7 @@ async def test_run_sync_happy_path_heavy_mock():
         return_value=(None, None),
     ):
         with patch.object(conn, "_fetch_users", new_callable=AsyncMock, return_value=[u]):
-            with patch.object(conn, "_sync_user_groups", new_callable=AsyncMock, return_value={}):
+            with patch.object(conn, "_sync_user_groups", new_callable=AsyncMock, return_value=GroupMemberships({})):
                 with patch.object(
                     conn, "_fetch_projects", new_callable=AsyncMock, return_value=([], []),
                 ):
@@ -1002,7 +1004,7 @@ async def test_fetch_project_permission_scheme_user_resolved_via_user_by_key():
 
 
 @pytest.mark.asyncio
-async def test_fetch_project_permission_scheme_http_fail_returns_empty():
+async def test_fetch_project_permission_scheme_http_fail_returns_none():
     conn = _make_connector()
     bad = MagicMock()
     bad.status = 404
@@ -1010,7 +1012,7 @@ async def test_fetch_project_permission_scheme_http_fail_returns_empty():
     ds = MagicMock()
     ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=bad)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        assert await conn._fetch_project_permission_scheme("P", {}) == []
+        assert await conn._fetch_project_permission_scheme("P", {}) is None
 
 
 @pytest.mark.asyncio
@@ -1150,7 +1152,7 @@ async def test_sync_user_groups_batches_groups_and_maps_members():
         conn,
         "_fetch_groups",
         new_callable=AsyncMock,
-        return_value=[{"groupId": "g1", "name": "G1"}],
+        return_value=GroupPickerPage([{"groupId": "g1", "name": "G1"}]),
     ):
         with patch.object(
             conn,
@@ -1158,7 +1160,7 @@ async def test_sync_user_groups_batches_groups_and_maps_members():
             new_callable=AsyncMock,
             return_value=["acc", "missing-key"],
         ):
-            mmap = await conn._sync_user_groups([u])
+            mmap = (await conn._sync_user_groups([u])).members
     conn.data_entities_processor.on_new_user_groups.assert_awaited()
     assert mmap["g1"][0].email == "member@example.com"
     assert mmap["G1"] == mmap["g1"]
@@ -1168,8 +1170,8 @@ async def test_sync_user_groups_batches_groups_and_maps_members():
 async def test_sync_user_groups_no_groups_returns_empty():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    with patch.object(conn, "_fetch_groups", new_callable=AsyncMock, return_value=[]):
-        assert await conn._sync_user_groups([]) == {}
+    with patch.object(conn, "_fetch_groups", new_callable=AsyncMock, return_value=GroupPickerPage([])):
+        assert await conn._sync_user_groups([]) == GroupMemberships({})
     conn.data_entities_processor.on_new_user_groups.assert_not_called()
 
 
@@ -1177,11 +1179,12 @@ async def test_sync_user_groups_no_groups_returns_empty():
 async def test_fetch_group_members_missing_group_id():
     conn = _make_connector()
     conn.data_source = MagicMock()
-    assert await conn._fetch_group_members("", "name") == []
+    # The datasource cannot be built from this bare mock, so the read fails.
+    assert await conn._fetch_group_members("", "name") is None
 
 
 @pytest.mark.asyncio
-async def test_fetch_group_members_non_ok():
+async def test_fetch_group_members_non_ok_returns_none():
     conn = _make_connector()
     conn.data_source = MagicMock()
     bad = MagicMock()
@@ -1190,7 +1193,7 @@ async def test_fetch_group_members_non_ok():
     ds = MagicMock()
     ds.get_users_from_group_v2 = AsyncMock(return_value=bad)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        assert await conn._fetch_group_members("gid", "G") == []
+        assert await conn._fetch_group_members("gid", "G") is None
 
 
 @pytest.mark.asyncio
@@ -1993,7 +1996,7 @@ async def test_fetch_project_permission_scheme_grants_not_ok():
     ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
     ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=bad_grants)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        assert await conn._fetch_project_permission_scheme("P", {}) == []
+        assert await conn._fetch_project_permission_scheme("P", {}) is None
 
 
 @pytest.mark.asyncio
@@ -2027,7 +2030,7 @@ async def test_fetch_project_permission_scheme_never_expands_holders():
 
 
 @pytest.mark.asyncio
-async def test_fetch_project_permission_scheme_scheme_missing_id_returns_empty():
+async def test_fetch_project_permission_scheme_scheme_missing_id_returns_none():
     """OK scheme response with no id -> no grants call, empty result."""
     conn = _make_connector()
     conn.data_source = MagicMock()
@@ -2038,7 +2041,7 @@ async def test_fetch_project_permission_scheme_scheme_missing_id_returns_empty()
     ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
     ds.get_permission_scheme_grants_v2 = AsyncMock()
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        assert await conn._fetch_project_permission_scheme("P", {}) == []
+        assert await conn._fetch_project_permission_scheme("P", {}) is None
     ds.get_permission_scheme_grants_v2.assert_not_awaited()
 
 
@@ -2081,7 +2084,7 @@ async def test_fetch_project_permission_scheme_grants_json_raises():
     ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
     ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        assert await conn._fetch_project_permission_scheme("P", {}) == []
+        assert await conn._fetch_project_permission_scheme("P", {}) is None
 
 
 @pytest.mark.asyncio
@@ -2121,7 +2124,7 @@ async def test_sync_user_groups_skips_invalid_group_row():
         conn,
         "_fetch_groups",
         new_callable=AsyncMock,
-        return_value=[{"name": "only-name"}, {"groupId": "g1", "name": "G1"}],
+        return_value=GroupPickerPage([{"name": "only-name"}, {"groupId": "g1", "name": "G1"}]),
     ):
         with patch.object(conn, "_fetch_group_members", new_callable=AsyncMock, return_value=[]):
             await conn._sync_user_groups([])
@@ -2142,10 +2145,10 @@ async def test_sync_user_groups_single_group_failure_continues():
         conn,
         "_fetch_groups",
         new_callable=AsyncMock,
-        return_value=[
+        return_value=GroupPickerPage([
             {"groupId": "bad", "name": "B"},
             {"groupId": "ok", "name": "O"},
-        ],
+        ]),
     ):
         with patch.object(conn, "_fetch_group_members", new_callable=AsyncMock, side_effect=flaky):
             await conn._sync_user_groups([])
@@ -2162,8 +2165,11 @@ async def test_fetch_group_members_list_payload_pages():
     r2 = MagicMock()
     r2.status = HttpStatusCode.OK.value
     r2.json = MagicMock(return_value=[{"key": "k2", "emailAddress": "b@b"}])
+    r3 = MagicMock()
+    r3.status = HttpStatusCode.OK.value
+    r3.json = MagicMock(return_value=[])
     ds = MagicMock()
-    ds.get_users_from_group_v2 = AsyncMock(side_effect=[r1, r2])
+    ds.get_users_from_group_v2 = AsyncMock(side_effect=[r1, r2, r3])
     with patch("app.connectors.sources.atlassian.jira_data_center.connector.GROUP_MEMBER_PAGE_SIZE", 1):
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             keys = await conn._fetch_group_members("g1", "G")
@@ -2171,7 +2177,7 @@ async def test_fetch_group_members_list_payload_pages():
 
 
 @pytest.mark.asyncio
-async def test_fetch_group_members_exception_breaks():
+async def test_fetch_group_members_exception_returns_none():
     conn = _make_connector()
     conn.data_source = MagicMock()
     boom = MagicMock()
@@ -2180,7 +2186,7 @@ async def test_fetch_group_members_exception_breaks():
     ds = MagicMock()
     ds.get_users_from_group_v2 = AsyncMock(return_value=boom)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        assert await conn._fetch_group_members("g", "G") == []
+        assert await conn._fetch_group_members("g", "G") is None
 
 
 @pytest.mark.asyncio
@@ -2302,7 +2308,7 @@ async def test_run_sync_with_project_keys_filter_logs(monkeypatch):
         fake_load,
     )
     with patch.object(conn, "_fetch_users", new_callable=AsyncMock, return_value=[u]):
-        with patch.object(conn, "_sync_user_groups", new_callable=AsyncMock, return_value={}):
+        with patch.object(conn, "_sync_user_groups", new_callable=AsyncMock, return_value=GroupMemberships({})):
             with patch.object(
                 conn,
                 "_fetch_projects",
@@ -2913,11 +2919,11 @@ async def test_resolve_private_email_users_api_failure_graceful():
 
 
 @pytest.mark.asyncio
-async def test_sync_user_groups_top_level_exception_returns_empty():
+async def test_sync_user_groups_top_level_exception_returns_none():
     conn = _make_connector()
     conn.data_source = MagicMock()
     with patch.object(conn, "_fetch_groups", new_callable=AsyncMock, side_effect=RuntimeError("boom")):
-        assert await conn._sync_user_groups([]) == {}
+        assert await conn._sync_user_groups([]) is None
 
 
 @pytest.mark.asyncio
@@ -2957,7 +2963,7 @@ async def test_run_sync_empty_project_keys_filter(monkeypatch):
         fake_load,
     )
     with patch.object(conn, "_fetch_users", new_callable=AsyncMock, return_value=[]):
-        with patch.object(conn, "_sync_user_groups", new_callable=AsyncMock, return_value={}):
+        with patch.object(conn, "_sync_user_groups", new_callable=AsyncMock, return_value=GroupMemberships({})):
             with patch.object(conn, "_fetch_projects", new_callable=AsyncMock, return_value=([], [])) as fp:
                 with patch.object(conn, "_sync_project_roles", new_callable=AsyncMock):
                     with patch.object(conn, "_sync_project_lead_roles", new_callable=AsyncMock):
@@ -4281,7 +4287,7 @@ async def test_fetch_project_permission_scheme_outer_exception():
     conn = _make_connector()
     conn.data_source = MagicMock()
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, side_effect=OSError("net")):
-        assert await conn._fetch_project_permission_scheme("P", {}) == []
+        assert await conn._fetch_project_permission_scheme("P", {}) is None
 
 
 # ===========================================================================
@@ -4349,29 +4355,31 @@ class TestFetchGroupsPicker:
             ],
         }))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            groups = await conn._fetch_groups()
+            page = await conn._fetch_groups()
+        assert page.cut_off is False
+        groups = page.groups
         assert len(groups) == 3
         assert groups[0]["name"] == "jira-administrators"
         assert groups[0]["groupId"] == "jira-administrators"
         ds.groups_picker_get_v2.assert_awaited_once_with(query="", maxResults=1000)
 
     @pytest.mark.asyncio
-    async def test_non_ok_returns_empty(self):
+    async def test_non_ok_returns_none(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         ds = MagicMock()
         ds.groups_picker_get_v2 = AsyncMock(return_value=_err_resp(403, "Forbidden"))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            assert await conn._fetch_groups() == []
+            assert await conn._fetch_groups() is None
 
     @pytest.mark.asyncio
-    async def test_transport_exception_returns_empty(self):
+    async def test_transport_exception_returns_none(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         ds = MagicMock()
         ds.groups_picker_get_v2 = AsyncMock(side_effect=httpx.RemoteProtocolError("disconnected"))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            assert await conn._fetch_groups() == []
+            assert await conn._fetch_groups() is None
 
     @pytest.mark.asyncio
     async def test_raises_when_data_source_not_initialized(self):
@@ -4387,7 +4395,7 @@ class TestFetchGroupsPicker:
         ds = MagicMock()
         ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({"groups": [{"name": "no-id-group"}]}))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            groups = await conn._fetch_groups()
+            groups = (await conn._fetch_groups()).groups
         match = next(g for g in groups if g["name"] == "no-id-group")
         assert match["groupId"] == "no-id-group"
 
@@ -4410,10 +4418,10 @@ class TestFallbackPermissionsForForbiddenSchemeDC:
         assert result[0].type == PermissionType.READ
 
     @pytest.mark.asyncio
-    async def test_returns_empty_when_no_email(self):
+    async def test_returns_none_when_no_email(self):
         conn = _make_connector()
         conn.creator_email = None
-        assert await conn._fallback_permissions_for_forbidden_scheme("PROJ", 401, "permission scheme") == []
+        assert await conn._fallback_permissions_for_forbidden_scheme("PROJ", 401, "permission scheme") is None
 
     @pytest.mark.asyncio
     async def test_works_for_both_401_and_403(self):
@@ -4458,14 +4466,14 @@ class TestFetchProjectPermissionScheme401403DC:
         assert perms[0].email == "admin@example.com"
 
     @pytest.mark.asyncio
-    async def test_scheme_401_no_email_returns_empty(self):
+    async def test_scheme_401_no_email_returns_none(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         conn.creator_email = None
         ds = MagicMock()
         ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=_err_resp(401, "Unauthorized"))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            assert await conn._fetch_project_permission_scheme("PROJ", {}) == []
+            assert await conn._fetch_project_permission_scheme("PROJ", {}) is None
 
     @pytest.mark.asyncio
     async def test_scheme_500_does_not_call_fallback(self):
@@ -4476,7 +4484,7 @@ class TestFetchProjectPermissionScheme401403DC:
         ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=_err_resp(500, "Server error"))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             with patch.object(conn, "_fallback_permissions_for_forbidden_scheme") as fm:
-                assert await conn._fetch_project_permission_scheme("PROJ", {}) == []
+                assert await conn._fetch_project_permission_scheme("PROJ", {}) is None
         fm.assert_not_called()
 
     @pytest.mark.asyncio
@@ -4515,7 +4523,7 @@ class TestFetchProjectPermissionScheme401403DC:
         ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=_err_resp(500, "Server error"))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             with patch.object(conn, "_fallback_permissions_for_forbidden_scheme") as fm:
-                assert await conn._fetch_project_permission_scheme("PROJ", {}) == []
+                assert await conn._fetch_project_permission_scheme("PROJ", {}) is None
         fm.assert_not_called()
 
 

@@ -128,6 +128,11 @@ class AzureFilesStorageHelper:
             "size": props.size,
         }
 
+    def delete_file(self, share: str, key: str) -> None:
+        dir_name, _, file_name = key.rpartition("/")
+        share_client = self._service.get_share_client(share)
+        share_client.get_directory_client(dir_name).get_file_client(file_name).delete_file()
+
     def rename_object(self, share: str, old_path: str, new_path: str) -> None:
         self._rename_within_share(share, old_path, new_path)
 

@@ -95,11 +95,12 @@ function stubNoTeamMemberships(): sinon.SinonStub {
     .resolves({ statusCode: 200, data: { teams: [] } } as any)
 }
 
-afterEach(() => {
-  sinon.restore()
-})
-
 describe('project.controller', () => {
+  // Inside the describe: at file level, mocha applies it to every file in a serial (--no-parallel) run.
+  afterEach(() => {
+    sinon.restore()
+  })
+
   describe('createProject', () => {
     it('creates a project and returns 201', async () => {
       const project = makeProjectDoc({ name: 'New Project' })

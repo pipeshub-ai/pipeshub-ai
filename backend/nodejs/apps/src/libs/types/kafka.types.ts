@@ -11,6 +11,10 @@ export interface KafkaConfig {
   maxRetries?: number;
   initialRetryTime?: number;
   maxRetryTime?: number;
+  // kafkajs only heartbeats between messages, so a handler that runs longer
+  // than sessionTimeout gets its partition reassigned and the message replayed.
+  sessionTimeout?: number;
+  rebalanceTimeout?: number;
 }
 
 /** @deprecated Use StreamMessage from messaging.types instead */

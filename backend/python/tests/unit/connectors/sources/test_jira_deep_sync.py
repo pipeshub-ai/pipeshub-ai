@@ -1763,9 +1763,9 @@ class TestPermissionSchemeIdGuard:
 class TestBuildProjectRecordGroupDegradation:
 
     @pytest.mark.asyncio
-    async def test_scheme_unavailable_syncs_project_with_empty_permissions(self):
-        # A transient scheme failure must not drop the project — sync it with an empty ACL
-        # so its issues keep flowing; the next successful fetch refreshes permissions.
+    async def test_scheme_unavailable_keeps_project_with_permissions_none(self):
+        # A transient scheme failure must not drop the project (its issues keep flowing), and
+        # must not become an empty ACL, which would replace the stored one.
         connector = _make_connector()
         connector._fetch_project_permission_scheme = AsyncMock(return_value=None)
 
@@ -1776,7 +1776,7 @@ class TestBuildProjectRecordGroupDegradation:
         assert result is not None
         record_group, permissions = result
         assert record_group.short_name == "PROJ"
-        assert permissions == []
+        assert permissions is None
 
     @pytest.mark.asyncio
     async def test_returns_none_when_record_group_build_fails(self):
@@ -2199,7 +2199,7 @@ class TestProcessGroupEdges:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_membership_failure_syncs_group_with_no_members(self):
+    async def test_membership_failure_returns_members_none(self):
         connector = _make_connector()
         connector._fetch_group_members = AsyncMock(return_value=([], False))
 
@@ -2207,7 +2207,7 @@ class TestProcessGroupEdges:
 
         assert result is not None
         _gid, _name, _group, members = result
-        assert members == []
+        assert members is None
 
 
 class TestPaginationBounds:

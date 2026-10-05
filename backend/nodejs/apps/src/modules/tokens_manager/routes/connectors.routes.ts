@@ -15,6 +15,7 @@ import axios from 'axios';
 import axiosRetry from 'axios-retry';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { 
   AuthenticatedUserRequest,
@@ -58,6 +59,7 @@ import {
   reindexVectorStore,
   reindexConnector,
   resyncConnectorRecords,
+  stopConnectorSync,
 } from '../controllers/connector.controllers';
 import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
 import { RecordsEventProducer } from '../../knowledge_base/services/records_events.service';
@@ -430,6 +432,13 @@ export function createConnectorRouter(
   crawlingContainer: Container,
 ): Router {
   const router = Router();
+  guardPathParams(
+    router,
+    'connectorId',
+    'connectorType',
+    'filterKey',
+    'recordId',
+  );
   let config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const eventService = container.get<EntitiesEventProducer>('EntitiesEventProducer');
@@ -680,6 +689,18 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE, OAuthScopeNames.KB_WRITE),
     ValidationMiddleware.validate(resyncConnectorSchema),
     resyncConnectorRecords(recordRelationService, config),
+  );
+
+  /**
+   * POST /:connectorId/sync/stop
+   * Request cancellation of the in-flight sync for a connector.
+   */
+  router.post(
+    '/:connectorId/sync/stop',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    stopConnectorSync(config),
   );
 
   // ============================================================================
@@ -1016,7 +1037,7 @@ export function createConnectorRouter(
             payload: {
               orgId: req.user.orgId,
               appGroup: connector.name,
-              appGroupId: connector._id,
+              appGroupId: connector._id.toString(),
               credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH}`,
               refreshTokenRoute: `${config.cmBackend}/${REFRESH_TOKEN_PATH}`,
               apps: enabledApps,
@@ -1063,7 +1084,7 @@ export function createConnectorRouter(
             payload: {
               orgId: req.user.orgId,
               appGroup: connector.name,
-              appGroupId: connector._id,
+              appGroupId: connector._id.toString(),
               credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH}`,
               refreshTokenRoute: `${config.cmBackend}/${REFRESH_TOKEN_PATH}`,
               apps: [
@@ -1256,7 +1277,6 @@ export function createConnectorRouter(
 
         res.status(200).json({
           message: 'Connectors configuration updated successfully',
-          config,
         });
       } catch (error) {
         logger.error('Error updating connector configuration', {

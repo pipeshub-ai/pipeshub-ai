@@ -10,6 +10,7 @@ import { redisConnectionConfigFromHostPort } from '../../../libs/services/redis/
 import { IamService } from '../services/iam.service';
 import { MailService } from '../services/mail.service';
 import { SessionService } from '../services/session.service';
+import { SamlDesktopHandoffService } from '../services/samlDesktopHandoff.service';
 import { SamlController } from '../controller/saml.controller';
 import { UserAccountController } from '../controller/userAccount.controller';
 import { ConfigurationManagerService } from '../services/cm.service';
@@ -110,6 +111,9 @@ export class AuthServiceContainer {
       container
         .bind<SessionService>('SessionService')
         .toConstantValue(sessionService);
+      container
+        .bind<SamlDesktopHandoffService>('SamlDesktopHandoffService')
+        .toConstantValue(new SamlDesktopHandoffService(redisService));
 
       const configurationService = new ConfigurationManagerService();
       container
@@ -157,6 +161,7 @@ export class AuthServiceContainer {
             configurationService,
             logger,
             jitProvisioningService,
+            entityEventsService,
           );
         })
         .inSingletonScope();

@@ -1,25 +1,39 @@
 """The caller's live org role, as the Node identity service sees it.
 
-OAuth/PAT access tokens carry no role claim, and only Node can tell whether such a
-token has since been revoked or its user deleted. ``fetch_caller_role`` forwards the
+Only Node can tell whether a token has been revoked since it was signed: a session
+ended by signing out, a password change, a lockout or the user's deletion, or an
+OAuth/PAT token withdrawn. OAuth/PAT tokens also carry no role claim, so their role
+comes from here too. ``fetch_caller_role`` forwards the
 caller's own credentials to ``GET /api/v1/users/me/role``, so the answer is always
 about the caller: there is no user id a caller could steer, and no OAuth scope needed.
 """
 
 from __future__ import annotations
 
+import asyncio
+import functools
+import hashlib
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Literal, cast
 
 import httpx
 
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.config.constants.service import (
+    DefaultEndpoints,
+    TokenScopes,
+    config_node_constants,
+)
+from app.utils.jwt import mint_service_token
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    import ssl
+    from collections.abc import Awaitable, Callable, Mapping
 
     from fastapi import Request
 
@@ -32,6 +46,8 @@ _TIMEOUT_SECONDS = 5.0
 # Node authenticates the caller from the Authorization header alone, so nothing else is
 # sent; cookies in particular can carry a long-lived refresh token.
 _FORWARDED_HEADERS = ("authorization",)
+SERVICE_AUTHORIZATION_HEADER = "x-service-authorization"
+_SERVICE_TOKEN_TTL = timedelta(minutes=5)
 
 Role = Literal["admin", "member"]
 
@@ -84,6 +100,37 @@ async def _nodejs_endpoint(config_service: ConfigurationService) -> str:
     return endpoint.rstrip("/")
 
 
+@functools.cache
+def _ssl_context() -> ssl.SSLContext:
+    # A client left to build its own loads the CA bundle each time: about 15 ms of
+    # CPU that blocks the event loop, on a path every session request can now reach.
+    return httpx.create_ssl_context()
+
+
+async def _service_credentials(config_service: ConfigurationService) -> dict[str, str]:
+    """A service token that lets Node's rate limiter tell this lookup from client traffic.
+
+    Every user's lookup leaves from the same few service addresses, so counted per
+    address they would share one allowance. Without the secret the lookup still goes
+    out, only counted like any other request.
+    """
+    try:
+        secret_keys = cast(
+            "object",
+            await config_service.get_config(config_node_constants.SECRET_KEYS.value, use_cache=True),
+        )
+    except Exception as exc:
+        logger.warning("Could not read the service secret (%s)", type(exc).__name__)
+        return {}
+    secret = _str_field(secret_keys, "scopedJwtSecret")
+    if not isinstance(secret, str) or not secret:
+        return {}
+    token = mint_service_token(
+        secret, {"scopes": [TokenScopes.CALLER_ROLE.value]}, ttl=_SERVICE_TOKEN_TTL
+    )
+    return {SERVICE_AUTHORIZATION_HEADER: f"Bearer {token}"}
+
+
 def _forwarded_headers(headers: Mapping[str, str]) -> dict[str, str]:
     present = {name.lower(): value for name, value in headers.items()}
     return {name: present[name] for name in _FORWARDED_HEADERS if present.get(name)}
@@ -97,9 +144,17 @@ async def fetch_caller_role(
     if not headers.get("authorization"):
         return _UNKNOWN
 
+    headers.update(await _service_credentials(config_service))
     url = f"{await _nodejs_endpoint(config_service)}{CALLER_ROLE_PATH}"
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+        # A bad SSL_CERT_FILE or SSL_CERT_DIR raises OSError here; it must answer
+        # "unknown" (503), not escape as a refused token (401).
+        ssl_context = _ssl_context()
+    except OSError as exc:
+        logger.warning("Caller role SSL setup failed: %s", type(exc).__name__)
+        return _UNKNOWN
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS, verify=ssl_context) as client:
             response = await client.get(url, headers=headers)
     except httpx.HTTPError as exc:
         logger.warning("Caller role lookup failed: %s", type(exc).__name__)
@@ -116,3 +171,59 @@ async def fetch_caller_role(
         logger.warning("Caller role lookup returned a non-JSON body")
         return _UNKNOWN
     return CallerRole(CallerRoleStatus.VALID, normalize_auth_role(_str_field(body, "role")))
+
+
+class CallerRoleCache:
+    """Node's recent answers about a token, keyed by the token's SHA-256.
+
+    Concurrent lookups for one token share a single call to Node, and a definite
+    answer is reused for ``ttl_seconds``: a page load fans out into many requests
+    carrying the same token, and they should cost Node one lookup, not one each.
+    The price is that a token Node starts refusing is still accepted here until
+    the answer it gave last expires. An UNKNOWN answer is never kept, so the next
+    request asks again.
+    """
+
+    def __init__(
+        self,
+        ttl_seconds: float,
+        max_entries: int,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._max_entries = max_entries
+        self._clock = clock
+        self._answers: OrderedDict[bytes, tuple[float, CallerRole]] = OrderedDict()
+        self._in_flight: dict[bytes, asyncio.Task[CallerRole]] = {}
+
+    def clear(self) -> None:
+        self._answers.clear()
+        self._in_flight.clear()
+
+    async def get(self, token: str, lookup: Callable[[], Awaitable[CallerRole]]) -> CallerRole:
+        key = hashlib.sha256(token.encode()).digest()
+        cached = self._answers.get(key)
+        if cached is not None:
+            expires_at, answer = cached
+            if self._clock() < expires_at:
+                return answer
+            del self._answers[key]
+
+        task = self._in_flight.get(key)
+        if task is None:
+            task = asyncio.ensure_future(self._look_up(key, lookup))
+            self._in_flight[key] = task
+        # One waiter's request being cancelled must not cancel the lookup the others share.
+        return await asyncio.shield(task)
+
+    async def _look_up(self, key: bytes, lookup: Callable[[], Awaitable[CallerRole]]) -> CallerRole:
+        try:
+            answer = await lookup()
+        finally:
+            self._in_flight.pop(key, None)
+        if answer.status is not CallerRoleStatus.UNKNOWN:
+            self._answers[key] = (self._clock() + self._ttl_seconds, answer)
+            self._answers.move_to_end(key)
+            while len(self._answers) > self._max_entries:
+                self._answers.popitem(last=False)
+        return answer

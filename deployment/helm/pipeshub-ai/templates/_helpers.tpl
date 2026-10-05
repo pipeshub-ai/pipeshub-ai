@@ -260,7 +260,9 @@ This helper is called during template rendering to fail fast with clear error me
 {{- end }}
 
 {{/*
-Validate that SANDBOX_MODE=docker actually has a daemon to reach.
+Validate that SANDBOX_MODE=docker actually has a daemon to reach, and that
+SANDBOX_MODE=local carries the dev flag the service would otherwise refuse it
+without.
 
 Without one, `run_code` fails at provision with an opaque Docker error in the
 middle of a user's conversation. Failing here instead makes the operator
@@ -268,6 +270,9 @@ choose how code execution is isolated, at install time, with the options in
 front of them.
 */}}
 {{- define "pipeshub-ai.validateSandbox" -}}
+{{- if and (eq (include "pipeshub-ai.sandboxMode" .) "local") (ne (include "pipeshub-ai.sandboxAllowLocal" .) "true") }}
+  {{- fail "config.sandboxMode is \"local\", which runs generated code as a subprocess of this pod with no container isolation, and the service refuses it unless config.sandboxAllowLocal=true. Set that only on a single-tenant development cluster; otherwise use docker or e2b." }}
+{{- end }}
 {{- if eq (include "pipeshub-ai.sandboxMode" .) "docker" }}
   {{- $hasDaemon := or .Values.sandbox.dind.enabled .Values.config.dockerHost }}
   {{- if not $hasDaemon }}
@@ -278,7 +283,7 @@ front of them.
       {{- end }}
     {{- end }}
     {{- if not $socketMounted }}
-      {{- fail "config.sandboxMode is \"docker\" but no Docker daemon is configured, so run_code would fail at runtime. Pick one: (a) --set sandbox.dind.enabled=true to run a Docker-in-Docker sidecar (needs a PRIVILEGED container - see sandbox.dind in values.yaml); (b) --set config.dockerHost=tcp://<host>:2375 to use a daemon you already run; (c) mount the node's /var/run/docker.sock via extraVolumes/extraVolumeMounts; (d) --set config.sandboxMode=e2b with an E2B_API_KEY to execute off-cluster; or (e) --set config.sandboxMode=local to run generated code as a subprocess of this pod - NO container isolation, acceptable only for single-tenant development clusters." }}
+      {{- fail "config.sandboxMode is \"docker\" but no Docker daemon is configured, so run_code would fail at runtime. Pick one: (a) --set sandbox.dind.enabled=true to run a Docker-in-Docker sidecar (needs a PRIVILEGED container - see sandbox.dind in values.yaml); (b) --set config.dockerHost=tcp://<host>:2375 to use a daemon you already run; (c) mount the node's /var/run/docker.sock via extraVolumes/extraVolumeMounts; (d) --set config.sandboxMode=e2b with an E2B_API_KEY to execute off-cluster; or (e) --set config.sandboxMode=local --set config.sandboxAllowLocal=true to run generated code as a subprocess of this pod - NO container isolation, acceptable only for single-tenant development clusters." }}
     {{- end }}
   {{- end }}
 {{- end }}
@@ -301,6 +306,19 @@ the same thing.
   {{- fail (printf "config.sandboxMode=%q is not a supported coding sandbox. Use one of: local, docker, e2b." $raw) -}}
 {{- end -}}
 {{- $mode -}}
+{{- end -}}
+
+{{/*
+Canonical `config.sandboxAllowLocal`: "true" or "false".
+
+Parsed the way the service parses SANDBOX_ALLOW_LOCAL (1/true/yes/on, any
+case), so the install check and the rendered env var cannot disagree. A plain
+truthiness test let `--set-string config.sandboxAllowLocal=false` (a
+non-empty string) past the check, and the service then refused local anyway.
+*/}}
+{{- define "pipeshub-ai.sandboxAllowLocal" -}}
+{{- $raw := .Values.config.sandboxAllowLocal | default false | toString | trim | lower -}}
+{{- ternary "true" "false" (has $raw (list "1" "true" "yes" "on")) -}}
 {{- end -}}
 
 {{/*
@@ -351,6 +369,9 @@ renders `REDIS_HOST=""` while `REDIS_MODE=standalone` selects
 back to localhost, and the subchart still deploys. Both failures are silent.
 */}}
 {{- define "pipeshub-ai.validateRedis" -}}
+{{- if and .Values.redis.builtin.enabled .Values.redis.external.enabled -}}
+  {{- fail "redis.builtin.enabled and redis.external.enabled cannot both be true." -}}
+{{- end -}}
 {{- $external := .Values.redis.external -}}
 {{- if $external.enabled -}}
   {{- if not $external.clusterEndpoints -}}
@@ -362,8 +383,14 @@ back to localhost, and the subchart still deploys. Both failures are silent.
   {{- if .Values.redis.enabled -}}
     {{- fail "redis.external.enabled=true also requires redis.enabled=false, otherwise the bundled Redis subchart is deployed and left unused." -}}
   {{- end -}}
+{{- else if and (not .Values.redis.enabled) .Values.redis.builtin.enabled -}}
+  {{- if ne (.Values.redis.mode | default "standalone") "standalone" -}}
+    {{- fail "redis.builtin is a replication deployment, not a Redis Cluster. Use redis.mode=standalone with it. Redis Cluster still requires redis.external.enabled=true and redis.external.clusterEndpoints." -}}
+  {{- end -}}
+{{- else if and .Values.redis.enabled .Values.redis.builtin.enabled -}}
+  {{- fail "redis.enabled and redis.builtin.enabled cannot both be true. Use redis.enabled=true for the Bitnami subchart or redis.enabled=false with redis.builtin.enabled=true for the chart-owned master and replica." -}}
 {{- else if not .Values.redis.enabled -}}
-  {{- fail "redis.enabled=false requires redis.external.enabled=true with redis.external.clusterEndpoints; otherwise nothing provides Redis." -}}
+  {{- fail "redis.enabled=false requires redis.external.enabled=true with redis.external.clusterEndpoints, or redis.builtin.enabled=true; otherwise nothing provides Redis." -}}
 {{- else if ne (.Values.redis.mode | default "standalone") "standalone" -}}
   {{- /*
     The bundled Bitnami subchart is *replication*, not Redis Cluster. Pointing
@@ -392,6 +419,15 @@ synced Secret never gets.
 {{- end -}}
 {{- if and (eq (.Values.config.kvStoreType | default "redis") "etcd") (not .Values.etcd.enabled) -}}
   {{- fail "config.kvStoreType=etcd requires etcd.enabled=true; otherwise the app has no etcd to connect to." -}}
+{{- end -}}
+{{- if and .Values.neo4j.enabled (gt (int .Values.neo4j.replicaCount) 1) (not (contains "enterprise" (.Values.neo4j.image.tag | toString))) -}}
+  {{- fail "neo4j.replicaCount > 1 requires an Enterprise image (image.tag must contain \"enterprise\"). Neo4j Community has no clustering; extra replicas are separate databases and split writes. Keep replicaCount at 1, or switch neo4j.image.tag to an enterprise build you are licensed for." -}}
+{{- end -}}
+{{- if and .Values.mongodb.enabled .Values.mongodb.builtin.enabled -}}
+  {{- fail "mongodb.enabled and mongodb.builtin.enabled cannot both be true. Use mongodb.enabled=true for the Bitnami subchart (existing installs) or mongodb.enabled=false and mongodb.builtin.enabled=true for the chart-owned replica set (new installs)." -}}
+{{- end -}}
+{{- if and (not .Values.mongodb.enabled) (not .Values.mongodb.builtin.enabled) -}}
+  {{- fail "MongoDB is not deployed. Set mongodb.enabled=true (Bitnami subchart) or mongodb.builtin.enabled=true (chart-owned replica set)." -}}
 {{- end -}}
 {{- if and .Values.secretManagement.externalSecrets.enabled (not .Values.secretManagement.externalSecrets.remoteRefs.secretKey) -}}
   {{- fail "secretManagement.externalSecrets.remoteRefs.secretKey is required when externalSecrets is enabled; the app cannot start without secret-key." -}}

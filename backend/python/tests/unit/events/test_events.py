@@ -38,6 +38,8 @@ def _make_event_processor():
     # MagicMock raises TypeError, which the caller now propagates rather than
     # swallowing.
     processor.indexing_pipeline = AsyncMock()
+    # Dedup checks the twin's stored content before reusing it; default to present.
+    processor.sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value="stored/path")
     graph_provider = AsyncMock()
     graph_provider.update_node = AsyncMock(return_value=True)
     config_service = MagicMock()
@@ -74,6 +76,15 @@ def _make_event_payload(
     if event_type is not None:
         data["eventType"] = event_type
     return data
+
+
+def _rereads_as_still_in_flight(twin, doc) -> AsyncMock:
+    """The post-QUEUED re-read of the twin: same content and org, still running.
+
+    Read at call time, after dedup has stored the computed md5 on ``doc``."""
+    return AsyncMock(side_effect=lambda *_a, **_k: {
+        **twin, "md5Checksum": doc.get("md5Checksum"), "orgId": doc.get("orgId"),
+    })
 
 
 async def _drain(async_gen):
@@ -255,6 +266,23 @@ class TestCheckDuplicateMd5EdgeCases:
         assert result.skip_indexing is False
 
     @pytest.mark.asyncio
+    async def test_a_restored_record_without_its_checksum_is_hashed_again_and_indexed(self) -> None:
+        """A restore clears md5Checksum and keeps virtualRecordId; unchanged content must
+        get its checksum back and be indexed, never matched against itself."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = []
+        doc = {"_key": "restored-1", "virtualRecordId": "vr-old", "recordType": "FILE", "sizeInBytes": 4}
+
+        with patch.object(ep, "update_record_fields", new_callable=AsyncMock, return_value=True) as update:
+            result = await ep._check_duplicate_by_md5(b"same", doc)
+
+        md5 = ep._hash_for_dedup(b"same", "FILE", None)
+        update.assert_awaited_once_with(doc, {"md5Checksum": md5})
+        assert gp.find_duplicate_records.await_args.kwargs["record_key"] == "restored-1"
+        assert gp.find_duplicate_records.await_args.kwargs["md5_checksum"] == md5
+        assert result.skip_indexing is False
+
+    @pytest.mark.asyncio
     async def test_completed_without_virtual_record_id_not_matched(self):
         """A COMPLETED duplicate without virtualRecordId is NOT treated as processed."""
         ep, _, _, gp = _make_event_processor()
@@ -320,6 +348,83 @@ class TestCheckDuplicateMd5EdgeCases:
         gp.copy_document_relationships.assert_awaited_once_with("dup-src", "r-fallback")
 
 
+class TestCheckDuplicateMd5MissingStoredContent:
+    """A twin whose stored content is gone (e.g. deleted with the connector
+    that indexed it first) must not be reused, or every re-index -- forced or
+    not -- skips against it and the record stays unreadable."""
+
+    @staticmethod
+    def _setup(twin_status=ProgressStatus.COMPLETED.value, stored_path=None):
+        ep, _, processor, gp = _make_event_processor()
+        lookup = processor.sink_orchestrator.blob_storage.get_actual_content_path
+        lookup.return_value = stored_path
+        gp.find_duplicate_records.return_value = [{
+            "_key": "twin",
+            "virtualRecordId": "vr-shared",
+            "indexingStatus": twin_status,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+            "summaryDocumentId": "sum-1",
+        }]
+        doc = {
+            "_key": "r1", "orgId": "org-1", "virtualRecordId": "vr-shared",
+            "md5Checksum": "abc", "recordType": "FILE", "sizeInBytes": 10,
+        }
+        return ep, gp, lookup, doc
+
+    @pytest.mark.asyncio
+    async def test_completed_twin_without_stored_content_is_indexed(self):
+        ep, gp, lookup, doc = self._setup(stored_path=None)
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is False
+        assert result.virtual_record_id is None
+        assert doc["virtualRecordId"] == "vr-shared"
+        lookup.assert_awaited_once_with("org-1", "vr-shared")
+        gp.copy_document_relationships.assert_not_called()
+        assert result.rebuild_shared_vrid is True
+
+    @pytest.mark.asyncio
+    async def test_twin_on_another_vrid_is_not_rebuilt_through_this_record(self):
+        ep, _, _, doc = self._setup(stored_path=None)
+        doc["virtualRecordId"] = "vr-own"
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is False
+        assert result.rebuild_shared_vrid is False
+
+    @pytest.mark.asyncio
+    async def test_completed_twin_with_stored_content_is_still_reused(self):
+        ep, gp, _, doc = self._setup(stored_path="PipesHub/records/c1/a.pdf")
+
+        with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        gp.copy_document_relationships.assert_awaited_once_with("twin", "r1")
+
+    @pytest.mark.asyncio
+    async def test_empty_twin_is_reused_without_a_storage_lookup(self):
+        ep, _, lookup, doc = self._setup(twin_status=ProgressStatus.EMPTY.value)
+
+        with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        lookup.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_blob_storage_keeps_reusing_the_twin(self):
+        ep, _, _, doc = self._setup()
+        ep.processor.sink_orchestrator = None
+
+        with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+
+
 # ===========================================================================
 # _check_duplicate_by_md5 - cross-collection dedup matrix
 #
@@ -345,6 +450,8 @@ def _make_multi_collection_event_processor():
     logger = MagicMock()
     processor = MagicMock()
     processor.indexing_pipeline = AsyncMock()
+    # Dedup checks the twin's stored content before reusing it; default to present.
+    processor.sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value="stored/path")
     graph_provider = AsyncMock()
     graph_provider.update_node = AsyncMock(return_value=True)
     config_service = MagicMock()
@@ -433,6 +540,7 @@ class TestCheckDuplicateMd5CrossCollectionMatrix:
             "recordType": "FILE",
             "sizeInBytes": 10,
         }
+        gp.get_document = _rereads_as_still_in_flight(in_progress, doc)
 
         result = await ep._check_duplicate_by_md5(b"x", doc)
 
@@ -463,6 +571,103 @@ class TestCheckDuplicateMd5CrossCollectionMatrix:
         assert result.skip_indexing is False
         assert result.virtual_record_id is None
         assert doc.get("indexingStatus") != ProgressStatus.QUEUED.value
+
+
+# ===========================================================================
+# _check_duplicate_by_md5 - entities-collection sync on the finished-
+# duplicate branch (SinkOrchestrator.sync_entities_for_duplicate)
+# ===========================================================================
+
+
+class TestCheckDuplicateMd5EntitySync:
+    """sync_entities_for_duplicate must run only for same-collection,
+    already-processed duplicates -- a different-collection duplicate
+    continues to full indexing and gets entity sync from
+    SinkOrchestrator.index()/enrich() instead."""
+
+    _DUP = {
+        "_key": "dup-1",
+        "connectorName": "GOOGLE_DRIVE",
+        "virtualRecordId": "vr-1",
+        "indexingStatus": ProgressStatus.COMPLETED.value,
+        "extractionStatus": ProgressStatus.COMPLETED.value,
+    }
+
+    @pytest.mark.asyncio
+    async def test_same_collection_finished_duplicate_syncs_entities(self):
+        ep, gp = _make_multi_collection_event_processor()
+        ep.sink_orchestrator = AsyncMock()
+        gp.find_duplicate_records.return_value = [self._DUP]
+        doc = {
+            "_key": "r1",
+            "connectorName": "GOOGLE_DRIVE",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        ep.sink_orchestrator.sync_entities_for_duplicate.assert_awaited_once_with(doc)
+
+    @pytest.mark.asyncio
+    async def test_different_collection_finished_duplicate_skips_entity_sync(self):
+        ep, gp = _make_multi_collection_event_processor()
+        ep.sink_orchestrator = AsyncMock()
+        gp.find_duplicate_records.return_value = [self._DUP]
+        doc = {
+            "_key": "r1",
+            "connectorName": "SLACK",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is False
+        ep.sink_orchestrator.sync_entities_for_duplicate.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_sink_orchestrator_does_not_raise(self):
+        """ep.sink_orchestrator defaults to None; must not AttributeError."""
+        ep, gp = _make_multi_collection_event_processor()
+        assert ep.sink_orchestrator is None
+        gp.find_duplicate_records.return_value = [self._DUP]
+        doc = {
+            "_key": "r1",
+            "connectorName": "GOOGLE_DRIVE",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+
+    @pytest.mark.asyncio
+    async def test_entity_sync_failure_is_non_fatal(self):
+        """A raising sink still returns the normal dedup decision -- entity
+        sync is bookkeeping, not part of the correctness of the decision."""
+        ep, gp = _make_multi_collection_event_processor()
+        ep.sink_orchestrator = AsyncMock()
+        ep.sink_orchestrator.sync_entities_for_duplicate = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        gp.find_duplicate_records.return_value = [self._DUP]
+        doc = {
+            "_key": "r1",
+            "connectorName": "GOOGLE_DRIVE",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result == DedupDecision(virtual_record_id="vr-1", skip_indexing=True)
 
 
 # ===========================================================================
@@ -760,55 +965,49 @@ class TestOnEventEdgeCases:
 
 
 class TestEpubDispatch:
-    """EPUB must be converted to PDF then routed through the identical PDF
-    decision logic used for native PDFs — never through PyMuPDF/fitz."""
+    """EPUB is read by the processor's EPUB reader, never converted to PDF."""
 
+    @pytest.mark.parametrize(
+        ("extension", "mime_type"),
+        [(ExtensionTypes.EPUB.value, "unknown"), ("unknown", MimeTypes.EPUB.value)],
+    )
     @pytest.mark.asyncio
-    async def test_epub_converts_then_routes_to_docling_by_default(self):
+    async def test_epub_routes_to_the_epub_processor(self, extension: str, mime_type: str) -> None:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
-        processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_epub_document = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
-             patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
-             patch(
-                 "app.events.events.convert_with_libreoffice",
-                 new_callable=AsyncMock,
-                 return_value=b"pdf bytes",
-             ) as mock_convert:
+             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn:
             event_data = _make_event_payload(
-                extension=ExtensionTypes.EPUB.value, record_name="book.epub"
+                extension=extension, mime_type=mime_type, record_name="book.epub"
             )
             events = await _drain(ep.on_event(event_data))
 
-        mock_convert.assert_called_once_with(b"hello", "epub", "pdf")
-        processor.process_pdf_with_docling.assert_called_once()
-        assert processor.process_pdf_with_docling.call_args.kwargs["recordName"] == "book.pdf"
-        assert processor.process_pdf_with_docling.call_args.kwargs["pdf_binary"] == b"pdf bytes"
+        processor.process_epub_document.assert_called_once()
+        kwargs = processor.process_epub_document.call_args.kwargs
+        assert kwargs["epub_binary"] == b"hello"
+        assert kwargs["recordName"] == "book.epub"
+        processor.process_pdf_with_docling.assert_not_called()
+        processor.process_pdf_document_with_ocr.assert_not_called()
+        spawn.assert_not_called()
         assert len(events) == 3
 
     @pytest.mark.asyncio
-    async def test_libreoffice_conversion_failure_bubbles_up(self):
-        """A LibreOffice failure (e.g. missing binary, corrupt EPUB) surfaces
-        as an indexing error rather than being silently swallowed."""
+    async def test_an_epub_failure_bubbles_up(self) -> None:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
 
+        processor.process_epub_document = MagicMock(side_effect=RuntimeError("book could not be read"))
+
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
-             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch(
-                 "app.events.events.convert_with_libreoffice",
-                 new_callable=AsyncMock,
-                 side_effect=RuntimeError("LibreOffice is not installed"),
-             ):
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
             event_data = _make_event_payload(extension=ExtensionTypes.EPUB.value)
-            with pytest.raises(RuntimeError, match="LibreOffice is not installed"):
+            with pytest.raises(RuntimeError, match="book could not be read"):
                 await _drain(ep.on_event(event_data))
 
         processor.process_pdf_with_docling.assert_not_called()
-        processor.process_pdf_document_with_ocr.assert_not_called()
 
 
 # ===========================================================================
@@ -1291,6 +1490,37 @@ class TestOnEventUpdateEvent:
         assert len(call_kwargs["virtual_record_id"]) == 36
 
     @pytest.mark.asyncio
+    async def test_shared_vrid_with_missing_content_is_rebuilt_not_isolated(self):
+        """Isolating would repair only this record; the others sharing the
+        VRID would keep reading content that no longer exists."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": "shared-vrid",
+        }
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=[
+            {"_key": "rec-1"}, {"_key": "rec-2"},
+        ])
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+        cleanup = AsyncMock()
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(rebuild_shared_vrid=True)),              patch.object(ep, "_cleanup_abandoned_vrid_storage", cleanup):
+            event_data = _make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.REINDEX_RECORD.value,
+                virtual_record_id="shared-vrid",
+            )
+            await _drain(ep.on_event(event_data))
+
+        call_kwargs = processor.process_sql_structured_data.call_args[1]
+        assert call_kwargs["virtual_record_id"] == "shared-vrid"
+        assert call_kwargs["prev_virtual_record_id"] == "shared-vrid"
+        cleanup.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_reindex_event_uses_same_reconciliation_logic(self):
         """REINDEX_RECORD follows the same reconciliation path as UPDATE_RECORD."""
         ep, _, processor, gp = _make_event_processor()
@@ -1509,6 +1739,38 @@ class TestOnEventEarlyReturns:
         ]
 
     @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_not_drained_as_a_deletion(self):
+        """The graph being unreachable must not read as "this record is gone".
+
+        Draining is permanent: the message is acknowledged and the record sits
+        at QUEUED until the stranded sweep republishes it an hour later. During
+        a graph restart every record in flight took that path.
+        """
+        ep, _logger, _, gp = _make_event_processor()
+
+        async def unreachable_graph(*_args, raise_on_error: bool = False, **_kwargs):
+            # What both providers do: swallow and answer None unless asked not to.
+            # A double that raised either way would pass without the fix.
+            if raise_on_error:
+                raise RuntimeError("graph is restarting")
+            return None
+
+        gp.get_document.side_effect = unreachable_graph
+
+        with pytest.raises(RuntimeError):
+            await _drain(ep.on_event(_make_event_payload()))
+
+    @pytest.mark.asyncio
+    async def test_the_record_lookup_asks_for_failures_to_be_raised(self):
+        """`raise_on_error` is what makes the None above mean "deleted"."""
+        ep, _logger, _, gp = _make_event_processor()
+        gp.get_document.return_value = None
+
+        await _drain(ep.on_event(_make_event_payload()))
+
+        assert gp.get_document.await_args.kwargs.get("raise_on_error") is True
+
+    @pytest.mark.asyncio
     async def test_no_buffer_proceeds_with_none_content(self):
         """None buffer proceeds (no early return), duplicate check runs with None content."""
         ep, logger, processor, gp = _make_event_processor()
@@ -1588,12 +1850,12 @@ class TestOnEventDuplicate:
         ep, _, _, gp = _make_event_processor()
 
         # find_duplicate_records returns an in-progress duplicate (no processed one)
-        gp.find_duplicate_records = AsyncMock(return_value=[
-            {"_key": "dup-1", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
-        ])
+        twin = {"_key": "dup-1", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
+        gp.find_duplicate_records = AsyncMock(return_value=[twin])
         gp.batch_update_nodes = AsyncMock()
 
         doc = {"_key": "rec-1", "md5Checksum": "abc123", "recordType": "FILE", "sizeInBytes": 100}
+        gp.get_document = _rereads_as_still_in_flight(twin, doc)
         result = await ep._check_duplicate_by_md5(b"hello world", doc)
         assert result.skip_indexing is True
         assert doc["indexingStatus"] == ProgressStatus.QUEUED.value
@@ -2207,15 +2469,17 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
     async def test_a_successful_in_flight_duplicate_still_skips(self):
         """The happy path is unchanged: raising is reserved for real failures."""
         ep, gp = _make_multi_collection_event_processor()
-        gp.find_duplicate_records.return_value = [{
+        twin = {
             "_key": "dup-1",
             "connectorName": "GOOGLE_DRIVE",
             "indexingStatus": ProgressStatus.IN_PROGRESS.value,
-        }]
+        }
+        gp.find_duplicate_records.return_value = [twin]
         doc = {
             "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
             "recordType": "FILE", "sizeInBytes": 10,
         }
+        gp.get_document = _rereads_as_still_in_flight(twin, doc)
 
         result = await ep._check_duplicate_by_md5(b"payload", doc)
 

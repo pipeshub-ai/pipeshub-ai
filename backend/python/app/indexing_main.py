@@ -19,11 +19,18 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.modules.indexing.duplicate_reconcile import (
+    DuplicateReconciler,
+    retry_pending_duplicate_reconciles,
+)
+from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
 from app.modules.indexing.vector_membership_backfill import (
     run_vector_membership_backfill_loop,
 )
 from app.containers.indexing import initialize_container
 from app.edition_containers import IndexingAppContainer
+from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
+from app.services.graph_db.common.utils import RESTORED_AT_FIELD
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     ConsumerType,
@@ -85,6 +92,15 @@ async def get_initialized_container() -> IndexingAppContainer:
                 container.wire(modules=["app.modules.retrieval.retrieval_service"])
                 setattr(get_initialized_container, "initialized", True)
     return container
+
+def _enrichment_cut_short(record: dict[str, Any]) -> bool:
+    """Indexed, with an enrichment that has not ended (and nothing else in flight)."""
+    return (
+        record.get("indexingStatus") == ProgressStatus.COMPLETED.value
+        and record.get("extractionStatus") == ProgressStatus.IN_PROGRESS.value
+        and record.get("parsingStatus") != ProgressStatus.IN_PROGRESS.value
+    )
+
 
 async def recover_in_progress_records(
     app_container: IndexingAppContainer,
@@ -194,8 +210,16 @@ async def recover_in_progress_records(
                     f"Failed to persist recovery status for record {record_id}"
                 )
 
-        async def process_single_record(record: dict[str, Any]) -> bool | None:
-            """Reset one stuck record and re-queue it, with semaphore control."""
+        async def process_single_record(
+            record: dict[str, Any], *, resume_enrichment: bool = False
+        ) -> bool | None:
+            """Reset one stuck record and re-queue it, with semaphore control.
+
+            ``resume_enrichment``: the record is indexed and only its enrichment
+            was cut short. It stays searchable; the republished event re-runs it
+            (the handler does not skip an indexed record whose enrichment is
+            IN_PROGRESS), and its completion promotes its queued duplicates.
+            """
             async with semaphore:
                 record_id = record.get("_key")
                 record_name = record.get("recordName", "Unknown")
@@ -228,12 +252,18 @@ async def recover_in_progress_records(
                         record_id,
                         CollectionNames.RECORDS.value,
                     )
-                    if latest_record is None or not (
-                        latest_record.get("indexingStatus")
-                        == ProgressStatus.IN_PROGRESS.value
-                        or latest_record.get("parsingStatus")
-                        == ProgressStatus.IN_PROGRESS.value
-                    ):
+                    if latest_record is None:
+                        still_stuck = False
+                    elif resume_enrichment:
+                        # Stale again, not merely cut short: a redelivery that
+                        # is enriching it now has refreshed processingStartedAt.
+                        still_stuck = _enrichment_cut_short(latest_record) and is_stale(latest_record)
+                    else:
+                        still_stuck = (
+                            latest_record.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value
+                            or latest_record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value
+                        )
+                    if not still_stuck:
                         results["skipped"] += 1
                         return True
                     record = latest_record
@@ -243,12 +273,18 @@ async def recover_in_progress_records(
                         f"🔄 Recovering stale record: {record_name} (ID: {record_id})"
                     )
 
-                    # Check if connector is disabled or deleted
+                    # Check if connector is disabled or deleted. Not for a
+                    # resumed enrichment: the record is searchable, and these
+                    # branches would turn it AUTO_INDEX_OFF and strand its
+                    # QUEUED copies. The republished event reaches the
+                    # handler, which ends the enrichment and releases them.
                     connector_id = record.get("connectorId")
                     origin = record.get("origin")
-                    if connector_id and origin == OriginTypes.CONNECTOR.value:
+                    if connector_id and origin == OriginTypes.CONNECTOR.value and not resume_enrichment:
+                        # A failed read must not look like a deleted connector;
+                        # raising leaves the row for the next pass.
                         connector_instance = await graph_provider.get_document(
-                            connector_id, CollectionNames.APPS.value
+                            connector_id, CollectionNames.APPS.value, raise_on_error=True
                         )
                         if not connector_instance:
                             logger.info(
@@ -313,14 +349,22 @@ async def recover_in_progress_records(
                         event_type = EventTypes.NEW_RECORD.value
                         logger.debug(f"Treating as NEW_RECORD (version={version}, virtualRecordId={virtual_record_id})")
 
-                    reset_fields = {
-                        "parsingStatus": ProgressStatus.NOT_STARTED.value,
-                        "indexingStatus": ProgressStatus.QUEUED.value,
-                        "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
-                        "extractionStatus": ProgressStatus.NOT_STARTED.value,
-                        "processingStartedAt": None,
-                        "reason": RECOVERY_REQUEUED,
-                    }
+                    if resume_enrichment:
+                        # A fresh start time keeps the next scans off it while
+                        # the event waits; if the event is lost it ages out again.
+                        reset_fields = {
+                            "processingStartedAt": get_epoch_timestamp_in_ms(),
+                            "reason": RECOVERY_REQUEUED,
+                        }
+                    else:
+                        reset_fields = {
+                            "parsingStatus": ProgressStatus.NOT_STARTED.value,
+                            "indexingStatus": ProgressStatus.QUEUED.value,
+                            "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
+                            "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                            "processingStartedAt": None,
+                            "reason": RECOVERY_REQUEUED,
+                        }
 
                     async def publish_recovery_event() -> None:
                         nonlocal published
@@ -438,7 +482,7 @@ async def recover_in_progress_records(
             except (TypeError, ValueError):
                 return True
 
-        for status_field in ("indexingStatus", "parsingStatus"):
+        for status_field in ("indexingStatus", "parsingStatus", "extractionStatus"):
             offset = 0
             while True:
                 if (
@@ -460,6 +504,7 @@ async def recover_in_progress_records(
                 if not page:
                     break
 
+                resume_enrichment = status_field == "extractionStatus"
                 candidates = [
                     record
                     for record in page
@@ -469,10 +514,14 @@ async def recover_in_progress_records(
                         and record.get("indexingStatus")
                         == ProgressStatus.IN_PROGRESS.value
                     )
+                    and (not resume_enrichment or _enrichment_cut_short(record))
                 ]
 
                 outcomes = await asyncio.gather(
-                    *(process_single_record(record) for record in candidates)
+                    *(
+                        process_single_record(record, resume_enrichment=resume_enrichment)
+                        for record in candidates
+                    )
                 )
                 total_records += sum(outcome is not None for outcome in outcomes)
                 removed_from_result = sum(outcome is True for outcome in outcomes)
@@ -534,6 +583,27 @@ async def recover_in_progress_records(
                 logger=logger,
                 page_size=page_size,
             )
+
+        # A primary whose handler could not copy its taxonomy to promoted
+        # duplicates keeps duplicateReconcilePending; a redelivery finds
+        # nothing QUEUED, so nothing else would retry it.
+        try:
+            event_processor = app_container.event_processor()
+            if inspect.isawaitable(event_processor):
+                event_processor = await event_processor
+            total_records += await retry_pending_duplicate_reconciles(
+                graph_provider=graph_provider,
+                reconciler=DuplicateReconciler(
+                    graph_provider=graph_provider,
+                    sink=getattr(event_processor, "sink_orchestrator", None),
+                    sync_vector_membership=event_processor.sync_vector_membership,
+                    logger=logger,
+                ),
+                logger=logger,
+                page_size=page_size,
+            )
+        except Exception as exc:
+            logger.warning(f"Duplicate reconcile retry skipped this pass: {exc}")
 
         if total_records == 0:
             logger.debug("No stale in-progress records to recover")
@@ -623,7 +693,12 @@ async def _sweep_orphaned_virtual_record_mappings(
             if not isinstance(vrid, str) or not vrid:
                 continue
             try:
-                records = await graph_provider.get_records_by_virtual_record_id(vrid)
+                # The handler below was written for this and could not fire:
+                # the read swallowed its own failure and answered [], which
+                # this loop reads as "no records reference it" and cleans up.
+                records = await graph_provider.get_records_by_virtual_record_id(
+                    vrid, raise_on_error=True
+                )
             except Exception as exc:
                 logger.warning(
                     "Could not check virtual record %s for orphaned vectors: %s",
@@ -632,6 +707,18 @@ async def _sweep_orphaned_virtual_record_mappings(
                 )
                 continue
             if records:
+                continue
+            try:
+                # Content still held by a record in the trash is the purge's to
+                # remove; releasing it here would delete a restorable record's
+                # stored content ahead of time.
+                trashed = await graph_provider.get_records_by_virtual_record_id(
+                    vrid, raise_on_error=True, visibility=RecordVisibility.DELETED
+                )
+            except Exception as exc:
+                logger.warning("Could not check virtual record %s for trashed records: %s", vrid, exc)
+                continue
+            if trashed:
                 continue
             try:
                 outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
@@ -689,22 +776,43 @@ async def _sweep_queued_records_for_inactive_connectors(
     interval is enough to be sure no worker still owns the row.
     """
     swept = 0
-    connector_active: dict[str, bool] = {}
+    # None means "could not read this pass" -- recorded so the lookup is not
+    # repeated, but never mistaken for "gone". Rebuilt on the next tick.
+    connector_active: dict[str, bool | None] = {}
     in_progress_cutoff_ms = get_epoch_timestamp_in_ms() - int(
         messaging_env.concurrency_lease_seconds * 1000
     )
 
     async def _is_inactive(connector_id: str) -> bool:
         if connector_id not in connector_active:
-            instance = await graph_provider.get_document(
-                connector_id, CollectionNames.APPS.value
-            )
-            # A missing instance counts as inactive: its records can never be
-            # indexed again.
-            connector_active[connector_id] = bool(
-                instance and instance.get("isActive", False)
-            )
-        return not connector_active[connector_id]
+            try:
+                # `raise_on_error`, because saying yes here parks the record as
+                # AUTO_INDEX_OFF. Without it an unreadable graph answers None,
+                # which is the same answer a deleted connector gives -- so a
+                # restart would take healthy records out of indexing for good,
+                # under a status that reads as somebody's deliberate setting.
+                instance = await graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value, raise_on_error=True
+                )
+            except Exception as e:
+                # Remembered as unreadable for the rest of this pass, not
+                # retried per record: on Neo4j a restart surfaces only after the
+                # 30s connection-acquisition timeout, so asking again for each
+                # of a hundred records would hold recovery for the best part of
+                # an hour while hammering the database trying to come back.
+                logger.warning(
+                    "Could not read connector %s, so leaving its records alone "
+                    "this pass rather than parking them: %s", connector_id, e
+                )
+                connector_active[connector_id] = None
+            else:
+                # A missing instance counts as inactive: its records can never
+                # be indexed again.
+                connector_active[connector_id] = bool(
+                    instance and instance.get("isActive", False)
+                )
+        # Unreadable is not inactive, so nothing is parked on a failed read.
+        return connector_active[connector_id] is False
 
     for status_value in (
         ProgressStatus.QUEUED.value,
@@ -819,18 +927,30 @@ async def _republish_stranded_records(
         return 0
 
     cutoff_ms = get_epoch_timestamp_in_ms() - int(after_seconds * 1000)
-    connector_active: dict[str, bool] = {}
+    # None means "could not read this pass": see the sibling sweep above.
+    connector_active: dict[str, bool | None] = {}
     republished = 0
 
     async def _is_active(connector_id: str) -> bool:
         if connector_id not in connector_active:
-            instance = await graph_provider.get_document(
-                connector_id, CollectionNames.APPS.value
-            )
-            connector_active[connector_id] = bool(
-                instance and instance.get("isActive", False)
-            )
-        return connector_active[connector_id]
+            try:
+                instance = await graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value, raise_on_error=True
+                )
+            except Exception as e:
+                # Remembered for this pass rather than retried per record, for
+                # the same reason as the sweep above.
+                logger.warning(
+                    "Could not read connector %s, so leaving its records for the "
+                    "next pass: %s", connector_id, e
+                )
+                connector_active[connector_id] = None
+            else:
+                connector_active[connector_id] = bool(
+                    instance and instance.get("isActive", False)
+                )
+        # Unreadable is not active either: the record waits for the next pass.
+        return connector_active[connector_id] is True
 
     for status_value in (
         ProgressStatus.QUEUED.value,
@@ -852,10 +972,18 @@ async def _republish_stranded_records(
             for record in page:
                 record_key = record.get("_key") or record.get("id")
                 connector_id = record.get("connectorId")
+                # Uploads are otherwise left alone: a new one waits on its file
+                # reaching storage. A restored file's content is already there,
+                # and its restore was the only thing that would have queued it.
+                restored_upload = (
+                    status_value == ProgressStatus.NOT_STARTED.value
+                    and bool(record.get(RESTORED_AT_FIELD))
+                    and is_live_record(record)
+                )
                 if (
                     not record_key
                     or not connector_id
-                    or record.get("origin") != OriginTypes.CONNECTOR.value
+                    or (record.get("origin") != OriginTypes.CONNECTOR.value and not restored_upload)
                 ):
                     continue
 
@@ -895,7 +1023,9 @@ async def _republish_stranded_records(
                 # A duplicate parked behind an in-flight twin is legitimately
                 # QUEUED with its message already acked — it is released by the
                 # twin's completion, not by us.
-                if record.get("md5Checksum") and record.get("virtualRecordId"):
+                # Parking writes QUEUED, so a restored file still NOT_STARTED is
+                # not parked, though it keeps the checksum and content id it had.
+                if record.get("md5Checksum") and record.get("virtualRecordId") and not restored_upload:
                     continue
 
                 record_owner = f"stranded:{uuid4().hex}"
@@ -927,9 +1057,10 @@ async def _republish_stranded_records(
                         "virtualRecordId": record.get("virtualRecordId"),
                     }
                     version = int(payload.get("version", 0) or 0)
+                    # An upload keeps version 0; a restored one was indexed before.
                     event_type = (
                         EventTypes.REINDEX_RECORD.value
-                        if version > 0 and payload.get("virtualRecordId")
+                        if (version > 0 or restored_upload) and payload.get("virtualRecordId")
                         else EventTypes.NEW_RECORD.value
                     )
 
@@ -1326,12 +1457,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_vector_membership_backfill_loop(app_container, graph_provider),
             worker_loop,
         )
+        app.state.entity_index_future = asyncio.run_coroutine_threadsafe(
+            run_entity_index_rebuild_loop(app_container, graph_provider),
+            worker_loop,
+        )
     else:
         app.state.recovery_task = asyncio.create_task(
             run_stale_recovery_loop(app_container, graph_provider)
         )
         app.state.backfill_task = asyncio.create_task(
             run_vector_membership_backfill_loop(app_container, graph_provider)
+        )
+        app.state.entity_index_task = asyncio.create_task(
+            run_entity_index_rebuild_loop(app_container, graph_provider)
         )
 
     yield
@@ -1393,6 +1531,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         except Exception as e:
             logger.error(f"❌ Error during vector membership backfill future shutdown: {str(e)}")
+
+    entity_index_task = getattr(app.state, "entity_index_task", None)
+    if entity_index_task:
+        if not entity_index_task.done():
+            entity_index_task.cancel()
+        try:
+            await entity_index_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during entity index rebuild shutdown: {str(e)}")
+
+    entity_index_future = getattr(app.state, "entity_index_future", None)
+    if entity_index_future:
+        if not entity_index_future.done():
+            entity_index_future.cancel()
+        try:
+            await asyncio.wrap_future(entity_index_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during entity index rebuild future shutdown: {str(e)}")
 
     # Stop message consumers
     try:
@@ -1480,7 +1640,8 @@ async def health_check(request: Request) -> JSONResponse:
             except Exception as stats_error:
                 # Observability failure must not fail the liveness probe —
                 # the service itself is still healthy.
-                content["resource_governor"] = {"error": str(stats_error)}
+                container.logger().warning("Resource governor stats failed: %s", stats_error)
+                content["resource_governor"] = {"error": "unavailable"}
         # Per-tier dispatch admission: a heavy tier pinned at its ceiling with
         # light idle is attachments queueing on heavy parse, which is fine as
         # long as light keeps moving; both pinned means the node is full.
@@ -1493,19 +1654,21 @@ async def health_check(request: Request) -> JSONResponse:
             try:
                 dispatch[str(entry[0])] = stats()
             except Exception as stats_error:
-                dispatch[str(entry[0])] = {"error": str(stats_error)}
+                container.logger().warning("Dispatch stats failed for %s: %s", entry[0], stats_error)
+                dispatch[str(entry[0])] = {"error": "unavailable"}
         if dispatch:
             content["dispatch"] = dispatch
         return JSONResponse(
             status_code=200,
             content=content,
         )
-    except Exception as e:
+    except Exception:
+        container.logger().exception("Health check failed")
         return JSONResponse(
             status_code=500,
             content={
                 "status": "unhealthy",
-                "error": str(e),
+                "error": "Health check failed",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )

@@ -4,10 +4,8 @@ import { Logger } from '../../../libs/services/logger.service';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 import axios from 'axios';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
-import {
-  endpoint,
-  STORAGE_WRITE_FAILED_MESSAGE,
-} from '../../storage/constants/constants';
+import { STORAGE_WRITE_FAILED_MESSAGE } from '../../storage/constants/constants';
+import { storedServiceEndpoint } from '../../storage/utils/service-endpoint';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { RecordRelationService } from '../services/kb.relation.service';
@@ -25,6 +23,7 @@ import {
   getFilenameWithoutExtension,
 } from '../../../libs/utils/file-extension.util';
 import { mapWithConcurrency } from '../../../libs/utils/concurrency.util';
+import { handleBackendError } from '../../../libs/errors/backend-error';
 
 const logger = Logger.getInstance({
   service: 'knowledge_base.utils',
@@ -34,6 +33,9 @@ const logger = Logger.getInstance({
 // single batch. Bounds load on the storage service while ensuring one large
 // file never serializes the whole batch behind it.
 export const UPLOAD_STORAGE_CONCURRENCY = 5;
+
+// Completes "PipesHub tried to ..." in the message a failed file carries.
+const INDEX_OPERATION = 'add this file to the knowledge base';
 
 const axiosInstance = axios.create({
   maxRedirects: 0,
@@ -110,9 +112,11 @@ export const createPlaceholderDocument = async (
     filename: file.originalname,
     contentType: file.mimetype,
   });
-  const url = (await keyValueStoreService.get<string>(endpoint)) || '{}';
-
-  const storageUrl = JSON.parse(url).storage.endpoint || defaultConfig.endpoint;
+  const storageUrl = await storedServiceEndpoint(
+    keyValueStoreService,
+    'storage',
+    defaultConfig.endpoint,
+  );
 
   // Add other required fields
   formData.append(
@@ -242,7 +246,19 @@ export const createPlaceholderDocument = async (
             ? error.message
             : String(error),
       });
-      throw error;
+      // Storage's own error body is written for the uploader; a refused
+      // connection or a proxy's page would put our hosts on their screen.
+      const storageMessage = axios.isAxiosError(error)
+        ? (
+            error.response?.data as
+              | { error?: { message?: unknown } }
+              | undefined
+          )?.error?.message
+        : undefined;
+      if (typeof storageMessage === 'string' && storageMessage !== '') {
+        throw error;
+      }
+      throw new Error(STORAGE_WRITE_FAILED_MESSAGE);
     }
   }
 };
@@ -612,6 +628,10 @@ export const processUploadsInBackground = async (
       });
 
       // Whole indexing request failed → every uploaded record failed (index).
+      const indexFailure = handleBackendError(
+        response,
+        INDEX_OPERATION,
+      ).message;
       for (const pf of processedFiles) {
         publishFailure(
           {
@@ -619,7 +639,7 @@ export const processUploadsInBackground = async (
             fileName: pf.record.recordName,
             filePath: pf.filePath,
           },
-          `Indexing service failed: ${response.msg || 'Unknown error'}`,
+          indexFailure,
           'index',
         );
       }
@@ -638,8 +658,9 @@ export const processUploadsInBackground = async (
 
     // Catastrophic failure after uploads succeeded → mark the uploaded-but-
     // unindexed files as failed (storage-upload failures were already streamed).
+    const indexFailure = handleBackendError(error, INDEX_OPERATION).message;
     for (const result of successfulResults) {
-      publishFailure(result.metadata, error.message || 'Processing failed', 'index');
+      publishFailure(result.metadata, indexFailure, 'index');
     }
     batchSucceeded = 0;
     batchFailed = failedResults.length + successfulResults.length;
@@ -708,9 +729,11 @@ export const uploadNextVersionToStorage = async (
     contentType: file.mimetype,
   });
 
-  const url = (await keyValueStoreService.get<string>(endpoint)) || '{}';
-
-  const storageUrl = JSON.parse(url).storage.endpoint || defaultConfig.endpoint;
+  const storageUrl = await storedServiceEndpoint(
+    keyValueStoreService,
+    'storage',
+    defaultConfig.endpoint,
+  );
 
   try {
     const response = await axiosInstance.post(
