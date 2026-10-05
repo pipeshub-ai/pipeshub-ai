@@ -2146,6 +2146,18 @@ components:
           type: string
           format: uri
           description: JSON Web Key Set endpoint
+        registration_endpoint:
+          type: string
+          format: uri
+          description: Dynamic client registration endpoint (RFC 7591). Present only when dynamic client registration is enabled (`PIPESHUB_ENABLE_DCR=true`).
+        device_authorization_endpoint:
+          type: string
+          format: uri
+          description: Device authorization endpoint (RFC 8628). Omitted when the device grant is disabled (`PIPESHUB_ENABLE_DEVICE_GRANT=false`).
+        pipeshub_device_client_id:
+          type: string
+          description: Client ID of the built-in first-party public client that CLIs and devices use for the device authorization grant. PipesHub extension; omitted when the device grant is disabled.
+          example: pipeshub-agent
         scopes_supported:
           type: array
           items:
@@ -2230,6 +2242,10 @@ components:
           type: string
           format: uri
           description: URL to human-readable documentation for the resource
+        pipeshub_device_client_id:
+          type: string
+          description: Client ID of the built-in first-party public client that CLIs and devices use for the device authorization grant. PipesHub extension; omitted when the device grant is disabled.
+          example: pipeshub-agent
 
     JWKS:
       type: object
@@ -3980,6 +3996,9 @@ components:
           type: string
           format: date-time
           description: Last update timestamp (ISO 8601)
+        __v:
+          type: integer
+          description: Mongoose document version key
       required:
         - type
         - name
@@ -8277,6 +8296,10 @@ components:
         chatMode:
           type: string
           description: Chat mode used for this turn (e.g. `quick`, `internal_search`)
+        reasoningEffort:
+          type: string
+          enum: [none, low, medium, high, max]
+          description: Reasoning effort requested for the turn, when one was set.
 
     FollowUpQuestion:
       type: object
@@ -8768,6 +8791,10 @@ components:
             `PATCH /conversations/{conversationId}/project-visibility`.
         sharedBy:
           $ref: '#/components/schemas/ConversationSharedBy'
+        __v:
+          type: integer
+          readOnly: true
+          description: Mongoose document version key.
 
     ConversationSharedBy:
       type: object
@@ -9092,6 +9119,18 @@ components:
         updatedAt:
           type: string
           format: date-time
+        __v:
+          type: integer
+          readOnly: true
+          description: Mongoose document version key.
+        role:
+          type: string
+          enum: [owner, editor, viewer]
+          readOnly: true
+          description: |
+            Caller's effective role on this project (owner, explicit
+            member role, or `viewer` via `visibility: org`). Computed per
+            request and included on every project response; not persisted.
 
     ProjectListItem:
       allOf:
@@ -9508,6 +9547,14 @@ components:
         block_index:
           type: integer
           nullable: true
+        qualified_name:
+          type: string
+          description: |
+            Qualified name of the code symbol a code block belongs to (for example
+            `method:Outer.Inner.run`). Emitted on top-level code-block hits and on
+            hits expanded from a block group (the children of a table, list or
+            similar group); an empty string when the block carries no code
+            metadata. Absent on every other hit.
 
     SemanticSearchGraphRecord:
       type: object
@@ -9672,6 +9719,18 @@ components:
         rowCount:
           type: number
           nullable: true
+        isPlaceholder:
+          type: boolean
+          description: |
+            `true` when the record is a stub parent created for an ancestor that
+            is not yet synced or is out of scope; replaced when the real record syncs.
+        location:
+          type: string
+          description: |
+            Human-readable ancestor trail resolved at retrieval time (not stored on
+            the record), for example
+            `Confluence (App ID: <id>) -> Engineering (Record Group ID: <id>)`.
+            Omitted when no trail could be resolved for the record.
 
     SemanticSearchAppliedFilters:
       type: object
@@ -9899,18 +9958,27 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Entry inside `sharedWith[]`. The schema sets `_id: false` on these
-        sub-docs, so no auto-injected `_id` is present.
+        Entry inside `sharedWith[]`: one user the search is shared with and
+        the access level they were given.
       required:
         - userId
         - accessLevel
       properties:
+        _id:
+          type: string
+          format: objectId
+          description: |
+            Identifier of this share entry, generated when the entry is
+            stored. It identifies the entry, not the user — use `userId`
+            for the user.
         userId:
           type: string
           format: objectId
+          description: User the search is shared with.
         accessLevel:
           type: string
           enum: [read, write]
+          description: Access granted to that user.
 
     PersistedSemanticSearch:
       type: object
@@ -10687,10 +10755,16 @@ components:
           type: string
         instanceId:
           type: string
-          description: Admin-created toolset instance id
+          nullable: true
+          description: |
+            Admin-created toolset instance id. `null` when the toolset was
+            attached to the agent without an instance.
         instanceName:
           type: string
-          description: Human-readable instance label (e.g. sidebar instance name)
+          nullable: true
+          description: |
+            Human-readable instance label (e.g. sidebar instance name). `null`
+            when the toolset was attached without an instance.
         selectedTools:
           type: array
           nullable: true
@@ -12209,6 +12283,10 @@ components:
           format: objectId
         title:
           type: string
+        initiator:
+          type: string
+          format: objectId
+          description: User who started the conversation.
         messages:
           type: array
           items:
@@ -12217,8 +12295,16 @@ components:
           type: string
           enum: [None, Inprogress, Complete, Failed, Stopped]
           description: Same values as `Conversation.status`.
+        failReason:
+          type: string
+          description: Error description, populated only when `status` is `Failed`.
+        modelInfo:
+          $ref: '#/components/schemas/ConversationModelInfo'
         isShared:
           type: boolean
+        shareLink:
+          type: string
+          description: Shareable link, present only when the conversation is shared.
         sharedWith:
           type: array
           items:
@@ -12229,6 +12315,69 @@ components:
               accessLevel:
                 type: string
                 enum: [read, write]
+        isArchived:
+          type: boolean
+          description: Whether this conversation is archived.
+        archivedBy:
+          type: string
+          format: objectId
+          nullable: true
+          description: User who archived the conversation. Absent on rows that were never archived.
+        isDeleted:
+          type: boolean
+          description: Whether this conversation has been soft-deleted.
+        deletedBy:
+          type: string
+          format: objectId
+          nullable: true
+          description: User who soft-deleted the conversation. Absent on live rows.
+        conversationErrors:
+          type: array
+          description: Errors recorded against this conversation (e.g. failed message generations).
+          items:
+            type: object
+            required:
+              - message
+            properties:
+              _id:
+                type: string
+                format: objectId
+              message:
+                type: string
+              errorType:
+                type: string
+              timestamp:
+                type: string
+                format: date-time
+              messageId:
+                type: string
+                format: objectId
+              stack:
+                type: string
+              metadata:
+                type: object
+                additionalProperties: true
+                description: Free-form map of error context values.
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Free-form metadata map attached to the conversation.
+        conversationSource:
+          type: string
+          enum: [agent_chat]
+          description: Always `agent_chat` for agent conversations.
+        compactedSummary:
+          type: string
+          description: |
+            Summary of older turns, present only once the conversation has
+            been compacted.
+        compactedAtTurnIndex:
+          type: integer
+          description: Turn index up to which `compactedSummary` covers the conversation.
+        compactedAtTimestamp:
+          type: integer
+          format: int64
+          description: Unix timestamp (ms) of the last compaction.
         lastActivityAt:
           type: integer
         createdAt:
@@ -12237,6 +12386,9 @@ components:
         updatedAt:
           type: string
           format: date-time
+        __v:
+          type: integer
+          description: Document version counter of the backing store.
         projectId:
           type: string
           format: objectId
@@ -16913,11 +17065,25 @@ components:
             details:
               $ref: '#/components/schemas/AIModelProviderHealthCheckBackendPayload'
 
+    AIModelProviderErrorEnvelope:
+      type: object
+      additionalProperties: false
+      description: |
+        Body with a top-level `error` object, in one of two shapes: the standard
+        envelope (`code`, `message`) from `ErrorMiddleware`, or the health-check
+        failure (`status`, `message`) written by the controller.
+      required:
+        - error
+      properties:
+        error:
+          oneOf:
+            - $ref: '#/components/schemas/ErrorResponse/properties/error'
+            - $ref: '#/components/schemas/AIModelProviderHealthCheckErrorEnvelope/properties/error'
+
     AddAIModelProviderErrorResponse:
       oneOf:
-        - $ref: '#/components/schemas/ErrorResponse'
         - $ref: '#/components/schemas/AIModelProviderSimpleError'
-        - $ref: '#/components/schemas/AIModelProviderHealthCheckErrorEnvelope'
+        - $ref: '#/components/schemas/AIModelProviderErrorEnvelope'
 
     UpdateAIModelProviderDetails:
       type: object
@@ -16973,9 +17139,8 @@ components:
 
     UpdateAIModelProviderErrorResponse:
       oneOf:
-        - $ref: '#/components/schemas/ErrorResponse'
         - $ref: '#/components/schemas/AIModelProviderSimpleError'
-        - $ref: '#/components/schemas/AIModelProviderHealthCheckErrorEnvelope'
+        - $ref: '#/components/schemas/AIModelProviderErrorEnvelope'
 
     DeleteAIModelProviderDetails:
       type: object
@@ -20143,6 +20308,49 @@ components:
         app:
           $ref: '#/components/schemas/OAuthAppResponse'
 
+    AgentAddMessageResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Envelope returned by
+        `POST /agents/{agentKey}/conversations/{conversationId}/messages`:
+        the updated agent conversation, the number of citation records used
+        to ground the answer for this turn, and request metadata.
+      required:
+        - conversation
+        - recordsUsed
+        - meta
+      properties:
+        conversation:
+          $ref: '#/components/schemas/AgentConversation'
+        recordsUsed:
+          type: integer
+          minimum: 0
+          description: Number of citation records used to ground the answer generated for this turn.
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+            - timestamp
+            - duration
+            - recordsUsed
+          properties:
+            requestId:
+              type: string
+              description: Request correlation id. Omitted when no request id was set on the context.
+            timestamp:
+              type: string
+              format: date-time
+              description: Server timestamp when the response was sent.
+            duration:
+              type: integer
+              minimum: 0
+              description: Total handler duration in milliseconds.
+            recordsUsed:
+              type: integer
+              minimum: 0
+              description: Same value as the top-level `recordsUsed`.
+
 security:
   - bearerAuth: []
   - oauth2: []
@@ -20824,11 +21032,18 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - redirectUrl
                 properties:
-                  redirect_uri:
+                  redirectUrl:
                     type: string
                     format: uri
-                    description: URL to redirect user (includes code and state)
+                    description: |
+                      The client's registered `redirect_uri` with the outcome appended as query
+                      parameters, for the frontend to navigate to. On approval it carries `code`
+                      and `state`; on denial or a missing PKCE challenge for a public client it
+                      carries `error`, `error_description` and `state` instead.
         '400':
           description: Invalid request
           content:
@@ -37140,16 +37355,30 @@ paths:
           description: |
             Invalid request — `query` is missing, empty, or the request
             body fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: |
             Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
             Bearer token lacks the `semantic:write` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
-            A referenced knowledge base or app filter could not be
-            resolved.
+            The search service found nothing the caller is allowed to
+            search — no indexed document is accessible to the caller, or
+            none remains inside the scope set by `filters`. The search is
+            not persisted in this case.
           content:
             application/json:
               schema:
@@ -37158,16 +37387,28 @@ paths:
           description: |
             Unexpected server error while executing the search, or the
             upstream AI search service was unreachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '502':
           description: |
             The upstream AI search service returned an invalid response.
         '503':
           description: |
             The upstream AI search service is temporarily unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '504':
           description: |
             The upstream AI search service timed out before returning a
             response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -37831,6 +38072,205 @@ paths:
             - Non-`BaseError` exception caught by the
               global error middleware.
             - Response serializer fallback.
+
+  /search/{searchId}/share:
+    patch:
+      tags:
+        - Semantic Search
+      summary: Share a search with users
+      description: |
+        Give other users access to a persisted search. The caller must own
+        the search or already have it shared with them; archived and
+        deleted searches cannot be shared.
+
+        - `accessLevel` defaults to `read` when omitted and is applied to
+          every user in `userIds`.
+        - Sharing again with a user who already has access updates that
+          user's `accessLevel` instead of adding a second entry.
+        - Every id in `userIds` is looked up before anything is written;
+          one unknown user fails the whole request with `400`.
+
+        A successful call marks the search as shared and sets its
+        `shareLink`.
+      operationId: shareSearch
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:write]
+      parameters:
+        - name: searchId
+          in: path
+          required: true
+          description: Unique search identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: Users to share the search with, and the access level to give them.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SemanticSearchShareRequest'
+            examples:
+              readAccess:
+                summary: Share with one user, read-only
+                value:
+                  userIds:
+                    - "65f1c0a4e2b9c4d8f3a1b2c4"
+                  accessLevel: read
+      responses:
+        '200':
+          description: |
+            Search shared. The body is the persisted search document; see
+            `ShareSearchResponse` for which state of the document it carries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShareSearchResponse'
+        '400':
+          description: |
+            Invalid request. Possible causes:
+
+            - `VALIDATION_ERROR` — `searchId` is not a valid ObjectId;
+              `userIds` is missing, not an array, empty, or holds a value
+              that is not a valid ObjectId; `accessLevel` is neither
+              `read` nor `write`.
+            - `HTTP_BAD_REQUEST` — one of the `userIds` does not resolve
+              to an existing user (`User not found: <id>`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: |
+            Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            OAuth token lacks the `semantic:write` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            No search matched. Returned when the id does not exist in the
+            caller's org, when the caller neither owns the search nor has
+            it shared with them, or when the search is archived or deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Unexpected server error, or the search document could not be
+            updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /search/{searchId}/unshare:
+    patch:
+      tags:
+        - Semantic Search
+      summary: Revoke share access for users
+      description: |
+        Remove users from a shared search. The caller must own the search
+        or have it shared with them; archived and deleted searches cannot
+        be changed.
+
+        - Ids in `userIds` that the search was never shared with are
+          ignored; they are still echoed back in `unsharedUsers`.
+        - When the last user is removed the search stops being shared.
+        - `accessLevel` is accepted in the body because both share routes
+          use one validator, but it has no effect here.
+        - Every id in `userIds` is looked up before anything is written;
+          one unknown user fails the whole request with `400`.
+      operationId: unshareSearch
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:write]
+      parameters:
+        - name: searchId
+          in: path
+          required: true
+          description: Unique search identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: Users whose access to the search is revoked.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SemanticSearchShareRequest'
+            examples:
+              revokeOne:
+                summary: Revoke one user's access
+                value:
+                  userIds:
+                    - "65f1c0a4e2b9c4d8f3a1b2c4"
+      responses:
+        '200':
+          description: |
+            Access revoked. The body carries the search id, its sharing
+            fields and the ids that were passed in; see
+            `UnshareSearchResponse` for which state of the sharing fields
+            it carries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnshareSearchResponse'
+        '400':
+          description: |
+            Invalid request. Possible causes:
+
+            - `VALIDATION_ERROR` — `searchId` is not a valid ObjectId;
+              `userIds` is missing, not an array, empty, or holds a value
+              that is not a valid ObjectId; `accessLevel` is present but
+              neither `read` nor `write`.
+            - `HTTP_BAD_REQUEST` — one of the `userIds` does not resolve
+              to an existing user (`User not found: <id>`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: |
+            Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            OAuth token lacks the `semantic:write` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            No search matched. Returned when the id does not exist in the
+            caller's org, when the caller neither owns the search nor has
+            it shared with them, or when the search is archived or deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Unexpected server error, or the search document could not be
+            updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /search/{searchId}/archive:
     patch:
@@ -39328,7 +39768,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AddMessageResponse'
+                $ref: '#/components/schemas/AgentAddMessageResponse'
         '400':
           description: |
             Invalid request — `query` is missing, empty or over 100,000
@@ -43410,96 +43850,41 @@ paths:
                           description: User/agent auth payload for the instance; null when not authenticated. Absent on registry-only entries.
                           additionalProperties: true
         '400':
-          description: Invalid query parameters (e.g. page/limit out of range, unknown authStatus value).
+          description: "Invalid query parameters (e.g. page/limit out of range, unknown authStatus value). `code` is `VALIDATION_ERROR` for query-schema failures (with `metadata.errors` listing each failing field) and `HTTP_BAD_REQUEST` when forwarded from the connector backend."
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: object
-                    properties:
-                      code:
-                        type: string
-                        description: VALIDATION_ERROR for query-schema failures; HTTP_BAD_REQUEST when forwarded from the connector backend.
-                        example: VALIDATION_ERROR
-                      message:
-                        type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Missing or invalid authentication token, or no user on the request.
+          description: "Missing or invalid authentication token, or no user on the request."
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: object
-                    properties:
-                      code:
-                        type: string
-                        example: HTTP_UNAUTHORIZED
-                      message:
-                        type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Authenticated user is not permitted to access these toolsets.
+          description: "Authenticated user is not permitted to access these toolsets."
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: object
-                    properties:
-                      code:
-                        type: string
-                        example: HTTP_FORBIDDEN
-                      message:
-                        type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Connector backend returned no data for the request.
+          description: "Connector backend returned no data for the request."
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: object
-                    properties:
-                      code:
-                        type: string
-                        example: HTTP_NOT_FOUND
-                      message:
-                        type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Unexpected error, or an unmapped error forwarded from the connector backend.
+          description: "Unexpected error, or an unmapped error forwarded from the connector backend."
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: object
-                    properties:
-                      code:
-                        type: string
-                        example: HTTP_INTERNAL_SERVER_ERROR
-                      message:
-                        type: string
+                $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: Connector service is unreachable (connection refused or fetch failed).
+          description: "Connector service is unreachable (connection refused or fetch failed)."
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: object
-                    properties:
-                      code:
-                        type: string
-                        example: HTTP_SERVICE_UNAVAILABLE
-                      message:
-                        type: string
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/agents/{agentKey}:
     get:
