@@ -26,6 +26,9 @@ describe('StorageController.getStorageConfig: credentials come from the server, 
   let controller: StorageController
   let kvs: any
 
+  // The config is cached at module level; tests must not leak it.
+  const clearConfigCache = () => kvs.watchKey.lastCall.args[1]()
+
   const userRequest = (): any => ({
     user: { orgId: ORG_ID, userId: 'user-1' },
     headers: { authorization: 'Bearer user-jwt' },
@@ -62,12 +65,12 @@ describe('StorageController.getStorageConfig: credentials come from the server, 
     }
     const logger: any = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
     controller = new StorageController(DEFAULT_CONFIG, logger, kvs, SCOPED_SECRET)
-    // The config is cached at module level; drop whatever another test left.
     await controller.watchStorageType(kvs)
-    kvs.watchKey.lastCall.args[1]()
+    clearConfigCache()
   })
 
   afterEach(() => {
+    clearConfigCache()
     sinon.restore()
   })
 

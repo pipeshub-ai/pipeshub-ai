@@ -122,7 +122,10 @@ export class StorageController {
     // therefore reads the internal route too, with a storage token for its org.
     const token =
       'user' in req && req.user
-        ? scopedStorageServiceJwtGenerator(extractOrgId(req), this.scopedJwtSecret)
+        ? scopedStorageServiceJwtGenerator(
+            extractOrgId(req),
+            this.scopedJwtSecret,
+          )
         : req.headers.authorization?.split(' ')[1];
     const configurationManagerServiceCommand =
       new ConfigurationManagerServiceCommand({
