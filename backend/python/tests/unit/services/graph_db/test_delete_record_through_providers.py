@@ -15,7 +15,9 @@ from fastapi import HTTPException
 
 import app.connectors.api.router as router_mod
 import app.edition_config  # noqa: F401  (binds the edition seams before the router loads)
+from app.config.constants.arangodb import GraphNames
 from app.connectors.api.router import delete_record
+from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
@@ -109,9 +111,41 @@ class _ArangoDriver:
             return [self.kb_role]
         return []
 
+    async def get_graph(self, graph_name: str) -> dict | None:
+        # GET /_api/gharial/{graph} as ArangoDB answers it (and None for 404, as the client maps it).
+        if graph_name != GraphNames.KNOWLEDGE_GRAPH.value:
+            return None
+        return {
+            "error": False,
+            "code": 200,
+            "graph": {
+                "_key": graph_name,
+                "_id": f"_graphs/{graph_name}",
+                "_rev": "_jT3hU2a---",
+                "name": graph_name,
+                "edgeDefinitions": [
+                    {
+                        "collection": ed["edge_collection"],
+                        "from": ed["from_vertex_collections"],
+                        "to": ed["to_vertex_collections"],
+                    }
+                    for ed in EDGE_DEFINITIONS
+                ],
+                "orphanCollections": [],
+            },
+        }
+
     @property
     def destructive(self) -> list[str]:
         return [q for q, _ in self.statements if re.search(r"\bREMOVE\b", q)]
+
+    @property
+    def edge_collections_cleared(self) -> set[str]:
+        return {
+            bind["@edge_collection"]
+            for q, bind in self.statements
+            if "@edge_collection" in bind and re.search(r"\bREMOVE\b", q)
+        }
 
 
 def _neo4j(record: dict | None, access: list | None, kb_context: dict | None, kb_role: str | None) -> tuple[Any, Any]:
@@ -219,6 +253,16 @@ async def test_kb_upload_is_deleted_for_a_writer(backend: Any, record: dict, kb_
     assert event["eventType"] == "deleteRecord"
     assert event["payload"]["recordId"] == RECORD_ID
     assert event["payload"]["virtualRecordId"] == "vr-1"
+
+
+@pytest.mark.asyncio
+async def test_arango_kb_upload_delete_clears_every_edge_collection_of_the_graph() -> None:
+    """Enrichment links a record to taxonomy nodes the fixed KB edge list never named."""
+    provider, driver = _arango(KB_FILE, KB_ACCESS, KB_CONTEXT, "WRITER")
+
+    await _delete(provider, AsyncMock())
+
+    assert {ed["edge_collection"] for ed in EDGE_DEFINITIONS} <= driver.edge_collections_cleared
 
 
 @pytest.mark.asyncio
