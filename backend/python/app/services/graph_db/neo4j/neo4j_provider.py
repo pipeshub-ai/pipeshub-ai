@@ -12117,7 +12117,8 @@ class Neo4jProvider(IGraphDBProvider):
             """,
             parameters={
                 "org_id": org_id,
-                "lower": after_ts if after_ts is not None else 0,
+                # Below every timestamp on the first page, so a record trashed at 0 is read.
+                "lower": after_ts if after_ts is not None else -1,
                 "cutoff": deleted_before,
                 "after_ts": after_ts,
                 "after_key": after_key,
