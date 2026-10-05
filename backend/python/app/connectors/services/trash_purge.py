@@ -22,13 +22,16 @@ A crash or a broker outage after step 2 leaves the outbox entry; the next tick
 publishes the events of every record in it that is gone from the graph and
 drops the rest. A record that still has a child, trashed or not, waits: the
 org is walked again while a walk both removed something and passed over such
-a record, so a trashed tree goes leaves first, one level per walk, in one run. A page the graph refuses is retried record by record, and a
-record that fails is counted (``purgeAttempts``) and left out after
-``maxAttempts``. Then the record groups kept only for the trash
-(``isDeletedAtSource``) go once nothing belongs to them.
+a record, so a trashed tree goes leaves first, one level per walk, in one run.
+A page the graph refuses is retried record by record, and a record that fails
+is counted (``purgeAttempts``) and left out after ``maxAttempts``. Then the
+record groups kept only for the trash (``isDeletedAtSource``) go once nothing
+belongs to them.
 
-Nothing happens while ``ENABLE_SOFT_DELETE`` is off or ``softDeletePurge.enabled``
-is false; an unfinished run resumes from its cursor when both are on again.
+The purge runs whether ``ENABLE_SOFT_DELETE`` is on or off: turning the trash
+off makes new deletes hard deletes, and what is already in the trash is still
+removed on schedule. Only ``softDeletePurge.enabled`` pauses it; an unfinished
+run resumes from its cursor when it is on again.
 """
 
 from __future__ import annotations
@@ -51,10 +54,7 @@ from app.exceptions.graph_db_exceptions import GraphLockUnavailableError
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
-from app.services.featureflag.platform_settings import (
-    PLATFORM_SETTINGS_KEY,
-    is_soft_delete_enabled,
-)
+from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
 from app.services.graph_db.common.utils import is_storage_document_id
 from app.services.messaging.utils import MessagingUtils
 from app.telemetry.modules.soft_delete_metrics import (
@@ -95,6 +95,7 @@ class Outcome:
     NOT_LEADER = "not_leader"
     DISABLED = "disabled"
     NOT_DUE = "not_due"
+    INDEX_NOT_READY = "index_not_ready"
     FINISHED = "finished"
     PAUSED = "paused"
     STOPPED = "stopped"
@@ -305,14 +306,17 @@ class TrashPurger:
         if not await self.lock.try_acquire():
             return Outcome.NOT_LEADER
         try:
-            if not await is_soft_delete_enabled(self.config_service):
-                return Outcome.DISABLED
+            # Not the Labs flag: with the trash off, what is in it is still removed on schedule.
             settings = await load_purge_settings(self.config_service)
             if not settings.enabled:
                 return Outcome.DISABLED
             if not await self._drain_outbox():
                 record_purge_run(Outcome.PAUSED)
                 return Outcome.PAUSED
+            if not await self.graph.is_trash_walk_index_ready():
+                # Without it each page reads the whole trash; the next tick looks again.
+                self.logger.warning("Trash purge skipped this tick: the index it walks is not built yet")
+                return Outcome.INDEX_NOT_READY
             state = await self._read_state()
             if state.run is None:
                 now = self.clock()
@@ -390,7 +394,14 @@ class TrashPurger:
                     break
                 if settings.page_pause_ms:
                     await self.sleep(settings.page_pause_ms / 1000)
-            run.groups += await self._purge_kept_groups(org_id)
+            removed, stop = await self._purge_kept_groups(org_id, deadline, processed, settings)
+            run.groups += removed
+            if stop:
+                # The org is not done: the next tick walks it again, which finds its trash
+                # already gone, then carries on with its groups.
+                await self._save_state(state)
+                self.logger.info("Trash purge %s %s while removing kept record groups", run.run_id, stop)
+                return stop
             run.org_index += 1
             run.after = None
             run.pass_purged = run.pass_held = 0
@@ -401,7 +412,7 @@ class TrashPurger:
     async def _stop_reason(self, deadline: float, processed: int, settings: PurgeSettings) -> str | None:
         if not await self.lock.refresh():
             return Outcome.LOST_LEASE
-        if not await is_soft_delete_enabled(self.config_service):
+        if not (await load_purge_settings(self.config_service)).enabled:
             return Outcome.STOPPED
         if processed >= settings.max_records_per_run or self.monotonic() >= deadline:
             return Outcome.PAUSED
@@ -549,18 +560,25 @@ class TrashPurger:
             await self._forget_outbox(key)
         return True
 
-    async def _purge_kept_groups(self, org_id: str) -> int:
+    async def _purge_kept_groups(
+        self, org_id: str, deadline: float, processed: int, settings: PurgeSettings
+    ) -> tuple[int, str | None]:
+        """Remove this org's kept groups that nothing belongs to; and why it stopped early, if it did."""
         removed = 0
+        stop = None
         try:
             # Until a pass removes nothing: a kept parent empties only once its kept child has gone.
-            while ids := await self.graph.purge_trash_kept_record_groups(org_id, limit=GROUP_PAGE_SIZE):
+            while not (stop := await self._stop_reason(deadline, processed, settings)):
+                ids = await self.graph.purge_trash_kept_record_groups(org_id, limit=GROUP_PAGE_SIZE)
+                if not ids:
+                    break
                 removed += len(ids)
         except Exception as exc:
             # The marks stay, so the next run tries these groups again.
             self.logger.warning("Trash purge: could not remove kept record groups in org %s: %s", org_id, exc)
         if removed:
             self.logger.info("Trash purge: removed %d record group(s) kept for the trash in org %s", removed, org_id)
-        return removed
+        return removed, stop
 
     async def _finish(self, state: PurgeState, settings: PurgeSettings) -> None:
         run = state.run

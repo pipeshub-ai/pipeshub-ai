@@ -1100,6 +1100,8 @@
       "label": "Reasoning Effort",
       "overrideHint": "Click again to use the default.",
       "defaultHintWithLevel": "Defaults to {{level}} when not set.",
+      "modelDefaultHint": "Defaults to {{level}}, this model's own default, when not set.",
+      "modelDefaultLabel": "Default ({{level}})",
       "low": "Low",
       "medium": "Medium",
       "high": "High",

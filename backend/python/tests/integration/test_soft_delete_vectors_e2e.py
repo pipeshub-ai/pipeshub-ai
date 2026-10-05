@@ -57,7 +57,6 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
-from app.connectors.services import trash_purge as purge_module
 from app.connectors.services.trash_purge import Outcome, TrashPurger
 from app.connectors.sources.localKB.handlers import kb_service as kb_service_module
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
@@ -298,15 +297,13 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)
         if isinstance(graph, Neo4jProvider):
-            # Restore reads batches by one index and the purge walks the other;
-            # ensure_schema creates both on a real install.
-            for statement in (
-                "CREATE INDEX record_delete_batch IF NOT EXISTS FOR (n:Record) ON (n.deleteBatchId)",
-                "CREATE INDEX record_deleted_at IF NOT EXISTS FOR (n:Record) ON (n.deletedAtTimestamp)",
-            ):
+            # The indexes ensure_schema creates on a real install: restore reads batches
+            # by one, and the purge waits until its walk index is online.
+            for statement in graph._generate_performance_indexes():
                 await graph.client.execute_query(statement)
+            await graph.client.execute_query("CALL db.awaitIndexes(300)")
         flag = AsyncMock(return_value=True)
-        for module in (processor_module, purge_module, kb_service_module):
+        for module in (processor_module, kb_service_module):
             monkeypatch.setattr(module, "is_soft_delete_enabled", flag)
         monkeypatch.setattr(processor_module, "notify_kb_records_changed", AsyncMock())
 

@@ -371,13 +371,13 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)
         if isinstance(graph, Neo4jProvider):
-            # The purge walks this index; ensure_schema creates it on a real install.
-            await graph.client.execute_query(
-                "CREATE INDEX record_deleted_at IF NOT EXISTS FOR (n:Record) ON (n.deletedAtTimestamp)"
-            )
+            # The indexes ensure_schema creates on a real install, the purge's walk index
+            # among them: without it online the purge waits instead of running.
+            for statement in graph._generate_performance_indexes():
+                await graph.client.execute_query(statement)
+            await graph.client.execute_query("CALL db.awaitIndexes(300)")
         flag = AsyncMock(return_value=True)
         monkeypatch.setattr(processor_module, "is_soft_delete_enabled", flag)
-        monkeypatch.setattr(purge_module, "is_soft_delete_enabled", flag)
         monkeypatch.setattr(processor_module, "notify_kb_records_changed", AsyncMock())
         suffix = uuid.uuid4().hex[:10]
         processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
@@ -965,9 +965,22 @@ async def test_a_run_that_loses_its_lease_resumes_from_its_cursor(
         assert await world.stored(name) is None, name
 
 
-async def test_with_the_trash_off_nothing_happens(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_with_the_trash_turned_off_what_is_in_it_still_goes(world: _World) -> None:
+    """Turning the trash off makes new deletes hard deletes; the trash still empties on schedule."""
+    await world.trash("upload", "restored")
+    world.kv.values[PLATFORM_SETTINGS_KEY]["featureFlags"]["ENABLE_SOFT_DELETE"] = False
+
+    assert await world.tick(13) == Outcome.FINISHED
+    assert (await world.stored("upload"))["isDeleted"] is True, "the retention still holds"
+
+    assert await world.tick(15) == Outcome.FINISHED
+    assert await world.stored("upload") is None and await world.stored("restored") is None
+    assert sorted(world.broker.deleted_record_ids()) == sorted([world.ids["upload"], world.ids["restored"]])
+
+
+async def test_the_purge_setting_turned_off_pauses_it(world: _World) -> None:
     await world.trash("upload")
-    monkeypatch.setattr(purge_module, "is_soft_delete_enabled", AsyncMock(return_value=False))
+    world.kv.values[PLATFORM_SETTINGS_KEY]["softDeletePurge"]["enabled"] = False
 
     assert await world.tick(30) == Outcome.DISABLED
 
@@ -1019,6 +1032,11 @@ async def test_both_stores_list_the_trash_in_the_same_shape(world: _World) -> No
 # gives most of it the same timestamp. TRASH_PURGE_WALK_RECORDS changes the size.
 WALK_RECORDS = int(os.environ.get("TRASH_PURGE_WALK_RECORDS", "1500"))
 WALK_PAGE = 50
+# Live records beside the trash, in the walked org and four others, so the planner
+# sees statistics like production's. With fewer, Neo4j picked the walk's index even
+# unhinted, and the test passed on the walk that misplanned on a real install.
+WALK_LIVE = int(os.environ.get("TRASH_PURGE_WALK_LIVE", "20000"))
+WALK_OTHER_ORGS = 4
 # Per record on the page: its own reads (type doc, app, children) plus the index entries.
 MAX_NEO4J_HITS_PER_ROW = 60
 MAX_ARANGO_INDEX_ENTRIES_PER_ROW = 4
@@ -1029,36 +1047,43 @@ def _neo4j_plan_hits(plan: dict) -> int:
 
 
 async def _seed_walk(world: _World) -> list[tuple[int, str]]:
-    """WALK_RECORDS trashed records in the test's org, most sharing one timestamp, and as many in another org."""
+    """WALK_RECORDS trashed records in the test's org, most sharing one timestamp, beside live records and other orgs."""
     base = world.now - 30 * DAY_MS
     mine = [(base + (0 if i < WALK_RECORDS * 2 // 3 else i), f"walk-{uuid.uuid4().hex[:6]}-{i:05d}")
             for i in range(WALK_RECORDS)]
-    theirs = [(base + i, f"walk-other-{uuid.uuid4().hex[:6]}-{i:05d}") for i in range(WALK_RECORDS)]
-    rows = [(world.org_id, ts, key) for ts, key in mine] + [(f"other-{world.org_id}", ts, key) for ts, key in theirs]
+    run = uuid.uuid4().hex[:6]
+    others = [f"other-{o}-{world.org_id}" for o in range(WALK_OTHER_ORGS)]
+    rows = [(world.org_id, ts, key) for ts, key in mine]
+    rows += [(org, base + i, f"walk-other-{run}-{o}-{i:05d}")
+             for o, org in enumerate(others) for i in range(WALK_RECORDS // 5)]
+    rows += [(world.org_id, None, f"walk-live-{run}-{i:06d}") for i in range(WALK_LIVE)]
+    rows += [(org, None, f"walk-live-{run}-{o}-{i:06d}")
+             for o, org in enumerate(others) for i in range(WALK_LIVE // 4)]
     if isinstance(world.graph, Neo4jProvider):
-        # One statement: the walk reads only the record's own properties.
-        await world.graph.client.execute_query(
-            "UNWIND $rows AS row CREATE (r:Record {id: row.key, orgId: row.org, connectorId: $connector, "
-            "connectorName: 'DRIVE', origin: 'CONNECTOR', recordName: row.key, version: 1, "
-            "isDeleted: true, deletedAtTimestamp: row.ts, deleteSource: 'CONNECTOR'})",
-            parameters={"rows": [{"org": org, "ts": ts, "key": key} for org, ts, key in rows],
-                        "connector": world.drive_id},
-        )
+        # In chunks of one statement: the walk reads only the record's own properties.
+        for i in range(0, len(rows), 5000):
+            await world.graph.client.execute_query(
+                "UNWIND $rows AS row CREATE (r:Record {id: row.key, orgId: row.org, connectorId: $connector, "
+                "connectorName: 'DRIVE', origin: 'CONNECTOR', recordName: row.key, version: 1, "
+                "indexingStatus: 'COMPLETED', isDeleted: row.ts IS NOT NULL, deletedAtTimestamp: row.ts})",
+                parameters={"rows": [{"org": org, "ts": ts, "key": key} for org, ts, key in rows[i:i + 5000]],
+                            "connector": world.drive_id},
+            )
         return sorted(mine)
-    records = [
-        FileRecord(id=key, org_id=org, record_name=f"{key}.pdf", record_type=RecordType.FILE,
-                   external_record_id=f"ext-{key}", version=1, origin=OriginTypes.CONNECTOR,
-                   connector_name=Connectors.GOOGLE_DRIVE, connector_id=world.drive_id,
-                   mime_type="application/pdf", is_file=True, extension="pdf")
-        for org, _, key in rows
+    # The stored shape of a real record, inserted directly: strict schema, one query per chunk.
+    template = FileRecord(
+        id="template", org_id=world.org_id, record_name="t.pdf", record_type=RecordType.FILE,
+        external_record_id="ext-template", version=1, origin=OriginTypes.CONNECTOR,
+        connector_name=Connectors.GOOGLE_DRIVE, connector_id=world.drive_id, mime_type="application/pdf",
+        is_file=True, extension="pdf",
+    ).to_arango_base_record()
+    docs = [
+        {**template, "_key": key, "orgId": org, "recordName": f"{key}.pdf", "externalRecordId": f"ext-{key}",
+         **({"isDeleted": True, "deletedAtTimestamp": ts, "deleteSource": "CONNECTOR"} if ts is not None else {})}
+        for org, ts, key in rows
     ]
-    for i in range(0, len(records), 500):
-        await world.graph.batch_upsert_records(records[i:i + 500])
-    await world.graph.http_client.execute_aql(
-        f"FOR m IN @marks UPDATE m.key WITH {{ isDeleted: true, deletedAtTimestamp: m.ts, "
-        f"deleteSource: 'CONNECTOR' }} IN {RECORDS}",
-        {"marks": [{"key": key, "ts": ts} for _, ts, key in rows]},
-    )
+    for i in range(0, len(docs), 2000):
+        await world.graph.http_client.execute_aql(f"FOR d IN @docs INSERT d INTO {RECORDS}", {"docs": docs[i:i + 2000]})
     return sorted(mine)
 
 
@@ -1103,23 +1128,15 @@ async def _page_cost(world: _World, monkeypatch: pytest.MonkeyPatch, call) -> tu
     return page, scanned
 
 
-async def test_each_page_of_the_walk_reads_about_one_page(
-    world: _World, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """One org's trash, walked in pages through the cursor, costs a page's worth of reads per page.
-
-    The walk once read and sorted the whole trash of every org (Neo4j) or every
-    record of the org (ArangoDB) on each page. It also keeps its order: every
-    record once, by (deletedAtTimestamp, key), through a batch sharing one timestamp.
-    """
+async def _production_schema(world: _World) -> None:
+    """The schema a real install has: constraints (record_id_unique among them) and every index."""
+    await world.graph.ensure_schema()
     if isinstance(world.graph, Neo4jProvider):
-        # The production indexes, as ensure_schema creates them on a real install.
-        for statement in world.graph._generate_performance_indexes():
-            await world.graph.client.execute_query(statement)
         await world.graph.client.execute_query("CALL db.awaitIndexes(300)")
-    expected = await _seed_walk(world)
-    cutoff = world.now
 
+
+async def _walk_costs(world: _World, monkeypatch: pytest.MonkeyPatch, cutoff: int) -> tuple[list, list, object]:
+    """The first pages of the walk: the rows they returned, what each cost, and the cursor after them."""
     walked: list[tuple[int, str]] = []
     after = None
     costs = []
@@ -1134,13 +1151,54 @@ async def test_each_page_of_the_walk_reads_about_one_page(
         walked += [(row["deletedAtTimestamp"], row["id"]) for row in page["records"]]
         after = page["next"]
         if after is None or len(costs) > 8:
-            break
-    assert walked == expected[:len(walked)], "every record once, in (deletedAtTimestamp, key) order"
-    assert len(walked) == WALK_PAGE * len(costs)
+            return walked, costs, after
 
+
+async def _drop_walk_seed(world: _World) -> None:
+    if isinstance(world.graph, Neo4jProvider):
+        await world.graph.client.execute_query(
+            "MATCH (r:Record {connectorId: $c}) WHERE r.id STARTS WITH 'walk-' "
+            "CALL { WITH r DETACH DELETE r } IN TRANSACTIONS OF 5000 ROWS",
+            parameters={"c": world.drive_id},
+        )
+    else:
+        await world.graph.http_client.execute_aql(
+            f"FOR r IN {RECORDS} FILTER r.connectorId == @c AND STARTS_WITH(r._key, 'walk-') REMOVE r IN {RECORDS}",
+            {"c": world.drive_id},
+        )
+
+
+async def test_each_page_of_the_walk_reads_about_one_page(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One org's trash, walked in pages through the cursor, costs a page's worth of reads per page.
+
+    The walk once read and sorted the whole trash of every org (Neo4j) or every
+    record of the org (ArangoDB) on each page. It also keeps its order: every
+    record once, by (deletedAtTimestamp, key), through a batch sharing one timestamp.
+
+    On the production schema, Neo4j's unhinted plan flipped between the walk's
+    index, the id constraint's and a deletedAtTimestamp scan as its statistics
+    went stale: after a large delete and new writes, as on an install. So the
+    walk is measured on fresh plans twice, with such a delete and reseed between.
+    """
+    await _production_schema(world)
     per_row = MAX_NEO4J_HITS_PER_ROW if isinstance(world.graph, Neo4jProvider) else MAX_ARANGO_INDEX_ENTRIES_PER_ROW
-    # Inside the shared timestamp, with most of the trash still ahead of the cursor.
-    assert max(costs[1:]) <= per_row * WALK_PAGE, (costs, f"{2 * WALK_RECORDS} records in the trash")
+    for round_ in range(2):
+        if round_:
+            await _drop_walk_seed(world)
+        expected = await _seed_walk(world)
+        if isinstance(world.graph, Neo4jProvider):
+            await world.graph.client.execute_query("CALL db.clearQueryCaches()")
+        cutoff = world.now
+
+        walked, costs, after = await _walk_costs(world, monkeypatch, cutoff)
+        assert walked == expected[:len(walked)], "every record once, in (deletedAtTimestamp, key) order"
+        assert len(walked) == WALK_PAGE * len(costs)
+        # Inside the shared timestamp, with most of the trash still ahead of the cursor.
+        assert max(costs[1:]) <= per_row * WALK_PAGE, (
+            round_, costs, f"{WALK_RECORDS} records in this org's trash, {WALK_LIVE} live",
+        )
 
     rest = []
     while after is not None:
@@ -1148,4 +1206,69 @@ async def test_each_page_of_the_walk_reads_about_one_page(
         rest += [(row["deletedAtTimestamp"], row["id"]) for row in page["records"]]
         after = page["next"]
     assert walked + rest == expected
+
+
+async def test_without_its_index_the_purge_waits_and_the_walk_still_answers(
+    world: _World, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A missing or building index pauses the purge rather than letting every page read the whole trash."""
+    await _production_schema(world)
+    await world.trash("upload", "upload_twin")
+    graph = world.graph
+    if isinstance(graph, Neo4jProvider):
+        rows = await graph.client.execute_query(
+            "SHOW SETTINGS YIELD name, value WHERE name = 'dbms.cypher.hints_error' RETURN value"
+        )
+        hints_error = bool(rows) and str(rows[0]["value"]).lower() == "true"
+        await graph.client.execute_query("DROP INDEX record_org_deleted_at IF EXISTS")
+    else:
+        hints_error = False
+        indexes = (await (await (await graph.http_client._get_session()).get(
+            f"{graph.http_client.base_url}/_db/{graph.http_client.database}/_api/index?collection={RECORDS}"
+        )).json())["indexes"]
+        [walk_index] = [i for i in indexes if i.get("name") == "records_org_deleted_at"]
+        session = await graph.http_client._get_session()
+        await session.delete(f"{graph.http_client.base_url}/_db/{graph.http_client.database}/_api/index/{walk_index['id']}")
+    try:
+        assert await graph.is_trash_walk_index_ready() is False
+        with caplog.at_level(logging.WARNING):
+            assert await world.tick(15) == Outcome.INDEX_NOT_READY
+        assert "the index it walks is not built yet" in caplog.text
+        assert (await world.stored("upload"))["isDeleted"] is True
+
+        caplog.clear()
+        cutoff = get_epoch_timestamp_in_ms() + 1000
+        with caplog.at_level(logging.WARNING):
+            first = await graph.get_purgeable_trashed_records(world.org_id, cutoff, limit=1)
+            second = await graph.get_purgeable_trashed_records(world.org_id, cutoff, after=first["next"], limit=1)
+        assert sorted(r["id"] for r in first["records"] + second["records"]) == sorted(
+            [world.ids["upload"], world.ids["upload_twin"]]
+        )
+        # A server that fails a hinted query without its index: the walk drops the hint, and says so once.
+        fell_back = caplog.text.count("walking the trash without it")
+        assert fell_back == (1 if hints_error else 0), caplog.text
+    finally:
+        await _production_schema(world)
+    assert await graph.is_trash_walk_index_ready() is True
+    assert await world.tick(15) == Outcome.FINISHED
+    assert await world.stored("upload") is None
+
+
+# Not collected on Neo4j, which takes no collection locks: its lock races are the
+# link tests above. CI fails any run that reports a skip.
+@pytest.mark.parametrize("world", ["arango"], indirect=True)
+async def test_a_purge_that_cannot_take_its_lock_says_so(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ArangoDB: a sync transaction holding the collections makes the purge's exclusive lock time out."""
+    from app.services.graph_db.arango import arango_http_provider as arango_module
+    monkeypatch.setattr(arango_module, "_PURGE_LOCK_TIMEOUT_SECONDS", 1)
+    await world.trash("upload")
+    held = await _arango_sync_tx(world, f"FOR r IN {RECORDS} LIMIT 0 RETURN r", {})
+    try:
+        with pytest.raises(GraphLockUnavailableError):
+            await world.graph.purge_trashed_records(
+                [world.ids["upload"]], world.org_id, get_epoch_timestamp_in_ms() + DAY_MS
+            )
+    finally:
+        await world.graph.http_client.abort_transaction(held)
+    assert (await world.stored("upload"))["isDeleted"] is True
 

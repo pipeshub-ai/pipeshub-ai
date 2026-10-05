@@ -259,8 +259,10 @@ async def test_deferred_extraction_skips_extraction_client() -> None:
 
     # Extraction client should not have been called
     extraction_client.classify.assert_not_awaited()
-    # But indexing should have happened
+    # But indexing should have happened, without marking enrichment as running
     sink_orchestrator.index.assert_awaited_once()
+    (index_ctx,), _ = sink_orchestrator.index.await_args
+    assert not index_ctx.settings.get("enrichment_follows")
     updates = [
         call.args[2]
         for call in ep.graph_provider.update_node.await_args_list
@@ -346,11 +348,10 @@ async def test_statuses_track_active_parse_and_index_phases() -> None:
 
     third = await gen.__anext__()
     assert third.event == IndexingEvent.INDEXING_COMPLETE
-    assert {
-        "parsingStatus": "COMPLETED",
-        "indexingStatus": "IN_PROGRESS",
-        "extractionStatus": "IN_PROGRESS",
-    } in status_writes
+    # Enrichment's IN_PROGRESS rides in the sink's indexed write (mocked here),
+    # so no reader sees the record indexed with enrichment not yet started.
+    (index_ctx,), _ = sink_orchestrator.index.await_args
+    assert index_ctx.settings.get("enrichment_follows") is True
 
     with pytest.raises(StopAsyncIteration):
         await gen.__anext__()

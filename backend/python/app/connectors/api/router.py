@@ -104,7 +104,7 @@ from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.core.registry.filters import sync_filter_selection_problems
-from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
+from app.connectors.sources.atlassian.core.auth_fields import apply_confluence_jira_scope
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.vector_cleanup_events import (
@@ -146,7 +146,11 @@ from app.utils.user_messages import (
 from app.utils.filename_utils import upload_extension
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
-from app.utils.oauth_config import extract_oauth_error_message, get_oauth_config
+from app.utils.oauth_config import (
+    check_salesforce_login_url_setting,
+    extract_oauth_error_message,
+    get_oauth_config,
+)
 from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
@@ -3863,16 +3867,7 @@ def _apply_confluence_optional_jira_scope(
     scopes: list[str],
 ) -> list[str]:
     """Add or remove read:jira-user based on Confluence Cloud includeJiraScope."""
-    normalized = (connector_type or "").replace(" ", "").upper()
-    if normalized != Connectors.CONFLUENCE.value:
-        return scopes
-    jira_scope = "read:jira-user"
-    enabled = include_jira_scope_enabled(auth_config.get("includeJiraScope"))
-    if enabled:
-        if jira_scope in scopes:
-            return scopes
-        return [*scopes, jira_scope]
-    return [scope for scope in scopes if scope != jira_scope]
+    return apply_confluence_jira_scope(connector_type, auth_config, scopes)
 
 
 # Set by the server: which org a linked OAuth app belongs to (worked out from the app
@@ -3896,6 +3891,15 @@ def _mirror_shared_instance_url(auth: dict[str, Any], shared_oauth_config: dict[
         auth[AuthFieldKeys.INSTANCE_URL] = shared_instance_url
     else:
         auth.pop(AuthFieldKeys.INSTANCE_URL, None)
+
+
+def _check_salesforce_login_url(connector_type: str, settings: dict[str, Any] | None) -> None:
+    """Refuse a Salesforce login URL off salesforce.com before it is saved: the token request
+    sends the client secret there from the server."""
+    try:
+        check_salesforce_login_url_setting(connector_type, settings)
+    except ValueError as e:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e
 
 
 async def _link_to_shared_oauth_app(
@@ -8496,6 +8500,9 @@ async def _create_or_update_oauth_config(
         import logging
         logger = logging.getLogger(__name__)
 
+    # Raised before the try below, which turns every failure into a None return.
+    _check_salesforce_login_url(connector_type, auth_config)
+
     try:
         # Get OAuth field names from registry (dynamic, no hardcoding)
         oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
@@ -8694,6 +8701,8 @@ async def _validate_admin_oauth_config_before_creation(
     Raises:
         HTTPException: If OAuth name conflicts are detected
     """
+    _check_salesforce_login_url(connector_type, config.get(OAuthConfigKeys.AUTH))
+
     oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
     has_oauth_credentials = any(
         config.get(OAuthConfigKeys.AUTH, {}).get(field_name) or
@@ -8877,6 +8886,7 @@ async def create_oauth_config(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="config is required"
             )
+        _check_salesforce_login_url(connector_type, config)
 
         # Get OAuth config from registry (completely independent)
         # OAuth configs are self-contained and don't depend on connector/toolset registries
@@ -9214,6 +9224,7 @@ async def update_oauth_config(
             existing_cfg = oauth_config.get(OAuthConfigKeys.CONFIG, {}) or {}
             cleaned = strip_redacted_fields(new_config)
             merged = {**existing_cfg, **cleaned}
+            _check_salesforce_login_url(connector_type, merged)
             oauth_config[OAuthConfigKeys.CONFIG] = merged
 
         # Ensure OAuth infrastructure fields are present (if missing, add from registry)

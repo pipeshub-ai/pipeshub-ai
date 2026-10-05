@@ -21,7 +21,7 @@ from logging import Logger
 from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import Request
-from neo4j.exceptions import TransientError
+from neo4j.exceptions import ClientError, TransientError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -131,6 +131,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
     DUPLICATE_RECONCILE_DUE_AT_FIELD,
     DUPLICATE_RECONCILE_GRACE_MS,
+    promoted_duplicate_extraction_status,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
@@ -240,6 +241,47 @@ WHERE r.connectorId = $connector_id AND r.deletedAtTimestamp IS NOT NULL
       }
   ))
 """
+# The purge walk's index, created by ensure_schema; it holds only the trash.
+_PURGE_WALK_INDEX = "record_org_deleted_at"
+_PURGE_WALK_HINT = "USING INDEX r:Record(orgId, deletedAtTimestamp, id)"
+_INDEX_NOT_FOUND = "Neo.ClientError.Schema.IndexNotFound"
+
+
+def _purge_walk_query(hint: str) -> str:
+    """One page of an org's trash: two seeks in index order, each cut at the page.
+
+    The rest of the cursor's timestamp, then later ones; one OR over both read
+    the whole trash of every org per page, and one folder delete gives thousands
+    of records the same timestamp. Hinted: with the id constraint and real data
+    the planner picked the id or the deletedAtTimestamp index instead, from run
+    to run. The id existence predicate is what lets the hint apply to the second
+    seek. The connector check runs after the LIMIT, so a deleting connector's
+    rows still move the cursor.
+    """
+    return f"""
+    CALL {{
+        MATCH (r:Record) {hint}
+        WHERE r.orgId = $org_id AND r.deletedAtTimestamp = $after_ts AND r.id > $after_key
+          AND r.isDeleted = true AND coalesce(r.purgeAttempts, 0) < $max_attempts
+        RETURN r ORDER BY r.orgId, r.deletedAtTimestamp, r.id LIMIT $limit
+        UNION ALL
+        MATCH (r:Record) {hint}
+        WHERE r.orgId = $org_id AND r.deletedAtTimestamp > $lower AND r.deletedAtTimestamp <= $cutoff
+          AND r.id IS NOT NULL
+          AND r.isDeleted = true AND coalesce(r.purgeAttempts, 0) < $max_attempts
+        RETURN r ORDER BY r.orgId, r.deletedAtTimestamp, r.id LIMIT $limit
+    }}
+    WITH r ORDER BY r.deletedAtTimestamp, r.id LIMIT $limit
+    OPTIONAL MATCH (app:App {{id: r.connectorId}})
+    OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
+    WITH r, app, head(collect(t)) AS t
+    RETURN properties(r) AS rec, properties(t) AS type_doc,
+           coalesce(app.status, '') = $deleting AS skip,
+           EXISTS {{
+               MATCH (r)-[c:RECORD_RELATION]->(:Record) WHERE c.relationshipType IN $containment
+           }} AS held
+    ORDER BY r.deletedAtTimestamp, r.id
+    """
 
 
 class Neo4jProvider(IGraphDBProvider):
@@ -272,6 +314,8 @@ class Neo4jProvider(IGraphDBProvider):
         self.client: Neo4jClient | None = None
         self.validator = NodeSchemaValidator()
         self.accessible_records_cache = accessible_records_cache
+        # Set while the purge walk runs without its hinted index, so that is logged once.
+        self._purge_walk_hint_missing = False
 
 
     # ==================== Connection Management ====================
@@ -4858,6 +4902,16 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.debug(f"Record {record_id} missing orgId, skipping queued duplicate update")
                 return 0
 
+            extraction_status = promoted_duplicate_extraction_status(
+                new_indexing_status, ref_record
+            )
+            if extraction_status is None:
+                self.logger.info(
+                    "Record %s is indexed but its enrichment has not ended; its queued duplicates wait",
+                    record_id,
+                )
+                return 0
+
             # Find all queued duplicate records directly from RECORDS collection
             query = f"""
             MATCH (record:Record)
@@ -4914,15 +4968,6 @@ class Neo4jProvider(IGraphDBProvider):
                 record_key = doc.get("_key") or doc.get("id")
                 if not record_key:
                     continue
-
-                # Map indexing status to extraction status
-                # For EMPTY status, extraction status should also be EMPTY, not FAILED
-                if new_indexing_status == ProgressStatus.COMPLETED.value:
-                    extraction_status = ProgressStatus.COMPLETED.value
-                elif new_indexing_status == ProgressStatus.EMPTY.value:
-                    extraction_status = ProgressStatus.EMPTY.value
-                else:
-                    extraction_status = ProgressStatus.FAILED.value
 
                 update_doc = {
                     "id": record_key,
@@ -8018,6 +8063,58 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Delete records and relations failed: {str(e)}")
             raise
 
+    async def _attachments_to_delete(
+        self, record_id: str, org_id: str, transaction: str | None
+    ) -> tuple[list[str], list[dict]]:
+        """A record's direct ATTACHMENT children and their deleteRecord payloads, read before the delete.
+
+        Attachments already in the trash, from an earlier batch, go too: a restore
+        refuses an item whose parent is in the trash, so with its mail gone for good
+        one could never come back, and ArangoDB's hard delete takes them the same way.
+        """
+        attachment_ids = await self._direct_attachment_ids(record_id, org_id, transaction)
+        payloads: list[dict] = []
+        for attachment_id in attachment_ids:
+            # Raises rather than answering None: an attachment deleted without its
+            # payload would keep its vectors.
+            attachment = await self.get_document(
+                attachment_id, CollectionNames.RECORDS.value, transaction, raise_on_error=True
+            )
+            if not attachment or not attachment.get("virtualRecordId"):
+                continue
+            file_doc = await self.get_document(attachment_id, CollectionNames.FILES.value, transaction)
+            payload = await self._create_deleted_record_event_payload(attachment, file_doc)
+            if payload:
+                payload["connectorName"] = attachment.get("connectorName")
+                payload["origin"] = attachment.get("origin")
+                payloads.append(payload)
+        return attachment_ids, payloads
+
+    async def _delete_records_with_their_types(self, record_ids: list[str], transaction: str | None) -> None:
+        # One statement, so a failure deletes nothing: with NEO4J_EXPLICIT_TRANSACTIONS
+        # off (the default) a caller's transaction cannot roll back separate statements.
+        # Type nodes are also matched by id, label by label (each an index seek):
+        # batch_upsert_records writes the IS_OF_TYPE edge in a statement of its own,
+        # so a type node can exist without it.
+        labels = sorted({collection_to_label(c) for c in RECORD_TYPE_COLLECTION_MAPPING.values()})
+        same_id = "\n".join(f"OPTIONAL MATCH (s{i}:`{label}` {{id: rid}})" for i, label in enumerate(labels))
+        candidates = ", ".join(f"s{i}" for i in range(len(labels)))
+        await self.client.execute_query(
+            f"""
+            UNWIND $record_ids AS rid
+            MATCH (v:Record {{id: rid}})
+            OPTIONAL MATCH (v)-[:IS_OF_TYPE]->(t)
+            WITH v, rid, collect(t) AS linked
+            {same_id}
+            UNWIND linked + [{candidates}] AS candidate
+            WITH v, collect(DISTINCT candidate) AS types
+            FOREACH (t IN types | DETACH DELETE t)
+            DETACH DELETE v
+            """,
+            parameters={"record_ids": record_ids},
+            txn_id=transaction,
+        )
+
     async def delete_record(
         self,
         record_id: str,
@@ -8103,8 +8200,11 @@ class Neo4jProvider(IGraphDBProvider):
             except Exception as e:
                 self.logger.debug(f"File record not found for record {record_id}: {e}")
 
-            # For Neo4j, use generic delete
-            await self.delete_records_and_relations(record_id, hard_delete=True, transaction=transaction)
+            # A mail's attachments go with it, as on ArangoDB: left behind, they stay
+            # searchable with nothing left to clean up their vectors.
+            attachment_ids, attachment_payloads = await self._attachments_to_delete(
+                record_id, org_id, transaction
+            )
 
             # Create event payload for router to publish
             event_data = None
@@ -8123,16 +8223,20 @@ class Neo4jProvider(IGraphDBProvider):
                     event_data = {
                         "eventType": "deleteRecord",
                         "topic": "record-events",
-                        "payload": payload
+                        "payload": payload,
+                        "payloads": [payload, *attachment_payloads],
                     }
             except Exception as e:
                 self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
                 event_data = None
 
+            await self._delete_records_with_their_types([*attachment_ids, record_id], transaction)
+
             return {
                 "success": True,
                 "record_id": record_id,
                 "message": "Record deleted successfully",
+                "attachments_deleted": len(attachment_ids),
                 "eventData": event_data,
                 # Lets the caller invalidate the right cache entry without
                 # re-reading the record it just deleted.
@@ -8175,7 +8279,11 @@ class Neo4jProvider(IGraphDBProvider):
                     record.id, user_id, record.org_id, transaction,
                     soft_delete=True, delete_source=DeleteSource.CONNECTOR,
                 )
-            return await self.delete_record(record.id, user_id, record.org_id, transaction)
+            result = await self.delete_record(record.id, user_id, record.org_id, transaction)
+            # Raised, as on ArangoDB, so the caller's transaction rolls back.
+            if not result.get("success"):
+                raise Exception(f"Deletion failed: {result.get('reason', 'Unknown error')}")
+            return result
 
         except Exception as e:
             self.logger.error(f"❌ Delete record by external ID failed: {str(e)}")
@@ -12202,52 +12310,39 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> dict[str, Any]:
         """See ``IGraphDBProvider.get_purgeable_trashed_records``."""
         after_ts, after_key = after if after else (None, None)
-        # Two seeks on record_org_deleted_at (orgId, deletedAtTimestamp, id), each
-        # in index order and cut at the page: the rest of the cursor's timestamp,
-        # then later ones. One OR over both read the whole trash of every org per
-        # page; one folder delete gives thousands of records the same timestamp.
-        # The connector check runs after the LIMIT, so a deleting connector's
-        # rows still move the cursor.
-        rows = await self.client.execute_query(
-            """
-            CALL {
-                MATCH (r:Record)
-                WHERE $after_ts IS NOT NULL
-                  AND r.orgId = $org_id AND r.deletedAtTimestamp = $after_ts AND r.id > $after_key
-                  AND r.isDeleted = true AND coalesce(r.purgeAttempts, 0) < $max_attempts
-                RETURN r ORDER BY r.orgId, r.deletedAtTimestamp, r.id LIMIT $limit
-                UNION ALL
-                MATCH (r:Record)
-                WHERE r.orgId = $org_id AND r.deletedAtTimestamp > $lower AND r.deletedAtTimestamp <= $cutoff
-                  AND r.id IS NOT NULL
-                  AND r.isDeleted = true AND coalesce(r.purgeAttempts, 0) < $max_attempts
-                RETURN r ORDER BY r.orgId, r.deletedAtTimestamp, r.id LIMIT $limit
-            }
-            WITH r ORDER BY r.deletedAtTimestamp, r.id LIMIT $limit
-            OPTIONAL MATCH (app:App {id: r.connectorId})
-            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
-            WITH r, app, head(collect(t)) AS t
-            RETURN properties(r) AS rec, properties(t) AS type_doc,
-                   coalesce(app.status, '') = $deleting AS skip,
-                   EXISTS {
-                       MATCH (r)-[c:RECORD_RELATION]->(:Record) WHERE c.relationshipType IN $containment
-                   } AS held
-            ORDER BY r.deletedAtTimestamp, r.id
-            """,
-            parameters={
-                "org_id": org_id,
-                # Below every timestamp on the first page, so a record trashed at 0 is read.
-                "lower": after_ts if after_ts is not None else -1,
-                "cutoff": deleted_before,
-                "after_ts": after_ts,
-                "after_key": after_key,
-                "max_attempts": max_attempts,
-                "limit": limit,
-                "deleting": APP_STATUS_DELETING,
-                "containment": list(_CONTAINMENT_RELATIONS),
-            },
-            txn_id=transaction,
-        )
+        # Below every timestamp on the first page, so a record trashed at 0 is read.
+        lower = after_ts if after_ts is not None else -1
+        parameters = {
+            "org_id": org_id,
+            "lower": lower,
+            "cutoff": deleted_before,
+            # With no cursor yet, the first seek asks for a timestamp no record has.
+            "after_ts": after_ts if after_ts is not None else lower - 1,
+            "after_key": after_key or "",
+            "max_attempts": max_attempts,
+            "limit": limit,
+            "deleting": APP_STATUS_DELETING,
+            "containment": list(_CONTAINMENT_RELATIONS),
+        }
+        try:
+            rows = await self.client.execute_query(
+                _purge_walk_query(_PURGE_WALK_HINT), parameters=parameters, txn_id=transaction
+            )
+            self._purge_walk_hint_missing = False
+        except ClientError as exc:
+            # Raised only where the server sets dbms.cypher.hints_error; elsewhere a
+            # missing or building index is a notification and the plan goes without it.
+            if exc.code != _INDEX_NOT_FOUND:
+                raise
+            if not self._purge_walk_hint_missing:
+                self.logger.warning(
+                    "The purge's index %s is not ready; walking the trash without it until it is: %s",
+                    _PURGE_WALK_INDEX, exc,
+                )
+                self._purge_walk_hint_missing = True
+            rows = await self.client.execute_query(
+                _purge_walk_query(""), parameters=parameters, txn_id=transaction
+            )
         rows = rows or []
         records = [
             await self._trash_purge_row(row["rec"], row.get("type_doc"))
@@ -12259,6 +12354,14 @@ class Neo4jProvider(IGraphDBProvider):
             "held": sum(1 for row in rows if row.get("held") and not row.get("skip")),
             "next": (last["deletedAtTimestamp"], last["id"]) if last else None,
         }
+
+    async def is_trash_walk_index_ready(self) -> bool:
+        """See ``IGraphDBProvider.is_trash_walk_index_ready``."""
+        rows = await self.client.execute_query(
+            "SHOW INDEXES YIELD name, state WHERE name = $name RETURN state",
+            parameters={"name": _PURGE_WALK_INDEX},
+        )
+        return bool(rows) and rows[0].get("state") == "ONLINE"
 
     async def purge_trashed_records(
         self,

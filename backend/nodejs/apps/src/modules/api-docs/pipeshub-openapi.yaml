@@ -5429,21 +5429,76 @@ components:
             One entry per requested id: `recordId`, `success`, `code`, and either the
             restore response fields or a `reason` that says what to do next.
           items:
-            type: object
-            required:
-              - recordId
-              - success
-            properties:
-              recordId:
-                type: string
-              success:
-                type: boolean
-              code:
-                type: integer
-              reason:
-                type: string
-              message:
-                type: string
+            $ref: '#/components/schemas/RestoreRecordsResultItemSchema'
+
+    RestoreRecordsResultItemSchema:
+      type: object
+      additionalProperties: false
+      description: |
+        The outcome for one id of POST /knowledgeBase/records/restore. A restored item
+        carries the fields of RestoreRecordResponseSchema; a refused one carries `reason`,
+        and, when the refusal names other records, the snake_case details below.
+      required:
+        - recordId
+        - success
+      properties:
+        recordId:
+          type: string
+        success:
+          type: boolean
+        code:
+          type: integer
+        reason:
+          type: string
+          description: Why it was not restored, and what to do next
+        message:
+          type: string
+        batchId:
+          type: string
+          nullable: true
+          description: The delete batch that was restored
+        restoredRecords:
+          type: array
+          items:
+            $ref: '#/components/schemas/RestoredRecordSchema'
+        reindexPending:
+          type: boolean
+          description: Some restored files could not be queued for indexing
+        reindexPendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Files to reindex by hand to make them searchable again
+        reindexPendingReason:
+          type: string
+        renamePendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Items restored under a name another item next to them has; rename them
+        renamePendingReason:
+          type: string
+        record_id:
+          type: string
+          description: The item a refusal is about
+        external_id:
+          type: string
+          description: The source item two of the restored items came from
+        conflicting_record_id:
+          type: string
+          description: The live item that holds this item's place
+        conflicting_record_name:
+          type: string
+          nullable: true
+        missing:
+          type: array
+          items:
+            type: string
+          description: Items of the batch that were no longer in the trash
+        parentId:
+          type: string
+          nullable: true
+          description: The folder still in the trash that must be restored first
 
     reIndexRecordResponseSchema:
       type: object
@@ -10373,6 +10428,16 @@ components:
                     example: llm
                   modelFriendlyName:
                     type: string
+                  defaultReasoningEffort:
+                    type: string
+                    enum: [none, low, medium, high, max]
+                    description: >-
+                      The model's own reasoning effort, read from its stored
+                      configuration. It applies only when the chat request sets
+                      no `reasoningEffort` and the agent has no
+                      `defaultReasoningEffort`. Omitted when nothing valid is
+                      stored; `none` is a legacy value that runs as `low`.
+                    example: low
         usesOrgDefault:
           type: boolean
           description: |
@@ -13430,9 +13495,9 @@ components:
               example: "12345678-1234-1234-1234-123456789abc"
         baseUrl:
           type: string
-          description: "Base URL for self-hosted instances (e.g., GitLab Self-Managed)"
+          description: "PipesHub's public origin, prefixed to the connector's redirect path to build the stored redirectUri. When omitted, the frontend public endpoint is used. Not the provider's URL; a self-hosted provider's address goes in config."
           format: uri
-          example: "https://gitlab.mycompany.com"
+          example: "https://pipeshub.mycompany.com"
 
     ConnectorPagination:
       type: object
@@ -39083,6 +39148,9 @@ paths:
                       type: string
                     tenantId:
                       type: string
+                baseUrl:
+                  type: string
+                  description: "PipesHub's public origin. Used only when the stored configuration has no redirectUri yet, to build one; an existing redirectUri is kept whether or not this is sent."
       responses:
         '200':
           description: OAuth configuration updated
@@ -39799,6 +39867,10 @@ paths:
           `isDefault: true`; all subsequent models from the same entry get `false`.
         - `modelFriendlyName` is included **only** when the provider entry contains
           exactly one model name (not a comma-separated list).
+        - `defaultReasoningEffort` is included on every model of an entry whose
+          `configuration.defaultReasoningEffort` (or, when that is unset, a
+          top-level `defaultReasoningEffort`) holds a valid effort. It is left out
+          when no default is stored.
         - When no providers of the requested type are configured the endpoint still
           returns HTTP **200** with an empty `models` array — this is **not** an error.
 
@@ -39926,6 +39998,20 @@ paths:
                             **and** a friendly name was added during
                             configuration.
                           example: "Reasoning model"
+                        defaultReasoningEffort:
+                          type: string
+                          enum: [none, low, medium, high, max]
+                          description: >-
+                            The model's own reasoning effort. It applies only
+                            when the chat request sets no `reasoningEffort` and
+                            the agent has no `defaultReasoningEffort`; a level
+                            the user picks always wins. Read from
+                            `configuration.defaultReasoningEffort`, falling back
+                            to a top-level `defaultReasoningEffort`. Present on
+                            every model expanded from the entry, and left out
+                            when no default is stored. `none` is a legacy value
+                            that runs as `low`.
+                          example: low
               examples:
                 two_llm_models:
                   summary: Two LLM models from an Azure OpenAI provider
@@ -39948,6 +40034,7 @@ paths:
                         isReasoning: true
                         isDefault: false
                         modelFriendlyName: "Reasoning model"
+                        defaultReasoningEffort: low
                 no_models_configured:
                   summary: modelType key present in config but zero models after expansion
                   value:

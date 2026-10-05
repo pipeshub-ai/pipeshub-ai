@@ -56,6 +56,7 @@ from app.connectors.core.registry.connector_builder import (
     SyncStrategy,
 )
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
+from app.connectors.sources.salesforce.common.auth_fields import salesforce_login_url_field
 from app.connectors.core.registry.filters import (
     FilterCollection,
     IndexingFilterKey,
@@ -760,6 +761,7 @@ def _ts_in_bounds(
                     field_type="TEXT",
                     max_length=2048
                 ),
+                salesforce_login_url_field(),
                 CommonFields.client_id("Salesforce Connected App"),
                 CommonFields.client_secret("Salesforce Connected App")
             ],

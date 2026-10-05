@@ -24,11 +24,11 @@ from app.connectors.sources.azure_blob.connector import (
 )
 import base64
 from contextlib import asynccontextmanager
-from app.config.constants.arangodb import MimeTypes, ProgressStatus
+from app.config.constants.arangodb import ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator
 from app.models.entities import RecordType, User
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
-from app.models.entities import FileRecord, RecordGroupType, RecordType, User
+from app.config.constants.arangodb import Connectors, OriginTypes
+from app.models.entities import FileRecord, RecordGroupType
 
 
 # ---------------------------------------------------------------------------
@@ -78,19 +78,6 @@ def mock_data_store_provider():
     mock_tx.__aexit__ = AsyncMock(return_value=None)
     provider.transaction.return_value = mock_tx
     return provider
-
-
-@pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "auth": {
-            "azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=abc123;EndpointSuffix=core.windows.net"
-        },
-        "scope": "TEAM",
-        "created_by": "user-1",
-    })
-    return svc
 
 
 @pytest.fixture()
