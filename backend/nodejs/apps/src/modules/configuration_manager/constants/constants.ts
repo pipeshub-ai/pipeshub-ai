@@ -142,4 +142,11 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
       "Include the current user's name, email, and organization name in the default assistant and Universal Agent system prompts. When disabled, those agents rely solely on tools, actions, and knowledge sources without knowing who is asking. Agent Builder agents have a separate per-agent toggle.",
     defaultEnabled: true,
   },
+  {
+    key: 'ENABLE_KH_SCOPE_LISTING',
+    label: 'Faster Knowledge Hub Listing',
+    description:
+      'Serve the All records listing from per-connector scopes precomputed after each sync, instead of walking every connector on each request. Results are the same; a connector that is syncing, or a request it cannot serve (search, filters other than origin and connector, sorting by size or type), falls back to the full listing. Disable to always use the full listing.',
+    defaultEnabled: false,
+  },
 ];

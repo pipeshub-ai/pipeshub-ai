@@ -119,7 +119,7 @@ describe('knowledge_base/constants/record.constants', () => {
     })
 
     it('should have edge collections', () => {
-      expect(COLLECTIONS.RECORD_TO_RECORD).to.equal('recordRelations')
+      expect(COLLECTIONS.RECORD_TO_RECORD).to.equal('nodeRelations')
       expect(COLLECTIONS.IS_OF_TYPE).to.equal('isOfType')
       expect(COLLECTIONS.PERMISSIONS).to.equal('permissions')
       expect(COLLECTIONS.BELONGS_TO).to.equal('belongsTo')
