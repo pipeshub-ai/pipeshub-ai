@@ -351,8 +351,10 @@ _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus
 
 # A record with any of these children waits for them to be purged first.
 _CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
-# records[orgId, deletedAtTimestamp, _key]: one org's trash, in purge order.
+# records[orgId, deletedAtTimestamp, _key]: one org's trash, in purge order. An
+# index with these fields that already exists keeps its own name.
 PURGE_WALK_INDEX = "records_org_deleted_at"
+_PURGE_WALK_FIELDS = ("orgId", "deletedAtTimestamp", "_key")
 # Waiting this long for the purge's exclusive locks means syncs are busy; the next tick tries again.
 _PURGE_LOCK_TIMEOUT_SECONDS = 30
 
@@ -380,6 +382,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self.logger = logger
         self.config_service = config_service
         self.http_client: ArangoHTTPClient | None = None
+        # The walk index's actual name, found by its fields (is_trash_walk_index_ready).
+        self._purge_walk_index = PURGE_WALK_INDEX
 
 
         # Connector-specific delete permissions
@@ -895,7 +899,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # record of the org on each page.
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
-            ["orgId", "deletedAtTimestamp", "_key"],
+            list(_PURGE_WALK_FIELDS),
             name=PURGE_WALK_INDEX,
         )
 
@@ -14092,7 +14096,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # after the LIMIT, so a deleting connector's rows still move the cursor.
         def walk(range_filter: str) -> str:
             return (
-                f'FOR r IN @@records OPTIONS {{ indexHint: "{PURGE_WALK_INDEX}" }}\n'
+                f'FOR r IN @@records OPTIONS {{ indexHint: "{self._purge_walk_index}" }}\n'
                 f"    FILTER r.orgId == @org_id AND {range_filter}\n"
                 # null sorts below every number, so this keeps a missing count with
                 # no OR, which would split the read in two and lose the index order.
@@ -14153,8 +14157,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
         }
 
     async def is_trash_walk_index_ready(self) -> bool:
-        """See ``IGraphDBProvider.is_trash_walk_index_ready``. ArangoDB builds an index before it lists it."""
-        return PURGE_WALK_INDEX in await self.http_client.get_index_names(CollectionNames.RECORDS.value)
+        """See ``IGraphDBProvider.is_trash_walk_index_ready``. ArangoDB builds an index before it lists it.
+
+        Found by its definition, not its name: ensureIndex answers a definition
+        that already exists under another name with that index, so the walk's
+        index may carry that name. The walk then hints the name found here.
+        """
+        for index in await self.http_client.get_indexes(CollectionNames.RECORDS.value):
+            if (
+                index.get("type") == "persistent"
+                and index.get("fields") == list(_PURGE_WALK_FIELDS)
+                and not index.get("sparse")
+                and index.get("name")
+            ):
+                self._purge_walk_index = index["name"]
+                return True
+        return False
 
     async def purge_trashed_records(
         self,
