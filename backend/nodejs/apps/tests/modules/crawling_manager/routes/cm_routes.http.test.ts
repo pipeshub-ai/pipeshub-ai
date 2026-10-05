@@ -194,13 +194,22 @@ describe('Crawling manager over HTTP', () => {
   const repeatables = async () => queue.getRepeatableJobs()
   const pendingRuns = () => store.pending()
 
+  let previousConnectorBackend: string | undefined
+
   before(async () => {
     await backend.start()
+    previousConnectorBackend = process.env.CONNECTOR_BACKEND
+    process.env.CONNECTOR_BACKEND = backend.url
     config = buildConfig(backend.url)
   })
 
   after(async () => {
     await backend.stop()
+    if (previousConnectorBackend === undefined) {
+      delete process.env.CONNECTOR_BACKEND
+    } else {
+      process.env.CONNECTOR_BACKEND = previousConnectorBackend
+    }
   })
 
   // Stubbed per test: in a serial run another file's root-level

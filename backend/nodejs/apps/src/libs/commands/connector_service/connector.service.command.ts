@@ -42,10 +42,10 @@ export class ConnectorServiceCommand<T> extends BaseCommand<
     const url = this.buildUrl();
     const parsedTarget = new URL(url);
 
-    // In isolated test environments where CONNECTOR_BACKEND is not set, fallback to the requested URI's origin.
-    const configuredOrigin = process.env.CONNECTOR_BACKEND
-      ? new URL(process.env.CONNECTOR_BACKEND).origin
-      : new URL(this.uri).origin;
+    if (!process.env.CONNECTOR_BACKEND) {
+      throw new InternalServerError('CONNECTOR_BACKEND is not configured');
+    }
+    const configuredOrigin = new URL(process.env.CONNECTOR_BACKEND).origin;
 
     if (parsedTarget.origin !== configuredOrigin) {
       throw new InternalServerError(
