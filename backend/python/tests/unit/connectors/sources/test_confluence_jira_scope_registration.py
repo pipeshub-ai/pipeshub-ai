@@ -11,7 +11,7 @@ import subprocess
 import sys
 from importlib import import_module
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -43,7 +43,7 @@ async def save(oauth_app_id, existing):
     service.set_config = AsyncMock(return_value=True)
     await _create_or_update_oauth_config(
         connector_type="Confluence",
-        auth_config={"clientId": "c", "clientSecret": "s", "includeJiraScope": "no"},
+        auth_config={"clientId": "c", "clientSecret": "s", "includeJiraScope": "yes"},
         instance_name="Confluence", user_id="u1", org_id="org-1", is_admin=True,
         config_service=service, base_url="https://pipeshub.example", oauth_app_id=oauth_app_id,
     )
@@ -56,7 +56,7 @@ print(json.dumps({
     "connector": connector_fields.get("includeJiraScope"),
     "saved_on_create": asyncio.run(save(None, [])),
     "saved_on_update": asyncio.run(save("app-1", existing)),
-    "toolset_form": [f["name"] for f in toolset_schema["fields"]],
+    "toolset_form": {f["name"]: f.get("defaultValue") for f in toolset_schema["fields"]},
 }))
 """
 
@@ -84,16 +84,26 @@ class TestTheToolsetDoesNotDropTheSetting:
 
     def test_the_toolset_registers_the_connectors_definition(self, after_startup: dict) -> None:
         # The OAuth apps page shows the registered field, so it must read as the connector's does.
-        assert after_startup["registered"] == after_startup["connector"]
+        assert {**after_startup["registered"], "defaultValue": None} == {
+            **after_startup["connector"],
+            "defaultValue": None,
+        }
 
     def test_creating_the_oauth_app_saves_it(self, after_startup: dict) -> None:
-        assert after_startup["saved_on_create"] == "no"
+        assert after_startup["saved_on_create"] == "yes"
 
     def test_updating_the_oauth_app_saves_it(self, after_startup: dict) -> None:
-        assert after_startup["saved_on_update"] == "no"
+        assert after_startup["saved_on_update"] == "yes"
 
-    def test_the_toolset_form_offers_it(self, after_startup: dict) -> None:
-        assert "includeJiraScope" in after_startup["toolset_form"]
+    def test_the_toolset_form_offers_it_pre_filled_with_no(self, after_startup: dict) -> None:
+        assert after_startup["toolset_form"].get("includeJiraScope", "missing") == "no"
+
+    def test_the_oauth_apps_page_pre_fills_no(self, after_startup: dict) -> None:
+        # The registered field is the toolset's; No reads the same as an app saved without the setting.
+        assert after_startup["registered"]["defaultValue"] == "no"
+
+    def test_the_connector_still_pre_fills_yes(self, after_startup: dict) -> None:
+        assert after_startup["connector"]["defaultValue"] == "yes"
 
 
 class TestToolsetSignIn:
@@ -133,5 +143,42 @@ class TestToolsetSignIn:
     async def test_an_app_saved_before_the_setting_asks_for_what_it_did_before(self) -> None:
         assert await self._scopes() == TOOLSET_SCOPES
 
+    @pytest.mark.timeout(180)
+    async def test_an_app_saved_with_the_forms_defaults_asks_for_what_it_did_before(self, after_startup: dict) -> None:
+        defaults = {name: value for name, value in after_startup["toolset_form"].items() if value}
+        assert await self._scopes(**defaults) == TOOLSET_SCOPES
+
     async def test_other_toolsets_ignore_it(self) -> None:
         assert await self._scopes("jira", includeJiraScope="yes") == TOOLSET_SCOPES
+
+
+class TestTheConnectorsFallbackToItsOAuthApp:
+    """A connector without its own value reads the app's; existing apps hold none."""
+
+    async def _enabled(self, own: object, app_value: object) -> bool:
+        from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
+        from app.connectors.sources.atlassian.confluence_cloud.connector import (
+            ConfluenceConnector,
+        )
+
+        app_config = {} if app_value is None else {"includeJiraScope": app_value}
+        auth = {"oauthConfigId": "app-1"} if own is None else {"oauthConfigId": "app-1", "includeJiraScope": own}
+        connector = MagicMock(config_service=MagicMock(), logger=MagicMock())
+        with patch(
+            "app.edition_config.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={"config": app_config}
+        ):
+            setting = await ConfluenceConnector._include_jira_scope_setting(connector, auth)
+        return include_jira_scope_enabled(setting)
+
+    async def test_an_app_saved_before_this_fix_still_reads_as_no(self) -> None:
+        assert await self._enabled(None, None) is False
+
+    async def test_an_app_saved_with_the_pre_filled_no_reads_as_no(self) -> None:
+        assert await self._enabled(None, "no") is False
+
+    async def test_an_app_saved_with_yes_reads_as_yes(self) -> None:
+        assert await self._enabled(None, "yes") is True
+
+    async def test_the_connectors_own_value_still_wins(self) -> None:
+        assert await self._enabled("yes", "no") is True
+        assert await self._enabled("no", "yes") is False

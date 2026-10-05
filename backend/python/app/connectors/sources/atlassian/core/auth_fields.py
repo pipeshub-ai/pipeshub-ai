@@ -14,12 +14,13 @@ INCLUDE_JIRA_SCOPE_DESCRIPTION = (
 )
 
 
-def confluence_include_jira_scope_field() -> AuthField:
+def confluence_include_jira_scope_field(*, default_value: str = "yes") -> AuthField:
     """The "Grant Jira user access" choice on a Confluence Cloud OAuth app.
 
     The connector and the agent toolset both register an OAuth config named
     "Confluence", and the later registration replaces the earlier one, so both
-    must declare this field or it drops out of the saved OAuth app.
+    must declare this field or it drops out of the saved OAuth app. Only the
+    pre-filled choice may differ between them.
     """
     return AuthField(
         name=INCLUDE_JIRA_SCOPE,
@@ -28,7 +29,7 @@ def confluence_include_jira_scope_field() -> AuthField:
         field_type="SELECT",
         required=True,
         placeholder="Select...",
-        default_value="yes",
+        default_value=default_value,
         options=["no", "yes"],
         usage="CONFIGURE",
         is_secret=False,

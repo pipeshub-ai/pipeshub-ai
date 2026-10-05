@@ -429,7 +429,8 @@ def _confluence_user_label(user: dict[str, Any]) -> str:
             fields=[
                 CommonFields.client_id("Atlassian Developer Console"),
                 CommonFields.client_secret("Atlassian Developer Console"),
-                confluence_include_jira_scope_field(),
+                # No: toolsets never asked for read:jira-user, and an Atlassian app without it refuses sign-in.
+                confluence_include_jira_scope_field(default_value="no"),
             ],
             icon_path=IconPaths.connector_icon("confluence"),
             app_group="Documentation",
