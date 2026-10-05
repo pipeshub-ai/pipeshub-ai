@@ -149,7 +149,15 @@ class Runner:
 
     def _iteration(self, iteration: Iteration, *, profile: bool) -> dict[str, Any]:
         iteration.directory.mkdir(parents=True, exist_ok=True)
-        connector_ids = self._create_connectors(iteration)
+        connector_ids: list[str] = []
+        try:
+            self._create_connectors(iteration, connector_ids)
+        except BaseException:
+            # The cleanup below is not reached yet, so connectors made before the
+            # failure would outlive the run.
+            if connector_ids:
+                self._delete_connectors(connector_ids)
+            raise
 
         expected_total = self.expected_total
         # Generous ceiling: the sampler must outlive the sync, and it stops the
@@ -219,8 +227,8 @@ class Runner:
 
     # -- steps -------------------------------------------------------------
 
-    def _create_connectors(self, iteration: Iteration) -> list[str]:
-        ids: list[str] = []
+    def _create_connectors(self, iteration: Iteration, ids: list[str]) -> list[str]:
+        """Appends each id to `ids` as it is created, so a caller can clean up a partial set."""
         for unit in self.units:
             name = f"lt-{self.scenario.source}-{unit.index}-{uuid.uuid4().hex[:8]}"
             connector_id = self.client.create(
@@ -230,9 +238,9 @@ class Runner:
                 self.source.scope,
                 self.source.auth_type,
             )
+            ids.append(connector_id)
             self.client.set_filters(connector_id, unit.filters_payload(), unit.sync_config)
             self._assert_filters_applied(connector_id)
-            ids.append(connector_id)
         (iteration.directory / "connectors.json").write_text(
             json.dumps(
                 [{"connector_id": cid, "unit": u.label} for cid, u in zip(ids, self.units)],

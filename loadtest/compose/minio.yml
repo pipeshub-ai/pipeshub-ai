@@ -13,15 +13,13 @@
 services:
   minio:
     # minio/minio is no longer published on Docker Hub. This is Bitnami's build
-    # of the same 2025-04-22 release; it keeps its data under /bitnami/minio/data
-    # and serves the console on 9001 without a custom command.
+    # of the same 2025-04-22 release; it keeps its data under /bitnami/minio/data.
     image: bitnamilegacy/minio:2025.4.22
     container_name: lt-minio
     environment:
       MINIO_ROOT_USER: ${LT_MINIO_ACCESS_KEY:-loadtest}
       MINIO_ROOT_PASSWORD: ${LT_MINIO_SECRET_KEY:-loadtest123}
-      # Deterministic corpora are re-uploaded per run; retaining versions would
-      # let one run's deletions inflate the next run's listing cost.
+      # No web console: the harness only uses the S3 API, so no console port is published.
       MINIO_BROWSER: "off"
       # Bitnami keeps the first run's root credentials in the volume; without this
       # a changed LT_MINIO_* pair is shown in the env but never accepted.
@@ -29,7 +27,6 @@ services:
     ports:
       # Loopback only: the default credentials above are public.
       - "127.0.0.1:${LT_MINIO_HOST_PORT:-9100}:9000"
-      - "127.0.0.1:${LT_MINIO_CONSOLE_PORT:-9101}:9001"
     volumes:
       - lt_minio_data:/bitnami/minio/data
     networks:

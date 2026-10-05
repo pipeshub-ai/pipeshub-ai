@@ -44,6 +44,12 @@ def verdict(baseline: dict[str, Any], candidate: dict[str, Any]) -> dict[str, An
             blockers.append(f"{name} used a non-deterministic (SaaS-backed) load source")
         if not summary.get("all_complete", True):
             blockers.append(f"{name} had an iteration that timed out before completing")
+        # A single iteration reports cv 0, which would make any difference clear
+        # the noise floor below.
+        if not summary.get("cv_known", True):
+            blockers.append(f"{name} measured one iteration, so its run-to-run noise is unknown")
+        elif not summary.get("reproducible", True):
+            blockers.append(f"{name} varied more between iterations than the reproducibility threshold")
         if summary.get("records_diverged"):
             # Duplicated work inflates records_per_s, so comparing against it
             # would read a correctness regression as a throughput improvement.

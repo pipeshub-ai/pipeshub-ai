@@ -365,10 +365,23 @@ def test_verdict_reports_a_real_improvement() -> None:
 
 
 def test_verdict_invalid_on_mismatched_or_leaky_runs() -> None:
-    assert compare.verdict(_doc("a", [100.0]), _doc("b", [100.0], units=4))["state"] == "invalid"
-    assert compare.verdict(_doc("a", [100.0]), _doc("b", [100.0], indexed=9))["state"] == "invalid"
-    assert compare.verdict(_doc("a", [100.0]), _doc("b", [100.0], deterministic=False))["state"] == "invalid"
-    assert compare.verdict(_doc("a", [100.0]), _doc("b", [100.0], source="postgres"))["state"] == "invalid"
+    # Two iterations each, so the noise is known and only the mismatch can block.
+    steady = [100.0, 100.0]
+    assert compare.verdict(_doc("a", steady), _doc("b", steady))["state"] == "inconclusive"
+    assert compare.verdict(_doc("a", steady), _doc("b", steady, units=4))["state"] == "invalid"
+    assert compare.verdict(_doc("a", steady), _doc("b", steady, indexed=9))["state"] == "invalid"
+    assert compare.verdict(_doc("a", steady), _doc("b", steady, deterministic=False))["state"] == "invalid"
+    assert compare.verdict(_doc("a", steady), _doc("b", steady, source="postgres"))["state"] == "invalid"
+
+
+def test_verdict_refuses_runs_whose_noise_is_unknown_or_too_high() -> None:
+    """One iteration reports cv 0, so without this any change would count."""
+    single = compare.verdict(_doc("a", [100.0]), _doc("b", [200.0]))
+    assert single["state"] == "invalid"
+    assert "one iteration" in single["reason"]
+    noisy = compare.verdict(_doc("a", [100.0, 101.0]), _doc("b", [100.0, 160.0, 60.0]))
+    assert noisy["state"] == "invalid"
+    assert "reproducibility" in noisy["reason"]
 
 
 def test_blocking_analysis_finds_the_longest_stall() -> None:
@@ -605,6 +618,38 @@ def test_connector_timeline_falls_back_when_status_is_unavailable() -> None:
     assert entry["completed_s"] is None
     assert entry["duration_s"] == 8.0            # falls back to last_record_s
     assert entry["final_records"] == 50
+
+
+def test_connectors_created_before_a_setup_failure_are_deleted() -> None:
+    """Setup ran outside the iteration's cleanup, so a failure there leaked every
+    connector already created onto the target stack."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from lt import runner
+
+    r = runner.Runner.__new__(runner.Runner)
+    r.scenario = SimpleNamespace(source="minio")
+    r.source = SimpleNamespace(connector_type="S3", scope="team", auth_type=None)
+    r.units = [SimpleNamespace(index=i, auth={}, filters_payload=dict, sync_config=None, label=str(i))
+               for i in range(3)]
+    r.client = MagicMock()
+    r.client.create.side_effect = ["c1", "c2", "c3"]
+    r.client.set_filters.side_effect = [None, RuntimeError("filters rejected"), None]
+    r._assert_filters_applied = lambda _cid: None
+    deleted: list[str] = []
+    r._delete_connectors = deleted.extend
+
+    with tempfile.TemporaryDirectory() as d:
+        iteration = runner.Iteration(index=0, kind="measured", directory=Path(d))
+        try:
+            r._iteration(iteration, profile=False)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("setup failure was swallowed")
+
+    assert deleted == ["c1", "c2"]
 
 
 if __name__ == "__main__":
