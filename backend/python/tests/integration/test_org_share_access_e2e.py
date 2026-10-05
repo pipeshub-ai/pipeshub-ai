@@ -107,6 +107,7 @@ async def _remove_test_data(env: _Env) -> None:
         CollectionNames.BELONGS_TO.value,
         CollectionNames.USER_APP_RELATION.value,
         CollectionNames.INHERIT_PERMISSIONS.value,
+        CollectionNames.NODE_RELATIONS.value,
     ):
         await graph.http_client.execute_aql(
             f"FOR e IN {edges} FILTER CONTAINS(e._from, @s) OR CONTAINS(e._to, @s) REMOVE e IN {edges}",
@@ -260,12 +261,21 @@ async def test_search_and_chat_retrieve_org_shares_only(env: _Env) -> None:
     assert found == expected
 
 
+async def _roles(env: _Env, record_id: str) -> set[str] | None:
+    """The roles a record opens with, or None when the batch access check refuses it."""
+    admitted = (await env.graph.check_access(env.user_key, env.org_id, node_ids=[record_id])).node_ids
+    details = await env.graph.check_record_access_with_details(env.user_id, env.org_id, record_id)
+    assert (details is not None) == (record_id in admitted), f"the check and the details disagree on {record_id}"
+    return None if details is None else {p["relationship"] for p in details["permissions"]}
+
+
 async def test_the_per_record_check_follows_org_shares_only(env: _Env) -> None:
-    granted = await env.graph._check_record_permissions(env.records["org"][0], env.user_key)
-    assert granted.get("permission") == "READER", f"an org share must grant READER, got {granted}"
-    for label in ("domain", "anyone"):
-        refused = await env.graph._check_record_permissions(env.records[label][0], env.user_key)
-        assert refused.get("permission") is None, f"a {label} share must grant nothing, got {refused}"
+    asked = {label: record_id for label, (record_id, _) in env.records.items()}
+    admitted = (await env.graph.check_access(env.user_key, env.org_id, node_ids=asked.values())).node_ids
+    assert admitted == {asked[label] for label in _org_shared(env)}, (
+        f"only an org share opens a record; domain and anyone shares grant nothing: {admitted}"
+    )
+    assert await _roles(env, asked["org"]) == {"READER"}, "an org share must grant READER"
 
 
 async def test_a_knowledge_bases_sharing_list_leaves_out_inactive_users(env: _Env) -> None:
@@ -318,15 +328,36 @@ async def test_the_container_filter_follows_org_shares_only(env: _Env) -> None:
 
     containers = await env.graph.get_accessible_containers(env.user_id, env.org_id)
 
+    # The filter scopes a search to the connectors the user can enter and trusts
+    # nothing inside them: the batch access check decides every hit.
     assert containers.fallback_reason is None, containers.fallback_reason
-    assert org_group in containers.record_group_ids, "a record group shared with the whole org must be searchable"
-    assert domain_group not in containers.record_group_ids, "a domain-typed org edge must not open a record group"
-    direct = set(containers.direct_records) | set(containers.direct_records.values())
-    assert env.records["org"][0] in direct, "a record shared with the whole org must be searchable"
-    assert env.records["domain"][0] not in direct, "a domain-typed org edge must not open a record"
+    assert containers.app_ids == {env.connector_id}
+    assert not containers.record_group_ids and not containers.direct_records
+    hits = await env.graph.check_access(
+        env.user_key, env.org_id, node_ids=[org_group, domain_group],
+        virtual_record_ids=[virtual_id for _, virtual_id in env.records.values()],
+        indexed_only=True, connector_ids=containers.app_ids,
+    )
+    assert org_group in hits.node_ids, "a record group shared with the whole org must be searchable"
+    assert domain_group not in hits.node_ids, "a domain-typed org edge must not open a record group"
+    assert hits.records_by_vrid.get(env.records["org"][1]) == env.records["org"][0], (
+        "a record shared with the whole org must be searchable"
+    )
+    assert env.records["domain"][1] not in hits.records_by_vrid, "a domain-typed org edge must not open a record"
+    assert env.records["anyone"][1] not in hits.records_by_vrid, "an anyone node must not open a record"
 
 
 async def _inherit_from(env: _Env, record_id: str, group_id: str) -> None:
+    """Put the record in the group, as a sync does: listed under it and inheriting from it."""
+    await env.graph.batch_create_edges(
+        [_edge(group_id, CollectionNames.RECORD_GROUPS.value, record_id, CollectionNames.RECORDS.value,
+               relationshipType="PARENT_CHILD")],
+        collection=CollectionNames.NODE_RELATIONS.value,
+    )
+    await env.graph.batch_create_edges(
+        [_edge(record_id, CollectionNames.RECORDS.value, group_id, CollectionNames.RECORD_GROUPS.value)],
+        collection=CollectionNames.BELONGS_TO.value,
+    )
     await env.graph.batch_create_edges(
         [_edge(record_id, CollectionNames.RECORDS.value, group_id, CollectionNames.RECORD_GROUPS.value)],
         collection=CollectionNames.INHERIT_PERMISSIONS.value,
@@ -340,11 +371,11 @@ async def test_a_shared_record_group_grants_only_the_records_inside_it(env: _Env
     outside = await _add_record(env, "outside")
     await _inherit_from(env, inside, org_group)
 
-    granted = await env.graph._check_record_permissions(inside, env.user_key)
-    refused = await env.graph._check_record_permissions(outside, env.user_key)
+    granted = await _roles(env, inside)
+    refused = await _roles(env, outside)
 
-    assert granted.get("permission") == "READER", f"a record in an org-shared group must open, got {granted}"
-    assert refused.get("permission") is None, f"an org-shared group must not open a record outside it, got {refused}"
+    assert granted == {"READER"}, f"a record in an org-shared group must open, got {granted}"
+    assert refused is None, f"an org-shared group must not open a record outside it, got {refused}"
 
 
 async def test_a_users_record_group_role_grants_only_the_records_inside_it(env: _Env) -> None:
@@ -368,8 +399,8 @@ async def test_a_users_record_group_role_grants_only_the_records_inside_it(env: 
     outside = await _add_record(env, "outside-user-group")
     await _inherit_from(env, inside, group_id)
 
-    granted = await env.graph._check_record_permissions(inside, env.user_key)
-    refused = await env.graph._check_record_permissions(outside, env.user_key)
+    granted = await _roles(env, inside)
+    refused = await _roles(env, outside)
 
-    assert granted.get("permission") == "WRITER", f"a record in the user's group must open, got {granted}"
-    assert refused.get("permission") is None, f"the user's group must not open a record outside it, got {refused}"
+    assert granted == {"WRITER"}, f"a record in the user's group must open, got {granted}"
+    assert refused is None, f"the user's group must not open a record outside it, got {refused}"

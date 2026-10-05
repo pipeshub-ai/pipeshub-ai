@@ -1053,6 +1053,13 @@ class TestGenerateTextFragmentUrlEdgeBranches:
         assert "#:~:text=" in url
 
 class TestEnrichFkChildrenExtraBranches:
+    @pytest.fixture(autouse=True)
+    def _access_unfiltered(self):
+        """These cover blob and DDL handling; the access filter has its own tests,
+        so every asked table is admitted."""
+        with patch("app.utils.chat_helpers.accessible_node_ids", AsyncMock(side_effect=lambda _provider, ids, *_args, **_kwargs: set(ids))):
+            yield
+
     @pytest.mark.asyncio
     async def test_skips_non_dict_record_entries(self):
         gp = AsyncMock()

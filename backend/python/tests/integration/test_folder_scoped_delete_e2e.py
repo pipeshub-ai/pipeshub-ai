@@ -94,7 +94,7 @@ class _Tree:
                 "to_id": self.ids[child], "to_collection": CollectionNames.RECORDS.value,
                 "relationshipType": relation, "createdAtTimestamp": now, "updatedAtTimestamp": now,
             }],
-            collection=CollectionNames.RECORD_RELATIONS.value,
+            collection=CollectionNames.NODE_RELATIONS.value,
         )
 
     async def delete(self, names: list[str], **kwargs: object) -> dict:
@@ -189,6 +189,33 @@ async def test_only_records_inside_the_folder_are_deleted(tree: _Tree) -> None:
         assert await tree.exists(name), (
             f"{name} was deleted through folder_a's route although it is not inside folder_a"
         )
+
+
+async def _unlink_type_node(graph: IGraphDBProvider, record_id: str) -> None:
+    if isinstance(graph, Neo4jProvider):
+        await graph.client.execute_query(
+            "MATCH (:Record {id: $id})-[e:IS_OF_TYPE]->() DELETE e", parameters={"id": record_id}
+        )
+        return
+    await graph.http_client.execute_aql(
+        f"FOR e IN {CollectionNames.IS_OF_TYPE.value} FILTER e._from == @from "
+        f"REMOVE e IN {CollectionNames.IS_OF_TYPE.value}",
+        {"from": f"{CollectionNames.RECORDS.value}/{record_id}"},
+    )
+
+
+@pytest.mark.parametrize("scoped", [False, True], ids=["anywhere", "inside-a-folder"])
+async def test_a_delete_removes_a_type_node_that_lost_its_link(tree: _Tree, scoped: bool) -> None:
+    """An upsert writes the IS_OF_TYPE edge after the type node, so a failed one can
+    leave the node without it."""
+    await _unlink_type_node(tree.graph, tree.ids["a1"])
+    assert await tree.graph.get_document(tree.ids["a1"], CollectionNames.FILES.value) is not None
+
+    result = await tree.delete(["a1"], **({"within_folder_id": tree.ids["folder_a"]} if scoped else {}))
+
+    assert result["success"] is True, result
+    assert not await tree.exists("a1")
+    assert await tree.graph.get_document(tree.ids["a1"], CollectionNames.FILES.value) is None
 
 
 async def test_a_record_moved_out_of_the_folder_is_kept(tree: _Tree) -> None:

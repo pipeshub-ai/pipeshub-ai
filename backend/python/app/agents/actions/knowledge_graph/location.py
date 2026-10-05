@@ -1,6 +1,6 @@
 """Permission-aware hierarchy Location for retrieved records.
 
-Retrieval-only (navigate Path uses get_knowledge_hub_breadcrumbs separately).
+Retrieval-only (navigate's path is the breadcrumb trail the knowledge hub listing returns).
 
 Flow:
 1. One batched parent-adjacency query (structure + names)
@@ -41,9 +41,9 @@ _TYPE_LABELS: dict[str, str] = {
 
 
 def pick_parent(edges: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
-    """Breadcrumb priority: recordRelations record → belongsTo RG → belongsTo app."""
+    """Breadcrumb priority: nodeRelations record → belongsTo RG → belongsTo app."""
     for via, ptype in (
-        ("recordRelations", "record"),
+        ("nodeRelations", "record"),
         ("belongsTo", "recordGroup"),
         ("belongsTo", "app"),
     ):
@@ -178,9 +178,14 @@ async def resolve_ancestor_locations(
                     "resolve_ancestor_locations: no user_key — rendering App-only prefixes"
                 )
             else:
-                accessible = await graph_provider.filter_nodes_with_permission_role(
-                    candidates, user_key, org_id
-                )
+                try:
+                    accessible = set((await graph_provider.check_access(
+                        user_key, org_id, node_ids=[c["id"] for c in candidates],
+                    )).node_ids)
+                except Exception as exc:
+                    # Trails lose names, never gain them.
+                    logger.warning("resolve_ancestor_locations: access check failed — %s", exc)
+                    accessible = set()
                 if not accessible:
                     # ACL search just returned hits for this user, so zero
                     # accessible ancestors is contradictory — likely a

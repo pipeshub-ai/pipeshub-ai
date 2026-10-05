@@ -305,7 +305,7 @@ class InMemoryGraph:
         return True
 
     # generic writes
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         self._enter("begin_transaction", read, write)
         txn = f"txn-{next(self._txn)}"
         self._snapshots[txn] = (copy.deepcopy(self.nodes), copy.deepcopy(self.edges))

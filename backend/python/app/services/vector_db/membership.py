@@ -311,6 +311,29 @@ def _record_group_id_from_edge(edge: dict) -> Optional[str]:
     return None
 
 
+def _is_root_scoped(record: Any) -> bool:
+    """Whether this record's connector filters by group root rather than by
+    every descendant group. Read off the record so it costs no extra query."""
+    if record is None:
+        return False
+    if isinstance(record, dict):
+        name = record.get("connectorName") or record.get("connector_name")
+    else:
+        name = getattr(record, "connector_name", None)
+        name = getattr(name, "value", name)
+    return bool(name) and str(name).upper() in ROOT_SCOPED_CONNECTOR_TYPES
+
+
+def _root_record_group_id_from_record(record: Any) -> Optional[str]:
+    if record is None:
+        return None
+    if isinstance(record, dict):
+        return record.get("rootRecordGroupId") or record.get("root_record_group_id")
+    return getattr(record, "root_record_group_id", None) or getattr(
+        record, "rootRecordGroupId", None
+    )
+
+
 async def _derive_group_root(
     graph_provider, group_id: str, cache: dict[str, Optional[str]]
 ) -> Optional[str]:

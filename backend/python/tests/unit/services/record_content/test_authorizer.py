@@ -66,20 +66,18 @@ async def test_org_mismatch_raises_without_io(graph):
 
 
 @pytest.mark.asyncio
-async def test_direct_edge_grants_without_tier3(graph):
-    """Tier 2 permission edge present → tier 3 never called."""
+async def test_a_direct_edge_alone_no_longer_grants(graph):
+    """A user->record edge used to be accepted on its own, skipping the
+    STRICT/RESTRICTED rule and the connector gate. The permission model decides."""
     graph.get_edge.return_value = {"_id": "edges/e1"}
+    graph.check_record_access_with_details.return_value = None
     authorizer = TieredRecordAuthorizer(graph)
-    actor = _make_actor()
-    record = _make_record()
 
-    with patch(
-        "app.services.artifact_registry.access.AccessPolicy.resolve_user_key",
-        new=AsyncMock(return_value="user/user1"),
-    ):
-        await authorizer.authorize(actor, record)
+    with pytest.raises(RecordAccessDeniedError):
+        await authorizer.authorize(_make_actor(), _make_record())
 
-    graph.check_record_access_with_details.assert_not_called()
+    graph.get_edge.assert_not_called()
+    graph.check_record_access_with_details.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -197,13 +195,24 @@ async def test_a_trashed_record_is_not_found_even_with_a_direct_edge(graph, reco
 
 @pytest.mark.asyncio
 async def test_a_live_record_still_goes_through_the_tiers(graph) -> None:
+    """Tier 0 lets a live record on to the org check and the permission model,
+    which alone decides: a direct edge is not read."""
+    graph.get_edge.return_value = {"_id": "edges/e1"}
+    graph.check_record_access_with_details.return_value = {"record": {"id": "rec1"}}
+    authorizer = TieredRecordAuthorizer(graph)
+
+    await authorizer.authorize(_make_actor(), _stored_record(is_deleted=False))
+
+    graph.check_record_access_with_details.assert_awaited_once_with("user1", "org1", "rec1")
+    graph.get_edge.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_live_record_the_model_denies_is_denied_not_missing(graph) -> None:
     graph.get_edge.return_value = {"_id": "edges/e1"}
     authorizer = TieredRecordAuthorizer(graph)
 
-    with patch(
-        "app.services.artifact_registry.access.AccessPolicy.resolve_user_key",
-        new=AsyncMock(return_value="user/user1"),
-    ):
+    with pytest.raises(RecordAccessDeniedError):
         await authorizer.authorize(_make_actor(), _stored_record(is_deleted=False))
 
-    graph.get_edge.assert_awaited_once()
+    graph.check_record_access_with_details.assert_awaited_once_with("user1", "org1", "rec1")

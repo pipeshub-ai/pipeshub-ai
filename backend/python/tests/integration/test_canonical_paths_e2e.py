@@ -7,9 +7,10 @@ graph shapes are the ones that made the backends disagree before: a second
 non-canonical parent, a non-canonical link on the way up, duplicate edges,
 equal-length ties and cycles.
 
-The group-scoping cases check that pattern match narrows grep to every record
-group of a connector the user reaches, including groups that inherit from a
-grant on another connector.
+The group-scoping cases check what pattern match narrows grep to. The containers
+name the connectors a user can enter and no record group, so grep is never
+narrowed to some of a connector's groups: it covers the connector and the batch
+access check decides every hit, admitting the groups the user reaches.
 
 Needs Docker services, and skips cleanly when they are not reachable:
 
@@ -51,7 +52,7 @@ GROUPS = CollectionNames.RECORD_GROUPS.value
 APPS = CollectionNames.APPS.value
 USERS = CollectionNames.USERS.value
 EDGE_COLLECTIONS = (
-    CollectionNames.RECORD_RELATIONS.value,
+    CollectionNames.NODE_RELATIONS.value,
     CollectionNames.BELONGS_TO.value,
     CollectionNames.PERMISSION.value,
     CollectionNames.INHERIT_PERMISSIONS.value,
@@ -181,7 +182,7 @@ class _Env:
 
     async def child_of(self, parent: str, child: str, relation: str = "PARENT_CHILD", **kw: object) -> None:
         await self.edge(
-            CollectionNames.RECORD_RELATIONS.value, RECORDS, parent, RECORDS, child,
+            CollectionNames.NODE_RELATIONS.value, RECORDS, parent, RECORDS, child,
             relationshipType=relation, **kw,
         )
 
@@ -191,14 +192,14 @@ class _Env:
         if isinstance(self.graph, Neo4jProvider):
             await self.graph.client.execute_query(
                 "MATCH (p:Record {id: $p}), (c:Record {id: $c}) "
-                "CREATE (p)-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD', createdAtTimestamp: $t}]->(c)",
+                "CREATE (p)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD', createdAtTimestamp: $t}]->(c)",
                 parameters={"p": parent, "c": child, "t": now},
             )
             return
         await self.graph.http_client.execute_aql(
             f"INSERT {{_from: CONCAT('{RECORDS}/', @p), _to: CONCAT('{RECORDS}/', @c), "
             f"relationshipType: 'PARENT_CHILD', createdAtTimestamp: @t}} "
-            f"INTO {CollectionNames.RECORD_RELATIONS.value}",
+            f"INTO {CollectionNames.NODE_RELATIONS.value}",
             {"p": parent, "c": child, "t": now},
         )
 
@@ -503,8 +504,8 @@ async def test_descendants_see_uncommitted_edges_inside_a_transaction(env: _Env)
     folder = await env.record("Folder", content=False)
     leaf = await env.record("f.txt", parent="Folder")
     txn = await env.graph.begin_transaction(
-        read=[RECORDS, CollectionNames.RECORD_RELATIONS.value],
-        write=[RECORDS, CollectionNames.RECORD_RELATIONS.value],
+        read=[RECORDS, CollectionNames.NODE_RELATIONS.value],
+        write=[RECORDS, CollectionNames.NODE_RELATIONS.value],
     )
     try:
         await env.child_of(folder, leaf, transaction=txn)
@@ -595,8 +596,8 @@ async def test_record_path_sees_uncommitted_edges_inside_a_transaction(env: _Env
     docs = await env.record("Docs")
     leaf = await env.record("f.txt", parent="Docs")
     txn = await env.graph.begin_transaction(
-        read=[RECORDS, CollectionNames.RECORD_RELATIONS.value],
-        write=[RECORDS, CollectionNames.RECORD_RELATIONS.value],
+        read=[RECORDS, CollectionNames.NODE_RELATIONS.value],
+        write=[RECORDS, CollectionNames.NODE_RELATIONS.value],
     )
     try:
         await env.child_of(docs, leaf, transaction=txn)
@@ -697,7 +698,11 @@ async def _grant(env: _Env, user: str, group: str) -> None:
     )
 
 
-async def _inherits(env: _Env, child: str, parent: str) -> None:
+async def _nests_under(env: _Env, child: str, parent: str) -> None:
+    """A group inside another, inheriting from it."""
+    await env.edge(
+        CollectionNames.NODE_RELATIONS.value, GROUPS, parent, GROUPS, child, relationshipType="PARENT_CHILD",
+    )
     await env.edge(CollectionNames.INHERIT_PERMISSIONS.value, GROUPS, child, GROUPS, parent)
 
 
@@ -717,9 +722,8 @@ async def _groups_for(env: _Env, containers: object, connector_id: str) -> list[
     return [g["id"] for g in groups]
 
 
-async def test_scoping_reaches_every_group_the_user_can_read_including_cross_connector_inheritance(
-    env: _Env,
-) -> None:
+async def test_scoping_leaves_out_no_group_the_user_can_read(env: _Env) -> None:
+    """Grep is narrowed to no group, and the access check admits each group the user reaches."""
     trusted = PermissionModel.RECORD_GROUP_LEVEL.value
     user = await env.user("user")
     jira = await env.app("jira")
@@ -734,16 +738,21 @@ async def test_scoping_reaches_every_group_the_user_can_read_including_cross_con
     other_granted = await env.group("other-granted", connector_id=other, permission_model=trusted)
     await _grant(env, user, granted)
     await _grant(env, user, other_granted)
-    await _inherits(env, inherited, granted)
-    # A Jira group inheriting from a grant on another connector.
-    await _inherits(env, cross, other_granted)
+    await _nests_under(env, inherited, granted)
+    # A Jira group under a granted group of another connector: a node is judged
+    # inside its own connector, so that grant opens nothing here.
+    await _nests_under(env, cross, other_granted)
 
     containers = await env.graph.get_accessible_containers(user_id=user, org_id=env.org_id)
 
     assert containers.fallback_reason is None
-    assert await _groups_for(env, containers, jira) == sorted([granted, inherited, cross])
-    assert hidden not in await _groups_for(env, containers, jira)
-    assert await _groups_for(env, containers, other) == [other_granted]
+    assert containers.app_ids == {jira, other}
+    assert await _groups_for(env, containers, jira) == []
+    assert await _groups_for(env, containers, other) == []
+    readable = (await env.graph.check_access(
+        user, env.org_id, node_ids=[granted, inherited, cross, hidden, other_granted],
+    )).node_ids
+    assert readable == {granted, inherited, other_granted}
 
 
 async def test_scoping_is_off_for_a_connector_the_user_cannot_reach(env: _Env) -> None:
@@ -766,5 +775,6 @@ async def test_scoping_is_off_for_root_scoped_connectors(env: _Env) -> None:
 
     containers = await env.graph.get_accessible_containers(user_id=user, org_id=env.org_id)
 
-    assert channel in containers.root_group_ids
+    assert containers.app_ids == {slack}
     assert await _groups_for(env, containers, slack) == []
+    assert channel in (await env.graph.check_access(user, env.org_id, node_ids=[channel])).node_ids

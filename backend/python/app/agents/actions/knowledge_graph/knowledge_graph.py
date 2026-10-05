@@ -26,7 +26,7 @@ from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
-from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
+from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.modules.agents.qna.chat_state import (
     ChatState,
     remember_record_ids,

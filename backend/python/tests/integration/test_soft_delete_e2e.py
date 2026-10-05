@@ -131,7 +131,7 @@ class _World:
 
     async def children(self, name: str) -> set[str]:
         edges = await self.graph.get_edges_from_node(
-            f"{CollectionNames.RECORDS.value}/{self.ids[name]}", CollectionNames.RECORD_RELATIONS.value
+            f"{CollectionNames.RECORDS.value}/{self.ids[name]}", CollectionNames.NODE_RELATIONS.value
         )
         return {(e.get("_to") or e.get("to_id") or "").split("/")[-1] for e in edges}
 
@@ -170,7 +170,7 @@ async def _remove(graph: IGraphDBProvider, w: _World) -> None:
             f"FOR d IN {collection} FILTER d._key IN @ids REMOVE d IN {collection}", {"ids": ids}
         )
     for edges in (CollectionNames.PERMISSION.value, CollectionNames.BELONGS_TO.value,
-                  CollectionNames.IS_OF_TYPE.value, CollectionNames.RECORD_RELATIONS.value):
+                  CollectionNames.IS_OF_TYPE.value, CollectionNames.NODE_RELATIONS.value):
         await graph.http_client.execute_aql(
             f"FOR e IN {edges} FILTER PARSE_IDENTIFIER(e._from).key IN @ids "
             f"OR PARSE_IDENTIFIER(e._to).key IN @ids REMOVE e IN {edges}",
@@ -301,7 +301,7 @@ async def _seed(w: _World) -> None:
            edge(w.ids["outlook_mail"], records, w.ids["outlook_attachment"], records, relationshipType="ATTACHMENT"),
            edge(w.ids["outlook_attachment"], records, w.ids["outlook_attachment_attachment"], records,
                 relationshipType="ATTACHMENT")],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
 
 
@@ -525,13 +525,13 @@ async def _visible(w: _World, names: tuple[str, ...]) -> set[str]:
 
 
 @pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
-async def test_an_api_folder_delete_takes_the_folder_alone(world: _World, soft: bool) -> None:
-    """The record DELETE route's hard path removes this vertex only, so the trash takes it only."""
+async def test_an_api_folder_delete_takes_the_folder_with_its_contents(world: _World, soft: bool) -> None:
+    """The record DELETE route's hard path removes a Collection folder with its subtree, so the trash takes the same."""
     names = ("folder", "file_a", "file_b", "attachment", "outside")
     before = await _visible(world, names)
     result = await world.graph.delete_record(world.ids["folder"], world.user_id, world.org_id, soft_delete=soft)
     assert result["success"] is True, result
-    assert before - await _visible(world, names) == {"folder"}
+    assert before - await _visible(world, names) == {"folder", "file_a", "file_b", "attachment"}
 
 
 @pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
@@ -545,12 +545,13 @@ async def test_an_api_mail_delete_takes_the_mail_and_its_direct_attachments(worl
 
 
 @pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
-async def test_an_outlook_sync_delete_takes_the_message_and_its_direct_attachments(
+async def test_an_outlook_sync_delete_takes_the_message_and_its_attachments(
     world: _World, monkeypatch: pytest.MonkeyPatch, soft: bool,
 ) -> None:
-    """Outlook deletes by external id, and the trash takes what Arango's hard path removes."""
+    """Outlook deletes by external id: the processor's cascade over ATTACHMENT edges, at
+    any depth, the same on both backends, and the trash takes what that hard path removes."""
     _flag(monkeypatch, soft)
-    expected = {"outlook_mail", "outlook_attachment"}
+    expected = set(OUTLOOK_NAMES)
     before = await _visible(world, OUTLOOK_NAMES)
     await world.processor.delete_record_by_external_id(
         world.mail_connector_id, f"ext-{world.ids['outlook_mail']}", world.user_id,
@@ -625,7 +626,7 @@ async def _link(w: _World, pairs: list[tuple[str, str]]) -> None:
         [{"from_id": w.ids[parent], "from_collection": records, "to_id": w.ids[child], "to_collection": records,
           "relationshipType": "PARENT_CHILD", "createdAtTimestamp": now, "updatedAtTimestamp": now}
          for parent, child in pairs],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
 
 

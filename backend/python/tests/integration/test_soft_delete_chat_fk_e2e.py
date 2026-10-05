@@ -55,6 +55,7 @@ from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.entities import RecordType, RelatedExternalRecord, SQLTableRecord
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.chat_helpers import enrich_virtual_record_id_to_result_with_fk_children
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.test_soft_delete_e2e import _connect_arango, _connect_neo4j
 
 if TYPE_CHECKING:
@@ -102,6 +103,8 @@ class _World:
     processor: DataSourceEntitiesProcessor
     org_id: str
     connector_id: str
+    user_id: str
+    user_key: str
     blobs: _StoredContent = field(default_factory=_StoredContent)
     ids: dict[str, str] = field(default_factory=dict)
 
@@ -118,6 +121,7 @@ class _World:
         flattened: list[dict[str, Any]] = [{"virtual_record_id": self.vrid(hit), "record_id": self.ids[hit]}]
         await enrich_virtual_record_id_to_result_with_fk_children(
             results, self.blobs, self.org_id, graph_provider=self.graph, flattened_results=flattened,
+            user_id=self.user_id,
         )
         return results, flattened
 
@@ -141,7 +145,7 @@ def _table(w: _World, name: str) -> SQLTableRecord:
 
 
 async def _remove(graph: IGraphDBProvider, w: _World) -> None:
-    ids = [*w.ids.values(), w.connector_id]
+    ids = [*w.ids.values(), w.connector_id, w.user_key]
     if isinstance(graph, Neo4jProvider):
         await graph.client.execute_query(
             "MATCH (n) WHERE n.id IN $ids OR n.connectorId = $connector "
@@ -153,12 +157,14 @@ async def _remove(graph: IGraphDBProvider, w: _World) -> None:
         ids += await graph.http_client.execute_aql(
             f"FOR d IN {collection} FILTER d.connectorId == @c RETURN d._key", {"c": w.connector_id}
         ) or []
-    for collection in (RECORDS, CollectionNames.SQL_TABLES.value, CollectionNames.RECORD_GROUPS.value):
+    for collection in (RECORDS, CollectionNames.SQL_TABLES.value, CollectionNames.RECORD_GROUPS.value,
+                       CollectionNames.USERS.value, CollectionNames.APPS.value):
         await graph.http_client.execute_aql(
             f"FOR d IN {collection} FILTER d._key IN @ids REMOVE d IN {collection}", {"ids": ids}
         )
     for edges in (CollectionNames.PERMISSION.value, CollectionNames.BELONGS_TO.value,
-                  CollectionNames.IS_OF_TYPE.value, CollectionNames.RECORD_RELATIONS.value,
+                  CollectionNames.IS_OF_TYPE.value, CollectionNames.NODE_RELATIONS.value,
+                  CollectionNames.RECORD_LINKS.value, CollectionNames.USER_APP_RELATION.value,
                   CollectionNames.INHERIT_PERMISSIONS.value):
         await graph.http_client.execute_aql(
             f"FOR e IN {edges} FILTER PARSE_IDENTIFIER(e._from).key IN @ids "
@@ -185,15 +191,20 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         suffix = uuid.uuid4().hex[:10]
         processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
         processor.messaging_producer = _Producer()
-        w = _World(graph=graph, processor=processor, org_id=f"org-fk-{suffix}", connector_id=f"postgres-fk-{suffix}")
+        w = _World(
+            graph=graph, processor=processor, org_id=f"org-fk-{suffix}", connector_id=f"postgres-fk-{suffix}",
+            user_id=f"user-fk-{suffix}", user_key=f"ukey-fk-{suffix}",
+        )
         processor.org_id = w.org_id
         cleanup.push_async_callback(_remove, graph, w)
         for name in REFERENCES:
             w.ids[name] = f"{name}-{uuid.uuid4().hex[:12]}"
+        await _seed_reader(w)
         # Parents first, so each foreign key finds the table it points at.
         for name in REFERENCES:
             await processor.on_new_records([(_table(w, name), [])])
             await graph.update_node(w.ids[name], RECORDS, {"virtualRecordId": w.vrid(name)})
+            await _grant_reader(w, name)
             w.blobs.content[w.vrid(name)] = {
                 "record_name": name,
                 "block_containers": {
@@ -203,6 +214,38 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
                 },
             }
         yield w
+
+
+async def _seed_reader(w: _World) -> None:
+    """The asking user and the connector: enrichment names only tables the user may access."""
+    now = get_epoch_timestamp_in_ms()
+    stamps = {"createdAtTimestamp": now, "updatedAtTimestamp": now}
+    users, apps = CollectionNames.USERS.value, CollectionNames.APPS.value
+    await w.graph.batch_upsert_nodes(
+        [{"id": w.user_key, "userId": w.user_id, "orgId": w.org_id, "email": f"{w.user_id}@example.com",
+          "fullName": "Chat Tester", "isActive": True, **stamps}],
+        collection=users,
+    )
+    await w.graph.batch_upsert_nodes(
+        [{"id": w.connector_id, "name": "PostgreSQL", "type": Connectors.POSTGRESQL.value, "appGroup": "PostgreSQL",
+          "scope": "team", "isActive": True, "orgId": w.org_id, **stamps}],
+        collection=apps,
+    )
+    await w.graph.batch_create_edges(
+        [{"from_id": w.user_key, "from_collection": users, "to_id": w.connector_id, "to_collection": apps,
+          "syncState": "COMPLETED", "lastSyncUpdate": now, **stamps}],
+        collection=CollectionNames.USER_APP_RELATION.value,
+    )
+
+
+async def _grant_reader(w: _World, name: str) -> None:
+    now = get_epoch_timestamp_in_ms()
+    await w.graph.batch_create_edges(
+        [{"from_id": w.user_key, "from_collection": CollectionNames.USERS.value, "to_id": w.ids[name],
+          "to_collection": RECORDS, "role": "READER", "type": "USER",
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+        collection=CollectionNames.PERMISSION.value,
+    )
 
 
 def _pulled_in(w: _World, flattened: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:

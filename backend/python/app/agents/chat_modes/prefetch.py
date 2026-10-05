@@ -159,6 +159,7 @@ async def prefetch_retrieval(
     )
     await enrich_virtual_record_id_to_result_with_fk_children(
         virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results,
+        user_id=user_id,
     )
     if flattened_results and graph_provider:
         await enrich_records_with_graph_context(

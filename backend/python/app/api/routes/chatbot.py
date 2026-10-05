@@ -65,6 +65,7 @@ from app.utils.attachment_mime_types import (
     SUPPORTED_ATTACHMENT_MIME_TYPES,
     TEXT_ATTACHMENT_MIME_TYPES,
 )
+from app.utils.attachment_utils import keep_accessible_attachments
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
 from app.utils.record_access import service_account_upload_permission_edges
@@ -944,9 +945,9 @@ async def _records_owned_by(
 
 
 async def _user_record_pairs(
-    graph_provider: IGraphDBProvider, user_ids: list[str], record_ids: list[str]
+    graph_provider: IGraphDBProvider, org_id: str, user_ids: list[str], record_ids: list[str]
 ) -> tuple[list[tuple[str, str]], list[dict[str, Any] | None]]:
-    user_keys = await _resolve_user_keys(graph_provider, list(dict.fromkeys(user_ids)))
+    user_keys = await _org_user_keys(graph_provider, org_id, user_ids)
     pairs = [
         (user_key, record_id)
         for user_key in dict.fromkeys(user_keys)
@@ -957,6 +958,7 @@ async def _user_record_pairs(
 
 async def _grant_reader_permissions(
     graph_provider: IGraphDBProvider,
+    org_id: str,
     grantor_user_id: str,
     user_ids: list[str],
     record_ids: list[str],
@@ -968,7 +970,7 @@ async def _grant_reader_permissions(
     if not user_ids or not record_ids:
         return 0
 
-    pairs, existing = await _user_record_pairs(graph_provider, user_ids, record_ids)
+    pairs, existing = await _user_record_pairs(graph_provider, org_id, user_ids, record_ids)
     missing = [pair for pair, edge in zip(pairs, existing) if edge is None]
     if not missing:
         return 0
@@ -998,6 +1000,7 @@ async def _grant_reader_permissions(
 
 async def _revoke_reader_permissions(
     graph_provider: IGraphDBProvider,
+    org_id: str,
     grantor_user_id: str,
     user_ids: list[str],
     record_ids: list[str],
@@ -1008,7 +1011,7 @@ async def _revoke_reader_permissions(
     if not user_ids or not record_ids:
         return 0
 
-    pairs, existing = await _user_record_pairs(graph_provider, user_ids, record_ids)
+    pairs, existing = await _user_record_pairs(graph_provider, org_id, user_ids, record_ids)
     readers = [
         pair for pair, edge in zip(pairs, existing) if edge and edge.get("role") == "READER"
     ]
@@ -1063,6 +1066,89 @@ async def _get_artifact_record_ids_for_conversation(
     return record_ids
 
 
+async def _attachment_caller(
+    request: Request, graph_provider: IGraphDBProvider,
+) -> tuple[str, str | None, bool]:
+    """(org id, the caller's User node key, is a service account). A service
+    account has no User node, so it owns no attachment."""
+    user = request.state.user or {}
+    org_id = user.get("orgId")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Missing org context")
+    if user.get("isServiceAccount"):
+        return org_id, None, True
+    user_id = user.get("userId")
+    user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
+    return org_id, (user_doc or {}).get("_key") or (user_doc or {}).get("id"), False
+
+
+def _is_chat_attachment(record: dict | None, org_id: str) -> bool:
+    return (
+        bool(record)
+        and record.get("orgId") == org_id
+        and record.get("origin") == "UPLOAD"
+        and record.get("connectorId") == f"attachments_{org_id}"
+    )
+
+
+# The ids come from the client: bound the graph reads they cause.
+_OWNERSHIP_CHECKS_AT_ONCE = 8
+
+
+async def _owned_chat_attachments(
+    graph_provider: IGraphDBProvider, org_id: str, user_key: str | None, record_ids: list[str],
+) -> list[str]:
+    """The ids that are chat attachments of this org uploaded by this user. The
+    ids come from the client and a READER edge written here is honoured by every
+    permission check, so only the uploader may share, unshare or delete one."""
+    if not user_key:
+        return []
+
+    async def owned(record_id: str) -> bool:
+        record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+        if not _is_chat_attachment(record, org_id):
+            return False
+        edge = await graph_provider.get_edge(
+            from_id=user_key,
+            from_collection=CollectionNames.USERS.value,
+            to_id=record_id,
+            to_collection=CollectionNames.RECORDS.value,
+            collection=CollectionNames.PERMISSION.value,
+        )
+        return (edge or {}).get("role") == "OWNER"
+
+    ids = list(dict.fromkeys(r for r in record_ids if r))
+    flags = await gather_with_concurrency(_OWNERSHIP_CHECKS_AT_ONCE, *(owned(r) for r in ids))
+    return [r for r, ok in zip(ids, flags) if ok]
+
+
+async def _grantor_chat_attachments(
+    graph_provider: IGraphDBProvider, org_id: str, grantor_user_id: str, record_ids: list[str],
+) -> list[str]:
+    """The attachment routes take record ids from the client; only this org's chat
+    attachments the grantor uploaded may be shared or unshared through them, never
+    a collection file or connector record the grantor happens to own."""
+    grantor_keys = await _resolve_user_keys(graph_provider, [grantor_user_id])
+    return await _owned_chat_attachments(
+        graph_provider, org_id, grantor_keys[0] if grantor_keys else None, record_ids,
+    )
+
+
+async def _org_user_keys(
+    graph_provider: IGraphDBProvider, org_id: str, user_ids: list[str],
+) -> list[str]:
+    """User node keys for the ids that are users of this org; others are skipped."""
+    keys: list[str] = []
+    for user_id in dict.fromkeys(user_ids):
+        user_doc = await graph_provider.get_user_by_user_id(user_id)
+        user_key = (user_doc or {}).get("_key") or (user_doc or {}).get("id")
+        if not user_key or user_doc.get("orgId") != org_id:
+            logger.warning("Not a user of this org, skipping: %s", user_id)
+            continue
+        keys.append(user_key)
+    return keys
+
+
 @router.post("/chat/attachments/permissions")
 @inject
 async def grant_attachment_permissions(
@@ -1071,10 +1157,11 @@ async def grant_attachment_permissions(
     claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
 ) -> dict[str, Any]:
     """Grant READER on chat attachment records to the users a conversation was shared with."""
-    _, grantor_user_id = _permission_grantor(claims)
+    org_id, grantor_user_id = _permission_grantor(claims)
     payload = await _parse_permission_request(request, AttachmentPermissionRequest)
+    record_ids = await _grantor_chat_attachments(graph_provider, org_id, grantor_user_id, payload.recordIds)
     granted = await _grant_reader_permissions(
-        graph_provider, grantor_user_id, payload.userIds, payload.recordIds
+        graph_provider, org_id, grantor_user_id, payload.userIds, record_ids
     )
     return {"granted": granted}
 
@@ -1087,10 +1174,11 @@ async def revoke_attachment_permissions(
     claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
 ) -> dict[str, Any]:
     """Revoke READER on chat attachment records from users a conversation was unshared from."""
-    _, grantor_user_id = _permission_grantor(claims)
+    org_id, grantor_user_id = _permission_grantor(claims)
     payload = await _parse_permission_request(request, AttachmentPermissionRequest)
+    record_ids = await _grantor_chat_attachments(graph_provider, org_id, grantor_user_id, payload.recordIds)
     revoked = await _revoke_reader_permissions(
-        graph_provider, grantor_user_id, payload.userIds, payload.recordIds
+        graph_provider, org_id, grantor_user_id, payload.userIds, record_ids
     )
     return {"revoked": revoked}
 
@@ -1114,7 +1202,7 @@ async def grant_artifact_permissions(
         graph_provider, org_id, payload.conversationId
     )
     granted = await _grant_reader_permissions(
-        graph_provider, grantor_user_id, payload.userIds, record_ids
+        graph_provider, org_id, grantor_user_id, payload.userIds, record_ids
     )
     return {"granted": granted}
 
@@ -1136,7 +1224,7 @@ async def revoke_artifact_permissions(
         graph_provider, org_id, payload.conversationId
     )
     revoked = await _revoke_reader_permissions(
-        graph_provider, grantor_user_id, payload.userIds, record_ids
+        graph_provider, org_id, grantor_user_id, payload.userIds, record_ids
     )
     return {"revoked": revoked}
 
@@ -1168,23 +1256,19 @@ async def delete_chat_attachment(
     ``delete_nodes_and_edges`` removes the RECORDS node plus all edges that
     reference it; a separate ``delete_nodes`` call removes the FILES node.
     """
-    user = request.state.user or {}
-    org_id = user.get("orgId")
-    user_id = user.get("userId")
-    if not org_id:
-        raise HTTPException(status_code=400, detail="Missing org context")
+    org_id, caller_key, _ = await _attachment_caller(request, graph_provider)
 
     record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
-    if not record:
-        # Already gone — treat as success so the client stays consistent.
-        return
-    if record.get("orgId") != org_id:
-        raise HTTPException(status_code=403, detail="Attachment does not belong to this organisation")
-    # record_id comes from the client, so without these checks any member could
-    # delete any record in the org (KB and connector records included).
-    if record.get("connectorName") != Connectors.ATTACHMENTS.value:
-        raise HTTPException(status_code=404, detail="Attachment not found")
-    if not user_id or record_id not in await _records_owned_by(graph_provider, user_id, [record_id]):
+    # record_id comes from the client: only a chat attachment, and only by its
+    # uploader, or any member could delete any record in the org (KB and
+    # connector records included). One answer for a missing id, another org's
+    # record and one that is not the caller's, so the id is never confirmed.
+    if (
+        not record
+        or record.get("connectorName") != Connectors.ATTACHMENTS.value
+        or not _is_chat_attachment(record, org_id)
+        or not await _owned_chat_attachments(graph_provider, org_id, caller_key, [record_id])
+    ):
         raise HTTPException(status_code=404, detail="Attachment not found")
 
     # Remove the RECORDS node and all its incident edges
@@ -1361,10 +1445,19 @@ async def _generate_chat_stream_via_agent_loop(
     if query_info.strictScope:
         effective_filters["strictScope"] = True
 
+    attachments, previous_conversations = await keep_accessible_attachments(
+        graph_provider,
+        org_id=org_id,
+        user_id=user_id,
+        is_service_account=bool(user.get("isServiceAccount")),
+        attachments=query_info.attachments,
+        previous_conversations=query_info.previousConversations,
+        logger=logger_,
+    )
     query_dict = {
         "query": query_info.query,
         "limit": query_info.limit,
-        "previous_conversations": query_info.previousConversations,
+        "previous_conversations": previous_conversations,
         "filters": effective_filters,
         "retrievalMode": query_info.retrievalMode,
         "quickMode": query_info.quickMode,
@@ -1373,7 +1466,7 @@ async def _generate_chat_stream_via_agent_loop(
         "currentTime": query_info.currentTime,
         "conversationId": query_info.conversationId,
         "projectInstructions": query_info.projectInstructions,
-        "attachments": query_info.attachments,
+        "attachments": attachments,
         "enableRecordIdShortening": query_info.enableRecordIdShortening,
         "runId": query_info.runId,
         "is_service_account": bool(user.get("isServiceAccount")),

@@ -9,7 +9,8 @@ one class:
 ``WRITE``  changes records rather than reading them.
 
 ``tests/unit/services/graph_db/test_record_visibility_registry.py`` fails when a
-record method on the interface is missing here, and
+record method on the interface is missing here (the batch access check and the
+knowledge hub listing are not named for records, and are listed all the same), and
 ``tests/integration/test_record_visibility_e2e.py`` checks the classes against a
 real Neo4j and a real ArangoDB. Adding a method to the interface means adding it
 here, which means deciding what it does with the trash.
@@ -49,6 +50,9 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         "rename detection asks LIVE: after a hard delete there is no old record, so the item is new",
     ),
     # Gates: a trashed record must never pass.
+    "check_access": (
+        Rule.LIVE, "the batch access check behind every open, listing and search hit: trashed means no access",
+    ),
     "check_record_access_with_details": (Rule.LIVE, "the access check: trashed means no access"),
     "get_accessible_virtual_record_ids": (Rule.LIVE, "the search permission map"),
     "filter_accessible_virtual_record_ids": (Rule.LIVE, "search permission check"),
@@ -60,7 +64,6 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "find_duplicate_records": (Rule.LIVE, "a copy must not take COMPLETED from a record without vectors"),
     "find_next_queued_duplicate": (Rule.LIVE, "dedup never hands work to a trashed record"),
     "update_queued_duplicates_status": (Rule.LIVE, "dedup never copies status onto a trashed record"),
-    "get_failed_records_with_active_users": (Rule.LIVE, "retrying a trashed record would re-index it"),
     "get_failed_records_by_org": (Rule.LIVE, "retrying a trashed record would re-index it"),
     "get_records_by_record_group": (Rule.LIVE, "reindex keyset walk"),
     "get_records_by_parent_record": (Rule.LIVE, "reindex keyset walk"),
@@ -72,15 +75,12 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.LIVE, "the reconcile sweep copies taxonomy onto duplicates; a trashed record gets none",
     ),
     # Browse surfaces, already filtered.
-    # Arango delegates to list_all_records. Neo4j's get_records takes record ids
-    # instead (a signature mismatch that predates soft delete).
-    "get_records": (Rule.LIVE, "All Records list"),
-    "list_all_records": (Rule.LIVE, "All Records list"),
     "list_kb_records": (Rule.LIVE, "KB record list"),
     "get_kb_children": (Rule.LIVE, "KB browse"),
     "get_folder_children": (Rule.LIVE, "folder browse"),
-    "get_knowledge_hub_children": (Rule.LIVE, "Knowledge Hub browse; Neo4j gained the filter in PR1"),
-    "get_knowledge_hub_search": (Rule.LIVE, "Knowledge Hub search"),
+    "get_knowledge_hub_connector_page_v3": (
+        Rule.LIVE, "Knowledge Hub browse and search, which is the All Records list too",
+    ),
     "get_connector_stats": (Rule.LIVE, "counts"),
     # Returned whatever their state.
     "get_record_by_id": (Rule.ALL, _BY_KEY + "; content access is gated by TieredRecordAuthorizer"),
@@ -92,13 +92,11 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_record_by_issue_key": (Rule.ALL, _SYNC_LOOKUP),
     "find_slack_burst_record_by_ts": (Rule.ALL, _SYNC_LOOKUP),
     "get_records_by_record_type": (Rule.ALL, _SYNC_LOOKUP),
-    "get_related_records_by_relation_type": (Rule.ALL, _SYNC_LOOKUP),
     "get_existing_record_keys": (Rule.ALL, "upsert pre-check by key"),
     "page_records_for_vector_membership_backfill": (Rule.ALL, "backfill walks every stored record"),
     "get_virtual_record_ids_for_record_ids": (Rule.ALL, _BY_KEY),
     "get_child_record_ids_by_relation_type": (Rule.ALL, _STRUCTURE),
     "get_parent_record_ids_by_relation_type": (Rule.ALL, _STRUCTURE),
-    "get_record_relations_batch": (Rule.ALL, _STRUCTURE),
     "get_record_parent_adjacency": (Rule.ALL, _STRUCTURE),
     "get_record_parent_info": (Rule.ALL, _STRUCTURE),
     "is_record_folder": (Rule.ALL, _STRUCTURE),

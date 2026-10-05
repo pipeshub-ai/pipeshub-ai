@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import ProgressStatus
-from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+from app.services.graph_db.interface.graph_db_provider import AccessCheck, AccessibleContainers
 from app.utils.chat_helpers import RecordIdShortener
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.pattern_match import merge_pattern_match_results, render_pattern_match_hint
@@ -44,6 +44,8 @@ def _graph_provider(graph_record: dict) -> MagicMock:
     graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={VRID: RECORD_ID})
     graph.get_records_by_record_ids = AsyncMock(return_value=[graph_record])
     graph.check_record_access_with_details = AsyncMock(return_value={"record": {"_key": RECORD_ID}})
+    graph.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
+    graph.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({RECORD_ID})))
     graph.get_document = AsyncMock(return_value=graph_record)
     return graph
 
@@ -99,7 +101,7 @@ async def test_grep_hit_is_shown_with_its_record_id_and_fetches_by_it(id_field):
     assert result["not_available_ids"] == []
 
 
-async def test_neo4j_shaped_hit_is_served_from_the_map_without_a_second_access_check():
+async def test_neo4j_shaped_hit_is_served_from_the_map_after_the_one_batch_access_check():
     graph = _graph_provider(_graph_record("id"))
     _entries, vr_map = await _merge(graph)
 
@@ -111,7 +113,25 @@ async def test_neo4j_shaped_hit_is_served_from_the_map_without_a_second_access_c
         )
 
     assert result["ok"] is True
+    graph.check_access.assert_awaited_once_with("user-key", ORG, node_ids={RECORD_ID})
     graph.check_record_access_with_details.assert_not_awaited()
+    graph.get_document.assert_not_awaited()
+
+
+async def test_a_hit_in_the_map_is_not_served_once_the_batch_check_refuses_it():
+    graph = _graph_provider(_graph_record("id"))
+    _entries, vr_map = await _merge(graph)
+    graph.check_access = AsyncMock(return_value=AccessCheck())
+
+    blob_store = MagicMock()
+    blob_store.config_service.get_config = AsyncMock(return_value={})
+    with patch("app.utils.fetch_full_record.get_record", AsyncMock(side_effect=_fake_get_record)):
+        result = await _fetch_multiple_records_impl(
+            [RECORD_ID], vr_map, graph_provider=graph, blob_store=blob_store, org_id=ORG, user_id=USER,
+        )
+
+    assert result["ok"] is False
+    assert result["not_available_ids"] == [RECORD_ID]
 
 
 async def test_record_name_comes_from_the_readable_record_not_the_stored_file():
