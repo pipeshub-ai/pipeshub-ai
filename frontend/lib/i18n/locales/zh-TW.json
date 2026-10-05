@@ -58,7 +58,7 @@
       "restoreFailedTitle": "無法還原「{{name}}」",
       "noneRestored_one": "{{count}} 個項目均無法還原",
       "noneRestored_other": "{{count}} 個項目均無法還原",
-      "reindexPending": "已還原；很快就能再次被搜尋到。",
+      "reindexPending": "已還原，但部分檔案無法加入索引佇列，暫時還搜尋不到。PipesHub 會在大約一小時內自動重新將其加入佇列。如需更快，請開啟每個檔案的選單並選擇「{{action}}」。",
       "searchableAfterIndexing": "還原的項目已回到原來的位置，索引完成後會重新出現在搜尋結果中。",
       "renamed": "「{{from}}」已還原為「{{to}}」，因為該位置已有同名項目。",
       "partiallyRestored": "已還原 {{restored}}/{{total}} 個項目",
@@ -67,7 +67,16 @@
       "restoredMany_other": "已還原 {{count}} 個項目",
       "showing": "第 {{from}}–{{to}} 項，共 {{total}} 項",
       "previous": "上一頁",
-      "next": "下一頁"
+      "next": "下一頁",
+      "nameAndMore_one": "{{name}} 及另外 {{count}} 項",
+      "nameAndMore_other": "{{name}} 及另外 {{count}} 項",
+      "deletedTogether_one": "一起刪除的 {{count}} 個項目",
+      "deletedTogether_other": "一起刪除的 {{count}} 個項目",
+      "withOthers": "連同 {{names}}",
+      "withOthersAndMore_one": "連同 {{names}} 及另外 {{count}} 項",
+      "withOthersAndMore_other": "連同 {{names}} 及另外 {{count}} 項",
+      "restoredOneAndMore_one": "已還原「{{name}}」及另外 {{count}} 項",
+      "restoredOneAndMore_other": "已還原「{{name}}」及另外 {{count}} 項"
     }
   },
   "resetPassword": {

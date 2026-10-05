@@ -4228,7 +4228,7 @@
       "restoreFailedTitle": "'{{name}}' वापस नहीं लाया जा सका",
       "noneRestored_one": "{{count}} आइटम वापस नहीं लाया जा सका",
       "noneRestored_other": "{{count}} आइटम में से कोई भी वापस नहीं लाया जा सका",
-      "reindexPending": "वापस लाया गया; यह जल्द ही फिर से खोज में दिखेगा।",
+      "reindexPending": "वापस लाया गया, लेकिन कुछ फ़ाइलें अभी खोज में नहीं दिखेंगी क्योंकि उन्हें इंडेक्सिंग के लिए कतार में नहीं डाला जा सका। PipesHub लगभग एक घंटे में उन्हें खुद फिर से कतार में डाल देता है। जल्दी करने के लिए, हर फ़ाइल का मेनू खोलें और {{action}} चुनें।",
       "searchableAfterIndexing": "वापस लाए गए आइटम अपनी पुरानी जगह पर हैं, और इंडेक्सिंग पूरी होते ही फिर से खोज में दिखेंगे।",
       "renamed": "'{{from}}' को '{{to}}' नाम से वापस लाया गया, क्योंकि वहाँ किसी दूसरे आइटम का यही नाम है।",
       "partiallyRestored": "{{total}} में से {{restored}} आइटम वापस लाए गए",
@@ -4237,7 +4237,16 @@
       "restoredMany_other": "{{count}} आइटम वापस लाए गए",
       "showing": "{{total}} में से {{from}}–{{to}}",
       "previous": "पिछला",
-      "next": "अगला"
+      "next": "अगला",
+      "nameAndMore_one": "{{name}} और {{count}} अन्य",
+      "nameAndMore_other": "{{name}} और {{count}} अन्य",
+      "deletedTogether_one": "एक साथ हटाया गया {{count}} आइटम",
+      "deletedTogether_other": "एक साथ हटाए गए {{count}} आइटम",
+      "withOthers": "{{names}} के साथ",
+      "withOthersAndMore_one": "{{names}} और {{count}} अन्य के साथ",
+      "withOthersAndMore_other": "{{names}} और {{count}} अन्य के साथ",
+      "restoredOneAndMore_one": "'{{name}}' और {{count}} अन्य वापस लाए गए",
+      "restoredOneAndMore_other": "'{{name}}' और {{count}} अन्य वापस लाए गए"
     }
   },
   "reindexScope": {

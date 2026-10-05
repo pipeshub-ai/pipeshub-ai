@@ -394,7 +394,8 @@ class TrashDeletedBy(BaseModel):
 
 
 class TrashItem(BaseModel):
-    """What one delete action put in the trash; restoring it brings back all of it"""
+    """What one delete action put in the trash (a folder with its contents, or a whole
+    multi-select); restoring it brings back all of it"""
     id: str = Field(..., description="Record id to restore")
     name: str | None = Field(None, description="Name when it was deleted")
     recordType: str | None = Field(None, description="Record type")
@@ -404,7 +405,11 @@ class TrashItem(BaseModel):
     parentId: str | None = Field(None, description="Folder it was in; none at the collection's top level")
     parentName: str | None = Field(None, description="Name of that folder")
     parentInTrash: bool = Field(..., description="That folder is in the trash too and must be restored first")
-    itemCount: int = Field(..., description="Items the delete removed, this one included")
+    itemCount: int = Field(..., description="Records the delete removed, all of which a restore brings back")
+    rootCount: int = Field(1, description="Items selected in the delete: more than one for a multi-select")
+    otherRootNames: list[str] = Field(
+        default_factory=list, description="Names of some of the other items selected with this one"
+    )
     deletedAtTimestamp: int = Field(..., description="When it was deleted (epoch ms)")
     deletedBy: TrashDeletedBy | None = Field(None, description="Who deleted it, when known")
     removableAfterTimestamp: int | None = Field(

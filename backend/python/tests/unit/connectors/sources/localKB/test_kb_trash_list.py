@@ -130,6 +130,8 @@ class TestTheList:
             "parentName": None,
             "parentInTrash": False,
             "itemCount": 1,
+            "rootCount": 1,
+            "otherRootNames": [],
             "deletedAtTimestamp": DELETED_AT,
             "deletedBy": {"name": "Ada Admin", "email": "ada@acme.test"},
             "removableAfterTimestamp": DELETED_AT + 20 * DAY_MS,
@@ -148,6 +150,13 @@ class TestTheList:
         assert (item["itemCount"], item["parentName"], item["parentInTrash"]) == (4, "Projects", True)
         assert item["deletedBy"] is None
         assert result["pagination"]["totalPages"] == 3
+
+    async def test_a_multi_select_delete_is_one_item_counting_everything_it_restores(self, svc) -> None:
+        svc.graph_provider.list_trashed_records = AsyncMock(return_value={"items": [
+            _row("a", batchSize=6, rootCount=3, otherRootNames=["b.pdf", "Docs"]),
+        ], "total": 1})
+        [item] = (await svc.list_trash(KB, "u1", ORG))["items"]
+        assert (item["id"], item["itemCount"], item["rootCount"], item["otherRootNames"]) == ("a", 6, 3, ["b.pdf", "Docs"])
 
     async def test_the_retention_defaults_to_fourteen_days(self, svc) -> None:
         svc.config_service.get_config = AsyncMock(return_value={})

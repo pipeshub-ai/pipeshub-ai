@@ -17,9 +17,9 @@ import type { TrashItem, TrashListResponse } from '../types';
 import {
   deletedByLabel,
   formatTrashDate,
-  itemDisplayName,
   itemTypeLabel,
   locationLabel,
+  othersLabel,
   orderForRestore,
   outcomeOfBulk,
   outcomeOfBulkError,
@@ -29,6 +29,7 @@ import {
   removalLabel,
   restoreMessage,
   retentionNote,
+  rowTitle,
   type RestoreOutcome,
 } from '../utils';
 
@@ -65,7 +66,8 @@ interface RowProps {
 
 function TrashRow({ item, collectionName, isMobile, isSelected, isRestoring, disabled, onSelect, onRestore }: RowProps) {
   const { t, i18n } = useTranslation();
-  const name = itemDisplayName(item, t);
+  const name = rowTitle(item, t);
+  const others = othersLabel(item, t);
   return (
     <Flex
       role="row"
@@ -107,6 +109,11 @@ function TrashRow({ item, collectionName, isMobile, isSelected, isRestoring, dis
           {itemTypeLabel(item, t)}
           {isMobile ? ` · ${formatTrashDate(item.deletedAtTimestamp, i18n.language)}` : ''}
         </Text>
+        {others && (
+          <Text size="1" style={cellTextStyle}>
+            {others}
+          </Text>
+        )}
         {item.parentInTrash && item.parentName && (
           <Flex align="center" gap="1">
             <MaterialIcon name="info" size={14} color="var(--amber-11)" />

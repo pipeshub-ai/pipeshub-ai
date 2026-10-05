@@ -162,6 +162,7 @@ from app.services.graph_db.common.utils import (
     PATH_MAX_CANDIDATES,
     ROOT_SCOPED_CONNECTOR_TYPES,
     SOFT_DELETE_CHUNK,
+    TRASH_LIST_OTHER_ROOT_NAMES,
     TRASH_STATE_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
     EntityCandidateRows,
@@ -344,8 +345,8 @@ _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus
 
 # A record with any of these children waits for them to be purged first.
 _CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
-# The roots of a connector's delete batches, newest first: records in the trash whose
-# parent is not in the same batch. The walk goes through the sparse
+# The roots of a connector's delete batches: records in the trash whose parent is
+# not in the same batch. A multi-select delete has several. The walk goes through the sparse
 # records[connectorId, deletedAtTimestamp] index, which holds only the trash (a
 # sparse index serves only conditions that leave null out, hence "> 0"). A
 # candidate costs one parent lookup and, for a file organizer, one look for a
@@ -354,7 +355,6 @@ TRASH_LIST_INDEX = "records_connector_deleted_at"
 _TRASH_BATCH_ROOTS = f"""
 FOR r IN @@records OPTIONS {{ indexHint: "{TRASH_LIST_INDEX}" }}
     FILTER r.connectorId == @connector_id AND r.deletedAtTimestamp > 0
-    SORT r.deletedAtTimestamp DESC, r._key DESC
     FILTER r.orgId == @org_id AND r.isDeleted == true AND r.deleteBatchId != null
     LET in_batch_parent = FIRST(
         FOR e IN @@record_relations
@@ -14032,10 +14032,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
             "@record_relations": CollectionNames.RECORD_RELATIONS.value,
             "@is_of_type": CollectionNames.IS_OF_TYPE.value,
         }
+        # One row per delete batch, as restore brings a batch back whole: its first
+        # root (by key) stands for it, and the others are counted and named.
         rows = await self.execute_query(
             f"""
             {_TRASH_BATCH_ROOTS}
+                COLLECT batch = r.deleteBatchId
+                    AGGREGATE deleted_at = MAX(r.deletedAtTimestamp)
+                    INTO roots = {{ key: r._key, name: r.recordName }}
+                SORT deleted_at DESC, batch DESC
                 LIMIT @skip, @limit
+                LET ordered = (FOR root IN roots SORT root.key RETURN root)
+                LET r = DOCUMENT(@@records, ordered[0].key)
                 LET parent = FIRST(
                     FOR e IN @@record_relations
                         FILTER e._to == r._id AND e.relationshipType IN @containment
@@ -14061,9 +14069,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     isFile: t.isFile,
                     fileMimeType: t.mimeType,
                     sizeInBytes: t.sizeInBytes,
+                    rootCount: LENGTH(ordered),
+                    otherRootNames: SLICE(ordered, 1, @names)[*].name,
                     batchSize: LENGTH(
                         FOR x IN @@records
-                            FILTER x.deleteBatchId == r.deleteBatchId AND x.deleteBatchId != null
+                            FILTER x.deleteBatchId == batch AND x.deleteBatchId != null
                             FILTER x.isDeleted == true AND x.connectorId == @connector_id
                             RETURN 1
                     ),
@@ -14076,12 +14086,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 **bind_vars,
                 "skip": max(skip, 0),
                 "limit": limit,
+                "names": TRASH_LIST_OTHER_ROOT_NAMES,
                 "@users": CollectionNames.USERS.value,
             },
             transaction=transaction,
         ) or []
         counted = await self.execute_query(
-            f"{_TRASH_BATCH_ROOTS} COLLECT WITH COUNT INTO total RETURN total",
+            f"{_TRASH_BATCH_ROOTS} COLLECT batch = r.deleteBatchId COLLECT WITH COUNT INTO total RETURN total",
             bind_vars=bind_vars,
             transaction=transaction,
         )

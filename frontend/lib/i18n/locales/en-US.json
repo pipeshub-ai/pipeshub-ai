@@ -58,7 +58,7 @@
       "restoreFailedTitle": "Couldn't restore '{{name}}'",
       "noneRestored_one": "{{count}} item couldn't be restored",
       "noneRestored_other": "None of the {{count}} items could be restored",
-      "reindexPending": "Restored; it will be searchable again shortly.",
+      "reindexPending": "Restored, but some files aren't searchable yet because they couldn't be queued for indexing. PipesHub queues them again on its own within about an hour. To do it sooner, open each file's menu and choose {{action}}.",
       "searchableAfterIndexing": "Restored items are back where they were, and show up in search again once indexing finishes.",
       "renamed": "'{{from}}' came back as '{{to}}', because another item there already has that name.",
       "partiallyRestored": "Restored {{restored}} of {{total}} items",
@@ -67,7 +67,16 @@
       "restoredMany_other": "Restored {{count}} items",
       "showing": "Showing {{from}}–{{to}} of {{total}}",
       "previous": "Previous",
-      "next": "Next"
+      "next": "Next",
+      "nameAndMore_one": "{{name}} and {{count}} more",
+      "nameAndMore_other": "{{name}} and {{count}} more",
+      "deletedTogether_one": "{{count}} item deleted together",
+      "deletedTogether_other": "{{count}} items deleted together",
+      "withOthers": "With {{names}}",
+      "withOthersAndMore_one": "With {{names}} and {{count}} more",
+      "withOthersAndMore_other": "With {{names}} and {{count}} more",
+      "restoredOneAndMore_one": "Restored '{{name}}' and {{count}} more",
+      "restoredOneAndMore_other": "Restored '{{name}}' and {{count}} more"
     }
   },
   "resetPassword": {

@@ -4262,7 +4262,7 @@
       "noneRestored_one": "No se ha podido restaurar {{count}} elemento",
       "noneRestored_many": "No se ha podido restaurar ninguno de los {{count}} de elementos",
       "noneRestored_other": "No se ha podido restaurar ninguno de los {{count}} elementos",
-      "reindexPending": "Restaurado; se podrá buscar de nuevo en breve.",
+      "reindexPending": "Restaurado, pero algunos archivos aún no se pueden buscar porque no se pudieron poner en cola para indexarse. PipesHub los vuelve a poner en cola por sí solo en aproximadamente una hora. Para hacerlo antes, abre el menú de cada archivo y elige {{action}}.",
       "searchableAfterIndexing": "Los elementos restaurados vuelven a estar donde estaban y aparecerán de nuevo en la búsqueda cuando termine la indexación.",
       "renamed": "«{{from}}» se ha restaurado como «{{to}}» porque otro elemento ya tiene ese nombre allí.",
       "partiallyRestored": "Se han restaurado {{restored}} de {{total}} elementos",
@@ -4272,7 +4272,20 @@
       "restoredMany_other": "Se han restaurado {{count}} elementos",
       "showing": "Mostrando {{from}}–{{to}} de {{total}}",
       "previous": "Anterior",
-      "next": "Siguiente"
+      "next": "Siguiente",
+      "nameAndMore_one": "{{name}} y {{count}} más",
+      "nameAndMore_many": "{{name}} y {{count}} más",
+      "nameAndMore_other": "{{name}} y {{count}} más",
+      "deletedTogether_one": "{{count}} elemento eliminado a la vez",
+      "deletedTogether_many": "{{count}} de elementos eliminados a la vez",
+      "deletedTogether_other": "{{count}} elementos eliminados a la vez",
+      "withOthers": "Junto con {{names}}",
+      "withOthersAndMore_one": "Junto con {{names}} y {{count}} más",
+      "withOthersAndMore_many": "Junto con {{names}} y {{count}} más",
+      "withOthersAndMore_other": "Junto con {{names}} y {{count}} más",
+      "restoredOneAndMore_one": "Se ha restaurado «{{name}}» y {{count}} más",
+      "restoredOneAndMore_many": "Se han restaurado «{{name}}» y {{count}} más",
+      "restoredOneAndMore_other": "Se han restaurado «{{name}}» y {{count}} más"
     }
   },
   "reindexScope": {

@@ -4411,25 +4411,29 @@ class IGraphDBProvider(ABC):
     ) -> dict[str, Any]:
         """One page of what delete actions put in the trash in one connector (a KB), newest first.
 
-        Lists the root of each delete batch: a record in the trash, in
-        ``org_id`` and ``connector_id``, with a ``deletedAtTimestamp`` and a
-        ``deleteBatchId``, whose ``PARENT_CHILD`` or ``ATTACHMENT`` parent is
-        not in the same batch. A folder deleted with its contents is one item,
-        and restoring any root brings back its whole batch. With
-        ``single_file_batches_only``, only batches of one file are listed (what
-        a file organizer may restore). Sorted by ``deletedAtTimestamp``, then
-        key, both descending, and paged inside the query; ``total`` is a
-        separate count. Each read walks only this connector's trash, through
-        an index that holds only the trash, at a fixed cost per record, so a
-        deleted folder's files never cost a read of their whole batch.
+        One item per delete batch, as restore brings a batch back whole. A
+        batch's roots are its records in the trash, in ``org_id`` and
+        ``connector_id``, with a ``deletedAtTimestamp`` and a ``deleteBatchId``,
+        whose ``PARENT_CHILD`` or ``ATTACHMENT`` parent is not in the same batch:
+        a folder deleted with its contents has one, a multi-select delete one
+        per item selected. With ``single_file_batches_only``, only batches of
+        one file are listed (what a file organizer may restore). Sorted by the
+        batch's ``deletedAtTimestamp``, then batch id, both descending, and
+        paged inside the query; ``total`` counts batches in a separate read.
+        Each read walks only this connector's trash, through an index that
+        holds only the trash, at a fixed cost per record, so a deleted folder's
+        files never cost a read of their whole batch.
 
-        Returns ``items`` and ``total`` (roots in all pages). Each item is
-        ``record`` (the stored document, ``_key`` set on both backends),
-        ``parentId``, ``parentName`` and ``parentIsDeleted`` for the record it
-        hangs under (None at the KB root), ``isFile``, ``fileMimeType`` and
-        ``sizeInBytes`` from its type doc, ``batchSize`` (records in its batch
-        in this connector) and ``deletedByName`` and ``deletedByEmail`` for the
-        user in ``deletedByUserId`` (None when unknown). A failed read raises.
+        Returns ``items`` and ``total``. Each item stands for one batch through
+        its first root by key: ``record`` (that root's stored document, ``_key``
+        set on both backends), ``parentId``, ``parentName`` and
+        ``parentIsDeleted`` for the record it hangs under (None at the KB
+        root), ``isFile``, ``fileMimeType`` and ``sizeInBytes`` from its type
+        doc, ``rootCount`` (the batch's roots), ``otherRootNames`` (up to
+        ``TRASH_LIST_OTHER_ROOT_NAMES`` other roots' names, by key),
+        ``batchSize`` (records in the batch in this connector) and
+        ``deletedByName`` and ``deletedByEmail`` for the user in
+        ``deletedByUserId`` (None when unknown). A failed read raises.
         """
         raise NotImplementedError
 

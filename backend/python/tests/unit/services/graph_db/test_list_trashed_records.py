@@ -78,6 +78,7 @@ async def test_neo4j_shapes_each_item() -> None:
     rows = [
         {"rec": {"id": "new", "recordName": "Sub"}, "parent_id": "p1", "parent_name": "Docs", "parent_deleted": True,
          "is_file": False, "file_mime": None, "size": None, "batch_size": 3,
+         "root_count": 2, "other_names": ["b.pdf", None],
          "user_name": "Ada Admin", "user_email": "ada@acme.test"},
         {"rec": {"id": "old", "recordName": "old.pdf"}, "parent_id": None, "parent_name": None, "parent_deleted": None,
          "is_file": True, "file_mime": "application/pdf", "size": 10, "batch_size": 1,
@@ -95,6 +96,8 @@ async def test_neo4j_shapes_each_item() -> None:
         False, 3, "Ada Admin", "ada@acme.test",
     )
     assert (old["parentId"], old["parentIsDeleted"], old["deletedByName"], old["sizeInBytes"]) == (None, None, None, 10)
+    assert (new["rootCount"], new["otherRootNames"]) == (2, ["b.pdf"])
+    assert (old["rootCount"], old["otherRootNames"]) == (1, [])
 
 
 @pytest.mark.parametrize("backend", ["arango", "neo4j"])

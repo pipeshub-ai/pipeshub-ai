@@ -72,6 +72,17 @@ describe('what a row says', () => {
     expect(utils.itemTypeLabel(item('e', { isFolder: true, itemCount: 1 }), t)).toBe('Folder');
   });
 
+  it('shows a multi-select delete as one row, naming what came with it and counting all it restores', () => {
+    const together = item('a', { rootCount: 3, itemCount: 6, otherRootNames: ['b.pdf', 'Docs'] });
+    expect(utils.rowTitle(together, t)).toBe('a.pdf and 2 more');
+    expect(utils.itemTypeLabel(together, t)).toBe('6 items deleted together');
+    expect(utils.othersLabel(together, t)).toBe('With b.pdf, Docs');
+    const many = item('a', { rootCount: 6, itemCount: 6, otherRootNames: ['b.pdf', 'c.pdf', 'd.pdf'] });
+    expect(utils.othersLabel(many, t)).toBe('With b.pdf, c.pdf, d.pdf and 2 more');
+    expect(utils.rowTitle(item('solo'), t)).toBe('solo.pdf');
+    expect(utils.othersLabel(item('solo'), t)).toBeNull();
+  });
+
   it('places an item in its folder, or at the collection top level', () => {
     expect(utils.locationLabel(inDocs, 'Handbook', t)).toBe('Docs');
     expect(utils.locationLabel(item('r'), 'Handbook', t)).toBe('Handbook');
@@ -114,8 +125,17 @@ describe('what a restore says', () => {
       restoredRecords: [{ recordId: 'r', name: 'r (restored).pdf', renamedFrom: 'r.pdf' }],
     }, t);
     expect(utils.restoreMessage(outcome, t).description).toBe(
-      "Restored; it will be searchable again shortly.\n'r.pdf' came back as 'r (restored).pdf', because another item there already has that name.",
+      "Restored, but some files aren't searchable yet because they couldn't be queued for indexing. PipesHub queues them again on its own within about an hour. To do it sooner, open each file's menu and choose Start indexing.\n" +
+        "'r.pdf' came back as 'r (restored).pdf', because another item there already has that name.",
     );
+  });
+
+  it('says a multi-select row came back with everything selected with it', () => {
+    const together = item('a', { rootCount: 3, itemCount: 6, otherRootNames: ['b.pdf', 'Docs'] });
+    const message = utils.restoreMessage(utils.outcomeOfSingle(together, { success: true }, t), t);
+    expect(message.title).toBe("Restored 'a.pdf' and 2 more");
+    const refused = utils.outcomeOfSingleError(together, { type: 'CONFLICT', statusCode: 409, message: '' }, t);
+    expect(utils.restoreMessage(refused, t).title).toBe("Couldn't restore 'a.pdf and 2 more'");
   });
 
   it('passes on why the server refused, and falls back to plain words by status', () => {
@@ -206,6 +226,27 @@ describe('the page', () => {
     expect(screen.getByText(/stay here for at least 14 days/)).toBeTruthy();
     expect(screen.getByText('Showing 1–2 of 2')).toBeTruthy();
     expect(api.sent.find((r) => r.url === `${KB}/${KB_ID}/trash`)?.config.params).toEqual({ page: 1, limit: 25 });
+  });
+
+  it('shows a multi-select delete as one row, and restores it with one request', async () => {
+    const together = item('a', { rootCount: 3, itemCount: 6, otherRootNames: ['b.pdf', 'Docs'] });
+    const api = render({
+      [`GET ${KB}/${KB_ID}/trash`]: [{ status: 200, data: page([together]) }, { status: 200, data: page([]) }],
+      [`POST ${KB}/record/a/restore`]: { status: 200, data: { success: true } },
+    });
+
+    const row = await screen.findByRole('row', { name: 'a.pdf and 2 more' });
+    expect(within(row).getByText('6 items deleted together')).toBeTruthy();
+    expect(within(row).getByText('With b.pdf, Docs')).toBeTruthy();
+    expect(screen.getAllByRole('row')).toHaveLength(2);
+
+    await act(async () => {
+      fireEvent.click(within(row).getByRole('button', { name: /Restore/ }));
+    });
+
+    await screen.findByText('Nothing was deleted recently');
+    expect(api.count(`POST ${KB}/record/a/restore`)).toBe(1);
+    expect(toasts()[0].title).toBe("Restored 'a.pdf' and 2 more");
   });
 
   it('restores one item, says so, and reloads the list without it', async () => {

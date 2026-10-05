@@ -5278,7 +5278,7 @@ components:
     TrashItemSchema:
       type: object
       additionalProperties: false
-      description: What one delete removed; restoring it brings back all of it.
+      description: What one delete removed (a folder with its contents, or every item of a multi-select); restoring it brings back all of it.
       required:
         - id
         - isFolder
@@ -5317,7 +5317,15 @@ components:
           description: That folder is in the trash too; restore it first
         itemCount:
           type: integer
-          description: Records this delete removed, this one included
+          description: Records this delete removed, all of which a restore brings back
+        rootCount:
+          type: integer
+          description: Items selected in the delete; more than one for a multi-select delete, which is one item here
+        otherRootNames:
+          type: array
+          items:
+            type: string
+          description: Names of up to three of the other items selected with this one
         deletedAtTimestamp:
           type: integer
           format: int64
@@ -25161,8 +25169,10 @@ paths:
       summary: List a collection's recently deleted items
       description: |
         One page of what was deleted from a collection and can still be restored,
-        newest first. Each item is what one delete removed: a folder deleted with its
-        contents is one item, and `itemCount` says how many records it holds.
+        newest first. Each item is what one delete removed, as a restore brings it back
+        whole: a folder deleted with its contents is one item, and so is a multi-select
+        delete (`rootCount` items selected, some named in `otherRootNames`). `itemCount`
+        says how many records it holds.
         Restore an item with `POST /knowledgeBase/record/{recordId}/restore`, using its `id`.
 
         Needs "Move Deleted Records to the Trash" on in Labs.

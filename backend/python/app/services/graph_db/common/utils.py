@@ -286,6 +286,9 @@ TRASH_STATE_FIELDS = (
     "trashedExternalRecordId",
 )
 
+# A Recently deleted row for a multi-select delete names this many of its other items.
+TRASH_LIST_OTHER_ROOT_NAMES = 3
+
 # Unique per record and never a source id, so no sync or move can land on it.
 TRASHED_EXTERNAL_ID_PREFIX = "trashed:"
 

@@ -1934,7 +1934,8 @@ class KnowledgeBaseService:
             response["reindexPendingRecordIds"] = reindex_pending
             response["reindexPendingReason"] = (
                 "Restored, but some files aren't searchable yet because we couldn't queue them for "
-                "indexing. Open each one and choose Reindex to make it searchable again."
+                "indexing. PipesHub queues them again on its own within about an hour. To do it "
+                "sooner, open each file's menu and choose Start indexing."
             )
         if rename_failed:
             response["renamePendingRecordIds"] = rename_failed
@@ -1985,9 +1986,10 @@ class KnowledgeBaseService:
     ) -> dict:
         """One page of the collection's "Recently deleted" list: what this user may restore.
 
-        Each item is what one delete action removed (a folder with its
-        contents is one item), with where it was, who deleted it and from when
-        the purge may remove it for good. Owners and writers see every item; a
+        Each item is what one delete action removed, as restore brings it back
+        whole: a folder with its contents, or every item of a multi-select. It
+        says where it was, who deleted it and from when the purge may remove it
+        for good. Owners and writers see every item; a
         file organizer only single files, as those are all they may restore.
         """
         if (
@@ -2061,6 +2063,8 @@ class KnowledgeBaseService:
             "parentName": item.get("parentName"),
             "parentInTrash": item.get("parentIsDeleted") is True,
             "itemCount": max(item.get("batchSize") or 1, 1),
+            "rootCount": max(item.get("rootCount") or 1, 1),
+            "otherRootNames": [name for name in item.get("otherRootNames") or [] if isinstance(name, str)],
             "deletedAtTimestamp": deleted_at,
             "deletedBy": deleted_by,
             "removableAfterTimestamp": (

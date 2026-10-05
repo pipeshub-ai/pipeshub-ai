@@ -234,3 +234,32 @@ async def test_a_large_deleted_folder_does_not_slow_a_page_or_hide_a_loose_file(
     assert (_ids(first), first["total"]) == ([seeded.ids["big"]], 2)
     assert first["items"][0]["batchSize"] == BIG_FOLDER_FILES + 1
     assert (_ids(second), second["total"]) == ([seeded.ids["solo"]], 2)
+
+
+async def test_a_multi_select_delete_is_one_row_and_restores_exactly_what_it_says(seeded: _World) -> None:
+    """Two files and a folder deleted in one action are one batch, so one row: restore brings back all of it."""
+    await seeded.trash("solo", "report", "folder")
+    together = ("solo", "report", "folder", "file_a", "file_b", "attachment")
+
+    found = await seeded.graph.list_trashed_records(seeded.kb_id, seeded.org_id)
+
+    assert found["total"] == 1
+    [row] = found["items"]
+    roots = {seeded.ids[name] for name in ("solo", "report", "folder")}
+    assert row["record"]["_key"] == min(roots)
+    assert (row["rootCount"], row["batchSize"]) == (3, len(together))
+    names = {"solo": "solo.pdf", "report": "report.pdf", "folder": "Docs"}
+    others = {names[n] for n in names if seeded.ids[n] != row["record"]["_key"]}
+    assert set(row["otherRootNames"]) == others
+
+    listed = await seeded.service.list_trash(seeded.kb_id, seeded.user_id, seeded.org_id)
+    [item] = listed["items"]
+    assert (item["id"], item["itemCount"], item["rootCount"]) == (row["record"]["_key"], 6, 3)
+
+    restored = await seeded.service.restore_record(item["id"], seeded.user_id, seeded.org_id)
+
+    assert restored["success"] is True, restored
+    assert {r["recordId"] for r in restored["restoredRecords"]} == {seeded.ids[n] for n in together}
+    assert len(restored["restoredRecords"]) == item["itemCount"]
+    assert await seeded.live(together) == set(together)
+    assert await seeded.graph.list_trashed_records(seeded.kb_id, seeded.org_id) == {"items": [], "total": 0}

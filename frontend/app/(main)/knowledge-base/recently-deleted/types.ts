@@ -11,8 +11,12 @@ export interface TrashItem {
   parentName?: string | null;
   /** That folder is in the trash too, so it has to be restored first. */
   parentInTrash: boolean;
-  /** Records this delete removed, this one included. */
+  /** Records this delete removed, all of which a restore brings back. */
   itemCount: number;
+  /** Items selected in the delete: more than one for a multi-select. */
+  rootCount?: number;
+  /** Names of some of the other items selected with this one. */
+  otherRootNames?: string[];
   deletedAtTimestamp: number;
   deletedBy?: { name?: string | null; email?: string | null } | null;
   /** From when the scheduled cleanup may remove it for good; null when unknown. */

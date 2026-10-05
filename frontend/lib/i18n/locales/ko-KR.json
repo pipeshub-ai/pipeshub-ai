@@ -58,7 +58,7 @@
       "restoreFailedTitle": "'{{name}}'을(를) 복원하지 못했습니다",
       "noneRestored_one": "항목 {{count}}개를 복원하지 못했습니다",
       "noneRestored_other": "항목 {{count}}개를 복원하지 못했습니다",
-      "reindexPending": "복원되었습니다. 곧 다시 검색할 수 있습니다.",
+      "reindexPending": "복원되었지만 일부 파일은 인덱싱 대기열에 추가하지 못해 아직 검색되지 않습니다. PipesHub가 약 1시간 안에 자동으로 다시 대기열에 추가합니다. 더 빨리 하려면 각 파일의 메뉴를 열고 {{action}}을(를) 선택하세요.",
       "searchableAfterIndexing": "복원된 항목은 원래 위치로 돌아갔으며, 인덱싱이 끝나면 다시 검색에 표시됩니다.",
       "renamed": "같은 위치에 이미 같은 이름의 항목이 있어 '{{from}}'이(가) '{{to}}'(으)로 복원되었습니다.",
       "partiallyRestored": "항목 {{total}}개 중 {{restored}}개를 복원했습니다",
@@ -67,7 +67,16 @@
       "restoredMany_other": "항목 {{count}}개를 복원했습니다",
       "showing": "{{total}}개 중 {{from}}–{{to}}",
       "previous": "이전",
-      "next": "다음"
+      "next": "다음",
+      "nameAndMore_one": "{{name}} 외 {{count}}개",
+      "nameAndMore_other": "{{name}} 외 {{count}}개",
+      "deletedTogether_one": "함께 삭제된 항목 {{count}}개",
+      "deletedTogether_other": "함께 삭제된 항목 {{count}}개",
+      "withOthers": "{{names}}와(과) 함께",
+      "withOthersAndMore_one": "{{names}} 외 {{count}}개와 함께",
+      "withOthersAndMore_other": "{{names}} 외 {{count}}개와 함께",
+      "restoredOneAndMore_one": "'{{name}}' 외 {{count}}개를 복원했습니다",
+      "restoredOneAndMore_other": "'{{name}}' 외 {{count}}개를 복원했습니다"
     }
   },
   "resetPassword": {

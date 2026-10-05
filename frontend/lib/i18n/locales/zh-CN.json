@@ -58,7 +58,7 @@
       "restoreFailedTitle": "无法恢复“{{name}}”",
       "noneRestored_one": "{{count}} 个项目均无法恢复",
       "noneRestored_other": "{{count}} 个项目均无法恢复",
-      "reindexPending": "已恢复；很快就能再次被搜索到。",
+      "reindexPending": "已恢复，但部分文件无法加入索引队列，暂时还搜索不到。PipesHub 会在大约一小时内自动重新将其加入队列。如需更快，请打开每个文件的菜单并选择“{{action}}”。",
       "searchableAfterIndexing": "恢复的项目已回到原来的位置，索引完成后会重新出现在搜索结果中。",
       "renamed": "“{{from}}”已恢复为“{{to}}”，因为该位置已有同名项目。",
       "partiallyRestored": "已恢复 {{restored}}/{{total}} 个项目",
@@ -67,7 +67,16 @@
       "restoredMany_other": "已恢复 {{count}} 个项目",
       "showing": "第 {{from}}–{{to}} 项，共 {{total}} 项",
       "previous": "上一页",
-      "next": "下一页"
+      "next": "下一页",
+      "nameAndMore_one": "{{name}} 及另外 {{count}} 项",
+      "nameAndMore_other": "{{name}} 及另外 {{count}} 项",
+      "deletedTogether_one": "一起删除的 {{count}} 个项目",
+      "deletedTogether_other": "一起删除的 {{count}} 个项目",
+      "withOthers": "连同 {{names}}",
+      "withOthersAndMore_one": "连同 {{names}} 及另外 {{count}} 项",
+      "withOthersAndMore_other": "连同 {{names}} 及另外 {{count}} 项",
+      "restoredOneAndMore_one": "已恢复“{{name}}”及另外 {{count}} 项",
+      "restoredOneAndMore_other": "已恢复“{{name}}”及另外 {{count}} 项"
     }
   },
   "resetPassword": {

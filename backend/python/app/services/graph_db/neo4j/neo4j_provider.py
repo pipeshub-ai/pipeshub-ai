@@ -104,6 +104,7 @@ from app.services.graph_db.common.utils import (
     MAX_DIRECT_GRANT_RECORDS,
     PATH_MAX_CANDIDATES,
     ROOT_SCOPED_CONNECTOR_TYPES,
+    TRASH_LIST_OTHER_ROOT_NAMES,
     TRASH_STATE_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
     EntityCandidateRows,
@@ -218,9 +219,10 @@ _PURGE_LOCK = "purgeLock"
 # A record with any of these children waits for them to be purged first.
 _CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
 # The roots of a connector's delete batches: records in the trash whose parent is
-# not in the same batch. Read through record_connector_deleted_at, which holds only
-# the trash, so a candidate costs one parent lookup and, for a file organizer, one
-# look for a second member of its batch; a deleted folder's files are never counted.
+# not in the same batch (a multi-select delete has several). Read through
+# record_connector_deleted_at, which holds only the trash, so a candidate costs one
+# parent lookup and, for a file organizer, one look for a second member of its
+# batch; a deleted folder's files are never counted.
 _TRASH_BATCH_ROOTS = """
 MATCH (r:Record)
 WHERE r.connectorId = $connector_id AND r.deletedAtTimestamp IS NOT NULL
@@ -12036,35 +12038,42 @@ class Neo4jProvider(IGraphDBProvider):
             "skip": max(skip, 0),
             "limit": limit,
         }
+        # One row per delete batch, as restore brings a batch back whole: its first
+        # root (by id) stands for it, and the others are counted and named.
         rows = await self.client.execute_query(
             f"""
             {_TRASH_BATCH_ROOTS}
-            WITH r ORDER BY r.deletedAtTimestamp DESC, r.id DESC SKIP $skip LIMIT $limit
+            WITH r ORDER BY r.id
+            WITH r.deleteBatchId AS batch, max(r.deletedAtTimestamp) AS deleted_at, collect(r) AS roots
+            ORDER BY deleted_at DESC, batch DESC SKIP $skip LIMIT $limit
+            WITH batch, deleted_at, roots, head(roots) AS r
             OPTIONAL MATCH (p:Record)-[rel:RECORD_RELATION]->(r)
             WHERE rel.relationshipType IN $containment
-            WITH r, head(collect(p)) AS p
+            WITH batch, deleted_at, roots, r, head(collect(p)) AS p
             OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
-            WITH r, p, head(collect(t)) AS t
+            WITH batch, deleted_at, roots, r, p, head(collect(t)) AS t
             OPTIONAL MATCH (u:User {{id: r.deletedByUserId}})
-            WITH r, p, t, head(collect(u)) AS u
+            WITH batch, deleted_at, roots, r, p, t, head(collect(u)) AS u
             RETURN properties(r) AS rec,
                    p.id AS parent_id, p.recordName AS parent_name, p.isDeleted AS parent_deleted,
                    t.isFile AS is_file, t.mimeType AS file_mime, t.sizeInBytes AS size,
+                   size(roots) AS root_count,
+                   [x IN roots[1..(1 + $names)] | x.recordName] AS other_names,
                    COUNT {{
-                       MATCH (x:Record {{deleteBatchId: r.deleteBatchId}})
+                       MATCH (x:Record {{deleteBatchId: batch}})
                        WHERE x.isDeleted = true AND x.connectorId = $connector_id
                    }} AS batch_size,
                    CASE WHEN u IS NULL THEN null
                         WHEN coalesce(u.fullName, '') <> '' THEN u.fullName
                         ELSE trim(coalesce(u.firstName, '') + ' ' + coalesce(u.lastName, '')) END AS user_name,
                    u.email AS user_email
-            ORDER BY r.deletedAtTimestamp DESC, r.id DESC
+            ORDER BY deleted_at DESC, batch DESC
             """,
-            parameters=parameters,
+            parameters={**parameters, "names": TRASH_LIST_OTHER_ROOT_NAMES},
             txn_id=transaction,
         )
         counted = await self.client.execute_query(
-            f"{_TRASH_BATCH_ROOTS} RETURN count(r) AS total",
+            f"{_TRASH_BATCH_ROOTS} RETURN count(DISTINCT r.deleteBatchId) AS total",
             parameters=parameters,
             txn_id=transaction,
         )
@@ -12077,6 +12086,8 @@ class Neo4jProvider(IGraphDBProvider):
                 "isFile": row.get("is_file"),
                 "fileMimeType": row.get("file_mime"),
                 "sizeInBytes": row.get("size"),
+                "rootCount": row.get("root_count") or 1,
+                "otherRootNames": [name for name in row.get("other_names") or [] if name is not None],
                 "batchSize": row.get("batch_size") or 0,
                 "deletedByName": row.get("user_name") or None,
                 "deletedByEmail": row.get("user_email"),
