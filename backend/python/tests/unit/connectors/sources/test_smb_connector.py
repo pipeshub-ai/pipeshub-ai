@@ -762,6 +762,28 @@ class TestSmbConnectorStreamAndFilters:
         assert opened is not None
         assert opened.is_reparse is True
 
+    def test_stat_time_equals_the_listing_time_of_the_same_file(self):
+        # FILETIME 2026-10-05T20:32:12.6567569Z. The listing truncates to .656756;
+        # float seconds round to .656757.
+        nanos = 1791232332656756900
+        listed = datetime(2026, 10, 5, 20, 32, 12, 656756, tzinfo=timezone.utc)
+        assert datetime.fromtimestamp(nanos / 1_000_000_000, tz=timezone.utc) != listed
+        result = MagicMock()
+        result.st_mode = stat.S_IFREG
+        result.st_file_attributes = 0
+        result.st_size = 43
+        result.st_ino = 7
+        result.st_mtime = nanos / 1_000_000_000
+        result.st_mtime_ns = nanos
+        result.st_ctime = nanos / 1_000_000_000
+        result.st_ctime_ns = nanos
+        client = SmbClient(server="files", username="u", password="p")
+        with patch.object(client, "register"), patch.object(client, "_smbclient") as smbclient:
+            smbclient.return_value.stat.return_value = result
+            entry = client.stat("Finance", "budget.csv")
+        assert entry.last_write_time == listed
+        assert entry.created_time == listed
+
     async def test_get_filter_options_enum_failure_returns_configured_share(self, smb_connector):
         ds = FakeNetworkShareDataSource(shares=ShareListingError("NetrShareEnum failed"))
         smb_connector.data_source = ds

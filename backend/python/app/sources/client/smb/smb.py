@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import stat
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, BinaryIO, TypeVar
 
 from app.connectors.core.constants import ConfigPaths
@@ -38,6 +38,18 @@ def _as_datetime(value: object) -> datetime | None:
     if isinstance(value, (int, float)):
         return datetime.fromtimestamp(float(value), tz=timezone.utc)
     return None
+
+
+def _stat_time(result: object, field: str) -> datetime | None:
+    """A stat time equal to the one a directory listing gives for the same file.
+
+    ``st_mtime`` is float seconds and rounds to a neighbouring microsecond for
+    about half of all files, which changes the revision of an unchanged file.
+    """
+    nanos = getattr(result, f"{field}_ns", None)
+    if isinstance(nanos, int):
+        return datetime.fromtimestamp(0, tz=timezone.utc) + timedelta(microseconds=nanos // 1000)
+    return _as_datetime(getattr(result, field, None))
 
 
 def unc(server: str, share: str, rel: str = "") -> str:
@@ -172,8 +184,8 @@ class SmbClient(IClient):
             is_symlink=stat.S_ISLNK(result.st_mode),
             is_reparse=bool(attrs & REPARSE_POINT),
             size=int(result.st_size or 0),
-            created_time=_as_datetime(getattr(result, "st_ctime", None)),
-            last_write_time=_as_datetime(getattr(result, "st_mtime", None)),
+            created_time=_stat_time(result, "st_ctime"),
+            last_write_time=_stat_time(result, "st_mtime"),
             file_id=int(result.st_ino) if getattr(result, "st_ino", None) else None,
         )
 
