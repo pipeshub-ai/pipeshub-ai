@@ -417,7 +417,6 @@ async def test_the_purge_removes_the_attachment_with_its_mail_in_one_run(
 ) -> None:
     monkeypatch.setenv("SOFT_DELETE_PURGE_INTERVAL_SECONDS", "0")
     monkeypatch.delenv("SOFT_DELETE_PURGE_MIN_AGE_SECONDS", raising=False)
-    monkeypatch.setattr(purge_module, "is_soft_delete_enabled", AsyncMock(return_value=True))
     # Only this test's org, whatever else the shared database holds.
     monkeypatch.setattr(TrashPurger, "_org_ids", AsyncMock(return_value=[world.org_id]))
     await _trash_mail(world)

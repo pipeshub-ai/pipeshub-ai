@@ -223,12 +223,9 @@ class _Broker:
 
 
 @pytest.fixture
-def flag(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
-    mock = AsyncMock(return_value=True)
-    monkeypatch.setattr(purge_module, "is_soft_delete_enabled", mock)
+def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SOFT_DELETE_PURGE_INTERVAL_SECONDS", raising=False)
     monkeypatch.delenv("SOFT_DELETE_PURGE_MIN_AGE_SECONDS", raising=False)
-    return mock
 
 
 def _purger(
@@ -241,7 +238,7 @@ def _purger(
 
 
 class TestSettings:
-    def test_defaults_are_the_designs(self, flag) -> None:
+    def test_defaults_are_the_designs(self, clean_env) -> None:
         s = PurgeSettings.from_config(None)
         assert (s.enabled, s.interval_days, s.min_age_days, s.run_hour_utc, s.page_size, s.max_attempts) == (
             True, 14, 14, 3, 500, 5
@@ -249,7 +246,7 @@ class TestSettings:
         assert (s.max_records_per_run, s.max_run_minutes, s.page_pause_ms) == (500_000, 120, 200)
         assert s.min_age_ms == 14 * DAY_MS
 
-    def test_values_are_bounded_and_bad_ones_fall_back(self, flag) -> None:
+    def test_values_are_bounded_and_bad_ones_fall_back(self, clean_env) -> None:
         s = PurgeSettings.from_config({
             "enabled": "no", "intervalDays": 0, "minAgeDays": 0, "pageSize": 100_000,
             "runHourUtc": "x", "maxAttempts": True,
@@ -260,7 +257,7 @@ class TestSettings:
         assert s.page_size == 1000
         assert s.run_hour_utc == 3 and s.max_attempts == 5
 
-    def test_environment_overrides_in_seconds(self, flag, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_environment_overrides_in_seconds(self, clean_env, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SOFT_DELETE_PURGE_INTERVAL_SECONDS", "300")
         monkeypatch.setenv("SOFT_DELETE_PURGE_MIN_AGE_SECONDS", "0")
         s = PurgeSettings.from_config({"minAgeDays": 30})
@@ -271,12 +268,12 @@ class TestSettings:
 
 
 class TestIsDue:
-    def test_only_at_the_run_hour(self, flag) -> None:
+    def test_only_at_the_run_hour(self, clean_env) -> None:
         s = PurgeSettings()
         assert s.is_due(None, _ms(2026, 10, 4, 3))
         assert not s.is_due(None, _ms(2026, 10, 4, 4))
 
-    def test_counts_whole_days_since_the_last_start(self, flag) -> None:
+    def test_counts_whole_days_since_the_last_start(self, clean_env) -> None:
         s = PurgeSettings()
         last = _ms(2026, 10, 4, 3) + 20 * 60 * 1000
         assert not s.is_due(last, _ms(2026, 10, 17, 3))
@@ -285,7 +282,7 @@ class TestIsDue:
 
 
 class TestTick:
-    async def test_of_two_replicas_only_the_leader_purges(self, flag) -> None:
+    async def test_of_two_replicas_only_the_leader_purges(self, clean_env) -> None:
         graph, kv, shared = _Graph(), _KV(), {}
         graph.trash("a", days_ago=20)
         shared["leader"] = "other"
@@ -298,34 +295,40 @@ class TestTick:
         assert "a" not in graph.records
         assert shared == {}, "the lease is let go after the tick"
 
-    async def test_the_kill_switch_stops_it(self, flag) -> None:
+    async def test_the_kill_switch_stops_it(self, clean_env) -> None:
         graph, kv = _Graph(), _KV({"enabled": False})
         graph.trash("a", days_ago=20)
         assert await _purger(graph, kv).tick() == Outcome.DISABLED
         assert "a" in graph.records and graph.calls == []
 
-    async def test_not_due_outside_the_run_hour(self, flag) -> None:
+    async def test_not_due_outside_the_run_hour(self, clean_env) -> None:
         graph, kv = _Graph(), _KV()
         graph.trash("a", days_ago=20)
         assert await _purger(graph, kv, now=_ms(2026, 10, 4, 9)).tick() == Outcome.NOT_DUE
         assert graph.calls == []
 
-    async def test_a_flag_turned_off_mid_run_stops_at_the_page_and_resumes_later(self, flag) -> None:
+    async def test_the_kill_switch_turned_off_mid_run_stops_at_the_page_and_resumes_later(self, clean_env) -> None:
         graph, kv = _Graph(), _KV({"pageSize": 1})
         graph.trash("a", days_ago=20)
         graph.trash("b", days_ago=19)
-        # On at the start and for the first page, off before the second.
-        flag.side_effect = [True, True, False]
+        listing = graph.get_purgeable_trashed_records
 
+        async def switch_off_after_the_first_page(*args, **kwargs) -> dict:
+            page = await listing(*args, **kwargs)
+            kv.values[PLATFORM_SETTINGS_KEY]["softDeletePurge"]["enabled"] = False
+            return page
+
+        graph.get_purgeable_trashed_records = switch_off_after_the_first_page
         assert await _purger(graph, kv).tick() == Outcome.STOPPED
         assert set(graph.records) == {"b"}
         assert kv.values[STATE_KEY]["status"] == "running"
 
-        flag.side_effect = None
+        graph.get_purgeable_trashed_records = listing
+        kv.values[PLATFORM_SETTINGS_KEY]["softDeletePurge"]["enabled"] = True
         assert await _purger(graph, kv, now=_ms(2026, 10, 5, 11)).tick() == Outcome.FINISHED
         assert graph.records == {}, "resumed outside the run hour: it is the same run"
 
-    async def test_the_record_budget_pauses_the_run_until_the_next_tick(self, flag) -> None:
+    async def test_the_record_budget_pauses_the_run_until_the_next_tick(self, clean_env) -> None:
         graph, kv = _Graph(), _KV({"pageSize": 1, "maxRecordsPerRun": 1})
         graph.trash("a", days_ago=20)
         graph.trash("b", days_ago=19)
@@ -336,14 +339,14 @@ class TestTick:
         assert graph.records == {}
         assert await _purger(graph, kv).tick() == Outcome.FINISHED
 
-    async def test_the_time_budget_pauses_the_run(self, flag) -> None:
+    async def test_the_time_budget_pauses_the_run(self, clean_env) -> None:
         graph, kv = _Graph(), _KV({"maxRunMinutes": 1})
         graph.trash("a", days_ago=20)
         clock = iter([0.0, 61.0])
         assert await _purger(graph, kv, monotonic=lambda: next(clock)).tick() == Outcome.PAUSED
         assert "a" in graph.records
 
-    async def test_a_deleting_connectors_trash_moves_the_cursor_and_stays(self, flag) -> None:
+    async def test_a_deleting_connectors_trash_moves_the_cursor_and_stays(self, clean_env) -> None:
         graph, kv = _Graph(), _KV({"pageSize": 1})
         graph.trash("a", days_ago=20, connector="going")
         graph.trash("b", days_ago=19)
@@ -352,7 +355,7 @@ class TestTick:
         assert await _purger(graph, kv).tick() == Outcome.FINISHED
         assert set(graph.records) == {"a"}
 
-    async def test_without_the_walk_index_the_tick_waits(self, flag) -> None:
+    async def test_without_the_walk_index_the_tick_waits(self, clean_env) -> None:
         graph, kv = _Graph(), _KV()
         graph.trash("a", days_ago=20)
         graph.walk_index_ready = False
@@ -364,16 +367,19 @@ class TestTick:
         assert await _purger(graph, kv).tick() == Outcome.FINISHED
         assert graph.records == {}
 
-    async def test_with_the_trash_off_nothing_is_read_or_written(self, flag) -> None:
+    async def test_with_the_trash_turned_off_what_is_in_it_still_goes(self, clean_env) -> None:
         graph, kv = _Graph(), _KV()
+        kv.values[PLATFORM_SETTINGS_KEY]["featureFlags"] = {"ENABLE_SOFT_DELETE": False}
         graph.trash("a", days_ago=20)
-        flag.return_value = False
-        assert await _purger(graph, kv).tick() == Outcome.DISABLED
-        assert graph.calls == [] and STATE_KEY not in kv.values and kv.outbox() == {}
+        graph.trash("young", days_ago=3)
+
+        assert await _purger(graph, kv).tick() == Outcome.FINISHED
+
+        assert set(graph.records) == {"young"}, "the retention still holds"
 
 
 class TestTrees:
-    async def test_a_trashed_tree_goes_leaves_first_in_one_run(self, flag) -> None:
+    async def test_a_trashed_tree_goes_leaves_first_in_one_run(self, clean_env) -> None:
         graph, kv, broker = _Graph(), _KV({"pageSize": 2}), _Broker()
         for key in ("root", "mid", "leaf_a", "leaf_b"):
             graph.trash(key, days_ago=20)
@@ -386,7 +392,7 @@ class TestTrees:
         assert set(order[:2]) == {"leaf_a", "leaf_b"} and order[2:] == ["mid", "root"]
         assert kv.values[STATE_KEY]["lastCounts"]["purged"] == 4
 
-    async def test_a_record_with_a_live_child_stays_and_the_walk_ends(self, flag) -> None:
+    async def test_a_record_with_a_live_child_stays_and_the_walk_ends(self, clean_env) -> None:
         graph, kv = _Graph(), _KV()
         graph.trash("folder", days_ago=20)
         graph.trash("other", days_ago=20)
@@ -398,7 +404,7 @@ class TestTrees:
         assert set(graph.records) == {"folder", "child"}
         assert graph.calls.count("list") == 2, "a second walk finds nothing more to remove"
 
-    async def test_a_failure_is_tried_once_per_run_however_many_walks(self, flag) -> None:
+    async def test_a_failure_is_tried_once_per_run_however_many_walks(self, clean_env) -> None:
         graph, kv = _Graph(), _KV()
         graph.trash("bad", days_ago=20)
         graph.trash("parent", days_ago=20)
@@ -413,7 +419,7 @@ class TestTrees:
 
 
 class TestPageFailures:
-    async def test_locks_that_cannot_be_taken_pause_without_counting_a_failure(self, flag) -> None:
+    async def test_locks_that_cannot_be_taken_pause_without_counting_a_failure(self, clean_env) -> None:
         graph, kv = _Graph(), _KV()
         graph.trash("a", days_ago=20)
         graph.lock_unavailable = True
@@ -427,7 +433,7 @@ class TestPageFailures:
         assert await _purger(graph, kv, broker).tick() == Outcome.FINISHED
         assert broker.deleted() == ["a"], "the saved page owed nothing; the run removed it once"
 
-    async def test_events_the_broker_refuses_stay_owed_for_the_records_that_went(self, flag) -> None:
+    async def test_events_the_broker_refuses_stay_owed_for_the_records_that_went(self, clean_env) -> None:
         graph, kv, broker = _Graph(), _KV(), _Broker()
         graph.trash("a", days_ago=20)
         graph.trash("young", days_ago=1)
@@ -443,7 +449,7 @@ class TestPageFailures:
         assert broker.deleted() == ["a"]
         assert kv.outbox() == {}
 
-    async def test_a_delete_whose_answer_is_lost_still_sends_its_cleanup(self, flag) -> None:
+    async def test_a_delete_whose_answer_is_lost_still_sends_its_cleanup(self, clean_env) -> None:
         graph, kv, broker = _Graph(), _KV(), _Broker()
         graph.trash("a", days_ago=20)
         graph.trash("young", days_ago=1)
@@ -468,7 +474,7 @@ class TestPageFailures:
         assert kv.outbox() == {}
         assert kv.values[STATE_KEY]["lastCounts"]["purged"] == 1
 
-    async def test_a_record_the_graph_refuses_is_counted_and_the_rest_go(self, flag) -> None:
+    async def test_a_record_the_graph_refuses_is_counted_and_the_rest_go(self, clean_env) -> None:
         graph, kv = _Graph(), _KV()
         graph.trash("a", days_ago=20)
         graph.trash("bad", days_ago=19)
@@ -481,7 +487,7 @@ class TestPageFailures:
         assert graph.records["bad"]["purgeLastError"] == "RuntimeError: graph refused the write"
         assert kv.values[STATE_KEY]["lastCounts"] == {"purged": 1, "kept": 0, "failed": 1, "groups": 0}
 
-    async def test_a_failure_that_cannot_be_counted_stops_the_tick(self, flag) -> None:
+    async def test_a_failure_that_cannot_be_counted_stops_the_tick(self, clean_env) -> None:
         graph, kv = _Graph(), _KV()
         graph.trash("bad", days_ago=20)
         graph.refuse = {"bad"}
@@ -499,7 +505,7 @@ class TestPageFailures:
         assert broker.deleted() == ["bad"]
         assert kv.outbox() == {}
 
-    async def test_a_malformed_outbox_entry_is_dropped(self, flag) -> None:
+    async def test_a_malformed_outbox_entry_is_dropped(self, clean_env) -> None:
         graph, kv = _Graph(), _KV()
         kv.values[f"{OUTBOX_DIRECTORY}junk"] = "not a page"
         assert await _purger(graph, kv).tick() == Outcome.FINISHED
@@ -507,7 +513,7 @@ class TestPageFailures:
 
 
 class TestOrgListing:
-    async def test_a_failed_org_listing_starts_no_run_and_the_next_tick_does(self, flag) -> None:
+    async def test_a_failed_org_listing_starts_no_run_and_the_next_tick_does(self, clean_env) -> None:
         graph, kv = _Graph(), _KV()
         graph.trash("a", days_ago=20)
         graph.orgs_unreadable = True
@@ -523,7 +529,7 @@ class TestOrgListing:
 
 
 class TestBookkeeping:
-    async def test_the_backlog_gauges_count_pending_and_stuck(self, flag) -> None:
+    async def test_the_backlog_gauges_count_pending_and_stuck(self, clean_env) -> None:
         graph, kv = _Graph(), _KV()
         graph.trash("young", days_ago=3)
         graph.trash("stuck", days_ago=40, purgeAttempts=5)
@@ -531,7 +537,7 @@ class TestBookkeeping:
             assert await _purger(graph, kv).tick() == Outcome.FINISHED
         gauges.assert_called_once_with(1, 1, pytest.approx(3 * 24 * 3600, rel=1e-6))
 
-    async def test_a_finished_run_records_when_it_started(self, flag) -> None:
+    async def test_a_finished_run_records_when_it_started(self, clean_env) -> None:
         graph, kv = _Graph(), _KV()
         assert await _purger(graph, kv).tick() == Outcome.FINISHED
         state = kv.values[STATE_KEY]

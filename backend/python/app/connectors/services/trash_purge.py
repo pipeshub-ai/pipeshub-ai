@@ -22,13 +22,16 @@ A crash or a broker outage after step 2 leaves the outbox entry; the next tick
 publishes the events of every record in it that is gone from the graph and
 drops the rest. A record that still has a child, trashed or not, waits: the
 org is walked again while a walk both removed something and passed over such
-a record, so a trashed tree goes leaves first, one level per walk, in one run. A page the graph refuses is retried record by record, and a
-record that fails is counted (``purgeAttempts``) and left out after
-``maxAttempts``. Then the record groups kept only for the trash
-(``isDeletedAtSource``) go once nothing belongs to them.
+a record, so a trashed tree goes leaves first, one level per walk, in one run.
+A page the graph refuses is retried record by record, and a record that fails
+is counted (``purgeAttempts``) and left out after ``maxAttempts``. Then the
+record groups kept only for the trash (``isDeletedAtSource``) go once nothing
+belongs to them.
 
-Nothing happens while ``ENABLE_SOFT_DELETE`` is off or ``softDeletePurge.enabled``
-is false; an unfinished run resumes from its cursor when both are on again.
+The purge runs whether ``ENABLE_SOFT_DELETE`` is on or off: turning the trash
+off makes new deletes hard deletes, and what is already in the trash is still
+removed on schedule. Only ``softDeletePurge.enabled`` pauses it; an unfinished
+run resumes from its cursor when it is on again.
 """
 
 from __future__ import annotations
@@ -51,10 +54,7 @@ from app.exceptions.graph_db_exceptions import GraphLockUnavailableError
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
-from app.services.featureflag.platform_settings import (
-    PLATFORM_SETTINGS_KEY,
-    is_soft_delete_enabled,
-)
+from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
 from app.services.graph_db.common.utils import is_storage_document_id
 from app.services.messaging.utils import MessagingUtils
 from app.telemetry.modules.soft_delete_metrics import (
@@ -306,8 +306,7 @@ class TrashPurger:
         if not await self.lock.try_acquire():
             return Outcome.NOT_LEADER
         try:
-            if not await is_soft_delete_enabled(self.config_service):
-                return Outcome.DISABLED
+            # Not the Labs flag: with the trash off, what is in it is still removed on schedule.
             settings = await load_purge_settings(self.config_service)
             if not settings.enabled:
                 return Outcome.DISABLED
@@ -406,7 +405,7 @@ class TrashPurger:
     async def _stop_reason(self, deadline: float, processed: int, settings: PurgeSettings) -> str | None:
         if not await self.lock.refresh():
             return Outcome.LOST_LEASE
-        if not await is_soft_delete_enabled(self.config_service):
+        if not (await load_purge_settings(self.config_service)).enabled:
             return Outcome.STOPPED
         if processed >= settings.max_records_per_run or self.monotonic() >= deadline:
             return Outcome.PAUSED
