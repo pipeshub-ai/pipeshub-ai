@@ -596,11 +596,12 @@ class TestRebuildSupport:
             await store.search_entities("pricing", org, set(), {"c1"})
         assert store._initialized is False
 
-    async def test_a_same_dimension_model_change_recreates_only_in_the_owner(
+    async def test_a_same_dimension_model_change_waits_for_the_owner_to_recreate(
         self, store: EntityVectorStore,
     ) -> None:
-        """The owning store reads the model one point records, through a
-        scroll projected to that field, which every backend must answer."""
+        """Every store reads the model one point records, through a scroll
+        projected to that field, which every backend must answer. Only the
+        owner recreates; the others refuse the old vectors until it has."""
         org = f"org-{uuid.uuid4().hex[:6]}"
         await store.upsert_entities_batch([_entity("t1", org=org, connectors=["c1"])])
         await _publish_writes(store)
@@ -621,13 +622,15 @@ class TestRebuildSupport:
 
         assert await _restarted(store._model_id, owner=True)._model_of_a_stored_point() == store._fingerprint()
         await _restarted(store._model_id, owner=True)._ensure_initialized()
-        await _restarted("other:model", owner=False)._ensure_initialized()
+        with pytest.raises(VectorStoreError, match="indexing service recreates it"):
+            await _restarted("other:model", owner=False)._ensure_initialized()
         assert await _point(store, org, "topic", "t1") is not None
 
         await _restarted("other:model", owner=True)._ensure_initialized()
         info = await store.vector_db_service.get_collection_info(store.collection_name)
         assert info.exists and info.dense_dimension == DIM
         assert await _point(store, org, "topic", "t1") is None
+        await _restarted("other:model", owner=False)._ensure_initialized()
 
 
 class TestWriteOutcomeAndLocks:

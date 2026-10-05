@@ -188,15 +188,28 @@ the next write, search and rebuild tick use the new model and the marker
 moves. A write embedded by the old model while the switch happened is not
 stored; the passes write that entity again.
 
-The indexing service recreates the collection when the new model does not
-match it: a different dimension, or, at the same dimension, a point recorded
-by another model. The passes refill it instead of re-embedding in place, so
-new-model queries are not matched against old-model vectors. Points from before `metadata.embeddingModel` existed do not
-trigger this; they are re-embedded in place. Until the indexing service has
-recreated the collection, the query and connector services fail entity calls
-with the dimension mismatch, retrying initialisation every 30 seconds. Points
-of legacy nodes without an org are not projected, so after a recreate they
-return only when their records are reindexed.
+A store checks the collection against its new model: the collection's
+dimension, and the model recorded on one stored point. The collection does
+not match when the dimension differs, or when the dimension is the same but
+that point was embedded by another model. Points from before
+`metadata.embeddingModel` existed are not counted as a mismatch; they are
+re-embedded in place.
+
+- The indexing service drops and recreates a collection that does not match,
+  and the passes refill it. Its rebuild loop checks for a model switch every
+  5 seconds while it waits between ticks, so this happens within seconds of
+  the switch even when nothing is being indexed.
+- The query and connector services never recreate it. Until the indexing
+  service has, they fail entity calls with the mismatch (`The indexing
+  service recreates it`) and retry initialisation every 30 seconds. At the
+  same dimension the old vectors would otherwise answer new-model queries
+  with no error.
+- If the stored point cannot be read, the switch fails and is retried 30
+  seconds later. The store does not adopt the new model on an unread
+  collection.
+
+Points of legacy nodes without an org are not projected, so after a recreate
+they return only when their records are reindexed.
 
 The rebuild runs on one indexing replica at a time (Redis leader
 `entity_index_rebuild:leader`), one page per tick. It resumes from the cursor

@@ -18,6 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
+from app.exceptions.indexing_exceptions import VectorStoreError
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 from app.modules.transformers import entity_vectorstore as module
 from app.modules.transformers.entity_vectorstore import (
@@ -193,6 +194,58 @@ class TestQueries:
 
         assert [request.dense_query[0] for request in db.searches] == [SMALL.value, ADA.value]
         assert db.deletions == 0
+
+
+    async def test_a_query_store_waits_while_the_collection_holds_the_old_model(self, monkeypatch) -> None:
+        """Same dimension, so the old vectors would answer without an error."""
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        indexing = _store(db, config)
+        await indexing.upsert_entities_batch([_topic()], merge_membership=False)
+        reader = _store(db, config, owner=False)
+        await reader.search_entities("pricing", ORG, set(), {"c1"})
+
+        await switch_embedding_model(config, ADA_CONFIG)
+        with pytest.raises(VectorStoreError, match="indexing service recreates it"):
+            await reader.search_entities("pricing", ORG, set(), {"c1"})
+        assert db.deletions == 0
+
+        assert await indexing.refresh_model() is True
+        monkeypatch.setattr(module, "_INIT_RETRY_SECONDS", 0.0)
+        await reader.search_entities("pricing", ORG, set(), {"c1"})
+        assert db.searches[-1].dense_query[0] == ADA.value
+
+
+class TestRecreateOnSwitch:
+    async def test_refresh_model_recreates_without_waiting_for_a_write(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+        assert await store.refresh_model() is False
+
+        await switch_embedding_model(config, ADA_CONFIG)
+        assert await store.refresh_model() is True
+        assert (db.deletions, db.points) == (1, {})
+        assert await store.refresh_model() is False
+
+    async def test_a_failed_point_read_fails_the_switch_and_is_retried(self, monkeypatch) -> None:
+        """An unread collection may still hold the old model's vectors, so the
+        new model is not adopted on the strength of a failed read."""
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+
+        await switch_embedding_model(config, ADA_CONFIG)
+        with patch.object(db, "scroll", side_effect=RuntimeError("scroll timed out")):
+            with pytest.raises(RuntimeError, match="scroll timed out"):
+                await store.embedding_fingerprint()
+            assert store._initialized is False
+            with pytest.raises(VectorStoreError, match="retrying later"):
+                await store.embedding_fingerprint()
+        assert db.deletions == 0
+
+        monkeypatch.setattr(module, "_INIT_RETRY_SECONDS", 0.0)
+        assert await store.embedding_fingerprint() == ADA_FP
+        assert (db.deletions, db.points) == (1, {})
 
 
 class TestConfigReads:

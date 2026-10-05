@@ -73,6 +73,10 @@ STARTUP_GRACE_SECONDS = 60.0
 # Between ticks that did work, and while idle or not leader.
 BUSY_INTERVAL_SECONDS = 2.0
 IDLE_INTERVAL_SECONDS = 60.0
+# While waiting between ticks, how often to check for an embedding model
+# switch. The check is a cache read; a switch makes this service recreate a
+# collection the query and connector services refuse to search until it does.
+MODEL_CHECK_SECONDS = 5.0
 SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
 # A deleted connector's entity cleanup intent older than this, whose event
 # never cleared it, is run here; younger ones are left to the event.
@@ -645,6 +649,24 @@ async def _resolve_store(app_container: Any) -> EntityVectorStore | None:  # noq
     return store
 
 
+async def _sleep_watching_model(store: EntityVectorStore | None, seconds: float, logger: Logger) -> None:
+    """Sleep ``seconds``, returning early once ``store`` has switched model,
+    so the next tick runs the passes under the new marker."""
+    remaining = seconds
+    while remaining > 0:
+        step = min(MODEL_CHECK_SECONDS, remaining)
+        await asyncio.sleep(step)
+        remaining -= step
+        if store is None:
+            continue
+        try:
+            if await store.refresh_model():
+                return
+        except Exception as exc:
+            # The model cannot start; the next tick raises, logs and backs off.
+            logger.debug("entity_index_rebuild: model check failed: %s", exc)
+
+
 async def run_entity_index_rebuild_loop(
     app_container: Any,  # noqa: ANN401
     graph_provider: IGraphDBProvider,
@@ -690,7 +712,7 @@ async def run_entity_index_rebuild_loop(
                     lock = None
                 backoff = min(backoff * _BACKOFF_FACTOR, _MAX_BACKOFF_MULTIPLIER)
                 interval = IDLE_INTERVAL_SECONDS * backoff
-            await asyncio.sleep(interval)
+            await _sleep_watching_model(rebuilder.store if rebuilder else None, interval, logger)
     finally:
         if lock is not None:
             await lock.release()

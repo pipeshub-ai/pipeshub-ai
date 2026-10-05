@@ -222,7 +222,7 @@ class EntityVectorStore:
         # Only the indexing service sets this: it runs the rebuild that
         # repopulates the collection (app.modules.indexing.entity_index_rebuild).
         # It also recreates a collection of the same dimension whose points
-        # another model embedded (``_init_collection``).
+        # another model embedded; other stores wait for that (``_init_collection``).
         self.recreate_on_dimension_mismatch = recreate_on_dimension_mismatch
         self._model_id = ""
         self._embedding_size = 0
@@ -414,12 +414,19 @@ class EntityVectorStore:
             )
             await self.vector_db_service.delete_collection(self.collection_name)
             info = None
-        elif info.exists and self.recreate_on_dimension_mismatch:
+        elif info.exists:
             stored = await self._model_of_a_stored_point()
             if stored is not None and stored != self._fingerprint():
-                # Same dimension, another model: re-embedding in place would
-                # leave old vectors answering new-model queries until the
-                # rebuild reached them, so the passes refill it from empty.
+                # Same dimension, another model: its vectors would answer
+                # this model's queries with no error, so a store that does
+                # not own the collection waits, as on a dimension change, and
+                # the owner refills it from empty rather than in place.
+                if not self.recreate_on_dimension_mismatch:
+                    raise VectorStoreError(
+                        f"Entity collection holds points embedded by {stored}, "
+                        f"model is now {self._fingerprint()}. The indexing service recreates it.",
+                        details={"collection": self.collection_name},
+                    )
                 self.logger.warning(
                     "Recreating entity collection '%s': its points were embedded by %s, the model is now %s",
                     self.collection_name, stored, self._fingerprint(),
@@ -456,7 +463,9 @@ class EntityVectorStore:
 
     async def _model_of_a_stored_point(self) -> str | None:
         """The model recorded on one point of the collection; None when it has
-        no point, the point predates the field, or the read fails.
+        no point or the point predates the field. Raises when the read fails:
+        the caller cannot tell whether the collection still holds another
+        model's vectors.
 
         One point is enough: this store recreates the collection whenever the
         model changes, so apart from points that predate the field, and the
@@ -464,25 +473,26 @@ class EntityVectorStore:
         holds one model's points."""
         from app.models.entities import EntityType
 
-        try:
-            page = await self.vector_db_service.scroll(
-                collection_name=self.collection_name,
-                scroll_filter=await self.vector_db_service.filter_collection(
-                    must={"metadata.entityType": [t.value for t in EntityType]},
-                ),
-                limit=1,
-                with_payload=[f"metadata.{EMBEDDING_MODEL_FIELD}"],
-            )
-        except Exception as exc:
-            self.logger.warning(
-                "Could not read the model of entity collection '%s'; keeping it: %s", self.collection_name, exc,
-            )
-            return None
+        page = await self.vector_db_service.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=await self.vector_db_service.filter_collection(
+                must={"metadata.entityType": [t.value for t in EntityType]},
+            ),
+            limit=1,
+            with_payload=[f"metadata.{EMBEDDING_MODEL_FIELD}"],
+        )
         for point in page.points:
             stored = _entity_metadata(point.payload).get(EMBEDDING_MODEL_FIELD)
             if stored:
                 return stored
         return None
+
+    async def refresh_model(self) -> bool:
+        """Follow an embedding model switch now instead of on the next write or
+        search; True when the model changed. A cache read when nothing did."""
+        before = self._fingerprint() if self._initialized else None
+        await self._ensure_initialized()
+        return self._fingerprint() != before
 
     async def embedding_fingerprint(self) -> str:
         """``provider:model:dimension`` of the model writing this collection.

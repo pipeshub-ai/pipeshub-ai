@@ -123,9 +123,14 @@ class FakeStore:
         self.fail_ids: set[str] = set()
         self.points: list[EntityPointRef] = []
         self.page_calls: list[tuple[str, list[str], str | None, int]] = []
+        self.refreshes = 0
 
     async def embedding_fingerprint(self) -> str:
         return self.fingerprint
+
+    async def refresh_model(self) -> bool:
+        self.refreshes += 1
+        return False
 
     async def upsert_entities_batch(
         self, entities: list, batch_size: int = 64, *, merge_membership: bool = True,
@@ -698,8 +703,10 @@ class TestLoop:
 
         container = MagicMock()
         container.logger = MagicMock(return_value=logging.getLogger("entity-index-test"))
-        container.entity_vector_store = AsyncMock(return_value=FakeStore())
+        store = FakeStore()
+        container.entity_vector_store = AsyncMock(return_value=store)
         with patch.object(mod.asyncio, "sleep", _sleep), \
+             patch.object(mod, "MODEL_CHECK_SECONDS", float("inf")), \
              patch.object(EntityIndexRebuilder, "tick", _tick), \
              patch.object(mod.MessagingUtils, "_get_redis_config", AsyncMock(return_value=MagicMock())):
             with pytest.raises(asyncio.CancelledError):
@@ -711,6 +718,25 @@ class TestLoop:
         assert idle == mod.IDLE_INTERVAL_SECONDS
         assert busy == mod.BUSY_INTERVAL_SECONDS
         assert busy < idle
+        assert store.refreshes == 2
+
+    async def test_a_model_switch_ends_the_wait_early(self) -> None:
+        """Recreating the collection promptly shortens the time the query and
+        connector services refuse entity searches after a switch."""
+        store = FakeStore()
+        store.refresh_model = AsyncMock(side_effect=[False, True])  # type: ignore[method-assign]
+        sleep = AsyncMock()
+        with patch.object(mod.asyncio, "sleep", sleep):
+            await mod._sleep_watching_model(store, mod.IDLE_INTERVAL_SECONDS, logging.getLogger("t"))
+        assert [c.args[0] for c in sleep.await_args_list] == [mod.MODEL_CHECK_SECONDS] * 2
+
+    async def test_a_model_that_cannot_start_does_not_end_the_wait(self) -> None:
+        store = FakeStore()
+        store.refresh_model = AsyncMock(side_effect=RuntimeError("endpoint down"))  # type: ignore[method-assign]
+        sleep = AsyncMock()
+        with patch.object(mod.asyncio, "sleep", sleep):
+            await mod._sleep_watching_model(store, 12.0, logging.getLogger("t"))
+        assert [c.args[0] for c in sleep.await_args_list] == [5.0, 5.0, 2.0]
 
     async def test_store_unavailable_skips_the_tick(self) -> None:
         sleeps: list[float] = []

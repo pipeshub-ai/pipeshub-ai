@@ -365,6 +365,7 @@ class TestARecreatedCollectionReachesRunningServices:
 
         db.query_nearest_points = AsyncMock(return_value=[[]])
         db.create_index = AsyncMock()
+        db.scroll = AsyncMock(return_value=ScrollResult(points=[]))
         with patch.object(store, "_init_embeddings", side_effect=_new_model) as reinit:
             assert await store.search_entities("pricing", ORG, set(), {"c1"}) == []
         reinit.assert_awaited_once()

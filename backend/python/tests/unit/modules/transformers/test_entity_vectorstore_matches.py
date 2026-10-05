@@ -410,6 +410,7 @@ class TestInitHousekeeping:
         )
         service.create_collection = AsyncMock()
         service.create_index = AsyncMock()
+        service.scroll = AsyncMock(return_value=ScrollResult(points=[]))
         store = _make_store(service)
         store._embedding_size = 2
 
